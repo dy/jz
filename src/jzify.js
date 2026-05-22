@@ -918,18 +918,8 @@ const handlers = {
 
   'switch'(disc, ...cases) {
     const clean = cases.map(c => {
-      if (c[0] === 'case' && Array.isArray(c[2]) && c[2][0] === ';') {
-        const body = c[2].slice(1).filter(s => typeof s !== 'number')
-        const stripped = stripTerminalSwitchBreak(body.length === 1 ? body[0] : [';', ...body])
-        return ['case', c[1], stripped]
-      }
-      if (c[0] === 'default' && Array.isArray(c[1]) && c[1][0] === ';') {
-        const body = c[1].slice(1).filter(s => s != null && typeof s !== 'number')
-        const stripped = stripTerminalSwitchBreak(body.length === 1 ? body[0] : [';', ...body])
-        return ['default', stripped]
-      }
-      if (c[0] === 'case') return ['case', c[1], stripTerminalSwitchBreak(c[2])]
-      if (c[0] === 'default') return ['default', stripTerminalSwitchBreak(c[1])]
+      if (c[0] === 'case') return ['case', c[1], normalizeCaseBody(c[2])]
+      if (c[0] === 'default') return ['default', normalizeCaseBody(c[1])]
       return c
     })
     return transformSwitch(disc, clean)
@@ -1488,18 +1478,12 @@ function cloneAst(node) {
   return node.map(cloneAst)
 }
 
-function stripTerminalSwitchBreak(body) {
-  if (!Array.isArray(body)) return body
-  if (body[0] === 'break') return null
-  if (body[0] === '{}') {
-    const inner = stripTerminalSwitchBreak(body[1])
-    if (inner == null) return ['{}', [';']]
-    return ['{}', Array.isArray(inner) && inner[0] === ';' ? inner : [';', inner]]
-  }
-  if (body[0] !== ';') return body
-
-  const stmts = body.slice(1)
-  if (Array.isArray(stmts.at(-1)) && stmts.at(-1)[0] === 'break') stmts.pop()
+/** Flatten a switch clause body to a single node, dropping ASI position markers.
+ * Unlike a plain statement list this keeps any `break` intact — transformSwitch
+ * needs the breaks to gate fall-through; it rewrites them to a sticky flag. */
+function normalizeCaseBody(body) {
+  if (!Array.isArray(body) || body[0] !== ';') return body
+  const stmts = body.slice(1).filter(s => s != null && typeof s !== 'number')
   return stmts.length === 0 ? null : stmts.length === 1 ? stmts[0] : [';', ...stmts]
 }
 
@@ -1537,31 +1521,60 @@ function rewriteSwitchBreaks(node, flag) {
   return node.map((part, i) => i === 0 ? part : rewriteSwitchBreaks(part, flag))
 }
 
-/** Transform switch statement to if/else chain. */
+/** Transform a switch into structured control flow with faithful fall-through.
+ *
+ * A pure if/else-if chain (the former lowering) can't express fall-through,
+ * stacked labels, or a `default` clause that isn't last \u2014 it ran only the first
+ * matching body. The correct model is two-phase, evaluated once with no goto:
+ *
+ *   1. ENTRY \u2014 compare the discriminant against each `case` label in source
+ *      order; the first `===` match fixes the entry index. No case matches \u2192
+ *      entry = the `default` clause's source index (or past-end if none).
+ *   2. RUN \u2014 walk clauses in source order; `entry <= i` runs clause i, so every
+ *      clause from the entry onward executes (fall-through). A `break` flips the
+ *      sticky `brk` flag (via rewriteSwitchBreaks) and gates the rest.
+ *
+ * The discriminant is bound to a temp only when re-reading it isn't free/safe; a
+ * bare identifier is compared directly \u2014 a synthetic temp would shed its STRING
+ * val-type and mis-fold string `case`s to `false` under strict-=== folding. */
 let swIdx = 0
 function transformSwitch(discriminant, cases) {
   const disc = transform(discriminant)
-  const tmp = `\uE000sw${swIdx++}`
+  const simple = typeof disc === 'string' || (Array.isArray(disc) && disc[0] == null)
+  const tmp = simple ? disc : `\uE000sw${swIdx++}`
+  const start = `\uE000swst${swIdx++}`
   const needsBreakFlag = cases.some(c => hasOwnSwitchBreak(c[0] === 'case' ? c[2] : c[1]))
   const brk = needsBreakFlag ? `\uE000swbrk${swIdx++}` : null
 
-  // Collect case/default
-  const stmts = [['let', ['=', tmp, disc]]]
-  if (brk) stmts.push(['let', ['=', brk, [null, false]]])
-  let chain = null
+  const n = cases.length
+  let defaultIdx = -1
+  const bodies = cases.map((c, i) => {
+    if (c[0] === 'default') { defaultIdx = i; return transform(c[1]) }
+    return transform(c[2])
+  })
 
-  for (let i = cases.length - 1; i >= 0; i--) {
-    const c = cases[i]
-    if (c[0] === 'default') {
-      const body = transform(c[1])
-      chain = brk ? rewriteSwitchBreaks(body, brk) : body
-    } else if (c[0] === 'case') {
-      const cond = ['===', tmp, transform(c[1])]
-      const body = transform(c[2])
-      const lowered = brk ? rewriteSwitchBreaks(body, brk) : body
-      chain = chain != null ? ['if', cond, lowered, chain] : ['if', cond, lowered]
-    }
+  const stmts = []
+  if (!simple) stmts.push(['let', ['=', tmp, disc]])
+
+  // Phase 1 \u2014 entry index. Init to default's position (or n = "no clause runs"),
+  // then let the first matching label override it via an if/else-if chain.
+  stmts.push(['let', ['=', start, [null, defaultIdx >= 0 ? defaultIdx : n]]])
+  let chain = null
+  for (let i = n - 1; i >= 0; i--) {
+    if (cases[i][0] !== 'case') continue
+    const hit = ['=', start, [null, i]]
+    const cond = ['===', tmp, transform(cases[i][1])]
+    chain = chain != null ? ['if', cond, hit, chain] : ['if', cond, hit]
   }
   if (chain) stmts.push(chain)
+  if (brk) stmts.push(['let', ['=', brk, [null, false]]])
+
+  // Phase 2 \u2014 run clauses from the entry index, falling through until a break.
+  for (let i = 0; i < n; i++) {
+    if (bodies[i] == null) continue
+    const body = brk ? rewriteSwitchBreaks(bodies[i], brk) : bodies[i]
+    const reached = ['<=', start, [null, i]]
+    stmts.push(['if', brk ? ['&&', ['!', brk], reached] : reached, body])
+  }
   return [';', ...stmts]
 }

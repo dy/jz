@@ -169,6 +169,12 @@ const bugCases = [
     (func (export "load_mem1") (param i32) (result i32)
       (i32.load8_u (local.get 0))))`],
   ['float hex', 'assertion failure', `(module (func (f64.const 0x1p+0) (f64.const -0x1.7f00a2d80faabp-35)))`],
+  // string.const's operand is a byte-array carrying a `valueOf` override (set by
+  // str()). normalize() classifies it as an immediate via the discriminator
+  // `parts[0].valueOf !== Array.prototype.valueOf`. jz folds that comparison from
+  // the receiver's static array type, ignoring the runtime override, so the operand
+  // is misread as an opcode — "Unknown instruction 104" (104 = 'h' of "hello").
+  ['string.const', 'Unknown instruction 104', `(module (func (export "f") (result stringref) (string.const "hello")))`],
 ]
 
 for (const [name, reason, wat] of bugCases) {

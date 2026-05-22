@@ -2072,7 +2072,16 @@ export const emitter = {
   // i32 / lit values are already numeric — the toNumF64 wrap is skipped to keep
   // the numeric fast path at one wasm instruction. Non-numeric (NaN-boxed string,
   // unknown type) routes through __to_num so "2026" | 0 === 2026.
-  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32') },
+  // `~~x` is the idiomatic int32 truncation: the two xor-with-(-1) cancel, leaving
+  // a single toI32 (whose NaN/Infinity guard runs once, unchanged). Fold it here so
+  // DSP/bytebeat `~~` doesn't emit a dead double-xor watr won't remove.
+  '~':   a => {
+    if (Array.isArray(a) && a[0] === '~') {
+      const inner = a[1], iv = emit(inner)
+      return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
+    }
+    const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
+  },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {

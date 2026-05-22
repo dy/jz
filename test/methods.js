@@ -525,6 +525,37 @@ test('valueOf: override wins on an array-element receiver', () => {
   is(f(), 'hi')
 })
 
+// The comparison `arr.valueOf !== Array.prototype.valueOf` must reflect a runtime
+// override — not be constant-folded from the receiver's static type. This is the
+// EXACT discriminator at watr compile.js:369, which classifies a string-byte-array
+// (override assigned by `str()`) as an immediate vs a sub-expression. jz only accepts
+// `Array.prototype.valueOf` as a syntactic comparison RHS (it is otherwise "not in
+// scope"), and folds `<arrayExpr>.valueOf === Array.prototype.valueOf` to `true`
+// (so `!==` to `false`) because the receiver is statically an array — ignoring the
+// assigned override. Result: every string operand misreads as an opcode
+// ("Unknown instruction 104"). Distinct from the tests above, which compare against a
+// captured runtime value or call `.valueOf()`; both of those already pass.
+// Uses the jzify path: `Array.prototype.valueOf` only resolves under jzify (the
+// path watr's build takes); the bare in-memory path rejects it as "not in scope".
+test('valueOf: identity vs Array.prototype.valueOf reflects override (not static fold)', () => {
+  const { f } = jz(`export let f = () => {
+    let a = [104, 105]
+    a.valueOf = () => 'hi'
+    return a.valueOf !== Array.prototype.valueOf ? 'overridden' : 'builtin'
+  }`, { jzify: true }).exports
+  is(f(), 'overridden')
+})
+
+// A plain array (no override) must still compare EQUAL to Array.prototype.valueOf,
+// so the fix narrows to "has an assigned override" rather than disabling the fold.
+test('valueOf: plain array identity still equals Array.prototype.valueOf', () => {
+  const { f } = jz(`export let f = () => {
+    let a = [104, 105]
+    return a.valueOf === Array.prototype.valueOf ? 'builtin' : 'overridden'
+  }`, { jzify: true }).exports
+  is(f(), 'builtin')
+})
+
 test('Regression: computed array receiver for indexing evaluates once', () => {
   const { test } = runHost(`
     export let test = () => {

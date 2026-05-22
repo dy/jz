@@ -92,6 +92,16 @@ test('bitwise: ~', () => {
   is(run('export let f = (a) => ~a').f(0), -1)
 })
 
+test('bitwise: ~~x truncates to int32 (double-xor folded away)', () => {
+  const { f } = run('export let f = (x) => ~~x')
+  is(f(3.7), 3)
+  is(f(-3.7), -3)
+  is(f(2147483648), -2147483648)   // wraps mod 2^32, same as `x | 0`
+  // The fold is value-identical to the old double-`~`; the WAT just drops 2 xors.
+  const wat = compile('export let f = (x) => ~~x', { wat: true })
+  is((wat.match(/i32\.xor/g) || []).length, 0)
+})
+
 test('bitwise: <<', () => {
   is(run('export let f = (a, b) => a << b').f(1, 8), 256)
 })
@@ -278,6 +288,24 @@ test('unary +: numeric variable returns same value', () => {
   is(jz('export let f = (x) => +x').exports.f(7), 7)
 })
 
+// === !! drop in boolean position ===
+
+test('logical: !!x in a condition drops to plain truthiness', () => {
+  // `if/while/for/?:` read only truthiness, so `!!e` ≡ `e` — the double-eqz folds out.
+  is(run('export let f = (x) => !!x ? 10 : 20').f(0), 20)
+  is(run('export let f = (x) => !!x ? 10 : 20').f(5), 10)
+  is(run('export let f = (x) => !!!x ? 1 : 0').f(0), 1)   // odd count → single `!`
+  const wat = compile('export let f = (x) => !!x ? 10 : 20', { wat: true })
+  is((wat.match(/i32\.eqz/g) || []).length, 0)
+})
+
+test('logical: !! in value position is preserved (still a 0/1 boolean)', () => {
+  // Not a boolean position — `!!x` must still normalize to a stored 0/1.
+  const { f } = jz('export let f = (x) => { let b = !!x; return b ? 100 : 200 }', { jzify: true }).exports
+  is(f(0), 200)
+  is(f(9), 100)
+})
+
 // === Optional call ?.() ===
 
 test('?.(): non-null callable returns value', () => {
@@ -326,7 +354,7 @@ test('switch: two cases', () => {
   is(f(99), -1)
 })
 
-test('switch: jzify strips terminal case breaks', () => {
+test('switch: break stops fall-through', () => {
   const { f } = run(`export let f = (x) => {
     let y = 0
     switch (x) {
@@ -394,6 +422,66 @@ test('switch: jzify lowers nested case breaks', () => {
   }`, { jzify: true })
   is(f(1), 0)
   is(f(2), 20)
+})
+
+// The if/else-if chain the old lowering used could only run one matching body;
+// these four pin the capabilities it structurally couldn't express.
+
+test('switch: a breakless case falls through into the next', () => {
+  const { f } = run(`export let f = (x) => {
+    let y = 0
+    switch (x) {
+      case 1: y = 1        // no break — falls through
+      case 2: y = 2; break
+      default: y = 9
+    }
+    return y
+  }`, { jzify: true })
+  is(f(1), 2)   // 1 enters at case 1, falls into case 2, then breaks
+  is(f(2), 2)
+  is(f(3), 9)
+})
+
+test('switch: stacked labels share one body', () => {
+  const { f } = run(`export let f = (g) => {
+    switch (g) {
+      case 1:
+      case 2: return 10
+      default: return 99
+    }
+  }`, { jzify: true })
+  is(f(1), 10)
+  is(f(2), 10)
+  is(f(3), 99)
+})
+
+test('switch: default need not be last', () => {
+  const { f } = run(`export let f = (x) => {
+    switch (x) {
+      case 1: return 10
+      default: return 99
+      case 2: return 20
+    }
+  }`, { jzify: true })
+  is(f(1), 10)
+  is(f(2), 20)
+  is(f(3), 99)   // no label matches → default, wherever it sits
+})
+
+test('switch: string discriminant matches by value (no temp mis-fold)', () => {
+  // String built internally — the local `run` can't marshal a string *argument*
+  // (it lands as NaN), but the switch's string `===` matching is what's under test.
+  const { f } = run(`export let f = (n) => {
+    let s = n === 0 ? "a" : n === 1 ? "b" : "z"
+    switch (s) {
+      case "a": return 1
+      case "b": return 2
+      default: return 0
+    }
+  }`, { jzify: true })
+  is(f(0), 1)
+  is(f(1), 2)
+  is(f(2), 0)
 })
 
 // === Default params ===
