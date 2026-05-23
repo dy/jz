@@ -1150,13 +1150,31 @@ export function containsDeclOf(body, name) {
   return false
 }
 
-/** Clone AST node, substituting bare-name matches with [null, value]. Skips into closures. */
-export function cloneWithSubst(node, name, value) {
-  if (node === name) return [null, value]
+/** Clone AST, applying substitutions and/or renames. Skips into `=>` bodies.
+ *  Call styles: `(node, name, value)` for single binding, or `(node, substMap, renameMap)` for plan inlining. */
+export function cloneWithSubst(node, subst, rename = null) {
+  if (!(subst instanceof Map)) {
+    const name = subst, value = rename
+    if (node === name) return [null, value]
+    if (!Array.isArray(node)) return node
+    if (node[0] === '=>') return node
+    return node.map(x => cloneWithSubst(x, name, value))
+  }
+  const ren = rename instanceof Map ? rename : new Map()
+  if (typeof node === 'string') {
+    if (subst.has(node)) return clonePlain(subst.get(node))
+    return ren.get(node) || node
+  }
   if (!Array.isArray(node)) return node
-  if (node[0] === '=>') return node
-  return node.map(x => cloneWithSubst(x, name, value))
+  const op = node[0]
+  if (op === 'str') return node.slice()
+  if (op === '=>') return node
+  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren), node[2]]
+  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren)]
+  return node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
 }
+
+const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
 
 /** Does `body` access a typed-array element by string name known to the type system? */
 export function containsKnownTypedArrayIndex(body) {

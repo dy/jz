@@ -26,7 +26,7 @@
 
 import { ctx, warn } from './ctx.js'
 import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
@@ -1428,19 +1428,6 @@ const scalarizeFunctionObjectLiterals = () => {
     }
   }
   return changed
-}
-
-const cloneWithSubst = (node, subst, rename) => {
-  if (typeof node === 'string') {
-    if (subst.has(node)) return clonePlain(subst.get(node))
-    return rename.get(node) || node
-  }
-  if (!Array.isArray(node)) return node
-  const op = node[0]
-  if (op === 'str') return node.slice()
-  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, rename), node[2]]
-  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, rename)]
-  return node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, rename))
 }
 
 // Returns { prefix, value } where prefix is the substituted body statements
