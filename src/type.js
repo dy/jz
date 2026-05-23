@@ -4,6 +4,7 @@
  * - exprType: i32 vs f64 for locals/params
  * - typedElem*: PTR.TYPED NaN-box aux encoding
  * - scanBoundedLoops / inBoundsCharCodeAt: charCodeAt i32 contract proof
+ * - loop unroll helpers: smallConstForTripCount, cloneWithSubst, …
  * - intCertainMap / intExprChecker: integer-shaped binding analysis
  *
  * @module type
@@ -201,6 +202,122 @@ export function inBoundsCharCodeAt(ctx) {
   ctx.func.ccInBounds = set
   ctx.func._ccBody = body
   return set
+}
+
+// === Loop unroll / AST transforms (emit + plan) ===
+
+export const MAX_SMALL_FOR_UNROLL = 8
+export const MAX_NESTED_FOR_UNROLL = 64
+
+export function containsNestedClosure(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return true
+  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
+  return false
+}
+
+export function containsNestedLoop(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'for' || op === 'while' || op === 'do') return true
+  if (op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
+  return false
+}
+
+export function nestedSmallLoopBudget(body) {
+  if (!Array.isArray(body)) return 1
+  if (body[0] === '=>') return 1
+  if (body[0] === 'for') {
+    const [, init, cond, step, loopBody] = body
+    const n = smallConstForTripCount(init, cond, step)
+    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
+  }
+  let max = 1
+  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
+  return max
+}
+
+export function containsDeclOf(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === '=>') return false
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (d === name) return true
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+    }
+  }
+  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
+  return false
+}
+
+/** Clone AST with substitutions/renames. Skips into `=>` bodies. */
+export function cloneWithSubst(node, subst, rename = null) {
+  if (!(subst instanceof Map)) {
+    const name = subst, value = rename
+    if (node === name) return [null, value]
+    if (!Array.isArray(node)) return node
+    if (node[0] === '=>') return node
+    return node.map(x => cloneWithSubst(x, name, value))
+  }
+  const ren = rename instanceof Map ? rename : new Map()
+  if (typeof node === 'string') {
+    if (subst.has(node)) return clonePlain(subst.get(node))
+    return ren.get(node) || node
+  }
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  if (op === 'str') return node.slice()
+  if (op === '=>') return node
+  if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren), node[2]]
+  if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren)]
+  return node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
+}
+
+const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
+
+export function containsKnownTypedArrayIndex(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return false
+  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
+  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
+  return false
+}
+
+/** Trip count for `for (let i=0; i<N; i++)` when structurally obvious, else null. */
+export function smallConstForTripCount(init, cond, step, maxEnd = MAX_SMALL_FOR_UNROLL) {
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const decl = init[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const name = decl[1]
+  const start = intLiteralValue(decl[2])
+  if (start !== 0) return null
+  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
+  const end = intLiteralValue(cond[2])
+  if (end == null || end < 0 || end > maxEnd) return null
+  const stepOk = Array.isArray(step) && (
+    (step[0] === '++' && step[1] === name) ||
+    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
+  )
+  return stepOk ? end : null
+}
+
+/** Does `body` always exit via return/throw/break/continue? */
+export function isTerminator(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
+  if (op === '{}' || op === ';') {
+    for (let i = body.length - 1; i >= 1; i--) {
+      const s = body[i]
+      if (s == null) continue
+      return isTerminator(s)
+    }
+    return false
+  }
+  return false
 }
 
 const isUnsignedI32Expr = (e) => Array.isArray(e) && (

@@ -176,3 +176,39 @@ export function collectParamNames(raw, out = new Set()) {
   return out
 }
 
+// === Return-path queries (narrowing) ===
+
+const collectReturnExprs = (node, out) => {
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '=>') return
+  if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+  for (const a of args) collectReturnExprs(a, out)
+}
+
+export const alwaysReturns = (n) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === '=>') return false
+  if (op === 'return' || op === 'throw') return true
+  if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+  if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+  return false
+}
+
+export const hasBareReturn = (n) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === '=>') return false
+  if (n[0] === 'return' && n[1] == null) return true
+  return n.some(hasBareReturn)
+}
+
+export const returnExprs = (body) => {
+  if (isBlockBody(body)) {
+    const out = []
+    collectReturnExprs(body, out)
+    return out
+  }
+  return [body]
+}
+

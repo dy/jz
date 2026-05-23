@@ -12,21 +12,25 @@ node bench/bench.mjs  # run benchmarks
 ## Code layout
 
 ```
-src/           compiler core (parse → prepare → compile → emit → optimize)
-  ast.js       AST shape, params, walks (cycle-free)
-  static.js    compile-time static eval + int literal folding
-  kind.js      value KIND inference (STRING, ARRAY, OBJECT, …)
-  type.js      WASM local typing (i32/f64), typed-array aux, int proofs
-  program-facts.js  whole-program dyn-key / call-site facts
-  bridge.js    stdlib registration bridge (ctx.bridge)
-  analyze.js   body walks (analyzeBody, valTypes, captures)
-module/        stdlib — import bridge + kind/static/type/ast, not analyze.js
-test/          test files (tst framework)
-bench/         benchmark corpus (one dir per case: .js + optional .as.ts/.c/.rs/…)
-scripts/       bench harnesses (bench-size = wasm size, bench-compile = compile time)
+src/
+  jzify/       opt-in JS→JZ desugar (index.js, op-policy.js)
+  abi/         NaN-box ABI helpers (string, array, object, number)
+  # shared leaves — short paths, imported across stages:
+  ast.js static.js kind.js type.js
+  ctx.js bridge.js reps.js ir.js autoload.js resolve.js
+  # pipeline orchestrators (flat until a stage grows a sub-family):
+  prepare.js   validate, normalize, extract exports/imports
+  compile.js   per-function emit driver
+  analyze.js program-facts.js infer.js plan.js narrow.js emit.js optimize.js vectorize.js
+  assemble.js codegen.js watopt.js   WAT module assembly + post-opt
+module/        stdlib
 ```
 
-**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs.
+**Folder policy:** one folder per pipeline *family*, not per file. Shared cycle-free leaves stay at `src/` root so `module/` imports stay short. Add a folder when a family has multiple files or is clearly separable (like `jzify/`). Avoid deep nesting — file count should reflect concepts, not stages × sub-pass.
+
+**Suggested future folders** (optional, no rush): `wat/` (assemble, codegen, watopt), `compile/` (middle pipeline if it grows further). Not worth moving until you're editing that family often.
+
+**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs, loop-unroll helpers.
 
 ## Architecture
 
