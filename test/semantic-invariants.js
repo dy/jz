@@ -10,8 +10,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/emit.js'
-import { GLOBALS } from '../src/prepare.js'
+import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
+import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
 
 // === Helper: compile with WAT output for structural inspection ===

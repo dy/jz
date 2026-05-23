@@ -5,10 +5,10 @@ import { is, ok, throws, almost } from 'tst/assert.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
-import prepare, { GLOBALS } from '../src/prepare.js'
+import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emit, emitter, emitFlat as flat, emitBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/emit.js'
-import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/analyze.js'
+import { emit, emitter, emitFlat as flat, emitBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
+import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v

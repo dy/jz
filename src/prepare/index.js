@@ -23,17 +23,17 @@
  */
 
 import { parse } from 'subscript/feature/jessie'
-import { handlerArgs, refsName } from './ast.js'
-import { ctx, err, derive } from './ctx.js'
-import { T } from './ast.js'
-import { extractParams, collectParamNames, classifyParam } from './ast.js'
-import { observeNodeFacts } from './program-facts.js'
-import { staticObjectProps, staticPropertyKey } from './static.js'
-import { VAL } from './reps.js'
-import { STMT_OPS } from './ast.js'
-import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from './op-policy.js'
-import { recordGlobalRep } from './infer.js'
-import { isFuncRef } from './ir.js'
+import { handlerArgs, refsName } from '../ast.js'
+import { ctx, err, derive } from '../ctx.js'
+import { T } from '../ast.js'
+import { extractParams, collectParamNames, classifyParam } from '../ast.js'
+import { observeNodeFacts } from '../compile/program-facts.js'
+import { staticObjectProps, staticPropertyKey } from '../static.js'
+import { VAL } from '../reps.js'
+import { STMT_OPS } from '../ast.js'
+import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
+import { recordGlobalRep } from '../compile/infer.js'
+import { isFuncRef } from '../ir.js'
 import {
   CTORS, TIMER_NAMES,
   hasModule, includeModule,
@@ -41,7 +41,7 @@ import {
   includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion,
   includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
-} from './autoload.js'
+} from '../autoload.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]

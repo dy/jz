@@ -12,7 +12,7 @@
 import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize.js'
+import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
 import { run } from './util.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {

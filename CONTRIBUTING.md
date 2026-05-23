@@ -12,30 +12,28 @@ node bench/bench.mjs  # run benchmarks
 ## Code layout
 
 ```
-jzify/         opt-in JS→JZ desugar (index.js orchestrator + phase modules) — root, not src/
-  names.js     temp-name factory (switch/class/arg/do namespaces)
-  bundler.js   esbuild export/interop folds + object-literal idioms
-  classes.js   class + object-method `this` lowering
-  switch.js    switch fall-through lowering
+jzify/          pre-compile desugar (index.js orchestrator + phase modules)
+  names.js      temp-name factory
+  bundler.js    esbuild export/interop folds + object-literal idioms
+  classes.js    class + object-method `this` lowering
+  switch.js     switch fall-through lowering
 src/
-  op-policy.js shared jzify/prepare reject + class-error messages
-  abi/         NaN-box ABI helpers (string, array, object, number)
-  # shared leaves — short paths, imported across stages:
+  prepare/      validate, normalize, extract exports/imports (index.js)
+  compile/      analyze → infer → plan → narrow → emit; program-facts; driver (index.js)
+  optimize/     WASM IR peephole passes + vectorize.js
+  wat/          assemble.js, codegen.js, watopt.js
+  abi/          NaN-box ABI helpers (string, array, object, number)
+  op-policy.js  shared jzify/prepare reject + class-error messages
+  # shared leaves — cycle-free, imported across stages:
   ast.js static.js kind.js type.js param-reps.js
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
-  # pipeline orchestrators (flat until a stage grows a sub-family):
-  prepare.js   validate, normalize, extract exports/imports
-  compile.js   per-function emit driver
-  analyze.js program-facts.js infer.js plan.js narrow.js emit.js optimize.js vectorize.js
-  assemble.js codegen.js watopt.js   WAT module assembly + post-opt
-module/        stdlib
+module/         stdlib
+layout.js       NaN-box bit layout (compiler-free, shared with module/)
 ```
 
-**Folder policy:** one folder per pipeline *family*, not per file. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
+**Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
 
 **Stdlib registration:** use `wat(name, body)` for WAT bodies and `reg(name, deps, fn)` for emit handlers. Co-locate with `reg(name, { deps, wat, emit })` when they pair. Do not assign `ctx.core.stdlib[…]` / `ctx.core.emit[…]` directly in new code.
-
-**Suggested future folders** (optional, no rush): `wat/` (assemble, codegen, watopt), `compile/` (middle pipeline if it grows further). Not worth moving until you're editing that family often.
 
 **kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs, loop-unroll helpers. **AST walks:** use `refsName`/`refsAny`/`some` from `ast.js` — don't hand-roll name scanners.
 

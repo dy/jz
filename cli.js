@@ -10,7 +10,7 @@ import { pathToFileURL } from 'url'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from './index.js'
 import jzifyFn from './jzify/index.js'
-import { codegen } from './src/codegen.js'
+import { codegen } from './src/wat/codegen.js'
 import { resolveModuleGraph } from './src/resolve.js'
 import { createRequire } from 'module'
 

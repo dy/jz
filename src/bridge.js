@@ -1,5 +1,5 @@
 /**
- * Stdlib module bridge — `module/*` imports from here, not `src/emit.js`.
+ * Stdlib module bridge — `module/*` imports from here, not `src/compile/emit.js`.
  *
  * Emit impls bind on `ctx.bridge` at reset(). Registration: `wat(name, body)`
  * for WAT stdlib, `reg(name, deps, fn)` for emit, or `reg(name, { deps, wat, emit })`
