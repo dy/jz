@@ -1,28 +1,11 @@
 /** Runtime module autoload rules used by prepare(). */
 
-import { createRequire } from 'module'
-import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
 import { ctx, err } from './ctx.js'
-import { MOD_ALIAS, MOD_PATHS, hasModName } from '../module/registry.js'
-
-const require = createRequire(import.meta.url)
-const _moduleDir = dirname(fileURLToPath(import.meta.url))
-const _modCache = Object.create(null)
-
-/** Sync lazy load — Node require() of ESM default export. */
-const loadModule = (modName) => {
-  if (_modCache[modName]) return _modCache[modName]
-  const rel = MOD_PATHS[modName]
-  if (!rel) return null
-  _modCache[modName] = require(join(_moduleDir, '..', 'module', rel.replace(/^\.\//, ''))).default
-  return _modCache[modName]
-}
-
-export { MOD_ALIAS }
-export const hasModule = hasModName
+import * as mods from '../module/index.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
+
+export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
 
 export const PROP_MODULES = Object.assign(Object.create(null), {
   push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
@@ -140,13 +123,15 @@ const MOD_DEPS = {
 
 export function includeModule(name) {
   const modName = MOD_ALIAS[name] || name
-  const init = loadModule(modName)
+  const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
   if (ctx.module.modules[modName]) return
   ctx.module.modules[modName] = true
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
   init(ctx)
 }
+
+export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
 
 export const includeMods = (...names) => names.forEach(includeModule)
 

@@ -24,7 +24,7 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit } from './_emit.js'
+import { emit } from './emit.js'
 import { valTypeOf, exprType } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'

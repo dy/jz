@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { emit, emitIndex } from './_emit.js'
+import { emit, emitIndex } from './emit.js'
 import { valTypeOf, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex } from '../layout.js'

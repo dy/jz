@@ -1,7 +1,16 @@
-/**
- * Stdlib module barrel — registry metadata only (no eager module imports).
- *
- * @module module/index
- */
-
-export { MOD_ALIAS, MOD_PATHS, hasModName } from './registry.js'
+import math from './math.js'
+import core from './core.js'
+import array from './array.js'
+import object from './object.js'
+import string from './string.js'
+import number from './number.js'
+import fn from './function.js'
+import typedarray from './typedarray.js'
+import collection from './collection.js'
+import symbol from './symbol.js'
+import console from './console.js'
+import json from './json.js'
+import regex from './regex.js'
+import timer from './timer.js'
+import date from './date.js'
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date }

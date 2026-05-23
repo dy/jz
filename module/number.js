@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit, emitBoolStr } from './_emit.js'
+import { emit, emitBoolStr } from './emit.js'
 import { isReassigned, valTypeOf } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR } from '../src/ctx.js'
