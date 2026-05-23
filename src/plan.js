@@ -862,8 +862,8 @@ const forLoopBodyIndex = (stmt) =>
 const withForLoopBody = (stmt, body) =>
   stmt.length === 3 ? ['for', stmt[1], body] : ['for', stmt[1], stmt[2], stmt[3], body]
 
-// `const ch = prog[ci]; … ch.length …` → `chordLens[ci]` without row flattening.
-// Floatbeat waltz/pad loops — avoids dynamic array-length dispatch on nested rows.
+// `row[ci].length` on nested static int-row tables → `rowlen[ci]`.
+// General: `const rows = [[…],…]; const row = rows[idx]; … row.length`.
 const bindNestedRowLengths = () => {
   let changed = false
   for (const func of ctx.func.list) {
@@ -997,8 +997,8 @@ const bindNestedRowLengthsSeq = (body) => {
   return { node: wrapStmtList(out, body), changed: true }
 }
 
-// `for (i < rowlen[ci])` pad loops — full unroll when row lengths are uniform;
-// min-length loop + one guarded tail when they vary (e.g. waltz 5/4/4/5).
+// `for (i < rowlen[ci])` inner loops — full unroll when lens are uniform;
+// min-length loop + one guarded tail when they vary (mixed static row lengths).
 const MAX_ROWLEN_PAD_UNROLL = 8
 
 const parseFlatIntRowLit = (expr) => {

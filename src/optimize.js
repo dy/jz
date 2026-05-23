@@ -1232,6 +1232,7 @@ export function csePureExprLoop(fn) {
 
   const table = new Map()
   const keyLocals = new Set()
+  const keyGlobals = new Set()
 
   const invalidateLocal = (X) => {
     for (const [key, entry] of table) {
@@ -1239,11 +1240,17 @@ export function csePureExprLoop(fn) {
     }
   }
 
+  const invalidateGlobal = (G) => {
+    for (const [key, entry] of table) {
+      if (entry.globals.has(G)) table.delete(key)
+    }
+  }
+
   const pureKeyI32 = (n) => {
     if (!Array.isArray(n)) return null
     const op = n[0]
     if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
-    if (op === 'global.get' && typeof n[1] === 'string') return `G:${n[1]}`
+    if (op === 'global.get' && typeof n[1] === 'string') { keyGlobals.add(n[1]); return `G:${n[1]}` }
     if (op === 'i32.const' || op === 'i64.const') return `C:${op}:${n[1]}`
     if (PURE_I32_UNARY.has(op) && n.length === 2) {
       const k = pureKeyI32(n[1]); return k ? `${op}|${k}` : null
@@ -1263,7 +1270,7 @@ export function csePureExprLoop(fn) {
     if (!Array.isArray(n)) return null
     const op = n[0]
     if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
-    if (op === 'global.get' && typeof n[1] === 'string') return `G:${n[1]}`
+    if (op === 'global.get' && typeof n[1] === 'string') { keyGlobals.add(n[1]); return `G:${n[1]}` }
     if (op === 'f64.const' || op === 'f32.const') return `C:${op}:${n[1]}`
     if (PURE_F64_UNARY.has(op) && n.length === 2) {
       if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') {
@@ -1290,9 +1297,11 @@ export function csePureExprLoop(fn) {
     if (op === 'local.get' || op === 'global.get' || op === 'f64.const' || op === 'f32.const') return
     if (!canMutateSite(parent, node)) return
     keyLocals.clear()
+    keyGlobals.clear()
     const key = pureKeyF64(node)
     if (!key) return
     const locals = new Set(keyLocals)
+    const globals = new Set(keyGlobals)
     const entry = table.get(key)
     if (entry) {
       if (!entry.snapName) {
@@ -1305,7 +1314,7 @@ export function csePureExprLoop(fn) {
       }
       parent[idx] = ['local.get', entry.snapName]
     } else {
-      table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals })
+      table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals, globals })
     }
   }
 
@@ -1342,6 +1351,13 @@ export function csePureExprLoop(fn) {
       for (let i = 2; i < node.length; i++) walk(node[i], node, i)
       const X = node[1]
       if (typeof X === 'string') invalidateLocal(X)
+      return
+    }
+
+    if (op === 'global.set') {
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      const G = node[1]
+      if (typeof G === 'string') invalidateGlobal(G)
       return
     }
 

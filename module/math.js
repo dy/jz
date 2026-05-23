@@ -311,16 +311,24 @@ export default (ctx) => {
   const expPosPow = (base, exp) =>
     typed(['call', '$math.exp', ['f64.mul', toNumF64(exp, emit(exp)), ['f64.const', Math.log(base)]]], 'f64')
   const expPowCall = emitter(['math.exp'], (base, exp) => expPosPow(base, exp))
-  ctx.core.emit['math.pow'] = (a, b) => {
+  // Shared pow/** lowering. `expPosPow` is only for `**`: it is bit-identical to
+  // $math.pow for fractional exponents (e.g. 2**(n/12)) but not for integer
+  // Math.pow — exp(log(b)*y) loses ulps and misses overflow (test262 S8.5).
+  const emitPow = (a, b, allowExpPos) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
-    const cb = constNum(a)
-    if (cb != null && cb > 0 && Number.isFinite(cb)) return expPowCall(cb, b)
+    if (allowExpPos) {
+      const cb = constNum(a)
+      // Integer literal exponents keep $math.pow (exact bits + overflow semantics).
+      if (cb != null && cb > 0 && Number.isFinite(cb) && n === null) return expPowCall(cb, b)
+    }
     return powCall(a, b)
   }
+  ctx.core.emit['math.pow'] = (a, b) => emitPow(a, b, false)
   ctx.core.emit['math.pow'].deps = powCall.deps   // metadata parity (tabulation/analysis)
-  ctx.core.emit['**'] = ctx.core.emit['math.pow']
+  ctx.core.emit['**'] = (a, b) => emitPow(a, b, true)
+  ctx.core.emit['**'].deps = powCall.deps
   ctx.core.emit['math.cbrt'] = emitter(['math.cbrt'], a => call('math.cbrt', a))
   ctx.core.emit['math.hypot'] = emitter(['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
