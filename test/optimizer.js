@@ -1098,6 +1098,33 @@ const compileMain = (src) => {
   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
 }
 
+// === unrollRowLenPadLoops (floatbeat variable-row pad) ===
+// `for (i < rowlen[ci])` after bindNestedRowLengths — uniform rows fully
+// unroll; mixed row lengths peel a fixed-prefix loop + one guarded tail.
+
+test('unrollRowLenPadLoops: mixed row lengths peel tail iteration', () => {
+  const src = `
+    export let main = (t) => {
+      const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
+      const ch = prog[(t * .5 | 0) % 4]
+      let pad = 0
+      for (let i = 0; i < ch.length; i++) pad += Math.sin(t * 6.283185307179586 * 130.8 * 2**(ch[i] / 12))
+      return pad
+    }
+  `
+  const js = (t) => {
+    const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
+    const ch = prog[(t * .5 | 0) % 4]
+    let pad = 0
+    for (let i = 0; i < ch.length; i++) pad += Math.sin(t * 6.283185307179586 * 130.8 * 2**(ch[i] / 12))
+    return pad
+  }
+  const { main } = run(src)
+  for (let k = 0; k < 20; k++) almost(main(k / 17), js(k / 17), 5e-3)
+  const body = compileMain(src)
+  ok(/i32\.const 4/.test(body), 'fixed-prefix loop bound should constant-fold to 4')
+})
+
 test('promoteIntArrayLiterals: int-only literal with read-only loop → TYPED + SIMD', () => {
   const src = `
     export const main = () => {

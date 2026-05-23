@@ -13,6 +13,8 @@
   h1 small { font-weight: 400; opacity: .55; }
   a { color: #eee; text-decoration: none; }
   a:hover { color: #50ad7b; text-decoration: underline; }
+  h1 .src { display: inline-flex; align-items: center; margin-left: 6px; opacity: .45; vertical-align: middle; text-decoration: none; }
+  h1 .src:hover { opacity: 1; color: #eee; text-decoration: none; }
   #stage { position: absolute; top: 52px; left: 20px; right: 20px; bottom: 20px;
     display: flex; flex-direction: column; gap: 6px; }
   #sgwrap { position: relative; flex: 3 1 0; }
@@ -54,14 +56,17 @@
   #shuffle:hover { border-color: #50ad7b; color: #50ad7b; }
   #play { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     background: rgba(7,7,12,.6); cursor: pointer; }
-  #play div { font-size: 24px; font-weight: 600; padding: 18px 36px; border: 1px solid #fff3;
-    border-radius: 12px; background: #0008; }
+  #play div { width: 0; height: 0; border-style: solid; border-width: 22px 0 22px 36px;
+    border-color: transparent transparent transparent rgba(238,238,238,.92);
+    filter: drop-shadow(0 0 12px rgba(80,173,123,.35)); }
+  #play:hover div { border-left-color: #50ad7b; }
 </style>
 </head>
 <body>
 <h1>
   Live <b>spectrogram</b> &mdash; real FFT computed by <a href="https://github.com/dy/jz">jz</a>,
   playing a <a href="https://www.youtube.com/watch?v=tCRPUv8V22o">floatbeat</a> tune
+  <a class="src" href="https://github.com/dy/jz/tree/main/examples/rfft" title="source" aria-label="source"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
   <small>&nbsp;· vertical = 20 Hz–20 kHz, A-weighted · log (equal octaves) / mel scale · space / click = pause · 🎲 shuffles the tune</small>
 </h1>
 <div id="stage">
@@ -69,7 +74,7 @@
     <canvas id="sg"></canvas>
     <div id="axis"></div>
     <div id="scale"><button data-s="log" class="on">log</button><button data-s="mel">mel</button></div>
-    <div id="play"><div>▶ play</div></div>
+    <div id="play" aria-label="Play"><div></div></div>
   </div>
   <div id="wavewrap">
     <canvas id="wave"></canvas>
@@ -87,8 +92,8 @@ import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
 import { songs, songDisplaySrc, songBeatSrc, songSlug } from "./songs.js";
 
-const N = 4096;                      // FFT size → N/2 = 2048 magnitude bins; bin width SR/N ≈ 10.8 Hz
-const HOP = 256;                     // samples between successive spectrogram columns
+const N = 8192;                      // FFT size → N/2 = 4096 magnitude bins; bin width SR/N ≈ 5.4 Hz
+const HOP = 512;                     // samples between successive spectrogram columns (same overlap as N/8)
 const urls = { js: "./rfft.js", wasm: "./rfft.wasm" };
 const TAU = 6.283185307179586;
 
@@ -284,7 +289,7 @@ async function start(kind) {
       }
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
-      waveCol(samp, cursor, x, wave.height);        // one waveform column, time-aligned to this frame
+      waveCol(samp, cursor, x, wave.height, spec);  // one waveform column, time-aligned to this frame
     }
     drawBars(spec);
     ui.frame(work);
@@ -361,13 +366,34 @@ function drawBars(spec) {
 
 // Scrolling waveform: one column per spectrogram column, time-aligned to it. Each
 // column is the min/max envelope of that hop's HOP samples, so the time-domain
-// signal scrolls left in lockstep with the spectral picture above it.
-const WAMP = 0.42;
-function waveCol(samp, cursor, x, h) {
+// signal scrolls left in lockstep with the spectral picture above it. Tint is lch():
+// log-Hz → hue (20 Hz red … 20 kHz UV), A-weighted level → lightness only.
+const WAMP = 0.42, WAVE_H0 = 12, WAVE_H1 = 312, WAVE_C = 96;
+const hzHue = (f) => WAVE_H0 + SCALES.log.fwd(f) * (WAVE_H1 - WAVE_H0);
+function waveColor(spec) {
+  let lSum = 0, sinH = 0, cosH = 0, w = 0;
+  const dbSpan = DB_CEIL - DB_FLOOR, step = 1 / (NBARS - 1);
+  for (let i = 0; i < NBARS; i++) {
+    let mag = 0;
+    for (let j = barLo[i]; j <= barHi[i]; j++) if (spec[j] > mag) mag = spec[j];
+    const db = 20 * Math.log10(mag + 1e-7) + barAw[i];
+    const v = Math.max(0, Math.min(1, (db - DB_FLOOR) / dbSpan));
+    const wt = v * v * v + 0.003;                              // loud bands steer hue more
+    const rad = hzHue(SCALES.log.inv(i * step)) * TAU / 360;
+    sinH += Math.sin(rad) * wt; cosH += Math.cos(rad) * wt;
+    lSum += (26 + v * 54) * wt;                                // brightness from level only
+    w += wt;
+  }
+  if (w < 1e-6) return "lch(40% 24 250 / .88)";
+  let hue = Math.atan2(sinH / w, cosH / w) * 360 / TAU; if (hue < 0) hue += 360;
+  const light = lSum / w, chroma = WAVE_C * (0.78 + 0.22 * (light - 26) / 54);
+  return `lch(${light.toFixed(1)}% ${chroma.toFixed(1)} ${hue.toFixed(1)} / .88)`;
+}
+function waveCol(samp, cursor, x, h, spec) {
   let lo = 1, hi = -1;
   for (let i = cursor - HOP; i < cursor; i++) { const s = samp(i); if (s < lo) lo = s; if (s > hi) hi = s; }
   const mid = h * 0.5, amp = h * WAMP, y0 = mid - hi * amp, y1 = mid - lo * amp;
-  wctx.fillStyle = "rgba(127,216,255,.85)";
+  wctx.fillStyle = waveColor(spec);
   wctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
 }
 
@@ -406,12 +432,12 @@ document.getElementById("shuffle").addEventListener("click", shuffle);
 // clock, so the scroll halts and resumes seamlessly. Only the 🎲 button shuffles.
 const playEl = document.getElementById("play");
 let paused = false;
-const overlay = (show, txt) => { if (txt) playEl.firstElementChild.textContent = txt; playEl.style.display = show ? "flex" : "none"; };
+const overlay = (show) => { playEl.style.display = show ? "flex" : "none"; };
 
 function togglePlay() {
   if (!running) return;
   paused = !paused;
-  if (paused) { audio.ctx.suspend(); overlay(true, "▶ resume"); }
+  if (paused) { audio.ctx.suspend(); overlay(true); }
   else { audio.ctx.resume(); overlay(false); }   // the render loop kept running; clock just unfreezes
 }
 

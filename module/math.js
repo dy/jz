@@ -21,8 +21,10 @@ export default (ctx) => {
   // Direct stdlib→stdlib call edges. resolveIncludes() expands these transitively,
   // so each emitter declares only the single stdlib it directly calls.
   Object.assign(ctx.core.stdlibDeps, {
-    'math.sin': ['math.isFinite', 'math.sin_core'],
-    'math.cos': ['math.isFinite', 'math.cos_core'],
+    'math.sin': ['math.sin_core'],
+    'math.cos': ['math.cos_core'],
+    'math.sin_core': ['math.isFinite'],
+    'math.cos_core': ['math.isFinite'],
     'math.tan': ['math.sin', 'math.cos'],
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
@@ -56,14 +58,28 @@ export default (ctx) => {
     }
     return false
   }
-  // Provably finite f64 — skips the isFinite guard in $math.sin/$math.cos when the
-  // argument is pure int/const/global arithmetic (floatbeat phase args, semitone ratios).
-  const isFiniteArith = (src) => {
+  // Emit-time fast path: call $math.sin_core/$math.cos_core directly instead of
+  // the $math.sin/$math.cos wrappers. sin_core still runs the isFinite guard
+  // (finite operands can overflow to ±Inf); this only saves a call indirection.
+  const isBoundName = (name) =>
+    typeof name === 'string' && (
+      repOf(name) != null ||
+      ctx.func.locals?.has(name) ||
+      ctx.func.current?.params?.some(p => p.name === name)
+    )
+  const isSinCoreFastPath = (src) => {
     if (src == null) return false
     if (typeof src === 'number') return Number.isFinite(src)
-    if (typeof src === 'string') return isIntCertain(src)
+    if (typeof src === 'string') return isIntCertain(src) || isBoundName(src)
     if (!Array.isArray(src)) return false
     const op = src[0]
+    // jz source literals: [null, n], [, bool], [null, null]
+    if (op == null && src.length === 2) {
+      const v = src[1]
+      if (typeof v === 'number') return Number.isFinite(v)
+      if (typeof v === 'boolean') return true
+      if (v == null) return true
+    }
     if (op === 'literal') {
       const v = src[1]
       return typeof v === 'number' && Number.isFinite(v)
@@ -77,20 +93,27 @@ export default (ctx) => {
           'math.abs', 'math.floor', 'math.ceil', 'math.trunc', 'math.round', 'math.sqrt',
           'math.sin', 'math.cos', 'math.tan', 'math.imul', 'math.clz32',
         ])
-        if (finiteOps.has(fn)) return src.slice(2).every(isFiniteArith)
+        if (finiteOps.has(fn)) return src.slice(2).every(isSinCoreFastPath)
       }
     }
-    if (op === '|' && src.length === 2) return isFiniteArith(src[1])
+    if (op === '|' && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
     if (op === '%' || op === '&' || op === '^' || op === '<<' || op === '>>' || op === '>>>') {
-      return src.slice(1).every(isFiniteArith)
+      return src.slice(1).every(isSinCoreFastPath)
     }
     if (op === '+' || op === '-' || op === '*' || op === '**') {
-      return src.slice(1).every(isFiniteArith)
+      return src.slice(1).every(isSinCoreFastPath)
     }
-    if (op === '/') return isFiniteArith(src[1]) && isFiniteArith(src[2])
-    if (op === '?:' && src.length === 4) return isFiniteArith(src[2]) && isFiniteArith(src[3])
-    if ((op === '&&' || op === '||') && src.length === 3) return isFiniteArith(src[1]) && isFiniteArith(src[2])
-    if (op === '!' && src.length === 2) return isFiniteArith(src[1])
+    if (op === '/') return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
+    if (op === '?:' && src.length === 4) return isSinCoreFastPath(src[2]) && isSinCoreFastPath(src[3])
+    if ((op === '&&' || op === '||') && src.length === 3) return isSinCoreFastPath(src[1]) && isSinCoreFastPath(src[2])
+    if (op === '!' && src.length === 2) return isSinCoreFastPath(src[1])
+    if (op === '[]' && src.length === 3) {
+      // Chord tables / semitone indices — index is int-shaped, element is a small int.
+      return isSinCoreFastPath(src[2]) || isIntCertain(src[2])
+    }
+    if (op === '.' && src.length === 3 && src[2] === 'length') {
+      return typeof src[1] === 'string' || isSinCoreFastPath(src[1])
+    }
     if (op === '.' && src.length === 3) return isIntCertain(src)
     return false
   }
@@ -191,14 +214,14 @@ export default (ctx) => {
   // Sign
   ctx.core.emit['math.sign'] = emitter(['math.sign'], a => call('math.sign', a))
 
-  // Trig — finite args skip the isFinite guard via $math.sin_core/$math.cos_core.
+  // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
   const sinCall = emitter(['math.sin'], a => call('math.sin', a))
-  const sinCoreCall = emitter(['math.sin_core'], a => call('math.sin_core', a))
-  ctx.core.emit['math.sin'] = (a) => isFiniteArith(a) ? sinCoreCall(a) : sinCall(a)
+  const sinCoreCall = emitter(['math.sin_core', 'math.isFinite'], a => call('math.sin_core', a))
+  ctx.core.emit['math.sin'] = (a) => isSinCoreFastPath(a) ? sinCoreCall(a) : sinCall(a)
   ctx.core.emit['math.sin'].deps = sinCall.deps
   const cosCall = emitter(['math.cos'], a => call('math.cos', a))
-  const cosCoreCall = emitter(['math.cos_core'], a => call('math.cos_core', a))
-  ctx.core.emit['math.cos'] = (a) => isFiniteArith(a) ? cosCoreCall(a) : cosCall(a)
+  const cosCoreCall = emitter(['math.cos_core', 'math.isFinite'], a => call('math.cos_core', a))
+  ctx.core.emit['math.cos'] = (a) => isSinCoreFastPath(a) ? cosCoreCall(a) : cosCall(a)
   ctx.core.emit['math.cos'].deps = cosCall.deps
   ctx.core.emit['math.tan'] = emitter(['math.tan'], a => call('math.tan', a))
 
@@ -339,6 +362,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.sin_core'] = `(func $math.sin_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -356,11 +380,11 @@ export default (ctx) => {
               (f64.const 2.505210838544172e-8))))))))))))))`
 
   ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (call $math.sin_core (local.get $x)))`
 
   ctx.core.stdlib['math.cos_core'] = `(func $math.cos_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -378,7 +402,6 @@ export default (ctx) => {
               (f64.const 2.7557319223985893e-7)))))))))))))`
 
   ctx.core.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (call $math.cos_core (local.get $x)))`
 
   ctx.core.stdlib['math.tan'] = `(func $math.tan (param $x f64) (result f64)

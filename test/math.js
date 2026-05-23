@@ -131,6 +131,7 @@ test('Math.sin', async () => {
   almost(await evaluate('Math.sin(Math.PI)'), Math.sin(Math.PI), 1e-6)
   almost(await evaluate('Math.sin(Math.PI * 2)'), Math.sin(Math.PI * 2), 1e-6)
   almost(await evaluate('Math.sin(1)'), Math.sin(1), 1e-6)
+  isNaN(await evaluate('Math.sin(1 * 1e308 * 10)'))
 })
 
 test('Math.cos', async () => {
