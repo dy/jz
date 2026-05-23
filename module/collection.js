@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
-import { emit, emitFlat } from '../src/emit.js'
+import { emit, emitFlat } from '../src/stdlib-emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { hasOwnContinue } from '../src/analyze.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'

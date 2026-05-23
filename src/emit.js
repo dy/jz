@@ -16,8 +16,7 @@
  * The emitter table (`emitter` export) is copied into ctx.core.emit by reset();
  * language modules add/override entries to extend dispatch.
  *
- * Low-level IR construction helpers (typed/asF64/allocPtr/readVar/…) live in compile.js
- * and are imported below.
+ * Low-level IR construction helpers live in `ir.js` and are imported below.
  *
  * @module emit
  */
@@ -1202,10 +1201,12 @@ function compoundAssign(name, val, f64op, i32op) {
   return writeVar(name, f64op(asF64(va), asF64(vb)), void_)
 }
 
+// === Core emitter dispatch table ===
+// ctx.core.emit is seeded with a flat copy of this object on reset;
+// language modules add or override ops on ctx.core.emit directly.
+
 /**
  * Core emitter table. Maps AST ops to WASM IR generators.
- * ctx.core.emit is seeded with a flat copy of this object on reset;
- * modules add or override ops on ctx.core.emit directly.
  * @type {Record<string, (...args: any[]) => Array>}
  */
 export const emitter = {

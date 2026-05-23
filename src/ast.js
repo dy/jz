@@ -1,10 +1,40 @@
 /**
  * Shared Jessie/subscript AST shape helpers and walks.
  *
- * Also hosts cycle-free helpers shared with abi/* (no ctx/analyze imports).
+ * Cycle-free: no ctx/analyze/ir imports. Shared with abi/* and ir.js.
  *
  * @module ast
  */
+
+// === Numeric range (shared by analyze + ir) ===
+
+export const I32_MIN = -2147483648
+export const I32_MAX = 2147483647
+export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX && !Object.is(v, -0)
+
+// === Statement / block-body classification ===
+
+/** Statement operators — distinguish block bodies from object literals. */
+export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
+  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
+  'throw', 'try', 'catch', 'finally', '++', '--', '()'])
+
+/** jzify superset: pre-lowered JS shapes before prepare strips them. */
+export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'for-of', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
+
+/** Valid labeled-statement bodies in jzify. */
+export const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
+
+/** Distinguish a function block body `{ … }` from an expression object literal `({a:1})`. */
+export const isBlockBody = (body) =>
+  Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))
+
+// === AST node classifiers ===
+
+export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNames.has(node)
+
+// === Assignment / reassignment ===
 
 /** Assignment operators — shared across analyze, plan, emit, abi. */
 export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])

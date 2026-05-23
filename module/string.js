@@ -13,13 +13,12 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, emitBoolStr } from '../src/emit.js'
+import { emit, emitBoolStr } from '../src/stdlib-emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
+import { ssoBitI64Hex } from '../layout.js'
 
-// SSO discriminator bit pre-shifted to its slot in the full i64 ptr (bit 46).
-// Used as `i64.and ptr SSO_BIT_I64` for branch-without-extracting-aux.
-const SSO_BIT_I64 = '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+const SSO_BIT_I64 = ssoBitI64Hex()
 // Slice/view discriminator bit, pre-shifted to bit 45 — same branch-without-aux trick.
 const SLICE_BIT_I64 = '0x' + (BigInt(LAYOUT.SLICE_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
 

@@ -18,8 +18,7 @@
  */
 
 import { warn } from './ctx.js'
-import { handlerArgs } from './ast.js'
-import { STMT_OPS } from './analyze.js'
+import { handlerArgs, JZ_BLOCK_OPS, LABEL_BODY_OPS } from './ast.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
 
@@ -389,10 +388,6 @@ const methodOverrideHasOwn = (a, b) => {
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
-
-// Block-shape ops used to detect "this `{}` is a block body, not an object literal".
-const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'for-of', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
-const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
 
 /** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape
  *  already pins down its runtime type. Returns true/false or null (unknown).

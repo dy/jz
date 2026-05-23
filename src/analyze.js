@@ -22,25 +22,14 @@
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, isReassigned } from './ast.js'
+import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ast.js'
 import { ctx, err } from './ctx.js'
-import { isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ir.js'
 
 // === value lattice / static eval ===
 
 export const T = '\uE000'
 
-/** Statement operators — used to distinguish block bodies from object literals. */
-export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
-  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
-  'throw', 'try', 'catch', 'finally', '++', '--', '()'])
-
-export { ASSIGN_OPS, isReassigned }
-
-/** Distinguish a function block body `{ ... }` from an expression-bodied object literal `({a:1})`.
- *  Both share the `'{}'` op tag; blocks start with statement ops, while object literals start with `:` or `...`. */
-export const isBlockBody = (body) =>
-  Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))
+export { ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 }
 
 /** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
 export function intLiteralValue(expr) {
@@ -3632,54 +3621,72 @@ export function analyzeFuncNamespaces(ast) {
  *                                     closure-internal calls don't poison
  *                                     caller-context type inference.
  */
-export function collectProgramFacts(ast) {
-  const paramReps = new Map()
-  const valueUsed = new Set()
-  const propMap = new Map()
-  const callSites = []
-  const doSchema = ast && ctx.schema.register
-  const doArity = !!ctx.closure.make
-  const f = { dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false, maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false }
-  // Slot-type observation lives in the dedicated `observeProgramSlots` pass below;
-  // walkFacts only registers schemas (which is local to the AST node).
-  const walkFacts = (node, full, inArrow, callerFunc) => {
+
+const _programFactsCache = new WeakMap()
+
+function emptyWalkFacts() {
+  return {
+    dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
+    propMap: new Map(), valueUsed: new Set(), callSites: [],
+  }
+}
+
+function mergeWalkFacts(into, from) {
+  if (from.anyDyn) into.anyDyn = true
+  for (const v of from.dynVars) into.dynVars.add(v)
+  if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
+  if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
+  if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
+  if (from.hasRest) into.hasRest = true
+  if (from.hasSpread) into.hasSpread = true
+  for (const [obj, props] of from.propMap) {
+    if (!into.propMap.has(obj)) into.propMap.set(obj, new Set())
+    for (const p of props) into.propMap.get(obj).add(p)
+  }
+  for (const v of from.valueUsed) into.valueUsed.add(v)
+  into.callSites.push(...from.callSites)
+}
+
+/** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
+ *  so plan-phase rescans skip unchanged bodies after inlining/scalarization passes. */
+function walkFactsRoot(root, full, callerFunc, doSchema, doArity) {
+  if (full && root != null && typeof root === 'object') {
+    const cached = _programFactsCache.get(root)
+    if (cached) return cached
+  }
+  const acc = emptyWalkFacts()
+  const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
-    // shared dyn/schema/arity facts (duplicated pattern synced with prepare.js)
-    observeNodeFacts(node, f)
-    // strict for-in check
+    observeNodeFacts(node, acc)
     if (op === 'for-in' && ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
-    // schema registration (analyze-specific)
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(args)
       if (parsed) ctx.schema.register(parsed.names)
     }
-    // Crossing into a closure body: from now on, no call-site collection (matches the
-    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
     if (op === '=>') {
-      for (const a of args) walkFacts(a, full, true, callerFunc)
+      for (const a of args) walkFacts(a, fullWalk, true, caller)
       return
     }
-    if (full) {
-      // property-assignment scan for auto-box
+    if (fullWalk) {
       if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
         const [, obj, prop] = args[0]
         if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
-          if (!propMap.has(obj)) propMap.set(obj, new Set())
-          propMap.get(obj).add(prop)
+          if (!acc.propMap.has(obj)) acc.propMap.set(obj, new Set())
+          acc.propMap.get(obj).add(prop)
         }
       }
-      // first-class function-value + static-call-site scan
       if (op === '()' && isFuncRef(args[0], ctx.func.names)) {
         if (!inArrow) {
           const a = args[1]
           const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-          callSites.push({ callee: args[0], argList, callerFunc, node })
+          acc.callSites.push({ callee: args[0], argList, callerFunc: caller, node })
         }
         for (let i = 1; i < args.length; i++) {
           const a = args[i]
-          if (isFuncRef(a, ctx.func.names)) valueUsed.add(a)
-          else walkFacts(a, true, inArrow, callerFunc)
+          if (isFuncRef(a, ctx.func.names)) acc.valueUsed.add(a)
+          else walkFacts(a, true, inArrow, caller)
         }
         return
       }
@@ -3690,27 +3697,40 @@ export function collectProgramFacts(ast) {
             const name = decl[1]
             if (typeof name === 'string' && ctx.func.names.has(name)) {
               const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'
-              if (isFuncLit || callerFunc?.name !== name) valueUsed.add(name)
+              if (isFuncLit || caller?.name !== name) acc.valueUsed.add(name)
             }
-            walkFacts(decl[2], true, inArrow, callerFunc)
-          } else walkFacts(decl, true, inArrow, callerFunc)
+            walkFacts(decl[2], true, inArrow, caller)
+          } else walkFacts(decl, true, inArrow, caller)
         }
         return
       }
       if (op === '=' && args.length >= 2) {
-        walkFacts(args[1], true, inArrow, callerFunc)
+        walkFacts(args[1], true, inArrow, caller)
         return
       }
       for (const a of args) {
-        if (isFuncRef(a, ctx.func.names)) valueUsed.add(a)
-        else walkFacts(a, true, inArrow, callerFunc)
+        if (isFuncRef(a, ctx.func.names)) acc.valueUsed.add(a)
+        else walkFacts(a, true, inArrow, caller)
       }
     } else {
-      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
+      for (const a of args) walkFacts(a, false, inArrow, caller)
     }
   }
-  walkFacts(ast, true, false, null)
-  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
+  walkFacts(root, full, false, callerFunc)
+  if (full && root != null && typeof root === 'object') _programFactsCache.set(root, acc)
+  return acc
+}
+
+export function collectProgramFacts(ast) {
+  const paramReps = new Map()
+  const doSchema = ast && ctx.schema.register
+  const doArity = !!ctx.closure.make
+  const f = emptyWalkFacts()
+  mergeWalkFacts(f, walkFactsRoot(ast, true, null, doSchema, doArity))
+  for (const func of ctx.func.list) {
+    if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, doArity))
+  }
+  const { propMap, valueUsed, callSites } = f
   const initFacts = ctx.module.initFacts
   if (initFacts) {
     if (initFacts.anyDyn) {
@@ -3749,6 +3769,10 @@ export function collectProgramFacts(ast) {
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals,
   }
 }
+
+/** Re-collect program facts after a mutating plan pass. Unchanged function bodies
+ *  reuse WeakMap-cached walks from the prior collectProgramFacts call. */
+export const refreshProgramFacts = (ast, _prev) => collectProgramFacts(ast)
 
 /** Walk `ast` + every user function body + module inits, observing slot types
  *  on each `{}` literal. Per-function bodies have their analyzeBody.valTypes
@@ -3953,13 +3977,4 @@ export function analyzeSchemaSlotIntCertain(ast) {
     for (const mi of ctx.module.moduleInits) visit(mi, analyzeBodyLocally(mi))
   }
 }
-
-// =============================================================================
-// AST predicate helpers — pure functions over jz AST arrays
-// =============================================================================
-// AST nodes are strings (identifiers), numbers (literals), or arrays where [0]
-// is the operator tag (e.g. ['+', a, b], ['=>', params, body]). [null, value]
-// denotes a parenthesized/boxed literal.
-
-
 

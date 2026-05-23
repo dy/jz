@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit } from '../src/stdlib-emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep, shapeOf } from '../src/analyze.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { includeModule } from '../src/autoload.js'

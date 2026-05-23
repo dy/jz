@@ -21,19 +21,11 @@
  */
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
+import { ptrBoxPrefixBigInt, atomNanHex } from '../layout.js'
+import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef } from './ast.js'
 import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal, objLiteralSchemaId } from './analyze.js'
 
-// === Numeric range ===
-
-/** Signed-32-bit range. Used everywhere a number value must round-trip through
- *  wasm `i32` (literal constants, default-arg folding, exprType inference). */
-export const I32_MIN = -2147483648
-export const I32_MAX = 2147483647
-
-/** True when `v` is a finite integer that fits in i32 *and* isn't -0 (which i32
- *  cannot represent). Callers that don't care about -0 can compare against
- *  I32_MIN/I32_MAX directly. */
-export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX && !Object.is(v, -0)
+export { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef }
 
 // === Type helpers ===
 
@@ -42,9 +34,7 @@ export const typed = (node, type) => (node.type = type, node)
 
 /** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
 function ptrBoxPrefix(ptrType, aux = 0) {
-  return (0x7FF8n << 48n)
-    | ((BigInt(ptrType) & 0xFn) << 47n)
-    | ((BigInt(aux) & 0x7FFFn) << 32n)
+  return ptrBoxPrefixBigInt(ptrType, aux)
 }
 
 /** Build f64 NaN-boxed pointer IR from an i32 offset node of known kind.
@@ -166,16 +156,16 @@ export const fromI64 = n => {
  *  See module/symbol.js for the broader reserved-atom-id scheme.
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
  *  At the JS boundary, null and undefined preserve their identity for interop. */
-export const NULL_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
-export const UNDEF_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const NULL_NAN = atomNanHex(1)
+export const UNDEF_NAN = atomNanHex(2)
 /** Boxed-boolean carrier. `false`/`true` are reserved atoms — materialized only
  *  where boolean identity is observed (typeof/String/JSON/host boundary); in
  *  branch/arithmetic position booleans stay raw i32/f64 0/1. The atomId encodes
  *  the truth value in its low bit (4=false, 5=true), so `aux & 1` recovers 0/1
  *  and `4 | bit` boxes it — see boolBoxIR / unboxBoolIR. */
 export const BOOL_ATOM_BASE = 4
-export const FALSE_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (4n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
-export const TRUE_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (5n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const FALSE_NAN = atomNanHex(4)
+export const TRUE_NAN = atomNanHex(5)
 /** WAT-template-ready sentinel expressions for use in stdlib template strings.
  *  `f64.const nan:0xHEX` is 3 bytes shorter than `f64.reinterpret_i64 (i64.const ...)`. */
 export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
@@ -348,15 +338,9 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
   'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz'])
 export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
 
-/** Check if AST node is a literal string: ['str', 'value']. */
-export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
-
 /** Resolve compile-time value type from AST node (literal → type, name → lookup). */
 export const resolveValType = (node, valTypeOf, lookupValType) =>
   valTypeOf(node) ?? (typeof node === 'string' ? lookupValType(node) : null)
-
-/** Check if AST node is a string reference to a known function name. */
-export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNames.has(node)
 
 /** Check if (a, op, b) is a postfix pattern: [op, name] and [, 1] literal. */
 export const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.isArray(b) && b[0] == null && b[1] === 1

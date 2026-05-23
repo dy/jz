@@ -8,6 +8,8 @@
 // jz owns its optimizer: watr is used *only* as the WAT→binary encoder.
 import compile from 'watr/compile'
 
+// === WAT optimizer passes ===
+
 // — AST helpers (formerly watr/util.js) — every node is an s-expression
 // array `[head, ...args]`; non-arrays are immediates.
 const clone = (node) => Array.isArray(node) ? node.map(clone) : node

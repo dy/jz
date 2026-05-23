@@ -26,6 +26,7 @@ import { parse } from 'subscript/feature/jessie'
 import { handlerArgs } from './ast.js'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticObjectProps, staticPropertyKey } from './analyze.js'
+import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from './op-policy.js'
 import { recordGlobalRep } from './infer.js'
 import { isFuncRef } from './ir.js'
 import {
@@ -489,7 +490,7 @@ function isUnresolvableBareIdent(name) {
   if (typeof name !== 'string') return false
   if (name in CONSTANTS || name in F64_CONSTANTS) return false
   if (name === 'Boolean' || name === 'Number') return false
-  if (PROHIBITED[name]) return false
+  if (REJECT_IDENTS[name]) return false
   if (scopes.length && isDeclared(name)) return false
   if (ctx.scope.chain[name]) return false
   if (GLOBALS[name]) return false
@@ -602,7 +603,7 @@ function prep(node) {
     if (typeof node === 'string') {
       if (node in CONSTANTS) return [, CONSTANTS[node]]
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
-      if (PROHIBITED[node]) err(PROHIBITED[node])
+      if (REJECT_IDENTS[node]) err(REJECT_IDENTS[node])
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
@@ -630,19 +631,9 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// Strict-jz prohibitions. `class` and `arguments` are *also* listed here but
-// only reach this point when jzify is off — jzify lowers `class` to a factory
-// arrow and rewrites `arguments` to a rest param before prepare runs. The
-// remainder (`with`, `this`, `super`, `yield`, `eval`) have no safe lowering
-// and stay errors in both modes.
-const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not supported', 'yield': '`yield` not supported',
-  'this': '`this` not supported: use explicit parameter',
-  'super': '`super` not supported: no class inheritance',
-  'arguments': '`arguments` not supported: use rest params',
-  'eval': '`eval` not supported'
-}
+// Identifier prohibitions: op-policy.js REJECT_IDENTS (prep string nodes).
 
-// Predefined globals seeded into scope.chain at ctx.reset(). Value is the scope alias
+// Predefined globals seeded into scope.chain at ctx.reset().
 // used in ctx.core.emit[]. Dotted lookups (Math.sin) go through the '.' handler which
 // resolves via scope.chain → module 'math' → registers 'math.sin' emitter.
 // Not actually "implicit imports" — these are ambient globals that exist in every jz/JS
@@ -1078,18 +1069,13 @@ function renestSoleCommaArg(args) {
 }
 
 const handlers = {
+  ...rejectHandlers(err),
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
   '...'(expr) {
     includeForArrayLiteral()
     return ['...', prep(expr)]
   },
 
-  // Prohibited ops — duplicated from jzify deliberately: .jz source bypasses jzify,
-  // so prepare is the actual defense. Messages here fire for both .js and .jz.
-  'async': () => err('async/await not supported: WASM is synchronous'),
-  'await': () => err('async/await not supported: WASM is synchronous'),
-  'class': () => err('class not supported: use object literals'),
-  'yield': () => err('generators not supported: use loops'),
   'debugger': () => null,
   // Static-key delete (.x, ["x"], [literal]) would change the fixed schema → reject.
   // Computed-key delete (obj[expr]) — including jessie's `delete ctx[k]` — lowers
@@ -1104,12 +1090,7 @@ const handlers = {
     err('delete not supported: object shape is fixed')
   },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
-  'instanceof': () => err('instanceof not supported: use typeof'),
-  'with': () => err('`with` not supported: deprecated'),
-  ':': () => err('labeled statements not supported'),
   'label'(name, body) { return ['label', name, prep(body)] },
-  'var': () => err('`var` not supported: use let/const'),
-  'function': () => err('`function` not supported: use arrow functions'),
 
   // Destructuring assignment: [a, ...b] = expr or {x, y} = expr
   '='(lhs, rhs) {
@@ -1589,7 +1570,7 @@ const handlers = {
 '()'(callee, ...args) {
     // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
     if (args.length === 0) return prep(callee)
-    if (typeof callee === 'string' && PROHIBITED[callee]) err(PROHIBITED[callee])
+    if (typeof callee === 'string' && REJECT_IDENTS[callee]) err(REJECT_IDENTS[callee])
 
     // Compile-time folds: the callee names something resolvable now. Each fold
     // is gated by callee shape, so at most one of the three fires.

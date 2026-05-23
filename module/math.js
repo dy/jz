@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit } from '../src/stdlib-emit.js'
 import { emitter } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
 
