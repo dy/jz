@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, bool, method, deps, wat } from '../src/bridge.js'
+import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -77,7 +77,7 @@ export default (ctx) => {
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
 
-  ctx.core.emit['str'] = (str) => {
+  bind('str', (str) => {
     const MAX_SSO = 4
     if (ctx.features.sso && str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
@@ -115,7 +115,7 @@ export default (ctx) => {
       ctx.runtime.strPoolDedup.set(str, off)
     }
     return mkPtrIR(PTR.STRING, 0, ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]])
-  }
+  })
 
   // === WAT: char extraction ===
 
@@ -1102,16 +1102,16 @@ export default (ctx) => {
   // (21.1.3.27/28). Typed forms cover the static-string case; generic forms
   // pair with them so the dispatcher can pick a runtime ptr-type branch when
   // the receiver type can't be statically inferred (e.g. a callback param).
-  ctx.core.emit['.string:toString'] = (str) => asF64(emit(str))
-  ctx.core.emit['.string:valueOf'] = (str) => asF64(emit(str))
-  ctx.core.emit['.toString'] = (val) => {
+  bind('.string:toString', (str) => asF64(emit(str)))
+  bind('.string:valueOf', (str) => asF64(emit(str)))
+  bind('.toString', (val) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
-  }
+  })
   // Object.prototype.valueOf returns the receiver (per ES2024 20.1.3.7).
   // Array/Object inherit this; only primitive wrappers (Number/Boolean/String)
   // override to return the primitive — strings already covered by .string:valueOf.
-  ctx.core.emit['.valueOf'] = (val) => asF64(emit(val))
+  bind('.valueOf', (val) => asF64(emit(val)))
 
   // `.slice` lowering, parametrised on the backing helper: __str_slice copies
   // bytes; __str_slice_view returns a no-copy SLICE_BIT view — used only when
@@ -1129,8 +1129,8 @@ export default (ctx) => {
       ['call', `$${fn}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
-  ctx.core.emit['.string:slice'] = sliceEmitter('__str_slice')
-  ctx.core.emit['.string:slice#view'] = sliceEmitter('__str_slice_view')
+  bind('.string:slice', sliceEmitter('__str_slice'))
+  bind('.string:slice#view', sliceEmitter('__str_slice_view'))
 
   // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
   // string / boolean / null / undefined positions coerce per spec) then trunc.
@@ -1150,11 +1150,11 @@ export default (ctx) => {
     valTypeOf(search) === VAL.BOOL ? asI64(bool(search)) :
     valTypeOf(search) === VAL.OBJECT ? toStrI64(search, emit(search)) : asI64(emit(search))
 
-  ctx.core.emit['.string:indexOf'] = (str, search, from) => {
+  bind('.string:indexOf', (str, search, from) => {
     inc('__str_indexof')
     const hay = asI64(emit(str)), ndl = searchArg(search)
     return typed(['f64.convert_i32_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)]], 'f64')
-  }
+  })
 
   // String.prototype.{includes,startsWith,endsWith} run IsRegExp(searchString)
   // and throw a TypeError when it is a RegExp. Detect a regex-typed search arg
@@ -1165,16 +1165,16 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
   }
 
-  ctx.core.emit['.string:includes'] = (str, search, from) => {
+  bind('.string:includes', (str, search, from) => {
     const guard = regexpSearchGuard(search); if (guard) return guard
     inc('__str_indexof')
     const hay = asI64(emit(str)), ndl = searchArg(search)
     return typed(['f64.convert_i32_s',
       ['i32.ge_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)], ['i32.const', 0]]], 'f64')
-  }
+  })
 
   // Generic (no collision)
-  ctx.core.emit['.substring'] = (str, start, end) => {
+  bind('.substring', (str, start, end) => {
     inc('__str_substring')
     if (end != null) return typed(['call', '$__str_substring', asI64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
     const t = temp('t')
@@ -1182,13 +1182,13 @@ export default (ctx) => {
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
-  }
+  })
 
   // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
   // __str_substring clamps end to byteLen and start/end to [0, byteLen], so negative
   // values are floored to 0 (matches v8 for length<0 → empty; for start<0 spec wants
   // max(0, len+start), which we don't implement — rare in practice).
-  ctx.core.emit['.substr'] = (str, start, length) => {
+  bind('.substr', (str, start, length) => {
     inc('__str_substring')
     if (length != null) {
       const s = tempI32('substrS')
@@ -1204,7 +1204,7 @@ export default (ctx) => {
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
-  }
+  })
 
   // Search args go through ToString per spec — coerce non-string-typed args
   // via __to_str so the underlying byte-compare receives an actual string.
@@ -1221,35 +1221,36 @@ export default (ctx) => {
     }
     return typed(['f64.convert_i32_s', ['call', `$${name}`, asI64(emit(str)), sfxArg]], 'f64')
   }
-  ctx.core.emit['.startsWith'] = stringSearchMethod('__str_startswith')
-  ctx.core.emit['.endsWith'] = stringSearchMethod('__str_endswith')
-  ctx.core.emit['.trim']       = method('__str_trim',       'I')
-  ctx.core.emit['.trimStart']  = method('__str_trimStart',  'I')
-  ctx.core.emit['.trimEnd']    = method('__str_trimEnd',    'I')
-  ctx.core.emit['.repeat']     = method('__str_repeat',     'Ii')
-  ctx.core.emit['.split']      = method('__str_split',      'II')
-  ctx.core.emit['.replace']    = method('__str_replace',    'III')
-  ctx.core.emit['.replaceAll'] = method('__str_replaceall', 'III')
+  bind('.startsWith', stringSearchMethod('__str_startswith'))
+  bind('.endsWith', stringSearchMethod('__str_endswith'))
+  bind('.trim', method('__str_trim',       'I'))
+  bind('.trimStart', method('__str_trimStart',  'I'))
+  bind('.trimEnd', method('__str_trimEnd',    'I'))
+  bind('.repeat', method('__str_repeat',     'Ii'))
+  bind('.split', method('__str_split',      'II'))
+  bind('.replace', method('__str_replace',    'III'))
+  bind('.replaceAll', method('__str_replaceall', 'III'))
 
   const caseMethod = (lo, hi, delta) => (str) => {
     inc('__str_case')
     return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', lo], ['i32.const', hi], ['i32.const', delta]], 'f64')
   }
-  ctx.core.emit['.toUpperCase'] = caseMethod(97, 122, -32)
-  ctx.core.emit['.toLowerCase'] = caseMethod(65, 90, 32)
+  bind('.toUpperCase', caseMethod(97, 122, -32))
+  const _toLowerCase = caseMethod(65, 90, 32)
+  bind('.toLowerCase', _toLowerCase)
 
   // Locale-specific casing needs ICU/CLDR data. jz intentionally has no
   // runtime, so this follows the existing ASCII-only lowercase helper and
   // ignores optional locale arguments.
-  ctx.core.emit['.toLocaleLowerCase'] = ctx.core.emit['.toLowerCase']
+  bind('.toLocaleLowerCase', _toLowerCase)
 
   const padMethod = (start) => (str, len, pad) => {
     inc('__str_pad')
     const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, 32)]
     return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', start]], 'f64')
   }
-  ctx.core.emit['.padStart'] = padMethod(1)
-  ctx.core.emit['.padEnd'] = padMethod(0)
+  bind('.padStart', padMethod(1))
+  bind('.padEnd', padMethod(0))
 
   // Byte-wise variant of String.prototype.localeCompare. Returns -1/0/1 from
   // an unsigned byte-by-byte compare with shorter-string-sorts-first tiebreak.
@@ -1258,21 +1259,21 @@ export default (ctx) => {
   // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
   // codepoint order for well-formed strings — close enough for sort-stability
   // use cases, wrong for human-language collation.
-  ctx.core.emit['.localeCompare'] = method('__str_cmp', 'II', 'i32')
+  bind('.localeCompare', method('__str_cmp', 'II', 'i32'))
 
-  ctx.core.emit['.string:concat'] = (str, ...others) => {
+  bind('.string:concat', (str, ...others) => {
     inc('__str_concat')
     let result = asF64(emit(str))
     for (const other of others) result = typed(['call', '$__str_concat', ['i64.reinterpret_f64', result], asI64(emit(other))], 'f64')
     return result
-  }
+  })
 
   // A VAL.BOOL part rides the 0/1 carrier, so __to_str would render "1"/"0".
   // bool selects the interned "true"/"false" literal (constant-folded
   // when the operand is known); every other part goes through __to_str.
   const partStrI64 = (p) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, emit(p))
 
-  ctx.core.emit['strcat'] = (...parts) => {
+  bind('strcat', (...parts) => {
     inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
     if (parts.length === 1) return typed(['f64.reinterpret_i64', partStrI64(parts[0])], 'f64')
@@ -1306,17 +1307,17 @@ export default (ctx) => {
       ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)],
       ['else', ['block', ['result', 'f64'], ...alloc]]])
     return typed(['block', ['result', 'f64'], ...ir], 'f64')
-  }
+  })
 
   // .charAt(i) → 1-char string from char code at index i
-  ctx.core.emit['.charAt'] = (str, idx) => {
+  bind('.charAt', (str, idx) => {
     inc('__char_at')
     const t = tempI32('ch')
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__char_at', asI64(emit(str)), asI32(emit(idx))]],
       mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, ['local.get', `$${t}`])], 'f64')
-  }
+  })
 
   // .charCodeAt(i) → JS-spec char code: the UTF-16 code unit at `i`, or NaN
   // when `i` is out of range (`i < 0 || i >= length`). Result is f64 because
@@ -1325,11 +1326,11 @@ export default (ctx) => {
   // loop `while ((cc = s.charCodeAt(i++)) <= 32) {}` would never terminate
   // (`0 <= 32` is true, `NaN <= 32` is false). The narrower may re-narrow the
   // result to i32 where it can prove the index in-bounds.
-  ctx.core.emit['.charCodeAt'] = (str, idx) =>
-    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64')
+  bind('.charCodeAt', (str, idx) =>
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64'))
 
   // String.fromCharCode(code) → 1-char SSO string
-  ctx.core.emit['String'] = (value) => {
+  bind('String', (value) => {
     if (value === undefined) return emit(['str', ''])
     if (valTypeOf(value) === VAL.STRING) return emit(value)
     if (valTypeOf(value) === VAL.BOOL) return bool(value)
@@ -1338,14 +1339,14 @@ export default (ctx) => {
       return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
     }
     return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
-  }
+  })
 
-  ctx.core.emit['String.fromCharCode'] = (code) => {
+  bind('String.fromCharCode', (code) => {
     if (code === undefined) return emit(['str', ''])
     // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
     // argument, so a throwing valueOf/toString propagates per spec.
     return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(toNumF64(code, emit(code))))
-  }
+  })
 
   // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.
   // Param is f64 (already ToNumber-coerced); throws RangeError ($__jz_err) when
@@ -1385,7 +1386,7 @@ export default (ctx) => {
 
   // String.fromCodePoint(...codePoints) — variadic; each arg is ToNumber-coerced
   // then validated/encoded by __fromCodePoint, results concatenated left to right.
-  ctx.core.emit['String.fromCodePoint'] = (...codes) => {
+  bind('String.fromCodePoint', (...codes) => {
     if (codes.length === 0) return emit(['str', ''])
     ctx.runtime.throws = true
     inc('__fromCodePoint')
@@ -1397,7 +1398,7 @@ export default (ctx) => {
       r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
     }
     return r
-  }
+  })
 
   wat('__encodeURIComponent', `(func $__encodeURIComponent (param $val i64) (result f64)
     (local $str i64) (local $slen i32) (local $base i32) (local $out i32)
@@ -1443,11 +1444,11 @@ export default (ctx) => {
     (i32.store (local.get $base) (local.get $j))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $out)))`)
 
-  ctx.core.emit['encodeURIComponent'] = (value) => {
+  bind('encodeURIComponent', (value) => {
     inc('__encodeURIComponent')
     const input = value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))
     return typed(['call', '$__encodeURIComponent', input], 'f64')
-  }
+  })
 
   wat('__uri_hex', `(func $__uri_hex (param $c i32) (result i32)
     (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
@@ -1536,15 +1537,15 @@ export default (ctx) => {
     (i32.store (local.get $base) (local.get $outLen))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst)))`)
 
-  ctx.core.emit['decodeURIComponent'] = (value) => {
+  bind('decodeURIComponent', (value) => {
     ctx.runtime.throws = true
     inc('__decodeURIComponent')
     return typed(['call', '$__decodeURIComponent',
       value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')
-  }
+  })
 
   // .at(i) → charAt with negative index support
-  ctx.core.emit['.string:at'] = (str, idx) => {
+  bind('.string:at', (str, idx) => {
     inc('__char_at', '__str_byteLen')
     const t = tempI32('at'), s = temp('as')
     return typed(['block', ['result', 'f64'],
@@ -1555,17 +1556,17 @@ export default (ctx) => {
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
           ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]],
       mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${t}`]])], 'f64')
-  }
+  })
 
   // .search(str) → indexOf (same as indexOf for string args)
-  ctx.core.emit['.search'] = (str, search) => {
+  bind('.search', (str, search) => {
     inc('__str_indexof')
     return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
-  }
+  })
 
   // .match(str) → [match] array if found, or 0 (null) if not
   // For string args, returns single-element array with the matched substring
-  ctx.core.emit['.match'] = (str, search) => {
+  bind('.match', (str, search) => {
     inc('__str_indexof', '__str_slice', '__wrap1')
     const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
     // indexOf, then if >= 0, create 1-element array with the match slice
@@ -1582,7 +1583,7 @@ export default (ctx) => {
               ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
                 ['local.get', `$${idx}`],
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
-  }
+  })
 
   // __wrap1(val: i64) → f64 — create 1-element array [val]
   wat('__wrap1', `(func $__wrap1 (param $val i64) (result f64)
@@ -1594,8 +1595,8 @@ export default (ctx) => {
     (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`)
 
   // TextEncoder() / TextDecoder() → dummy values (methods do the work)
-  ctx.core.emit['TextEncoder'] = () => typed(['f64.const', 1], 'f64')
-  ctx.core.emit['TextDecoder'] = () => typed(['f64.const', 2], 'f64')
+  bind('TextEncoder', () => typed(['f64.const', 1], 'f64'))
+  bind('TextDecoder', () => typed(['f64.const', 2], 'f64'))
 
   // .encode(str) → Uint8Array of string's UTF-8 bytes
   // Copies bytes from string (SSO or heap) into a new Uint8Array
@@ -1609,7 +1610,7 @@ export default (ctx) => {
     (call $__str_copy (local.get $str) (local.get $dst) (local.get $len))
     (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`)
 
-  ctx.core.emit['.encode'] = (obj, str) => {
+  bind('.encode', (obj, str) => {
     inc('__str_encode')
     // .encode() yields a runtime PTR.TYPED/u8 array (see __mkptr above). Downstream
     // indexing/spread dispatch through __typed_idx, whose element-unaware fallback
@@ -1617,7 +1618,7 @@ export default (ctx) => {
     // the feature pulls the element-aware variant — same invariant `.length` follows.
     ctx.features.typedarray = true
     return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
-  }
+  })
 
   // .decode(uint8arr) → string from byte data
   wat('__bytes_decode', `(func $__bytes_decode (param $arr i64) (result f64)
@@ -1630,8 +1631,8 @@ export default (ctx) => {
     (memory.copy (local.get $dst) (local.get $off) (local.get $len))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst)))`)
 
-  ctx.core.emit['.decode'] = (obj, arr) => {
+  bind('.decode', (obj, arr) => {
     inc('__bytes_decode')
     return typed(['call', '$__bytes_decode', asI64(emit(arr))], 'f64')
-  }
+  })
 }
