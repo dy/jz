@@ -21,23 +21,19 @@
  * @module emit
  */
 
-import { commaList } from './ast.js'
-import { ctx, err, inc, PTR } from './ctx.js'
 import {
-  T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
+  commaList, T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
+  extractParams, classifyParam,
 } from './ast.js'
-import { nonNegIntLiteral } from './static.js'
-import { extractParams, classifyParam } from './ast.js'
+import { ctx, err, inc, PTR } from './ctx.js'
+import { nonNegIntLiteral, staticPropertyKey } from './static.js'
 import { findFreeVars } from './analyze.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
-  containsDeclOf, cloneWithSubst,
-  containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
-  MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-} from './analyze.js'
-import { staticPropertyKey } from './static.js'
-import { scanBoundedLoops, inBoundsCharCodeAt } from './type.js'
-import { exprType } from './type.js'
+  containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
+  smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
+  exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
+} from './type.js'
 import { valTypeOf } from './kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from './reps.js'
 import {

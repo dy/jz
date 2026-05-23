@@ -29,11 +29,12 @@ import { callArgs, setCallArgs, some, blockStmts, stmtList, T } from './ast.js'
 import { ASSIGN_OPS, isReassigned, hasControlTransfer, isBlockBody } from './ast.js'
 import {
   analyzeBody, invalidateLocalsCache, analyzeFuncNamespaces,
-  smallConstForTripCount, containsDeclOf, cloneWithSubst,
 } from './analyze.js'
-import { intLiteralValue, constIntExpr } from './static.js'
-import { staticObjectProps, staticPropertyKey } from './static.js'
-import { typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS } from './type.js'
+import { intLiteralValue, constIntExpr, staticObjectProps, staticPropertyKey } from './static.js'
+import {
+  smallConstForTripCount, containsDeclOf, cloneWithSubst,
+  typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS,
+} from './type.js'
 import { extractParams } from './ast.js'
 import {
   collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache,

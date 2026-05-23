@@ -8,18 +8,15 @@
  */
 
 import { ctx, warn } from './ctx.js'
-import { isBlockBody } from './ast.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs } from './ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
-  analyzeBody, paramFactsOf, findMutations, hasBareReturn,
-  invalidateLocalsCache, alwaysReturns,
-  narrowReturnArrayElems, returnExprs,
+  analyzeBody, paramFactsOf, findMutations,
+  invalidateLocalsCache, narrowReturnArrayElems,
 } from './analyze.js'
 import { staticObjectProps } from './static.js'
-import { scanBoundedLoops } from './type.js'
+import { scanBoundedLoops, exprType, typedElemAux, typedElemCtor, ctorFromElemAux } from './type.js'
 import { observeProgramSlots } from './program-facts.js'
-import { exprType } from './type.js'
-import { typedElemAux, typedElemCtor, ctorFromElemAux } from './type.js'
 import { valTypeOf } from './kind.js'
 import { VAL, updateRep } from './reps.js'
 import {

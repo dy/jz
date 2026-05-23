@@ -50,7 +50,7 @@ import compile from './src/compile.js'
 import { resetProgramFactsCache } from './src/program-facts.js'
 import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/emit.js'
 import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize.js'
-import jzify from './src/jzify.js'
+import jzify from './src/jzify/index.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './interop.js'
