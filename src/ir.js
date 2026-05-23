@@ -21,9 +21,10 @@
  */
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
-import { ptrBoxPrefixBigInt, atomNanHex } from '../layout.js'
+import { ptrBoxPrefixBigInt, atomNanHex, nanPrefixHex } from '../layout.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef } from './ast.js'
-import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal, objLiteralSchemaId } from './analyze.js'
+import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
+import { valTypeOf, objLiteralSchemaId, T } from './analyze.js'
 
 export { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef }
 
@@ -547,7 +548,7 @@ export function truthyIR(e) {
     // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
       const bits = String(e[1][1])
-      const FALSY = new Set([UNDEF_NAN, NULL_NAN, FALSE_NAN, '0x7FF8000000000000', '0x7FFA400000000000'])
+      const FALSY = new Set([UNDEF_NAN, NULL_NAN, FALSE_NAN, nanPrefixHex(), '0x7FFA400000000000'])
       return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.

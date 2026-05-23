@@ -24,12 +24,16 @@
 
 import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ast.js'
 import { ctx, err } from './ctx.js'
+import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from './reps.js'
 
 // === value lattice / static eval ===
 
 export const T = '\uE000'
 
-export { ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 }
+export {
+  ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32,
+  VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString,
+}
 
 /** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
 export function intLiteralValue(expr) {
@@ -114,68 +118,7 @@ export const returnExprs = (body) => {
   return [body]
 }
 
-// Value types — what a variable holds (for method dispatch, schema resolution)
-export const VAL = {
-  NUMBER: 'number', ARRAY: 'array', STRING: 'string',
-  OBJECT: 'object', HASH: 'hash', SET: 'set', MAP: 'map',
-  CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
-  BIGINT: 'bigint', BUFFER: 'buffer', DATE: 'date',
-  // BOOL is a *type fact* only: the working representation stays i32/f64 0/1
-  // (so branches, arithmetic and the optimizer are untouched). The boxed-atom
-  // carrier (TRUE_NAN/FALSE_NAN, see src/ir.js) is materialized lazily, only at
-  // observation/escape sites — `typeof`, `String`, `JSON.stringify`, the host
-  // return boundary — where boolean identity must survive. Everywhere else a
-  // VAL.BOOL value is just a 0/1 number, so no perf is paid for the distinction.
-  BOOL: 'boolean',
-}
-
-/**
- * ValueRep — unified per-local + per-param representation record. (S2.)
- *
- * One shape, two storages:
- *   - per-local (current func):  ctx.func.localReps: Map<name, ValueRep>
- *   - per-param (cross-call):    programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>
- *
- * Lattice per field: undefined = unobserved, null = sticky-poison
- * (cross-site disagreement), value = consensus. Local reps don't use the null
- * sentinel (locals are intra-function — single point of truth). Param reps do
- * (cross-call fixpoint convergence).
- *
- * Fields:
- *   val:              VAL.* — value-type for method dispatch / schema / length
- *   wasm:             'i32'|'f64' — narrowed wasm type at param boundary (param-only today)
- *   ptrKind:          VAL.* — local stores unboxed i32 pointer offset (local-only today)
- *   ptrAux:           i32   — kind-dependent aux (TYPED elem code, schemaId, …)
- *   schemaId:         i32   — schema binding for known-shape OBJECTs
- *   arrayElemSchema:  i32   — Array<schemaId> element shape
- *   arrayElemValType: VAL.* — Array<VAL.*> element val-kind
- *   jsonShape:        obj   — { val, props?, elem? } for HASH/ARRAY trees parsed
- *                             from a compile-time JSON.parse source. Propagates
- *                             through `.prop` and `[i]` so nested chains stay typed.
- *   typedCtor:        str   — TypedArray ctor name (`Float64Array`, …)
- *   intCertain:       bool  — proven integer-valued (every defining RHS is integer-shaped).
- *                             Pure analysis fact; codegen extensions may use it to choose
- *                             i32-shaped emission inside hot regions where range fits.
- *                             Boundary ABI is NOT narrowed by this fact alone — narrowing
- *                             at param/result level remains a separate, opt-in decision.
- *   intConst:         number — proven same integer literal at every static call site.
- *                             Param-only (cross-call fixpoint). Drives constant substitution
- *                             at readVar: every `local.get $param` lowers to `i32.const N`
- *                             (or `f64.const N`), letting the WAT optimizer fold guards,
- *                             unroll fixed-bound loops, and treeshake the read entirely.
- *                             Cleared if the param is written inside the body.
- *   notString:        bool   — write-shape evidence proves the binding isn't a primitive
- *                             string. Gates STRING-vs-typed dispatch elision at `.length`
- *                             and `xs[i]` reads. Body-walk source: `notStringEvidence` in
- *                             src/infer.js. Flow-scoped overlay: see `lookupNotString`.
- *
- * Out-of-band tracking (not rep fields):
- *   - boxed captures: `ctx.func.boxed: Map<name, cellName>` — set by boxedCaptures
- *     for mutably-captured locals. Parallel to rep because the cell-based storage is a
- *     storage decision, not a value-shape fact.
- *   - flow-sensitive refinements: `ctx.func.refinements: Map<name, {val?, notString?}>` —
- *     set by emitBody's post-terminator narrowing for the duration of a syntactic suffix.
- */
+// ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
 
 // === ParamReps lattice helpers (cross-call fixpoint) ===
 // programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>. Per-field lattice:
@@ -203,54 +146,6 @@ export const paramFactsOf = (paramReps, callerFunc, key) => {
     }
   }
   return out
-}
-
-/** Get the rep for a local name, or undefined if not tracked. */
-export const repOf = name => ctx.func.localReps?.get(name)
-
-/** Merge fields into a local's rep. Lazily allocates the map and the rep.
- *  Field set to `undefined` removes that field; empty rep is dropped from the map. */
-export const updateRep = (name, fields) => {
-  const m = ctx.func.localReps ||= new Map()
-  const prev = m.get(name) || {}
-  const next = { ...prev, ...fields }
-  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
-  if (Object.keys(next).length === 0) m.delete(name)
-  else m.set(name, next)
-}
-
-/** Get the rep for a global name, or undefined if not tracked. */
-export const repOfGlobal = name => ctx.scope.globalReps?.get(name)
-
-/** Merge fields into a global's rep. Lazily allocates the map and the rep. */
-export const updateGlobalRep = (name, fields) => {
-  const m = ctx.scope.globalReps ||= new Map()
-  const prev = m.get(name)
-  m.set(name, prev ? { ...prev, ...fields } : { ...fields })
-}
-
-/** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →
- *  in-progress analyzeBody overlay (if any) → function-local scope → module-global scope.
- *  Refinements are pushed by the 'if' emitter when the condition is a type guard
- *  (typeof x === 't', Array.isArray(x), etc.) and popped after the then-branch.
- *  The overlay (`ctx.func.localValTypesOverlay`) is set by analyzeBody/observeSlots passes
- *  pre-emit, when `localReps` isn't populated yet but a local Map<name, VAL.*> is
- *  available — lets `const x = new Float64Array(); const y = x[0]` resolve y as NUMBER. */
-export const lookupValType = name => {
-  const r = ctx.func.refinements
-  if (r && r.size) { const v = r.get(name)?.val; if (v) return v }
-  const ov = ctx.func.localValTypesOverlay
-  if (ov) { const v = ov.get(name); if (v) return v }
-  return ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
-}
-
-/** Resolve `notString` for a binding, overlaying flow-sensitive refinements
- *  on top of the function-global rep proof. Mirrors `lookupValType`'s precedence:
- *  refinement first (scope-local), then rep (whole-function). */
-export const lookupNotString = name => {
-  const r = ctx.func.refinements
-  if (r && r.size && r.get(name)?.notString) return true
-  return ctx.func.localReps?.get(name)?.notString === true
 }
 
 /** Infer value type of an AST expression (without emitting). */

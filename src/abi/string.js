@@ -63,7 +63,7 @@ const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 // fully initialized) — never at module top level — so this is safe.
 import { LAYOUT } from '../ctx.js'
 import { isReassigned } from '../ast.js'
-import { ssoBitI64Hex } from '../../layout.js'
+import { oobNanIR, ssoBitI64Hex } from '../../layout.js'
 
 /** Pre-shifted SSO discriminator — layout.js is cycle-free; memoized at first use. */
 let _ssoBitI64 = null
@@ -110,7 +110,7 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan) {
     ['else', heapByteExpr]]
   const use = ['if', ['result', rt],
     ['i32.ge_u', idx, ['local.get', `$${dec.len}`]],
-    ['then', oobNan ? ['f64.const', 'nan:0x7FF8000000000000'] : ['i32.const', 0]],
+    ['then', oobNan ? oobNanIR() : ['i32.const', 0]],
     ['else', oobNan ? ['f64.convert_i32_u', ccByte] : ccByte]]
   return spill
     ? ['block', ['result', rt], ['local.set', `$${spill}`, iI32], use]
@@ -228,7 +228,7 @@ export const sso = {
       //     being false to terminate; an i32 `0` would loop forever.
       // A fresh OOB node per use — IR nodes must not be structurally shared
       // (later passes mutate in place).
-      const mkOob = () => oobNan ? ['f64.const', 'nan:0x7FF8000000000000'] : ['i32.const', 0]
+      const mkOob = () => oobNan ? oobNanIR() : ['i32.const', 0]
       const rt = oobNan ? 'f64' : 'i32'
       const widen = b => oobNan ? ['f64.convert_i32_u', b] : b
       // Shape 1: receiver is a `local.get` of a non-boxed function parameter.
