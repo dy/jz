@@ -7,7 +7,7 @@ import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emitter } from '../src/emit.js'
+import { emit, emitter, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads } from '../src/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 
@@ -828,7 +828,7 @@ test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
 // rep entry"). `paramVals` mirrors what narrowSignatures pre-seeds in the real
 // pipeline — needed only for tests that exercise `.length` / receiver-typed.
 function runAnalyze(code, paramVals) {
-  reset(emitter, GLOBALS)
+  reset(emitter, GLOBALS, { emit, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads })
   prepare(parse(code))
   const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.func.list[0]

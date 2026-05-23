@@ -19,7 +19,7 @@
  */
 
 import { typed, asF64, mkPtrIR } from '../src/ir.js'
-import { emit } from '../src/stdlib-emit.js'
+import { emit } from './_emit.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
 const RESERVED = 16  // first user atom ID

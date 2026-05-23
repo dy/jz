@@ -48,7 +48,7 @@ import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
 import { resetProgramFactsCache } from './src/analyze.js'
-import { emitter } from './src/emit.js'
+import { emit, emitter, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads } from './src/emit.js'
 import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
 import {
@@ -303,7 +303,7 @@ const jzCompileInner = (code, opts = {}) => {
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
-  reset(emitter, GLOBALS)
+  reset(emitter, GLOBALS, { emit, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads })
   resetProgramFactsCache()
   ctx.error.src = code
   initWarnings(opts.warnings)
