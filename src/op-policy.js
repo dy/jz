@@ -35,6 +35,17 @@ export const REJECT_IDENTS = {
 /** Ops jzify transforms rather than rejecting (prepare still rejects survivors). */
 export const JZIFY_TRANSFORM_OPS = new Set(['var', 'function', 'class', 'arguments'])
 
+/** jzify-only errors for class lowering (no prepare counterpart). */
+export const JZIFY_CLASS_ERRORS = {
+  computedMember: 'non-constant computed class member names are not supported',
+  computedStaticField: 'non-constant computed static class fields are not supported',
+  computedField: 'non-constant computed/destructured class fields are not supported',
+  computedStaticMember: 'non-constant computed static class member names are not supported',
+  accessor: 'class getters/setters are not supported — jz objects have no accessors',
+  staticMember: '`static` class members are not supported yet',
+  superProp: '`super` property access is not supported yet',
+}
+
 /** Build prepare handler map from shared reject messages. */
 export function rejectHandlers(errFn) {
   const out = {}

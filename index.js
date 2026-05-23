@@ -47,6 +47,7 @@ import watrOptimize from "./src/watopt.js";
 import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
+import { resetProgramFactsCache } from './src/analyze.js'
 import { emitter } from './src/emit.js'
 import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
@@ -303,6 +304,7 @@ const jzCompileInner = (code, opts = {}) => {
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
   reset(emitter, GLOBALS)
+  resetProgramFactsCache()
   ctx.error.src = code
   initWarnings(opts.warnings)
 

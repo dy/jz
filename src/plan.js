@@ -26,7 +26,7 @@
 
 import { ctx, warn } from './ctx.js'
 import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, refreshProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
@@ -2346,6 +2346,7 @@ const flattenFuncNamespaces = (ast) => {
   const newAst = rewrite(ast)
   ast.length = 0
   for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
+  invalidateProgramFactsCache(ast)
   for (const fn of ctx.func.list)
     if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
   // The defining `f.prop = …` writes live in moduleInits for bundled programs —

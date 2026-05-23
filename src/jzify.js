@@ -19,6 +19,7 @@
 
 import { warn } from './ctx.js'
 import { handlerArgs, JZ_BLOCK_OPS, LABEL_BODY_OPS } from './ast.js'
+import { JZIFY_CLASS_ERRORS as JC } from './op-policy.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
 
@@ -709,7 +710,7 @@ function lowerClass(name, heritage, body) {
     if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
     if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
       const key = constStringKey(it[1])
-      if (key == null) jzifyError('non-constant computed class member names are not supported')
+      if (key == null) jzifyError(JC.computedMember)
       if (key === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
       else methods.push([key, it[2][1], it[2][2]])
       continue
@@ -718,12 +719,12 @@ function lowerClass(name, heritage, body) {
       const lhs = it[1]
       if (Array.isArray(lhs) && lhs[0] === 'static') {
         const key = constStringKey(lhs[1])
-        if (key == null) jzifyError('non-constant computed static class fields are not supported')
+        if (key == null) jzifyError(JC.computedStaticField)
         statics.push([key, it[2]])
         continue
       }
       const key = constStringKey(lhs)
-      if (key == null) jzifyError('non-constant computed/destructured class fields are not supported')
+      if (key == null) jzifyError(JC.computedField)
       fields.push([key, it[2]])
       continue
     }
@@ -740,12 +741,12 @@ function lowerClass(name, heritage, body) {
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === '=>') {
       const key = constStringKey(it[1][1])
-      if (key == null) jzifyError('non-constant computed static class member names are not supported')
+      if (key == null) jzifyError(JC.computedStaticMember)
       statics.push([key, it[1][2], true])
       continue
     }
-    if (it[0] === 'get' || it[0] === 'set') jzifyError('class getters/setters are not supported — jz objects have no accessors')
-    if (it[0] === 'static') jzifyError('`static` class members are not supported yet')
+    if (it[0] === 'get' || it[0] === 'set') jzifyError(JC.accessor)
+    if (it[0] === 'static') jzifyError(JC.staticMember)
     jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
   }
   const superMethods = heritage == null ? new Set() : new Set([
@@ -761,7 +762,7 @@ function lowerClass(name, heritage, body) {
       fields.some(([, init]) => unsupportedSuperProp(init)) ||
       methods.some(([, , mbody]) => unsupportedSuperProp(mbody))
     )
-      jzifyError('`super` property access is not supported yet')
+      jzifyError(JC.superProp)
   }
   const self = `self${classIdx++}`
   const UNDEF = []                                  // jessie's node for `undefined`
