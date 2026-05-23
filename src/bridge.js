@@ -21,6 +21,12 @@ export const bool = (...a) => ctx.bridge.bool(...a)
 export const idx = (...a) => ctx.bridge.idx(...a)
 export const spread = (...a) => ctx.bridge.spread(...a)
 
+/** Attach a pre-built handler (e.g. from method/emitter) to ctx.core.emit. */
+export const bind = (name, handler) => {
+  ctx.core.emit[name] = handler
+  return handler
+}
+
 /** WAT stdlib→stdlib deps for `resolveIncludes()`. */
 export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 

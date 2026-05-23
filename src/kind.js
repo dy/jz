@@ -8,6 +8,12 @@
 
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
+import {
+  BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
+  calleeValType, methodValType, typedCtorElemValType,
+} from './kind-traits.js'
+
+export { typedCtorElemValType } from './kind-traits.js'
 
 export function valTypeOf(expr) {
   if (expr == null) return null
@@ -29,9 +35,7 @@ export function valTypeOf(expr) {
 
   // Boolean-result operators: relational/equality compares and logical-not always
   // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
-  if (op === '!' || op === '<' || op === '<=' || op === '>' || op === '>=' ||
-      op === '==' || op === '!=' || op === '===' || op === '!==' || op === 'in' || op === 'instanceof')
-    return VAL.BOOL
+  if (BOOL_OPS.has(op)) return VAL.BOOL
 
   if (op === '[') return VAL.ARRAY
   if (op === 'str' || op === 'strcat') return VAL.STRING
@@ -81,11 +85,11 @@ export function valTypeOf(expr) {
     }
   }
   // Arithmetic expressions: BigInt if either operand is BigInt, else number
-  if (['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
+  if (NUMERIC_BINARY_OPS.includes(op)) {
     if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
     return VAL.NUMBER
   }
-  if (['**', '++', '--', '~', '>>>', 'u+'].includes(op)) return VAL.NUMBER
+  if (NUMERIC_UNARY_OPS.has(op)) return VAL.NUMBER
   if (op === '+') {
     const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
     if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
@@ -103,7 +107,7 @@ export function valTypeOf(expr) {
     if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
     return VAL.NUMBER
   }
-  if (['-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>='].includes(op)) {
+  if (COMPOUND_NUMERIC_OPS.has(op)) {
     const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
     const tb = valTypeOf(args[1])
     if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
@@ -119,90 +123,27 @@ export function valTypeOf(expr) {
     }
     // Constructor results + user function return-type inference
     if (typeof callee === 'string') {
-      if (callee === 'new.Set') return VAL.SET
-      if (callee === 'new.Map') return VAL.MAP
-      if (callee === 'new.Date') return VAL.DATE
-      if (callee === 'new.ArrayBuffer') return VAL.BUFFER
-      // `new Array(...)` is a plain growable Array, not a TypedArray — index
-      // stores must route through __arr_set_idx_ptr (grow + persist), so it
-      // must NOT fall into the new.* → VAL.TYPED catch-all below.
-      if (callee === 'new.Array') return VAL.ARRAY
-      // `new DataView(...)` falls through to VAL.TYPED: a DataView is a proper
-      // view object (TYPED|view ptr over a 16-byte descriptor), same shape as a
-      // typed-array subview — see module/typedarray.js `new.DataView`.
-      if (callee.startsWith('new.')) return VAL.TYPED
-      if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
-      if (callee === 'Boolean') return VAL.BOOL
-      if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
       if (callee === 'JSON.parse') {
         const src = jsonConstString(args[1])
         if (src != null) {
           const c = src.trimStart()[0]
-          // Objects emit as fixed-shape OBJECT (slot-based) — see
-          // module/json.js:emitJsonConstValue. The downstream `.prop` reads
-          // hit emitSchemaSlotRead via ctx.schema.find, bypassing hash probes.
           if (c === '{') return VAL.OBJECT
           if (c === '[') return VAL.ARRAY
           if (c === '"') return VAL.STRING
           if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
         }
+      } else {
+        const vt = calleeValType(callee, args, ctx)
+        if (vt != null) return vt
       }
-      // Math.* always returns Number — let `+` skip string-concat dispatch and
-      // let exprType propagate i32 for the integer-returning subset.
-      if (typeof callee === 'string' && callee.startsWith('math.')) return VAL.NUMBER
-      // Clock helpers always return Number — lets `t0 = performance.now()` propagate
-      // VAL.NUMBER through subsequent reads, eliding `__to_num` wrappers in arithmetic.
-      if (callee === 'performance.now' || callee === 'Date.now') return VAL.NUMBER
-      const hostVT = ctx.module.hostImportValTypes?.get(callee)
-      if (hostVT) return hostVT
-      // User-defined func with monomorphic VAL return (populated in compile.js E2 pass).
-      const f = ctx.func.map?.get(callee)
-      if (f?.valResult) return f.valResult
     }
-    // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
-      if (method === 'map' || method === 'filter') {
-        // Typed-array .map/.filter preserve element type → return VAL.TYPED.
-        // Unknown receiver: don't claim (stay null) — runtime-dispatched index handles both.
-        const objType = valTypeOf(obj)
-        if (objType === VAL.TYPED) return VAL.TYPED
-        if (objType === VAL.ARRAY) return VAL.ARRAY
-        return null
-      }
-      if (method === 'push') return VAL.ARRAY
-      if ((method === 'shift' || method === 'pop') && typeof obj === 'string') {
-        const elemVt = ctx.func.localReps?.get(obj)?.arrayElemValType
-        if (elemVt) return elemVt
-      }
-      if (method === 'add' || method === 'delete') return VAL.SET
-      if (method === 'set') return VAL.MAP
-      // String-returning methods
-      if (['toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'trim', 'trimStart', 'trimEnd',
-        'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring'].includes(method)) return VAL.STRING
-      // `charCodeAt`/`codePointAt` always yield a number (a UTF-16 code unit or
-      // NaN for an out-of-range index — both VAL.NUMBER). Without this, the f64
-      // OOB-NaN result has an unknown val-type and any reader (`+`, `-`, ...)
-      // wraps it in a runtime `__to_num` coercion, pulling the whole number↔
-      // string stdlib tree (`__ftoa`/`__str_concat`/…) for nothing.
-      if (method === 'charCodeAt' || method === 'codePointAt') return VAL.NUMBER
-      if (method === 'split') return VAL.ARRAY
-      // slice/concat preserve caller type (string.slice → string, array.slice → array)
-      if (method === 'slice' || method === 'concat') {
-        const objType = valTypeOf(obj)
-        if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType
-        return null
-      }
+      const vt = methodValType(method, obj, valTypeOf(obj), ctx)
+      if (vt != null) return vt
     }
   }
   return null
-}
-
-const typedCtorElemValType = (ctor) => {
-  if (!ctor) return null
-  const isView = ctor.endsWith('.view')
-  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-  return name === 'BigInt64Array' || name === 'BigUint64Array' ? VAL.BIGINT : VAL.NUMBER
 }
 
 export function jsonConstString(expr) {
