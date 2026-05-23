@@ -477,7 +477,7 @@ Runnable browser demos in [`examples/`](examples/) — each compiles a `.js` ker
 * [interference](examples/interference/) — two-source wave interference field rendered per frame.
 * [mandelbrot](examples/mandelbrot/) — escape-time fractal with a precomputed color table.
 
-Each folder has a `build.mjs` and an `index.html` — build, then open the page.
+Each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` binaries are committed so the demos work when served from GitHub; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
 
 
 ## Alternatives
