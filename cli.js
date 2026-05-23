@@ -17,6 +17,11 @@ import { createRequire } from 'module'
 const jzRequire = createRequire(import.meta.url)
 const PKG = jzRequire('./package.json')
 
+function formatWarning(w) {
+  const where = w.line != null ? ` (${w.line}:${w.column})` : ''
+  return `warning[${w.code}]${where}: ${w.message}`
+}
+
 function showHelp() {
   console.log(`
 jz v${PKG.version} - min JS → WASM compiler
@@ -156,8 +161,10 @@ async function handleCompile(args) {
 
   // .jz = strict (no auto-transform), .js = auto-jzify
   // --strict forces strict for any extension
+  const warnings = { entries: [] }
   const opts = {
     wat,
+    warnings,
     jzify: !strict && !inputFile.endsWith('.jz'),
     strict,
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
@@ -174,6 +181,9 @@ async function handleCompile(args) {
   }
 
   const result = compile(codeRewritten, opts)
+
+  for (const w of warnings.entries)
+    console.warn(formatWarning(w))
 
   if (outputFile === '-') {
     process.stdout.write(result)

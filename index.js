@@ -44,7 +44,7 @@ import { parse } from 'subscript/feature/jessie'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
 import watrOptimize from "./src/watopt.js";
-import { ctx, reset, err } from './src/ctx.js'
+import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
 import { emitter } from './src/emit.js'
@@ -174,6 +174,10 @@ jz.memory = enhanceMemory
  *     mutable globals); trades size for speed.
  *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
+ * @param {object} [opts.warnings] - Optional mutable warning sink populated with
+ *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
+ *   fire when a module uses the bump allocator and an export or loop retains
+ *   allocations without a host-side memory.reset().
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
  *   Set `profile.names = true` to also emit a standard wasm `name` custom section
@@ -300,6 +304,7 @@ const jzCompileInner = (code, opts = {}) => {
 
   reset(emitter, GLOBALS)
   ctx.error.src = code
+  initWarnings(opts.warnings)
 
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
@@ -486,13 +491,12 @@ export default function jz(code, ...args) {
   // String call: jz('code', opts?) — compile + instantiate + wrap
   const callOpts = args[0] || {}
   const out = jz.compile(code, callOpts)
-  // inspect:true returns { wasm, inspect } from jz.compile — unwrap the bytes for
-  // instantiation and surface inspect on the runtime result alongside exports/memory.
-  if (callOpts.inspect && out && typeof out === 'object' && 'wasm' in out) {
-    const result = instantiateRuntime(out.wasm, callOpts)
-    return Object.assign(result, { inspect: out.inspect })
-  }
-  return instantiateRuntime(out, callOpts)
+  const wasm = out && typeof out === 'object' && 'wasm' in out ? out.wasm : out
+  const result = instantiateRuntime(wasm, callOpts)
+  const extra = {}
+  if (callOpts.inspect && out && typeof out === 'object' && 'inspect' in out) extra.inspect = out.inspect
+  if (callOpts.warnings) extra.warnings = callOpts.warnings.entries
+  return Object.keys(extra).length ? Object.assign(result, extra) : result
 }
 
 export { jz }

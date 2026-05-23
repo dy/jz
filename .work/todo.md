@@ -251,21 +251,17 @@ form-normalization remnants — all already *correct*, only IR-tightness is at s
   statically STRING, else it's a meaningful ToString); `no-useless-return`. Low value /
   DCE-adjacent; defer until one is on a hot path. Owner: `src/optimize.js`, `src/prepare.js`.
 
-#### Advisory / opt-in trade (omitted mechanism — needs the warn channel first)
+#### Advisory / opt-in trade (soft warn channel — `ctx.warn`, `opts.warnings`, CLI)
 
-Prerequisite: a `ctx.warn(node, code, msg)` sink, surfaced on the `compile()` result and
-printed by the CLI — mirror the passed-in `profile` sink. Without it none of the below
-lands as anything but a hard error.
-
+* [x] **Warn channel.** `ctx.warn` + `opts.warnings` sink + CLI print (mirrors `opts.profile`).
+* [x] **no-auto-reclaim leak heuristic.** `adviseHeapGrowth` in `plan()` — heap-return /
+  heap-loop / heap-per-call when bump allocator can't rewind (see `test/warnings.js`).
 * [ ] **untagged errors (`e instanceof TypeError`).** Structural fix = type tags on
   thrown values = Error machinery = the weight jz dropped. Warn, or offer opt-in tagging.
   (README "errors are untagged".)
 * [ ] **Set/Map slot-order iteration.** Already a documented trade (Deferred ›
   "Insertion-order Set/Map", `test262-builtins.js` xfail). Warn only if iteration order
   is observably relied upon.
-* [ ] **no-auto-reclaim leak heuristic.** Folds into the existing "Warn/error on hitting
-  memory limits" item (Language coverage). At most: "allocates in a loop with no
-  `memory.reset()` in scope."
 * [ ] **perf-feedback advisories (LLVM-style "why it didn't vectorize").** Surface bail
   reasons the passes already compute: `no-param-reassign` → "reassigning `s` disabled the
   zero-copy externref carrier"; vectorizer bail → "loop-carried scalar `s` / AoS stride —

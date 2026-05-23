@@ -41,6 +41,7 @@ const TESTS = [
   'parser-bugs',
   'jsstring',
   'booleans',
+  'warnings',
 ]
 
 const argFilters = process.argv.slice(2)
