@@ -5,9 +5,10 @@
 import { commaList, isFuncRef, isLiteralStr } from './ast.js'
 import { ctx, err } from './ctx.js'
 import { VAL, lookupValType, repOf } from './reps.js'
-import { valTypeOf } from './val-type.js'
-import { extractParams, classifyParam } from './params.js'
-import { staticObjectProps, staticValue, NO_VALUE } from './static.js'
+import { valTypeOf } from './kind.js'
+import { extractParams, classifyParam } from './ast.js'
+import { staticObjectProps } from './static.js'
+import { intExprChecker } from './type.js'
 import { analyzeBody } from './analyze.js'
 
 export function observeNodeFacts(node, f) {
@@ -37,11 +38,6 @@ export function observeNodeFacts(node, f) {
     if (cargs.length > f.maxCall) f.maxCall = cargs.length
   }
 }
-
-const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
-const INT_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!==', '!'])
-const INT_CLOSED_OPS = new Set(['+', '-', '*', '%'])
-const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
 
 const _programFactsCache = new WeakMap()
 const _moduleInitSlotCache = new WeakMap()
@@ -319,94 +315,12 @@ export function analyzeSchemaSlotIntCertain(ast) {
     if (arr[idx] === undefined) arr[idx] = true
   }
 
-  // Per-body fixpoint: replicates analyzeIntCertain's two-pass collect/iterate
-  // but stays local to the body so it can run during collectProgramFacts
-  // (before emit-time inferLocals sets per-function intCertain reps).
-  const analyzeBodyLocally = (body) => {
-    const defs = new Map()
-    const pushDef = (name, rhs) => {
-      let list = defs.get(name)
-      if (!list) { list = []; defs.set(name, list) }
-      list.push(rhs)
-    }
-    const collect = (node) => {
-      if (!Array.isArray(node)) return
-      const [op, ...args] = node
-      if (op === '=>') return
-      if (op === 'let' || op === 'const') {
-        for (const a of args)
-          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2])
-      } else if (op === '=' && typeof args[0] === 'string') {
-        pushDef(args[0], args[1])
-      } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
-                 !INT_CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
-        pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
-      } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
-        pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
-      }
-      for (const a of args) collect(a)
-    }
-    collect(body)
-    const intCertain = new Map()
-    for (const name of defs.keys()) intCertain.set(name, true)
-    const isIntExpr = (expr) => {
-      if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
-      if (typeof expr === 'boolean') return true
-      if (typeof expr === 'string') return intCertain.get(expr) === true
-      if (!Array.isArray(expr)) return false
-      const sv = staticValue(expr)
-      if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return false
-      const [op, ...args] = expr
-      if (op == null) {
-        const v = args[0]
-        if (typeof v === 'number') return Number.isInteger(v) && !Object.is(v, -0)
-        if (typeof v === 'boolean') return true
-        return false
-      }
-      if (INT_BIT_OPS.has(op) || INT_CMP_OPS.has(op)) return true
-      if (op === '.') {
-        if ((args[1] === 'length' || args[1] === 'byteLength') && typeof args[0] === 'string') {
-          const vt = lookupValType(args[0])
-          return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
-        }
-        if (args[1] === 'size' && typeof args[0] === 'string') {
-          const vt = lookupValType(args[0])
-          return vt === VAL.SET || vt === VAL.MAP
-        }
-        return false
-      }
-      if (INT_CLOSED_OPS.has(op)) {
-        const a = isIntExpr(args[0])
-        const b = args[1] != null ? isIntExpr(args[1]) : a
-        return a && b
-      }
-      if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
-      if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
-      if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
-      if (op === '()') {
-        const c = args[0]
-        if (typeof c === 'string' && c.startsWith('math.') && INT_MATH_FNS.has(c.slice(5))) return true
-        if (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && INT_MATH_FNS.has(c[2])) return true
-      }
-      return false
-    }
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const [name, rhsList] of defs) {
-        if (!intCertain.get(name)) continue
-        if (!rhsList.every(isIntExpr)) { intCertain.set(name, false); changed = true }
-      }
-    }
-    return isIntExpr
-  }
-
   const bodyIntCertainOf = (body) => {
     if (body != null && typeof body === 'object') {
       const hit = _bodyIntCertainCache.get(body)
       if (hit?.gen === _programFactsGen) return hit.isInt
     }
-    const isInt = analyzeBodyLocally(body)
+    const isInt = intExprChecker(body)
     if (body != null && typeof body === 'object')
       _bodyIntCertainCache.set(body, { gen: _programFactsGen, isInt })
     return isInt

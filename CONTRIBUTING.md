@@ -13,21 +13,20 @@ node bench/bench.mjs  # run benchmarks
 
 ```
 src/           compiler core (parse → prepare → compile → emit → optimize)
-  ast.js       cycle-free AST helpers (T, walks, isReassigned, …)
-  const.js     compile-time integer folding
-  static.js    static keys / object props / schema ids
-  typed.js     typed-array ctor → PTR.TYPED aux
-  params.js    arrow param normalization, findFreeVars
-  bounds.js    in-bounds charCodeAt proof
-  types.js     exprType (i32 vs f64)
+  ast.js       AST shape, params, walks (cycle-free)
+  static.js    compile-time static eval + int literal folding
+  kind.js      value KIND inference (STRING, ARRAY, OBJECT, …)
+  type.js      WASM local typing (i32/f64), typed-array aux, int proofs
   program-facts.js  whole-program dyn-key / call-site facts
   bridge.js    stdlib registration bridge (ctx.bridge)
   analyze.js   body walks (analyzeBody, valTypes, captures)
-module/        stdlib modules — import bridge.js + leaf src/*, not analyze.js
+module/        stdlib — import bridge + kind/static/type/ast, not analyze.js
 test/          test files (tst framework)
 bench/         benchmark corpus (one dir per case: .js + optional .as.ts/.c/.rs/…)
 scripts/       bench harnesses (bench-size = wasm size, bench-compile = compile time)
 ```
+
+**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs.
 
 ## Architecture
 

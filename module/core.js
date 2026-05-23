@@ -12,7 +12,7 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, shapeOf } from '../src/val-type.js'
+import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'

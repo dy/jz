@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
 import { emit, bool, deps } from '../src/bridge.js'
-import { valTypeOf } from '../src/val-type.js'
+import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'

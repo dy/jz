@@ -8,13 +8,9 @@
  *        `.dynKeyVars` / `.anyDynKey`.
  *
  * # Passes (all walk AST; none mutate AST itself — only ctx)
- *   - valTypeOf:           expression-level value-type inference (pure)
- *   - lookupValType:       name→VAL.* resolver (func scope ∪ global scope)
- *   - analyzeBody:         single unified walk — body-keyed cache, returns
- *                          { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
- *   - analyzeValTypes:     ctx-mutating pass — writes types + tracks regex/typed + localProps
  *   - boxedCaptures:       detect mutably-captured vars → ctx.func.boxed cells
- *   - extractParams/classifyParam/collectParamNames: arrow param AST normalization helpers
+ *
+ * Value KIND inference: src/kind.js. WASM local typing: src/type.js. Static eval: src/static.js.
  *
  * Ordering: all passes run per function during compile(). plan.js owns the
  * cross-function dynKey scan via programFacts (results land in ctx.types.dynKeyVars).
@@ -25,13 +21,10 @@
 import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T } from './ast.js'
 import { ctx, err } from './ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from './reps.js'
-import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from './val-type.js'
-import { intLiteralValue, nonNegIntLiteral, constIntExpr } from './const.js'
-import { NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from './static.js'
-import { typedElemCtor, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs } from './typed.js'
-import { extractParams, classifyParam, collectParamNames, findFreeVars } from './params.js'
-import { scanBoundedLoops, inBoundsCharCodeAt } from './bounds.js'
-import { exprType } from './types.js'
+import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from './kind.js'
+import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from './static.js'
+import { typedElemCtor, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from './type.js'
+import { extractParams, classifyParam, collectParamNames } from './ast.js'
 
 /** Collect all `return X` expressions (X != null) from a function body, skipping nested arrow funcs.
  *  Pushes into `out`. Non-returning paths are silently skipped — pair with `alwaysReturns` if total
@@ -167,6 +160,42 @@ export const paramFactsOf = (paramReps, callerFunc, key) => {
 
 // === Param / closure helpers ===
 
+/** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
+export function findFreeVars(node, bound, free, scope) {
+  if (node == null) return
+  if (typeof node === 'string') {
+    if (bound.has(node) || free.includes(node)) return
+    const inScope = scope
+      ? scope.has(node)
+      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
+    if (inScope) free.push(node)
+    return
+  }
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '=>') {
+    const innerBound = collectParamNames(extractParams(args[0]), new Set(bound))
+    findFreeVars(args[1], innerBound, free, scope)
+    return
+  }
+  if (op === 'catch') {
+    findFreeVars(args[0], bound, free, scope)
+    const errName = args[1]
+    const handlerBound = typeof errName === 'string' && errName
+      ? new Set(bound).add(errName) : bound
+    findFreeVars(args[2], handlerBound, free, scope)
+    return
+  }
+  if (op === 'let' || op === 'const') {
+    collectParamNames(args, bound)
+    if (scope) collectParamNames(args, scope)
+  }
+  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
+    collectParamNames(args[0].slice(1), bound)
+    if (scope) collectParamNames(args[0].slice(1), scope)
+  }
+  for (const a of args) findFreeVars(a, bound, free, scope)
+}
 
 /** Check if any of the given variable names are assigned anywhere in the AST. */
 export function findMutations(node, names, mutated) {
@@ -1608,142 +1637,9 @@ export function analyzeValTypes(body) {
   }
 }
 
-const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
-const INT_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!==', '!'])
-const INT_CLOSED_OPS = new Set(['+', '-', '*', '%'])
-const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
-
-/**
- * Forward-propagate `intCertain` across local bindings (S2 Stage 4a — pure analysis).
- *
- * A binding is `intCertain` iff every defining RHS evaluates to an integer-valued
- * expression. Reassignments widen — any non-int RHS poisons the binding, regardless
- * of order in source. Multi-pass fixpoint converges when RHSs read other bindings
- * transitively (`let j = i + 1` resolves only after `i` is known intCertain).
- *
- * Integer-shaped RHS (closed under composition):
- *   - integer Number literal, boolean literal
- *   - bitwise ops `& | ^ ~ << >> >>>` — i32 result by spec
- *   - comparisons `< > <= >= == != === !== !` — 0/1 result
- *   - `.length` / `.byteLength` on TYPED/ARRAY/STRING/BUFFER receiver
- *   - `+ - * %` and unary `+ -` of intCertain operands (overflow OK — value is mathematically integer)
- *   - `?: && ||` when both branches are intCertain
- *   - `Math.{imul, clz32, floor, ceil, round, trunc}`
- *   - self-mutation ops `++` `--` `+=` `-=` `*=` `%=` (preserve when operand is int);
- *     `&= |= ^= <<= >>= >>>=` (always int by op result type);
- *     `/=` `**=` poison.
- *
- * Writes `intCertain: true` on `ctx.func.localReps[name]`. Consumers:
- *   • `toNumF64` (src/ir.js) — skips the `__to_num` wrapper since an intCertain
- *     local never carries a NaN-boxed pointer.
- *   • `Math.floor/ceil/trunc/round` (module/math.js) — short-circuits to the
- *     identity, eliding the wasm rounding op on an already-integer operand.
- */
+/** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js. */
 export function analyzeIntCertain(body) {
-  // Pass 1: collect every defining RHS per binding name. Compound assignments
-  // are desugared to their `=` equivalent (`x += y` → `x = x + y`) so the
-  // existing `isIntExpr` op rules apply uniformly.
-  const defs = new Map()
-  const pushDef = (name, rhs) => {
-    let list = defs.get(name)
-    if (!list) { list = []; defs.set(name, list) }
-    list.push(rhs)
-  }
-  const collect = (node) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2])
-      }
-    } else if (op === '=' && typeof args[0] === 'string') {
-      pushDef(args[0], args[1])
-    } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
-               !INT_CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
-      // Compound assign: desugar `x <op>= rhs` → `x = x <op> rhs`. The base op
-      // result is fed back through isIntExpr — bitwise compounds become int by
-      // the bitwise rule; +=/-=/*=/%= preserve via int-closed rule.
-      pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
-    } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
-      // `x++` / `x--` desugars to `x = x ± 1`. 1 is int → preserves intCertain.
-      pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
-    }
-    for (const a of args) collect(a)
-  }
-  collect(body)
-  if (defs.size === 0) return
-
-  // Pass 2: monotone-down fixpoint. Start optimistic (every defined binding
-  // assumed intCertain), then for each iteration mark false any binding whose
-  // RHS list contains a non-int expression. Once false, stays false — defs is
-  // fixed and isIntExpr only reads back through bindings that themselves can
-  // only flip true→false. Converges when no further bindings flip.
-  //
-  // (Naive bottom-up `false→true` direction is unsound for recursive bindings
-  // like `let i = 0; i = i + 1` — first iteration sees i unobserved → false →
-  // i+1 false → i stays false, missing the fact that all RHSs are int.)
-  const intCertain = new Map()
-  for (const name of defs.keys()) intCertain.set(name, true)
-
-  const isIntExpr = (expr) => {
-    // -0 is integer-valued mathematically but i32 has no signed zero — must stay f64.
-    if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
-    if (typeof expr === 'boolean') return true
-    if (typeof expr === 'string') return intCertain.get(expr) === true
-    if (!Array.isArray(expr)) return false
-    // Statically evaluable to -0 (e.g. -1 * 0, 0 / -1) — i32 would lose the sign.
-    const sv = staticValue(expr)
-    if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return false
-    const [op, ...args] = expr
-    if (op == null) {
-      // `[, value]` / `[null, value]` literal form
-      const v = args[0]
-      if (typeof v === 'number') return Number.isInteger(v) && !Object.is(v, -0)
-      if (typeof v === 'boolean') return true
-      return false
-    }
-    if (INT_BIT_OPS.has(op) || INT_CMP_OPS.has(op)) return true
-    if (op === '.') {
-      if ((args[1] === 'length' || args[1] === 'byteLength') && typeof args[0] === 'string') {
-        const vt = lookupValType(args[0])
-        return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
-      }
-      if (args[1] === 'size' && typeof args[0] === 'string') {
-        const vt = lookupValType(args[0])
-        return vt === VAL.SET || vt === VAL.MAP
-      }
-      return false
-    }
-    if (INT_CLOSED_OPS.has(op)) {
-      const a = isIntExpr(args[0])
-      const b = args[1] != null ? isIntExpr(args[1]) : a
-      return a && b
-    }
-    if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
-    if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
-    if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
-    // Math.{imul,clz32,floor,ceil,round,trunc} — prepare normalizes the callee to
-    // the string `math.<fn>`. The pre-prepare `['.', 'Math', '<fn>']` shape is
-    // matched too so this analyzer is robust if invoked on a non-normalized AST.
-    if (op === '()') {
-      const c = args[0]
-      if (typeof c === 'string' && c.startsWith('math.') && INT_MATH_FNS.has(c.slice(5))) return true
-      if (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && INT_MATH_FNS.has(c[2])) return true
-    }
-    return false
-  }
-
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const [name, rhsList] of defs) {
-      if (!intCertain.get(name)) continue
-      if (!rhsList.every(isIntExpr)) { intCertain.set(name, false); changed = true }
-    }
-  }
-
-  for (const [name, intC] of intCertain) {
+  for (const [name, intC] of intCertainMap(body)) {
     if (intC) updateRep(name, { intCertain: true })
   }
 }

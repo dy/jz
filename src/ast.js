@@ -143,3 +143,36 @@ export function hasOwnBreakOrContinue(body) {
   for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
   return false
 }
+
+// === Arrow param normalization ===
+
+
+export function extractParams(rawParams) {
+  let p = rawParams
+  if (Array.isArray(p) && p[0] === '()') p = p[1]
+  return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+}
+
+export function classifyParam(r) {
+  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
+  if (Array.isArray(r) && r[0] === '=') {
+    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
+    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
+  }
+  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
+  return { kind: 'plain', name: r }
+}
+
+export function collectParamNames(raw, out = new Set()) {
+  for (const r of raw) {
+    if (typeof r === 'string') out.add(r)
+    else if (Array.isArray(r)) {
+      if (r[0] === '=' && typeof r[1] === 'string') out.add(r[1])
+      else if (r[0] === '...' && typeof r[1] === 'string') out.add(r[1])
+      else if (r[0] === '=' && Array.isArray(r[1])) collectParamNames([r[1]], out)
+      else if (r[0] === '[]' || r[0] === '{}' || r[0] === ',') collectParamNames(r.slice(1), out)
+    }
+  }
+  return out
+}
+

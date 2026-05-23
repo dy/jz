@@ -24,7 +24,7 @@ import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { ptrBoxPrefixBigInt, atomNanHex, nanPrefixHex } from '../layout.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
-import { valTypeOf } from './val-type.js'
+import { valTypeOf } from './kind.js'
 import { T } from './ast.js'
 import { objLiteralSchemaId } from './static.js'
 

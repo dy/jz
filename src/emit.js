@@ -26,8 +26,9 @@ import { ctx, err, inc, PTR } from './ctx.js'
 import {
   T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
 } from './ast.js'
-import { nonNegIntLiteral } from './const.js'
-import { extractParams, classifyParam, findFreeVars } from './params.js'
+import { nonNegIntLiteral } from './static.js'
+import { extractParams, classifyParam } from './ast.js'
+import { findFreeVars } from './analyze.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst,
@@ -35,9 +36,9 @@ import {
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
 } from './analyze.js'
 import { staticPropertyKey } from './static.js'
-import { scanBoundedLoops, inBoundsCharCodeAt } from './bounds.js'
-import { exprType } from './types.js'
-import { valTypeOf } from './val-type.js'
+import { scanBoundedLoops, inBoundsCharCodeAt } from './type.js'
+import { exprType } from './type.js'
+import { valTypeOf } from './kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from './reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,

@@ -44,11 +44,11 @@
  */
 
 import { ctx } from './ctx.js'
-import { collectParamNames } from './params.js'
+import { collectParamNames } from './ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps } from './static.js'
-import { typedElemCtor, ctorFromElemAux } from './typed.js'
-import { shapeOfObjectLiteralAst, valTypeOf } from './val-type.js'
+import { typedElemCtor, ctorFromElemAux } from './type.js'
+import { shapeOfObjectLiteralAst, valTypeOf } from './kind.js'
 import { VAL, updateRep, updateGlobalRep } from './reps.js'
 
 // === typeof predicate helper ==============================================
