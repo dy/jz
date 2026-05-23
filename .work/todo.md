@@ -59,6 +59,7 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 * [ ] (niche, loyal crowds) Voronoi stippler→plotter SVG · bitmap→SVG tracer · pixel-art upscalers (EPX/xBRZ) · cymatics/harmonograph/guilloché · WFC tile generator
 * [ ] (verticals, build when a user pulls) quant (Black-Scholes/MC) · GIS (simplify/MVT) · fabrication (G-code/STL) · sci kernels (RK4/FFT/least-squares) · bioinformatics (alignment)
 * [ ] **Demoscene / js13k / Genuary culture play** — tiny WASM output = sizecoding hook; same-source JS↔WASM = prototype-then-compile. Targets: Pouët, Dwitter/tixy.land ("tixy but compiled"), Lovebyte, JS13k (jz = the compute kernel, not the DOM glue), Genuary starter. floatbeat doubles as the entry.
+* [ ] stdlib-io integration (faster whole lib)
 
 ### Deferred — NOT minimal, schedule explicitly
 - Insertion-order Set/Map — open-addressing table iterates slot-order; ES
