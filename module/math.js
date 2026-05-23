@@ -21,8 +21,8 @@ export default (ctx) => {
   // Direct stdlib→stdlib call edges. resolveIncludes() expands these transitively,
   // so each emitter declares only the single stdlib it directly calls.
   Object.assign(ctx.core.stdlibDeps, {
-    'math.sin': ['math.isFinite'],
-    'math.cos': ['math.isFinite'],
+    'math.sin': ['math.isFinite', 'math.sin_core'],
+    'math.cos': ['math.isFinite', 'math.cos_core'],
     'math.tan': ['math.sin', 'math.cos'],
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
@@ -54,6 +54,44 @@ export default (ctx) => {
     if (Array.isArray(a) && a[0] === '.' && typeof a[1] === 'string' && typeof a[2] === 'string') {
       return ctx.schema.slotIntCertainAt?.(a[1], a[2]) === true
     }
+    return false
+  }
+  // Provably finite f64 — skips the isFinite guard in $math.sin/$math.cos when the
+  // argument is pure int/const/global arithmetic (floatbeat phase args, semitone ratios).
+  const isFiniteArith = (src) => {
+    if (src == null) return false
+    if (typeof src === 'number') return Number.isFinite(src)
+    if (typeof src === 'string') return isIntCertain(src)
+    if (!Array.isArray(src)) return false
+    const op = src[0]
+    if (op === 'literal') {
+      const v = src[1]
+      return typeof v === 'number' && Number.isFinite(v)
+    }
+    if (op === 'global' || op === 'param') return true
+    if (op === '()') {
+      const fn = src[1]
+      if (fn === 'math.PI' || fn === 'math.E' || fn === 'math.LN2' || fn === 'math.SQRT2') return true
+      if (typeof fn === 'string' && fn.startsWith('math.')) {
+        const finiteOps = new Set([
+          'math.abs', 'math.floor', 'math.ceil', 'math.trunc', 'math.round', 'math.sqrt',
+          'math.sin', 'math.cos', 'math.tan', 'math.imul', 'math.clz32',
+        ])
+        if (finiteOps.has(fn)) return src.slice(2).every(isFiniteArith)
+      }
+    }
+    if (op === '|' && src.length === 2) return isFiniteArith(src[1])
+    if (op === '%' || op === '&' || op === '^' || op === '<<' || op === '>>' || op === '>>>') {
+      return src.slice(1).every(isFiniteArith)
+    }
+    if (op === '+' || op === '-' || op === '*' || op === '**') {
+      return src.slice(1).every(isFiniteArith)
+    }
+    if (op === '/') return isFiniteArith(src[1]) && isFiniteArith(src[2])
+    if (op === '?:' && src.length === 4) return isFiniteArith(src[2]) && isFiniteArith(src[3])
+    if ((op === '&&' || op === '||') && src.length === 3) return isFiniteArith(src[1]) && isFiniteArith(src[2])
+    if (op === '!' && src.length === 2) return isFiniteArith(src[1])
+    if (op === '.' && src.length === 3) return isIntCertain(src)
     return false
   }
   const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
@@ -153,9 +191,15 @@ export default (ctx) => {
   // Sign
   ctx.core.emit['math.sign'] = emitter(['math.sign'], a => call('math.sign', a))
 
-  // Trig
-  ctx.core.emit['math.sin'] = emitter(['math.sin'], a => call('math.sin', a))
-  ctx.core.emit['math.cos'] = emitter(['math.cos'], a => call('math.cos', a))
+  // Trig — finite args skip the isFinite guard via $math.sin_core/$math.cos_core.
+  const sinCall = emitter(['math.sin'], a => call('math.sin', a))
+  const sinCoreCall = emitter(['math.sin_core'], a => call('math.sin_core', a))
+  ctx.core.emit['math.sin'] = (a) => isFiniteArith(a) ? sinCoreCall(a) : sinCall(a)
+  ctx.core.emit['math.sin'].deps = sinCall.deps
+  const cosCall = emitter(['math.cos'], a => call('math.cos', a))
+  const cosCoreCall = emitter(['math.cos_core'], a => call('math.cos_core', a))
+  ctx.core.emit['math.cos'] = (a) => isFiniteArith(a) ? cosCoreCall(a) : cosCall(a)
+  ctx.core.emit['math.cos'].deps = cosCall.deps
   ctx.core.emit['math.tan'] = emitter(['math.tan'], a => call('math.tan', a))
 
   // Inverse trig
@@ -241,10 +285,15 @@ export default (ctx) => {
   // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
   // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
   const powCall = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
+  const expPosPow = (base, exp) =>
+    typed(['call', '$math.exp', ['f64.mul', toNumF64(exp, emit(exp)), ['f64.const', Math.log(base)]]], 'f64')
+  const expPowCall = emitter(['math.exp'], (base, exp) => expPosPow(base, exp))
   ctx.core.emit['math.pow'] = (a, b) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
+    const cb = constNum(a)
+    if (cb != null && cb > 0 && Number.isFinite(cb)) return expPowCall(cb, b)
     return powCall(a, b)
   }
   ctx.core.emit['math.pow'].deps = powCall.deps   // metadata parity (tabulation/analysis)
@@ -288,10 +337,8 @@ export default (ctx) => {
       (then (f64.const 1.0))
       (else (f64.const -1.0))))`
 
-  ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
+  ctx.core.stdlib['math.sin_core'] = `(func $math.sin_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
-    ;; NaN/±Infinity → NaN (avoid trapping i32.trunc on infinities).
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -308,10 +355,12 @@ export default (ctx) => {
             (f64.sub (f64.const 0.0000027557319223985893) (f64.mul (local.get $x2)
               (f64.const 2.505210838544172e-8))))))))))))))`
 
-  ctx.core.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
-    (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
-    ;; NaN/±Infinity → NaN (avoid trapping i32.trunc on infinities).
+  ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
+    (call $math.sin_core (local.get $x)))`
+
+  ctx.core.stdlib['math.cos_core'] = `(func $math.cos_core (param $x f64) (result f64)
+    (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -327,6 +376,10 @@ export default (ctx) => {
           (f64.sub (f64.const 0.001388888888888889) (f64.mul (local.get $x2)
             (f64.sub (f64.const 0.0000248015873015873) (f64.mul (local.get $x2)
               (f64.const 2.7557319223985893e-7)))))))))))))`
+
+  ctx.core.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
+    (call $math.cos_core (local.get $x)))`
 
   ctx.core.stdlib['math.tan'] = `(func $math.tan (param $x f64) (result f64)
     (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`

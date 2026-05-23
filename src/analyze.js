@@ -3225,6 +3225,23 @@ export function collectProgramFacts(ast) {
         return
       }
       if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.func.names)) return
+      if (op === 'let' || op === 'const') {
+        for (const decl of args) {
+          if (Array.isArray(decl) && decl[0] === '=' && decl.length >= 3) {
+            const name = decl[1]
+            if (typeof name === 'string' && ctx.func.names.has(name)) {
+              const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'
+              if (isFuncLit || callerFunc?.name !== name) valueUsed.add(name)
+            }
+            walkFacts(decl[2], true, inArrow, callerFunc)
+          } else walkFacts(decl, true, inArrow, callerFunc)
+        }
+        return
+      }
+      if (op === '=' && args.length >= 2) {
+        walkFacts(args[1], true, inArrow, callerFunc)
+        return
+      }
       for (const a of args) {
         if (isFuncRef(a, ctx.func.names)) valueUsed.add(a)
         else walkFacts(a, true, inArrow, callerFunc)

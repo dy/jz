@@ -84,84 +84,48 @@
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
+import { instantiate } from "../../interop.js";
+import { songs, songDisplaySrc, songBeatSrc, songSlug } from "./songs.js";
 
 const N = 4096;                      // FFT size → N/2 = 2048 magnitude bins; bin width SR/N ≈ 10.8 Hz
 const HOP = 256;                     // samples between successive spectrogram columns
 const urls = { js: "./rfft.js", wasm: "./rfft.wasm" };
 const TAU = 6.283185307179586;
 
-// ── floatbeat tunes ──────────────────────────────────────────────────────────
-// Each is a deterministic t→sample formula (t in seconds), shown verbatim in the
-// code panel and compiled with `new Function`. Click shuffle to swap. Determinism
-// keeps the spectrogram a faithful picture of exactly what you hear.
-const songs = [
-  { name: "lofi jazz", src:
-`t => {
-  // ii–V–I–vi in C: Dm7 G7 Cmaj7 Am7, two seconds each, with a soft arpeggio
-  const prog = [[2,5,9,12],[7,11,14,17],[0,4,7,11],[9,12,16,19]]
-  const ch = prog[(t*.5|0) % 4]
-  let pad = 0
-  for (let i = 0; i < 4; i++) pad += Math.sin(t*TAU*130.8 * 2**(ch[i]/12))
-  const a = (t*4) % 1
-  const arp = Math.sin(t*TAU*523.3 * 2**(ch[(t*4|0)%4]/12)) * Math.exp(-a*5)
-  const bass = Math.sin(t*TAU*65.4 * 2**(ch[0]/12))
-  return Math.tanh(pad*.16 + arp*.35 + bass*.5)
-}` },
-  { name: "rhodes", src:
-`t => {
-  // the four chords, I–V–vi–IV: Cmaj7 G7 Am7 Fmaj7 on a warm FM Rhodes that swells
-  const prog = [[0,4,7,11],[7,11,14,17],[9,12,16,19],[5,9,12,16]]
-  const ch = prog[(t*.5|0) % 4]
-  const sw = Math.exp(-((t*.5)%1) * .7)
-  let v = 0
-  for (let i = 0; i < 4; i++) { const f = 261.6 * 2**(ch[i]/12); v += Math.sin(t*TAU*f + 1.8*Math.sin(t*TAU*f)) }
-  const bass = Math.sin(t*TAU*65.4 * 2**(ch[0]/12))
-  return Math.tanh(v*.16*sw + bass*.5)
-}` },
-  { name: "bossa", src:
-`t => {
-  // bossa nova — maj7/m7 comp pushed off the beat over a soft root–fifth bass
-  const prog = [[0,4,7,11],[2,5,9,12],[7,11,14,17],[0,4,7,11]]
-  const ch = prog[(t*.5|0) % 4]
-  let comp = 0
-  for (let i = 0; i < 4; i++) comp += Math.sin(t*TAU*261.6 * 2**(ch[i]/12))
-  const hit = Math.exp(-((t*2)%1) * 6) * (((t*2|0)%2) ? 1 : .45)
-  const bass = Math.sin(t*TAU*98 * 2**(ch[0]/12)) * (((t*4|0)%2) ? .6 : 1)
-  return Math.tanh(comp*.15*hit + bass*.5)
-}` },
-  { name: "dream pad", src:
-`t => {
-  // slow lush pad — Cmaj9 ⇄ Am9, shimmering detune, breathing very gently
-  const prog = [[0,4,7,11,14],[9,12,16,19,23]]
-  const ch = prog[(t*.25|0) % 2]
-  let v = 0
-  for (let i = 0; i < 5; i++) { const f = 130.8 * 2**(ch[i]/12); v += Math.sin(t*TAU*f) + Math.sin(t*TAU*f*1.003) }
-  const breath = .6 + .4*Math.sin(t*TAU*.125)
-  return Math.tanh(v*.11 * breath)
-}` },
-  { name: "blue waltz", src:
-`t => {
-  // minor jazz waltz in 3/4 — Cm9 Fm7 G7 Cm9, a wistful lilt
-  const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
-  const ch = prog[(t*.5|0) % 4]
-  const beat = (t*3) % 1
-  let pad = 0
-  for (let i = 0; i < ch.length; i++) pad += Math.sin(t*TAU*130.8 * 2**(ch[i]/12))
-  const pluck = Math.sin(t*TAU*523.3 * 2**(ch[(t*3|0)%ch.length]/12)) * Math.exp(-beat*4)
-  const bass = Math.sin(t*TAU*65.4 * 2**(ch[0]/12)) * (((t*3|0)%3===0) ? 1 : .5)
-  return Math.tanh(pad*.13 + pluck*.3 + bass*.5)
-}` },
-];
-
+// ── floatbeat synthesis (JS ⇄ jz — same sources as the code panel) ───────────
 const codeEl = document.getElementById("code");
-let songFn = null, songName = "";
+let songName = "", lastSynthMs = 0;
 const buildSong = (i) => {
   const s = songs[i];
-  songFn = new Function("TAU", "return " + s.src)(TAU);
   songName = s.name;
   codeEl.innerHTML = `<span class="ttl">// floatbeat · ${s.name}</span>\n` +
-    s.src.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    songDisplaySrc(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 };
+
+let beatCache = { kind: "", ix: -1, fill: null };
+const beatUrl = (ix) => new URL(`./beats/${songSlug(songs[ix])}.wasm`, document.baseURI).href;
+const makeBeatFill = async (kind, ix) => {
+  const song = songs[ix];
+  if (kind === "js") {
+    const beat = new Function("t", `return (${songBeatSrc(song)})(t)`);
+    return (ch, len, sr) => { for (let i = 0; i < len; i++) ch[i] = beat(i / sr); };
+  }
+  const { exports, memory } = instantiate(
+    new Uint8Array(await (await fetch(beatUrl(ix))).arrayBuffer())
+  );
+  return (ch, len, sr) => {
+    const out = memory.Float64Array(new Float64Array(len));
+    exports.fill(out, len, sr);
+    const samples = memory.read(out);
+    for (let i = 0; i < len; i++) ch[i] = samples[i];
+  };
+};
+const beatFill = async (kind, ix, ch, len, sr) => {
+  if (beatCache.kind !== kind || beatCache.ix !== ix)
+    beatCache = { kind, ix, fill: await makeBeatFill(kind, ix) };
+  beatCache.fill(ch, len, sr);
+};
+
 let songIx = 0;
 buildSong(songIx);
 
@@ -270,7 +234,11 @@ window.addEventListener("resize", () => { fit(); fitSpec(); });
 
 // ── engine + render loop ─────────────────────────────────────────────────────
 let audio, startT = 0, running = false;
-const ui = hud({ kind: "jz", note: "same source · JS module ⇄ 9 KB wasm", onSwitch: start });
+const ui = hud({
+  kind: "jz",
+  note: "floatbeat + rfft · same source · JS ⇄ jz",
+  onSwitch: (kind) => { rebuildBuffer(kind).then(() => start(kind)); },
+});
 
 let gen = 0;
 async function start(kind) {
@@ -404,10 +372,12 @@ function waveCol(samp, cursor, x, h) {
 }
 
 // ── shuffle: swap to a different random tune, rebuild buffer, keep playing ─────
-function rebuildBuffer() {
+async function rebuildBuffer(kind = ui.kind) {
   const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 8);
   const buf = ctx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) ch[i] = songFn(i / sr);
+  const t0 = performance.now();
+  await beatFill(kind, songIx, ch, len, sr);
+  lastSynthMs = performance.now() - t0;
   const fade = Math.round(sr * 0.006);                     // 6 ms raised-cosine taper hides the loop seam
   for (let i = 0; i < fade; i++) {
     const g = 0.5 - 0.5 * Math.cos(Math.PI * i / fade);    // 0 → 1
@@ -423,9 +393,10 @@ function shuffle() {
   if (!running) return;
   songIx = (songIx + 1 + (Math.random() * (songs.length - 1) | 0)) % songs.length;
   buildSong(songIx);
-  rebuildBuffer();
-  if (paused) { paused = false; audio.ctx.resume(); overlay(false); }  // a shuffle resumes
-  start(ui.kind);                      // re-capture the new buffer in the render loop
+  rebuildBuffer(ui.kind).then(() => {
+    if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
+    start(ui.kind);
+  });
 }
 document.getElementById("shuffle").addEventListener("click", shuffle);
 
@@ -451,9 +422,10 @@ playEl.addEventListener("click", (e) => {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audio = { ctx, sampleRate: ctx.sampleRate };
   SR = ctx.sampleRate; buildRows(); drawAxis(); fitBars();   // real device rate → exact Hz everywhere
-  rebuildBuffer();
-  overlay(false);
-  start(ui.kind);
+  rebuildBuffer(ui.kind).then(() => {
+    overlay(false);
+    start(ui.kind);
+  });
 });
 document.getElementById("sgwrap").addEventListener("click", (e) => {
   if (!running || playEl.contains(e.target)) return;   // overlay handles its own clicks
