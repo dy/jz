@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, toNumF64, allocPtr, temp } from '../src/ir.js'
-import { emit } from './emit.js'
+import { emit } from '../src/stdlib-emit.js'
 import { inc, PTR } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
 
