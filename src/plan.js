@@ -26,7 +26,8 @@
 
 import { ctx, warn } from './ctx.js'
 import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
+import { T, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
+import { VAL, updateGlobalRep } from './reps.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'

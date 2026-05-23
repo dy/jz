@@ -9,7 +9,8 @@
 
 import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/stdlib-emit.js'
-import { VAL, lookupValType, repOf } from '../src/analyze.js'
+import { valTypeOf } from '../src/analyze.js'
+import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */

@@ -14,7 +14,8 @@
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
 import { emit, emitBoolStr } from '../src/stdlib-emit.js'
-import { valTypeOf, VAL } from '../src/analyze.js'
+import { valTypeOf } from '../src/analyze.js'
+import { VAL } from '../src/reps.js'
 import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
 

@@ -15,7 +15,7 @@
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit } from '../src/stdlib-emit.js'
 import { emitter } from '../src/ctx.js'
-import { repOf } from '../src/analyze.js'
+import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
   // Direct stdlib→stdlib call edges. resolveIncludes() expands these transitively,

@@ -25,7 +25,8 @@
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
 import { emit } from '../src/stdlib-emit.js'
-import { valTypeOf, VAL, exprType } from '../src/analyze.js'
+import { valTypeOf, exprType } from '../src/analyze.js'
+import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const addImportOnce = (ctx, mod, name, fn) => {
