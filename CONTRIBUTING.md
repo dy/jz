@@ -12,8 +12,8 @@ node bench/bench.mjs  # run benchmarks
 ## Code layout
 
 ```
+jzify/         opt-in JS→JZ desugar (index.js, op-policy.js) — root, not src/
 src/
-  jzify/       opt-in JS→JZ desugar (index.js, op-policy.js)
   abi/         NaN-box ABI helpers (string, array, object, number)
   # shared leaves — short paths, imported across stages:
   ast.js static.js kind.js type.js param-reps.js
@@ -26,7 +26,9 @@ src/
 module/        stdlib
 ```
 
-**Folder policy:** one folder per pipeline *family*, not per file. Shared cycle-free leaves stay at `src/` root so `module/` imports stay short. Add a folder when a family has multiple files or is clearly separable (like `jzify/`). Avoid deep nesting — file count should reflect concepts, not stages × sub-pass.
+**Folder policy:** one folder per pipeline *family*, not per file. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
+
+**Stdlib registration:** use `wat(name, body)` for WAT bodies and `reg(name, deps, fn)` for emit handlers. Co-locate with `reg(name, { deps, wat, emit })` when they pair. Do not assign `ctx.core.stdlib[…]` / `ctx.core.emit[…]` directly in new code.
 
 **Suggested future folders** (optional, no rush): `wat/` (assemble, codegen, watopt), `compile/` (middle pipeline if it grows further). Not worth moving until you're editing that family often.
 

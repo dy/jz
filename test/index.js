@@ -37,6 +37,7 @@ const TESTS = [
   'perf',
   'timers',
   'semantic-invariants',
+  'layout-invariants',
   'differential',
   'parser-bugs',
   'jsstring',

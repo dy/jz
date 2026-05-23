@@ -15,6 +15,7 @@
     "wasi.js",
     "interop.js",
     "layout.js",
+    "jzify",
     "src",
     "module",
     "README.md"
