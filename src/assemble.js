@@ -33,7 +33,8 @@ const parseTemplate = (str) => {
   if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
   return cloneTemplate(tmpl)
 }
-import { T, VAL, analyzeValTypes } from './analyze.js'
+import { T, analyzeValTypes } from './analyze.js'
+import { VAL } from './reps.js'
 import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from './optimize.js'
 import { emit } from './emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from './ir.js'
