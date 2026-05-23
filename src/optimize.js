@@ -1177,6 +1177,186 @@ export function csePureExpr(fn) {
 }
 
 /**
+ * Post-watr nested CSE for hot fill loops (loop + trig). Reuses `$__pe` locals from
+ * the pre-watr leaf pass. Deferred to `__phase === 'post'` so watr's typed-array
+ * inlining is not confused by pre-watr IR rewrites (test/mem.js).
+ */
+export function csePureExprLoop(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  let hasLoop = false
+  let hasTrigCall = false
+  const scanShape = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'loop') hasLoop = true
+    if (n[0] === 'call' && (n[1] === '$math.sin' || n[1] === '$math.cos'
+        || n[1] === '$math.sin_core' || n[1] === '$math.cos_core')) hasTrigCall = true
+    for (let i = 1; i < n.length; i++) scanShape(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) scanShape(fn[i])
+  if (!hasLoop || !hasTrigCall) return
+
+  let snapId = 0
+  for (const n of fn) {
+    if (!Array.isArray(n) || n[0] !== 'local' || typeof n[1] !== 'string') continue
+    const m = /^\$__pe(\d+)$/.exec(n[1])
+    if (m) { const k = +m[1]; if (k >= snapId) snapId = k + 1 }
+  }
+  const newLocals = []
+
+  const refcount = new Map()
+  const countRefs = (node) => {
+    if (!Array.isArray(node)) return
+    const n = (refcount.get(node) || 0) + 1
+    refcount.set(node, n)
+    if (n > 1) return
+    for (let i = 0; i < node.length; i++) countRefs(node[i])
+  }
+  countRefs(fn)
+  const canMutateSite = (parent, node) =>
+    (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1
+
+  const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
+  const PURE_F64_BIN = new Set(['f64.mul', 'f64.add', 'f64.sub', 'f64.div'])
+  const PURE_F64_UNARY = new Set(['f64.neg', 'f64.abs', 'f64.convert_i32_s', 'f64.convert_i32_u'])
+  const PURE_I32_BIN = new Set(['i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor'])
+  const PURE_I32_UNARY = new Set(['i32.eqz', 'i32.clz', 'i32.ctz', 'i32.popcnt'])
+  const OP_TYPE = {
+    'f64.mul': 'f64', 'f64.add': 'f64', 'f64.sub': 'f64', 'f64.div': 'f64', 'f64.neg': 'f64', 'f64.abs': 'f64',
+    'f64.convert_i32_s': 'f64', 'f64.convert_i32_u': 'f64',
+    'i32.mul': 'i32', 'i32.add': 'i32', 'i32.sub': 'i32', 'i32.shl': 'i32', 'i32.shr_u': 'i32', 'i32.shr_s': 'i32',
+    'i32.and': 'i32', 'i32.or': 'i32', 'i32.xor': 'i32', 'i32.eqz': 'i32',
+  }
+
+  const table = new Map()
+  const keyLocals = new Set()
+
+  const invalidateLocal = (X) => {
+    for (const [key, entry] of table) {
+      if (entry.locals.has(X)) table.delete(key)
+    }
+  }
+
+  const pureKeyI32 = (n) => {
+    if (!Array.isArray(n)) return null
+    const op = n[0]
+    if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
+    if (op === 'global.get' && typeof n[1] === 'string') return `G:${n[1]}`
+    if (op === 'i32.const' || op === 'i64.const') return `C:${op}:${n[1]}`
+    if (PURE_I32_UNARY.has(op) && n.length === 2) {
+      const k = pureKeyI32(n[1]); return k ? `${op}|${k}` : null
+    }
+    if (PURE_I32_BIN.has(op) && n.length === 3) {
+      const ka = pureKeyI32(n[1]), kb = pureKeyI32(n[2])
+      if (!ka || !kb) return null
+      return COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
+    }
+    if (op === 'i32.wrap_i64' && n.length === 2) {
+      const k = pureKeyI32(n[1]); return k ? `wrap|${k}` : null
+    }
+    return null
+  }
+
+  const pureKeyF64 = (n) => {
+    if (!Array.isArray(n)) return null
+    const op = n[0]
+    if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
+    if (op === 'global.get' && typeof n[1] === 'string') return `G:${n[1]}`
+    if (op === 'f64.const' || op === 'f32.const') return `C:${op}:${n[1]}`
+    if (PURE_F64_UNARY.has(op) && n.length === 2) {
+      if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') {
+        const k = pureKeyI32(n[1]); return k ? `${op}|${k}` : null
+      }
+      const k = pureKeyF64(n[1]); return k ? `${op}|${k}` : null
+    }
+    if (PURE_F64_BIN.has(op) && n.length === 3) {
+      const ka = pureKeyF64(n[1]), kb = pureKeyF64(n[2])
+      if (!ka || !kb) return null
+      return COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
+    }
+    if (op === 'call' && n[1] === '$__to_num' && n.length === 3) {
+      const a = n[2]
+      if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) {
+        const k = pureKeyF64(a[1]); return k ? `tonum|${k}` : null
+      }
+    }
+    return null
+  }
+
+  const tryCse = (node, parent, idx) => {
+    const op = node[0]
+    if (op === 'local.get' || op === 'global.get' || op === 'f64.const' || op === 'f32.const') return
+    if (!canMutateSite(parent, node)) return
+    keyLocals.clear()
+    const key = pureKeyF64(node)
+    if (!key) return
+    const locals = new Set(keyLocals)
+    const entry = table.get(key)
+    if (entry) {
+      if (!entry.snapName) {
+        if ((refcount.get(entry.anchorParent) || 0) > 1) return
+        const snapName = `$__pe${snapId++}`
+        entry.snapName = snapName
+        newLocals.push(['local', snapName, OP_TYPE[node[0]] || 'f64'])
+        const orig = entry.anchorParent[entry.anchorIdx]
+        entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
+      }
+      parent[idx] = ['local.get', entry.snapName]
+    } else {
+      table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals })
+    }
+  }
+
+  const walk = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    if (op === 'loop') {
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'if') {
+      table.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'then' || op === 'else') {
+      table.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      return
+    }
+
+    if (op === 'local.set' || op === 'local.tee') {
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      const X = node[1]
+      if (typeof X === 'string') invalidateLocal(X)
+      return
+    }
+
+    for (let i = 1; i < node.length; i++) {
+      if (Array.isArray(node[i])) walk(node[i], node, i)
+    }
+    tryCse(node, parent, idx)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
  * Drop redundant zero-initialisation of fresh function-scope locals.
  *
  * WASM zero-initialises every local on entry (0 / 0.0 / null). jz lowers source
@@ -1944,7 +2124,10 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals) {
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
-  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
+  if (!cfg || cfg.csePureExpr !== false) {
+    if (cfg && cfg.watr === true && cfg.__phase === 'post') csePureExprLoop(fn)
+    else csePureExpr(fn)
+  }
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals)
