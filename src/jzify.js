@@ -19,6 +19,7 @@
 
 import { warn } from './ctx.js'
 import { handlerArgs } from './ast.js'
+import { STMT_OPS } from './analyze.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
 
@@ -390,11 +391,7 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
 // Block-shape ops used to detect "this `{}` is a block body, not an object literal".
-// Mirrors analyze.STMT_OPS — kept inline so jzify stays self-contained.
-const JZ_BLOCK_OPS = new Set([';', 'let', 'const', 'var', 'return', 'if', 'for', 'for-in', 'for-of',
-  'while', 'do', 'break', 'continue', 'switch', 'throw', 'try', 'catch', 'finally',
-  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
-  '++', '--', '()', 'function', 'class', 'import', 'export', 'label'])
+const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'for-of', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
 const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
 
 /** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape

@@ -32,6 +32,9 @@ import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
 
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
+
+// === Loop unrolling & scalarization ===
+
 // Fixed-size typed arrays eligible for scalar replacement, mapped to the element
 // store-coercion kind ('' = none, i.e. Float64Array's f64-identity). Excluded:
 //   Float32Array      — store coercion is `Math.fround`, needs the `math` module pulled at plan time

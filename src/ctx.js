@@ -8,6 +8,7 @@
  */
 
 import { makeAbi } from './abi/index.js'
+export { HEAP } from '../heap.js'
 
 // === Carrier layout ===
 // i64 carrier holds either:

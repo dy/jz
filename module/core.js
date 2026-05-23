@@ -13,7 +13,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, pt
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf, inlineArraySid } from '../src/analyze.js'
-import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
 
@@ -167,23 +167,23 @@ export default (ctx) => {
 
   // Heap-base watermark: gates header-backed propsPtr fast paths so static-data
   // OBJECT slots (offsets < heap base) don't misread arbitrary memory at off-16.
-  // Updated by optimizeModule() when data segment exceeds 1024 bytes.
-  ctx.scope.globals.set('__heap_start', '(global $__heap_start (mut i32) (i32.const 1024))')
+  // Updated by optimizeModule() when data segment exceeds HEAP.START bytes.
+  ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${HEAP.START}))`)
 
-  // Shared memory keeps the heap pointer in linear memory (memory[1020]):
+  // Shared memory keeps the heap pointer in linear memory (memory[HEAP.PTR_ADDR]):
   // wasm globals are per-instance, so threads sharing one memory must share one
   // pointer cell. Non-shared memory (incl. alloc:false) uses the `$__heap`
   // global — exported so the JS-side adapter (memory.String etc) bumps the same
   // pointer. Storing it in memory would collide with the static data section
-  // whenever the data exceeds 1020 bytes.
+  // whenever the data exceeds HEAP.PTR_ADDR bytes.
   if (ctx.memory.shared) {
-    // Heap offset stored at memory[1020] (i32), just before heap start at 1024.
+    // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at HEAP.START.
     // We still want to grow memory when running out of pages — without growth a
     // host-run binary traps on the first allocation that exceeds the initial
     // 64 KB. Use the same geometric-growth strategy as the owned-memory variant.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32) (local $cur i32) (local $need i32)
-      (local.set $ptr (i32.load (i32.const 1020)))
+      (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
       (local.set $cur (i32.shl (memory.size) (i32.const 16)))
       (if (i32.gt_u (local.get $next) (local.get $cur))
@@ -194,14 +194,14 @@ export default (ctx) => {
             (then (if (i32.eq (memory.grow
               (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
               (i32.const -1)) (then (unreachable)))))))
-      (i32.store (i32.const 1020) (local.get $next))
+      (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
-      (i32.store (i32.const 1020) (i32.const 1024)))`
+      (i32.store (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
   } else {
     // Own memory: heap offset in a global, auto-grow when needed. Exported so
     // the JS-side adapter (alloc:false, no `_alloc` export) shares the pointer.
-    ctx.scope.globals.set('__heap', '(global $__heap (export "__heap") (mut i32) (i32.const 1024))')
+    ctx.scope.globals.set('__heap', `(global $__heap (export "__heap") (mut i32) (i32.const ${HEAP.START}))`)
     // Bump allocator with geometric growth. Growing one page at a time turns a
     // long-running embedding (e.g. watr called thousands of times) into O(n²) —
     // each memory.grow may relocate and copy the whole heap. So when we must
@@ -224,7 +224,7 @@ export default (ctx) => {
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
-      (global.set $__heap (i32.const 1024)))`
+      (global.set $__heap (i32.const ${HEAP.START})))`
   }
 
   // === Memory-based length/cap helpers (C-style headers) ===

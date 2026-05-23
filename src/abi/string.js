@@ -62,30 +62,7 @@ const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 // inline paths read these constants at *call* time (compile-time, after ctx is
 // fully initialized) — never at module top level — so this is safe.
 import { LAYOUT } from '../ctx.js'
-
-// Local copy of analyze.js#isReassigned — pulling the real one creates a load-
-// order cycle (abi/string ← ctx ← analyze ← ir ← ctx). Kept minimal: detects
-// any `=`/compound-assign/`++`/`--` of `name` anywhere in `body`. `let`/`const`
-// declarations are NOT reassignments (the param can't be redeclared anyway,
-// but a shadowing inner `let s = ...` shouldn't poison the outer param's
-// fast path). False positives are conservative — we just disable the fast
-// path and fall through to shape 2.
-const _CC_ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
-const _paramReassigned = (body, name) => {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (_CC_ASSIGN_OPS.has(op) && body[1] === name) return true
-  if ((op === '++' || op === '--') && body[1] === name) return true
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (Array.isArray(d) && d[0] === '=' && d[2] != null && _paramReassigned(d[2], name)) return true
-    }
-    return false
-  }
-  for (let i = 1; i < body.length; i++) if (_paramReassigned(body[i], name)) return true
-  return false
-}
+import { isReassigned } from '../ast.js'
 
 /** Pre-shifted SSO discriminator (bit 46 of the i64 ptr). Computed lazily on
  *  first read since LAYOUT is undefined when this module's top level runs.
@@ -273,7 +250,7 @@ export const sso = {
         // to actually be `f64` (i64.reinterpret_f64 below would fail
         // validation otherwise — narrowed-to-int params have type 'i32').
         if (param && param.type === 'f64' && param.ptrKind == null
-            && !isBoxed && ctx.func.body && !_paramReassigned(ctx.func.body, name)) {
+            && !isBoxed && ctx.func.body && !isReassigned(ctx.func.body, name)) {
           if (!ctx.func.charDecomp) ctx.func.charDecomp = new Map()
           let dec = ctx.func.charDecomp.get(name)
           if (!dec) {
