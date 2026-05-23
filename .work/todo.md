@@ -255,20 +255,14 @@ form-normalization remnants — all already *correct*, only IR-tightness is at s
 
 * [x] **Warn channel.** `ctx.warn` + `opts.warnings` sink + CLI print (mirrors `opts.profile`).
 * [x] **no-auto-reclaim leak heuristic.** `adviseHeapGrowth` in `plan()` — heap-return /
-  heap-loop / heap-per-call when bump allocator can't rewind (see `test/warnings.js`).
-* [ ] **untagged errors (`e instanceof TypeError`).** Structural fix = type tags on
-  thrown values = Error machinery = the weight jz dropped. Warn, or offer opt-in tagging.
-  (README "errors are untagged".)
-* [ ] **Set/Map slot-order iteration.** Already a documented trade (Deferred ›
-  "Insertion-order Set/Map", `test262-builtins.js` xfail). Warn only if iteration order
-  is observably relied upon.
-* [ ] **perf-feedback advisories (LLVM-style "why it didn't vectorize").** Surface bail
-  reasons the passes already compute: `no-param-reassign` → "reassigning `s` disabled the
-  zero-copy externref carrier"; vectorizer bail → "loop-carried scalar `s` / AoS stride —
-  split into one typed array per field"; arena-rewind bail → "returns a heap value,
-  per-call rewind skipped". Where the structural improvement is cheap (split a reassigned
-  string param into a fresh local so the carrier still applies past its last zero-copy
-  use), do that instead of warning. Owner: `src/vectorize.js`, `src/narrow.js`.
+  heap-loop / arena-rewind-skipped when bump allocator can't rewind (see `test/warnings.js`).
+* [x] **untagged errors (`e instanceof TypeError`).** `jzify` warns on `instanceof` against
+  Error constructor names — jz errors are untagged; inspect message/value instead.
+* [x] **Set/Map slot-order iteration.** `adviseSetMapIterationOrder` — for-in/for-of,
+  `.keys`/`.values`/`.entries`/spread/`JSON.stringify` on Set/Map bindings.
+* [x] **perf-feedback advisories.** `adviseJsstringCarrier` (externref carrier declined),
+  `adviseSimdLoops` (loop-carried scalar, AoS stride). Further vectorizer bails can
+  hook the same pass as reasons are surfaced.
 
 **Skip — already enforced by the subset.** `no-var` / `eqeqeq` / `no-undef` / `no-with` /
 `no-eval` are rejected at the subset boundary (`src/prepare.js:615`, `:1047`); borrow only

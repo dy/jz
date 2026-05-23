@@ -7,7 +7,7 @@
  * function `sig` records change.
  */
 
-import { ctx } from './ctx.js'
+import { ctx, warn } from './ctx.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
   VAL,
@@ -828,35 +828,37 @@ const JSS_OK_PROPS = new Set(['length', 'charCodeAt'])
  * `.charCodeAt` whose callee node lives in `safeCC` (provably bounded).
  * Reassignment / `++` / `--` / closure capture all reject conservatively.
  *
- * Returns `{ ok, stringDiscriminating }` — `stringDiscriminating` is true iff
- * we saw at least one string-only use (`.charCodeAt`); the caller uses this
- * to gate on whether the body actually proves the param is a string, since
- * `.length` alone is polymorphic across string/array/typed-array.
+ * Returns `{ ok, stringDiscriminating, reason? }` — `stringDiscriminating` is
+ * true iff we saw at least one string-only use (`.charCodeAt`); `reason` names
+ * the first blocking use when `ok` is false.
  */
 function paramAllUsesJsstringMappable(body, name, safeCC) {
-  if (body == null) return { ok: false, stringDiscriminating: false }
+  if (body == null) return { ok: false, stringDiscriminating: false, reason: null }
   let ok = true
   let stringDiscriminating = false
+  let reason = null
+  const fail = (msg) => { ok = false; reason ||= msg }
+  const refsParam = (node) => {
+    if (node === name) return true
+    if (!Array.isArray(node)) return false
+    for (let i = 1; i < node.length; i++) if (refsParam(node[i])) return true
+    return false
+  }
   const walk = (node) => {
     if (!ok) return
     if (typeof node === 'string') {
-      // A bare reference to the param outside an eligible `[., name, prop]`
-      // callee slot is a fallback trigger — the param escaped to a non-
-      // mappable use.
-      if (node === name) ok = false
+      if (node === name) fail('bare use of the string param disables the zero-copy externref boundary carrier')
       return
     }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') {
-      // Nested arrow may shadow `name` with its own param; if it doesn't, any
-      // capture of the outer `name` is an escape we can't track — reject.
       const params = node[1]
       const shadowed = Array.isArray(params)
         ? params.some(p => (typeof p === 'string' && p === name) ||
                            (Array.isArray(p) && p[1] === name))
         : params === name
-      if (!shadowed) ok = false
+      if (!shadowed) fail('closure capture of the string param disables the zero-copy externref boundary carrier')
       return
     }
     if ((op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' ||
@@ -864,26 +866,23 @@ function paramAllUsesJsstringMappable(body, name, safeCC) {
          op === '>>=' || op === '<<=' || op === '>>>=' ||
          op === '||=' || op === '&&=' || op === '??=' ||
          op === '++' || op === '--') && node[1] === name) {
-      ok = false
+      fail('reassigning the string param disables the zero-copy externref boundary carrier')
+      return
+    }
+    if (op === '+' && node.slice(1).some(arg => refsParam(arg))) {
+      fail('string concatenation on the param disables the zero-copy externref boundary carrier')
       return
     }
     if (op === '.' && node[1] === name && JSS_OK_PROPS.has(node[2])) {
-      // .length is always safe but polymorphic across string/array/typed.
-      // .charCodeAt is only safe when the loop-bounds analysis proves the
-      // index in-bounds (this dotted callee node is exactly the one collected
-      // by scanBoundedLoops) — but it IS string-discriminating.
       if (node[2] === 'length') return
       if (safeCC.has(node)) { stringDiscriminating = true; return }
-      ok = false
+      fail(`\`.${node[2]}\` on the string param disables the zero-copy externref boundary carrier`)
       return
     }
-    // For `['()', callee, ...args]` with callee = ['.', name, 'charCodeAt'],
-    // `name` is in the callee receiver slot (validated by the branch above).
-    // The `.length` case is just a member read — no `()` wrapping.
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
-  return { ok, stringDiscriminating }
+  return { ok, stringDiscriminating, reason }
 }
 
 function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
@@ -922,6 +921,42 @@ function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
       // Record the literal default so compile.js can omit wasm-side substitution
       // (the JS-side interop wrapper applies the default on `undefined`).
       if (hasStringDefault) p.jsstringDefault = defVal[1]
+    }
+  }
+}
+
+/** Soft warnings when a string param could use the externref carrier but doesn't. */
+export function adviseJsstringCarrier(paramReps, valueUsed) {
+  if (!ctx.warnings || !jsstringEnabled()) return
+
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.exported || !func.body || func.rest) continue
+    if (valueUsed?.has(func.name)) continue
+
+    const safeCC = new Set()
+    scanBoundedLoops(func.body, safeCC)
+    const reps = paramReps?.get(func.name)
+
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const p = func.sig.params[k]
+      if (p.jsstring) continue
+      if (p.type !== 'f64' || p.ptrKind != null) continue
+
+      const defVal = func.defaults?.[p.name]
+      if (defVal != null && !isLiteralStr(defVal)) continue
+
+      const r = reps?.get(k)
+      if (r && r.val != null && r.val !== VAL.STRING) continue
+
+      const hasStringDefault = defVal != null && isLiteralStr(defVal)
+      const { ok: usesOk, stringDiscriminating, reason } =
+        paramAllUsesJsstringMappable(func.body, p.name, safeCC)
+      const isCandidate = stringDiscriminating || r?.val === VAL.STRING || hasStringDefault
+      if (!isCandidate || usesOk) continue
+
+      warn('jsstring-declined',
+        `export '${func.name}' param '${p.name}': ${reason || 'string param uses disable the zero-copy externref boundary carrier'}`,
+        { fn: func.name, loc: func.body.loc })
     }
   }
 }
