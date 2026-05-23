@@ -1241,20 +1241,25 @@ export default (ctx) => {
   ctx.core.emit['.replace']    = method('__str_replace',    'III')
   ctx.core.emit['.replaceAll'] = method('__str_replaceall', 'III')
 
-  ctx.core.emit['.toUpperCase'] = (str) => {
+  const caseMethod = (lo, hi, delta) => (str) => {
     inc('__str_case')
-    return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', 97], ['i32.const', 122], ['i32.const', -32]], 'f64')
+    return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', lo], ['i32.const', hi], ['i32.const', delta]], 'f64')
   }
-
-  ctx.core.emit['.toLowerCase'] = (str) => {
-    inc('__str_case')
-    return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', 65], ['i32.const', 90], ['i32.const', 32]], 'f64')
-  }
+  ctx.core.emit['.toUpperCase'] = caseMethod(97, 122, -32)
+  ctx.core.emit['.toLowerCase'] = caseMethod(65, 90, 32)
 
   // Locale-specific casing needs ICU/CLDR data. jz intentionally has no
   // runtime, so this follows the existing ASCII-only lowercase helper and
   // ignores optional locale arguments.
   ctx.core.emit['.toLocaleLowerCase'] = ctx.core.emit['.toLowerCase']
+
+  const padMethod = (start) => (str, len, pad) => {
+    inc('__str_pad')
+    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, 32)]
+    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', start]], 'f64')
+  }
+  ctx.core.emit['.padStart'] = padMethod(1)
+  ctx.core.emit['.padEnd'] = padMethod(0)
 
   // Byte-wise variant of String.prototype.localeCompare. Returns -1/0/1 from
   // an unsigned byte-by-byte compare with shorter-string-sorts-first tiebreak.
@@ -1311,18 +1316,6 @@ export default (ctx) => {
       ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)],
       ['else', ['block', ['result', 'f64'], ...alloc]]])
     return typed(['block', ['result', 'f64'], ...ir], 'f64')
-  }
-
-  ctx.core.emit['.padStart'] = (str, len, pad) => {
-    inc('__str_pad')
-    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, 32)]
-    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
-  }
-
-  ctx.core.emit['.padEnd'] = (str, len, pad) => {
-    inc('__str_pad')
-    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, 32)]
-    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
   }
 
   // .charAt(i) → 1-char string from char code at index i

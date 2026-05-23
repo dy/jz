@@ -46,6 +46,8 @@ export const OP_MODULES = {
   '**': ['math'],
 }
 
+export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
+
 export const CALL_MODULES = dict({
   ArrayBuffer: ['core', 'typedarray'],
   DataView: ['core', 'typedarray'],
@@ -84,14 +86,7 @@ export const CALL_MODULES = dict({
   'String.fromCodePoint': ['core', 'string'],
   'BigInt.asIntN': ['number'],
   'BigInt.asUintN': ['number'],
-  'Float64Array.from': ['core', 'typedarray', 'array'],
-  'Float32Array.from': ['core', 'typedarray', 'array'],
-  'Int32Array.from': ['core', 'typedarray', 'array'],
-  'Uint32Array.from': ['core', 'typedarray', 'array'],
-  'Int16Array.from': ['core', 'typedarray', 'array'],
-  'Uint16Array.from': ['core', 'typedarray', 'array'],
-  'Int8Array.from': ['core', 'typedarray', 'array'],
-  'Uint8Array.from': ['core', 'typedarray', 'array'],
+  ...Object.fromEntries(TYPED_CTORS.filter(n => n.endsWith('Array')).map(n => [`${n}.from`, ['core', 'typedarray', 'array']])),
   'ArrayBuffer.isView': ['core', 'typedarray'],
   // instanceof Map / Set / TypedArray predicates (synthesized by jzify).
   '__is_map': ['core', 'collection'],
@@ -108,7 +103,6 @@ export const GENERIC_METHOD_MODULES = dict({
 })
 
 export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','Date']
-export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 export const COLLECTION_CTORS = ['Set', 'Map']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 

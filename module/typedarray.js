@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, emitIndex } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, TYPED_ELEM_NAMES } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 
@@ -1213,7 +1213,7 @@ export default (ctx) => {
   // ABI width at 2 to spare a slot across the whole program). Reduce passes
   // (acc, item). Closure invocation goes through `ctx.closure.call` directly.
   // The element-type-name list is needed by allocPtr for typedAux:
-  const ET_NAME = ['Int8Array','Uint8Array','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array']
+  const ET_NAME = TYPED_ELEM_NAMES
 
   // .forEach: callback (item, idx). Result is 0 to match array.js's
   // convention (spec says undefined; both modules pick 0 since f() exposes the

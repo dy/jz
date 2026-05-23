@@ -1099,59 +1099,51 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
-  // .some(fn) → return 1 if any element passes, else 0 (early exit)
-  ctx.core.emit['.some'] = (arr, fn) => {
+  // Early-exit callback iterator: init value, exit test, value on match.
+  const earlyExitMethod = ({ tag, init, test, onMatch }) => (arr, fn) => {
     const recv = hoistArrayValue(arr)
-    const r = temp('sr')
+    const r = temp(tag)
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
-        ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
+      ['if', test(cb, i, item),
+        ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
-      ['local.set', `$${r}`, ['f64.const', 0]],
+      ['local.set', `$${r}`, init],
       ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
   }
 
-  // .every(fn) → return 1 if all elements pass, else 0 (early exit)
-  ctx.core.emit['.every'] = (arr, fn) => {
-    const recv = hoistArrayValue(arr)
-    const r = temp('ev')
-    const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn, callbackArgReps(arr))
-    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i)]))],
-        ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
-    ])
-    return typed(['block', ['result', 'f64'],
-      recv.setup,
-      cb.setup,
-      ['local.set', `$${r}`, ['f64.const', 1]],
-      ['block', exit, ...loop],
-      ['local.get', `$${r}`]], 'f64')
-  }
+  ctx.core.emit['.some'] = earlyExitMethod({
+    tag: 'sr',
+    init: ['f64.const', 0],
+    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    onMatch: () => ['f64.const', 1],
+  })
 
-  // .findIndex(fn) → return index of first matching element, or -1 (early exit)
-  ctx.core.emit['.findIndex'] = (arr, fn) => {
-    const recv = hoistArrayValue(arr)
-    const r = temp('fi')
-    const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn, callbackArgReps(arr))
-    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
-        ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
-    ])
-    return typed(['block', ['result', 'f64'],
-      recv.setup,
-      cb.setup,
-      ['local.set', `$${r}`, ['f64.const', -1]],
-      ['block', exit, ...loop],
-      ['local.get', `$${r}`]], 'f64')
-  }
+  ctx.core.emit['.every'] = earlyExitMethod({
+    tag: 'ev',
+    init: ['f64.const', 1],
+    test: (cb, i, item) => ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i)]))],
+    onMatch: () => ['f64.const', 0],
+  })
+
+  ctx.core.emit['.findIndex'] = earlyExitMethod({
+    tag: 'fi',
+    init: ['f64.const', -1],
+    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
+  })
+
+  ctx.core.emit['.find'] = earlyExitMethod({
+    tag: 'ff',
+    init: ['f64.reinterpret_i64', ['i64.const', NULL_NAN]],
+    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    onMatch: (_cb, _i, item) => item,
+  })
 
   // === Array methods ===
 
@@ -1390,23 +1382,6 @@ export default (ctx) => {
       ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i)]))]
     ])
     return typed(['block', ['result', 'f64'], recv.setup, cb.setup, ...loop, ['f64.const', 0]], 'f64')
-  }
-
-  ctx.core.emit['.find'] = (arr, fn) => {
-    const recv = hoistArrayValue(arr)
-    const result = temp('ff')
-    const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn, callbackArgReps(arr))
-    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
-        ['then', ['local.set', `$${result}`, item], ['br', exit]]]
-    ])
-    return typed(['block', ['result', 'f64'],
-      recv.setup,
-      cb.setup,
-      ['local.set', `$${result}`, ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]],
-      ['block', exit, ...loop],
-      ['local.get', `$${result}`]], 'f64')
   }
 
   // .reverse() → in-place swap arr[i] ↔ arr[len-1-i], returns the array.

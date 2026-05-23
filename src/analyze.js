@@ -22,8 +22,11 @@
  * @module analyze
  */
 
+import { commaList } from './ast.js'
 import { ctx, err } from './ctx.js'
 import { isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ir.js'
+
+// === value lattice / static eval ===
 
 export const T = '\uE000'
 
@@ -52,6 +55,29 @@ export function intLiteralValue(expr) {
 
 /** Non-negative integer literal — used for string/typed-array index bounds. */
 export const nonNegIntLiteral = (node) => { const n = intLiteralValue(node); return n != null && n >= 0 ? n : null }
+
+/** Fold compile-time integer expressions (literals, const bindings, + - * <<). */
+export function constIntExpr(node) {
+  let lit = intLiteralValue(node)
+  if (lit == null && typeof node === 'number' && Number.isInteger(node)) lit = node
+  if (lit == null && Array.isArray(node) && node[0] == null && Number.isInteger(node[1])) lit = node[1]
+  if (lit != null) return lit
+  if (typeof node === 'string') return repOf(node)?.intConst ?? ctx.scope.constInts?.get(node) ?? null
+  if (!Array.isArray(node)) return null
+  const op = node[0]
+  if (op === 'u-') {
+    const v = constIntExpr(node[1])
+    return v == null ? null : -v
+  }
+  if (node.length !== 3) return null
+  const a = constIntExpr(node[1]), b = constIntExpr(node[2])
+  if (a == null || b == null) return null
+  if (op === '+') return a + b
+  if (op === '-') return a - b
+  if (op === '*') return a * b
+  if (op === '<<') return a << b
+  return null
+}
 
 /** Collect all `return X` expressions (X != null) from a function body, skipping nested arrow funcs.
  *  Pushes into `out`. Non-returning paths are silently skipped — pair with `alwaysReturns` if total
@@ -438,14 +464,14 @@ export function valTypeOf(expr) {
  *  null if any sub-expression isn't statically known. Handles literals, named
  *  string constants, String()/Number() casts, ternaries, short-circuit ops, and
  *  unary/binary arithmetic and bit ops. */
-const NO_VALUE = Symbol('no-static-property-key')
+export const NO_VALUE = Symbol('no-static-property-key')
 
 export function staticPropertyKey(node) {
   const value = staticValue(node)
   return value === NO_VALUE ? null : String(value)
 }
 
-function staticValue(node) {
+export function staticValue(node) {
   if (node === undefined) return undefined
   if (node === null || typeof node === 'number' || typeof node === 'boolean') return node
   if (typeof node === 'string') return ctx.scope.constStrs?.get(node) ?? NO_VALUE
@@ -528,7 +554,7 @@ export function staticObjectProps(args) {
   return names.length ? { names, values } : null
 }
 
-function staticArrayElems(expr) {
+export function staticArrayElems(expr) {
   if (!Array.isArray(expr)) return null
   if (expr[0] === '[') return expr.slice(1)
   if (expr[0] !== '[]' || expr.length >= 3) return null
@@ -548,7 +574,7 @@ export function objLiteralSchemaId(expr) {
  *  Used for both intra-function arr elem-schema observation and func.arrayElemSchema
  *  return inference. Recognizes: object literals, var names with bound schemaId,
  *  user fn calls with narrowed result schema, ?: / && / || when both branches agree. */
-function exprSchemaId(expr, localSchemaMap) {
+export function exprSchemaId(expr, localSchemaMap) {
   if (typeof expr === 'string') {
     if (localSchemaMap?.has(expr)) return localSchemaMap.get(expr)
     return ctx.schema?.idOf?.(expr) ?? null
@@ -600,8 +626,9 @@ export function typedElemAux(ctor) {
   if (et == null) return null
   return isView ? et | 8 : et
 }
-const _ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
+const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
+export { TYPED_ELEM_NAMES }
 /** Reverse of typedElemAux: pick a canonical ctor string for a 4-bit elem aux. Used
  *  to round-trip TYPED-narrowed call results through ctx.types.typedElem so the
  *  unboxed local's rep picks up the same aux. aux=7 is shared with BigInt typed
@@ -609,7 +636,7 @@ const _ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
 export function ctorFromElemAux(aux) {
   if (aux == null) return null
   const isView = (aux & 8) !== 0
-  const name = (aux & 16) !== 0 ? 'BigInt64Array' : _ELEM_NAMES[aux & 7]
+  const name = (aux & 16) !== 0 ? 'BigInt64Array' : TYPED_ELEM_NAMES[aux & 7]
   if (!name) return null
   return isView ? `new.${name}.view` : `new.${name}`
 }
@@ -617,7 +644,7 @@ export function ctorFromElemAux(aux) {
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
  *  different typed-array ctors — caller should drop any cached entry rather
  *  than leave a stale ctor (which would lock the wrong store width). */
-const MIXED_CTORS = Symbol('MIXED_CTORS')
+export const MIXED_CTORS = Symbol('MIXED_CTORS')
 
 const typedCtorElemValType = (ctor) => {
   if (!ctor) return null
@@ -628,13 +655,13 @@ const typedCtorElemValType = (ctor) => {
 
 /** A `?:`/`&&`/`||` expression — value depends on a condition, so its ctor
  *  must be derived by walking branches (handled by `ternaryCtorOfRhs`). */
-const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&&' || e[0] === '||')
+export const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&&' || e[0] === '||')
 
 /** Walk a `?:`/`&&`/`||` expression and return:
  *  - a single ctor string when every branch resolves to the same ctor,
  *  - MIXED_CTORS when branches resolve to different ctors,
  *  - null when no branch resolves (caller's behavior unchanged). */
-function ternaryCtorOfRhs(rhs) {
+export function ternaryCtorOfRhs(rhs) {
   if (!Array.isArray(rhs)) return null
   const op = rhs[0]
   const lo = op === '?:' ? 2 : (op === '&&' || op === '||') ? 1 : 0
@@ -687,6 +714,629 @@ function ternaryCtorOfRhs(rhs) {
  *
  * Order-independent: uses bucket by name, so a mention before its decl is fine.
  */
+export function jsonConstString(expr) {
+  if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
+  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
+  if (typeof expr === 'string') {
+    return ctx.scope.shapeStrs?.get(expr) ?? ctx.scope.constStrs?.get(expr) ?? null
+  }
+  return null
+}
+
+function jsonShapeStrings(expr) {
+  const single = jsonConstString(expr)
+  if (single != null) return [single]
+  if (Array.isArray(expr) && expr[0] === '[]' && typeof expr[1] === 'string') return ctx.scope.shapeStrArrays?.get(expr[1]) ?? null
+  return null
+}
+
+/** Build a structural shape tree from a parsed JSON value. Each node is
+ *  `{ val, props?, elem? }` — `val` is the inferred VAL kind (matches
+ *  rep.val in localReps entries). Lets `valTypeOf` propagate VAL kinds
+ *  through `.prop` chains and `[i]` reads on bindings sourced from
+ *  `JSON.parse` of a compile-time-known string. Polymorphic arrays drop
+ *  their `elem`. */
+function shapeOfJsonValue(v) {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'number') return { val: VAL.NUMBER }
+  if (typeof v === 'string') return { val: VAL.STRING }
+  if (typeof v === 'boolean') return { val: VAL.NUMBER }
+  if (Array.isArray(v)) {
+    let elem = null
+    for (const x of v) {
+      const s = shapeOfJsonValue(x)
+      if (!s) { elem = null; break }
+      if (!elem) elem = s
+      else if (!shapeUnifies(elem, s)) { elem = null; break }
+    }
+    return { val: VAL.ARRAY, elem }
+  }
+  if (typeof v === 'object') {
+    const props = Object.create(null)
+    const names = Object.keys(v)
+    for (const k of names) {
+      const s = shapeOfJsonValue(v[k])
+      if (s) props[k] = s
+    }
+    return { val: VAL.OBJECT, props, names }
+  }
+  return null
+}
+
+function shapeUnifies(a, b) {
+  if (!a || !b || a.val !== b.val) return false
+  if (a.val === VAL.OBJECT || a.val === VAL.HASH) {
+    const ak = Object.keys(a.props), bk = Object.keys(b.props)
+    if (ak.length !== bk.length) return false
+    for (const k of ak) {
+      if (!b.props[k] || !shapeUnifies(a.props[k], b.props[k])) return false
+    }
+  }
+  if (a.val === VAL.ARRAY) {
+    if ((a.elem == null) !== (b.elem == null)) return false
+    if (a.elem && !shapeUnifies(a.elem, b.elem)) return false
+  }
+  return true
+}
+
+function shapeLayoutUnifies(a, b) {
+  if (!shapeUnifies(a, b)) return false
+  if (a.val === VAL.OBJECT || a.val === VAL.HASH) {
+    if (a.names?.length !== b.names?.length) return false
+    for (let i = 0; i < a.names.length; i++) if (a.names[i] !== b.names[i]) return false
+  }
+  if (a.val === VAL.ARRAY && a.elem) return shapeLayoutUnifies(a.elem, b.elem)
+  return true
+}
+
+function parseJsonShape(src) {
+  if (typeof src !== 'string') return null
+  let parsed
+  try { parsed = JSON.parse(src) } catch { return null }
+  return shapeOfJsonValue(parsed)
+}
+
+function parseUnifiedJsonShape(srcs) {
+  if (!srcs?.length) return null
+  let out = null
+  for (const src of srcs) {
+    const sh = parseJsonShape(src)
+    if (!sh) return null
+    if (!out) out = sh
+    else if (!shapeLayoutUnifies(out, sh)) return null
+  }
+  return out
+}
+
+/** Resolve the json shape for an expression by walking name → rep.jsonShape and
+ *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
+export function shapeOf(expr) {
+  if (typeof expr === 'string')
+    return ctx.func.localReps?.get(expr)?.jsonShape
+        ?? ctx.scope.globalReps?.get(expr)?.jsonShape
+        ?? null
+  if (!Array.isArray(expr)) return null
+  const [op, ...args] = expr
+  if (op === '()' && args[0] === 'JSON.parse') {
+    const srcs = jsonShapeStrings(args[1])
+    if (srcs) return parseUnifiedJsonShape(srcs)
+  }
+  if (op === '.' && typeof args[1] === 'string') {
+    const parent = shapeOf(args[0])
+    if (parent?.val === VAL.OBJECT || parent?.val === VAL.HASH) return parent.props[args[1]] || null
+  }
+  if (op === '[]' && args.length === 2) {
+    const parent = shapeOf(args[0])
+    if (parent?.val === VAL.ARRAY) return parent.elem || null
+  }
+  return null
+}
+
+/** Build a structural shape from a `{}` AST node — recursive for nested
+ *  object/array literals + propagating shapes through identifier references
+ *  (so `let G = {…}; let H = {x: G}` carries G's shape under H.x). Returns
+ *  null when any property breaks the static-shape contract (computed key,
+ *  spread, non-shape value). Only called from `recordGlobalRep` — local
+ *  bindings keep relying on `shapeOf` whose narrower contract (JSON.parse /
+ *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
+ *  locking a static jsonShape onto it. */
+export function shapeOfObjectLiteralAst(expr) {
+  if (typeof expr === 'string') return shapeOf(expr)
+  if (!Array.isArray(expr) || expr[0] !== '{}') return shapeOf(expr)
+  const raw = expr.length === 2 && Array.isArray(expr[1]) && expr[1][0] === ','
+    ? expr[1].slice(1)
+    : expr.slice(1)
+  const props = Object.create(null)
+  const names = []
+  for (const p of raw) {
+    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    names.push(p[1])
+    const child = shapeOfObjectLiteralAst(p[2])
+    if (child) props[p[1]] = child
+  }
+  return names.length ? { val: VAL.OBJECT, props, names } : null
+}
+
+
+
+// === param helpers / AST predicates ===
+
+// === Param / closure helpers ===
+
+export function extractParams(rawParams) {
+  let p = rawParams
+  if (Array.isArray(p) && p[0] === '()') p = p[1]
+  return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+}
+
+export function classifyParam(r) {
+  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
+  if (Array.isArray(r) && r[0] === '=') {
+    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
+    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
+  }
+  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
+  return { kind: 'plain', name: r }
+}
+
+export function collectParamNames(raw, out = new Set()) {
+  for (const r of raw) {
+    if (typeof r === 'string') out.add(r)
+    else if (Array.isArray(r)) {
+      if (r[0] === '=' && typeof r[1] === 'string') out.add(r[1])
+      else if (r[0] === '...' && typeof r[1] === 'string') out.add(r[1])
+      else if (r[0] === '=' && Array.isArray(r[1])) collectParamNames([r[1]], out)
+      else if (r[0] === '[]' || r[0] === '{}' || r[0] === ',') collectParamNames(r.slice(1), out)
+    }
+  }
+  return out
+}
+
+/** Observe shared AST facts on a single node (dyn, schema, arity).
+ *  Mutates `f`: { anyDyn, dynVars:Set, hasSchemaLiterals, maxDef, maxCall, hasRest, hasSpread }.
+ *  Used by both prepare.js walk and analyze.js walkFacts. */
+export function observeNodeFacts(node, f) {
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '[]') {
+    const [obj, idx] = args
+    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
+  } else if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
+    const [, obj, idx] = args[0]
+    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
+  } else if (op === 'for-in') {
+    f.anyDyn = true
+    if (typeof args[1] === 'string') f.dynVars.add(args[1])
+  } else if (op === '{}') {
+    f.hasSchemaLiterals = true
+  } else if (op === '=>') {
+    let fixedN = 0
+    for (const r of extractParams(args[0])) {
+      if (classifyParam(r).kind === 'rest') f.hasRest = true
+      else fixedN++
+    }
+    if (fixedN > f.maxDef) f.maxDef = fixedN
+  } else if (op === '()') {
+    const cargs = commaList(args[1])
+    if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
+    if (cargs.length > f.maxCall) f.maxCall = cargs.length
+  }
+}
+
+/** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
+export function findFreeVars(node, bound, free, scope) {
+  if (node == null) return
+  if (typeof node === 'string') {
+    if (bound.has(node) || free.includes(node)) return
+    const inScope = scope
+      ? scope.has(node)
+      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
+    if (inScope) free.push(node)
+    return
+  }
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '=>') {
+    const innerBound = collectParamNames(extractParams(args[0]), new Set(bound))
+    findFreeVars(args[1], innerBound, free, scope)
+    return
+  }
+  if (op === 'catch') {
+    // ['catch', tryBody, errName, handler] — errName is a binding occurrence,
+    // not a reference, and is in scope only inside the handler. Recursing into
+    // it as a plain string would mis-capture an outer var of the same name.
+    findFreeVars(args[0], bound, free, scope)
+    const errName = args[1]
+    const handlerBound = typeof errName === 'string' && errName
+      ? new Set(bound).add(errName) : bound
+    findFreeVars(args[2], handlerBound, free, scope)
+    return
+  }
+  if (op === 'let' || op === 'const') {
+    collectParamNames(args, bound)
+    if (scope) collectParamNames(args, scope)
+  }
+  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
+    collectParamNames(args[0].slice(1), bound)
+    if (scope) collectParamNames(args[0].slice(1), scope)
+  }
+  for (const a of args) findFreeVars(a, bound, free, scope)
+}
+
+/** Check if any of the given variable names are assigned anywhere in the AST. */
+export function findMutations(node, names, mutated) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === 'let' || op === 'const') {
+    for (const decl of args)
+      if (Array.isArray(decl) && decl[0] === '=') findMutations(decl[2], names, mutated)
+    return
+  }
+  if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && names.has(args[0]))
+    mutated.add(args[0])
+  if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
+    mutated.add(args[0])
+  for (const a of args) findMutations(a, names, mutated)
+}
+
+/**
+ * Pre-scan function body for captured variables that are mutated.
+ * Marks mutably-captured vars in ctx.func.boxed for cell-based capture.
+ */
+export function boxedCaptures(body) {
+  const outerScope = new Set()
+  ;(function collectDecls(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const')
+      collectParamNames(args, outerScope)
+    for (const a of args) collectDecls(a)
+  })(body)
+  if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
+  if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
+
+  const markArrowCaptures = (node, assignTarget, seen) => {
+    const pnode = node[1]
+    let p = pnode
+    if (Array.isArray(p) && p[0] === '()') p = p[1]
+    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+    const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
+    const captures = []
+    findFreeVars(node[2], paramSet, captures, outerScope)
+    if (captures.length === 0) return
+    const captureSet = new Set(captures)
+    const boxed = new Set()
+    findMutations(body, captureSet, boxed)
+    for (const v of captures) if (!seen.has(v)) boxed.add(v)
+    if (assignTarget && captureSet.has(assignTarget)) boxed.add(assignTarget)
+    for (const v of boxed) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
+  }
+
+  ;(function walk(node, assignTarget, seen = new Set(ctx.func.current?.params?.map(p => p.name) || [])) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') {
+      markArrowCaptures(node, assignTarget, seen)
+      return
+    }
+
+    if (op === ';' || op === '{}') {
+      const blockSeen = new Set(seen)
+      for (const a of args) walk(a, null, blockSeen)
+      return
+    }
+
+    if (op === 'let' || op === 'const') {
+      for (const decl of args) {
+        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, seen)
+        else walk(decl, null, seen)
+        collectParamNames([decl], seen)
+      }
+      return
+    }
+
+    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')
+      return walk(args[1], args[0], seen)
+    for (const a of args) walk(a, null, seen)
+  })(body)
+}
+
+/**
+ * Narrow return arr-elem-{schema|valType}: for each non-exported, non-value-used
+ * user func with `valResult === VAL.ARRAY` and `func[field] == null`, walk return
+ * exprs (and trailing-fallthrough literal), resolve each via body-local elem map
+ * + caller-param facts + transitive user-fn results, and if all agree set `func[field]`.
+ * Lets callers' `const rows = initRows()` gain the elem fact, propagating to
+ * runKernel params via paramReps. `field` selects which fact ('arrayElemSchema'
+ * | 'arrayElemValType') — slice key is derived.
+ */
+export const MAX_SMALL_FOR_UNROLL = 8
+export const MAX_NESTED_FOR_UNROLL = 64
+
+/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
+ *  Conservative over-reject: if unsure, treat as written.
+ *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
+ *  inside them are scanned. */
+export function isReassigned(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (ASSIGN_OPS.has(op) && body[1] === name) return true
+  if ((op === '++' || op === '--') && body[1] === name) return true
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
+    }
+    return false
+  }
+  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
+  return false
+}
+
+const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
+
+/** Does `body` contain return/throw/break/continue (not inside nested `=>`)? */
+export function hasControlTransfer(body) {
+  if (!Array.isArray(body)) return false
+  if (CONTROL_TRANSFER.has(body[0])) return true
+  if (body[0] === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasControlTransfer(body[i])) return true
+  return false
+}
+
+/** Does `body` contain a `continue` that targets THIS loop?
+ *  A `continue` inside a nested `for`/`while`/`do` targets the inner loop, so we don't count it. */
+export function hasOwnContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
+  return false
+}
+
+export function hasOwnBreakOrContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
+  return false
+}
+
+export function containsNestedClosure(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return true
+  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
+  return false
+}
+
+export function containsNestedLoop(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'for' || op === 'while' || op === 'do') return true
+  if (op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
+  return false
+}
+
+/** Recursive loop size estimator — product of trip counts for nested `for (let i=0; i<N; i++)` loops. */
+export function nestedSmallLoopBudget(body) {
+  if (!Array.isArray(body)) return 1
+  if (body[0] === '=>') return 1
+  if (body[0] === 'for') {
+    const [, init, cond, step, loopBody] = body
+    const n = smallConstForTripCount(init, cond, step)
+    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
+  }
+  let max = 1
+  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
+  return max
+}
+
+export function containsDeclOf(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === '=>') return false
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (d === name) return true
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+    }
+  }
+  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
+  return false
+}
+
+/** Clone AST node, substituting bare-name matches with [null, value]. Skips into closures. */
+export function cloneWithSubst(node, name, value) {
+  if (node === name) return [null, value]
+  if (!Array.isArray(node)) return node
+  if (node[0] === '=>') return node
+  return node.map(x => cloneWithSubst(x, name, value))
+}
+
+/** Does `body` access a typed-array element by string name known to the type system? */
+export function containsKnownTypedArrayIndex(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return false
+  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
+  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
+  return false
+}
+
+/** Analyze `for (let i=0; i<N; i++)` trip count. Returns N if structurally matches, else null. */
+export function smallConstForTripCount(init, cond, step, maxEnd = MAX_SMALL_FOR_UNROLL) {
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const decl = init[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const name = decl[1]
+  const start = intLiteralValue(decl[2])
+  if (start !== 0) return null
+
+  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
+  const end = intLiteralValue(cond[2])
+  if (end == null || end < 0 || end > maxEnd) return null
+
+  const stepOk = Array.isArray(step) && (
+    (step[0] === '++' && step[1] === name) ||
+    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
+  )
+  return stepOk ? end : null
+}
+
+// =============================================================================
+// charCodeAt in-bounds proof
+// =============================================================================
+// `String.prototype.charCodeAt` returns NaN for an out-of-range index, so the
+// generic codegen contract is an f64 result (see module/string.js). When the
+// index is the induction variable of a `for (let i = C; i < recv.length; i++)`
+// loop, every `recv.charCodeAt(i)` in the loop body is statically inside
+// `[0, recv.length)` — OOB is impossible — so the call may use the cheaper i32
+// (raw-byte) contract instead. This is a static guarantee, not a guess.
+
+/** Step expression of a `for` that increments `name` by exactly 1. */
+function isUnitIncrement(step, name) {
+  if (!Array.isArray(step)) return false
+  if (step[0] === '++' && step[1] === name) return true
+  // postfix `i++` in value position lowers to `(++i) - 1`
+  if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++'
+      && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
+  return false
+}
+
+/** `let`/`const` re-declaration of `name` within `node` — does not cross `=>`
+ *  (a closure has its own scope; collection already stops at closure boundaries). */
+function redeclaresName(node, name) {
+  if (!Array.isArray(node) || node[0] === '=>') return false
+  if (node[0] === 'let' || node[0] === 'const') {
+    for (let k = 1; k < node.length; k++) {
+      const d = node[k]
+      if (d === name) return true
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+    }
+  }
+  for (let k = 1; k < node.length; k++) if (redeclaresName(node[k], name)) return true
+  return false
+}
+
+/** Collect `recv.charCodeAt(idxVar)` callee nodes within `node`. Stops at `=>`:
+ *  a closure may run after the loop, when `idxVar` has reached `recv.length`. */
+function collectBoundedCC(node, recv, idxVar, set) {
+  if (!Array.isArray(node) || node[0] === '=>') return
+  if (node[0] === '()' && node.length === 3 && node[2] === idxVar
+      && Array.isArray(node[1]) && node[1][0] === '.'
+      && node[1][1] === recv && node[1][2] === 'charCodeAt')
+    set.add(node[1])
+  for (let k = 1; k < node.length; k++) collectBoundedCC(node[k], recv, idxVar, set)
+}
+
+/** Receiver of a `.length` expression, possibly wrapped in `(… | 0)` — the
+ *  shape `prepare` produces when it hoists a for-cond bound. */
+function lengthRecv(expr) {
+  if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
+  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length'
+      && typeof expr[1] === 'string') return expr[1]
+  return null
+}
+
+/** Flatten `let`/`const` declarations (incl. `;`-joined groups) into `out`,
+ *  mapping each declared name to its initializer expression. */
+function collectDecls(node, out) {
+  if (!Array.isArray(node)) return
+  if (node[0] === ';') { for (let k = 1; k < node.length; k++) collectDecls(node[k], out); return }
+  if (node[0] === 'let' || node[0] === 'const') {
+    for (let k = 1; k < node.length; k++) {
+      const d = node[k]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.set(d[1], d[2])
+    }
+  }
+}
+
+/** Walk `node`, recording in `set` the `charCodeAt` callee nodes proven in-bounds
+ *  by an enclosing canonical induction loop `for (let i = C; i < recv.length; i++)`.
+ *  Matches the post-`prepare` shape, where the `.length` bound is hoisted into a
+ *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). */
+export function scanBoundedLoops(node, set) {
+  if (!Array.isArray(node)) return
+  if (node[0] === 'for' && node.length === 5) {
+    const [, init, cond, step, body] = node
+    let idx = null, recv = null, boundVar = null
+    if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
+      const decls = new Map()
+      collectDecls(init, decls)
+      idx = cond[1]
+      // index must be declared in `init` as `let i = C`, C an integer literal ≥ 0
+      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
+      if (start == null || start < 0) idx = null
+      // bound is `recv.length`, directly or via a hoisted temp declared in `init`
+      let bound = cond[2]
+      if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
+      recv = lengthRecv(bound)
+    }
+    // step `i++`; body never writes `i`/`recv`/the bound temp (incl. via
+    // closures) and never re-declares `i`. Then every bare `i` in the body
+    // satisfies `0 ≤ C ≤ i < recv.length`.
+    if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
+        && !isReassigned(body, idx) && !isReassigned(body, recv)
+        && (boundVar == null || !isReassigned(body, boundVar))
+        && !redeclaresName(body, idx))
+      collectBoundedCC(body, recv, idx, set)
+  }
+  for (let k = 1; k < node.length; k++) scanBoundedLoops(node[k], set)
+}
+
+const NO_BOUNDED_CC = new Set()  // shared immutable empty result
+
+/** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
+ *  index argument is provably within `[0, recv.length)`. Memoised per body. */
+export function inBoundsCharCodeAt(ctx) {
+  const body = ctx.func?.body
+  if (!Array.isArray(body)) return NO_BOUNDED_CC
+  if (ctx.func._ccBody === body) return ctx.func.ccInBounds
+  const set = new Set()
+  scanBoundedLoops(body, set)
+  ctx.func.ccInBounds = set
+  ctx.func._ccBody = body
+  return set
+}
+
+/** Does `body` always exit the enclosing scope (return / throw / break / continue)? */
+export function isTerminator(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
+  if (op === '{}' || op === ';') {
+    for (let i = body.length - 1; i >= 1; i--) {
+      const s = body[i]
+      if (s == null) continue
+      return isTerminator(s)
+    }
+    return false
+  }
+  return false
+}
+
+// =============================================================================
+// JSON-shape inference
+// =============================================================================
+// What a binding looks like when its provenance is a compile-time-known
+// `JSON.parse(stringConst)`. Building this tree at compile time lets
+// `.prop` and `[i]` reads on the result recover their VAL kind without a
+// runtime probe.
+
+/** Resolve a string-constant source for an expression: literal forms, or a
+ *  binding the scope tracker has recorded as effectively-const. Module/json's
+ *  static-fold path keeps a constStrs-only resolver to avoid folding `let`-bound
+ *  initializers; shape inference is sound on the broader shapeStrs because an
+ *  effectively-const literal's value is invariant. */
+
+
+
+// === body walks / program facts ===
+
 const USE = {
   MEMBER_R: 1,       // receiver of a `.`/`?.`/`[]` READ   — {key, optional, computed}
   MEMBER_W: 2,       // base of a `.`/`[]` WRITE           — {key, computed, compound}
@@ -1477,9 +2127,7 @@ export function analyzeBody(body) {
     // arr.push(...) — observe both schemas and val types in one pass
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'push' && typeof node[1][1] === 'string') {
       const arr = node[1][1]
-      const callArgs = node[2]
-      const list = callArgs == null ? [] :
-        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
+      const list = commaList(node[2])
       for (const a of list) {
         if (Array.isArray(a) && a[0] === '...') {
           observeArrSchema(arr, null); observeArrValType(arr, null); continue
@@ -1658,13 +2306,8 @@ export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') _bodyFactsCache.delete(body)
 }
 
-/** Drop the cached analyzeBody entry. Used after E2-phase valResult narrowing
- *  so the next walk re-evaluates `valTypeOf(call)` with up-to-date `f.valResult`
- *  — required for the D-pass paramReps val/arrayElemSchema re-fixpoint to see
- *  `const rows = initRows()` as VAL.ARRAY (initRows.valResult set by E2). */
-export function invalidateValTypesCache(body) {
-  if (body && typeof body === 'object') _bodyFactsCache.delete(body)
-}
+/** @deprecated alias — same invalidation as `invalidateLocalsCache`. */
+export const invalidateValTypesCache = invalidateLocalsCache
 
 /**
  * Analyze all local value types from declarations and assignments.
@@ -2438,197 +3081,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
   return safe
 }
 
-// === Param / closure helpers ===
 
-export function extractParams(rawParams) {
-  let p = rawParams
-  if (Array.isArray(p) && p[0] === '()') p = p[1]
-  return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-}
-
-export function classifyParam(r) {
-  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
-  if (Array.isArray(r) && r[0] === '=') {
-    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
-    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
-  }
-  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
-  return { kind: 'plain', name: r }
-}
-
-export function collectParamNames(raw, out = new Set()) {
-  for (const r of raw) {
-    if (typeof r === 'string') out.add(r)
-    else if (Array.isArray(r)) {
-      if (r[0] === '=' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '...' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '=' && Array.isArray(r[1])) collectParamNames([r[1]], out)
-      else if (r[0] === '[]' || r[0] === '{}' || r[0] === ',') collectParamNames(r.slice(1), out)
-    }
-  }
-  return out
-}
-
-/** Observe shared AST facts on a single node (dyn, schema, arity).
- *  Mutates `f`: { anyDyn, dynVars:Set, hasSchemaLiterals, maxDef, maxCall, hasRest, hasSpread }.
- *  Used by both prepare.js walk and analyze.js walkFacts. */
-export function observeNodeFacts(node, f) {
-  if (!Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === '[]') {
-    const [obj, idx] = args
-    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
-  } else if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
-    const [, obj, idx] = args[0]
-    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
-  } else if (op === 'for-in') {
-    f.anyDyn = true
-    if (typeof args[1] === 'string') f.dynVars.add(args[1])
-  } else if (op === '{}') {
-    f.hasSchemaLiterals = true
-  } else if (op === '=>') {
-    let fixedN = 0
-    for (const r of extractParams(args[0])) {
-      if (classifyParam(r).kind === 'rest') f.hasRest = true
-      else fixedN++
-    }
-    if (fixedN > f.maxDef) f.maxDef = fixedN
-  } else if (op === '()') {
-    const a = args[1]
-    const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-    if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
-    if (callArgs.length > f.maxCall) f.maxCall = callArgs.length
-  }
-}
-
-/** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
-export function findFreeVars(node, bound, free, scope) {
-  if (node == null) return
-  if (typeof node === 'string') {
-    if (bound.has(node) || free.includes(node)) return
-    const inScope = scope
-      ? scope.has(node)
-      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
-    if (inScope) free.push(node)
-    return
-  }
-  if (!Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === '=>') {
-    const innerBound = collectParamNames(extractParams(args[0]), new Set(bound))
-    findFreeVars(args[1], innerBound, free, scope)
-    return
-  }
-  if (op === 'catch') {
-    // ['catch', tryBody, errName, handler] — errName is a binding occurrence,
-    // not a reference, and is in scope only inside the handler. Recursing into
-    // it as a plain string would mis-capture an outer var of the same name.
-    findFreeVars(args[0], bound, free, scope)
-    const errName = args[1]
-    const handlerBound = typeof errName === 'string' && errName
-      ? new Set(bound).add(errName) : bound
-    findFreeVars(args[2], handlerBound, free, scope)
-    return
-  }
-  if (op === 'let' || op === 'const') {
-    collectParamNames(args, bound)
-    if (scope) collectParamNames(args, scope)
-  }
-  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
-    collectParamNames(args[0].slice(1), bound)
-    if (scope) collectParamNames(args[0].slice(1), scope)
-  }
-  for (const a of args) findFreeVars(a, bound, free, scope)
-}
-
-/** Check if any of the given variable names are assigned anywhere in the AST. */
-export function findMutations(node, names, mutated) {
-  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === 'let' || op === 'const') {
-    for (const decl of args)
-      if (Array.isArray(decl) && decl[0] === '=') findMutations(decl[2], names, mutated)
-    return
-  }
-  if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  for (const a of args) findMutations(a, names, mutated)
-}
-
-/**
- * Pre-scan function body for captured variables that are mutated.
- * Marks mutably-captured vars in ctx.func.boxed for cell-based capture.
- */
-export function boxedCaptures(body) {
-  const outerScope = new Set()
-  ;(function collectDecls(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const')
-      collectParamNames(args, outerScope)
-    for (const a of args) collectDecls(a)
-  })(body)
-  if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
-  if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
-
-  const markArrowCaptures = (node, assignTarget, seen) => {
-    const pnode = node[1]
-    let p = pnode
-    if (Array.isArray(p) && p[0] === '()') p = p[1]
-    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-    const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
-    const captures = []
-    findFreeVars(node[2], paramSet, captures, outerScope)
-    if (captures.length === 0) return
-    const captureSet = new Set(captures)
-    const boxed = new Set()
-    findMutations(body, captureSet, boxed)
-    for (const v of captures) if (!seen.has(v)) boxed.add(v)
-    if (assignTarget && captureSet.has(assignTarget)) boxed.add(assignTarget)
-    for (const v of boxed) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
-  }
-
-  ;(function walk(node, assignTarget, seen = new Set(ctx.func.current?.params?.map(p => p.name) || [])) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') {
-      markArrowCaptures(node, assignTarget, seen)
-      return
-    }
-
-    if (op === ';' || op === '{}') {
-      const blockSeen = new Set(seen)
-      for (const a of args) walk(a, null, blockSeen)
-      return
-    }
-
-    if (op === 'let' || op === 'const') {
-      for (const decl of args) {
-        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, seen)
-        else walk(decl, null, seen)
-        collectParamNames([decl], seen)
-      }
-      return
-    }
-
-    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')
-      return walk(args[1], args[0], seen)
-    for (const a of args) walk(a, null, seen)
-  })(body)
-}
-
-/**
- * Narrow return arr-elem-{schema|valType}: for each non-exported, non-value-used
- * user func with `valResult === VAL.ARRAY` and `func[field] == null`, walk return
- * exprs (and trailing-fallthrough literal), resolve each via body-local elem map
- * + caller-param facts + transitive user-fn results, and if all agree set `func[field]`.
- * Lets callers' `const rows = initRows()` gain the elem fact, propagating to
- * runKernel params via paramReps. `field` selects which fact ('arrayElemSchema'
- * | 'arrayElemValType') — slice key is derived.
- */
 const _FIELD_TO_SLICE = {
   arrayElemSchema: 'arrElemSchemas',
   arrayElemValType: 'arrElemValTypes',
@@ -3502,415 +3955,5 @@ export function analyzeSchemaSlotIntCertain(ast) {
 // is the operator tag (e.g. ['+', a, b], ['=>', params, body]). [null, value]
 // denotes a parenthesized/boxed literal.
 
-export const MAX_SMALL_FOR_UNROLL = 8
-export const MAX_NESTED_FOR_UNROLL = 64
 
-/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
- *  Conservative over-reject: if unsure, treat as written.
- *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
- *  inside them are scanned. */
-export function isReassigned(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (ASSIGN_OPS.has(op) && body[1] === name) return true
-  if ((op === '++' || op === '--') && body[1] === name) return true
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
-    }
-    return false
-  }
-  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
-  return false
-}
 
-/** Does `body` contain a `continue` that targets THIS loop?
- *  A `continue` inside a nested `for`/`while`/`do` targets the inner loop, so we don't count it. */
-export function hasOwnContinue(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do') return false
-  for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
-  return false
-}
-
-export function hasOwnBreakOrContinue(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'break' || op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
-  for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
-  return false
-}
-
-export function containsNestedClosure(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return true
-  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
-  return false
-}
-
-export function containsNestedLoop(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'for' || op === 'while' || op === 'do') return true
-  if (op === '=>') return false
-  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
-  return false
-}
-
-/** Recursive loop size estimator — product of trip counts for nested `for (let i=0; i<N; i++)` loops. */
-export function nestedSmallLoopBudget(body) {
-  if (!Array.isArray(body)) return 1
-  if (body[0] === '=>') return 1
-  if (body[0] === 'for') {
-    const [, init, cond, step, loopBody] = body
-    const n = smallConstForTripCount(init, cond, step)
-    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
-  }
-  let max = 1
-  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
-  return max
-}
-
-export function containsDeclOf(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === '=>') return false
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (d === name) return true
-      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
-    }
-  }
-  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
-  return false
-}
-
-/** Clone AST node, substituting bare-name matches with [null, value]. Skips into closures. */
-export function cloneWithSubst(node, name, value) {
-  if (node === name) return [null, value]
-  if (!Array.isArray(node)) return node
-  if (node[0] === '=>') return node
-  return node.map(x => cloneWithSubst(x, name, value))
-}
-
-/** Does `body` access a typed-array element by string name known to the type system? */
-export function containsKnownTypedArrayIndex(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return false
-  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
-  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
-  return false
-}
-
-/** Analyze `for (let i=0; i<N; i++)` trip count. Returns N if structurally matches, else null. */
-export function smallConstForTripCount(init, cond, step) {
-  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
-  const decl = init[1]
-  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
-  const name = decl[1]
-  const start = intLiteralValue(decl[2])
-  if (start !== 0) return null
-
-  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
-  const end = intLiteralValue(cond[2])
-  if (end == null || end < 0 || end > MAX_SMALL_FOR_UNROLL) return null
-
-  const stepOk = Array.isArray(step) && (
-    (step[0] === '++' && step[1] === name) ||
-    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
-  )
-  return stepOk ? end : null
-}
-
-// =============================================================================
-// charCodeAt in-bounds proof
-// =============================================================================
-// `String.prototype.charCodeAt` returns NaN for an out-of-range index, so the
-// generic codegen contract is an f64 result (see module/string.js). When the
-// index is the induction variable of a `for (let i = C; i < recv.length; i++)`
-// loop, every `recv.charCodeAt(i)` in the loop body is statically inside
-// `[0, recv.length)` — OOB is impossible — so the call may use the cheaper i32
-// (raw-byte) contract instead. This is a static guarantee, not a guess.
-
-/** Step expression of a `for` that increments `name` by exactly 1. */
-function isUnitIncrement(step, name) {
-  if (!Array.isArray(step)) return false
-  if (step[0] === '++' && step[1] === name) return true
-  // postfix `i++` in value position lowers to `(++i) - 1`
-  if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++'
-      && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
-  return false
-}
-
-/** `let`/`const` re-declaration of `name` within `node` — does not cross `=>`
- *  (a closure has its own scope; collection already stops at closure boundaries). */
-function redeclaresName(node, name) {
-  if (!Array.isArray(node) || node[0] === '=>') return false
-  if (node[0] === 'let' || node[0] === 'const') {
-    for (let k = 1; k < node.length; k++) {
-      const d = node[k]
-      if (d === name) return true
-      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
-    }
-  }
-  for (let k = 1; k < node.length; k++) if (redeclaresName(node[k], name)) return true
-  return false
-}
-
-/** Collect `recv.charCodeAt(idxVar)` callee nodes within `node`. Stops at `=>`:
- *  a closure may run after the loop, when `idxVar` has reached `recv.length`. */
-function collectBoundedCC(node, recv, idxVar, set) {
-  if (!Array.isArray(node) || node[0] === '=>') return
-  if (node[0] === '()' && node.length === 3 && node[2] === idxVar
-      && Array.isArray(node[1]) && node[1][0] === '.'
-      && node[1][1] === recv && node[1][2] === 'charCodeAt')
-    set.add(node[1])
-  for (let k = 1; k < node.length; k++) collectBoundedCC(node[k], recv, idxVar, set)
-}
-
-/** Receiver of a `.length` expression, possibly wrapped in `(… | 0)` — the
- *  shape `prepare` produces when it hoists a for-cond bound. */
-function lengthRecv(expr) {
-  if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
-  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length'
-      && typeof expr[1] === 'string') return expr[1]
-  return null
-}
-
-/** Flatten `let`/`const` declarations (incl. `;`-joined groups) into `out`,
- *  mapping each declared name to its initializer expression. */
-function collectDecls(node, out) {
-  if (!Array.isArray(node)) return
-  if (node[0] === ';') { for (let k = 1; k < node.length; k++) collectDecls(node[k], out); return }
-  if (node[0] === 'let' || node[0] === 'const') {
-    for (let k = 1; k < node.length; k++) {
-      const d = node[k]
-      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.set(d[1], d[2])
-    }
-  }
-}
-
-/** Walk `node`, recording in `set` the `charCodeAt` callee nodes proven in-bounds
- *  by an enclosing canonical induction loop `for (let i = C; i < recv.length; i++)`.
- *  Matches the post-`prepare` shape, where the `.length` bound is hoisted into a
- *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). */
-export function scanBoundedLoops(node, set) {
-  if (!Array.isArray(node)) return
-  if (node[0] === 'for' && node.length === 5) {
-    const [, init, cond, step, body] = node
-    let idx = null, recv = null, boundVar = null
-    if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
-      const decls = new Map()
-      collectDecls(init, decls)
-      idx = cond[1]
-      // index must be declared in `init` as `let i = C`, C an integer literal ≥ 0
-      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
-      if (start == null || start < 0) idx = null
-      // bound is `recv.length`, directly or via a hoisted temp declared in `init`
-      let bound = cond[2]
-      if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
-      recv = lengthRecv(bound)
-    }
-    // step `i++`; body never writes `i`/`recv`/the bound temp (incl. via
-    // closures) and never re-declares `i`. Then every bare `i` in the body
-    // satisfies `0 ≤ C ≤ i < recv.length`.
-    if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
-        && !isReassigned(body, idx) && !isReassigned(body, recv)
-        && (boundVar == null || !isReassigned(body, boundVar))
-        && !redeclaresName(body, idx))
-      collectBoundedCC(body, recv, idx, set)
-  }
-  for (let k = 1; k < node.length; k++) scanBoundedLoops(node[k], set)
-}
-
-const NO_BOUNDED_CC = new Set()  // shared immutable empty result
-
-/** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
- *  index argument is provably within `[0, recv.length)`. Memoised per body. */
-export function inBoundsCharCodeAt(ctx) {
-  const body = ctx.func?.body
-  if (!Array.isArray(body)) return NO_BOUNDED_CC
-  if (ctx.func._ccBody === body) return ctx.func.ccInBounds
-  const set = new Set()
-  scanBoundedLoops(body, set)
-  ctx.func.ccInBounds = set
-  ctx.func._ccBody = body
-  return set
-}
-
-/** Does `body` always exit the enclosing scope (return / throw / break / continue)? */
-export function isTerminator(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
-  if (op === '{}' || op === ';') {
-    for (let i = body.length - 1; i >= 1; i--) {
-      const s = body[i]
-      if (s == null) continue
-      return isTerminator(s)
-    }
-    return false
-  }
-  return false
-}
-
-// =============================================================================
-// JSON-shape inference
-// =============================================================================
-// What a binding looks like when its provenance is a compile-time-known
-// `JSON.parse(stringConst)`. Building this tree at compile time lets
-// `.prop` and `[i]` reads on the result recover their VAL kind without a
-// runtime probe.
-
-/** Resolve a string-constant source for an expression: literal forms, or a
- *  binding the scope tracker has recorded as effectively-const. Module/json's
- *  static-fold path keeps a constStrs-only resolver to avoid folding `let`-bound
- *  initializers; shape inference is sound on the broader shapeStrs because an
- *  effectively-const literal's value is invariant. */
-export function jsonConstString(expr) {
-  if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
-  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
-  if (typeof expr === 'string') {
-    return ctx.scope.shapeStrs?.get(expr) ?? ctx.scope.constStrs?.get(expr) ?? null
-  }
-  return null
-}
-
-function jsonShapeStrings(expr) {
-  const single = jsonConstString(expr)
-  if (single != null) return [single]
-  if (Array.isArray(expr) && expr[0] === '[]' && typeof expr[1] === 'string') return ctx.scope.shapeStrArrays?.get(expr[1]) ?? null
-  return null
-}
-
-/** Build a structural shape tree from a parsed JSON value. Each node is
- *  `{ val, props?, elem? }` — `val` is the inferred VAL kind (matches
- *  rep.val in localReps entries). Lets `valTypeOf` propagate VAL kinds
- *  through `.prop` chains and `[i]` reads on bindings sourced from
- *  `JSON.parse` of a compile-time-known string. Polymorphic arrays drop
- *  their `elem`. */
-function shapeOfJsonValue(v) {
-  if (v === null || v === undefined) return null
-  if (typeof v === 'number') return { val: VAL.NUMBER }
-  if (typeof v === 'string') return { val: VAL.STRING }
-  if (typeof v === 'boolean') return { val: VAL.NUMBER }
-  if (Array.isArray(v)) {
-    let elem = null
-    for (const x of v) {
-      const s = shapeOfJsonValue(x)
-      if (!s) { elem = null; break }
-      if (!elem) elem = s
-      else if (!shapeUnifies(elem, s)) { elem = null; break }
-    }
-    return { val: VAL.ARRAY, elem }
-  }
-  if (typeof v === 'object') {
-    const props = Object.create(null)
-    const names = Object.keys(v)
-    for (const k of names) {
-      const s = shapeOfJsonValue(v[k])
-      if (s) props[k] = s
-    }
-    return { val: VAL.OBJECT, props, names }
-  }
-  return null
-}
-
-function shapeUnifies(a, b) {
-  if (!a || !b || a.val !== b.val) return false
-  if (a.val === VAL.OBJECT || a.val === VAL.HASH) {
-    const ak = Object.keys(a.props), bk = Object.keys(b.props)
-    if (ak.length !== bk.length) return false
-    for (const k of ak) {
-      if (!b.props[k] || !shapeUnifies(a.props[k], b.props[k])) return false
-    }
-  }
-  if (a.val === VAL.ARRAY) {
-    if ((a.elem == null) !== (b.elem == null)) return false
-    if (a.elem && !shapeUnifies(a.elem, b.elem)) return false
-  }
-  return true
-}
-
-function shapeLayoutUnifies(a, b) {
-  if (!shapeUnifies(a, b)) return false
-  if (a.val === VAL.OBJECT || a.val === VAL.HASH) {
-    if (a.names?.length !== b.names?.length) return false
-    for (let i = 0; i < a.names.length; i++) if (a.names[i] !== b.names[i]) return false
-  }
-  if (a.val === VAL.ARRAY && a.elem) return shapeLayoutUnifies(a.elem, b.elem)
-  return true
-}
-
-function parseJsonShape(src) {
-  if (typeof src !== 'string') return null
-  let parsed
-  try { parsed = JSON.parse(src) } catch { return null }
-  return shapeOfJsonValue(parsed)
-}
-
-function parseUnifiedJsonShape(srcs) {
-  if (!srcs?.length) return null
-  let out = null
-  for (const src of srcs) {
-    const sh = parseJsonShape(src)
-    if (!sh) return null
-    if (!out) out = sh
-    else if (!shapeLayoutUnifies(out, sh)) return null
-  }
-  return out
-}
-
-/** Resolve the json shape for an expression by walking name → rep.jsonShape and
- *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
-export function shapeOf(expr) {
-  if (typeof expr === 'string')
-    return ctx.func.localReps?.get(expr)?.jsonShape
-        ?? ctx.scope.globalReps?.get(expr)?.jsonShape
-        ?? null
-  if (!Array.isArray(expr)) return null
-  const [op, ...args] = expr
-  if (op === '()' && args[0] === 'JSON.parse') {
-    const srcs = jsonShapeStrings(args[1])
-    if (srcs) return parseUnifiedJsonShape(srcs)
-  }
-  if (op === '.' && typeof args[1] === 'string') {
-    const parent = shapeOf(args[0])
-    if (parent?.val === VAL.OBJECT || parent?.val === VAL.HASH) return parent.props[args[1]] || null
-  }
-  if (op === '[]' && args.length === 2) {
-    const parent = shapeOf(args[0])
-    if (parent?.val === VAL.ARRAY) return parent.elem || null
-  }
-  return null
-}
-
-/** Build a structural shape from a `{}` AST node — recursive for nested
- *  object/array literals + propagating shapes through identifier references
- *  (so `let G = {…}; let H = {x: G}` carries G's shape under H.x). Returns
- *  null when any property breaks the static-shape contract (computed key,
- *  spread, non-shape value). Only called from `recordGlobalRep` — local
- *  bindings keep relying on `shapeOf` whose narrower contract (JSON.parse /
- *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
- *  locking a static jsonShape onto it. */
-export function shapeOfObjectLiteralAst(expr) {
-  if (typeof expr === 'string') return shapeOf(expr)
-  if (!Array.isArray(expr) || expr[0] !== '{}') return shapeOf(expr)
-  const raw = expr.length === 2 && Array.isArray(expr[1]) && expr[1][0] === ','
-    ? expr[1].slice(1)
-    : expr.slice(1)
-  const props = Object.create(null)
-  const names = []
-  for (const p of raw) {
-    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
-    names.push(p[1])
-    const child = shapeOfObjectLiteralAst(p[2])
-    if (child) props[p[1]] = child
-  }
-  return names.length ? { val: VAL.OBJECT, props, names } : null
-}

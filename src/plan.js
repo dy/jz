@@ -25,12 +25,12 @@
  */
 
 import { ctx, warn } from './ctx.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue } from './analyze.js'
+import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
 
-const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
 // Fixed-size typed arrays eligible for scalar replacement, mapped to the element
 // store-coercion kind ('' = none, i.e. Float64Array's f64-identity). Excluded:
@@ -60,20 +60,6 @@ const maxScalarTypedArrayLen = () => ctx.transform.optimize?.scalarTypedArrayLen
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
 
-const isSeq = node => Array.isArray(node) && node[0] === ';'
-const blockStmts = body => {
-  if (!Array.isArray(body) || body[0] !== '{}') return null
-  const inner = body[1]
-  if (!Array.isArray(inner)) return inner == null ? [] : [inner]
-  return inner[0] === ';' ? inner.slice(1) : [inner]
-}
-
-const callArgs = node => {
-  if (!Array.isArray(node) || node[0] !== '()') return null
-  const raw = node[2]
-  return raw == null ? [] : (Array.isArray(raw) && raw[0] === ',') ? raw.slice(1) : [raw]
-}
-
 const isSimpleArg = node => {
   if (typeof node === 'string' || typeof node === 'number') return true
   if (!Array.isArray(node)) return false
@@ -82,14 +68,6 @@ const isSimpleArg = node => {
   if (node[0] === 'u-' || (node[0] === '-' && node.length === 2)) return isSimpleArg(node[1])
   if (['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'].includes(node[0]))
     return isSimpleArg(node[1]) && isSimpleArg(node[2])
-  return false
-}
-
-const scanBody = (node, fn) => {
-  if (!Array.isArray(node)) return false
-  if (fn(node)) return true
-  if (node[0] === '=>') return false
-  for (let i = 1; i < node.length; i++) if (scanBody(node[i], fn)) return true
   return false
 }
 
@@ -131,43 +109,13 @@ const collectBindingTarget = (node, out) => {
     for (let i = 1; i < node.length; i++) collectBindingTarget(node[i], out)
 }
 
-const mutatesAny = (node, names) => scanBody(node, n => {
+const mutatesAny = (node, names) => some(node, n => {
   const op = n[0]
   if ((op === '++' || op === '--') && typeof n[1] === 'string') return names.has(n[1])
   return ASSIGN_OPS.has(op) && typeof n[1] === 'string' && names.has(n[1])
 })
 
 const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
-
-const intLit = node => {
-  if (typeof node === 'number' && Number.isInteger(node)) return node
-  if (Array.isArray(node) && node[0] == null && Number.isInteger(node[1])) return node[1]
-  return null
-}
-
-const constIntExpr = (node) => {
-  const lit = intLit(node)
-  if (lit != null) return lit
-  if (typeof node === 'string') return ctx.scope.constInts?.get(node) ?? null
-  if (!Array.isArray(node)) return null
-  const op = node[0]
-  if (op === 'u-') {
-    const v = constIntExpr(node[1])
-    return v == null ? null : -v
-  }
-  if (node.length !== 3) return null
-  const a = constIntExpr(node[1]), b = constIntExpr(node[2])
-  if (a == null || b == null) return null
-  if (op === '+') return a + b
-  if (op === '-') return a - b
-  if (op === '*') return a * b
-  if (op === '<<') return a << b
-  return null
-}
-
-const setCallArgs = (node, args) => {
-  node[2] = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
-}
 
 const scalarArrayElems = (expr) => {
   if (!Array.isArray(expr) || expr[0] !== '[') return null
@@ -213,12 +161,12 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   // can't model — reject unless idx is a literal within the literal's bounds.
   if ((ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--')
       && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
-    const idx = intLit(node[1][2])
+    const idx = constIntExpr(node[1][2])
     if (idx == null || idx < 0 || idx >= len) return false
     for (let i = 2; i < node.length; i++) if (!safeScalarArrayUse(node[i], name, len, op)) return false
     return true
   }
-  if (op === '[]' && node[1] === name) return intLit(node[2]) != null
+  if (op === '[]' && node[1] === name) return constIntExpr(node[2]) != null
   if (op === '...' && node[1] === name) return parentOp === '['
   for (let i = 1; i < node.length; i++) {
     if (!safeScalarArrayUse(node[i], name, len, op)) return false
@@ -233,7 +181,7 @@ const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
     return [, arrays.get(node[1]).length]
   }
   if (op === '[]' && arrays.has(node[1])) {
-    const idx = intLit(node[2])
+    const idx = constIntExpr(node[2])
     const elems = arrays.get(node[1])
     return idx != null && idx >= 0 && idx < elems.length ? elems[idx] : [, undefined]
   }
@@ -476,42 +424,13 @@ function scalarizeTypedArrayLiterals(node) {
   return changed ? { node: out, changed: true } : { node, changed: false }
 }
 
-const stmtList = (body) => {
-  if (!Array.isArray(body)) return body == null ? [] : [body]
-  if (body[0] === '{}') return stmtList(body[1])
-  if (body[0] === ';') return body.slice(1)
-  return [body]
-}
-
-const hasControlTransfer = node => scanBody(node, n => CONTROL_TRANSFER.has(n[0]))
-
-const containsDeclOf = (body, name) => scanBody(body, n => {
-  if (n[0] !== 'let' && n[0] !== 'const') return false
-  for (let i = 1; i < n.length; i++) {
-    const d = n[i]
-    if (d === name) return true
-    if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
-  }
-  return false
-})
-
-const isReassigned = (body, name) => scanBody(body, n =>
-  (ASSIGN_OPS.has(n[0]) && n[1] === name) || ((n[0] === '++' || n[0] === '--') && n[1] === name))
-
-const containsTypedArrayAccess = (body, names) => scanBody(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
+const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
 
 function smallScalarTypedForTrip(init, cond, step) {
-  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const end = smallConstForTripCount(init, cond, step, maxScalarTypedLoopUnroll())
+  if (end == null) return null
   const decl = init[1]
-  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
-  const name = decl[1]
-  if (constIntExpr(decl[2]) !== 0) return null
-  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
-  const end = constIntExpr(cond[2])
-  if (end == null || end < 0 || end > maxScalarTypedLoopUnroll()) return null
-  const stepOk = Array.isArray(step) && ((step[0] === '++' && step[1] === name) ||
-    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && constIntExpr(step[2]) === 1))
-  return stepOk ? { name, end } : null
+  return { name: decl[1], end }
 }
 
 const scalarTypedLoopBudget = (body) => {
@@ -585,7 +504,7 @@ const fixedTypedArraysInBody = (body) => {
 
 const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
   if (!sites?.length || func.exported || func.raw || !func.body || !Array.isArray(func.body) || func.body[0] !== '{}') return new Map()
-  if (scanBody(func.body, n => n[0] === 'return' || n[0] === 'throw')) return new Map()
+  if (some(func.body, n => n[0] === 'return' || n[0] === 'throw')) return new Map()
   const params = func.sig?.params || []
   const cands = new Map()
   for (let i = 0; i < params.length; i++) {
@@ -838,7 +757,7 @@ const parseNestedIntRowLit = (expr) => {
     if (elems.length === 1 && Array.isArray(elems[0]) && elems[0][0] === ',') elems = elems[0].slice(1)
     let rowLen = 0
     for (const el of elems) {
-      const v = intLit(el)
+      const v = constIntExpr(el)
       if (v == null) return null
       flat.push(v)
       rowLen++
@@ -1007,7 +926,7 @@ const parseFlatIntRowLit = (expr) => {
   if (elems.length === 1 && Array.isArray(elems[0]) && elems[0][0] === ',') elems = elems[0].slice(1)
   const lens = []
   for (const el of elems) {
-    const v = intLit(el)
+    const v = constIntExpr(el)
     if (v == null || v < 0) return null
     lens.push(v)
   }
@@ -1789,25 +1708,25 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     if (programFacts.valueUsed.has(func.name) && !soleCallerExport) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
-    if (paramNames.size && scanBody(func.body, n => {
+    if (paramNames.size && some(func.body, n => {
       if (n[0] !== '()' || !Array.isArray(n[1]) || n[1][0] !== '.') return false
       const [, obj, prop] = n[1]
       return prop === 'push' && typeof obj === 'string' && paramNames.has(obj)
     })) continue
     const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
     const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
-    const hasLoop = scanBody(func.body, n => LOOP_OPS.has(n[0]))
+    const hasLoop = some(func.body, n => LOOP_OPS.has(n[0]))
     const isTinyLeaf = !hasLoop && nodeSize(func.body) <= 15
     if (!sites || sites.length < 1 || (!isTinyLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
-    if (scanBody(func.body, n => n[0] === '=>')) continue
+    if (some(func.body, n => n[0] === '=>')) continue
     // throw/break/continue are unsupported; return is OK if it's a single
     // trailing return (rewritten to a value at inlining time).
-    if (scanBody(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
+    if (some(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
     let returnCount = 0
-    scanBody(func.body, n => { if (n[0] === 'return') returnCount++; return false })
+    some(func.body, n => { if (n[0] === 'return') returnCount++; return false })
     if (returnCount > 1) continue
     if (returnCount === 1 && stmts) {
       const last = stmts[stmts.length - 1]
@@ -1818,10 +1737,10 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // that get hammered from a hot caller's loop — replacing the call with its
     // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
     if (!hasLoop) {
-      if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
+      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
       if (nodeSize(func.body) > 30) continue
     }
-    if (scanBody(func.body, n => n[0] === '()' && n[1] === func.name)) continue
+    if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
     // loop carries most of the cost. Inlining them into a host that V8 can't
     // tier up (e.g. a once-called wrapper) freezes the kernel in baseline.
@@ -1833,8 +1752,8 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // single ctor, so the typed-array param of a callee like processCascade(x, …)
     // stays at generic f64 ABI with __typed_idx dispatch instead of i32 + f64.load.
     // Keeping the factory as a callable function preserves the call-site type fact.
-    if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
-    if (paramNames.size && scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
+    if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
+    if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     candidates.set(func.name, func)
   }
@@ -1955,10 +1874,10 @@ const removeStmts = (body, set) => {
 // `return` (trailing, if a block), no throw/break/continue, no param mutation,
 // no nested lambda.
 const inlinableLambdaBody = (abody, params) => {
-  if (scanBody(abody, n => n[0] === '=>')) return false
-  if (scanBody(abody, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) return false
+  if (some(abody, n => n[0] === '=>')) return false
+  if (some(abody, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) return false
   let returns = 0
-  scanBody(abody, n => { if (n[0] === 'return') returns++; return false })
+  some(abody, n => { if (n[0] === 'return') returns++; return false })
   if (returns > 1) return false
   if (returns === 1) {
     const stmts = blockStmts(abody)
@@ -2036,7 +1955,7 @@ const inlineLocalLambdas = () => {
 }
 
 const restIndexExpr = (idx, restParams) => {
-  const k = intLit(idx)
+  const k = constIntExpr(idx)
   if (k != null) return k >= 0 && k < restParams.length ? restParams[k] : [, undefined]
 
   let out = [, undefined]
@@ -2199,13 +2118,6 @@ const inferModuleLetTypes = (ast) => {
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, c.ctor)
   }
 }
-
-// `MIXED_CTORS` and `ternaryCtorOfRhs` are not exported from analyze — re-derive
-// the sentinel locally and look up the ctor through `typedElemCtor` alone.
-// `ternaryCtorOfRhs` is purely for ternary RHSs (e.g. `cond ? new Int32Array(N) : new Int32Array(M)`),
-// which game-of-life-style sources don't use; falling back to typedElemCtor is fine.
-const MIXED_CTORS = Symbol('MIXED_CTORS')
-const ternaryCtorOfRhs = () => null
 
 const unboxConstTypedGlobals = () => {
   if (!ctx.scope.globalTypedElem || !ctx.scope.consts) return
