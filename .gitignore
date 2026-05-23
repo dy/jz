@@ -138,5 +138,4 @@ __pycache__
 /test/test262/
 /bench/*.bak
 
-examples/**/*.wasm
 examples/**/build/
