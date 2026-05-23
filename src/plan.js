@@ -31,10 +31,10 @@ import {
   analyzeBody, invalidateLocalsCache, analyzeFuncNamespaces,
   smallConstForTripCount, containsDeclOf, cloneWithSubst,
 } from './analyze.js'
-import { intLiteralValue, constIntExpr } from './const.js'
+import { intLiteralValue, constIntExpr } from './static.js'
 import { staticObjectProps, staticPropertyKey } from './static.js'
-import { typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS } from './typed.js'
-import { extractParams } from './params.js'
+import { typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS } from './type.js'
+import { extractParams } from './ast.js'
 import {
   collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache,
 } from './program-facts.js'

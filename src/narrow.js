@@ -16,11 +16,11 @@ import {
   narrowReturnArrayElems, returnExprs,
 } from './analyze.js'
 import { staticObjectProps } from './static.js'
-import { scanBoundedLoops } from './bounds.js'
+import { scanBoundedLoops } from './type.js'
 import { observeProgramSlots } from './program-facts.js'
-import { exprType } from './types.js'
-import { typedElemAux, typedElemCtor, ctorFromElemAux } from './typed.js'
-import { valTypeOf } from './val-type.js'
+import { exprType } from './type.js'
+import { typedElemAux, typedElemCtor, ctorFromElemAux } from './type.js'
+import { valTypeOf } from './kind.js'
 import { VAL, updateRep } from './reps.js'
 import {
   clearStickyNull, ensureParamRep, mergeParamFact,

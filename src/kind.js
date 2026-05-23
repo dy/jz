@@ -1,9 +1,9 @@
 /**
- * Expression value-type inference + JSON shape propagation.
+ * Expression value KIND inference (STRING, ARRAY, …) + JSON shape propagation.
  *
  * Cycle-free w.r.t. analyze.js body walkers — reads ctx + reps only.
  *
- * @module val-type
+ * @module kind
  */
 
 import { ctx } from './ctx.js'

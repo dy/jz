@@ -32,7 +32,7 @@ import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
 } from './analyze.js'
-import { typedElemAux } from './typed.js'
+import { typedElemAux } from './type.js'
 import { VAL, updateRep } from './reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from './optimize.js'
@@ -114,8 +114,7 @@ const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : f
 // emit-calling ones (toBool, emitTypeofCmp, emitDecl, materializeMulti,
 // buildArrayWithSpreads) moved to src/emit.js.
 
-// AST-analysis primitives (staticObjectProps, paramReps lattice helpers,
-// infer* cross-call inference, collectProgramFacts) moved to src/analyze.js.
+// AST-analysis primitives live in kind.js, type.js, static.js, program-facts.js.
 
 /**
  * Boundary-wrap predicate: exports whose body-driven result OR any param narrowed
