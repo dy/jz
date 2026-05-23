@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
-import { emit, emitBoolStr, edges } from '../src/lib.js'
+import { emit, bool, deps } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { T } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
@@ -80,7 +80,7 @@ function hashCapFor(n) {
 }
 
 export default (ctx) => {
-  edges({
+  deps({
     __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
     __json_omit: ['__ptr_type'],
@@ -1145,9 +1145,9 @@ ${localDecls}
     if (folded !== undefined) return folded
     // Scalar boolean: the working-rep is the 0/1 number carrier, so the runtime
     // tag-walker would emit "0"/"1". A boolean's JSON is the bare word
-    // true/false — exactly emitBoolStr. Guard on `replacer == null`: a replacer
+    // true/false — exactly bool. Guard on `replacer == null`: a replacer
     // function may rewrite the top-level value, in which case fall to runtime.
-    if (replacer == null && valTypeOf(x) === VAL.BOOL) return emitBoolStr(x)
+    if (replacer == null && valTypeOf(x) === VAL.BOOL) return bool(x)
     inc('__stringify')
     const spaceIR = asI64(space == null ? undefExpr() : emit(space))
     return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')

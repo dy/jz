@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads, edges } from '../src/lib.js'
+import { emit, spread, deps } from '../src/lib.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/val-type.js'
 import { inlineArraySid, T } from '../src/analyze.js'
@@ -23,7 +23,7 @@ import { strHashLiteral } from './collection.js'
 const NAN_BITS = nanPrefixHex()
 
 export default (ctx) => {
-  edges({
+  deps({
     __eq: ['__str_eq', '__ptr_type'],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift'],
@@ -864,7 +864,7 @@ export default (ctx) => {
           else normal.push(a)
         }
         const combined = reconstructArgsWithSpreads(normal, spreads)
-        const arrayIR = buildArrayWithSpreads(combined)
+        const arrayIR = spread(combined)
         callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true)
       } else {
         callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)

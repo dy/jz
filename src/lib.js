@@ -2,7 +2,7 @@
  * Stdlib module bridge — `module/*` imports from here, not `src/emit.js`.
  *
  * Emit impls bind on `ctx.lib` at reset(). Registration helpers (`reg`,
- * `edges`, …) keep handler + WAT include edges in one place.
+ * `deps`, …) keep handler + WAT include deps in one place.
  *
  * @module lib
  */
@@ -12,12 +12,13 @@ import { typed, asF64, asI32, asI64 } from './ir.js'
 
 export { emitter } from './ctx.js'
 
-export const emit = (...args) => ctx.lib.emit(...args)
-export const emitFlat = (...args) => ctx.lib.emitFlat(...args)
-export const emitBody = (...args) => ctx.lib.emitBody(...args)
-export const emitBoolStr = (...args) => ctx.lib.emitBoolStr(...args)
-export const emitIndex = (...args) => ctx.lib.emitIndex(...args)
-export const buildArrayWithSpreads = (...args) => ctx.lib.buildArrayWithSpreads(...args)
+export const emit = (...a) => ctx.lib.emit(...a)
+export const flat = (...a) => ctx.lib.flat(...a)
+export const body = (...a) => ctx.lib.body(...a)
+export const bool = (...a) => ctx.lib.bool(...a)
+/** Index expr → i32 IR. */
+export const idx = (...a) => ctx.lib.idx(...a)
+export const spread = (...a) => ctx.lib.spread(...a)
 
 /** `ctx.core.emit[name] = emitter(deps, fn)`. `deps` = WAT stdlib names; `[]` for host-import wiring. */
 export const reg = (name, deps, fn) => {
@@ -26,8 +27,8 @@ export const reg = (name, deps, fn) => {
   return h
 }
 
-/** WAT stdlib→stdlib edges for `resolveIncludes()`. */
-export const edges = (map) => Object.assign(ctx.core.stdlibDeps, map)
+/** WAT stdlib→stdlib deps for `resolveIncludes()`. */
+export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
 /** Tag a hand-wrapped handler with `.deps` (pow/** dual lowering). */
 export const tag = (handler, deps) => {
@@ -43,10 +44,10 @@ export const dual = (wrap, core, fast) => {
   return h
 }
 
-const K = { I: asI64, F: asF64, i: asI32 }
+const cast = { I: asI64, F: asF64, i: asI32 }
 
-const args = (sig, nodes) =>
-  sig.split('').map((c, i) => K[c](emit(nodes[i])))
+const coerce = (sig, nodes) =>
+  sig.split('').map((c, i) => cast[c](emit(nodes[i])))
 
 const wrap = (fmt, call) => {
   if (fmt === 'i64') return typed(['f64.reinterpret_i64', call], 'f64')
@@ -57,7 +58,7 @@ const wrap = (fmt, call) => {
 /** `(…args) → call($stdlib, coerced…)`. fmt: f64 · i64 · i32 */
 export const call = (stdlib, sig, fmt = 'f64') => {
   const h = emitter([stdlib], (...nodes) =>
-    wrap(fmt, ['call', `$${stdlib}`, ...args(sig, nodes)]))
+    wrap(fmt, ['call', `$${stdlib}`, ...coerce(sig, nodes)]))
   Object.defineProperty(h, 'length', { value: sig.length, configurable: true })
   return h
 }
@@ -65,7 +66,7 @@ export const call = (stdlib, sig, fmt = 'f64') => {
 /** method `(recv, …args) → call($stdlib, …)`. sig: I · F · i per arg. */
 export const method = (stdlib, sig, ret = 'f64') => {
   const h = emitter([stdlib], (...nodes) => {
-    const c = ['call', `$${stdlib}`, ...args(sig, nodes)]
+    const c = ['call', `$${stdlib}`, ...coerce(sig, nodes)]
     return typed(ret === 'i32' ? ['f64.convert_i32_s', c] : c, 'f64')
   })
   Object.defineProperty(h, 'length', { value: sig.length, configurable: true })

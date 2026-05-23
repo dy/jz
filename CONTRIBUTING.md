@@ -32,7 +32,7 @@ The global `ctx` object (defined in `src/ctx.js`) is the single source of compil
 ## Adding a stdlib method
 
 1. Find or create the module file in `module/` (e.g. `module/string.js`)
-2. Register the handler — `reg('name', deps, fn)` or `call` / `method` from `src/lib.js`; WAT include edges via `edges({ … })`.
+2. Register the handler — `reg('name', deps, fn)` or `call` / `method` from `src/lib.js`; WAT include deps via `deps({ … })`. Emit helpers: `flat`, `body`, `bool`, `idx`, `spread`.
 3. Add tests in `test/`
 4. Run `npm test`
 

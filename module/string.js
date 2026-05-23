@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, emitBoolStr, method, edges } from '../src/lib.js'
+import { emit, bool, method, deps } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -38,7 +38,7 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 
 
 export default (ctx) => {
-  edges({
+  deps({
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
@@ -1147,7 +1147,7 @@ export default (ctx) => {
   // a BOOL rides the 0/1 carrier (→ "0"/"1" not "true"/"false"), and an OBJECT
   // needs compile-time ToPrimitive(string) (__to_str can't invoke user toString).
   const searchArg = (search) =>
-    valTypeOf(search) === VAL.BOOL ? asI64(emitBoolStr(search)) :
+    valTypeOf(search) === VAL.BOOL ? asI64(bool(search)) :
     valTypeOf(search) === VAL.OBJECT ? toStrI64(search, emit(search)) : asI64(emit(search))
 
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {
@@ -1268,9 +1268,9 @@ export default (ctx) => {
   }
 
   // A VAL.BOOL part rides the 0/1 carrier, so __to_str would render "1"/"0".
-  // emitBoolStr selects the interned "true"/"false" literal (constant-folded
+  // bool selects the interned "true"/"false" literal (constant-folded
   // when the operand is known); every other part goes through __to_str.
-  const partStrI64 = (p) => valTypeOf(p) === VAL.BOOL ? asI64(emitBoolStr(p)) : toStrI64(p, emit(p))
+  const partStrI64 = (p) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, emit(p))
 
   ctx.core.emit['strcat'] = (...parts) => {
     inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
@@ -1332,7 +1332,7 @@ export default (ctx) => {
   ctx.core.emit['String'] = (value) => {
     if (value === undefined) return emit(['str', ''])
     if (valTypeOf(value) === VAL.STRING) return emit(value)
-    if (valTypeOf(value) === VAL.BOOL) return emitBoolStr(value)
+    if (valTypeOf(value) === VAL.BOOL) return bool(value)
     if (valTypeOf(value) === VAL.NUMBER) {
       inc('__ftoa')
       return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')

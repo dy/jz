@@ -4,7 +4,7 @@
  * Module API:
  * - reg('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
  * - ctx.core.stdlib['math.X'] = '(func ...)' - WAT function definitions
- * - edges({ 'math.X': ['dep'] }) - WAT stdlib→stdlib edges (expanded transitively)
+ * - deps({ 'math.X': ['dep'] }) - WAT stdlib→stdlib deps (expanded transitively)
  *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.core.emit['math.sin'] and calls it.
@@ -13,11 +13,11 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, edges, dual, tag } from '../src/lib.js'
+import { emit, emitter, reg, deps, dual, tag } from '../src/lib.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
-  edges({
+  deps({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
     'math.sin_core': ['math.isFinite'],

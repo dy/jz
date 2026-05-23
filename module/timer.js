@@ -27,7 +27,7 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
-import { emit, edges } from '../src/lib.js'
+import { emit, deps } from '../src/lib.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
@@ -55,7 +55,7 @@ const setupWasi = (ctx) => {
   // Always include init + tick + loop when timer module loads (structural, not per-emitter)
   inc('__timer_init', '__timer_tick', '__timer_loop')
 
-  edges({
+  deps({
     __timer_init: ['__alloc'],
     __timer_add: ['__time_ns'],
     __timer_cancel: [],
