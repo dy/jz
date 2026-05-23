@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads, watDeps } from '../src/stdlib-emit.js'
+import { emit, buildArrayWithSpreads, edges } from '../src/lib.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/val-type.js'
 import { inlineArraySid, T } from '../src/analyze.js'
@@ -23,7 +23,7 @@ import { strHashLiteral } from './collection.js'
 const NAN_BITS = nanPrefixHex()
 
 export default (ctx) => {
-  watDeps({
+  edges({
     __eq: ['__str_eq', '__ptr_type'],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift'],

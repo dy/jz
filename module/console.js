@@ -24,7 +24,7 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit, watDeps, regEmit } from '../src/stdlib-emit.js'
+import { emit, edges, reg } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { exprType } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
@@ -54,7 +54,7 @@ const flattenTemplateConcat = (node) => {
 }
 
 const setupWasi = (ctx) => {
-  watDeps({
+  edges({
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
     __write_int: ['__itoa', '__mkstr', '__write_str'],
@@ -142,7 +142,7 @@ const setupWasi = (ctx) => {
       (br $read)))
     (call $__mkstr (local.get $buf) (local.get $total)))`
 
-  regEmit('readStdin', ['__read_stdin'], () => {
+  reg('readStdin', ['__read_stdin'], () => {
     needFdRead()
     return typed(['call', '$__read_stdin'], 'f64')
   })
@@ -194,11 +194,11 @@ const setupWasi = (ctx) => {
     (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
     (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
 
-  regEmit('Date.now', ['__time_ms'], () => {
+  reg('Date.now', ['__time_ms'], () => {
     needClock()
     return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')
   })
-  regEmit('performance.now', ['__time_ms'], () => {
+  reg('performance.now', ['__time_ms'], () => {
     needClock()
     return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')
   })
@@ -254,11 +254,11 @@ const setupJsHost = (ctx) => {
   makeConsole('warn', 2)
   makeConsole('error', 2)
 
-  regEmit('Date.now', [], () => {
+  reg('Date.now', [], () => {
     needNow()
     return typed(['call', '$__now', ['i32.const', 0]], 'f64')
   })
-  regEmit('performance.now', [], () => {
+  reg('performance.now', [], () => {
     needNow()
     return typed(['call', '$__now', ['i32.const', 1]], 'f64')
   })

@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit, emitBoolStr, watDeps, regEmit } from '../src/stdlib-emit.js'
+import { emit, emitBoolStr, edges, reg } from '../src/lib.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
@@ -137,7 +137,7 @@ const POW10_SCALE = `
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))`
 
 export default (ctx) => {
-  watDeps({
+  edges({
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
@@ -884,7 +884,7 @@ export default (ctx) => {
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 
   // Boolean(x) → truthiness (non-zero → 1, zero → 0)
-  regEmit('Boolean', ['__is_truthy'], (x) => {
+  reg('Boolean', ['__is_truthy'], (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
     const v = asI64(emit(x))
     return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
@@ -892,16 +892,16 @@ export default (ctx) => {
 
   // === Instance method emitters ===
 
-  regEmit('.number:toString', ['__ftoa'], n =>
+  reg('.number:toString', ['__ftoa'], n =>
     typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64'))
 
-  regEmit('.number:toFixed', ['__ftoa'], (n, d) =>
+  reg('.number:toFixed', ['__ftoa'], (n, d) =>
     typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64'))
 
-  regEmit('.number:toExponential', ['__toExp'], (n, d) =>
+  reg('.number:toExponential', ['__toExp'], (n, d) =>
     typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 0]], 'f64'))
 
-  regEmit('.number:toPrecision', ['__ftoa', '__toExp'], (n, p) => {
+  reg('.number:toPrecision', ['__ftoa', '__toExp'], (n, p) => {
     const val = temp('pv'), t = temp('tp'), exp = tempI32('te'), pr = tempI32('pp')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${val}`, asF64(emit(n))],

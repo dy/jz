@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { emit, emitIndex, watDeps, stdlibCall } from '../src/stdlib-emit.js'
+import { emit, emitIndex, edges, call } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -197,7 +197,7 @@ function genSimdMap(name, elemType, pattern) {
 
 
 export default (ctx) => {
-  watDeps({
+  edges({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
@@ -212,9 +212,9 @@ export default (ctx) => {
 
   inc('__mkptr', '__alloc', '__len')
 
-  const emitToBuffer = stdlibCall('__to_buffer', 'I')
-  const emitByteLength = stdlibCall('__byte_length', 'I', 'i32')
-  const emitByteOffset = stdlibCall('__byte_offset', 'I', 'i32')
+  const buf = call('__to_buffer', 'I')
+  const blen = call('__byte_length', 'I', 'i32')
+  const boff = call('__byte_offset', 'I', 'i32')
 
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
@@ -418,7 +418,7 @@ export default (ctx) => {
         }
       }
     }
-    return emitToBuffer(obj)
+    return buf(obj)
   }
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
@@ -443,7 +443,7 @@ export default (ctx) => {
         }
       }
     }
-    return emitByteLength(obj)
+    return blen(obj)
   }
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
@@ -461,7 +461,7 @@ export default (ctx) => {
       }
       if (ctor?.startsWith('new.') && TYPED_ELEM_CODE[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
-    return emitByteOffset(obj)
+    return boff(obj)
   }
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
