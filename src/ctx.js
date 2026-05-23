@@ -294,6 +294,9 @@ export function reset(proto, globals) {
   // Shape: { abi, functions: { [name]: { exported, params, results, ptrKind?, locals, callerReps } }, schemas }.
   ctx.inspect = null
 
+  // Advisory sink. Populated when compile() receives opts.warnings.
+  ctx.warnings = null
+
   // Feature flags: capabilities the compiled module may exercise at runtime.
   // Set true by producer sites (import points, auto-imports, dynamic call sites).
   // Read by stdlib template factories and deps graph at resolveIncludes() time to
@@ -323,6 +326,32 @@ export function reset(proto, globals) {
     timers: false,          // Set by prepare.js when timer module is included
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
   }
+}
+
+/** Enable compile-time advisories. Pass `opts.warnings` (mirrors `opts.profile`). */
+export function initWarnings(sink) {
+  if (sink == null) {
+    ctx.warnings = null
+    return
+  }
+  sink.entries ||= []
+  ctx.warnings = { sink, seen: new Set() }
+}
+
+/** Record one advisory. No-op unless `initWarnings` wired a sink. */
+export function warn(code, message, meta = {}) {
+  if (!ctx.warnings) return
+  const key = `${code}:${meta.fn || ''}:${meta.line || ''}`
+  if (ctx.warnings.seen.has(key)) return
+  ctx.warnings.seen.add(key)
+  const entry = { code, message, ...meta }
+  if (meta.loc != null && ctx.error.src) {
+    const before = ctx.error.src.slice(0, meta.loc)
+    entry.line = before.split('\n').length
+    entry.column = meta.loc - before.lastIndexOf('\n')
+  }
+  delete entry.loc
+  ctx.warnings.sink.entries.push(entry)
 }
 
 /** Throw with source location context. */

@@ -24,7 +24,7 @@
  * @module plan
  */
 
-import { ctx } from './ctx.js'
+import { ctx, warn } from './ctx.js'
 import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
@@ -2232,7 +2232,7 @@ const unboxConstTypedGlobals = () => {
 // fraction — a non-integer literal, `/` or `**`, a float-valued `Math.*`, or a
 // reference to an already-fractional value. (jz already truncates fractional
 // array indices, so a stray fraction in an integer slot is a pre-existing bug,
-// not one this introduces; a future lint can flag it.)
+// not one this introduces; a future advisory can flag it.)
 //
 // The payoff cascades: an i32 `width` makes `mem[y*width+x]` a fully-i32 index
 // (the per-access `trunc_sat` and the index-counter widen both vanish), and an
@@ -2657,6 +2657,124 @@ const canSkipWholeProgramNarrowing = (programFacts) =>
   !programFacts.hasSchemaLiterals &&
   !ctx.closure.make
 
+const HEAP_LOOP_OPS = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'do-while'])
+const HEAP_VALS = new Set([
+  VAL.ARRAY, VAL.STRING, VAL.OBJECT, VAL.HASH, VAL.SET, VAL.MAP,
+  VAL.CLOSURE, VAL.TYPED, VAL.REGEX, VAL.BUFFER,
+])
+
+function returnsHeap(func) {
+  if (func.sig.ptrKind != null) return true
+  return func.valResult != null && HEAP_VALS.has(func.valResult)
+}
+
+function isHeapAlloc(node) {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === '{}') return node.length > 1
+  if (op === '[]') return node.length === 2
+  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.') {
+    const method = node[1][2]
+    if (method === 'push' || method === 'concat') return true
+  }
+  return false
+}
+
+function containsHeapAlloc(node) {
+  if (!Array.isArray(node)) return false
+  if (isHeapAlloc(node)) return true
+  for (let i = 1; i < node.length; i++)
+    if (containsHeapAlloc(node[i])) return true
+  return false
+}
+
+function heapLoopBody(node) {
+  if (!Array.isArray(node) || !HEAP_LOOP_OPS.has(node[0])) return null
+  return node[node.length - 1]
+}
+
+function heapLoopAllocSites(body) {
+  const sites = []
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    if (HEAP_LOOP_OPS.has(node[0])) {
+      const lb = heapLoopBody(node)
+      if (lb && containsHeapAlloc(lb))
+        sites.push({ loc: node.loc ?? lb.loc })
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return sites
+}
+
+function bodyHeapAllocates(body) {
+  return body != null && containsHeapAlloc(body)
+}
+
+/** Mirrors `applyArenaRewind` eligibility in src/assemble.js (AST-level). */
+function isArenaRewindable(func) {
+  if (func.raw) return false
+  if (func.sig.params.length !== 0) return false
+  if (func.sig.results.length !== 1) return false
+  if (func.sig.ptrKind != null) return false
+  if (returnsHeap(func)) return false
+  if (func.sig.results[0] === 'f64' && func.valResult !== VAL.NUMBER && func.valResult != null)
+    return false
+  if (func.sig.results[0] !== 'f64' && func.sig.results[0] !== 'i32') return false
+  return bodyHeapAllocates(func.body)
+}
+
+function exportedFuncNames() {
+  const names = new Set()
+  for (const [key, val] of Object.entries(ctx.func.exports)) {
+    const name = val === true ? key : (typeof val === 'string' ? val : null)
+    if (name) names.add(name)
+  }
+  return names
+}
+
+/** Bump-allocator growth advisories — no-op without an `opts.warnings` sink. */
+function adviseHeapGrowth() {
+  if (!ctx.warnings) return
+  if (ctx.transform.alloc === false) return
+
+  const exported = exportedFuncNames()
+
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.body) continue
+
+    const fn = func.name
+    const isExport = exported.has(fn)
+
+    if (isExport && returnsHeap(func)) {
+      warn('heap-return',
+        `export '${fn}' returns a heap value — repeated calls grow linear memory; call memory.reset() between batches from the host`,
+        { fn, loc: func.body.loc })
+      continue
+    }
+
+    const loopSites = heapLoopAllocSites(func.body)
+    for (const site of loopSites) {
+      warn('heap-loop',
+        `${isExport ? `export '${fn}'` : `'${fn}'`} allocates heap values inside a loop — peak memory grows with trip count; call memory.reset() between batches from the host`,
+        { fn, loc: site.loc })
+    }
+
+    if (isExport && !returnsHeap(func) && bodyHeapAllocates(func.body)
+        && !isArenaRewindable(func) && loopSites.length === 0) {
+      warn('heap-per-call',
+        `export '${fn}' allocates heap values — jz does not reclaim between calls; call memory.reset() between batches from the host`,
+        { fn, loc: func.body.loc })
+    }
+  }
+}
+
+/** Compile-time advisories at end of plan — extensible home for soft warnings. */
+function adviseProgram() {
+  adviseHeapGrowth()
+}
+
 export default function plan(ast) {
   inferModuleLetTypes(ast)
   unboxConstTypedGlobals()
@@ -2702,6 +2820,7 @@ export default function plan(ast) {
     // fact, so `export let f = (a) => a > 2` boxes its boundary atom.
     applyJsstringBoundaryCarrierStandalone(programFacts)
     narrowBoolResults()
+    adviseProgram()
     return programFacts
   }
 
@@ -2709,5 +2828,6 @@ export default function plan(ast) {
   specializeBimorphicTyped(programFacts)
   refineDynKeys(programFacts)
 
+  adviseProgram()
   return programFacts
 }
