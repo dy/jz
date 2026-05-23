@@ -2,13 +2,13 @@
  * Whole-program fact collection — dyn keys, call sites, schema slots.
  * @module program-facts
  */
-import { commaList, isFuncRef, isLiteralStr } from './ast.js'
-import { ctx, err } from './ctx.js'
-import { VAL, lookupValType, repOf } from './reps.js'
-import { valTypeOf } from './kind.js'
-import { extractParams, classifyParam } from './ast.js'
-import { staticObjectProps } from './static.js'
-import { intExprChecker } from './type.js'
+import { commaList, isFuncRef, isLiteralStr } from '../ast.js'
+import { ctx, err } from '../ctx.js'
+import { VAL, lookupValType, repOf } from '../reps.js'
+import { valTypeOf } from '../kind.js'
+import { extractParams, classifyParam } from '../ast.js'
+import { staticObjectProps } from '../static.js'
+import { intExprChecker } from '../type.js'
 import { analyzeBody } from './analyze.js'
 
 export function observeNodeFacts(node, f) {

@@ -14,9 +14,9 @@
  *   prepared AST: normalized, with `ctx.func.list` / `ctx.module.imports` / `ctx.schema.list`
  *     populated. Arrow bodies carry no type info yet.
  *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
- *        narrowing fixpoint) with IR generation via the emitter table (src/emit.js).
+ *        narrowing fixpoint) with IR generation via the emitter table (src/compile/emit.js).
  *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
- *        Also calls optimizeFunc (src/optimize.js): `hoistPtrType` + fused peephole/inline/memarg walk.
+ *        Also calls optimizeFunc (src/optimize/index.js): `hoistPtrType` + fused peephole/inline/memarg walk.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
  *     ↓  watrOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
  *     ↓  optimizeFunc 2nd pass — re-folds rebox/unbox roundtrips that watrOptimize's inliner
@@ -43,13 +43,13 @@
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
-import watrOptimize from "./src/watopt.js";
+import watrOptimize from "./src/wat/watopt.js";
 import { ctx, reset, err, initWarnings } from './src/ctx.js'
-import prepare, { GLOBALS } from './src/prepare.js'
-import compile from './src/compile.js'
-import { resetProgramFactsCache } from './src/program-facts.js'
-import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/emit.js'
-import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize.js'
+import prepare, { GLOBALS } from './src/prepare/index.js'
+import compile from './src/compile/index.js'
+import { resetProgramFactsCache } from './src/compile/program-facts.js'
+import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
+import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize/index.js'
 import jzify from './jzify/index.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,

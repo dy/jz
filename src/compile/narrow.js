@@ -7,20 +7,20 @@
  * function `sig` records change.
  */
 
-import { ctx, warn } from './ctx.js'
-import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs } from './ast.js'
-import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
+import { ctx, warn } from '../ctx.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs } from '../ast.js'
+import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
   analyzeBody, findMutations, invalidateLocalsCache,
 } from './analyze.js'
-import { staticObjectProps } from './static.js'
-import { scanBoundedLoops, exprType, typedElemAux, typedElemCtor, ctorFromElemAux } from './type.js'
+import { staticObjectProps } from '../static.js'
+import { scanBoundedLoops, exprType, typedElemAux, typedElemCtor, ctorFromElemAux } from '../type.js'
 import { observeProgramSlots } from './program-facts.js'
-import { valTypeOf } from './kind.js'
-import { VAL, updateRep } from './reps.js'
+import { valTypeOf } from '../kind.js'
+import { VAL, updateRep } from '../reps.js'
 import {
   paramFactsOf, clearStickyNull, ensureParamRep, mergeParamFact,
-} from './param-reps.js'
+} from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemValType,
   inferSchemaId, inferValType, inferTypedCtor,

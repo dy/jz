@@ -18,12 +18,12 @@
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from './ast.js'
-import { ctx, err } from './ctx.js'
-import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from './reps.js'
-import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from './kind.js'
-import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from './static.js'
-import { typedElemCtor, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from './type.js'
+import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
+import { ctx, err } from '../ctx.js'
+import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
+import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
+import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from '../static.js'
+import { typedElemCtor, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
 

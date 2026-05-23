@@ -1,4 +1,4 @@
-import { findBodyStart } from './ir.js'
+import { findBodyStart } from '../ir.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.

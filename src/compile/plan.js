@@ -24,24 +24,24 @@
  * @module plan
  */
 
-import { ctx, warn } from './ctx.js'
-import { callArgs, setCallArgs, some, blockStmts, stmtList, T, refsName, refsAny, REFS_IN_EXPR } from './ast.js'
-import { ASSIGN_OPS, isReassigned, hasControlTransfer, isBlockBody } from './ast.js'
+import { ctx, warn } from '../ctx.js'
+import { callArgs, setCallArgs, some, blockStmts, stmtList, T, refsName, refsAny, REFS_IN_EXPR } from '../ast.js'
+import { ASSIGN_OPS, isReassigned, hasControlTransfer, isBlockBody } from '../ast.js'
 import {
   analyzeBody, invalidateLocalsCache, analyzeFuncNamespaces,
 } from './analyze.js'
-import { intLiteralValue, constIntExpr, staticObjectProps, staticPropertyKey } from './static.js'
+import { intLiteralValue, constIntExpr, staticObjectProps, staticPropertyKey } from '../static.js'
 import {
   smallConstForTripCount, containsDeclOf, cloneWithSubst,
   typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS,
-} from './type.js'
-import { extractParams } from './ast.js'
+} from '../type.js'
+import { extractParams } from '../ast.js'
 import {
   collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache,
 } from './program-facts.js'
-import { VAL, updateGlobalRep } from './reps.js'
-import { includeModule } from './autoload.js'
-import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
+import { VAL, updateGlobalRep } from '../reps.js'
+import { includeModule } from '../autoload.js'
+import { MAX_CLOSURE_ARITY, UNDEF_WAT } from '../ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
 
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])

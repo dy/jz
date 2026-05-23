@@ -24,18 +24,18 @@
 import {
   commaList, T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
   extractParams, classifyParam,
-} from './ast.js'
-import { ctx, err, inc, PTR } from './ctx.js'
-import { nonNegIntLiteral, staticPropertyKey } from './static.js'
+} from '../ast.js'
+import { ctx, err, inc, PTR } from '../ctx.js'
+import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-} from './type.js'
-import { valTypeOf } from './kind.js'
-import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from './reps.js'
+} from '../type.js'
+import { valTypeOf } from '../kind.js'
+import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -49,7 +49,7 @@ import {
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
-} from './ir.js'
+} from '../ir.js'
 import { typeofPredicate } from './infer.js'
 
 const stringOps = (node) => {

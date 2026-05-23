@@ -26,18 +26,18 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
-import { T, isBlockBody } from './ast.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from '../ctx.js'
+import { T, isBlockBody } from '../ast.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
 } from './analyze.js'
-import { typedElemAux } from './type.js'
-import { VAL, updateRep } from './reps.js'
+import { typedElemAux } from '../type.js'
+import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
-import { optimizeFunc, treeshake } from './optimize.js'
+import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
-import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from './abi/string.js'
+import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
@@ -51,12 +51,12 @@ import {
   valKindToPtr, findBodyStart, tcoTailRewrite,
   boolBoxIR,
   I32_MIN, I32_MAX,
-} from './ir.js'
+} from '../ir.js'
 import plan from './plan.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix,
-} from './assemble.js'
+} from '../wat/assemble.js'
 
 // =============================================================================
 // Single-source export semantics

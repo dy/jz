@@ -27,10 +27,10 @@
  * @module optimize
  */
 
-import { LAYOUT, ctx } from './ctx.js'
-import { findBodyStart } from './ir.js'
+import { LAYOUT, ctx } from '../ctx.js'
+import { findBodyStart } from '../ir.js'
 import { vectorizeLaneLocal } from './vectorize.js'
-import { nanPrefixHex, atomNanHex } from '../layout.js'
+import { nanPrefixHex, atomNanHex } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()

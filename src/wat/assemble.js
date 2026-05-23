@@ -13,7 +13,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP } from './ctx.js'
+import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP } from '../ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -33,12 +33,12 @@ const parseTemplate = (str) => {
   if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
   return cloneTemplate(tmpl)
 }
-import { T } from './ast.js'
-import { analyzeValTypes } from './analyze.js'
-import { VAL } from './reps.js'
-import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from './optimize.js'
-import { emit } from './emit.js'
-import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from './ir.js'
+import { T } from '../ast.js'
+import { analyzeValTypes } from '../compile/analyze.js'
+import { VAL } from '../reps.js'
+import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
+import { emit } from '../compile/emit.js'
+import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
 
 // NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
 const NAN_PREFIX = BigInt(LAYOUT.NAN_PREFIX)
