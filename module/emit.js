@@ -1,10 +1,10 @@
 /**
- * Runtime emit accessors for stdlib modules.
+ * Stdlib emit accessors — delegates to ctx.stdlibEmit (bound at compile reset).
  *
- * Delegates to ctx.stdlibEmit (bound at compile reset) so module files do not
- * statically import emit.js and its analyzer dependency chain.
+ * Keeps language modules off src/emit.js so they do not pull the analyzer in
+ * at import time. Static imports only (metacircular / self-host friendly).
  *
- * @module module/_emit
+ * @module module/emit
  */
 
 import { ctx } from '../src/ctx.js'

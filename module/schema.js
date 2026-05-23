@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64 } from '../src/ir.js'
-import { emit } from './_emit.js'
+import { emit } from './emit.js'
 import { valTypeOf } from '../src/analyze.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
