@@ -12,8 +12,13 @@ node bench/bench.mjs  # run benchmarks
 ## Code layout
 
 ```
-jzify/         opt-in JS→JZ desugar (index.js, op-policy.js) — root, not src/
+jzify/         opt-in JS→JZ desugar (index.js orchestrator + phase modules) — root, not src/
+  names.js     temp-name factory (switch/class/arg/do namespaces)
+  bundler.js   esbuild export/interop folds + object-literal idioms
+  classes.js   class + object-method `this` lowering
+  switch.js    switch fall-through lowering
 src/
+  op-policy.js shared jzify/prepare reject + class-error messages
   abi/         NaN-box ABI helpers (string, array, object, number)
   # shared leaves — short paths, imported across stages:
   ast.js static.js kind.js type.js param-reps.js

@@ -31,7 +31,7 @@ import { observeNodeFacts } from './program-facts.js'
 import { staticObjectProps, staticPropertyKey } from './static.js'
 import { VAL } from './reps.js'
 import { STMT_OPS } from './ast.js'
-import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../jzify/op-policy.js'
+import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from './op-policy.js'
 import { recordGlobalRep } from './infer.js'
 import { isFuncRef } from './ir.js'
 import {

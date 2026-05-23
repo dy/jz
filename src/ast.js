@@ -252,3 +252,85 @@ export const returnExprs = (body) => {
   return [body]
 }
 
+// === Clone / compare / module body / bare refs ===
+
+/** Deep-clone an AST node (arrays only; primitives pass through). */
+export function cloneNode(node) {
+  if (node == null || typeof node !== 'object') return node
+  if (!Array.isArray(node)) return node
+  return node.map(cloneNode)
+}
+
+/** Structural equality via JSON (AST nodes are JSON-serializable). */
+export function nodeEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/** Property entries of an object-literal AST node (`['{}', …]`). */
+export function descriptorProps(node) {
+  if (!Array.isArray(node) || node[0] !== '{}') return null
+  const body = node[1]
+  if (body == null) return []
+  if (Array.isArray(body) && body[0] === ',') return body.slice(1)
+  return [body]
+}
+
+/** Comma-unwrapped entries from an object-literal constructor arg list. */
+export function objectLiteralEntries(args) {
+  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  return raw.filter(p => p != null)
+}
+
+/** String literal node → string, or null. */
+export function literalString(node) {
+  return Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
+}
+
+/** Zero numeric literal node. */
+export function isZeroLiteral(node) {
+  return Array.isArray(node) && node[0] == null && node[1] === 0
+}
+
+/** Top-level module statements; null when `ast` is not module-shaped. */
+export function moduleStmts(ast) {
+  if (!Array.isArray(ast)) return null
+  return ast[0] === ';' ? ast.slice(1).filter(Boolean) : [ast]
+}
+
+/** Unwrap esbuild module binding to `[name, init]`, or null. */
+export function bindingOf(stmt) {
+  if (!Array.isArray(stmt)) return null
+  if (stmt[0] === '=' && typeof stmt[1] === 'string') return [stmt[1], stmt[2]]
+  if ((stmt[0] === 'let' || stmt[0] === 'const' || stmt[0] === 'var') && stmt.length === 2 &&
+      Array.isArray(stmt[1]) && stmt[1][0] === '=' && typeof stmt[1][1] === 'string')
+    return [stmt[1][1], stmt[1][2]]
+  return null
+}
+
+/** Identifier refs in value positions (skip decl names, member keys, object keys). */
+export function collectBareRefs(node, out) {
+  if (typeof node === 'string') return void out.add(node)
+  if (!Array.isArray(node)) return
+  if (node[0] === 'let' || node[0] === 'const' || node[0] === 'var') {
+    for (let i = 1; i < node.length; i++)
+      if (Array.isArray(node[i]) && node[i][0] === '=') collectBareRefs(node[i][2], out)
+  } else if ((node[0] === '.' || node[0] === '?.') && typeof node[2] === 'string') {
+    collectBareRefs(node[1], out)
+  } else if (node[0] === ':') {
+    collectBareRefs(node[2], out)
+  } else {
+    for (let i = 1; i < node.length; i++) collectBareRefs(node[i], out)
+  }
+}
+
+/** Deep walk: `pred` on every node including bare identifiers; descends into arrows. */
+export function someDeep(node, pred) {
+  if (pred(node)) return true
+  if (!Array.isArray(node)) return false
+  for (let i = 1; i < node.length; i++) if (someDeep(node[i], pred)) return true
+  return false
+}
+
+/** Alias for {@link extractParams}. */
+export const paramList = extractParams
+
