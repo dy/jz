@@ -1,5 +1,4 @@
-// Compile-time advisories (opts.warnings / ctx.warn). Heap growth today;
-// perf bails, untagged instanceof, Set/Map order — see .work/todo.md.
+// Compile-time advisories (opts.warnings / ctx.warn). See .work/todo.md.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
@@ -37,10 +36,10 @@ test('warnings: heap-loop when a loop body allocates', () => {
   is(ws[0].code, 'heap-loop')
 })
 
-test('warnings: heap-per-call on parametric export that allocates once', () => {
-  const ws = warningsFor('export let f = (n) => { let a = [n]; return a[0] }')
+test('warnings: arena-rewind-skipped on parametric export that allocates', () => {
+  const ws = warningsFor('export let f = (n) => { let xs = []; xs.push(n); return xs.length }')
   is(ws.length, 1)
-  is(ws[0].code, 'heap-per-call')
+  is(ws[0].code, 'arena-rewind-skipped')
 })
 
 test('warnings: arena-rewindable zero-arg scalar export stays quiet', () => {
@@ -62,4 +61,51 @@ test('warnings: jz() surfaces advisories on the runtime result', () => {
   const { warnings: surfaced } = jz('export let f = () => { let a = [1]; return a }', { warnings })
   is(surfaced.length, 1)
   is(surfaced[0].code, 'heap-return')
+})
+
+test('warnings: untagged instanceof on Error types (jzify)', () => {
+  const ws = warningsFor('export let f = (e) => e instanceof TypeError', { jzify: true })
+  is(ws.length, 1)
+  is(ws[0].code, 'untagged-instanceof')
+})
+
+test('warnings: set-map-order on JSON.stringify(map)', () => {
+  const ws = warningsFor('export let f = () => JSON.stringify(new Map())')
+  is(ws.length, 1)
+  is(ws[0].code, 'set-map-order')
+})
+
+test('warnings: jsstring-declined when concat blocks externref carrier', () => {
+  const ws = warningsFor(`export let f = (s = '') => s + '!'`)
+  is(ws.length, 1)
+  is(ws[0].code, 'jsstring-declined')
+  ok(/concatenation/.test(ws[0].message))
+})
+
+test('warnings: jsstring-declined when param is reassigned', () => {
+  const ws = warningsFor(`export let f = (s = '') => { s = s; return s.length }`)
+  is(ws.length, 1)
+  is(ws[0].code, 'jsstring-declined')
+  ok(/reassign/.test(ws[0].message))
+})
+
+test('warnings: simd-loop-carried on reduction-style loop', () => {
+  const ws = warningsFor(`
+    export let f = (xs) => {
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s ^= xs[i]
+      return s
+    }
+  `)
+  ok(ws.some(w => w.code === 'simd-loop-carried'))
+})
+
+test('warnings: simd-aos-stride on interleaved index', () => {
+  const ws = warningsFor(`
+    export let f = (a) => {
+      for (let i = 0; i < 10; i++) a[i * 3] = 1
+      return 0
+    }
+  `)
+  ok(ws.some(w => w.code === 'simd-aos-stride'))
 })

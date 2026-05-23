@@ -17,6 +17,10 @@
  * @module jzify
  */
 
+import { warn } from './ctx.js'
+
+const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
+
 /**
  * Transform AST in-place. Returns transformed AST.
  * @param {Array} ast - subscript/jessie parsed AST
@@ -964,6 +968,11 @@ const handlers = {
     // Static fold: literal shape of LHS already discriminates against the constructor.
     const fold = staticInstanceofFold(val, name)
     if (fold != null) return [null, fold]
+    if (typeof name === 'string' && ERROR_INSTANCEOF.has(name)) {
+      warn('untagged-instanceof',
+        `\`instanceof ${name}\` does not discriminate thrown values in jz — errors are untagged; inspect the message or value instead`,
+        { loc: Array.isArray(val) ? val.loc : null })
+    }
     if (name === 'Array') return ['()', ['.', 'Array', 'isArray'], t]
     if (name === 'Map') return ['()', '__is_map', t]
     if (name === 'Set') return ['()', '__is_set', t]
