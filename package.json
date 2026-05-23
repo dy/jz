@@ -14,7 +14,7 @@
     "cli.js",
     "wasi.js",
     "interop.js",
-    "heap.js",
+    "layout.js",
     "src",
     "module",
     "README.md"

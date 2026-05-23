@@ -8,9 +8,12 @@
  */
 
 import { makeAbi } from './abi/index.js'
-export { HEAP } from '../heap.js'
+export { HEAP, LAYOUT, PTR, ATOM, nanPrefixHex, atomNanHex, ssoBitI64Hex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI } from '../layout.js'
 
 // === Carrier layout ===
+// Canonical bit layout lives in layout.js (compiler-free). Re-exported above for
+// backward-compatible `import { LAYOUT, PTR } from './ctx.js'`.
+//
 // i64 carrier holds either:
 //   - raw f64 number bits (any non-NaN-shape pattern), discriminated by
 //     `f64.eq(f, f)` — true for real numbers, false for NaN-shape pointers.
@@ -20,38 +23,6 @@ export { HEAP } from '../heap.js'
 // `${LAYOUT.TAG_SHIFT}` etc. so a layout change propagates by re-evaluation.
 // Hot dispatch (__ptr_type/__ptr_aux/__ptr_offset) keeps the inline expansion
 // for codegen size; those sites are commented as LAYOUT-tied.
-export const LAYOUT = {
-  TAG_SHIFT: 47,
-  TAG_MASK: 0xF,           // 4-bit tag (16 type slots)
-  AUX_SHIFT: 32,
-  AUX_MASK: 0x7FFF,        // 15-bit aux (schemaId, elemType, atomId, …)
-  OFFSET_MASK: 0xFFFFFFFF, // 32-bit offset (4GB heap)
-  NAN_PREFIX: 0x7FF8,      // top 13 bits of any NaN-shape pointer
-  NAN_PREFIX_BITS: 0x7FF8000000000000n, // pre-shifted for i64 OR
-  SSO_BIT: 0x4000,         // STRING aux bit 14: 1=inline (≤4 ASCII chars in offset), 0=heap
-  SLICE_BIT: 0x2000,       // STRING aux bit 13: 1=view (no length header — len in aux[12:0],
-                           //   offset points into a parent buffer), 0=own heap string.
-  SLICE_LEN_MASK: 0x1FFF,  // aux[12:0] — view length (≤8191; larger slices fall back to copy)
-}
-
-// === Tagged-pointer type codes ===
-// 4-bit tag (LAYOUT.TAG_MASK = 16 slots).
-// To retire a type, gate emission behind a feature flag and drop its dispatch
-// branches; to add, renumber with care — hardcoded branches in module/* must update.
-export const PTR = {
-  ATOM: 0,      // null, undefined, booleans, symbols (aux=atomId)
-  ARRAY: 1,     // heap-allocated arrays
-  BUFFER: 2,    // ArrayBuffer: [-8:byteLen][-4:byteCap][bytes]
-  TYPED: 3,     // TypedArrays (Float64Array, etc.)
-  STRING: 4,    // strings (heap or inline-SSO; aux bit LAYOUT.SSO_BIT distinguishes)
-  // 5: free
-  OBJECT: 6,    // plain objects
-  HASH: 7,      // dynamic objects (Map-like)
-  SET: 8,       // Set collections
-  MAP: 9,       // Map collections
-  CLOSURE: 10,  // first-class functions
-  EXTERNAL: 11, // JS host object refs (aux=0, offset→extMap index)
-}
 
 // === Global context with nested sub-contexts ===
 // Each namespace has a single lifecycle phase and clear ownership. Violating

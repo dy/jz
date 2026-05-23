@@ -25,7 +25,7 @@
  */
 
 import { wasi } from './wasi.js'
-import { HEAP } from './heap.js'
+import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, PTR } from './layout.js'
 
 // ── WASI linking ────────────────────────────────────────────────────────────
 
@@ -129,13 +129,10 @@ export const i64ToF64 = _bi64.i64ToF64
 export const f64ToI64 = _bi64.f64ToI64
 // Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
 // Distinct from 0, JS NaN (payload=0), and all pointers.
-_u32[1] = 0x7FF80001; _u32[0] = 0; export const NULL_NAN = _f64[0]
-_u32[1] = 0x7FF80002; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
-// Boxed-boolean atoms (type=0, offset=0): aux=4 → false, aux=5 → true. The
-// low aux bit is the truth value; only exported scalars cross as these — the
-// inner 0/1 number carrier never escapes the wasm boundary.
-_u32[1] = 0x7FF80004; _u32[0] = 0; export const FALSE_NAN = _f64[0]
-_u32[1] = 0x7FF80005; _u32[0] = 0; export const TRUE_NAN = _f64[0]
+_u32[1] = ATOM_HI[ATOM.NULL]; _u32[0] = 0; export const NULL_NAN = _f64[0]
+_u32[1] = ATOM_HI[ATOM.UNDEF]; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
+_u32[1] = ATOM_HI[ATOM.FALSE]; _u32[0] = 0; export const FALSE_NAN = _f64[0]
+_u32[1] = ATOM_HI[ATOM.TRUE]; _u32[0] = 0; export const TRUE_NAN = _f64[0]
 
 // Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
@@ -145,20 +142,20 @@ const decode = v => {
   if (v === v) return v  // fast path: non-NaN
   _f64[0] = v
   if (_u32[0] !== 0) return v
-  if (_u32[1] === 0x7FF80001) return null
-  if (_u32[1] === 0x7FF80002) return undefined
-  if (_u32[1] === 0x7FF80004) return false
-  if (_u32[1] === 0x7FF80005) return true
+  if (_u32[1] === ATOM_HI[ATOM.NULL]) return null
+  if (_u32[1] === ATOM_HI[ATOM.UNDEF]) return undefined
+  if (_u32[1] === ATOM_HI[ATOM.FALSE]) return false
+  if (_u32[1] === ATOM_HI[ATOM.TRUE]) return true
   return v
 }
 
 export const ptr = (type, aux, offset) => {
-  _u32[1] = (0x7FF80000 | ((type & 0xF) << 15) | (aux & 0x7FFF)) >>> 0
+  _u32[1] = encodePtrHi(type, aux)
   _u32[0] = offset >>> 0; return _f64[0]
 }
 export const offset = (p) => { _f64[0] = p; return _u32[0] }
-export const type = (p) => { _f64[0] = p; return (_u32[1] >>> 15) & 0xF }
-export const aux = (p) => { _f64[0] = p; return _u32[1] & 0x7FFF }
+export const type = (p) => { _f64[0] = p; return decodePtrType(_u32[1]) }
+export const aux = (p) => { _f64[0] = p; return decodePtrAux(_u32[1]) }
 
 // Typed element metadata: [elemId, byteStride, DataView getter, DataView setter]
 const ELEMS = {

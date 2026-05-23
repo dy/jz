@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
-import { emit, emitBoolStr } from '../src/emit.js'
+import { emit, emitBoolStr } from '../src/stdlib-emit.js'
 import { T, valTypeOf, VAL } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'

@@ -30,11 +30,12 @@
 import { LAYOUT, ctx } from './ctx.js'
 import { findBodyStart } from './ir.js'
 import { vectorizeLaneLocal } from './vectorize.js'
+import { nanPrefixHex, atomNanHex } from '../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
-const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
-const NULL_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
-const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+const NAN_BITS = nanPrefixHex()
+const NULL_BITS = atomNanHex(1)
+const UNDEF_BITS = atomNanHex(2)
 
 /**
  * Optimization passes, partitioned by phase. The `level` presets pick which

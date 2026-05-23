@@ -10,15 +10,15 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads } from '../src/emit.js'
+import { emit, buildArrayWithSpreads } from '../src/stdlib-emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf, inlineArraySid } from '../src/analyze.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP } from '../src/ctx.js'
+import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
 
-// Pre-shifted NaN prefix as a full i64 mask, for `(i64.const ${NAN_BITS})` use.
-const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
+const NAN_BITS = nanPrefixHex()
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {

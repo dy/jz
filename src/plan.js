@@ -26,7 +26,7 @@
 
 import { ctx, warn } from './ctx.js'
 import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, refreshProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
@@ -2877,30 +2877,30 @@ export default function plan(ast) {
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
-  if (flattenFuncNamespaces(ast)) programFacts = collectProgramFacts(ast)
+  if (flattenFuncNamespaces(ast)) programFacts = refreshProgramFacts(ast, programFacts)
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   devirtGlobalCalls(ast)
-  if (bindNestedRowLengths()) programFacts = collectProgramFacts(ast)
-  if (unrollRowLenPadLoops()) programFacts = collectProgramFacts(ast)
+  if (bindNestedRowLengths()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (unrollRowLenPadLoops()) programFacts = refreshProgramFacts(ast, programFacts)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
   // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
   // replacement (`scalarize*`) is *not* gated on `sourceInline`: callers turn it on
   // independently via `optimize: { sourceInline: false }` to test heap elision alone.
-  if (inlineHotInternalCalls(programFacts, ast)) programFacts = collectProgramFacts(ast)
-  if (bindNestedRowLengths()) programFacts = collectProgramFacts(ast)
-  if (unrollRowLenPadLoops()) programFacts = collectProgramFacts(ast)
-  if (inlineLocalLambdas()) programFacts = collectProgramFacts(ast)
-  if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
-  if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
-  if (scalarizeFunctionObjectLiterals()) programFacts = collectProgramFacts(ast)
+  if (inlineHotInternalCalls(programFacts, ast)) programFacts = refreshProgramFacts(ast, programFacts)
+  if (bindNestedRowLengths()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (unrollRowLenPadLoops()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (inlineLocalLambdas()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (specializeFixedRestCalls(programFacts)) programFacts = refreshProgramFacts(ast, programFacts)
+  if (scalarizeFunctionArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (scalarizeFunctionObjectLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
   // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
   // are gone) and BEFORE typed-array scalarization (so a freshly-promoted array's
   // fixed-length-typed-of-known-size variant could still participate in loop
   // unrolling — currently it can't, since promotion produces the `[...]`-arg
   // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
-  if (promoteIntArrayLiterals()) programFacts = collectProgramFacts(ast)
-  if (scalarizeFunctionTypedArrays(programFacts)) programFacts = collectProgramFacts(ast)
+  if (promoteIntArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
+  if (scalarizeFunctionTypedArrays(programFacts)) programFacts = refreshProgramFacts(ast, programFacts)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn
 

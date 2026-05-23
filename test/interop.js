@@ -28,15 +28,15 @@ test('interop: instantiate works on baseline wasm', () => {
   is(exports.f(41), 42)
 })
 
-test('interop: subpath stays compiler-free — only wasi.js and heap.js outside its file', async () => {
+test('interop: subpath stays compiler-free — only wasi.js and layout.js outside its file', async () => {
   // The whole point of the subpath: it can be loaded without dragging in the
   // compiler. Enforce it as a static contract — `jz/interop` may import only
-  // `./wasi.js` and `./heap.js`. Any new dep here is a regression.
+  // `./wasi.js` and `./layout.js`. Any new dep here is a regression.
   const { readFileSync } = await import('node:fs')
   const url = await import.meta.resolve('jz/interop')
   const src = readFileSync(new URL(url), 'utf8')
   const imports = [...src.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
-  const allowed = new Set(['./wasi.js', './heap.js'])
+  const allowed = new Set(['./wasi.js', './layout.js'])
   for (const imp of imports) {
     ok(allowed.has(imp), `jz/interop imports ${imp} — only ${[...allowed].join(', ')} are allowed`)
     for (const forbidden of ['subscript', 'watr', './src/', './index.js', './module/']) {
