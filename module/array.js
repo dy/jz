@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads, edges } from '../src/lib.js'
+import { emit, spread, deps } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { extractParams, staticPropertyKey, staticObjectProps, inlineArraySid, classifyParam } from '../src/analyze.js'
 import { ASSIGN_OPS } from '../src/ast.js'
@@ -242,7 +242,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__dyn_props (local.get $root)))))) ` : ''
 
 export default (ctx) => {
-  edges({
+  deps({
     __arr_idx: [],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),
@@ -636,10 +636,10 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
 
-    // Spread literal: buildArrayWithSpreads pre-sums the total length, allocates
+    // Spread literal: spread pre-sums the total length, allocates
     // exact, and bulk-copies ARRAY sources with a single memory.copy — vs the
     // per-element __arr_set_idx_ptr grow loop. Normalise the parser's `['...', x]`.
-    return buildArrayWithSpreads(elems.map(e =>
+    return spread(elems.map(e =>
       Array.isArray(e) && e[0] === '...' ? ['__spread', e[1]] : e))
   }
 

@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit, emitBoolStr, edges, reg } from '../src/lib.js'
+import { emit, bool, deps, reg } from '../src/lib.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
@@ -137,7 +137,7 @@ const POW10_SCALE = `
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))`
 
 export default (ctx) => {
-  edges({
+  deps({
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
@@ -856,7 +856,7 @@ export default (ctx) => {
   // render as "true"/"false" (spec step 1: ToString) before parsing — otherwise
   // its 0/1 carrier bits are fed to the parser as if a string pointer. Other types
   // (string already, number/object ToPrimitive) stay out of scope per the runner.
-  const strInputI64 = (x) => valTypeOf(x) === VAL.BOOL ? asI64(emitBoolStr(x)) : asI64(emit(x))
+  const strInputI64 = (x) => valTypeOf(x) === VAL.BOOL ? asI64(bool(x)) : asI64(emit(x))
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     needParseInt()

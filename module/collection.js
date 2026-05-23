@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
-import { emit, emitFlat, edges, call } from '../src/lib.js'
+import { emit, flat, deps, call } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue } from '../src/analyze.js'
@@ -318,7 +318,7 @@ export default (ctx) => {
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
   const ifExt = (name) => () => ctx.features.external ? [name] : []
-  edges({
+  deps({
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     __set_add: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_set'] : ['__map_hash', '__same_value_zero'],
@@ -1240,7 +1240,7 @@ export default (ctx) => {
     const needsCont = hasOwnContinue(body)
     ctx.func.stack.push({ brk, loop: needsCont ? cont : loop })
     let bodyFlat
-    try { bodyFlat = emitFlat(body) }
+    try { bodyFlat = flat(body) }
     finally { ctx.func.stack.pop() }
     const bodyBlock = needsCont ? [['block', cont, ...bodyFlat]] : bodyFlat
     inc('__ptr_type')

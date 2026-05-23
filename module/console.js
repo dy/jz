@@ -24,7 +24,7 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit, edges, reg } from '../src/lib.js'
+import { emit, deps, reg } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { exprType } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
@@ -54,7 +54,7 @@ const flattenTemplateConcat = (node) => {
 }
 
 const setupWasi = (ctx) => {
-  edges({
+  deps({
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
     __write_int: ['__itoa', '__mkstr', '__write_str'],

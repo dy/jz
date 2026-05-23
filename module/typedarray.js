@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { emit, emitIndex, edges, call } from '../src/lib.js'
+import { emit, idx, deps, call } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -197,7 +197,7 @@ function genSimdMap(name, elemType, pattern) {
 
 
 export default (ctx) => {
-  edges({
+  deps({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
@@ -956,11 +956,11 @@ export default (ctx) => {
     (local.get $v))`
 
   // Type-aware TypedArray read: arr[i]
-  ctx.core.emit['.typed:[]'] = (arr, idx) => {
+  ctx.core.emit['.typed:[]'] = (arr, i) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
-    const objIR = emit(arr), vi = emitIndex(idx)
+    const objIR = emit(arr), vi = idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) return typed(['f64.reinterpret_i64', ['i64.load', off]], 'f64')
     if (et === 7) return typed(['f64.load', off], 'f64') // Float64Array
@@ -970,11 +970,11 @@ export default (ctx) => {
   }
 
   // Type-aware TypedArray write: arr[i] = val
-  ctx.core.emit['.typed:[]='] = (arr, idx, val, void_ = false) => {
+  ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView, isBigInt } = r
-    const objIR = emit(arr), vi = emitIndex(idx), valIR = emit(val)
+    const objIR = emit(arr), vi = idx(i), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) {
       const vt = temp('tw')

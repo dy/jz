@@ -148,7 +148,7 @@ export default (ctx) => {
   const arrayValType = (obj) => (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.ARRAY
   // Index-string key array for an array-like receiver. `lenCall` is the
   // length builtin: __len for jz arrays, __str_len for strings.
-  const emitIndexKeys = (obj, lenCall) => {
+  const idxKeys = (obj, lenCall) => {
     inc(lenCall, '__to_str')
     const v = temp('ik'), i = tempI32('iki'), len = tempI32('ikl')
     const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
@@ -172,8 +172,8 @@ export default (ctx) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
     if (isHashTyped(obj)) return emitHashKeys(obj)
-    if (arrayValType(obj)) return emitIndexKeys(obj, '__len')
-    if (stringValType(obj)) return emitIndexKeys(obj, '__str_len')
+    if (arrayValType(obj)) return idxKeys(obj, '__len')
+    if (stringValType(obj)) return idxKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
     if (schema) return emitStringArray(schema)
     // Receiver type unknown at compile time. Dispatch on ptr-type at
