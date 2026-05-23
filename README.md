@@ -471,13 +471,14 @@ Names are stable; binary layouts are not — re-derive from the latest `interop.
 
 ## Examples
 
-Runnable browser demos in [`examples/`](examples/) — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)):
+Runnable browser demos — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)):
 
-* [game-of-life](examples/game-of-life/) — Conway's Life writing the cell grid straight into shared pixel memory.
-* [interference](examples/interference/) — two-source wave interference field rendered per frame.
-* [mandelbrot](examples/mandelbrot/) — escape-time fractal with a precomputed color table.
+* [game-of-life](https://dy.github.io/jz/examples/game-of-life/) — Conway's Life writing the cell grid straight into shared pixel memory.
+* [interference](https://dy.github.io/jz/examples/interference/) — two-source wave interference field rendered per frame.
+* [mandelbrot](https://dy.github.io/jz/examples/mandelbrot/) — escape-time fractal with a precomputed color table.
+* [rfft](https://dy.github.io/jz/examples/rfft/) — live log/mel spectrogram from a jz-computed real FFT, with floatbeat audio and JS⇄jz toggle.
 
-Each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` binaries are committed so the demos work when served from GitHub; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
+Source in [`examples/`](examples/). Each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` binaries are committed so the demos work when served from GitHub; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
 
 
 ## Alternatives
