@@ -10,15 +10,15 @@
 import { ctx, warn } from './ctx.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
-  VAL,
   analyzeBody,
   paramFactsOf,
   exprType, findMutations, hasBareReturn,
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
   scanBoundedLoops,
-  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf, updateRep,
+  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
 } from './analyze.js'
+import { VAL, updateRep } from './reps.js'
 import {
   clearStickyNull, ensureParamRep, mergeParamFact,
   inferArrElemSchema, inferArrElemValType,

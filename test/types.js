@@ -8,7 +8,8 @@ import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare.js'
 import { ctx, reset } from '../src/ctx.js'
 import { emitter } from '../src/emit.js'
-import { analyzeValTypes, analyzeIntCertain, analyzeBody, repOf, updateRep, VAL } from '../src/analyze.js'
+import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/analyze.js'
+import { repOf, updateRep, VAL } from '../src/reps.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 

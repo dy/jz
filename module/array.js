@@ -10,7 +10,8 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/stdlib-emit.js'
-import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey, staticObjectProps, inlineArraySid, ASSIGN_OPS, classifyParam } from '../src/analyze.js'
+import { valTypeOf, extractParams, staticPropertyKey, staticObjectProps, inlineArraySid, ASSIGN_OPS, classifyParam } from '../src/analyze.js'
+import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'

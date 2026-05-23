@@ -11,7 +11,8 @@
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
 import { emit, emitBoolStr } from '../src/stdlib-emit.js'
-import { isReassigned, valTypeOf, VAL } from '../src/analyze.js'
+import { isReassigned, valTypeOf } from '../src/analyze.js'
+import { VAL } from '../src/reps.js'
 import { inc, PTR } from '../src/ctx.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
