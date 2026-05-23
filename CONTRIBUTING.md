@@ -16,7 +16,7 @@ src/
   jzify/       opt-in JS→JZ desugar (index.js, op-policy.js)
   abi/         NaN-box ABI helpers (string, array, object, number)
   # shared leaves — short paths, imported across stages:
-  ast.js static.js kind.js type.js
+  ast.js static.js kind.js type.js param-reps.js
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
   # pipeline orchestrators (flat until a stage grows a sub-family):
   prepare.js   validate, normalize, extract exports/imports
@@ -30,7 +30,7 @@ module/        stdlib
 
 **Suggested future folders** (optional, no rush): `wat/` (assemble, codegen, watopt), `compile/` (middle pipeline if it grows further). Not worth moving until you're editing that family often.
 
-**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs, loop-unroll helpers.
+**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs, loop-unroll helpers. **AST walks:** use `refsName`/`refsAny`/`some` from `ast.js` — don't hand-roll name scanners.
 
 ## Architecture
 

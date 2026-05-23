@@ -23,7 +23,7 @@
  */
 
 import { parse } from 'subscript/feature/jessie'
-import { handlerArgs } from './ast.js'
+import { handlerArgs, refsName } from './ast.js'
 import { ctx, err, derive } from './ctx.js'
 import { T } from './ast.js'
 import { extractParams, collectParamNames, classifyParam } from './ast.js'
@@ -2227,7 +2227,7 @@ function tryFusePair(decl, forNode, seq, declIdx) {
   if (!hasAnyIndexedRead(forBody, NAME) && !hasAnyIndexedRead(cond, NAME)) return null
   // `NAME` must not be read after the for-loop in the same block.
   for (let k = declIdx + 2; k < seq.length; k++) {
-    if (refsName(seq[k], NAME)) return null
+    if (refsName(seq[k], NAME, { skipArrow: false })) return null
   }
   // RECV must not be reassigned inside the for-loop (would invalidate substitution).
   if (assignsName(forNode, RECV) || assignsName(forNode, NAME)) return null
@@ -2267,12 +2267,6 @@ function hasAnyIndexedRead(n, NAME) {
   if (!Array.isArray(n)) return false
   if (n[0] === '[]' && n.length === 3 && n[1] === NAME) return true
   for (let i = 1; i < n.length; i++) if (hasAnyIndexedRead(n[i], NAME)) return true
-  return false
-}
-function refsName(n, NAME) {
-  if (typeof n === 'string') return n === NAME
-  if (!Array.isArray(n)) return false
-  for (let i = 1; i < n.length; i++) if (refsName(n[i], NAME)) return true
   return false
 }
 function assignsName(n, NAME) {

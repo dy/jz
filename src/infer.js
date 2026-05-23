@@ -81,91 +81,10 @@ export function typeofPredicate(node) {
   return { name: typeofSide[1], code, eq: op === '==' || op === '===' }
 }
 
-// === paramReps lattice primitives ==========================================
+// === paramReps lattice =====================================================
 //
-// `paramReps: Map<funcName, Map<paramIdx, ValueRep>>` is the cross-call fact
-// lattice. Evidence sources (body-walk and call-site `infer*`) produce
-// raw observations; these primitives apply them with sticky-null poison
-// semantics: undefined → observe (set); equal → stay; disagreement → null
-// (sticky). null is "no consensus" — readers treat it as missing.
-//
-// Lifecycle phases (chronological — readers should know which fields are
-// valid at which point):
-//
-//   1. prepare      ─ no paramReps yet. AST walk collects callSites with raw
-//                     arg lists; programFacts.paramReps is allocated empty.
-//
-//   2. collectProgramFacts ─ unchanged paramReps; aggregates module-global
-//                     callSites, valueUsed, hasSchemaLiterals into
-//                     programFacts. paramReps still empty here.
-//
-//   3. narrowSignatures phase D (call-site lattice) ─
-//                     runCallsiteLattice merges raw call-site facts via
-//                     mergeParamFact for fields: val, schemaId, intConst,
-//                     arrayElemSchema, arrayElemValType, typedCtor, wasm.
-//                     After D, these may be undefined/null/value.
-//                     Sticky-null reachable on any field whose call sites
-//                     disagreed.
-//
-//   4. validateIntConstParams ─ clears intConst on any param whose body
-//                     contains a write to it (intConst's contract is "no
-//                     writes after the call").
-//
-//   5. phase E / E2 / E3 (param ABI narrowing) ─
-//                     applyI32ParamSpecialization sets sig.params[k].type
-//                     to 'i32' based on rep.wasm consensus. Then
-//                     applyPointerParamAbi sets rep.ptrKind on
-//                     consistently-OBJECT/ARRAY/etc params; this prepares
-//                     the i32-offset ABI for unboxed pointer params.
-//
-//   6. phase F (signature fixpoint) ─ clearStickyNull on val + schemaId,
-//                     then re-runs D until stable. New evidence from
-//                     newly-narrowed return types (valResult) can unstick.
-//
-//   7. phase G (narrowReturnArrayElems) ─ propagates Array<T> element
-//                     facts back through return paths into caller param
-//                     reps. After G, arrayElemSchema/arrayElemValType
-//                     reflect the transitive closure.
-//
-//   8. phase H (applyTypedPointerParamAbi) ─ sets ptrKind=TYPED + ptrAux
-//                     (elem code) for params whose val converged to TYPED.
-//                     Depends on F having seeded val first.
-//
-//   9. phase I (resetParamWasmFacts + final i32 spec) ─ last WASM-level
-//                     pass. After H/I, sig.params[k].type and rep.ptrKind
-//                     are frozen for emit.
-//
-//  10. per-function compile (emit start) ─ each func reads its
-//                     paramReps[name][k] and folds the consensus facts
-//                     into ctx.func.localReps via updateRep. Locals and
-//                     params then share one ValueRep store for the
-//                     remainder of emit.
-
-/** Per-call-site fact merge into a param's ValueRep field. */
-export const mergeParamFact = (rep, key, observed) => {
-  if (rep[key] === null) return                        // sticky poison
-  if (observed == null) { rep[key] = null; return }    // unknown → poison
-  if (rep[key] === undefined) rep[key] = observed
-  else if (rep[key] !== observed) rep[key] = null
-}
-
-/** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */
-export const ensureParamRep = (paramReps, funcName, k) => {
-  let m = paramReps.get(funcName)
-  if (!m) { m = new Map(); paramReps.set(funcName, m) }
-  let r = m.get(k)
-  if (!r) { r = {}; m.set(k, r) }
-  return r
-}
-
-/** Reset sticky-null on a single field across all params program-wide.
- *  Used between fixpoint phases when newly-narrowed facts unblock previously-
- *  poisoned observations (e.g. valResult set after first pass). */
-export const clearStickyNull = (paramReps, key) => {
-  for (const m of paramReps.values()) for (const r of m.values()) {
-    if (r[key] === null) r[key] = undefined
-  }
-}
+// Primitives live in src/param-reps.js (cycle-free leaf). Lifecycle phases
+// below document when each field is valid during narrowSignatures.
 
 // === Source registry =======================================================
 

@@ -18,7 +18,7 @@
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs } from './ast.js'
+import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from './ast.js'
 import { ctx, err } from './ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from './reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from './kind.js'
@@ -31,49 +31,8 @@ import { typedElemCtor, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT
 // programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>. Per-field lattice:
 // undefined unobserved, null sticky-poison (cross-site disagreement), value = consensus.
 
-// Lattice primitives for `paramReps` (`mergeParamFact`, `ensureParamRep`,
-// `clearStickyNull`) live in src/infer.js with the call-site evidence
-// extractors that produce facts for them. `paramFactsOf` (next) stays
-// here because `narrowReturnArrayElems` below consumes it; moving it would
-// invert the analyze.js↔infer.js import direction.
-
-/** Build `paramName → fact` lookup for a caller's already-narrowed param facts.
- *  Used to flow caller's param info into its callees during the cross-call
- *  fixpoint (transitive propagation). Returns null if caller has no facts. */
-export const paramFactsOf = (paramReps, callerFunc, key) => {
-  if (!callerFunc) return null
-  const m = paramReps.get(callerFunc.name)
-  if (!m) return null
-  let out = null
-  for (const [k, r] of m) {
-    const v = r[key]
-    if (v != null && k < callerFunc.sig.params.length) {
-      out ||= new Map()
-      out.set(callerFunc.sig.params[k].name, v)
-    }
-  }
-  return out
-}
-
-/** Static property-key evaluation for computed member names: folds a node into
- *  its constant value (numeric, string, boolean, null) and stringifies it. Returns
- *  null if any sub-expression isn't statically known. Handles literals, named
- *  string constants, String()/Number() casts, ternaries, short-circuit ops, and
- *  unary/binary arithmetic and bit ops. */
-
-
-// Cross-call argument inference helpers (`infer*`) live in src/infer.js —
-// they're the call-site mirror of the body-walk evidence sources and pair
-// naturally with that registry. Consumed by src/narrow.js' signature fixpoint.
-
-// Per-body memoization: analyzeBody is a pure function of `body` plus a small
-// set of ctx fields (func.locals, func.localReps, func.map[*][field]). compile.js
-// calls slices of it many times per function (scan-fixpoint, narrowing, final
-// lowering); the unified cache absorbs that traffic. Caller-mutation safety is
-// preserved by cloning every Map on read (entry value stored once, copies handed out).
-// Invalidation: emitFunc calls `invalidateLocalsCache` after seeding cross-call
-// param facts; compile.js' E2 pass calls `invalidateValTypesCache` after valResult
-// narrowing; narrowReturnArrayElems clears entries between fixpoint iters.
+// Cross-call argument inference helpers (`infer*`) live in src/infer.js.
+// paramReps lattice lives in src/param-reps.js.
 
 /**
  * Per-binding use-summary — the substrate the representation analyses share.
@@ -461,24 +420,11 @@ function scanFlatObjects(body) {
   // A binding referenced as a value inside `node` (skips `:`/`.` property-name
   // slots). Used only to reject a self-referential initializer — a literal
   // whose own field values mention the binding is not a self-contained object.
-  const referencesName = (node, name) => {
-    if (typeof node === 'string') return node === name
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === 'str') return false
-    if (op === ':') return referencesName(node[2], name)
-    if (op === '.' || op === '?.') return referencesName(node[1], name)
-    for (let i = 1; i < node.length; i++) if (referencesName(node[i], name)) return true
-    return false
-  }
-
   for (const [name, s] of scanBindingUses(body)) {
-    // Candidate: exactly one `let/const name = {staticLiteral}` decl, unique
-    // keys, and an initializer that does not reference the binding itself.
     if (s.decls !== 1 || !Array.isArray(s.initRhs) || s.initRhs[0] !== '{}') continue
     const props = staticObjectProps(s.initRhs.slice(1))
     if (!props || new Set(props.names).size !== props.names.length) continue
-    if (props.values.some(v => referencesName(v, name))) continue
+    if (props.values.some(v => refsName(v, name, REFS_IN_EXPR))) continue
 
     // Schema = literal keys ∪ plain literal-key member writes. Such a write
     // monotonically extends the static field universe (the new field reads
@@ -1715,73 +1661,6 @@ export function cseSafeLoadBases(body, locals, localReps) {
   return safe
 }
 
-
-const _FIELD_TO_SLICE = {
-  arrayElemSchema: 'arrElemSchemas',
-  arrayElemValType: 'arrElemValTypes',
-}
-export function narrowReturnArrayElems(field, paramReps, valueUsed) {
-  const sliceKey = _FIELD_TO_SLICE[field]
-  const targets = ctx.func.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) &&
-    f.valResult === VAL.ARRAY && f[field] == null
-  )
-  let changed = true
-  while (changed) {
-    changed = false
-    // Cache-staleness barrier: the fixpoint mutates target funcs' [field]
-    // between iterations. analyzeBody reads ctx.func.map[*][field] when
-    // resolving `const x = callee()` and similar chains, so any cached entry
-    // from a prior iter would freeze cross-func propagation. Clear all target
-    // bodies before each sweep.
-    for (const f of targets) _bodyFactsCache.delete(f.body)
-    for (const func of targets) {
-      if (func[field] != null) continue
-      const isBlock = isBlockBody(func.body)
-      if (isBlock && !alwaysReturns(func.body)) continue
-      const exprs = returnExprs(func.body)
-      if (!exprs.length) continue
-      // analyzeBody is context-pure for the arrElem slices, so a single walk
-      // gives both `locals` (for ctx.func.locals seeding — observe filter for
-      // param-aware downstream consumers) and the requested slice.
-      const savedLocals = ctx.func.locals
-      const facts = analyzeBody(func.body)
-      ctx.func.locals = new Map(facts.locals)
-      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
-      const localElems = facts[sliceKey]
-      ctx.func.locals = savedLocals
-      const paramElemMap = paramFactsOf(paramReps, func, field) || new Map()
-      const resolveExpr = (expr) => {
-        if (typeof expr === 'string') {
-          if (localElems.has(expr)) {
-            const v = localElems.get(expr)
-            if (v != null) return v
-          }
-          if (paramElemMap.has(expr)) return paramElemMap.get(expr)
-          return null
-        }
-        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-          const f = ctx.func.map?.get(expr[1])
-          if (f?.[field] != null) return f[field]
-        }
-        if (Array.isArray(expr) && expr[0] === '?:') {
-          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
-          return a != null && a === b ? a : null
-        }
-        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
-          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
-          return a != null && a === b ? a : null
-        }
-        return null
-      }
-      const v0 = resolveExpr(exprs[0])
-      if (v0 == null) continue
-      if (!exprs.every(e => resolveExpr(e) === v0)) continue
-      func[field] = v0
-      changed = true
-    }
-  }
-}
 
 /**
  * Whole-program SRoA eligibility — decides which object schemas may back an

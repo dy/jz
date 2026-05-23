@@ -11,9 +11,8 @@
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam } from '../src/ast.js'
+import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/static.js'
-import { ASSIGN_OPS } from '../src/ast.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
@@ -98,16 +97,8 @@ function substExpr(node, mapping) {
   return out
 }
 
-// Check whether a name is referenced inside a pure expression body.
-// Mirrors substExpr's traversal — skips property names on '.'/'?.' and object keys on ':'.
 function exprUses(node, name) {
-  if (typeof node === 'string') return node === name
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  if (op === '.' || op === '?.') return exprUses(node[1], name)
-  if (op === ':') return exprUses(node[2], name)
-  for (let i = 1; i < node.length; i++) if (exprUses(node[i], name)) return true
-  return false
+  return refsName(node, name, REFS_IN_EXPR)
 }
 
 // Callback factory: returns { setup, call, usedParams } where call(argExprs) emits the invocation.
