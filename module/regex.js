@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
-import { emit } from '../src/stdlib-emit.js'
+import { emit, watDeps } from '../src/stdlib-emit.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { includeModule } from '../src/autoload.js'
 
@@ -714,7 +714,7 @@ const patternMinLen = node => {
 // === Module init ===
 
 export default (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __str_to_buf: ['__str_byteLen', '__char_at'],
   })
 

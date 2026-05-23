@@ -13,10 +13,10 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, emitBoolStr } from '../src/stdlib-emit.js'
-import { valTypeOf } from '../src/analyze.js'
+import { emit, emitBoolStr, stdlibMethod, watDeps } from '../src/stdlib-emit.js'
+import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
-import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -38,7 +38,7 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 
 
 export default (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
@@ -1206,15 +1206,6 @@ export default (ctx) => {
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
-  // Declarative emitter for regular `(recv, ...args) → call($stdlib, coerced...)` methods.
-  // `coerce` is a per-argument code string ('I' i64 · 'F' f64 · 'i' i32); index 0 is the receiver.
-  // `ret` is the helper's result type — 'f64' is returned directly, 'i32' is widened to the f64 ABI.
-  const CO = { I: asI64, F: asF64, i: asI32 }
-  const method = (stdlib, coerce, ret = 'f64') => emitter([stdlib], (...nodes) => {
-    const c = ['call', `$${stdlib}`, ...nodes.map((n, i) => CO[coerce[i]](emit(n)))]
-    return typed(ret === 'i32' ? ['f64.convert_i32_s', c] : c, 'f64')
-  })
-
   // Search args go through ToString per spec — coerce non-string-typed args
   // via __to_str so the underlying byte-compare receives an actual string.
   const stringSearchMethod = (name) => (str, sfx) => {
@@ -1232,13 +1223,13 @@ export default (ctx) => {
   }
   ctx.core.emit['.startsWith'] = stringSearchMethod('__str_startswith')
   ctx.core.emit['.endsWith'] = stringSearchMethod('__str_endswith')
-  ctx.core.emit['.trim']       = method('__str_trim',       'I')
-  ctx.core.emit['.trimStart']  = method('__str_trimStart',  'I')
-  ctx.core.emit['.trimEnd']    = method('__str_trimEnd',    'I')
-  ctx.core.emit['.repeat']     = method('__str_repeat',     'Ii')
-  ctx.core.emit['.split']      = method('__str_split',      'II')
-  ctx.core.emit['.replace']    = method('__str_replace',    'III')
-  ctx.core.emit['.replaceAll'] = method('__str_replaceall', 'III')
+  ctx.core.emit['.trim']       = stdlibMethod('__str_trim',       'I')
+  ctx.core.emit['.trimStart']  = stdlibMethod('__str_trimStart',  'I')
+  ctx.core.emit['.trimEnd']    = stdlibMethod('__str_trimEnd',    'I')
+  ctx.core.emit['.repeat']     = stdlibMethod('__str_repeat',     'Ii')
+  ctx.core.emit['.split']      = stdlibMethod('__str_split',      'II')
+  ctx.core.emit['.replace']    = stdlibMethod('__str_replace',    'III')
+  ctx.core.emit['.replaceAll'] = stdlibMethod('__str_replaceall', 'III')
 
   const caseMethod = (lo, hi, delta) => (str) => {
     inc('__str_case')
@@ -1267,7 +1258,7 @@ export default (ctx) => {
   // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
   // codepoint order for well-formed strings — close enough for sort-stability
   // use cases, wrong for human-language collation.
-  ctx.core.emit['.localeCompare'] = method('__str_cmp', 'II', 'i32')
+  ctx.core.emit['.localeCompare'] = stdlibMethod('__str_cmp', 'II', 'i32')
 
   ctx.core.emit['.string:concat'] = (str, ...others) => {
     inc('__str_concat')

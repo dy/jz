@@ -24,8 +24,9 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit } from '../src/stdlib-emit.js'
-import { valTypeOf, exprType } from '../src/analyze.js'
+import { emit, watDeps, regEmit } from '../src/stdlib-emit.js'
+import { valTypeOf } from '../src/val-type.js'
+import { exprType } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
@@ -53,7 +54,7 @@ const flattenTemplateConcat = (node) => {
 }
 
 const setupWasi = (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
     __write_int: ['__itoa', '__mkstr', '__write_str'],
@@ -141,11 +142,10 @@ const setupWasi = (ctx) => {
       (br $read)))
     (call $__mkstr (local.get $buf) (local.get $total)))`
 
-  ctx.core.emit['readStdin'] = () => {
+  regEmit('readStdin', ['__read_stdin'], () => {
     needFdRead()
-    inc('__read_stdin')
     return typed(['call', '$__read_stdin'], 'f64')
-  }
+  })
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
@@ -194,16 +194,14 @@ const setupWasi = (ctx) => {
     (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
     (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
 
-  ctx.core.emit['Date.now'] = () => {
+  regEmit('Date.now', ['__time_ms'], () => {
     needClock()
-    inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')
-  }
-  ctx.core.emit['performance.now'] = () => {
+  })
+  regEmit('performance.now', ['__time_ms'], () => {
     needClock()
-    inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')
-  }
+  })
   ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
   ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
 }
@@ -256,14 +254,14 @@ const setupJsHost = (ctx) => {
   makeConsole('warn', 2)
   makeConsole('error', 2)
 
-  ctx.core.emit['Date.now'] = () => {
+  regEmit('Date.now', [], () => {
     needNow()
     return typed(['call', '$__now', ['i32.const', 0]], 'f64')
-  }
-  ctx.core.emit['performance.now'] = () => {
+  })
+  regEmit('performance.now', [], () => {
     needNow()
     return typed(['call', '$__now', ['i32.const', 1]], 'f64')
-  }
+  })
   ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
   ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
 }

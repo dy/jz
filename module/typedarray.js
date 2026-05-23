@@ -8,8 +8,9 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { emit, emitIndex } from '../src/stdlib-emit.js'
-import { valTypeOf, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
+import { emit, emitIndex, watDeps, stdlibCall } from '../src/stdlib-emit.js'
+import { valTypeOf } from '../src/val-type.js'
+import { TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex } from '../layout.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -196,7 +197,7 @@ function genSimdMap(name, elemType, pattern) {
 
 
 export default (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
@@ -210,6 +211,10 @@ export default (ctx) => {
   ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
 
   inc('__mkptr', '__alloc', '__len')
+
+  const emitToBuffer = stdlibCall('__to_buffer', 'I')
+  const emitByteLength = stdlibCall('__byte_length', 'I', 'i32')
+  const emitByteOffset = stdlibCall('__byte_offset', 'I', 'i32')
 
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
@@ -413,8 +418,7 @@ export default (ctx) => {
         }
       }
     }
-    inc('__to_buffer')
-    return typed(['call', '$__to_buffer', asI64(emit(obj))], 'f64')
+    return emitToBuffer(obj)
   }
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
@@ -439,8 +443,7 @@ export default (ctx) => {
         }
       }
     }
-    inc('__byte_length')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_length', asI64(emit(obj))]], 'f64')
+    return emitByteLength(obj)
   }
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
@@ -458,8 +461,7 @@ export default (ctx) => {
       }
       if (ctor?.startsWith('new.') && TYPED_ELEM_CODE[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
-    inc('__byte_offset')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asI64(emit(obj))]], 'f64')
+    return emitByteOffset(obj)
   }
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.

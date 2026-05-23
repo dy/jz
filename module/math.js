@@ -2,9 +2,9 @@
  * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
  *
  * Module API:
- * - ctx.core.emit['math.X'] = emitter(deps, args => WasmNode) - emitters with declarative stdlib deps
+ * - regEmit('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
  * - ctx.core.stdlib['math.X'] = '(func ...)' - WAT function definitions
- * - ctx.core.stdlibDeps['math.X'] = ['dep'] - direct stdlib→stdlib edges (expanded transitively)
+ * - watDeps({ 'math.X': ['dep'] }) - WAT stdlib→stdlib edges (expanded transitively)
  *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.core.emit['math.sin'] and calls it.
@@ -13,14 +13,11 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit } from '../src/stdlib-emit.js'
-import { emitter } from '../src/ctx.js'
+import { emit, emitter, regEmit, watDeps, dualCall, attachDeps } from '../src/stdlib-emit.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
-  // Direct stdlib→stdlib call edges. resolveIncludes() expands these transitively,
-  // so each emitter declares only the single stdlib it directly calls.
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
     'math.sin_core': ['math.isFinite'],
@@ -42,7 +39,6 @@ export default (ctx) => {
     'math.cbrt': ['math.isFinite', 'math.pow'],
     'math.sumPrecise': ['__ptr_offset', '__len', '__alloc'],
   })
-
   // Helpers: all math ops take f64 and return f64. Args go through ToNumber
   // (toNumF64) — ECMA Math methods coerce each argument, so null→0, undefined→NaN.
   const f = (op, a) => typed([op, toNumF64(a, emit(a))], 'f64')
@@ -212,42 +208,42 @@ export default (ctx) => {
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
 
   // Sign
-  ctx.core.emit['math.sign'] = emitter(['math.sign'], a => call('math.sign', a))
+  regEmit('math.sign', ['math.sign'], a => call('math.sign', a))
 
   // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
-  const sinCall = emitter(['math.sin'], a => call('math.sin', a))
-  const sinCoreCall = emitter(['math.sin_core', 'math.isFinite'], a => call('math.sin_core', a))
-  ctx.core.emit['math.sin'] = (a) => isSinCoreFastPath(a) ? sinCoreCall(a) : sinCall(a)
-  ctx.core.emit['math.sin'].deps = sinCall.deps
-  const cosCall = emitter(['math.cos'], a => call('math.cos', a))
-  const cosCoreCall = emitter(['math.cos_core', 'math.isFinite'], a => call('math.cos_core', a))
-  ctx.core.emit['math.cos'] = (a) => isSinCoreFastPath(a) ? cosCoreCall(a) : cosCall(a)
-  ctx.core.emit['math.cos'].deps = cosCall.deps
-  ctx.core.emit['math.tan'] = emitter(['math.tan'], a => call('math.tan', a))
+  ctx.core.emit['math.sin'] = dualCall(
+    emitter(['math.sin'], a => call('math.sin', a)),
+    emitter(['math.sin_core', 'math.isFinite'], a => call('math.sin_core', a)),
+    isSinCoreFastPath)
+  ctx.core.emit['math.cos'] = dualCall(
+    emitter(['math.cos'], a => call('math.cos', a)),
+    emitter(['math.cos_core', 'math.isFinite'], a => call('math.cos_core', a)),
+    isSinCoreFastPath)
+  regEmit('math.tan', ['math.tan'], a => call('math.tan', a))
 
   // Inverse trig
-  ctx.core.emit['math.asin'] = emitter(['math.asin'], a => call('math.asin', a))
-  ctx.core.emit['math.acos'] = emitter(['math.acos'], a => call('math.acos', a))
-  ctx.core.emit['math.atan'] = emitter(['math.atan'], a => call('math.atan', a))
-  ctx.core.emit['math.atan2'] = emitter(['math.atan2'], (a, b) => call('math.atan2', a, b))
+  regEmit('math.asin', ['math.asin'], a => call('math.asin', a))
+  regEmit('math.acos', ['math.acos'], a => call('math.acos', a))
+  regEmit('math.atan', ['math.atan'], a => call('math.atan', a))
+  regEmit('math.atan2', ['math.atan2'], (a, b) => call('math.atan2', a, b))
 
   // Hyperbolic
-  ctx.core.emit['math.sinh'] = emitter(['math.sinh'], a => call('math.sinh', a))
-  ctx.core.emit['math.cosh'] = emitter(['math.cosh'], a => call('math.cosh', a))
-  ctx.core.emit['math.tanh'] = emitter(['math.tanh'], a => call('math.tanh', a))
+  regEmit('math.sinh', ['math.sinh'], a => call('math.sinh', a))
+  regEmit('math.cosh', ['math.cosh'], a => call('math.cosh', a))
+  regEmit('math.tanh', ['math.tanh'], a => call('math.tanh', a))
 
   // Inverse hyperbolic
-  ctx.core.emit['math.asinh'] = emitter(['math.asinh'], a => call('math.asinh', a))
-  ctx.core.emit['math.acosh'] = emitter(['math.acosh'], a => call('math.acosh', a))
-  ctx.core.emit['math.atanh'] = emitter(['math.atanh'], a => call('math.atanh', a))
+  regEmit('math.asinh', ['math.asinh'], a => call('math.asinh', a))
+  regEmit('math.acosh', ['math.acosh'], a => call('math.acosh', a))
+  regEmit('math.atanh', ['math.atanh'], a => call('math.atanh', a))
 
   // Exponential and logarithmic
-  ctx.core.emit['math.exp'] = emitter(['math.exp'], a => call('math.exp', a))
-  ctx.core.emit['math.expm1'] = emitter(['math.expm1'], a => call('math.expm1', a))
-  ctx.core.emit['math.log'] = emitter(['math.log'], a => call('math.log', a))
-  ctx.core.emit['math.log2'] = emitter(['math.log2'], a => call('math.log2', a))
-  ctx.core.emit['math.log10'] = emitter(['math.log10'], a => call('math.log10', a))
-  ctx.core.emit['math.log1p'] = emitter(['math.log1p'], a => call('math.log1p', a))
+  regEmit('math.exp', ['math.exp'], a => call('math.exp', a))
+  regEmit('math.expm1', ['math.expm1'], a => call('math.expm1', a))
+  regEmit('math.log', ['math.log'], a => call('math.log', a))
+  regEmit('math.log2', ['math.log2'], a => call('math.log2', a))
+  regEmit('math.log10', ['math.log10'], a => call('math.log10', a))
+  regEmit('math.log1p', ['math.log1p'], a => call('math.log1p', a))
 
   // Power. Constant-integer-exponent `Math.pow(x,n)` / `x ** n` (|n| ≤ POW_FOLD_MAX)
   // lower to inline square-and-multiply instead of a $math.pow call. The fold is
@@ -325,12 +321,10 @@ export default (ctx) => {
     }
     return powCall(a, b)
   }
-  ctx.core.emit['math.pow'] = (a, b) => emitPow(a, b, false)
-  ctx.core.emit['math.pow'].deps = powCall.deps   // metadata parity (tabulation/analysis)
-  ctx.core.emit['**'] = (a, b) => emitPow(a, b, true)
-  ctx.core.emit['**'].deps = powCall.deps
-  ctx.core.emit['math.cbrt'] = emitter(['math.cbrt'], a => call('math.cbrt', a))
-  ctx.core.emit['math.hypot'] = emitter(['math.hypot'], (a, b, ...rest) => {
+  ctx.core.emit['math.pow'] = attachDeps((a, b) => emitPow(a, b, false), powCall.deps)
+  ctx.core.emit['**'] = attachDeps((a, b) => emitPow(a, b, true), powCall.deps)
+  regEmit('math.cbrt', ['math.cbrt'], a => call('math.cbrt', a))
+  regEmit('math.hypot', ['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
     if (b === undefined) return f('f64.abs', a)
     let r = call('math.hypot', a, b)
@@ -342,7 +336,7 @@ export default (ctx) => {
 
   // Math.sumPrecise(iterable) — exact, correctly-rounded summation (ECMA-262).
   // jz models the array case; the WAT routine sums via a fixed-point accumulator.
-  ctx.core.emit['math.sumPrecise'] = emitter(['math.sumPrecise'], arr =>
+  regEmit('math.sumPrecise', ['math.sumPrecise'], arr =>
     typed(['call', '$math.sumPrecise', ['i64.reinterpret_f64', asF64(emit(arr))]], 'f64'))
 
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
@@ -354,7 +348,7 @@ export default (ctx) => {
   ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
 
   // Random
-  ctx.core.emit['math.random'] = emitter(['math.random'], () => typed(['call', '$math.random'], 'f64'))
+  regEmit('math.random', ['math.random'], () => typed(['call', '$math.random'], 'f64'))
 
   // ============================================
   // WAT stdlib implementations
