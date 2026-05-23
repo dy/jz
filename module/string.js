@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, bool, method, deps } from '../src/lib.js'
+import { emit, bool, method, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'

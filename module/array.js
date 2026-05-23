@@ -9,9 +9,10 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
-import { emit, spread, deps } from '../src/lib.js'
+import { emit, spread, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/val-type.js'
-import { extractParams, staticPropertyKey, staticObjectProps, inlineArraySid, classifyParam } from '../src/analyze.js'
+import { extractParams, classifyParam } from '../src/params.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/static.js'
 import { ASSIGN_OPS } from '../src/ast.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'

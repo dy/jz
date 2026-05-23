@@ -27,7 +27,7 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
-import { emit, deps } from '../src/lib.js'
+import { emit, deps } from '../src/bridge.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const MAX_TIMERS = 64

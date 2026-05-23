@@ -24,14 +24,19 @@
 import { commaList } from './ast.js'
 import { ctx, err, inc, PTR } from './ctx.js'
 import {
-  T, nonNegIntLiteral, exprType, extractParams, classifyParam, findFreeVars, staticPropertyKey,
-  // AST predicates
-  isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
-  containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
+  T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
+} from './ast.js'
+import { nonNegIntLiteral } from './const.js'
+import { extractParams, classifyParam, findFreeVars } from './params.js'
+import {
+  containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
+  containsDeclOf, cloneWithSubst,
   containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
-  inBoundsCharCodeAt,
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
 } from './analyze.js'
+import { staticPropertyKey } from './static.js'
+import { scanBoundedLoops, inBoundsCharCodeAt } from './bounds.js'
+import { exprType } from './types.js'
 import { valTypeOf } from './val-type.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from './reps.js'
 import {

@@ -25,8 +25,19 @@
  */
 
 import { ctx, warn } from './ctx.js'
-import { callArgs, setCallArgs, some, blockStmts, stmtList } from './ast.js'
-import { T, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache, analyzeFuncNamespaces, extractParams, intLiteralValue, constIntExpr, isReassigned, containsDeclOf, hasControlTransfer, ternaryCtorOfRhs, MIXED_CTORS, smallConstForTripCount, cloneWithSubst } from './analyze.js'
+import { callArgs, setCallArgs, some, blockStmts, stmtList, T } from './ast.js'
+import { ASSIGN_OPS, isReassigned, hasControlTransfer, isBlockBody } from './ast.js'
+import {
+  analyzeBody, invalidateLocalsCache, analyzeFuncNamespaces,
+  smallConstForTripCount, containsDeclOf, cloneWithSubst,
+} from './analyze.js'
+import { intLiteralValue, constIntExpr } from './const.js'
+import { staticObjectProps, staticPropertyKey } from './static.js'
+import { typedElemCtor, typedElemAux, ternaryCtorOfRhs, MIXED_CTORS } from './typed.js'
+import { extractParams } from './params.js'
+import {
+  collectProgramFacts, refreshProgramFacts, invalidateProgramFactsCache,
+} from './program-facts.js'
 import { VAL, updateGlobalRep } from './reps.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'

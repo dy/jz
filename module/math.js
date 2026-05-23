@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, deps, dual, tag } from '../src/lib.js'
+import { emit, emitter, reg, deps, dual, tag } from '../src/bridge.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {

@@ -9,10 +9,10 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
-import { emit, flat, deps, call } from '../src/lib.js'
+import { emit, flat, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { hasOwnContinue } from '../src/analyze.js'
+import { hasOwnContinue } from '../src/ast.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key

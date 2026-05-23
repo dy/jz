@@ -6,6 +6,9 @@
  * @module ast
  */
 
+/** Template placeholder in prepared AST (prepare.js). */
+export const T = '\uE000'
+
 // === Numeric range (shared by analyze + ir) ===
 
 export const I32_MIN = -2147483648
@@ -108,5 +111,35 @@ export function some(node, pred, { skipArrow = true } = {}) {
   if (pred(node)) return true
   if (skipArrow && node[0] === '=>') return false
   for (let i = 1; i < node.length; i++) if (some(node[i], pred, { skipArrow })) return true
+  return false
+}
+
+const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
+
+/** Does `body` contain return/throw/break/continue (not inside nested `=>`)? */
+export function hasControlTransfer(body) {
+  if (!Array.isArray(body)) return false
+  if (CONTROL_TRANSFER.has(body[0])) return true
+  if (body[0] === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasControlTransfer(body[i])) return true
+  return false
+}
+
+/** Does `body` contain a `continue` that targets THIS loop? */
+export function hasOwnContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
+  return false
+}
+
+export function hasOwnBreakOrContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
   return false
 }
