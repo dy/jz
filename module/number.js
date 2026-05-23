@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit, bool, deps, reg } from '../src/lib.js'
+import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'

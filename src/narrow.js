@@ -8,16 +8,19 @@
  */
 
 import { ctx, warn } from './ctx.js'
+import { isBlockBody } from './ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
-  analyzeBody,
-  paramFactsOf,
-  exprType, findMutations, hasBareReturn,
-  invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
-  narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
-  scanBoundedLoops,
-  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
+  analyzeBody, paramFactsOf, findMutations, hasBareReturn,
+  invalidateLocalsCache, alwaysReturns,
+  narrowReturnArrayElems, returnExprs,
 } from './analyze.js'
+import { staticObjectProps } from './static.js'
+import { scanBoundedLoops } from './bounds.js'
+import { observeProgramSlots } from './program-facts.js'
+import { exprType } from './types.js'
+import { typedElemAux, typedElemCtor, ctorFromElemAux } from './typed.js'
+import { valTypeOf } from './val-type.js'
 import { VAL, updateRep } from './reps.js'
 import {
   clearStickyNull, ensureParamRep, mergeParamFact,
@@ -467,7 +470,7 @@ function createPhaseState() {
 
     invalidateBodyFacts() {
       for (const func of ctx.func.list) {
-        if (func.body && !func.raw) invalidateValTypesCache(func.body)
+        if (func.body && !func.raw) invalidateLocalsCache(func.body)
       }
       clearDerived()
     },

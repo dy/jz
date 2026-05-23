@@ -111,8 +111,8 @@ export function resolveIncludes() {
 }
 
 /** Reset all compilation state. Called once per jz() invocation. */
-export function reset(proto, globals, lib) {
-  ctx.lib = lib
+export function reset(proto, globals, bridge) {
+  ctx.bridge = bridge
   ctx.core = {
     emit: derive(proto),
     stdlib: {},

@@ -10,10 +10,11 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
-import { emit, spread, deps } from '../src/lib.js'
+import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/val-type.js'
-import { inlineArraySid, T } from '../src/analyze.js'
+import { T } from '../src/ast.js'
+import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP } from '../src/ctx.js'
 import { nanPrefixHex } from '../layout.js'

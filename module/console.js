@@ -24,9 +24,9 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit, deps, reg } from '../src/lib.js'
+import { emit, deps, reg } from '../src/bridge.js'
 import { valTypeOf } from '../src/val-type.js'
-import { exprType } from '../src/analyze.js'
+import { exprType } from '../src/types.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 

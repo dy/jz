@@ -25,7 +25,8 @@ import { ptrBoxPrefixBigInt, atomNanHex, nanPrefixHex } from '../layout.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf } from './val-type.js'
-import { objLiteralSchemaId, T } from './analyze.js'
+import { T } from './ast.js'
+import { objLiteralSchemaId } from './static.js'
 
 export { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef }
 

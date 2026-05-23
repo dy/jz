@@ -13,7 +13,17 @@ node bench/bench.mjs  # run benchmarks
 
 ```
 src/           compiler core (parse → prepare → compile → emit → optimize)
-module/        stdlib modules (math, array, string, object, …)
+  ast.js       cycle-free AST helpers (T, walks, isReassigned, …)
+  const.js     compile-time integer folding
+  static.js    static keys / object props / schema ids
+  typed.js     typed-array ctor → PTR.TYPED aux
+  params.js    arrow param normalization, findFreeVars
+  bounds.js    in-bounds charCodeAt proof
+  types.js     exprType (i32 vs f64)
+  program-facts.js  whole-program dyn-key / call-site facts
+  bridge.js    stdlib registration bridge (ctx.bridge)
+  analyze.js   body walks (analyzeBody, valTypes, captures)
+module/        stdlib modules — import bridge.js + leaf src/*, not analyze.js
 test/          test files (tst framework)
 bench/         benchmark corpus (one dir per case: .js + optional .as.ts/.c/.rs/…)
 scripts/       bench harnesses (bench-size = wasm size, bench-compile = compile time)
@@ -32,7 +42,7 @@ The global `ctx` object (defined in `src/ctx.js`) is the single source of compil
 ## Adding a stdlib method
 
 1. Find or create the module file in `module/` (e.g. `module/string.js`)
-2. Register the handler — `reg('name', deps, fn)` or `call` / `method` from `src/lib.js`; WAT include deps via `deps({ … })`. Emit helpers: `flat`, `body`, `bool`, `idx`, `spread`.
+2. Register the handler — `reg('name', deps, fn)` or `call` / `method` from `src/bridge.js`; WAT include deps via `deps({ … })`. Emit helpers: `flat`, `body`, `bool`, `idx`, `spread`.
 3. Add tests in `test/`
 4. Run `npm test`
 

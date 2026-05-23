@@ -1,10 +1,10 @@
 /**
  * Stdlib module bridge — `module/*` imports from here, not `src/emit.js`.
  *
- * Emit impls bind on `ctx.lib` at reset(). Registration helpers (`reg`,
+ * Emit impls bind on `ctx.bridge` at reset(). Registration helpers (`reg`,
  * `deps`, …) keep handler + WAT include deps in one place.
  *
- * @module lib
+ * @module bridge
  */
 
 import { ctx, emitter } from './ctx.js'
@@ -12,13 +12,13 @@ import { typed, asF64, asI32, asI64 } from './ir.js'
 
 export { emitter } from './ctx.js'
 
-export const emit = (...a) => ctx.lib.emit(...a)
-export const flat = (...a) => ctx.lib.flat(...a)
-export const body = (...a) => ctx.lib.body(...a)
-export const bool = (...a) => ctx.lib.bool(...a)
+export const emit = (...a) => ctx.bridge.emit(...a)
+export const flat = (...a) => ctx.bridge.flat(...a)
+export const body = (...a) => ctx.bridge.body(...a)
+export const bool = (...a) => ctx.bridge.bool(...a)
 /** Index expr → i32 IR. */
-export const idx = (...a) => ctx.lib.idx(...a)
-export const spread = (...a) => ctx.lib.spread(...a)
+export const idx = (...a) => ctx.bridge.idx(...a)
+export const spread = (...a) => ctx.bridge.spread(...a)
 
 /** `ctx.core.emit[name] = emitter(deps, fn)`. `deps` = WAT stdlib names; `[]` for host-import wiring. */
 export const reg = (name, deps, fn) => {

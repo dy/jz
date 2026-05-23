@@ -27,12 +27,12 @@
 
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
+import { T, isBlockBody } from './ast.js'
 import {
-  T, analyzeBody,
-  unboxablePtrs, cseSafeLoadBases, typedElemAux, invalidateLocalsCache,
-  boxedCaptures,
-  isBlockBody, analyzeStructInline,
+  analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
+  analyzeStructInline, invalidateLocalsCache,
 } from './analyze.js'
+import { typedElemAux } from './typed.js'
 import { VAL, updateRep } from './reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from './optimize.js'
