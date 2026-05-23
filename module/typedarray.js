@@ -10,7 +10,10 @@
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, emitIndex } from '../src/stdlib-emit.js'
 import { valTypeOf, lookupValType, VAL, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
+import { nanPrefixHex } from '../layout.js'
 import { inc, PTR } from '../src/ctx.js'
+
+const _NAN_BITS = nanPrefixHex()
 
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
@@ -588,7 +591,7 @@ export default (ctx) => {
   // (cheap: 4 wasm ops) so `getFloat32`/`getFloat64` return a real-spec NaN value.
   ctx.core.stdlib['__canon_nan'] = `(func $__canon_nan (param $v f64) (result f64)
     (select
-      (f64.reinterpret_i64 (i64.const 0x7FF8000000000000))
+      (f64.reinterpret_i64 (i64.const ${_NAN_BITS}))
       (local.get $v)
       (f64.ne (local.get $v) (local.get $v))))`
   const canonNaN = (vIR) => { inc('__canon_nan'); return typed(['call', '$__canon_nan', vIR], 'f64') }

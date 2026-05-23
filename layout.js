@@ -81,3 +81,7 @@ export const ATOM_HI = {
   [ATOM.FALSE]: encodePtrHi(PTR.ATOM, ATOM.FALSE),
   [ATOM.TRUE]: encodePtrHi(PTR.ATOM, ATOM.TRUE),
 }
+
+/** OOB / canonical quiet-NaN f64 literal for WAT and IR (`nan:0x7FF8…`). */
+export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
+export const oobNanIR = () => ['f64.const', oobNanLiteral()]

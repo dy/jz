@@ -916,7 +916,7 @@ export default (ctx) => {
     ;; That bit pattern is the math NaN value, not a tagged pointer — treat as "number".
     ;; Negative-NaN bit patterns (sign bit set) don't match NAN_PREFIX so are uniquely numeric.
     (if (i32.or
-          (i64.eq (local.get $v) (i64.const 0x7FF8000000000000))
+          (i64.eq (local.get $v) (i64.const ${NAN_BITS}))
           (i64.eq (i64.and (local.get $v) (i64.const 0xFFF0000000000000))
                   (i64.const 0xFFF0000000000000)))
       (then (return (global.get $__tof_number))))
