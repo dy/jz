@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
-import { emit } from '../src/stdlib-emit.js'
+import { emit } from '../src/lib.js'
 import { valTypeOf, shapeOf } from '../src/val-type.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'

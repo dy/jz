@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit, emitBoolStr, stdlibMethod, watDeps } from '../src/stdlib-emit.js'
+import { emit, emitBoolStr, method, edges } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -38,7 +38,7 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 
 
 export default (ctx) => {
-  watDeps({
+  edges({
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
@@ -1223,13 +1223,13 @@ export default (ctx) => {
   }
   ctx.core.emit['.startsWith'] = stringSearchMethod('__str_startswith')
   ctx.core.emit['.endsWith'] = stringSearchMethod('__str_endswith')
-  ctx.core.emit['.trim']       = stdlibMethod('__str_trim',       'I')
-  ctx.core.emit['.trimStart']  = stdlibMethod('__str_trimStart',  'I')
-  ctx.core.emit['.trimEnd']    = stdlibMethod('__str_trimEnd',    'I')
-  ctx.core.emit['.repeat']     = stdlibMethod('__str_repeat',     'Ii')
-  ctx.core.emit['.split']      = stdlibMethod('__str_split',      'II')
-  ctx.core.emit['.replace']    = stdlibMethod('__str_replace',    'III')
-  ctx.core.emit['.replaceAll'] = stdlibMethod('__str_replaceall', 'III')
+  ctx.core.emit['.trim']       = method('__str_trim',       'I')
+  ctx.core.emit['.trimStart']  = method('__str_trimStart',  'I')
+  ctx.core.emit['.trimEnd']    = method('__str_trimEnd',    'I')
+  ctx.core.emit['.repeat']     = method('__str_repeat',     'Ii')
+  ctx.core.emit['.split']      = method('__str_split',      'II')
+  ctx.core.emit['.replace']    = method('__str_replace',    'III')
+  ctx.core.emit['.replaceAll'] = method('__str_replaceall', 'III')
 
   const caseMethod = (lo, hi, delta) => (str) => {
     inc('__str_case')
@@ -1258,7 +1258,7 @@ export default (ctx) => {
   // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
   // codepoint order for well-formed strings — close enough for sort-stability
   // use cases, wrong for human-language collation.
-  ctx.core.emit['.localeCompare'] = stdlibMethod('__str_cmp', 'II', 'i32')
+  ctx.core.emit['.localeCompare'] = method('__str_cmp', 'II', 'i32')
 
   ctx.core.emit['.string:concat'] = (str, ...others) => {
     inc('__str_concat')

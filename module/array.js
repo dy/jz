@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads, watDeps } from '../src/stdlib-emit.js'
+import { emit, buildArrayWithSpreads, edges } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { extractParams, staticPropertyKey, staticObjectProps, inlineArraySid, classifyParam } from '../src/analyze.js'
 import { ASSIGN_OPS } from '../src/ast.js'
@@ -242,7 +242,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__dyn_props (local.get $root)))))) ` : ''
 
 export default (ctx) => {
-  watDeps({
+  edges({
     __arr_idx: [],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),

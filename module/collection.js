@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
-import { emit, emitFlat, watDeps, stdlibCall } from '../src/stdlib-emit.js'
+import { emit, emitFlat, edges, call } from '../src/lib.js'
 import { valTypeOf } from '../src/val-type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue } from '../src/analyze.js'
@@ -318,7 +318,7 @@ export default (ctx) => {
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
   const ifExt = (name) => () => ctx.features.external ? [name] : []
-  watDeps({
+  edges({
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     __set_add: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_set'] : ['__map_hash', '__same_value_zero'],
@@ -499,14 +499,14 @@ export default (ctx) => {
       ['local.get', `$${setL}`]], 'f64')
   }
 
-  ctx.core.emit['.add'] = stdlibCall('__set_add', 'II', 'i64')
-  ctx.core.emit['.has'] = stdlibCall('__set_has', 'II', 'i32')
-  ctx.core.emit['.delete'] = stdlibCall('__set_delete', 'II', 'i32')
+  ctx.core.emit['.add'] = call('__set_add', 'II', 'i64')
+  ctx.core.emit['.has'] = call('__set_has', 'II', 'i32')
+  ctx.core.emit['.delete'] = call('__set_delete', 'II', 'i32')
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
   // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
   // stdlib reads the ptr tag to pick the entry stride.
-  ctx.core.emit['.clear'] = stdlibCall('__coll_clear', 'I')
+  ctx.core.emit['.clear'] = call('__coll_clear', 'I')
 
   // Zero every slot (so probes see empty) and reset the length header. Entry
   // stride is 16 for a SET, 24 for a MAP — `(t == MAP) << 3` adds the 8-byte
@@ -582,8 +582,8 @@ export default (ctx) => {
   ctx.core.emit['.get'] = emitMapGet
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
-  ctx.core.emit[`.${VAL.MAP}:has`] = stdlibCall('__map_has', 'II', 'i32')
-  ctx.core.emit[`.${VAL.MAP}:delete`] = stdlibCall('__map_delete', 'II', 'i32')
+  ctx.core.emit[`.${VAL.MAP}:has`] = call('__map_has', 'II', 'i32')
+  ctx.core.emit[`.${VAL.MAP}:delete`] = call('__map_delete', 'II', 'i32')
 
   // Generated Map probe functions
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)

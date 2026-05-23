@@ -2,9 +2,9 @@
  * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
  *
  * Module API:
- * - regEmit('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
+ * - reg('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
  * - ctx.core.stdlib['math.X'] = '(func ...)' - WAT function definitions
- * - watDeps({ 'math.X': ['dep'] }) - WAT stdlib→stdlib edges (expanded transitively)
+ * - edges({ 'math.X': ['dep'] }) - WAT stdlib→stdlib edges (expanded transitively)
  *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.core.emit['math.sin'] and calls it.
@@ -13,11 +13,11 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, regEmit, watDeps, dualCall, attachDeps } from '../src/stdlib-emit.js'
+import { emit, emitter, reg, edges, dual, tag } from '../src/lib.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
-  watDeps({
+  edges({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
     'math.sin_core': ['math.isFinite'],
@@ -119,7 +119,7 @@ export default (ctx) => {
   // undefined→NaN, and strings get parsed. Without this, raw NaN-boxed pointers
   // (null/undefined/strings) would propagate through math.log etc. and surface
   // as the original null/undefined sentinel after decode.
-  const call = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64')
+  const fn = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64')
 
   // Canonicalize a possibly-NaN f64 result. A wasm arithmetic op that mints a
   // fresh NaN (f64.sqrt of a negative, f64.min/max with a NaN operand) leaves
@@ -208,42 +208,42 @@ export default (ctx) => {
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
 
   // Sign
-  regEmit('math.sign', ['math.sign'], a => call('math.sign', a))
+  reg('math.sign', ['math.sign'], a => fn('math.sign', a))
 
   // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
-  ctx.core.emit['math.sin'] = dualCall(
-    emitter(['math.sin'], a => call('math.sin', a)),
-    emitter(['math.sin_core', 'math.isFinite'], a => call('math.sin_core', a)),
+  ctx.core.emit['math.sin'] = dual(
+    emitter(['math.sin'], a => fn('math.sin', a)),
+    emitter(['math.sin_core', 'math.isFinite'], a => fn('math.sin_core', a)),
     isSinCoreFastPath)
-  ctx.core.emit['math.cos'] = dualCall(
-    emitter(['math.cos'], a => call('math.cos', a)),
-    emitter(['math.cos_core', 'math.isFinite'], a => call('math.cos_core', a)),
+  ctx.core.emit['math.cos'] = dual(
+    emitter(['math.cos'], a => fn('math.cos', a)),
+    emitter(['math.cos_core', 'math.isFinite'], a => fn('math.cos_core', a)),
     isSinCoreFastPath)
-  regEmit('math.tan', ['math.tan'], a => call('math.tan', a))
+  reg('math.tan', ['math.tan'], a => fn('math.tan', a))
 
   // Inverse trig
-  regEmit('math.asin', ['math.asin'], a => call('math.asin', a))
-  regEmit('math.acos', ['math.acos'], a => call('math.acos', a))
-  regEmit('math.atan', ['math.atan'], a => call('math.atan', a))
-  regEmit('math.atan2', ['math.atan2'], (a, b) => call('math.atan2', a, b))
+  reg('math.asin', ['math.asin'], a => fn('math.asin', a))
+  reg('math.acos', ['math.acos'], a => fn('math.acos', a))
+  reg('math.atan', ['math.atan'], a => fn('math.atan', a))
+  reg('math.atan2', ['math.atan2'], (a, b) => fn('math.atan2', a, b))
 
   // Hyperbolic
-  regEmit('math.sinh', ['math.sinh'], a => call('math.sinh', a))
-  regEmit('math.cosh', ['math.cosh'], a => call('math.cosh', a))
-  regEmit('math.tanh', ['math.tanh'], a => call('math.tanh', a))
+  reg('math.sinh', ['math.sinh'], a => fn('math.sinh', a))
+  reg('math.cosh', ['math.cosh'], a => fn('math.cosh', a))
+  reg('math.tanh', ['math.tanh'], a => fn('math.tanh', a))
 
   // Inverse hyperbolic
-  regEmit('math.asinh', ['math.asinh'], a => call('math.asinh', a))
-  regEmit('math.acosh', ['math.acosh'], a => call('math.acosh', a))
-  regEmit('math.atanh', ['math.atanh'], a => call('math.atanh', a))
+  reg('math.asinh', ['math.asinh'], a => fn('math.asinh', a))
+  reg('math.acosh', ['math.acosh'], a => fn('math.acosh', a))
+  reg('math.atanh', ['math.atanh'], a => fn('math.atanh', a))
 
   // Exponential and logarithmic
-  regEmit('math.exp', ['math.exp'], a => call('math.exp', a))
-  regEmit('math.expm1', ['math.expm1'], a => call('math.expm1', a))
-  regEmit('math.log', ['math.log'], a => call('math.log', a))
-  regEmit('math.log2', ['math.log2'], a => call('math.log2', a))
-  regEmit('math.log10', ['math.log10'], a => call('math.log10', a))
-  regEmit('math.log1p', ['math.log1p'], a => call('math.log1p', a))
+  reg('math.exp', ['math.exp'], a => fn('math.exp', a))
+  reg('math.expm1', ['math.expm1'], a => fn('math.expm1', a))
+  reg('math.log', ['math.log'], a => fn('math.log', a))
+  reg('math.log2', ['math.log2'], a => fn('math.log2', a))
+  reg('math.log10', ['math.log10'], a => fn('math.log10', a))
+  reg('math.log1p', ['math.log1p'], a => fn('math.log1p', a))
 
   // Power. Constant-integer-exponent `Math.pow(x,n)` / `x ** n` (|n| ≤ POW_FOLD_MAX)
   // lower to inline square-and-multiply instead of a $math.pow call. The fold is
@@ -303,7 +303,7 @@ export default (ctx) => {
   // (Math.pow: +0; and -0 === 0), `(-Infinity) ** 0.5` is NaN (Math.pow: +Infinity).
   // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
   // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
-  const powCall = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
+  const powCall = emitter(['math.pow'], (a, b) => fn('math.pow', a, b))
   const expPosPow = (base, exp) =>
     typed(['call', '$math.exp', ['f64.mul', toNumF64(exp, emit(exp)), ['f64.const', Math.log(base)]]], 'f64')
   const expPowCall = emitter(['math.exp'], (base, exp) => expPosPow(base, exp))
@@ -321,13 +321,13 @@ export default (ctx) => {
     }
     return powCall(a, b)
   }
-  ctx.core.emit['math.pow'] = attachDeps((a, b) => emitPow(a, b, false), powCall.deps)
-  ctx.core.emit['**'] = attachDeps((a, b) => emitPow(a, b, true), powCall.deps)
-  regEmit('math.cbrt', ['math.cbrt'], a => call('math.cbrt', a))
-  regEmit('math.hypot', ['math.hypot'], (a, b, ...rest) => {
+  ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, false), powCall.deps)
+  ctx.core.emit['**'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
+  reg('math.cbrt', ['math.cbrt'], a => fn('math.cbrt', a))
+  reg('math.hypot', ['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
     if (b === undefined) return f('f64.abs', a)
-    let r = call('math.hypot', a, b)
+    let r = fn('math.hypot', a, b)
     // ToNumber every rest arg too (matches min/max) — an object arg's valueOf
     // must run and may throw, which Math.hypot propagates.
     for (const x of rest) r = typed(['call', '$math.hypot', r, toNumF64(x, emit(x))], 'f64')
@@ -336,7 +336,7 @@ export default (ctx) => {
 
   // Math.sumPrecise(iterable) — exact, correctly-rounded summation (ECMA-262).
   // jz models the array case; the WAT routine sums via a fixed-point accumulator.
-  regEmit('math.sumPrecise', ['math.sumPrecise'], arr =>
+  reg('math.sumPrecise', ['math.sumPrecise'], arr =>
     typed(['call', '$math.sumPrecise', ['i64.reinterpret_f64', asF64(emit(arr))]], 'f64'))
 
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
@@ -348,7 +348,7 @@ export default (ctx) => {
   ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
 
   // Random
-  regEmit('math.random', ['math.random'], () => typed(['call', '$math.random'], 'f64'))
+  reg('math.random', ['math.random'], () => typed(['call', '$math.random'], 'f64'))
 
   // ============================================
   // WAT stdlib implementations
