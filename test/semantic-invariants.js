@@ -10,7 +10,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emitter } from '../src/emit.js'
+import { emit, emitter, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads } from '../src/emit.js'
 import { GLOBALS } from '../src/prepare.js'
 import { run } from './util.js'
 
@@ -22,13 +22,13 @@ const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 // ============================================================================
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS)
+  reset(emitter, GLOBALS, { emit, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
 })
 
 test('invariant: let does not appear in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS)
+  reset(emitter, GLOBALS, { emit, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads })
   compile('let x = 10; export let f = () => x')
   ok(!ctx.scope.consts?.has('x'), 'let x should NOT be in ctx.scope.consts')
 })

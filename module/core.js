@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
-import { emit, buildArrayWithSpreads } from '../src/stdlib-emit.js'
+import { emit, buildArrayWithSpreads } from './_emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, inlineArraySid, T } from '../src/analyze.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'

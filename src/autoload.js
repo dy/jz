@@ -1,7 +1,26 @@
 /** Runtime module autoload rules used by prepare(). */
 
+import { createRequire } from 'module'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 import { ctx, err } from './ctx.js'
-import * as mods from '../module/index.js'
+import { MOD_ALIAS, MOD_PATHS, hasModName } from '../module/registry.js'
+
+const require = createRequire(import.meta.url)
+const _moduleDir = dirname(fileURLToPath(import.meta.url))
+const _modCache = Object.create(null)
+
+/** Sync lazy load — Node require() of ESM default export. */
+const loadModule = (modName) => {
+  if (_modCache[modName]) return _modCache[modName]
+  const rel = MOD_PATHS[modName]
+  if (!rel) return null
+  _modCache[modName] = require(join(_moduleDir, '..', 'module', rel.replace(/^\.\//, ''))).default
+  return _modCache[modName]
+}
+
+export { MOD_ALIAS }
+export const hasModule = hasModName
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
@@ -106,8 +125,6 @@ export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','
 export const COLLECTION_CTORS = ['Set', 'Map']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
-
 const MOD_DEPS = {
   number: ['core', 'string'],
   string: ['core', 'number'],
@@ -121,7 +138,15 @@ const MOD_DEPS = {
   regex: ['core', 'string', 'array'],
 }
 
-export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
+export function includeModule(name) {
+  const modName = MOD_ALIAS[name] || name
+  const init = loadModule(modName)
+  if (!init) return err(`Module not found: ${name}`)
+  if (ctx.module.modules[modName]) return
+  ctx.module.modules[modName] = true
+  for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
+  init(ctx)
+}
 
 export const includeMods = (...names) => names.forEach(includeModule)
 
@@ -179,14 +204,4 @@ export const includeForRuntimeCtor = name => {
   else if (kind === 'date') includeMods('core', 'console', 'date')
   else if (kind === 'array') includeMods('core', 'array')
   return kind
-}
-
-export function includeModule(name) {
-  const modName = MOD_ALIAS[name] || name
-  const init = mods[modName]
-  if (!init) return err(`Module not found: ${name}`)
-  if (ctx.module.modules[modName]) return
-  ctx.module.modules[modName] = true
-  for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
-  init(ctx)
 }

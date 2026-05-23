@@ -24,7 +24,7 @@
 import { commaList } from './ast.js'
 import { ctx, err, inc, PTR } from './ctx.js'
 import {
-  T, nonNegIntLiteral, exprType, valTypeOf, extractParams, classifyParam, findFreeVars, staticPropertyKey,
+  T, nonNegIntLiteral, exprType, extractParams, classifyParam, findFreeVars, staticPropertyKey,
   // AST predicates
   isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
   containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
@@ -32,6 +32,7 @@ import {
   inBoundsCharCodeAt,
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
 } from './analyze.js'
+import { valTypeOf } from './val-type.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from './reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
