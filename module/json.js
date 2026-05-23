@@ -9,8 +9,9 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
-import { emit, emitBoolStr } from '../src/stdlib-emit.js'
-import { T, valTypeOf } from '../src/analyze.js'
+import { emit, emitBoolStr, watDeps } from '../src/stdlib-emit.js'
+import { valTypeOf } from '../src/val-type.js'
+import { T } from '../src/analyze.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
@@ -79,7 +80,7 @@ function hashCapFor(n) {
 }
 
 export default (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
     __json_omit: ['__ptr_type'],

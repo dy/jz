@@ -9,7 +9,7 @@
 
 import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/stdlib-emit.js'
-import { valTypeOf } from '../src/analyze.js'
+import { valTypeOf } from '../src/val-type.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
 

@@ -10,8 +10,9 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit, emitBoolStr } from '../src/stdlib-emit.js'
-import { isReassigned, valTypeOf } from '../src/analyze.js'
+import { emit, emitBoolStr, watDeps, regEmit } from '../src/stdlib-emit.js'
+import { isReassigned } from '../src/ast.js'
+import { valTypeOf } from '../src/val-type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR } from '../src/ctx.js'
 
@@ -136,7 +137,7 @@ const POW10_SCALE = `
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))`
 
 export default (ctx) => {
-  Object.assign(ctx.core.stdlibDeps, {
+  watDeps({
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
@@ -859,8 +860,6 @@ export default (ctx) => {
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     needParseInt()
-    // Radix is coerced ToNumber then ToInt32 (modular wrap; NaN/±∞→0) per spec —
-    // a raw trunc would turn a string radix into garbage and Infinity into maxint.
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
     return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
   }
@@ -885,32 +884,24 @@ export default (ctx) => {
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 
   // Boolean(x) → truthiness (non-zero → 1, zero → 0)
-  ctx.core.emit['Boolean'] = (x) => {
+  regEmit('Boolean', ['__is_truthy'], (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
-    inc('__is_truthy')
     const v = asI64(emit(x))
     return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
-  }
+  })
 
   // === Instance method emitters ===
 
-  ctx.core.emit['.number:toString'] = (n) => {
-    inc('__ftoa')
-    return typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64')
-  }
+  regEmit('.number:toString', ['__ftoa'], n =>
+    typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64'))
 
-  ctx.core.emit['.number:toFixed'] = (n, d) => {
-    inc('__ftoa')
-    return typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64')
-  }
+  regEmit('.number:toFixed', ['__ftoa'], (n, d) =>
+    typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64'))
 
-  ctx.core.emit['.number:toExponential'] = (n, d) => {
-    inc('__toExp')
-    return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 0]], 'f64')
-  }
+  regEmit('.number:toExponential', ['__toExp'], (n, d) =>
+    typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 0]], 'f64'))
 
-  ctx.core.emit['.number:toPrecision'] = (n, p) => {
-    inc('__ftoa', '__toExp')
+  regEmit('.number:toPrecision', ['__ftoa', '__toExp'], (n, p) => {
     const val = temp('pv'), t = temp('tp'), exp = tempI32('te'), pr = tempI32('pp')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${val}`, asF64(emit(n))],
@@ -937,7 +928,7 @@ export default (ctx) => {
         ['else', ['call', '$__ftoa', ['local.get', `$${val}`],
           ['i32.sub', ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['local.get', `$${exp}`]],
           ['i32.const', 1]]]]], 'f64')
-  }
+  })
 
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt
   ctx.core.emit['Number'] = (x) => {

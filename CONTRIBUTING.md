@@ -32,7 +32,7 @@ The global `ctx` object (defined in `src/ctx.js`) is the single source of compil
 ## Adding a stdlib method
 
 1. Find or create the module file in `module/` (e.g. `module/string.js`)
-2. Register the handler on `ctx.core.emit` — see existing patterns in any module
+2. Register the handler — `regEmit('name', deps, fn)` or `stdlibCall` / `stdlibMethod` from `src/stdlib-emit.js` for stdlib-call patterns; record WAT include edges with `watDeps({ … })`.
 3. Add tests in `test/`
 4. Run `npm test`
 
