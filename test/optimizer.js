@@ -12,7 +12,7 @@
 import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize.js'
+import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize.js'
 import { run } from './util.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
@@ -239,6 +239,21 @@ test('known numeric coercions elide __to_num', () => {
   `, { wat: true })
   const calls = (wat.match(/\(call \$__to_num/g) || []).length
   is(calls, 0)
+})
+
+test('csePureExprLoop: global.set invalidates cached global.get pure expr', () => {
+  const fn = ['func', '$f',
+    ['result', 'f64'],
+    ['loop', [],
+      ['global.set', '$g', ['f64.const', 1]],
+      ['f64.mul', ['global.get', '$g'], ['f64.const', 2]],
+      ['global.set', '$g', ['f64.const', 2]],
+      ['call', '$math.sin', ['f64.mul', ['global.get', '$g'], ['f64.const', 2]]],
+    ],
+  ]
+  csePureExprLoop(fn)
+  const s = JSON.stringify(fn)
+  is((s.match(/"global\.get"/g) || []).length, 2, 'mul after global.set must not reuse stale $__pe snap')
 })
 
 test('peephole: i32/f64 signed roundtrips fold post-emit', () => {
