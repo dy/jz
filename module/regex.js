@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
-import { emit } from './emit.js'
+import { emit } from '../src/stdlib-emit.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { includeModule } from '../src/autoload.js'
 

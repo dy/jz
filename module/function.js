@@ -11,7 +11,7 @@
  */
 
 import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
-import { emit } from './emit.js'
+import { emit } from '../src/stdlib-emit.js'
 import { isReassigned, findFreeVars, T } from '../src/analyze.js'
 import { lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err } from '../src/ctx.js'
