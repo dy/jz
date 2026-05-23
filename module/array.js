@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
-import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/analyze.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey, staticObjectProps, inlineArraySid, ASSIGN_OPS, classifyParam } from '../src/analyze.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
@@ -1163,13 +1163,13 @@ export default (ctx) => {
   }
   function isPureCallback(fn) {
     if (!Array.isArray(fn) || fn[0] !== '=>') return false
-    const body = fn[2]
     const params = new Set()
-    const p = fn[1]
-    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : p[0] === '()' ? (p[1] == null ? [] : Array.isArray(p[1]) && p[1][0] === ',' ? p[1].slice(1) : [p[1]]) : [p]) : [p]
-    for (const r of raw) params.add(Array.isArray(r) && r[0] === '...' ? r[1] : typeof r === 'string' ? r : Array.isArray(r) && r[0] === '=' ? r[1] : null)
+    for (const r of extractParams(fn[1])) {
+      const p = classifyParam(r)
+      if (p.name) params.add(p.name)
+    }
     const locals = new Set(params)
-    collectLocals(body, locals)
+    collectLocals(fn[2], locals)
     let pure = true
     ;(function walk(node) {
       if (!pure || !Array.isArray(node)) return
@@ -1177,13 +1177,13 @@ export default (ctx) => {
       if (op === '=>') return
       if (op === '()' || op === '?.()' || op === 'new') { pure = false; return }
       if (op === '++' || op === '--') { pure = false; return }
-      if (op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%=' || op === '&=' || op === '|=' || op === '^=' || op === '>>=' || op === '<<=' || op === '>>>=' || op === '||=' || op === '&&=' || op === '??=') {
+      if (ASSIGN_OPS.has(op)) {
         const t = args[0]
         if (typeof t === 'string') { if (!locals.has(t)) { pure = false; return } }
         else { pure = false; return }
       }
       for (const a of args) walk(a)
-    })(body)
+    })(fn[2])
     return pure
   }
 
