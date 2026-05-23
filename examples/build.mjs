@@ -8,6 +8,7 @@ export function buildExample(name) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), name)
   const src = fs.readFileSync(join(dir, `${name}.js`), 'utf8')
   const wasm = compile(src)
+  fs.mkdirSync(join(dir, 'build'), { recursive: true })
   for (const out of ['build/optimized.wasm', 'build/release.wasm', `${name}.wasm`]) {
     fs.writeFileSync(join(dir, out), wasm)
   }
