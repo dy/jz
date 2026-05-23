@@ -23,6 +23,7 @@
  */
 
 import { parse } from 'subscript/feature/jessie'
+import { handlerArgs } from './ast.js'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticObjectProps, staticPropertyKey } from './analyze.js'
 import { recordGlobalRep } from './infer.js'
@@ -99,7 +100,6 @@ const stripBoolNot = c => {
   return c
 }
 const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
-const flatArgs = args => args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
 const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
 
 function staticStringArrayValues(expr) {
@@ -972,7 +972,7 @@ function prepDecl(op, ...inits) {
 // `import.meta.resolve("spec")` → the resolved URL as a static string.
 function foldImportMetaResolve(callee, args) {
   if (!isImportMetaProp(callee, 'resolve')) return undefined
-  const callArgs = flatArgs(args).filter(a => a != null)
+  const callArgs = handlerArgs(args)
   if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument')
   const spec = stringValue(callArgs[0])
   if (spec == null) err('`import.meta.resolve` supports only string literal arguments')
@@ -987,7 +987,7 @@ function foldImportMetaResolve(callee, args) {
 function dispatchConstructorCall(callee, args) {
   if (typeof callee !== 'string') return undefined
   if (callee === 'Array') {
-    const callArgs = flatArgs(args).filter(a => a != null)
+    const callArgs = handlerArgs(args)
     if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
   }
   if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
@@ -1005,7 +1005,7 @@ function foldNamespaceIntrospection(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
   const [, obj, prop] = callee
   if (obj === 'Array' && prop === 'isArray') {
-    const cargs = flatArgs(args).filter(a => a != null)
+    const cargs = handlerArgs(args)
     const a0 = cargs.length === 1 ? cargs[0] : null
     if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
       return [, 0]
@@ -1013,7 +1013,7 @@ function foldNamespaceIntrospection(callee, args) {
   if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
     const mod = ctx.scope.chain[obj]
     if (mod && !mod.includes('.') && hasModule(mod)) {
-      const cargs = flatArgs(args).filter(a => a != null)
+      const cargs = handlerArgs(args)
       const member = cargs.length === 1 ? stringValue(cargs[0]) : null
       // Include the module so its emit keys (the namespace's member set) are
       // registered; unreferenced emitters/data dead-strip in compile.

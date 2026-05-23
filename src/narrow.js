@@ -17,7 +17,7 @@ import {
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
   scanBoundedLoops,
-  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
+  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf, updateRep,
 } from './analyze.js'
 import {
   clearStickyNull, ensureParamRep, mergeParamFact,
@@ -918,8 +918,7 @@ function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
       if (!stringDiscriminating && r?.val !== VAL.STRING && !hasStringDefault) continue
       p.type = 'externref'
       p.jsstring = true
-      // Record the literal default so compile.js can omit wasm-side substitution
-      // (the JS-side interop wrapper applies the default on `undefined`).
+      updateRep(p.name, { carrier: 'jsstring', val: VAL.STRING })
       if (hasStringDefault) p.jsstringDefault = defVal[1]
     }
   }

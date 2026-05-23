@@ -351,6 +351,9 @@ function analyzeFuncForEmit(func, programFacts) {
     if (p.ptrAux != null) fields.ptrAux = p.ptrAux
     updateRep(p.name, fields)
   }
+  for (const p of sig.params) {
+    if (p.jsstring) updateRep(p.name, { carrier: 'jsstring', val: VAL.STRING })
+  }
 
   // CSE-safe load bases — pointer locals whose memory reads `cseScalarLoad`
   // may scalar-replace. Computed last: needs every `let`/param ptrKind in place.

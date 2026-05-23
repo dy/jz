@@ -22,11 +22,12 @@
  * @module emit
  */
 
+import { commaList } from './ast.js'
 import { ctx, err, inc, PTR } from './ctx.js'
 import {
-  T, VAL, nonNegIntLiteral, exprType, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey,
-  // AST predicates (formerly in src/ast.js)
-  isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
+  T, VAL, nonNegIntLiteral, exprType, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, repOf, updateRep, repOfGlobal, staticPropertyKey,
+  // AST predicates
+  isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
   containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
   containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
   inBoundsCharCodeAt,
@@ -47,6 +48,11 @@ import {
   reconstructArgsWithSpreads, tcoTailRewrite,
 } from './ir.js'
 import { typeofPredicate } from './infer.js'
+
+const stringOps = (node) => {
+  const rep = typeof node === 'string' ? repOf(node) : null
+  return ctx.abi.resolve('string', rep)?.ops ?? ctx.abi.string.ops
+}
 
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.
@@ -960,9 +966,6 @@ export function buildArrayWithSpreads(items) {
   return typed(['block', ['result', 'f64'], ...ir], 'f64')
 }
 
-/** Check if node is a block body (statement list, not object literal/expression) */
-const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && Array.isArray(n[1]) && STMT_OPS.has(n[1]?.[0])
-
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
 export function emitFlat(node) {
   if (isBlockBody(node)) return emitBody(node)
@@ -1067,7 +1070,7 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
   }
   if (vta === VAL.STRING && vtb === VAL.STRING) {
-    return typed([`i32.${i32op}`, ctx.abi.string.ops.cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
+    return typed([`i32.${i32op}`, stringOps(a).cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
   }
   // Exactly one operand is a known string; the other has no static type, so it
   // may hold a string pointer at runtime (e.g. `c >= '0'` where `c` came from
@@ -1078,13 +1081,13 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // three-way; else ToNumber both. Mirrors `+`'s __is_str_key string dispatch.
   // Gated on a *known-string* counterpart, so numeric loops (`i < n`) never pay
   // the check — comparing against a string literal signals string intent.
-  if (((vta === VAL.STRING && vtb == null) || (vtb === VAL.STRING && vta == null)) && ctx.abi.string?.ops?.cmp) {
+  if (((vta === VAL.STRING && vtb == null) || (vtb === VAL.STRING && vta == null)) && stringOps(a)?.cmp) {
     const unkIsA = vta == null
     const ta = temp('cmp'), tb = temp('cmp')
     inc('__is_str_key')
     const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
     const check = ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${unkIsA ? ta : tb}`]]]
-    const strCmp = [`i32.${i32op}`, ctx.abi.string.ops.cmp(getA, getB, ctx), ['i32.const', 0]]
+    const strCmp = [`i32.${i32op}`, stringOps(a).cmp(getA, getB, ctx), ['i32.const', 0]]
     const numCmp = [`f64.${f64op}`, toNumF64(a, getA), toNumF64(b, getB)]
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${ta}`, asF64(va)],
@@ -2297,9 +2300,7 @@ export const emitter = {
   },
 
   '()': (callee, callArgs) => {
-    let argList = Array.isArray(callArgs)
-      ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
-      : callArgs ? [callArgs] : []
+    let argList = commaList(callArgs)
 
     // Helper: expand spread arguments into flat list of normal arguments + spread markers
     // Returns { normal: [...], spreads: [(pos, expr), ...] }
@@ -2354,7 +2355,7 @@ export const emitter = {
       // (OOB-impossible) contract directly; the generic path keeps the
       // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
       if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
-          && ctx.abi.string?.ops?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
+          && stringOps(obj)?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
         const recv = emit(obj)
         // jsstring carrier: receiver is an externref boundary param. Route to
         // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out
@@ -2363,7 +2364,7 @@ export const emitter = {
           ctx.core.jsstring.add('charCodeAt')
           return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
         }
-        return typed(ctx.abi.string.ops.charCodeAt(
+        return typed(stringOps(obj).charCodeAt(
           asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
       }
 

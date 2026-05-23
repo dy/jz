@@ -7,7 +7,7 @@
  * Refactored into focused sub-contexts for better maintainability.
  */
 
-import { DEFAULTS as ABI_DEFAULTS } from './abi/index.js'
+import { makeAbi } from './abi/index.js'
 
 // === Carrier layout ===
 // i64 carrier holds either:
@@ -312,7 +312,7 @@ export function reset(proto, globals) {
   //   (b) a capability needs an opt-in A/B switch against the default path
   //       (SSO is the planned first user — default string-literal emission
   //       currently forces SSO for ≤4 ASCII chars at string.js:49)
-  ctx.abi = ABI_DEFAULTS
+  ctx.abi = makeAbi()
 
   // Only flags actually read by codegen live here. Hash/regex/json substrates
   // are pulled organically by inc(__*) — no flag mediates them, so no flag exists.

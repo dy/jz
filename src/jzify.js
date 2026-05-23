@@ -18,6 +18,7 @@
  */
 
 import { warn } from './ctx.js'
+import { handlerArgs } from './ast.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
 
@@ -1140,7 +1141,7 @@ function foldStaticBundlerHelpers(ast) {
   const interopBindings = new Map()
   for (const b of binds)
     if (b && Array.isArray(b[1]) && b[1][0] === '()' && interopHelpers.has(b[1][1])) {
-      const args = callArgs(b[1].slice(2))
+      const args = handlerArgs(b[1].slice(2))
       if (args.length) interopBindings.set(b[0], args[0])
     }
 
@@ -1208,7 +1209,7 @@ function rewriteBundlerAliases(node, aliases, interopBindings) {
 
   if (node[0] === '()') {
     const callee = node[1]
-    const args = callArgs(node.slice(2))
+    const args = handlerArgs(node.slice(2))
 
     if (typeof callee === 'string') {
       const key = aliases.get(callee)
@@ -1343,7 +1344,7 @@ function containsDefinePropertyCall(node, aliases) {
 
 function staticExportCall(stmt, helpers) {
   if (!Array.isArray(stmt) || stmt[0] !== '()' || !helpers.has(stmt[1])) return null
-  const args = callArgs(stmt.slice(2))
+  const args = handlerArgs(stmt.slice(2))
   if (args.length !== 2 || typeof args[0] !== 'string') return null
   const props = objectProps(args[1])
   if (!props) return null
@@ -1355,11 +1356,6 @@ function staticExportCall(stmt, helpers) {
     out.push([prop[1], value])
   }
   return { target: args[0], props: out }
-}
-
-function callArgs(args) {
-  if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') return args[0].slice(1)
-  return args.filter(a => a != null)
 }
 
 function objectProps(node) {
@@ -1420,7 +1416,7 @@ function arrayMapStringCallback(node) {
   if (!Array.isArray(node) || node[0] !== '()') return null
   const callee = node[1]
   if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'map') return null
-  const args = callArgs(node.slice(2))
+  const args = handlerArgs(node.slice(2))
   if (args.length !== 1 || args[0] !== 'String') return null
   return ['()', callee, ['=>', 'value', ['()', 'String', 'value']]]
 }
@@ -1430,7 +1426,7 @@ function objectHasOwnPropertyCall(node) {
   const callee = node[1]
   if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'call') return null
   if (!isObjectHasOwnPropertyRef(callee[1])) return null
-  const args = callArgs(node.slice(2))
+  const args = handlerArgs(node.slice(2))
   if (args.length < 2) return null
   return { obj: args[0], key: args[1] }
 }
@@ -1469,7 +1465,7 @@ function objectKeysLengthReceiver(node) {
   if (!Array.isArray(call) || call[0] !== '()') return null
   const callee = call[1]
   if (!Array.isArray(callee) || callee[0] !== '.' || callee[1] !== 'Object' || callee[2] !== 'keys') return null
-  const args = callArgs(call.slice(2))
+  const args = handlerArgs(call.slice(2))
   return args.length === 1 ? args[0] : null
 }
 
