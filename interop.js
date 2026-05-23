@@ -25,6 +25,7 @@
  */
 
 import { wasi } from './wasi.js'
+import { HEAP } from './heap.js'
 
 // ── WASI linking ────────────────────────────────────────────────────────────
 
@@ -43,15 +44,12 @@ const envFuncNames = (mod) =>
 // threads must share a pointer cell in linear memory). 8-byte aligned bump on
 // the JS side; wasm `_alloc` takes over if exported.
 
-const HEAP_PTR_ADDR = 1020
-const HEAP_START = 1024
-
 const makeJsAllocator = (mem, heapGlobal) => {
   const dv = () => new DataView(mem.buffer)
-  const getPtr = heapGlobal ? () => heapGlobal.value : () => dv().getInt32(HEAP_PTR_ADDR, true)
-  const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP_PTR_ADDR, v, true)
+  const getPtr = heapGlobal ? () => heapGlobal.value : () => dv().getInt32(HEAP.PTR_ADDR, true)
+  const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP.PTR_ADDR, v, true)
   // Rewind target: the global's post-static-init value, else the fixed start.
-  const base = heapGlobal ? heapGlobal.value : HEAP_START
+  const base = heapGlobal ? heapGlobal.value : HEAP.START
   const alloc = (bytes) => {
     const aligned = (getPtr() + 7) & ~7
     const next = aligned + bytes
@@ -66,7 +64,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   const initHeapPtr = () => {
     if (heapGlobal) return
     const d = dv()
-    if (d.getInt32(HEAP_PTR_ADDR, true) < HEAP_START) d.setInt32(HEAP_PTR_ADDR, HEAP_START, true)
+    if (d.getInt32(HEAP.PTR_ADDR, true) < HEAP.START) d.setInt32(HEAP.PTR_ADDR, HEAP.START, true)
   }
   return { alloc, reset, initHeapPtr }
 }

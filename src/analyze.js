@@ -22,7 +22,7 @@
  * @module analyze
  */
 
-import { commaList } from './ast.js'
+import { commaList, ASSIGN_OPS, isReassigned } from './ast.js'
 import { ctx, err } from './ctx.js'
 import { isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ir.js'
 
@@ -35,8 +35,7 @@ export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'fo
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   'throw', 'try', 'catch', 'finally', '++', '--', '()'])
 
-/** Assignment operators — shared across analyze, plan, emit. */
-export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+export { ASSIGN_OPS, isReassigned }
 
 /** Distinguish a function block body `{ ... }` from an expression-bodied object literal `({a:1})`.
  *  Both share the `'{}'` op tag; blocks start with statement ops, while object literals start with `:` or `...`. */
@@ -610,21 +609,30 @@ export function typedElemCtor(rhs) {
   return isView ? rhs[1] + '.view' : rhs[1]
 }
 
-// Element-type byte mapping (mirror of module/typedarray.js ELEM). Bit 3 (|8) marks a view.
-const _ELEM_AUX = {
+/** Base element-type codes for PTR.TYPED aux (0–7). BigInt ctors share 7 + TYPED_ELEM_BIGINT_FLAG. */
+export const TYPED_ELEM_CODE = {
   Int8Array: 0, Uint8Array: 1, Int16Array: 2, Uint16Array: 3,
   Int32Array: 4, Uint32Array: 5, Float32Array: 6, Float64Array: 7,
-  BigInt64Array: 23, BigUint64Array: 23,
+  BigInt64Array: 7, BigUint64Array: 7,
 }
+export const TYPED_ELEM_VIEW_FLAG = 8
+export const TYPED_ELEM_BIGINT_FLAG = 16
+
+/** Encode element-type name (+ optional view/bigint flags) to PTR.TYPED aux bits. */
+export function encodeTypedElemAux(name, isView = false) {
+  const et = TYPED_ELEM_CODE[name]
+  if (et == null) return null
+  return et | (isView ? TYPED_ELEM_VIEW_FLAG : 0) |
+    (name === 'BigInt64Array' || name === 'BigUint64Array' ? TYPED_ELEM_BIGINT_FLAG : 0)
+}
+
 /** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
  *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView). */
 export function typedElemAux(ctor) {
   if (!ctor || !ctor.startsWith('new.')) return null
   const isView = ctor.endsWith('.view')
   const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-  const et = _ELEM_AUX[name]
-  if (et == null) return null
-  return isView ? et | 8 : et
+  return encodeTypedElemAux(name, isView)
 }
 const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
@@ -1053,26 +1061,6 @@ export function boxedCaptures(body) {
  */
 export const MAX_SMALL_FOR_UNROLL = 8
 export const MAX_NESTED_FOR_UNROLL = 64
-
-/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
- *  Conservative over-reject: if unsure, treat as written.
- *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
- *  inside them are scanned. */
-export function isReassigned(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (ASSIGN_OPS.has(op) && body[1] === name) return true
-  if ((op === '++' || op === '--') && body[1] === name) return true
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
-    }
-    return false
-  }
-  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
-  return false
-}
 
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 

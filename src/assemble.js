@@ -13,7 +13,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, inc, resolveIncludes, err, PTR, LAYOUT } from './ctx.js'
+import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP } from './ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -46,16 +46,16 @@ const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT)
 const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT)
 const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
 
-// memory[1020] holds the heap pointer only for shared memory (wasm globals are
+// memory[HEAP.PTR_ADDR] holds the heap pointer only for shared memory (wasm globals are
 // per-instance — see module/core.js comment). Non-shared memory uses $__heap.
 const heapUsesMem = () => ctx.memory.shared
 
 const heapGetIR = () => heapUsesMem()
-  ? ['i32.load', ['i32.const', 1020]]
+  ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]]
   : ['global.get', '$__heap']
 
 const heapSetIR = value => heapUsesMem()
-  ? ['i32.store', ['i32.const', 1020], value]
+  ? ['i32.store', ['i32.const', HEAP.PTR_ADDR], value]
   : ['global.set', '$__heap', value]
 
 const ARENA_SAFE_CALLS = new Set([

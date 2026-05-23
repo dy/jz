@@ -54,6 +54,8 @@ const stringOps = (node) => {
   return ctx.abi.resolve('string', rep)?.ops ?? ctx.abi.string.ops
 }
 
+// === Emitter state & operand classification ===
+
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.
 let _expect = null

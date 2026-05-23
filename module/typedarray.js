@@ -9,21 +9,11 @@
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, emitIndex } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, TYPED_ELEM_NAMES } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 
-// Element types and their byte sizes
-const ELEM = {
-  Int8Array: 0, Uint8Array: 1,
-  Int16Array: 2, Uint16Array: 3,
-  Int32Array: 4, Uint32Array: 5,
-  Float32Array: 6, Float64Array: 7,
-  BigInt64Array: 7, BigUint64Array: 7,
-}
-const BIGINT_ELEM_FLAG = 16
-const typedAux = (name, isView = false) => ELEM[name] | (isView ? 8 : 0) |
-  (name === 'BigInt64Array' || name === 'BigUint64Array' ? BIGINT_ELEM_FLAG : 0)
+const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
 const STRIDE = [1, 1, 2, 2, 4, 4, 4, 8]
 const SHIFT = [0, 0, 1, 1, 2, 2, 2, 3]
 const LOAD = [
@@ -261,7 +251,7 @@ export default (ctx) => {
           (else (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $off)))))))`
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)
-  for (const [name, elemType] of Object.entries(ELEM)) {
+  for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
     const aux = typedAux(name)
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
@@ -411,7 +401,7 @@ export default (ctx) => {
       if (ctor?.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
         const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-        if (ELEM[name] != null) {
+        if (TYPED_ELEM_CODE[name] != null) {
           const parentOff = isView
             ? ['i32.load', ['i32.add', ptrOffsetIR(emit(obj), VAL.TYPED), ['i32.const', 8]]]
             : ptrOffsetIR(emit(obj), VAL.TYPED)
@@ -434,7 +424,7 @@ export default (ctx) => {
       if (ctor && ctor.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
         const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-        const et = ELEM[name]
+        const et = TYPED_ELEM_CODE[name]
         if (et != null) {
           if (isView) {
             return typed(['f64.convert_i32_s',
@@ -462,7 +452,7 @@ export default (ctx) => {
               ['i32.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
               ['i32.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]]]]], 'f64')
       }
-      if (ctor?.startsWith('new.') && ELEM[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
+      if (ctor?.startsWith('new.') && TYPED_ELEM_CODE[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
     inc('__byte_offset')
     return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asI64(emit(obj))]], 'f64')
@@ -799,7 +789,7 @@ export default (ctx) => {
   }
 
   // TypedArray.from(arr) — convert regular array to typed array
-  for (const [name, elemType] of Object.entries(ELEM)) {
+  for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
     const aux = typedAux(name)
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
@@ -858,7 +848,7 @@ export default (ctx) => {
     if (!ctor) return null
     const isView = !chainOutput && ctor.endsWith('.view')
     const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
-    const et = ELEM[name]
+    const et = TYPED_ELEM_CODE[name]
     return et == null ? null : { et, isView, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array' }
   }
 
@@ -913,7 +903,7 @@ export default (ctx) => {
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
               (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-                (then (if (result f64) (i32.and (local.get $aux) (i32.const ${BIGINT_ELEM_FLAG}))
+                (then (if (result f64) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
                   (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
                   (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
                 (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
@@ -938,7 +928,7 @@ export default (ctx) => {
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
-    (if (i32.and (local.get $aux) (i32.const ${BIGINT_ELEM_FLAG}))
+    (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
       (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i64.reinterpret_f64 (local.get $v))))
       (else
         (if (i32.eq (local.get $et) (i32.const 7))

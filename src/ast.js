@@ -1,8 +1,30 @@
 /**
  * Shared Jessie/subscript AST shape helpers and walks.
  *
+ * Also hosts cycle-free helpers shared with abi/* (no ctx/analyze imports).
+ *
  * @module ast
  */
+
+/** Assignment operators — shared across analyze, plan, emit, abi. */
+export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+
+/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`. */
+export function isReassigned(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (ASSIGN_OPS.has(op) && body[1] === name) return true
+  if ((op === '++' || op === '--') && body[1] === name) return true
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
+    }
+    return false
+  }
+  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
+  return false
+}
 
 /** Normalize a call's raw arg slot: null → [], comma-group → elems, else singleton. */
 export function commaList(raw) {
