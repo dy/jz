@@ -25,7 +25,7 @@
  */
 
 import { ctx, warn } from './ctx.js'
-import { callArgs, setCallArgs, some, blockStmts, stmtList, T } from './ast.js'
+import { callArgs, setCallArgs, some, blockStmts, stmtList, T, refsName, refsAny, REFS_IN_EXPR } from './ast.js'
 import { ASSIGN_OPS, isReassigned, hasControlTransfer, isBlockBody } from './ast.js'
 import {
   analyzeBody, invalidateLocalsCache, analyzeFuncNamespaces,
@@ -279,14 +279,6 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
   return true
 }
-
-const mentionsName = (node, name) => {
-  if (typeof node === 'string') return node === name
-  if (!Array.isArray(node) || node[0] === '=>') return false
-  for (let i = 1; i < node.length; i++) if (mentionsName(node[i], name)) return true
-  return false
-}
-
 const rewriteScalarTypedArrayUses = (node, arrays) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
@@ -376,7 +368,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     let hasSafeUse = false, hasUnsafeUse = false
     for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
-      if (!mentionsName(stmts[j], decl[1])) continue
+      if (!refsName(stmts[j], decl[1])) continue
       const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce)
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
@@ -412,7 +404,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     }
     const unsafe = []
     for (const [name, arr] of arrays) {
-      if (arr.mirrored && mentionsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len, arr.coerce)) unsafe.push([name, arr])
+      if (arr.mirrored && refsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len, arr.coerce)) unsafe.push([name, arr])
     }
     if (unsafe.length) {
       for (const [name, arr] of unsafe) out.push(...scalarTypedArrayStores(name, arr))
@@ -1188,16 +1180,6 @@ const _intArrayLitElems = (expr) => {
   return out
 }
 
-// True iff `name` appears anywhere within `node` as a bare identifier or
-// inside any expression position. Used to detect escape across a closure
-// boundary (where we can't trace the use sites locally).
-const _refsName = (node, name) => {
-  if (typeof node === 'string') return node === name
-  if (!Array.isArray(node)) return false
-  for (let i = 1; i < node.length; i++) if (_refsName(node[i], name)) return true
-  return false
-}
-
 // Walks `node` and disqualifies every candidate name that appears in an
 // unsafe context. `initSet` holds the candidate's own init-decl AST nodes
 // (their LHS reference is the binding being defined, not an escape).
@@ -1219,7 +1201,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
   // anyway, but this is explicit and avoids walking the inner closure).
   if (op === '=>') {
     for (const n of candidates.keys()) {
-      if (!disqualified.has(n) && _refsName(node, n)) disqualified.add(n)
+      if (!disqualified.has(n) && refsName(node, n, { skipArrow: false })) disqualified.add(n)
     }
     return
   }
@@ -1483,18 +1465,6 @@ const stmtDeclName = (stmt) => {
   return Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' ? decl[1] : null
 }
 
-const refsAnyName = (node, names) => {
-  if (!names?.size) return false
-  if (typeof node === 'string') return names.has(node)
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  if (op === 'str') return false
-  if (op === '.' || op === '?.') return refsAnyName(node[1], names)
-  if (op === ':') return refsAnyName(node[2], names)
-  for (let i = 1; i < node.length; i++) if (refsAnyName(node[i], names)) return true
-  return false
-}
-
 const whileInductionVar = (cond) => {
   if (typeof cond === 'string') return cond
   if (!Array.isArray(cond)) return null
@@ -1511,7 +1481,7 @@ const partitionInvariantPrefix = (prefix, variantNames) => {
   let i = 0
   for (; i < prefix.length; i++) {
     const s = prefix[i]
-    if (!stmtDeclName(s) || refsAnyName(s, variantNames)) break
+    if (!stmtDeclName(s) || refsAny(s, variantNames, REFS_IN_EXPR)) break
     hoisted.push(s)
   }
   return { hoisted, rest: prefix.slice(i) }
@@ -1824,20 +1794,6 @@ const inlineHotInternalCalls = (programFacts, ast) => {
 // semantics while eliminating the closure object (no env pointer, no NaN-box, no
 // call_indirect). Mirrors inlineHotInternalCalls, scoped to one function body.
 
-// True iff `name` appears textually anywhere in `node` (descending into nested
-// arrows; `.prop` / `:key` positions are literal names, not refs — skipped to
-// match cloneWithSubst's structure).
-const referencesName = (node, name) => {
-  if (typeof node === 'string') return node === name
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  if (op === 'str') return false
-  if (op === '.' || op === '?.') return referencesName(node[1], name)
-  if (op === ':') return referencesName(node[2], name)
-  for (let i = 1; i < node.length; i++) if (referencesName(node[i], name)) return true
-  return false
-}
-
 // True iff every textual reference to `name` in `node` is the callee of a
 // `name(...)` call (i.e. the binding never escapes — never read as a value,
 // reassigned, captured by a nested lambda, or shadowed).
@@ -1847,7 +1803,7 @@ const onlyCalledNotReferenced = (node, name) => {
   const op = node[0]
   if (op === 'str') return true
   // A nested lambda touching `name` at all (capture or shadowing param) → bail.
-  if (op === '=>') return !referencesName(node[1], name) && !referencesName(node[2], name)
+  if (op === '=>') return !refsName(node[1], name, REFS_IN_EXPR) && !refsName(node[2], name, REFS_IN_EXPR)
   if (op === '()' && node[1] === name) {
     for (let i = 2; i < node.length; i++) if (!onlyCalledNotReferenced(node[i], name)) return false
     return true
@@ -1917,7 +1873,7 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   for (let changed = true; changed;) {
     changed = false
     for (const [name, info] of decls) {
-      if ([...decls.keys()].some(c => referencesName(info.arrow[2], c))) { decls.delete(name); changed = true }
+      if ([...decls.keys()].some(c => refsName(info.arrow[2], c, REFS_IN_EXPR))) { decls.delete(name); changed = true }
     }
   }
   // Every other reference to the name must be a `name(...)` call.
@@ -1940,7 +1896,7 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   const newStmts = bodyStmtList(out)
   const dead = new Set()
   for (const [name, info] of decls) {
-    if (!newStmts.some(s => s !== info.stmt && referencesName(s, name))) dead.add(info.stmt)
+    if (!newStmts.some(s => s !== info.stmt && refsName(s, name, REFS_IN_EXPR))) dead.add(info.stmt)
   }
   if (dead.size) out = removeStmts(out, dead) ?? [';']
 
@@ -2826,14 +2782,14 @@ function simdLoopIssues(body, iv) {
     if (op === '=>') return
     if (op === '[]' && node.length === 3) {
       const idx = node[2]
-      if (idx === iv || (Array.isArray(idx) && referencesName(idx, iv))) indexed = true
+      if (idx === iv || (Array.isArray(idx) && refsName(idx, iv, REFS_IN_EXPR))) indexed = true
       const stride = indexStrideOnVar(idx, iv)
       if (stride > maxStride) maxStride = stride
     }
     if (SIMD_REDUCE_OPS.has(op) && typeof node[1] === 'string' && node[1] !== iv) carried = true
     if (op === '=' && typeof node[1] === 'string' && node[1] !== iv) {
       const rhs = node[2]
-      if (rhs === node[1] || (Array.isArray(rhs) && referencesName(rhs, node[1]))) carried = true
+      if (rhs === node[1] || (Array.isArray(rhs) && refsName(rhs, node[1], REFS_IN_EXPR))) carried = true
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }

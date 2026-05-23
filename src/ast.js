@@ -114,6 +114,46 @@ export function some(node, pred, { skipArrow = true } = {}) {
   return false
 }
 
+/** Options for {@link refsName} / {@link refsAny}. */
+// skipArrow (default true): stop at `=>` boundaries — matches `some()`.
+// skipStr: don't descend into `str` literal nodes.
+// skipBindingPositions: on `.`/`?.` recurse only the receiver; on `:` only the value.
+
+/** Expression-position name refs: descends into `=>`, skips literal keys and `str`. */
+export const REFS_IN_EXPR = { skipArrow: false, skipStr: true, skipBindingPositions: true }
+
+/** True if bare identifier `name` appears anywhere in `node`. */
+export function refsName(node, name, opts = {}) {
+  const skipArrow = opts.skipArrow !== false
+  if (typeof node === 'string') return node === name
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (skipArrow && op === '=>') return false
+  if (opts.skipStr && op === 'str') return false
+  if (opts.skipBindingPositions) {
+    if (op === '.' || op === '?.') return refsName(node[1], name, opts)
+    if (op === ':') return refsName(node[2], name, opts)
+  }
+  for (let i = 1; i < node.length; i++) if (refsName(node[i], name, opts)) return true
+  return false
+}
+
+/** True if any name in `names` (Set) appears in `node`. Same options as refsName. */
+export function refsAny(node, names, opts = {}) {
+  if (!names?.size) return false
+  if (typeof node === 'string') return names.has(node)
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (opts.skipArrow !== false && op === '=>') return false
+  if (opts.skipStr && op === 'str') return false
+  if (opts.skipBindingPositions) {
+    if (op === '.' || op === '?.') return refsAny(node[1], names, opts)
+    if (op === ':') return refsAny(node[2], names, opts)
+  }
+  for (let i = 1; i < node.length; i++) if (refsAny(node[i], names, opts)) return true
+  return false
+}
+
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 
 /** Does `body` contain return/throw/break/continue (not inside nested `=>`)? */

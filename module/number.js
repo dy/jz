@@ -10,6 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
+import { ssoBitI64Hex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
@@ -36,9 +37,10 @@ import { inc, PTR } from '../src/ctx.js'
 // Callers MUST declare `$sbase i32`, set it once after `$v` is final and a
 // confirmed string, and only pass indices proven `< $len` (`__char_at` would
 // otherwise return its OOB 0; the inline load has no such guard).
+const SSO_BIT_I64 = ssoBitI64Hex()
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
 const chAt = idx => `(if (result i32)
-        (i64.eqz (i64.and (local.get $v) (i64.const 0x0000400000000000)))
+        (i64.eqz (i64.and (local.get $v) (i64.const ${SSO_BIT_I64})))
         (then (i32.load8_u (i32.add (local.get $sbase) ${idx})))
         (else (call $__char_at (local.get $v) ${idx})))`
 

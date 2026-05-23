@@ -11,8 +11,7 @@ import { ctx, warn } from './ctx.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs } from './ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
-  analyzeBody, paramFactsOf, findMutations,
-  invalidateLocalsCache, narrowReturnArrayElems,
+  analyzeBody, findMutations, invalidateLocalsCache,
 } from './analyze.js'
 import { staticObjectProps } from './static.js'
 import { scanBoundedLoops, exprType, typedElemAux, typedElemCtor, ctorFromElemAux } from './type.js'
@@ -20,7 +19,9 @@ import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from './kind.js'
 import { VAL, updateRep } from './reps.js'
 import {
-  clearStickyNull, ensureParamRep, mergeParamFact,
+  paramFactsOf, clearStickyNull, ensureParamRep, mergeParamFact,
+} from './param-reps.js'
+import {
   inferArrElemSchema, inferArrElemValType,
   inferSchemaId, inferValType, inferTypedCtor,
 } from './infer.js'
@@ -481,6 +482,67 @@ function createPhaseState() {
       refreshCallerLocals(callerCtx)
       clearDerived()
     },
+  }
+}
+
+const _FIELD_TO_SLICE = {
+  arrayElemSchema: 'arrElemSchemas',
+  arrayElemValType: 'arrElemValTypes',
+}
+
+/** Propagate Array<T> element facts from return paths into caller paramReps (phase G). */
+function narrowReturnArrayElems(field, paramReps, valueUsed) {
+  const sliceKey = _FIELD_TO_SLICE[field]
+  const targets = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) &&
+    f.valResult === VAL.ARRAY && f[field] == null
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const f of targets) invalidateLocalsCache(f.body)
+    for (const func of targets) {
+      if (func[field] != null) continue
+      const isBlock = isBlockBody(func.body)
+      if (isBlock && !alwaysReturns(func.body)) continue
+      const exprs = returnExprs(func.body)
+      if (!exprs.length) continue
+      const savedLocals = ctx.func.locals
+      const facts = analyzeBody(func.body)
+      ctx.func.locals = new Map(facts.locals)
+      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
+      const localElems = facts[sliceKey]
+      ctx.func.locals = savedLocals
+      const paramElemMap = paramFactsOf(paramReps, func, field) || new Map()
+      const resolveExpr = (expr) => {
+        if (typeof expr === 'string') {
+          if (localElems.has(expr)) {
+            const v = localElems.get(expr)
+            if (v != null) return v
+          }
+          if (paramElemMap.has(expr)) return paramElemMap.get(expr)
+          return null
+        }
+        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+          const f = ctx.func.map?.get(expr[1])
+          if (f?.[field] != null) return f[field]
+        }
+        if (Array.isArray(expr) && expr[0] === '?:') {
+          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
+          return a != null && a === b ? a : null
+        }
+        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
+          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
+          return a != null && a === b ? a : null
+        }
+        return null
+      }
+      const v0 = resolveExpr(exprs[0])
+      if (v0 == null) continue
+      if (!exprs.every(e => resolveExpr(e) === v0)) continue
+      func[field] = v0
+      changed = true
+    }
   }
 }
 
