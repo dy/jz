@@ -16,11 +16,10 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32
 import { emit, emitBoolStr } from '../src/stdlib-emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
-import { ssoBitI64Hex } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
-// Slice/view discriminator bit, pre-shifted to bit 45 — same branch-without-aux trick.
-const SLICE_BIT_I64 = '0x' + (BigInt(LAYOUT.SLICE_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+const SLICE_BIT_I64 = sliceBitI64Hex()
 
 // WAT (no-locals expression): byte length of a heap STRING given its raw $-local
 // names for the offset and the i64 ptr. A view (SLICE_BIT) carries its length in
@@ -220,7 +219,7 @@ export default (ctx) => {
         (f64.reinterpret_i64
           (i64.or
             ;; mkptr(STRING, SSO_BIT|1, 0) = NAN_PREFIX | (STRING<<TAG_SHIFT) | ((SSO_BIT|1)<<AUX_SHIFT)
-            (i64.const ${'0x' + (LAYOUT.NAN_PREFIX_BITS | (BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT)) | ((BigInt(LAYOUT.SSO_BIT) | 1n) << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')})
+            (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT | 1)})
             (i64.extend_i32_u
               (if (result i32) (local.get $isSso)
                 (then (i32.and (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8))) (i32.const 0xFF)))

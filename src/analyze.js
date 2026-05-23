@@ -3623,6 +3623,15 @@ export function analyzeFuncNamespaces(ast) {
  */
 
 const _programFactsCache = new WeakMap()
+let _programFactsGen = 0
+
+/** Drop all cached program-fact walks (called at compile entry). */
+export function resetProgramFactsCache() { _programFactsGen++ }
+
+/** Drop cached walks for specific AST roots (in-place module rewrites). */
+export function invalidateProgramFactsCache(...roots) {
+  for (const r of roots) if (r != null && typeof r === 'object') _programFactsCache.delete(r)
+}
 
 function emptyWalkFacts() {
   return {
@@ -3649,11 +3658,12 @@ function mergeWalkFacts(into, from) {
 }
 
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
- *  so plan-phase rescans skip unchanged bodies after inlining/scalarization passes. */
-function walkFactsRoot(root, full, callerFunc, doSchema, doArity) {
-  if (full && root != null && typeof root === 'object') {
-    const cached = _programFactsCache.get(root)
-    if (cached) return cached
+ *  so plan-phase rescans skip unchanged bodies after inlining/scalarization passes.
+ *  Module AST is never cached — plan may mutate it in place (flattenFuncNamespaces). */
+function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
+  if (cache && full && root != null && typeof root === 'object') {
+    const hit = _programFactsCache.get(root)
+    if (hit?.gen === _programFactsGen) return hit.facts
   }
   const acc = emptyWalkFacts()
   const walkFacts = (node, fullWalk, inArrow, caller) => {
@@ -3717,7 +3727,8 @@ function walkFactsRoot(root, full, callerFunc, doSchema, doArity) {
     }
   }
   walkFacts(root, full, false, callerFunc)
-  if (full && root != null && typeof root === 'object') _programFactsCache.set(root, acc)
+  if (cache && full && root != null && typeof root === 'object')
+    _programFactsCache.set(root, { gen: _programFactsGen, facts: acc })
   return acc
 }
 
@@ -3726,9 +3737,9 @@ export function collectProgramFacts(ast) {
   const doSchema = ast && ctx.schema.register
   const doArity = !!ctx.closure.make
   const f = emptyWalkFacts()
-  mergeWalkFacts(f, walkFactsRoot(ast, true, null, doSchema, doArity))
+  mergeWalkFacts(f, walkFactsRoot(ast, true, null, doSchema, false))
   for (const func of ctx.func.list) {
-    if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, doArity))
+    if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, true))
   }
   const { propMap, valueUsed, callSites } = f
   const initFacts = ctx.module.initFacts

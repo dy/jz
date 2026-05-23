@@ -63,12 +63,11 @@ const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 // fully initialized) — never at module top level — so this is safe.
 import { LAYOUT } from '../ctx.js'
 import { isReassigned } from '../ast.js'
+import { ssoBitI64Hex } from '../../layout.js'
 
-/** Pre-shifted SSO discriminator (bit 46 of the i64 ptr). Computed lazily on
- *  first read since LAYOUT is undefined when this module's top level runs.
- *  Memoized in the closure so all later call sites pay zero overhead. */
+/** Pre-shifted SSO discriminator — layout.js is cycle-free; memoized at first use. */
 let _ssoBitI64 = null
-const ssoBitI64 = () => _ssoBitI64 ??= '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+const ssoBitI64 = () => _ssoBitI64 ??= ssoBitI64Hex()
 
 /** Allocate a fresh i64 local in the current function. Replicated here (not
  *  imported from `src/ir.js`) to keep this module loadable during ctx.js

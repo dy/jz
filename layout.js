@@ -60,6 +60,14 @@ export const atomNanHex = atomId =>
 export const ssoBitI64Hex = () =>
   '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
 
+/** Pre-shifted STRING slice/view aux bit as i64 hex. */
+export const sliceBitI64Hex = () =>
+  '0x' + (BigInt(LAYOUT.SLICE_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+
+/** Full i64 NaN-box hex for `(i64.const …)` — ptr type + aux, offset OR'd separately. */
+export const ptrNanHex = (ptrType, aux = 0) =>
+  '0x' + ptrBoxPrefixBigInt(ptrType, aux).toString(16).toUpperCase().padStart(16, '0')
+
 /** Compile-time i64 prefix for mkPtrIR (before offset OR). */
 export const ptrBoxPrefixBigInt = (ptrType, aux = 0) =>
   (0x7FF8n << 48n)
