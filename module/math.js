@@ -3,7 +3,7 @@
  *
  * Module API:
  * - reg('math.X', deps, args => WasmNode) — emit handler + declarative stdlib deps
- * - ctx.core.stdlib['math.X'] = '(func ...)' - WAT function definitions
+ * - wat('math.X', `(func …)`) — WAT stdlib via bridge
  * - deps({ 'math.X': ['dep'] }) - WAT stdlib→stdlib deps (expanded transitively)
  *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, deps, dual, tag } from '../src/bridge.js'
+import { emit, emitter, reg, deps, dual, tag, wat } from '../src/bridge.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
@@ -354,15 +354,15 @@ export default (ctx) => {
   // WAT stdlib implementations
   // ============================================
 
-  ctx.core.stdlib['math.sign'] = `(func $math.sign (param $x f64) (result f64)
+  wat('math.sign', `(func $math.sign (param $x f64) (result f64)
     ;; sign(NaN) = NaN, sign(±0) = ±0 — both pass x through unchanged.
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (if (result f64) (f64.gt (local.get $x) (f64.const 0.0))
       (then (f64.const 1.0))
-      (else (f64.const -1.0))))`
+      (else (f64.const -1.0))))`)
 
-  ctx.core.stdlib['math.sin_core'] = `(func $math.sin_core (param $x f64) (result f64)
+  wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
@@ -379,12 +379,12 @@ export default (ctx) => {
         (f64.sub (f64.const 0.008333333333333333) (f64.mul (local.get $x2)
           (f64.sub (f64.const 0.0001984126984126984) (f64.mul (local.get $x2)
             (f64.sub (f64.const 0.0000027557319223985893) (f64.mul (local.get $x2)
-              (f64.const 2.505210838544172e-8))))))))))))))`
+              (f64.const 2.505210838544172e-8))))))))))))))`)
 
-  ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
-    (call $math.sin_core (local.get $x)))`
+  wat('math.sin', `(func $math.sin (param $x f64) (result f64)
+    (call $math.sin_core (local.get $x)))`)
 
-  ctx.core.stdlib['math.cos_core'] = `(func $math.cos_core (param $x f64) (result f64)
+  wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
@@ -401,15 +401,15 @@ export default (ctx) => {
         (f64.sub (f64.const 0.041666666666666664) (f64.mul (local.get $x2)
           (f64.sub (f64.const 0.001388888888888889) (f64.mul (local.get $x2)
             (f64.sub (f64.const 0.0000248015873015873) (f64.mul (local.get $x2)
-              (f64.const 2.7557319223985893e-7)))))))))))))`
+              (f64.const 2.7557319223985893e-7)))))))))))))`)
 
-  ctx.core.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
-    (call $math.cos_core (local.get $x)))`
+  wat('math.cos', `(func $math.cos (param $x f64) (result f64)
+    (call $math.cos_core (local.get $x)))`)
 
-  ctx.core.stdlib['math.tan'] = `(func $math.tan (param $x f64) (result f64)
-    (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`
+  wat('math.tan', `(func $math.tan (param $x f64) (result f64)
+    (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
 
-  ctx.core.stdlib['math.exp'] = `(func $math.exp (param $x f64) (result f64)
+  wat('math.exp', `(func $math.exp (param $x f64) (result f64)
     (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $pow2 f64)
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     ;; +Infinity → +Infinity; finite overflow (x > 709) also rounds to +Infinity.
@@ -439,12 +439,12 @@ export default (ctx) => {
               (local.set $k (i32.add (local.get $k) (i32.const 1)))
               (br $loop2)))
               (local.set $result (f64.div (local.get $result) (local.get $pow2)))))))
-        (local.get $result))))))`
+        (local.get $result))))))`)
 
-  ctx.core.stdlib['math.expm1'] = `(func $math.expm1 (param $x f64) (result f64)
+  wat('math.expm1', `(func $math.expm1 (param $x f64) (result f64)
     ;; Preserve sign of zero: expm1(±0) = ±0.
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))`
+    (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))`)
 
   // log(x) via bit-level frexp + sqrt(2)-centered split + atanh series.
   //   x = m * 2^k   with bits-extracted k (no loop)
@@ -454,7 +454,7 @@ export default (ctx) => {
   // With 9 polynomial terms and |s|≤0.172, truncation error ≈ 2|s|·z⁹/19 ≈ 4e-17,
   // close to f64 ulp. The whole routine is branchless after edge cases.
   // Edge cases: NaN→NaN, ≤0 distinguishes 0→-Inf, <0→NaN; +Inf passes through.
-  ctx.core.stdlib['math.log'] = `(func $math.log (param $x f64) (result f64)
+  wat('math.log', `(func $math.log (param $x f64) (result f64)
     (local $bits i64) (local $k i32) (local $m f64) (local $s f64) (local $z f64)
     (if (f64.ne (local.get $x) (local.get $x))
       (then (return (local.get $x))))
@@ -500,10 +500,10 @@ export default (ctx) => {
                 (f64.mul (local.get $z) (f64.add (f64.const 0.09090909090909091)
                   (f64.mul (local.get $z) (f64.add (f64.const 0.07692307692307693)
                     (f64.mul (local.get $z) (f64.add (f64.const 0.06666666666666667)
-                      (f64.mul (local.get $z) (f64.const 0.058823529411764705)))))))))))))))))))))`
+                      (f64.mul (local.get $z) (f64.const 0.058823529411764705)))))))))))))))))))))`)
 
-  ctx.core.stdlib['math.log2'] = `(func $math.log2 (param $x f64) (result f64)
-    (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`
+  wat('math.log2', `(func $math.log2 (param $x f64) (result f64)
+    (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`)
 
   // log10 via fdlibm's two-term decomposition: log10(x) = k*log10(2) + log10(m).
   // A plain log(x)/ln(10) double-rounds (rounding of log itself, then of the
@@ -511,7 +511,7 @@ export default (ctx) => {
   // Reducing x = m·2^k, splitting log10(2) and 1/ln(10) into hi/lo halves, and
   // keeping the bulk term (k·log10_2hi, hi·ivln10hi) carry-free recovers the
   // last ulps, so log10(10/100/1000/…) round-trips to exact integers.
-  ctx.core.stdlib['math.log10'] = `(func $math.log10 (param $x f64) (result f64)
+  wat('math.log10', `(func $math.log10 (param $x f64) (result f64)
     (local $bits i64) (local $k i32) (local $m f64) (local $f f64)
     (local $hfsq f64) (local $s f64) (local $z f64) (local $w f64)
     (local $t1 f64) (local $t2 f64) (local $R f64)
@@ -575,12 +575,12 @@ export default (ctx) => {
     (local.set $w (f64.add (local.get $y) (local.get $valhi)))
     (local.set $vallo (f64.add (local.get $vallo)
       (f64.add (f64.sub (local.get $y) (local.get $w)) (local.get $valhi))))
-    (f64.add (local.get $vallo) (local.get $w)))`
+    (f64.add (local.get $vallo) (local.get $w)))`)
 
   // log1p(x) via Kahan's compensated trick: with u = 1+x, log(u) loses bits when x is
   // small (because u rounds to ~1), but the ratio x/(u-1) is exactly the missing factor.
   // For u==1 (x below ulp), result is just x; preserves -0 from x=-0 path.
-  ctx.core.stdlib['math.log1p'] = `(func $math.log1p (param $x f64) (result f64)
+  wat('math.log1p', `(func $math.log1p (param $x f64) (result f64)
     (local $u f64)
     ;; log1p(+Inf) = +Inf — the ratio trick below would compute Inf/Inf = NaN.
     (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
@@ -589,9 +589,9 @@ export default (ctx) => {
       (then (return (local.get $x))))
     (f64.div
       (f64.mul (call $math.log (local.get $u)) (local.get $x))
-      (f64.sub (local.get $u) (f64.const 1.0))))`
+      (f64.sub (local.get $u) (f64.const 1.0))))`)
 
-  ctx.core.stdlib['math.pow'] = `(func $math.pow (param $x f64) (param $y f64) (result f64)
+  wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)
     ;; y == 0 -> 1 (covers pow(NaN,0), pow(±0,0), pow(±Inf,0))
     (if (f64.eq (local.get $y) (f64.const 0.0)) (then (return (f64.const 1.0))))
@@ -664,12 +664,12 @@ export default (ctx) => {
     ;; x < 0, non-integer finite y -> NaN
     (if (f64.lt (local.get $x) (f64.const 0.0))
       (then (return (f64.const nan))))
-    (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`
+    (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`)
 
   // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
   // 11-term odd polynomial split into even/odd parts. Accurate to <1 ulp —
   // the old Taylor series was ~2e-6 off near |x|=0.5. Drives asin/acos/atan2.
-  ctx.core.stdlib['math.atan'] = `(func $math.atan (param $x f64) (result f64)
+  wat('math.atan', `(func $math.atan (param $x f64) (result f64)
     (local $abs_x f64) (local $id i32) (local $r f64) (local $z f64) (local $w f64)
     (local $s1 f64) (local $s2 f64) (local $ahi f64) (local $alo f64) (local $res f64)
     ;; NaN passes through unchanged.
@@ -736,19 +736,19 @@ export default (ctx) => {
     (local.set $res (f64.sub (local.get $ahi)
       (f64.sub (f64.sub (f64.mul (local.get $r) (f64.add (local.get $s1) (local.get $s2))) (local.get $alo))
                (local.get $r))))
-    (f64.copysign (local.get $res) (local.get $x)))`
+    (f64.copysign (local.get $res) (local.get $x)))`)
 
-  ctx.core.stdlib['math.asin'] = `(func $math.asin (param $x f64) (result f64)
+  wat('math.asin', `(func $math.asin (param $x f64) (result f64)
     ;; Domain is [-1, 1]; outside it (including ±Infinity), Math.asin returns NaN.
     (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 1.0))
       (then (f64.const nan))
       (else (call $math.atan (f64.div (local.get $x)
-        (f64.sqrt (f64.sub (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))))`
+        (f64.sqrt (f64.sub (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))))`)
 
-  ctx.core.stdlib['math.acos'] = `(func $math.acos (param $x f64) (result f64)
-    (f64.sub (f64.const ${Math.PI / 2}) (call $math.asin (local.get $x))))`
+  wat('math.acos', `(func $math.acos (param $x f64) (result f64)
+    (f64.sub (f64.const ${Math.PI / 2}) (call $math.asin (local.get $x))))`)
 
-  ctx.core.stdlib['math.atan2'] = `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
+  wat('math.atan2', `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
     ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
@@ -765,21 +765,21 @@ export default (ctx) => {
         (then (call $math.atan (f64.div (local.get $y) (local.get $x))))
         (else (if (result f64) (f64.ge (local.get $y) (f64.const 0.0))
           (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${Math.PI})))
-          (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${Math.PI})))))))))`
+          (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${Math.PI})))))))))`)
 
-  ctx.core.stdlib['math.sinh'] = `(func $math.sinh (param $x f64) (result f64)
+  wat('math.sinh', `(func $math.sinh (param $x f64) (result f64)
     (local $ex f64)
     ;; Preserve sign of zero: sinh(±0) = ±0 (the f64.lt sign test below is false for -0).
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (local.set $ex (call $math.exp (f64.abs (local.get $x))))
     (local.set $ex (f64.mul (f64.const 0.5) (f64.sub (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))
-    (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $ex))) (else (local.get $ex))))`
+    (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $ex))) (else (local.get $ex))))`)
 
-  ctx.core.stdlib['math.cosh'] = `(func $math.cosh (param $x f64) (result f64)
+  wat('math.cosh', `(func $math.cosh (param $x f64) (result f64)
     (local $ex f64) (local.set $ex (call $math.exp (f64.abs (local.get $x))))
-    (f64.mul (f64.const 0.5) (f64.add (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))`
+    (f64.mul (f64.const 0.5) (f64.add (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))`)
 
-  ctx.core.stdlib['math.tanh'] = `(func $math.tanh (param $x f64) (result f64)
+  wat('math.tanh', `(func $math.tanh (param $x f64) (result f64)
     (local $e2x f64)
     ;; Preserve sign of zero: tanh(±0) = ±0 (the f64.lt sign test below is false for -0).
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
@@ -787,30 +787,30 @@ export default (ctx) => {
       (then (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.const -1.0)) (else (f64.const 1.0))))
       (else (local.set $e2x (call $math.exp (f64.mul (f64.const 2.0) (f64.abs (local.get $x)))))
         (local.set $e2x (f64.div (f64.sub (local.get $e2x) (f64.const 1.0)) (f64.add (local.get $e2x) (f64.const 1.0))))
-        (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $e2x))) (else (local.get $e2x))))))`
+        (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $e2x))) (else (local.get $e2x))))))`)
 
-  ctx.core.stdlib['math.asinh'] = `(func $math.asinh (param $x f64) (result f64)
+  wat('math.asinh', `(func $math.asinh (param $x f64) (result f64)
     ;; ±Infinity and NaN pass through unchanged. (log(±Inf + sqrt(Inf²+1)) → NaN otherwise.)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
     ;; Preserve sign of zero: asinh(±0) = ±0.
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))`
+    (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))`)
 
-  ctx.core.stdlib['math.acosh'] = `(func $math.acosh (param $x f64) (result f64)
+  wat('math.acosh', `(func $math.acosh (param $x f64) (result f64)
     (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
     ;; acosh is defined only for x >= 1; everything below (incl. -Inf) is NaN.
     (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const nan)) (else
-      (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))))`
+      (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))))`)
 
-  ctx.core.stdlib['math.atanh'] = `(func $math.atanh (param $x f64) (result f64)
+  wat('math.atanh', `(func $math.atanh (param $x f64) (result f64)
     ;; Preserve sign of zero: atanh(±0) = ±0.
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     ;; ±Infinity → NaN. Without this the (1+x)/(1-x) ratio is Inf/Inf, whose
     ;; sign-nondeterministic arithmetic NaN would escape non-canonical on x86.
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`
+    (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`)
 
-  ctx.core.stdlib['math.cbrt'] = `(func $math.cbrt (param $x f64) (result f64)
+  wat('math.cbrt', `(func $math.cbrt (param $x f64) (result f64)
     (local $y f64)
     ;; ±Infinity and NaN pass through; preserve sign of zero.
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
@@ -822,31 +822,31 @@ export default (ctx) => {
         (local.set $y (call $math.pow (local.get $x) (f64.const 0.3333333333333333)))
         (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
         (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
-        (local.get $y))))`
+        (local.get $y))))`)
 
   // Small finite-test helper (NaN→0, ±Inf→0, finite→1). Used by transcendental
   // functions that need to short-circuit on infinite inputs.
-  ctx.core.stdlib['math.isFinite'] = `(func $math.isFinite (param $x f64) (result i32)
+  wat('math.isFinite', `(func $math.isFinite (param $x f64) (result i32)
     (i32.and
       (f64.eq (local.get $x) (local.get $x))
-      (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`
+      (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`)
 
-  ctx.core.stdlib['math.hypot'] = `(func $math.hypot (param $x f64) (param $y f64) (result f64)
+  wat('math.hypot', `(func $math.hypot (param $x f64) (param $y f64) (result f64)
     ;; Any ±Infinity argument ⇒ +Infinity, even when the other is NaN (ECMA-262 21.3.2.18).
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const inf))))
     (if (f64.eq (f64.abs (local.get $y)) (f64.const inf)) (then (return (f64.const inf))))
-    (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`
+    (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`)
 
-  ctx.core.stdlib['math.random'] = `(func $math.random (result f64)
+  wat('math.random', `(func $math.random (result f64)
     (local $s i32)
     (local.set $s (global.get $math.rng_state))
     (local.set $s (i32.xor (local.get $s) (i32.shl (local.get $s) (i32.const 13))))
     (local.set $s (i32.xor (local.get $s) (i32.shr_u (local.get $s) (i32.const 17))))
     (local.set $s (i32.xor (local.get $s) (i32.shl (local.get $s) (i32.const 5))))
     (global.set $math.rng_state (local.get $s))
-    (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`
+    (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`)
 
-  ctx.core.stdlib['math.sumPrecise'] = `(func $math.sumPrecise (param $arr i64) (result f64)
+  wat('math.sumPrecise', `(func $math.sumPrecise (param $arr i64) (result f64)
     ;; Exact summation via a 2304-bit fixed-point accumulator (36 i64 words,
     ;; little-endian two's complement) holding sum*2^1074. Every finite f64 is an
     ;; integer multiple of 2^-1074, so the running sum carries zero rounding
@@ -1005,7 +1005,7 @@ export default (ctx) => {
       (then (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u (i32.add (local.get $k) (i32.const 1023))) (i64.const 52))))
       (else (f64.reinterpret_i64 (i64.shl (i64.const 1) (i64.extend_i32_u (i32.add (local.get $k) (i32.const 1074))))))))
     (local.set $res (f64.mul (f64.convert_i64_u (local.get $top)) (local.get $pow)))
-    (select (f64.neg (local.get $res)) (local.get $res) (local.get $resultNeg)))`
+    (select (f64.neg (local.get $res)) (local.get $res) (local.get $resultNeg)))`)
 
   // Global for random state
   ctx.scope.globals.set('math.rng_state', '(global $math.rng_state (mut i32) (i32.const 12345))')
