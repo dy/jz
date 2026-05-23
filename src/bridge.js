@@ -1,8 +1,9 @@
 /**
  * Stdlib module bridge — `module/*` imports from here, not `src/emit.js`.
  *
- * Emit impls bind on `ctx.bridge` at reset(). Registration helpers (`reg`,
- * `deps`, …) keep handler + WAT include deps in one place.
+ * Emit impls bind on `ctx.bridge` at reset(). Registration: `wat(name, body)`
+ * for WAT stdlib, `reg(name, deps, fn)` for emit, or `reg(name, { deps, wat, emit })`
+ * to co-register both. `method`/`call` remain sugar for simple `$stdlib` calls.
  *
  * @module bridge
  */
@@ -20,15 +21,38 @@ export const bool = (...a) => ctx.bridge.bool(...a)
 export const idx = (...a) => ctx.bridge.idx(...a)
 export const spread = (...a) => ctx.bridge.spread(...a)
 
-/** `ctx.core.emit[name] = emitter(deps, fn)`. `deps` = WAT stdlib names; `[]` for host-import wiring. */
-export const reg = (name, deps, fn) => {
-  const h = emitter(deps, fn)
+/** WAT stdlib→stdlib deps for `resolveIncludes()`. */
+export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
+
+/** WAT stdlib body (+ optional deps edge for resolveIncludes). */
+export const wat = (name, body, depNames = []) => {
+  ctx.core.stdlib[name] = body
+  if (depNames.length) deps({ [name]: depNames })
+}
+
+/** Emit handler; optionally co-register WAT when `depsOrOpts.wat` is set.
+ *  reg(name, deps, fn) — emit only
+ *  reg(name, { deps, wat, emit }) — WAT key inferred from first `__…` dep
+ *  reg(name, { watKey, deps, wat, emit }) — explicit WAT key when deps differ */
+export const reg = (name, depsOrOpts, maybeFn) => {
+  if (typeof depsOrOpts === 'object' && depsOrOpts !== null && !Array.isArray(depsOrOpts)) {
+    const o = depsOrOpts
+    const depsList = o.deps ?? []
+    if (o.wat) {
+      const watKey = o.watKey ?? depsList.find(d => d.startsWith('__')) ?? name
+      wat(watKey, o.wat, o.watDeps ?? [])
+    }
+    if (o.emit) {
+      const h = emitter(depsList, o.emit)
+      ctx.core.emit[name] = h
+      return h
+    }
+    return
+  }
+  const h = emitter(depsOrOpts, maybeFn)
   ctx.core.emit[name] = h
   return h
 }
-
-/** WAT stdlib→stdlib deps for `resolveIncludes()`. */
-export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
 /** Tag a hand-wrapped handler with `.deps` (pow/** dual lowering). */
 export const tag = (handler, deps) => {

@@ -17,8 +17,8 @@
  * @module jzify
  */
 
-import { warn } from '../ctx.js'
-import { handlerArgs, JZ_BLOCK_OPS, LABEL_BODY_OPS } from '../ast.js'
+import { warn } from '../src/ctx.js'
+import { handlerArgs, JZ_BLOCK_OPS, LABEL_BODY_OPS } from '../src/ast.js'
 import { JZIFY_CLASS_ERRORS as JC } from './op-policy.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
