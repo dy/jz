@@ -80,7 +80,7 @@ const isSimpleArg = node => {
   if (node[0] == null) return typeof node[1] === 'number'
   if (node[0] === 'str') return typeof node[1] === 'string'
   if (node[0] === 'u-' || (node[0] === '-' && node.length === 2)) return isSimpleArg(node[1])
-  if (['+', '-', '*', '%', '&', '|', '^', '<<', '>>', '>>>'].includes(node[0]))
+  if (['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'].includes(node[0]))
     return isSimpleArg(node[1]) && isSimpleArg(node[2])
   return false
 }
@@ -1235,7 +1235,8 @@ const inlineInStmt = (stmt, candidates) => {
     }
   }
   // `X = call(...)` at statement position: inline as prefix + assign(value).
-  if (stmt[0] === '=' && typeof stmt[1] === 'string' && isCandidateCall(stmt[2], candidates)) {
+  // LHS may be a name or an indexed lvalue (`out[i] = beat(...)` in fill loops).
+  if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates)) {
     const args = callArgs(stmt[2])
     const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
     if (shape && shape.value !== null) {
@@ -1346,9 +1347,22 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   // a direct `call` (devirtualization).
   const forwarders = new Set()
   for (const func of ctx.func.list) {
-    if (func.exported || func.raw || !func.body || func.rest || programFacts.valueUsed.has(func.name)) continue
-    if (func.defaults && Object.keys(func.defaults).length) continue
     const sites = sitesByCallee.get(func.name)
+    // Exported leaf/kernel with exactly one internal caller (e.g. fill→beat in
+    // floatbeat): inline into the caller's loop but keep the export for external
+    // one-off calls (bench beat()). Multi-caller exports stay outlined so V8 can
+    // tier-up shared kernels.
+    const soleCallerExport = func.exported && sites?.length === 1
+    if (func.raw || !func.body || func.rest) continue
+    if (func.exported && !soleCallerExport) continue
+    if (programFacts.valueUsed.has(func.name) && !soleCallerExport) continue
+    if (func.defaults && Object.keys(func.defaults).length) continue
+    const paramNames = new Set((func.sig?.params || []).map(p => p.name))
+    if (paramNames.size && scanBody(func.body, n => {
+      if (n[0] !== '()' || !Array.isArray(n[1]) || n[1][0] !== '.') return false
+      const [, obj, prop] = n[1]
+      return prop === 'push' && typeof obj === 'string' && paramNames.has(obj)
+    })) continue
     const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
     const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
     const hasLoop = scanBody(func.body, n => LOOP_OPS.has(n[0]))
@@ -1389,7 +1403,6 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // stays at generic f64 ABI with __typed_idx dispatch instead of i32 + f64.load.
     // Keeping the factory as a callable function preserves the call-site type fact.
     if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
-    const paramNames = new Set((func.sig?.params || []).map(p => p.name))
     if (paramNames.size && scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     candidates.set(func.name, func)
@@ -1413,7 +1426,7 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // Forwarders cross into an exported caller too: the tier-up rationale that
     // keeps candidates out of exports concerns relocated loop kernels, not
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
-    if (fixedSiteExported || forwarders.has(name)) exportedCandidates.set(name, func)
+    if (fixedSiteExported || forwarders.has(name) || sites?.length === 1) exportedCandidates.set(name, func)
   }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue

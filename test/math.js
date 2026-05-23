@@ -325,6 +325,16 @@ test('Math.pow / ** — constant-integer-exponent fold (bit-identical, stdlib-fr
   ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
 })
 
+test('Math.pow / ** — positive-constant base lowers to exp (no pow/log stdlib)', async () => {
+  const m = run(`export let f = (n) => 2 ** (n / 12)`)
+  almost(m.f(5), Math.pow(2, 5 / 12), 1e-6)
+  almost(m.f(0), 1, 1e-6)
+  const wat = compile(`export let g = (n) => 440 * (2 ** (n / 12))`, { wat: true })
+  ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided for 2 ** (n/12)')
+  ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
+  ok(/\(func \$math\.exp/.test(wat), 'uses math.exp')
+})
+
 test('Math.cbrt', async () => {
   almost(await evaluate('Math.cbrt(8)'), 2, 1e-6)
   almost(await evaluate('Math.cbrt(27)'), 3, 1e-6)

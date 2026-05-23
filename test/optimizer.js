@@ -748,6 +748,26 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
   is(main(), 61)
 })
 
+test('sourceInline: trailing-return helper inlines into indexed `out[i] = call(...)`', () => {
+  const src = `
+    export let beat = (t) => Math.sin(t * 6.28)
+    export let fill = (out, len, sr) => {
+      let i = 0
+      while (i < len) { out[i] = beat(i / sr); i++ }
+    }
+    export const main = () => {
+      const out = new Float64Array(4)
+      fill(out, 4, 44100)
+      return out[1]
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const fillFn = wat.match(/\(func \$fill[\s\S]*?\n  \)/)?.[0] || ''
+  ok(!/call \$beat/.test(fillFn), 'expected beat inlined into fill loop')
+  const { beat, main } = run(src)
+  almost(main(), beat(1 / 44100), 1e-5)
+})
+
 test('sourceInline: does NOT inline ordinary hot loop into exported entry', () => {
   const src = `
     const hot = (n) => {
