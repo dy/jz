@@ -7,13 +7,34 @@
  * @module object
  */
 
-import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { includeModule } from '../src/autoload.js'
 
+const OBJECT_TO_STRING_TAGS = {
+  [VAL.NUMBER]: '[object Number]',
+  [VAL.BIGINT]: '[object BigInt]',
+  [VAL.BOOL]: '[object Boolean]',
+  [VAL.STRING]: '[object String]',
+  [VAL.ARRAY]: '[object Array]',
+  [VAL.OBJECT]: '[object Object]',
+  [VAL.HASH]: '[object Object]',
+  [VAL.SET]: '[object Set]',
+  [VAL.MAP]: '[object Map]',
+  [VAL.CLOSURE]: '[object Function]',
+  [VAL.REGEX]: '[object RegExp]',
+  [VAL.DATE]: '[object Date]',
+  [VAL.BUFFER]: '[object ArrayBuffer]',
+  [VAL.TYPED]: '[object Object]',
+}
+
+const objectToStringTagForVal = obj => {
+  const val = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+  return val ? OBJECT_TO_STRING_TAGS[val] : null
+}
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
@@ -208,6 +229,42 @@ export default (ctx) => {
   // Object.hasOwn(o, k) — ES2022 static equivalent of o.hasOwnProperty(k).
   // Reuses the same own-property emitter; receiver-type variants above apply.
   ctx.core.emit['Object.hasOwn'] = (obj, key) => ctx.core.emit['.hasOwnProperty'](obj, key)
+
+  ctx.core.emit['__object_toString'] = (obj) => {
+    const emitTag = value => asF64(emit(['str', value]))
+    const tag = objectToStringTagForVal(obj)
+    if (tag) return typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], emitTag(tag)], 'f64')
+
+    const value = temp('otag')
+    const type = tempI32('otagt')
+    const bits = ['i64.reinterpret_f64', ['local.get', `$${value}`]]
+    const typeIs = ptr => ['i32.eq', ['local.get', `$${type}`], ['i32.const', ptr]]
+    const tagIf = (cond, yes, no) => ['if', ['result', 'f64'], cond, ['then', emitTag(yes)], ['else', no]]
+    const byType =
+      tagIf(typeIs(PTR.STRING), '[object String]',
+        tagIf(typeIs(PTR.ARRAY), '[object Array]',
+          tagIf(typeIs(PTR.BUFFER), '[object ArrayBuffer]',
+            tagIf(typeIs(PTR.CLOSURE), '[object Function]',
+              tagIf(typeIs(PTR.SET), '[object Set]',
+                tagIf(typeIs(PTR.MAP), '[object Map]',
+                  emitTag('[object Object]')))))))
+    const pointerTag = ['block', ['result', 'f64'],
+      ['local.set', `$${type}`, ['call', '$__ptr_type', bits]],
+      byType]
+    const nonNumericTag = ['if', ['result', 'f64'],
+      ['i64.eq', bits, ['i64.const', NULL_NAN]],
+      ['then', emitTag('[object Null]')],
+      ['else', ['if', ['result', 'f64'],
+        ['i64.eq', bits, ['i64.const', UNDEF_NAN]],
+        ['then', emitTag('[object Undefined]')],
+        ['else', pointerTag]]]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${value}`, asF64(emit(obj))],
+      ['if', ['result', 'f64'],
+        ['f64.eq', ['local.get', `$${value}`], ['local.get', `$${value}`]],
+        ['then', emitTag('[object Number]')],
+        ['else', nonNumericTag]]], 'f64')
+  }
 
   // String primitives are coerced to exotic String objects whose own enumerable
   // properties are the indexed characters. Object.values/entries iterate them.
