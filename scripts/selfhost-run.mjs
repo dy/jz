@@ -5,7 +5,8 @@
  *
  * Usage: node scripts/selfhost-run.mjs '<source>'
  *   Build the kernel once with: node scripts/selfhost-build.mjs
- *   JZ_KERNEL_STRICT=1 errors instead of falling back to host jz on kernel failure.
+ *   Default is strict: kernel-compile failure throws (so this is real dogfood).
+ *   Set JZ_KERNEL_FALLBACK=1 to fall back to host-jz compile on failure (debug only).
  */
 import { readFileSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
@@ -44,7 +45,7 @@ try {
   bin = watrCompile(ir)
   console.log('kernel compile', bin.length, 'bytes in', Date.now() - t1, 'ms')
 } catch (e) {
-  if (process.env.JZ_KERNEL_STRICT) throw e
+  if (!process.env.JZ_KERNEL_FALLBACK) throw e
   console.error('kernel compile FAILED:', e?.stack || e)
   bin = compile(src, { jzify: true, optimize: false })
   console.log('host compile (kernel fallback)', bin.length, 'bytes in', Date.now() - t1, 'ms')

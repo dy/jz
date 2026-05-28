@@ -41,7 +41,7 @@
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
     "build:examples": "for dir in examples/*/; do [ -f \"$dir/build.mjs\" ] && node \"$dir/build.mjs\"; done",
-    "prepublishOnly": "npm run test:matrix && npm run test:bench"
+    "prepublishOnly": "npm run test:all"
   },
   "repository": {
     "type": "git",
@@ -54,7 +54,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.4.15",
+    "subscript": "^10.4.16",
     "watr": "^4.6.10"
   },
   "keywords": [

@@ -21,7 +21,7 @@ src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; program-facts; driver (index.js)
   optimize/     WASM IR peephole passes + vectorize.js
-  wat/          assemble.js, codegen.js, watopt.js
+  wat/          assemble.js, codegen.js, optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)
   op-policy.js  shared jzify/prepare reject + class-error messages
   # shared leaves — cycle-free, imported across stages:

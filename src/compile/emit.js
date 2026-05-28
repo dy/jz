@@ -527,6 +527,16 @@ function emitArgForParam(ir, param) {
   return asParamType(ir, param?.type)
 }
 
+/** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.
+ *  Returns `callIR` for chaining. Centralizes the three-property copy every
+ *  direct-call emission did inline. */
+function attachSigMeta(callIR, sig) {
+  if (sig?.ptrKind != null) callIR.ptrKind = sig.ptrKind
+  if (sig?.ptrAux != null) callIR.ptrAux = sig.ptrAux
+  if (sig?.unsignedResult) callIR.unsigned = true
+  return callIR
+}
+
 /**
  * Materialize a multi-value function call as a heap array.
  * Call → store each result in temp → copy to allocated array → return pointer.
@@ -1742,19 +1752,10 @@ function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
   return emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter)
 }
 
-/** Optional method call: `obj?.method(args)` — `undefined` if obj is nullish
- *  (per ES2020 optional-chaining spec), else `obj.method(args)`. The parser
- *  shapes the callee as ['?.', obj, method]; receiver hoists to a temp so the
- *  nullish check and the synthetic method dispatch see the same evaluation. */
-function emitOptionalMethodCall(callee, callArgs, parsed) {
-  const [, obj, method] = callee
-  return withNullGuard(asF64(emit(obj)), t =>
-    asF64(emitMethodCall(['.', t, method], parsed, callArgs)), 'om')
-}
-
 /** Hoist `headExpr` into a temp, evaluate it once, and yield `body(t)` when the
- *  temp is non-nullish, else `undefined`. Shared by `?.`-shaped optional callers
- *  (method call, chain-lift) so the nullish-guard scaffold stays in one place. */
+ *  temp is non-nullish, else `undefined`. Shared by every `?.`-shaped optional
+ *  emitter (chain-lift, `?.`, `?.[]`, `?.()` via `evalOnce` + this helper) so
+ *  the nullish-guard scaffold stays in one place. */
 function withNullGuard(headExpr, body, tag = 'ng') {
   const t = temp(tag)
   return block64(
@@ -1849,11 +1850,7 @@ function emitMethodCall(callee, parsed, callArgs) {
       const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
       while (emittedArgs.length < func.sig.params.length)
         emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
-      const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
-      if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-      if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-      if (func.sig.unsignedResult) callIR.unsigned = true
-      return callIR
+      return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
     }
   }
 
@@ -2007,31 +2004,23 @@ function emitMethodCall(callee, parsed, callArgs) {
     const arrayIR = buildArrayWithSpreads(combined)
     const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
     const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
-    if (closureOnly) {
-      inc('__dyn_get_expr', '__ptr_type')
-      return block64(
-        ['local.set', `$${objTmp}`, asF64(emit(obj))],
-        ['local.set', `$${propTmp}`, propRead],
-        ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-          ['else', undefExpr()]])
-    }
-    inc('__dyn_get_expr', '__ext_call', '__ptr_type')
-    ctx.features.external = true
+    inc('__dyn_get_expr', '__ptr_type')
+    if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
+    const extFallback = closureOnly ? undefExpr()
+      : ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
+          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+            ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+            ['i64.reinterpret_f64', arrayIR]]]],
+          ['else', undefExpr()]]
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
       ['if', ['result', 'f64'],
         ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
         ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-        ['else', ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
-          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
-            ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-            ['i64.reinterpret_f64', arrayIR]]]],
-          ['else', undefExpr()]]]])
+        ['else', extFallback]])
   }
 
   // Unknown callee — assume external method.
@@ -2107,10 +2096,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
           ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
           ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
         ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
-      if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-      if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-      if (func.sig.unsignedResult) callIR.unsigned = true
-      return callIR
+      return attachSigMeta(callIR, func.sig)
     }
     const fixedArgs = parsed.normal.slice(0, fixedParamCount)
     // Pad missing fixed args with `undefined` so default-param init triggers per spec.
@@ -2124,13 +2110,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
 
     // Build array: emit code for normal args + code to expand spreads
     const arrayIR = buildArrayWithSpreads(restArgsFinal)
-    const callIR = typed(['call', `$${callee}`,
-      ...emittedFixed,
-      arrayIR], func.sig.results[0])
-    if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-    if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-    if (func.sig.unsignedResult) callIR.unsigned = true
-    return callIR
+    return attachSigMeta(typed(['call', `$${callee}`, ...emittedFixed, arrayIR], func.sig.results[0]), func.sig)
   }
 
   // Regular function call without rest params
@@ -2150,12 +2130,9 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
   // argument past the first.
   if (func?.sig.results.length > 1) return materializeMulti(['()', callee, callArgs])
-  const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
-  if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-  if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-  // Unsigned-uint32 result (every tail was `>>>`): consumer's asF64 must use
-  // `f64.convert_i32_u` instead of `_s`, preserving the [0, 2^32) range.
-  if (func?.sig.unsignedResult) callIR.unsigned = true
+  // attachSigMeta also handles the unsigned-uint32 flag (every tail was `>>>`),
+  // so consumer's asF64 uses `f64.convert_i32_u` instead of `_s` ([0, 2^32) range).
+  const callIR = attachSigMeta(typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64'), func?.sig)
   return callIR
 }
 
@@ -3075,7 +3052,6 @@ export const emitter = {
     if (typeof callee === 'string' && ctx.func.globalDevirt?.has(callee))
       callee = ctx.func.globalDevirt.get(callee)
 
-    if (Array.isArray(callee) && callee[0] === '?.') return emitOptionalMethodCall(callee, callArgs, parsed)
     if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs)
 
     if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !isUserFunc(callee))
