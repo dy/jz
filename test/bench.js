@@ -115,9 +115,12 @@ const WASMOPT_SLACK_MIN = 0.70
 
 // Absolute byte backstop — catches gross codegen bloat independent of competitors.
 // (Sizes here are the default-optimize bench.mjs build, not `optimize:'size'`.)
+// `watr` pin is calibrated against the current watr lib version pinned in package.json:
+// it sits ~205 kB at watr 4.6.10 (was 180 kB at 4.6.5 when first pinned). When jz
+// codegen tightens, ratchet this down rather than letting it drift up silently.
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
-  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750, watr: 180000,
+  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750, watr: 210000,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────

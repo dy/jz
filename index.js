@@ -43,7 +43,7 @@
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
-import watrOptimize from "./src/wat/watopt.js";
+import watrOptimize from "./src/wat/optimize.js";
 import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
@@ -324,9 +324,9 @@ const TEST_ENV_DEFAULTS = (() => {
 const HAS_TEST_ENV = Object.keys(TEST_ENV_DEFAULTS).length > 0
 
 // Shared front-half: reset ctx, wire opts → ctx.transform/memory/module/features,
-// and inject parse/resolveUrl. Both `jzCompileInner` (full host pipeline) and
-// `compileBundle` (parse→prepare only, for the self-host kernel handoff) call
-// this so any opt added here applies uniformly to both entry points.
+// and inject parse/resolveUrl. Called by `jzCompileInner` (the only entry point
+// today). The self-host kernel (src/compile/kernel.js) drives reset itself rather
+// than going through this path, since it owns its module-marshalling shape.
 const setupCtx = (code, opts) => {
   if (HAS_TEST_ENV) {
     const merged = { ...opts }
@@ -460,22 +460,6 @@ const jzCompileInner = (code, opts = {}) => {
     }
     throw e
   }
-}
-
-/**
- * Self-host front-half: parse → jzify → prepare. Returns the prepared AST and
- * leaves the populated `ctx` in place, so a host replay can call
- * `compile(bundle.ast)` directly (it reads the global ctx prepare just wrote).
- * The wasm kernel instead receives `bundle.ast` marshaled across the boundary
- * and rebuilds its own ctx via in-kernel prepare. All `jzCompileInner` opts
- * apply (memory/imports/host/…) — both entry points share `setupCtx`.
- */
-export function compileBundle(code, opts = {}) {
-  setupCtx(code, opts)
-  let parsed = parse(code)
-  if (opts.jzify) parsed = jzify(parsed)
-  const ast = prepare(parsed)
-  return { ast }
 }
 
 /**

@@ -1,11 +1,12 @@
 /**
- * AST optimizations for WebAssembly modules.
- * Reduces code size and improves runtime performance.
+ * WAT AST optimizer — size/runtime passes over watr's s-expression IR.
  *
- * @module watr/optimize
+ * jz owns its optimizer; watr is used *only* as the WAT→binary encoder.
+ * Pairs with src/optimize/ (jz-IR-level) — folder context disambiguates.
+ *
+ * @module wat/optimize
  */
 
-// jz owns its optimizer: watr is used *only* as the WAT→binary encoder.
 import compile from 'watr/compile'
 
 // === WAT optimizer passes ===
