@@ -28,6 +28,7 @@ import {
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 
+
 function filterLiveCallSites(callSites, valueUsed) {
   if (!callSites.length) return
 
@@ -1017,7 +1018,7 @@ export function adviseJsstringCarrier(paramReps, valueUsed) {
 
       warn('jsstring-declined',
         `export '${func.name}' param '${p.name}': ${reason || 'string param uses disable the zero-copy externref boundary carrier'}`,
-        { fn: func.name, loc: func.body.loc })
+        { fn: func.name }, func.body.loc)
     }
   }
 }
@@ -1238,7 +1239,12 @@ export function refineDynKeys(programFacts) {
         if (!NON_DYN_VTS.has(vt)) real = true
       }
     } else if (op === 'for-in') real = true
-    if (op === '=>') return
+    // Recurse into nested arrows too. Closures stay inline (defFunc skips
+    // depth>0), so a dynamic-key access captured in one — e.g. `handlers[op]`
+    // in a dispatch closure — is reachable only through its parent's body.
+    // Matches collectProgramFacts, which also crosses arrows when setting
+    // anyDyn; not crossing here let refineDynKeys reset a flag the initial scan
+    // correctly raised. Monotone-safe: extra visits only ever raise `real`.
     for (let i = 1; i < node.length; i++) visit(typeMap, node[i])
   }
 

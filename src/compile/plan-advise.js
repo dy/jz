@@ -102,7 +102,7 @@ function adviseHeapGrowth() {
     if (isExport && returnsHeap(func)) {
       warn('heap-return',
         `export '${fn}' returns a heap value — repeated calls grow linear memory; call memory.reset() between batches from the host`,
-        { fn, loc: func.body.loc })
+        { fn }, func.body.loc)
       continue
     }
 
@@ -110,7 +110,7 @@ function adviseHeapGrowth() {
     for (const site of loopSites) {
       warn('heap-loop',
         `${isExport ? `export '${fn}'` : `'${fn}'`} allocates heap values inside a loop — peak memory grows with trip count; call memory.reset() between batches from the host`,
-        { fn, loc: site.loc })
+        { fn }, site.loc)
     }
 
     if (isExport && !returnsHeap(func) && bodyHeapAllocates(func.body)
@@ -121,7 +121,7 @@ function adviseHeapGrowth() {
         : `export '${fn}' allocates heap values — jz does not reclaim between calls`
       warn(code,
         `${detail}; call memory.reset() between batches from the host`,
-        { fn, loc: func.body.loc })
+        { fn }, func.body.loc)
     }
   }
 }
@@ -187,7 +187,7 @@ function adviseSetMapIterationOrder() {
     const fn = func.name
     const bindings = collectSetMapBindings(func.body)
 
-    const warnOrder = (msg, loc) => warn('set-map-order', msg, { fn, loc })
+    const warnOrder = (msg, loc) => warn('set-map-order', msg, { fn }, loc)
     const label = (kind) => kind === 'set' ? 'Set' : 'Map'
 
     const walk = (node) => {
@@ -291,12 +291,12 @@ function adviseSimdLoops() {
           if (indexed && carried) {
             warn('simd-loop-carried',
               `'${fn}' loop carries a scalar updated each iteration — SIMD vectorization skipped; split the reduction or use a separate accumulator`,
-              { fn, loc: node.loc })
+              { fn }, node.loc)
           }
           if (indexed && maxStride > 1) {
             warn('simd-aos-stride',
               `'${fn}' indexed access stride ${maxStride} on loop counter — split into one typed array per field for SIMD (array-of-structures blocks vectorization)`,
-              { fn, loc: node.loc })
+              { fn }, node.loc)
           }
         }
       }

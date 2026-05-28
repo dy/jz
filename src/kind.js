@@ -37,11 +37,31 @@ export function valTypeOf(expr) {
   // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
   if (BOOL_OPS.has(op)) return VAL.BOOL
 
+  // Self-describing bigint literal (`normalizeBigints`) — same VAL as a raw `255n`.
+  if (op === 'bigint') return VAL.BIGINT
+
   if (op === '[') return VAL.ARRAY
   if (op === 'str' || op === 'strcat') return VAL.STRING
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
-  if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+  if (op === '{}') {
+    const hasSpread = args.some(p => Array.isArray(p) && p[0] === '...')
+    if (!hasSpread) return args[0]?.[0] === ':' ? VAL.OBJECT : null
+    // Spread literal — mirror emitObjectSpread (module/object.js). When every
+    // spread source has a compile-time schema, emit builds a fixed-shape OBJECT
+    // and the existing schema-by-name read path resolves props with no val-type
+    // tag, so leave it untyped (tagging OBJECT here regresses it — the merged
+    // schema isn't bound to this name). When any source's schema is unknown, emit
+    // builds a dynamic HASH (emitDynamicSpread); that result carries no schema, so
+    // the binding MUST be HASH-typed or computed/static reads silently misdispatch
+    // (fixed-slot / array index) and return undefined — the bug this fixes.
+    for (const p of args)
+      if (Array.isArray(p) && p[0] === '...' && !spreadSchema(p[1])) {
+        // `{ ...src }` with a single unknown spread aliases src — carry its type.
+        return args.length === 1 ? valTypeOf(args[0][1]) : VAL.HASH
+      }
+    return null
+  }
   if (op === '?:') {
     const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
     return ta && ta === tb ? ta : null
@@ -89,7 +109,13 @@ export function valTypeOf(expr) {
     if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
     return VAL.NUMBER
   }
-  if (NUMERIC_UNARY_OPS.has(op)) return VAL.NUMBER
+  if (NUMERIC_UNARY_OPS.has(op)) {
+    // `~`, `++`, `--`, `**` preserve/propagate BigInt; `>>>` and unary-plus throw
+    // on bigint operands so they always yield Number.
+    if (op === '>>>' || op === 'u+') return VAL.NUMBER
+    if (valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT)) return VAL.BIGINT
+    return VAL.NUMBER
+  }
   if (op === '+') {
     const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
     if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
@@ -116,6 +142,14 @@ export function valTypeOf(expr) {
 
   if (op === '()') {
     const callee = args[0]
+    // __iter_arr normalizes an iterable to an index-iterable Array: Set→keys,
+    // Map→[k,v], while Array/String/TypedArray pass through unchanged. The result
+    // type drives the downstream arr[i]/.length dispatch, so a Set/Map source
+    // becomes ARRAY and everything else keeps the source's own type.
+    if (callee === '__iter_arr') {
+      const t = valTypeOf(args[1])
+      return t === VAL.SET || t === VAL.MAP ? VAL.ARRAY : t
+    }
     // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
     if (Array.isArray(callee) && callee[0] === '?') {
       const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
@@ -262,6 +296,25 @@ export function shapeOf(expr) {
     if (parent?.val === VAL.ARRAY) return parent.elem || null
   }
   return null
+}
+
+/** Spread source's static schema (key list) or null if unknown at compile time.
+ *  Mirrors module/object.js `resolveSchema` so kind inference predicts the same
+ *  OBJECT-vs-HASH decision emitObjectSpread makes (kept here to keep kind.js
+ *  cycle-free — it must not import the object stdlib module). */
+function spreadSchema(obj) {
+  // A parameter's compile-time schema is an inferred/union guess (and is unbound
+  // during this body's analysis but bound by emit) — see resolveSchema in
+  // module/object.js. Treat params as unknown so the spread result is HASH-typed
+  // consistently across analyze and emit; otherwise reads misdispatch.
+  if (typeof obj === 'string') {
+    if (ctx.func.current?.params?.some(p => p.name === obj)) return null
+    return ctx.schema?.resolve?.(obj)
+  }
+  if (Array.isArray(obj) && obj[0] === '{}')
+    return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+  const sh = shapeOf(obj)
+  return (sh?.val === VAL.OBJECT && sh.names) ? sh.names : null
 }
 
 /** Build a structural shape from a `{}` AST node — recursive for nested

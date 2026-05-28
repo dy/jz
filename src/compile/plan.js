@@ -43,6 +43,13 @@ import { VAL, updateGlobalRep } from '../reps.js'
 import { includeModule } from '../autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from '../ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults, adviseJsstringCarrier } from './narrow.js'
+import { PASS_NAMES } from '../optimize/index.js'
+
+// Scalar replacement / array promotion are pure heap-elision optimizations: under a
+// fully-disabled optimizer (`optimize:false` / level 0) they must not run, so emitted
+// code stays the canonical un-elided form. Every enabled preset keeps them on — including
+// the `optimize:{sourceInline:false}` heap-elision-test form, which is level-2 based.
+const optimizing = () => { const c = ctx.transform.optimize; return !!c && PASS_NAMES.some(n => c[n]) }
 
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
 
@@ -1982,14 +1989,17 @@ const specializeFixedRestCalls = (programFacts) => {
         name: cloneName,
         exported: false,
         rest: null,
+        // Build the specialized sig fresh. `params`/`results` are sig's only
+        // fields and both are replaced here, so a `{ ...func.sig, … }` spread
+        // would be pure redundancy — and a full-override spread of a live sig
+        // object also trips the self-host codegen, so the explicit form is both
+        // simpler and the one that round-trips through jz.wasm.
         sig: {
-          ...func.sig,
           params: [...fixedParams, ...restSigParams],
           results: [...func.sig.results],
         },
         body: rewritten.node,
       }
-      delete clone.defaults
       ctx.func.list.push(clone)
       ctx.func.names.add(cloneName)
       ctx.func.map.set(cloneName, clone)
@@ -2548,22 +2558,25 @@ export default function plan(ast) {
   if (unrollRowLenPadLoops()) programFacts = refreshProgramFacts(ast, programFacts)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
   // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
-  // replacement (`scalarize*`) is *not* gated on `sourceInline`: callers turn it on
-  // independently via `optimize: { sourceInline: false }` to test heap elision alone.
+  // replacement (`scalarize*`) and array promotion gate on `optimizing()`: off only
+  // under a fully-disabled optimizer, on for every enabled preset (incl. the
+  // `optimize:{sourceInline:false}` heap-elision-test form, which is level-2 based).
   if (inlineHotInternalCalls(programFacts, ast)) programFacts = refreshProgramFacts(ast, programFacts)
   if (bindNestedRowLengths()) programFacts = refreshProgramFacts(ast, programFacts)
   if (unrollRowLenPadLoops()) programFacts = refreshProgramFacts(ast, programFacts)
   if (inlineLocalLambdas()) programFacts = refreshProgramFacts(ast, programFacts)
   if (specializeFixedRestCalls(programFacts)) programFacts = refreshProgramFacts(ast, programFacts)
-  if (scalarizeFunctionArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
-  if (scalarizeFunctionObjectLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
-  // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
-  // are gone) and BEFORE typed-array scalarization (so a freshly-promoted array's
-  // fixed-length-typed-of-known-size variant could still participate in loop
-  // unrolling — currently it can't, since promotion produces the `[...]`-arg
-  // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
-  if (promoteIntArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
-  if (scalarizeFunctionTypedArrays(programFacts)) programFacts = refreshProgramFacts(ast, programFacts)
+  if (optimizing()) {
+    if (scalarizeFunctionArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
+    if (scalarizeFunctionObjectLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
+    // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
+    // are gone) and BEFORE typed-array scalarization (so a freshly-promoted array's
+    // fixed-length-typed-of-known-size variant could still participate in loop
+    // unrolling — currently it can't, since promotion produces the `[...]`-arg
+    // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
+    if (promoteIntArrayLiterals()) programFacts = refreshProgramFacts(ast, programFacts)
+    if (scalarizeFunctionTypedArrays(programFacts)) programFacts = refreshProgramFacts(ast, programFacts)
+  }
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn
 

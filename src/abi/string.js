@@ -56,14 +56,8 @@
 // take. Kept as a one-liner so each op reads as a single `call`.
 const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 
-// LAYOUT lives in `src/ctx.js`, which loads this module mid-bootstrap (line 10
-// of ctx.js, before LAYOUT itself is bound). ESM live bindings mean the import
-// resolves but the value is `undefined` until ctx.js finishes. All charCodeAt /
-// inline paths read these constants at *call* time (compile-time, after ctx is
-// fully initialized) — never at module top level — so this is safe.
-import { LAYOUT } from '../ctx.js'
 import { isReassigned } from '../ast.js'
-import { oobNanIR, ssoBitI64Hex } from '../../layout.js'
+import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
 
 /** Pre-shifted SSO discriminator — layout.js is cycle-free; memoized at first use. */
 let _ssoBitI64 = null

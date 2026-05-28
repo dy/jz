@@ -127,6 +127,26 @@ const _bi64 = (() => {
 })()
 export const i64ToF64 = _bi64.i64ToF64
 export const f64ToI64 = _bi64.f64ToI64
+
+// Rewrite native BigInt literals in a parsed AST to the marshalling-safe,
+// self-describing node `['bigint', <unsigned-64 decimal>]`. A native bigint
+// primitive can't survive the host→wasm AST boundary: `wrapVal` stringifies it
+// and jz's runtime `typeof` has no bigint case to re-detect it, so the kernel
+// would read `255n` as the string "255". The decimal here is `BigInt.asUintN(64,
+// n)` — the exact value the raw-primitive emit path (emit.js) feeds to
+// `i64.const` — so kernel and host emit byte-identical constants. Mutates in
+// place (preserving array holes and `.loc`); the AST is freshly parsed per call.
+export function normalizeBigints(node) {
+  if (Array.isArray(node)) {
+    // Literal node `[<hole/null>, <bigint>]` → flat self-describing `['bigint', dec]`.
+    // Replace the WHOLE node so `valTypeOf` sees the tag at node[0]; recursing
+    // would only swap the primitive and leave `[null, ['bigint', dec]]` nested.
+    if (node.length === 2 && node[0] == null && typeof node[1] === 'bigint')
+      return ['bigint', BigInt.asUintN(64, node[1]).toString()]
+    for (let i = 0; i < node.length; i++) if (i in node) node[i] = normalizeBigints(node[i])
+  }
+  return node
+}
 // Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
 // Distinct from 0, JS NaN (payload=0), and all pointers.
 _u32[1] = ATOM_HI[ATOM.NULL]; _u32[0] = 0; export const NULL_NAN = _f64[0]

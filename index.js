@@ -61,6 +61,11 @@ const importsMayReturnExternal = (imports) =>
   !!imports && Object.values(imports).some(mod =>
     Object.values(mod || {}).some(spec => typeof spec === 'function'))
 
+// WHATWG URL resolution for compile-time import.meta lowering. Injected into
+// ctx.transform (like parse/jzify) so prepare never references the `URL` global
+// directly — keeps the self-host kernel free of host-only built-ins.
+const resolveUrl = (spec, base) => new URL(spec, base).href
+
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
 const compileProfiler = (profile) => {
@@ -315,6 +320,10 @@ const jzCompileInner = (code, opts = {}) => {
     ctx.module.hostImports = opts.imports
     if (importsMayReturnExternal(opts.imports)) ctx.features.external = true
   }
+  // Parser for compile-time import bundling (prepareModule). Injected, not
+  // imported by prepare — see ctx.transform.parse note in prepare/index.js.
+  ctx.transform.parse = parse
+  ctx.transform.resolveUrl = resolveUrl
   // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
   // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
   if (opts.jzify) ctx.transform.jzify = jzify
@@ -421,6 +430,29 @@ const jzCompileInner = (code, opts = {}) => {
     }
     throw e
   }
+}
+
+/**
+ * Self-host front-half: parse → jzify → prepare. Returns the prepared AST and
+ * leaves the populated `ctx` in place, so a host replay can call
+ * `compile(bundle.ast)` directly (it reads the global ctx prepare just wrote).
+ * The wasm kernel instead receives `bundle.ast` marshaled across the boundary
+ * and rebuilds its own ctx via in-kernel prepare.
+ */
+export function compileBundle(code, opts = {}) {
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  resetProgramFactsCache()
+  ctx.error.src = code
+  if (opts.modules) ctx.module.importSources = opts.modules
+  ctx.transform.parse = parse
+  ctx.transform.resolveUrl = resolveUrl
+  if (opts.jzify) ctx.transform.jzify = jzify
+  if (opts.strict) ctx.transform.strict = true
+  ctx.transform.optimize = resolveOptimize(opts.optimize)
+  let parsed = parse(code)
+  if (opts.jzify) parsed = jzify(parsed)
+  const ast = prepare(parsed)
+  return { ast }
 }
 
 /**

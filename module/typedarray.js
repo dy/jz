@@ -13,7 +13,7 @@ import { valTypeOf } from '../src/kind.js'
 import { TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex } from '../layout.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, getter } from '../src/ctx.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -403,7 +403,7 @@ export default (ctx) => {
   // .buffer — always aliased (zero-copy). BUFFER: passthrough.
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
   // TYPED view (incl. DataView): BUFFER at descriptor[8] (root parent data offset).
-  ctx.core.emit['.buffer'] = (obj) => {
+  ctx.core.emit['.buffer'] = getter((obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') return asF64(emit(obj))
@@ -419,11 +419,11 @@ export default (ctx) => {
       }
     }
     return buf(obj)
-  }
+  })
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
   // View TYPED (incl. DataView): descriptor[0], via the __byte_length fallback.
-  ctx.core.emit['.byteLength'] = (obj) => {
+  ctx.core.emit['.byteLength'] = getter((obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') {
@@ -444,10 +444,10 @@ export default (ctx) => {
       }
     }
     return blen(obj)
-  }
+  })
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
-  ctx.core.emit['.byteOffset'] = (obj) => {
+  ctx.core.emit['.byteOffset'] = getter((obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor?.endsWith('.view')) {
@@ -462,7 +462,7 @@ export default (ctx) => {
       if (ctor?.startsWith('new.') && TYPED_ELEM_CODE[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
     return boff(obj)
-  }
+  })
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
   ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr i64) (result i32)

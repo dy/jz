@@ -1042,7 +1042,15 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // parseFloat string parsing — off the jessie parse path (parse emits no
 // __char_at calls). Deliberate size↔speed trade.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5216)
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 7789)
+// Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
+// per-object dyn props the literal's static schema doesn't enumerate. Reads
+// (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
+// spread) now route through the schema∪dyn-props merge when the var is in
+// `ctx.types.dynKeyVars` (the program-facts `mayHaveDynProps` predicate). That
+// pulls __dyn_get_any/__dyn_set + the small hash they share. Required for
+// correctness: a metacircular pass grows ctx.* dicts this way and then
+// enumerates them.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 8196)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
@@ -1062,9 +1070,15 @@ golden('closure-heavy parser', `export let f = (s) => {
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
 }`, 6736)
+// Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
+// local only when nothing in the body can mutate `buf` (no writes to it, no
+// calls — any call may reach `buf` through an alias the compiler can't track).
+// The `callFree`/`writesReceiver` recursion adds a per-loop guard plus the
+// snapshot store; soundness fix (prior bytes assumed unconditional hoist,
+// which was unsafe when the loop body invoked anything).
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 985)
+}`, 1062)

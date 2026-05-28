@@ -153,7 +153,6 @@ const EXCLUDED_PATTERNS = [
   /symbol\.iterator/i, /for[\s-]*of/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
   /\bexport\s+default\b/,
-  /\bdelete\b/,
 ]
 
 // `class` (and the `this` it implies) is lowered by jzify into plain objects +
@@ -164,7 +163,7 @@ const CLASS_EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/, /\bsuper\b/, /reflect/i, /proxy/i,
   /\bnew\b.*\btarget\b/, /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
   /iterator/i, /\bSymbol\b/, /for[\s-]*of/i,
-  /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/, /\bdelete\b/,
+  /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/,
 ]
 const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
 
@@ -317,6 +316,13 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/statements/try/S12.14_A18_T7.js', 'caught-exception object identity'],
   ['test/language/statements/try/S12.14_A19_T1.js', 'Error.prototype.toString on caught exception'],
   ['test/language/statements/try/S12.14_A19_T2.js', 'Error.prototype.toString on caught exception'],
+  // `delete` is no longer blanket-excluded (property deletion works); these
+  // residual files each hit a delete-operator corner jz does not model yet.
+  ['test/language/expressions/delete/S8.12.7_A3.js', 'delete via numeric computed key (coerced to string) on static-schema object'],
+  ['test/language/statements/for-in/S12.6.4_A7_T1.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
+  ['test/language/statements/for-in/S12.6.4_A7_T2.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
+  ['test/language/statements/function/S13_A11_T3.js', 'delete of an arguments-object element'],
+  ['test/language/statements/function/S13_A11_T4.js', 'delete of an arguments-object element'],
 ])
 
 function shouldSkip(content, rel = '') {

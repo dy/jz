@@ -45,7 +45,7 @@ import { findBodyStart } from '../ir.js'
 
 
 
-const isArr = Array.isArray
+const isArr = n => Array.isArray(n)
 
 const exprEq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const localGetName = n => isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' ? n[1] : null

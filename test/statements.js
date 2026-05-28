@@ -660,10 +660,14 @@ test('null and undefined are both nullish inside jz', () => {
   is(r.exports.f(0), false)
 })
 
-test('null === undefined: both nullish, == and === treat them equal', () => {
-  // jz merges === → ==; null and undefined are both nullish so compare equal
-  const r = jz('export let f = () => null === undefined')
-  is(r.exports.f(), true)
+test('null vs undefined: loose == equal, strict === distinct (per ES spec)', () => {
+  // Both are nullish so `==` treats them equal, but `===` compares exact identity:
+  // null and undefined are different sentinels, so `null === undefined` is false.
+  is(jz('export let f = () => null == undefined').exports.f(), true)
+  is(jz('export let f = () => null === undefined').exports.f(), false)
+  is(jz('export let f = () => undefined === null').exports.f(), false)
+  is(jz('export let f = () => null === null').exports.f(), true)
+  is(jz('export let f = () => undefined === undefined').exports.f(), true)
 })
 
 test('?? triggers on null/undefined', () => {

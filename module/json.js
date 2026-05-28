@@ -87,8 +87,8 @@ export default (ctx) => {
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
     __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val'],
-    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val'],
+    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order'],
+    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -371,34 +371,35 @@ export default (ctx) => {
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
 
-  // __json_hash(val: i64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
-  // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
+  // __json_hash(val: i64) — stringify HASH/MAP: emit {"key":val,...} in insertion
+  // order. Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. __coll_order
+  // returns the n live slot offsets sorted by packed seq, matching the JS spec.
   ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val i64)
-    (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32) (local $pv i64)
+    (local $off i32) (local $cap i32) (local $n i32) (local $i i32) (local $slot i32) (local $ord i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (i32.const 24)))
     (local.set $first (i32.const 1))
     (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
     (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
     (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $cap)))
-      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const 24))))
-      (if (f64.ne (f64.load (local.get $slot)) (f64.const 0))
+      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+      (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
+      (if (i32.eqz (call $__json_omit (local.get $pv)))
         (then
-          (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
-          (if (i32.eqz (call $__json_omit (local.get $pv)))
-            (then
-              (if (i32.eqz (local.get $first))
-                (then (call $__jput (i32.const 44))))
-              (local.set $first (i32.const 0))
-              (call $__jindent)
-              (call $__jput (i32.const 34))
-              (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
-              (call $__jput (i32.const 34))
-              (call $__jput (i32.const 58))
-              (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-              (call $__json_val (local.get $pv))))))
+          (if (i32.eqz (local.get $first))
+            (then (call $__jput (i32.const 44))))
+          (local.set $first (i32.const 0))
+          (call $__jindent)
+          (call $__jput (i32.const 34))
+          (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
+          (call $__jput (i32.const 34))
+          (call $__jput (i32.const 58))
+          (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+          (call $__json_val (local.get $pv))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
@@ -413,14 +414,21 @@ export default (ctx) => {
   ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val i64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
+    (local $props i64) (local $poff i32) (local $pcap i32) (local $dn i32) (local $slot i32) (local $ord i32)
+    (local $j i32) (local $skip i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $sid (call $__ptr_aux (local.get $val)))
-    ;; Load keys array from schema table: schema_tbl + sid * 8
-    (local.set $keys (call $__ptr_offset
-      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
-    (local.set $nkeys (call $__len
-      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
-    (local.set $koff (local.get $keys))
+    ;; Schema keys: schema_tbl + sid*8. Dyn-only programs (empty {} + computed
+    ;; o[k]=v) never allocate __schema_tbl, leaving it 0 — guard the read so the
+    ;; dyn-prop walk below still runs.
+    (local.set $nkeys (i32.const 0))
+    (local.set $koff (i32.const 0))
+    (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
+      (then
+        (local.set $koff (call $__ptr_offset
+          (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+        (local.set $nkeys (call $__len
+          (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))))
     (local.set $first (i32.const 1))
     (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
@@ -441,6 +449,54 @@ export default (ctx) => {
           (call $__json_val (local.get $pv))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
+    ;; Dynamic (off-schema) properties: heap OBJECTs carry a HASH propsPtr at
+    ;; off-16 (set by __dyn_set). Walk it in insertion order via __coll_order —
+    ;; schema-only enumeration would drop computed props (e.g. {} then o.a=1).
+    ;; Skip propsPtr entries whose key already appears in the schema: object
+    ;; literals with needsDynShadow(target)=true shadow-write each schema key
+    ;; into propsPtr so dyn-key reads can resolve via hash lookup. That mirror
+    ;; is a runtime acceleration, not an enumeration entity — without dedup,
+    ;; JSON output emits each schema key twice. Schema-key interns equal the
+    ;; keys we shadow-write (same compile-time string literal), so i64.eq matches.
+    (if (i32.ge_u (local.get $off) (global.get $__heap_start))
+      (then
+        (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (if (i32.eq
+              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+              (i32.const ${PTR.HASH}))
+          (then
+            (local.set $poff (call $__ptr_offset (local.get $props)))
+            (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
+            (local.set $dn (i32.load (i32.sub (local.get $poff) (i32.const 8))))
+            (local.set $ord (call $__coll_order (local.get $poff) (local.get $pcap) (i32.const 24)))
+            (local.set $i (i32.const 0))
+            (block $dd (loop $dl
+              (br_if $dd (i32.ge_s (local.get $i) (local.get $dn)))
+              (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+              (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
+              (local.set $skip (i32.const 0))
+              (local.set $j (i32.const 0))
+              (block $sd (loop $sl
+                (br_if $sd (i32.ge_s (local.get $j) (local.get $nkeys)))
+                (if (i64.eq
+                      (i64.load (i32.add (local.get $slot) (i32.const 8)))
+                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $j) (i32.const 3)))))
+                  (then (local.set $skip (i32.const 1)) (br $sd)))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (br $sl)))
+              (if (i32.and (i32.eqz (local.get $skip)) (i32.eqz (call $__json_omit (local.get $pv))))
+                (then
+                  (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
+                  (local.set $first (i32.const 0))
+                  (call $__jindent)
+                  (call $__jput (i32.const 34))
+                  (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
+                  (call $__jput (i32.const 34))
+                  (call $__jput (i32.const 58))
+                  (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+                  (call $__json_val (local.get $pv))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $dl)))))))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
     (if (i32.eqz (local.get $first)) (then (call $__jindent)))
     (call $__jput (i32.const 125))

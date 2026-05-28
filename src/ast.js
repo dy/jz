@@ -28,6 +28,15 @@ export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'for-of', 'do', 'functi
 /** Valid labeled-statement bodies in jzify. */
 export const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
 
+/** Statement-only ops: heads that can never be a concise arrow *value* body.
+ *  A concise-body arrow with one of these can only have come from method/function
+ *  shorthand the parser unwrapped (`m(){ if … }` → `['=>', p, ['if', …]]`), so it
+ *  must be re-blocked. Excludes `function`/`class` (those ARE expression bodies,
+ *  e.g. `() => function(){}`), assignment/update/call, and switch-internal
+ *  `case`/`default`. */
+export const STMT_ONLY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch',
+  'return', 'break', 'continue', 'throw', 'try', 'let', 'const', 'var', 'label'])
+
 /** Distinguish a function block body `{ … }` from an expression object literal `({a:1})`. */
 export const isBlockBody = (body) =>
   Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))

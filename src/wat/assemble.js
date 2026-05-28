@@ -34,7 +34,7 @@ const parseTemplate = (str) => {
   return cloneTemplate(tmpl)
 }
 import { T } from '../ast.js'
-import { analyzeValTypes } from '../compile/analyze.js'
+import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
 import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
 import { emit } from '../compile/emit.js'
@@ -138,6 +138,17 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.boxed = new Map()
   ctx.func.stack = []
   ctx.func.current = { params: [], results: [] }
+  // Reserve prepare-generated temp names (for-of `arrVar`/`idx`/`len`,
+  // destructure scratch, …) in the __start frame so emit's temp()/tempI32()
+  // skip them — the same pre-seed analyzeFuncForEmit gives every function frame.
+  // Only T-sentinel names: they're always __start locals (user module-scope
+  // bindings become globals and can't contain T). Without this, prepare's
+  // `${T}arr${n}` collides with an emit-time tempI32('arr') at the same uniq,
+  // declaring the array pointer's local i32 and corrupting it via convert_i32_s.
+  const seedGeneratedLocals = (body) => {
+    for (const [n, t] of analyzeBody(body).locals)
+      if (n.includes(T) && !ctx.func.locals.has(n)) ctx.func.locals.set(n, t)
+  }
   analyzeValTypes(ast)
   const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
@@ -145,9 +156,11 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   if (ctx.module.moduleInits) {
     for (const mi of ctx.module.moduleInits) {
       analyzeValTypes(mi)
+      seedGeneratedLocals(mi)
       moduleInits.push(...normalizeIR(emit(mi)))
     }
   }
+  seedGeneratedLocals(ast)
   const init = emit(ast)
 
   // Module-scope object literals can create closure bodies while `emit(ast)`
@@ -344,8 +357,12 @@ export function finalizeClosureTable(sec) {
   }
   for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
   if (!indirectUsed) for (const fn of sec.start) scan(fn)
-  if (!indirectUsed) for (const s of Object.keys(ctx.core.stdlib)) {
-    if (ctx.core.stdlib[s]?.includes?.('call_indirect')) { indirectUsed = true; break }
+  // stdlib values are mixed: WAT-template strings + lazy generator functions.
+  // Only the string templates can carry a literal `call_indirect`; a typeof
+  // guard skips the generators (where `.includes` is meaningless — and on a jz
+  // closure receiver would read the closure pointer as a string, out of bounds).
+  if (!indirectUsed) for (const tpl of Object.values(ctx.core.stdlib)) {
+    if (typeof tpl === 'string' && tpl.includes('call_indirect')) { indirectUsed = true; break }
   }
   if (indirectUsed) {
     if (!ctx.closure.table) ctx.closure.table = []
@@ -411,7 +428,13 @@ export function pullStdlib(sec) {
   const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
   if (!needsMemory) ctx.scope.globals.delete('__heap')
   if (needsMemory && ctx.module.modules.core) {
-    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
+    let added = false
+    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) {
+      if (!ctx.core.includes.has(fn)) { ctx.core.includes.add(fn); added = true }
+    }
+    // Late-add: __alloc declares `['__memgrow']` and similar transitive deps;
+    // resolveIncludes ran before the add, so re-run it to pull them in.
+    if (added) resolveIncludes()
     const pages = ctx.memory.pages || 1
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sec.memory.push(['memory', ['export', '"memory"'], pages])

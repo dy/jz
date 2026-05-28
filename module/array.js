@@ -242,9 +242,12 @@ export default (ctx) => {
       '__ptr_offset',
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
+    __arr_fill: ['__ptr_offset'],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
     __arr_push1: ['__arr_grow_known', '__ptr_offset'],
+    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
+    __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
       ? ['__len']
       : ['__len', '__ptr_offset'],
@@ -602,6 +605,37 @@ export default (ctx) => {
         (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
     (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
+    (local.get $p))`
+
+  // arr.length = N. Truncation (N ≤ len) just rewrites the len word in place — no
+  // relocation, so aliases keep their pointer. Growth past capacity relocates via
+  // __arr_grow_known (old header forward-marked) and undefined-fills the new slots,
+  // matching JS sparse-array semantics. Non-ARRAY receivers are left unchanged so a
+  // mistyped `.length =` cannot corrupt object/collection headers. Returns the
+  // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
+  ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $n i32) (result f64)
+    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32)
+    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
+    (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
+      (then (return (local.get $p))))
+    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (local.set $n (i32.const 0))))
+    (local.set $base (call $__ptr_offset (local.get $ptr)))
+    (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
+    (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
+    (local.set $cap (i32.load (i32.sub (local.get $base) (i32.const 4))))
+    (if (i32.gt_s (local.get $n) (local.get $cap))
+      (then
+        (local.set $p (call $__arr_grow_known (local.get $ptr) (local.get $n)))
+        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
+    (if (i32.gt_u (local.get $n) (local.get $oldLen))
+      (then
+        (local.set $k (local.get $oldLen))
+        (block $fdone (loop $fill
+          (br_if $fdone (i32.ge_u (local.get $k) (local.get $n)))
+          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+          (local.set $k (i32.add (local.get $k) (i32.const 1)))
+          (br $fill)))))
+    (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $n))
     (local.get $p))`
 
   // === Array literal ===
@@ -1017,6 +1051,42 @@ export default (ctx) => {
                 (i32.store (i32.sub (local.get $rawOff) (i32.const 4)) (i32.const -1))))
             (local.get $val))))))`
 
+  // .fill(value, start?, end?) — overwrite [start, end) with value; mutate + return the
+  // array. start/end default to 0 / length and accept negatives (offset from end). The
+  // INT_MAX end sentinel clamps to length in the helper, which also normalizes negatives.
+  ctx.core.emit['.fill'] = (arr, val, start, end) => {
+    inc('__arr_fill')
+    return typed(['call', '$__arr_fill',
+      asI64(emit(arr)),
+      val == null ? undefExpr() : asF64(emit(val)),
+      start == null ? ['i32.const', 0] : asI32(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+  }
+
+  ctx.core.stdlib['__arr_fill'] = `(func $__arr_fill (param $arr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
+    (local $off i32) (local $len i32) (local $i i32)
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $arr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+          (i32.const ${PTR.ARRAY}))
+      (then
+        (local.set $off (call $__ptr_offset (local.get $arr)))
+        (if (i32.ge_u (local.get $off) (i32.const 8))
+          (then
+            (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
+            (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))
+            (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
+            (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
+            (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.const 0))))
+            (if (i32.gt_s (local.get $end) (local.get $len)) (then (local.set $end (local.get $len))))
+            (local.set $i (local.get $start))
+            (block $done (loop $fill
+              (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
+              (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $val))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $fill)))))))
+    (f64.reinterpret_i64 (local.get $arr)))`
+
   // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
     const recv = hoistArrayValue(arr)
@@ -1094,8 +1164,52 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
+  // .splice(start, deleteCount, ...items) with inserts → __arr_splice. Deletes
+  // `del` elements at `s`, inserts the elements of `ins`, returns the removed
+  // elements as a new array. Mutation is in place: a grow relocates the buffer
+  // but leaves a forwarding pointer, so the caller's NaN-box still resolves —
+  // no write-back needed (mirrors __arr_unshift). memory.copy is memmove, so the
+  // tail shift is correct whether the array grew (shift right) or shrank (left).
+  ctx.core.stdlib['__arr_splice'] = `(func $__arr_splice (param $arr i64) (param $start i32) (param $del i32) (param $ins i64) (result f64)
+    (local $off i32) (local $len i32) (local $s i32) (local $cnt i32)
+    (local $m i32) (local $newLen i32) (local $tail i32) (local $out f64) (local $a f64)
+    (local.set $len (call $__len (local.get $arr)))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $s (local.get $start))
+    (if (i32.lt_s (local.get $s) (i32.const 0))
+      (then
+        (local.set $s (i32.add (local.get $s) (local.get $len)))
+        (if (i32.lt_s (local.get $s) (i32.const 0)) (then (local.set $s (i32.const 0))))))
+    (if (i32.gt_s (local.get $s) (local.get $len)) (then (local.set $s (local.get $len))))
+    (local.set $cnt (local.get $del))
+    (if (i32.lt_s (local.get $cnt) (i32.const 0)) (then (local.set $cnt (i32.const 0))))
+    (if (i32.gt_s (i32.add (local.get $s) (local.get $cnt)) (local.get $len))
+      (then (local.set $cnt (i32.sub (local.get $len) (local.get $s)))))
+    (local.set $m (call $__len (local.get $ins)))
+    (local.set $newLen (i32.add (i32.sub (local.get $len) (local.get $cnt)) (local.get $m)))
+    (local.set $tail (i32.sub (i32.sub (local.get $len) (local.get $s)) (local.get $cnt)))
+    (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (call $__alloc_hdr (local.get $cnt) (local.get $cnt))))
+    (memory.copy
+      (call $__ptr_offset (i64.reinterpret_f64 (local.get $out)))
+      (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3)))
+      (i32.shl (local.get $cnt) (i32.const 3)))
+    (local.set $a (f64.reinterpret_i64 (local.get $arr)))
+    (if (i32.gt_s (local.get $newLen) (local.get $len))
+      (then (local.set $a (call $__arr_grow (local.get $arr) (local.get $newLen)))))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
+    (memory.copy
+      (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $m)) (i32.const 3)))
+      (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $cnt)) (i32.const 3)))
+      (i32.shl (local.get $tail) (i32.const 3)))
+    (memory.copy
+      (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3)))
+      (call $__ptr_offset (local.get $ins))
+      (i32.shl (local.get $m) (i32.const 3)))
+    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newLen))
+    (local.get $out))`
+
   // Early-exit callback iterator: init value, exit test, value on match.
-  const earlyExitMethod = ({ tag, init, test, onMatch }) => (arr, fn) => {
+  const earlyExitMethod = ({ tag, init, test, onMatch, reverse }) => (arr, fn) => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
     const exit = `$exit${ctx.func.uniq++}`
@@ -1103,7 +1217,7 @@ export default (ctx) => {
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', test(cb, i, item),
         ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]
-    ])
+    ], undefined, undefined, reverse)
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
@@ -1138,6 +1252,22 @@ export default (ctx) => {
     init: ['f64.reinterpret_i64', ['i64.const', NULL_NAN]],
     test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
     onMatch: (_cb, _i, item) => item,
+  })
+
+  ctx.core.emit['.findLastIndex'] = earlyExitMethod({
+    tag: 'fli',
+    init: ['f64.const', -1],
+    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
+    reverse: true,
+  })
+
+  ctx.core.emit['.findLast'] = earlyExitMethod({
+    tag: 'fl',
+    init: ['f64.reinterpret_i64', ['i64.const', NULL_NAN]],
+    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    onMatch: (_cb, _i, item) => item,
+    reverse: true,
   })
 
   // === Array methods ===

@@ -16,7 +16,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity } from '../src/ctx.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -27,7 +27,7 @@ export default (ctx) => {
   deps({
     __eq: ['__str_eq', '__ptr_type'],
     __typeof: ['__ptr_type', '__is_nullish'],
-    __len: ['__typed_shift'],
+    __len: ['__typed_shift', '__ptr_offset'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
     __ptr_offset: [],
@@ -36,8 +36,10 @@ export default (ctx) => {
     __set_len: [],
     __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
     __typeof: ['__ptr_type', '__is_nullish'],
+    __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
+    __coll_order: ['__alloc'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -65,14 +67,17 @@ export default (ctx) => {
             (f64.eq (local.get $fb) (local.get $fb)))
           (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
-            ;; At least one operand is a NaN-box. Both STRING (heap or SSO) → __str_eq
-            ;; handles content compare and SSO fast-fail internally.
+            ;; At least one operand is a NaN-box (the && above failed). For both to
+            ;; be strings BOTH must be NaN-boxed: tag bits are only meaningful on a
+            ;; NaN-box, so a normal number whose exponent bits happen to alias the
+            ;; STRING tag (e.g. ASCII content read as f64) must NOT route to __str_eq
+            ;; — that would deref garbage. number-vs-string is simply false.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (if (result i32)
               (i32.and
-                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
               (then (call $__str_eq (local.get $a) (local.get $b)))
               (else (i32.const 0))))))))`
 
@@ -128,15 +133,16 @@ export default (ctx) => {
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const ${LAYOUT.OFFSET_MASK})))))))`
 
   ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr i64) (result i32)
-    (local $bits i64) (local $off i32)
+    (local $bits i64) (local $off i32) (local $t i32)
     (local.set $bits (local.get $ptr))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    ;; Arrays can be reallocated during growth; follow forwarding pointer (cap=-1 sentinel).
-    ;; Bounds are checked inside the loop so non-array ptrs skip them entirely, and well-formed
-    ;; ARRAY ptrs without forwarding still pay only one bounds check before the cap load.
-    (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-          (i32.const ${PTR.ARRAY}))
+    ;; ARRAY/SET/MAP/HASH can be reallocated on growth; follow the forwarding pointer
+    ;; (cap=-1 sentinel at -4, new offset at -8). Other types never forward, so they skip
+    ;; the loop; a well-formed ptr without forwarding pays one bounds + cap check per hop.
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+            (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))))
       (then
         (block $done
           (loop $follow
@@ -179,56 +185,101 @@ export default (ctx) => {
   // global — exported so the JS-side adapter (memory.String etc) bumps the same
   // pointer. Storing it in memory would collide with the static data section
   // whenever the data exceeds HEAP.PTR_ADDR bytes.
+  // Geometric memory growth shared by `__alloc` and the in-place string
+  // bump-extend paths (string.js). Ensures linear memory covers byte offset
+  // `$next`, growing when short. Growing one page at a time turns a long-running
+  // embedding (watr called thousands of times) into O(n²) — each memory.grow may
+  // relocate and copy the whole heap — so we request at least the current size
+  // (≥2× total) in one shot; only on hitting the declared maximum do we fall back
+  // to the bare minimum. `$need` is the TOTAL pages required to cover $next; the
+  // byte size of memory ((memory.size)<<16) is computed in i64 because it
+  // overflows i32 at the wasm32 max of 65536 pages (4 GiB) — without that,
+  // capacity reads as 0 and every allocation spuriously tries to grow past the
+  // ceiling, trapping near 4 GiB.
+  ctx.core.stdlib['__memgrow'] = `(func $__memgrow (param $next i32)
+    (local $cur i32) (local $need i32)
+    (local.set $need (i32.wrap_i64 (i64.shr_u (i64.add (i64.extend_i32_u (local.get $next)) (i64.const 65535)) (i64.const 16))))
+    (if (i32.gt_u (local.get $need) (memory.size))
+      (then
+        (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
+        (local.set $cur (i32.sub (local.get $need) (memory.size)))            ;; minimum delta
+        (if (i32.lt_u (local.get $cur) (memory.size)) (then (local.set $cur (memory.size))))  ;; geometric
+        (if (i32.gt_u (i32.add (local.get $cur) (memory.size)) (i32.const 65536))
+          (then (local.set $cur (i32.sub (i32.const 65536) (memory.size)))))  ;; cap at wasm32 max
+        (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
+          (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
+            (then (unreachable))))))))`
+
   if (ctx.memory.shared) {
-    // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at HEAP.START.
-    // We still want to grow memory when running out of pages — without growth a
-    // host-run binary traps on the first allocation that exceeds the initial
-    // 64 KB. Use the same geometric-growth strategy as the owned-memory variant.
+    // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at
+    // HEAP.START. Threads sharing one memory must share one pointer cell.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-      (local $ptr i32) (local $next i32) (local $cur i32) (local $need i32)
+      (local $ptr i32) (local $next i32)
       (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (local.set $cur (i32.shl (memory.size) (i32.const 16)))
-      (if (i32.gt_u (local.get $next) (local.get $cur))
-        (then
-          (local.set $need (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
-          (if (i32.lt_u (local.get $need) (memory.size)) (then (local.set $need (memory.size))))
-          (if (i32.eq (memory.grow (local.get $need)) (i32.const -1))
-            (then (if (i32.eq (memory.grow
-              (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
-              (i32.const -1)) (then (unreachable)))))))
+      (call $__memgrow (local.get $next))
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
   } else {
-    // Own memory: heap offset in a global, auto-grow when needed. Exported so
-    // the JS-side adapter (alloc:false, no `_alloc` export) shares the pointer.
+    // Own memory: heap offset in a global, exported so the JS-side adapter
+    // (alloc:false, no `_alloc` export) shares the pointer.
     ctx.scope.globals.set('__heap', `(global $__heap (export "__heap") (mut i32) (i32.const ${HEAP.START}))`)
-    // Bump allocator with geometric growth. Growing one page at a time turns a
-    // long-running embedding (e.g. watr called thousands of times) into O(n²) —
-    // each memory.grow may relocate and copy the whole heap. So when we must
-    // grow, request at least the current size (≥2× total) in one shot; only on
-    // hitting the declared maximum do we fall back to the bare minimum.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-      (local $ptr i32) (local $next i32) (local $cur i32) (local $need i32)
+      (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
-      ;; Align next allocation to 8 bytes
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (local.set $cur (i32.shl (memory.size) (i32.const 16)))
-      (if (i32.gt_u (local.get $next) (local.get $cur))
-        (then
-          (local.set $need (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
-          (if (i32.lt_u (local.get $need) (memory.size)) (then (local.set $need (memory.size))))
-          (if (i32.eq (memory.grow (local.get $need)) (i32.const -1))
-            (then (if (i32.eq (memory.grow
-              (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
-              (i32.const -1)) (then (unreachable)))))))
+      (call $__memgrow (local.get $next))
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
       (global.set $__heap (i32.const ${HEAP.START})))`
   }
+
+  // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH
+  // backing table at $off (cap slots of $stride bytes). Returns a fresh i32 array
+  // (live-count entries) of slot offsets sorted by packed sequence (the insertion
+  // counter rides in each entry's hash-word high 32 bits — see collection.js's
+  // seqStore). Every order-sensitive iteration (keys/values/entries, for-in,
+  // spread, JSON, Map copy) walks this instead of raw slot order, so jz matches
+  // the JS spec's insertion order. Lives in core (not collection) because object
+  // and json iterate HASH tables without pulling the collection module. Insertion
+  // sort: enumerated collections are small, and it stays branch-light when sorted.
+  ctx.core.stdlib['__coll_order'] = `(func $__coll_order (param $off i32) (param $cap i32) (param $stride i32) (result i32)
+    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32)
+    (local $j i32) (local $k i32) (local $cur i32) (local $sq i32)
+    (local.set $buf (call $__alloc (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 2))))
+    ;; gather live slot offsets (occupied ⇔ hash word ≠ 0)
+    (block $gd (loop $gl
+      (br_if $gd (i32.ge_s (local.get $i) (local.get $cap)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
+      (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+        (then
+          (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $slot))
+          (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $gl)))
+    ;; insertion-sort buf[0..n) ascending by sequence = hash-word high 32 bits
+    (local.set $j (i32.const 1))
+    (block $sd (loop $sl
+      (br_if $sd (i32.ge_s (local.get $j) (local.get $n)))
+      (local.set $cur (i32.load (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 2)))))
+      (local.set $sq (i32.wrap_i64 (i64.shr_u (i64.load (local.get $cur)) (i64.const 32))))
+      (local.set $k (i32.sub (local.get $j) (i32.const 1)))
+      (block $id (loop $il
+        (br_if $id (i32.lt_s (local.get $k) (i32.const 0)))
+        (br_if $id (i32.le_u
+          (i32.wrap_i64 (i64.shr_u (i64.load (i32.load (i32.add (local.get $buf) (i32.shl (local.get $k) (i32.const 2))))) (i64.const 32)))
+          (local.get $sq)))
+        (i32.store (i32.add (local.get $buf) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 2)))
+          (i32.load (i32.add (local.get $buf) (i32.shl (local.get $k) (i32.const 2)))))
+        (local.set $k (i32.sub (local.get $k) (i32.const 1)))
+        (br $il)))
+      (i32.store (i32.add (local.get $buf) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 2))) (local.get $cur))
+      (local.set $j (i32.add (local.get $j) (i32.const 1)))
+      (br $sl)))
+    (local.get $buf))`
 
   // === Memory-based length/cap helpers (C-style headers) ===
 
@@ -291,7 +342,9 @@ export default (ctx) => {
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
                   (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))))
-              (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
+              ;; HASH/SET/MAP/BUFFER: re-resolve offset so grown SET/MAP follow the
+              ;; forwarding chain (HASH/BUFFER never forward → same inline offset).
+              (else (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))))
           (else (i32.const 0))))))`
 
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr i64) (result i32)
@@ -380,12 +433,18 @@ export default (ctx) => {
 
   // Generic header allocator for non-8 strides: Set (16), Map probe (24), TypedArray raw (1).
   // Same 16-byte header layout as __alloc_hdr; per-entry stride is passed dynamically.
+  // Header (16B) + cap*stride slots. Collections (Set/Map/HASH) key "empty slot"
+  // off a zero hash word, so the slot region MUST start zeroed. The bump allocator
+  // reuses memory after a heap reset (__clear) without re-zeroing, so we cannot
+  // lean on fresh-page zeroing here — clear the slots explicitly. Also covers the
+  // grow path, which rehashes into a freshly-allocated table expecting empties.
   ctx.core.stdlib['__alloc_hdr_n'] = `(func $__alloc_hdr_n (param $len i32) (param $cap i32) (param $stride i32) (result i32)
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
     (i64.store (local.get $ptr) (i64.const 0))
     (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
     (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
+    (memory.fill (i32.add (local.get $ptr) (i32.const 16)) (i32.const 0) (i32.mul (local.get $cap) (local.get $stride)))
     (i32.add (local.get $ptr) (i32.const 16)))`
 
   // Allocator + exports are deferred: only included when memory is actually needed.
@@ -694,7 +753,7 @@ export default (ctx) => {
       // UTF-8 and __str_byteLen returns byte count, so this matches the runtime
       // semantics. Skips the call + NaN-unbox round-trip entirely.
       if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
-        return typed(['f64.const', Buffer.byteLength(obj[1], 'utf8')], 'f64')
+        return typed(['f64.const', new TextEncoder().encode(obj[1]).length], 'f64')
       }
       // structInline Array<S>: the header `len` counts physical f64 cells (K
       // per element), so the JS array length is `physicalLen / K`.
@@ -715,14 +774,15 @@ export default (ctx) => {
     }
 
     // Type-specific property emitter (`.regex:source`, …) — the property-read
-    // mirror of the `.vt:method` method-dispatch table. Property emitters take
-    // a single arg (the receiver); arity ≥ 2 entries are method emitters and
-    // must not be routed here (reading `re.test` as a value is not a call).
+    // mirror of the `.vt:method` method-dispatch table. Only entries tagged as
+    // getters (via `getter()`) fire here: reading `re.source` yields a value,
+    // but reading `m.keys`/`re.test` is not a call and must not invoke the
+    // method (which would materialize a view / run the probe).
     const ptRep = typeof obj === 'string' ? repOf(obj) : null
     const ptVt = ptRep ? ptRep.val : valTypeOf(obj)
     if (ptVt) {
       const tpEmitter = ctx.core.emit[`.${ptVt}:${prop}`]
-      if (tpEmitter && tpEmitter.length <= 1) return tpEmitter(obj)
+      if (tpEmitter?.getter) return tpEmitter(obj)
     }
 
     // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
@@ -737,7 +797,7 @@ export default (ctx) => {
     if ((prop === 'valueOf' || prop === 'toString') && ctx.closure.call &&
         (ptVt === VAL.ARRAY || ptVt === VAL.TYPED || ptVt === VAL.OBJECT)) {
       const builtin = ctx.core.emit[`.${ptVt}:${prop}`] || ctx.core.emit[`.${prop}`]
-      if (builtin && builtin.length <= 1) {
+      if (builtin && emitArity(builtin) <= 1) {
         const o = temp('vo'), p = temp('vp')
         inc('__dyn_get_expr', '__ptr_type')
         return typed(['block', ['result', 'f64'],
@@ -751,10 +811,12 @@ export default (ctx) => {
       }
     }
 
-    // Module-registered property emitter (.size, etc.)
+    // Module-registered property getter (.size, .byteLength, …). Methods sharing
+    // the bare-`.prop` table (`.values`, `.pop`, date getters) are untagged and
+    // fall through to a real property read — `m.values` reads the "values" field.
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]
-    if (propEmitter && propEmitter.length <= 1) return propEmitter(obj)
+    if (propEmitter?.getter) return propEmitter(obj)
 
     return emitPropAccess(emit(obj), obj, prop)
   }
@@ -839,14 +901,21 @@ export default (ctx) => {
     // as a direct method call. The outer optional short-circuits when the receiver
     // is nullish — the method itself is statically known to exist.
     if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
-      const methodEmit = ctx.core.emit[`.${callee[2]}`]
-      if (methodEmit) {
+      const method = callee[2]
+      if (ctx.core.emit[`.${method}`]) {
         const recv = callee[1]
         return evalOnce(recv, (t) => {
-          // Emit-time rep seed on fresh `?.()` recv-temp so methodEmit's dispatch fast-paths fire.
+          // Emit-time rep seed on fresh `?.()` recv-temp so the dispatch fast-paths fire.
           const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
           if (vt) updateRep(t, { val: vt })
-          return asF64(methodEmit(t, ...args))
+          // Re-enter the full `()` method dispatch (runtime string/array dispatch,
+          // charCodeAt, schema, …) rather than the bare generic `.${method}` emitter
+          // — that emitter is the *array* `includes`/`indexOf`/… and would mis-run on
+          // a string receiver. Mirrors `?.[]`'s re-entry into `[]`. The method is
+          // statically known to exist, so the inner optional is moot; `t` is already
+          // nullish-guarded by evalOnce. Args re-bundle into the `()` arg slot.
+          const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+          return asF64(ctx.core.emit['()'](['.', t, method], callArgs))
         })
       }
     }

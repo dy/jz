@@ -104,8 +104,11 @@ export const GENERIC_METHOD_MODULES = dict({
   hasOwnProperty: ['core', 'object', 'string', 'collection'],
 })
 
-export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','Date']
-export const COLLECTION_CTORS = ['Set', 'Map']
+export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','WeakSet','WeakMap','Date']
+// WeakSet/WeakMap are identity-keyed collections; jz has no GC, so weakness is
+// unobservable and they behave exactly like Set/Map (the `new` handler folds
+// the names). Compilers lean on them as identity caches / cycle-detection sets.
+export const COLLECTION_CTORS = ['Set', 'Map', 'WeakSet', 'WeakMap']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 
 const MOD_DEPS = {

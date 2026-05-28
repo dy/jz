@@ -9,8 +9,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
-import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
-import { includeModule } from '../src/autoload.js'
+import { ctx, err, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
@@ -27,7 +26,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => 
     if (groupNames[i]) named.push([i, groupNames[i]])
   }
   if (named.length) {
-    includeModule('collection')
+    ctx.module.include('collection')
     inc('__hash_new_small', '__hash_set', '__dyn_set')
   }
   const captureValue = i => ['if', ['result', 'f64'],
@@ -844,26 +843,26 @@ export default (ctx) => {
   // RegExp.prototype.source — the pattern text. A literal stores it verbatim
   // (already grammar-escaped), so `/A/.source` is the 6-char "A".
   // An empty pattern serializes to "(?:)" so the result re-parses to a regex.
-  ctx.core.emit['.regex:source'] = (obj) => {
+  ctx.core.emit['.regex:source'] = getter((obj) => {
     const a = regexAstOf(obj)
     return emit(['str', (a && a[1]) || '(?:)'])
-  }
+  })
 
   // RegExp.prototype.flags — flag characters in canonical order (sec-get-regexp.prototype.flags).
   const FLAG_ORDER = 'dgimsvy'
-  ctx.core.emit['.regex:flags'] = (obj) => {
+  ctx.core.emit['.regex:flags'] = getter((obj) => {
     const f = flagsOf(obj)
     return emit(['str', [...FLAG_ORDER].filter(c => f.includes(c)).join('')])
-  }
+  })
 
   // Individual flag accessors → 1/0 (jz carries booleans as f64).
   for (const [prop, ch] of [
     ['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'], ['dotAll', 's'],
     ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
-  ]) ctx.core.emit[`.regex:${prop}`] = (obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64')
+  ]) ctx.core.emit[`.regex:${prop}`] = getter((obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64'))
 
   // lastIndex — jz regexes are stateless; a freshly-evaluated regex reads 0.
-  ctx.core.emit['.regex:lastIndex'] = () => typed(['f64.const', 0], 'f64')
+  ctx.core.emit['.regex:lastIndex'] = getter(() => typed(['f64.const', 0], 'f64'))
 
   // str.search(/re/) → first match position or -1
   ctx.core.emit['.string:search'] = (str, search) => {
@@ -913,7 +912,8 @@ export default (ctx) => {
         ['else', buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
   }
 
-  // str.replace(/re/, repl) → replaced string
+  // str.replace(/re/, repl) → replaced string. With the `g` flag every match is
+  // replaced (a per-regex loop, mirroring split); otherwise only the first.
   ctx.core.emit['.string:replace'] = (str, search, repl) => {
     const id = resolveRegex(search)
     if (id == null) {
@@ -922,6 +922,39 @@ export default (ctx) => {
       return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat', '__str_byteLen')
+    // Global replace: walk every match, accumulating slice(prevEnd,matchStart)+repl.
+    // Empty seed via slice(str,0,0); zero-length matches advance by 1 (per split).
+    if (flagsOf(search).includes('g')) {
+      const replName = `__regex_replace_${id}`
+      if (!ctx.core.stdlib[replName]) {
+        inc('__str_to_buf')
+        ctx.core.stdlib[replName] = `(func $${replName} (param $str i64) (param $repl i64) (result f64)
+          (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
+          (local $mstart i32) (local $mend i32) (local $prevEnd i32) (local $acc f64)
+          (local.set $off (call $__str_to_buf (local.get $str)))
+          (local.set $len (call $__str_byteLen (local.get $str)))
+          (local.set $prevEnd (i32.const 0))
+          (local.set $pos (i32.const 0))
+          (local.set $acc (call $__str_slice (local.get $str) (i32.const 0) (i32.const 0)))
+          (block $done (loop $next
+            (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
+            (local.set $result (call $__regex_${id} (local.get $off) (local.get $len) (local.get $pos)))
+            (if (i32.lt_s (local.get $result) (i32.const 0))
+              (then (local.set $pos (i32.add (local.get $pos) (i32.const 1))) (br $next)))
+            (local.set $mstart (local.get $pos))
+            (local.set $mend (local.get $result))
+            (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+              (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))))
+            (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc)) (local.get $repl)))
+            (local.set $prevEnd (local.get $mend))
+            (local.set $pos (select (i32.add (local.get $mend) (i32.const 1)) (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
+            (br $next)))
+          (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+            (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))))`
+        inc(replName)
+      }
+      return typed(['call', `$${replName}`, asI64(emit(str)), asI64(emit(repl))], 'f64')
+    }
     const s = temp('sr'), r = temp('srr'), ms = tempI32('srms'), me = tempI32('srme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],

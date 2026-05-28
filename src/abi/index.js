@@ -40,12 +40,12 @@ export const DEFAULTS = Object.freeze({
   array: taggedLinear,
 })
 
-/** ctx.abi bundle: default carriers + resolve() + registry. */
+/** ctx.abi bundle: default carriers + resolve() + registry. All access is by
+ *  fixed key (`ctx.abi.object.ops`, `.string`, `.resolve`, …), so a plain
+ *  literal — the shape jz compiles directly — is equivalent to the former
+ *  null-proto `Object.assign` merge. */
 export function makeAbi() {
-  return Object.assign(Object.create(null), DEFAULTS, {
-    carriers: CARRIERS,
-    resolve: resolveCarrier,
-  })
+  return { ...DEFAULTS, carriers: CARRIERS, resolve: resolveCarrier }
 }
 
 export { nanboxF64, sso, jsstring, tagged, taggedLinear, structInline }

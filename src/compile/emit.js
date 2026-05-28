@@ -45,7 +45,7 @@ import {
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
-  boxedAddr, readVar, writeVar, isNullish, isBoolAtom,
+  boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -226,6 +226,14 @@ const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
 // zero-arg call on a not-proven-collection receiver cannot be the collection
 // op — it is a user/closure method and must not reach the collection emitter.
 const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
+
+// String char-index methods bound generically (no `.string:` qualifier — no array
+// name collision). `String.prototype.{charCodeAt,charAt}` each take at most one
+// argument (the index), so a call supplying ≥2 args on a not-proven-string receiver
+// cannot be the string built-in — it is a user method that happens to share the
+// name (e.g. the self-host abi's `ctx.abi.string.ops.charCodeAt(sF64,iI32,ctx,oobNan)`).
+// It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
+const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 
 // Pointer kinds for which JS `==` / `!=` is pure reference equality — i.e. i64 bit
 // compare of the NaN-box is equivalent to __eq. Excludes STRING (content compare for
@@ -603,9 +611,7 @@ export function materializeMulti(callNode) {
   const name = callNode[1]
   const func = ctx.func.map.get(name)
   const n = func.sig.results.length
-  const rawArgs = callNode.slice(2)
-  const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
-    ? rawArgs[0].slice(1) : rawArgs
+  const argList = commaList(callNode[2])
   const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
   while (emittedArgs.length < func.sig.params.length)
     emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
@@ -619,9 +625,59 @@ export function materializeMulti(callNode) {
   return typed(['block', ['result', 'f64'], ...ir], 'f64')
 }
 
+/**
+ * Fresh per-iteration heap cells for boxed (closure-captured) locals declared
+ * in a loop body. ECMAScript establishes the per-iteration environment at the
+ * START of each iteration, so the cell must exist before ANY body statement —
+ * including a closure declared *before* the binding (mutual recursion, or a
+ * `function` decl jzify hoists above its captures). Allocating at the decl point
+ * instead would let an earlier closure capture the previous iteration's (stale)
+ * cell while the binding reads/writes the freshly-allocated one. `emitDecl` then
+ * stores the initializer into this cell rather than re-allocating (see
+ * `frame.loopFresh`). Returns the alloc IR to splice at loop-body entry.
+ */
+export function emitLoopFreshBoxed(body, frame) {
+  if (!ctx.func.boxed?.size) return []
+  const names = new Set()
+  ;(function scan(node) {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>' || op === 'for' || op === 'for-of' || op === 'for-in' || op === 'while' || op === 'do') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        const nm = Array.isArray(d) && d[0] === '=' ? d[1] : d
+        if (typeof nm === 'string' && ctx.func.boxed.has(nm)) names.add(nm)
+      }
+    }
+    for (let i = 1; i < node.length; i++) scan(node[i])
+  })(body)
+  if (!names.size) return []
+  frame.loopFresh = names
+  const inits = []
+  for (const name of names) {
+    const cell = ctx.func.boxed.get(name)
+    ctx.func.locals.set(cell, 'i32')
+    inits.push(
+      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+      ['f64.store', ['local.get', `$${cell}`], undefExpr()])
+  }
+  return inits
+}
+
 /** Emit let/const initializations as typed local.set instructions. */
 export function emitDecl(...inits) {
   const result = []
+  // A `let`/`const` declared inside a loop creates a *fresh* binding each
+  // iteration (ECMAScript per-iteration environment). Boxed (closure-captured)
+  // locals therefore need a fresh heap cell per iteration — but the cell is
+  // allocated at loop-body entry by `emitLoopFreshBoxed` (so a closure declared
+  // before the binding captures the right cell), recorded in `frame.loopFresh`.
+  // Here we only re-allocate when the loop body did NOT pre-allocate it; a
+  // function-level declaration keeps its preboxed cell (forward/mutual-recursion
+  // capture relies on it pre-existing).
+  const inLoop = ctx.func.stack.some(f => f.loop)
+  const loopPrebox = (name) => ctx.func.stack.some(f => f.loopFresh?.has(name))
   for (let ii = 0; ii < inits.length; ii++) {
     const i = inits[ii]
     if (typeof i === 'string') {
@@ -629,7 +685,7 @@ export function emitDecl(...inits) {
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')
-        if (!ctx.func.preboxed?.has(i))
+        if (inLoop ? !loopPrebox(i) : !ctx.func.preboxed?.has(i))
           result.push(['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]])
         result.push(['f64.store', ['local.get', `$${cell}`], undef])
         continue
@@ -678,9 +734,7 @@ export function emitDecl(...inits) {
           targets.push(next[1])
         }
         if (match && targets.length === n) {
-          const rawArgs = init.slice(2)
-          const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
-            ? rawArgs[0].slice(1) : rawArgs
+          const argList = commaList(init[2])
           const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
             emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
@@ -727,7 +781,7 @@ export function emitDecl(...inits) {
     if (ctx.func.boxed.has(name)) {
       const cell = ctx.func.boxed.get(name)
       ctx.func.locals.set(cell, 'i32')
-      if (!ctx.func.preboxed?.has(name))
+      if (inLoop ? !loopPrebox(name) : !ctx.func.preboxed?.has(name))
         result.push(['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]])
       result.push(['f64.store', ['local.get', `$${cell}`], asF64(val)])
       continue
@@ -930,11 +984,15 @@ export function buildArrayWithSpreads(items) {
       ctx.func.locals.set(sec.local, 'f64')
       sec.lenLocal = `${T}spl${ctx.func.uniq++}`
       ctx.func.locals.set(sec.lenLocal, 'i32')
+      const n = multiCount(sec.expr)
+      // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
+      // Map→[k,v] arrays, others pass through. Only when `collection` is loaded —
+      // otherwise no Set/Map can exist and the source is already index-iterable.
+      const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', sec.expr] : sec.expr
       // A materialized multi-value is not a statically-typed pointer — let
       // emitSpreadCopy resolve its kind at runtime via its one-time __ptr_type branch.
-      sec.val = multiCount(sec.expr) ? undefined : valTypeOf(sec.expr)
-      const n = multiCount(sec.expr)
-      ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
+      sec.val = n ? undefined : valTypeOf(srcExpr)
+      ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(srcExpr))])
       // Cache __len once per spread; reused below for total-len sum and the copy.
       ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
     }
@@ -1038,16 +1096,38 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
  * the types match — or one side is statically unknown — the result is bit-for-bit
  * identical to loose `==` on same-type operands, so we delegate to it.
  *
- * Two carrier-level limitations remain (documented gaps, not regressions):
- *  • booleans and numbers share the 0/1 carrier, so `1 === trueDynamic` can only
- *    be told apart when the boolean's type is statically known;
- *  • jz unifies `null` and `undefined` into one NaN-boxed sentinel, so
- *    `null === undefined` is `true` (same as `==`).
+ * `null` and `undefined` are distinct NaN-boxed sentinels, so `===` tells them
+ * apart (`null === undefined` is false) even though loose `==` treats both nullish.
+ *
+ * One carrier-level limitation remains (documented gap, not a regression): booleans
+ * and numbers share the 0/1 carrier, so `1 === trueDynamic` can only be told apart
+ * when the boolean's type is statically known.
  */
 function emitStrictEq(a, b, negate) {
   // `typeof x === 'type'` (prepare rewrote the literal to a numeric code) — typeof
   // always yields a string, so strict and loose agree; reuse the loose lowering.
   const tc = emitTypeofCmp(a, b, negate ? 'ne' : 'eq'); if (tc) return tc
+  // Strict equality against a `null` or `undefined` literal must match ONLY that
+  // exact sentinel — `undefined === null` is false, unlike loose `==`. prepare
+  // normalizes both to the value-wrapper form `[, v]` (op==null) where the *strict*
+  // value of node[1] is the discriminator (=== null vs === undefined); the loose
+  // isNullLit/isUndefLit predicates use `== null` and can't tell them apart, so key
+  // off node[1] here — exactly as emit()'s literal value path does. A statically
+  // non-nullish operand (known VAL) is neither sentinel, so fold to a constant.
+  const sentinelOf = (n) => {
+    if (!Array.isArray(n) || n[0] != null) return null
+    if (n.length < 2 || n[1] === undefined) return 'undef'
+    if (n[1] === null) return 'null'
+    return null  // numeric / string literal value — not a nullish sentinel
+  }
+  const strictSentinel = (other, undef) => {
+    if (valTypeOf(other)) return emitNum(negate ? 1 : 0)
+    const chk = (undef ? isUndef : isNull)(asF64(emit(other)))
+    return negate ? typed(['i32.eqz', chk], 'i32') : chk
+  }
+  const sa = sentinelOf(a), sb = sentinelOf(b)
+  if (sb) return strictSentinel(a, sb === 'undef')
+  if (sa) return strictSentinel(b, sa === 'undef')
   // Known, differing primitive classes can never be strictly equal.
   const rawA = resolveValType(a, valTypeOf, lookupValType)
   const rawB = resolveValType(b, valTypeOf, lookupValType)
@@ -1164,6 +1244,13 @@ function intConstValue(expr) {
 }
 
 function bigintUnsignedBound(expr) {
+  // Self-describing literal carries the unsigned-64 decimal (`BigInt.asUintN(64,…)`,
+  // so 1–20 digits, always ≤ 2^64-1). Detect the high-unsigned range (> 2^63-1) by
+  // decimal magnitude — the kernel can't parse large decimals back to BigInt.
+  if (Array.isArray(expr) && expr[0] === 'bigint') {
+    const s = expr[1]
+    return s.length > 19 || (s.length === 19 && s > '9223372036854775807')
+  }
   const n = bigintConstValue(expr)
   return n != null && n > 0x7fffffffffffffffn && n <= 0xffffffffffffffffn
 }
@@ -1580,6 +1667,35 @@ export const emitter = {
     // Object property assignment: obj.prop = x
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
+      // arr.length = N — array resize. Intercept before the schema/object paths
+      // (`length` is never a schema field). Only ARRAY (or unknown — the runtime
+      // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
+      // `.length =` as a plain property write below. The expression value is N.
+      if (prop === 'length') {
+        const recvVt = typeof obj === 'string' ? keyValType(obj) : valTypeOf(obj)
+        if (recvVt === VAL.ARRAY || recvVt == null) {
+          inc('__arr_set_length')
+          const arrTmp = `${T}aln${ctx.func.uniq++}`
+          const nTmp = `${T}alv${ctx.func.uniq++}`
+          ctx.func.locals.set(arrTmp, 'f64')
+          ctx.func.locals.set(nTmp, 'i32')
+          // Write the relocated pointer back to a simple var receiver so later
+          // reads skip the forwarding hop; complex receivers stay correct via it.
+          const persist = recvVt === VAL.ARRAY && typeof obj === 'string'
+            ? ctx.func.boxed?.has(obj) ? ['f64.store', boxedAddr(obj), ['local.get', `$${arrTmp}`]]
+            : isGlobal(obj) ? ['global.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
+            : ['local.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
+            : null
+          const body = [
+            ['local.set', `$${arrTmp}`, asF64(emit(obj))],
+            ['local.set', `$${nTmp}`, asI32(emit(val))],
+            ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${nTmp}`]]],
+          ]
+          if (persist) body.push(persist)
+          body.push(['f64.convert_i32_s', ['local.get', `$${nTmp}`]])
+          return typed(['block', ['result', 'f64'], ...body], 'f64')
+        }
+      }
       // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
       const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
       if (flatW) {
@@ -2127,9 +2243,14 @@ export const emitter = {
   // DSP/bytebeat `~~` doesn't emit a dead double-xor watr won't remove.
   '~':   a => {
     if (Array.isArray(a) && a[0] === '~') {
-      const inner = a[1], iv = emit(inner)
+      const inner = a[1]
+      // ~~x === x for BigInt; the int32-truncation fold below is number-only.
+      if (valTypeOf(inner) === VAL.BIGINT) return emit(inner)
+      const iv = emit(inner)
       return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }
+    // BigInt complement is the i64 `x ^ -1` (all bits flipped), like emitNeg's i64.sub.
+    if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.xor', asI64(emit(a)), ['i64.const', -1]])
     const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([
@@ -2208,10 +2329,16 @@ export const emitter = {
     const needsCont = step && hasOwnContinue(body)
     const cont = needsCont ? `$cont${id}` : loop
     ctx.func.stack.push({ brk, loop: cont })
+    const frame = ctx.func.stack[ctx.func.stack.length - 1]
+    // Per-iteration fresh cells for boxed locals declared in the body — allocated
+    // at body entry so a closure declared before its binding captures the right
+    // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
+    const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
     if (init != null) result.push(...emitFlat(init))
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
+    loopBody.push(...freshBoxed)
     if (needsCont) loopBody.push(['block', cont, ...emitFlat(body)])
     else loopBody.push(...emitFlat(body))
     if (step) loopBody.push(...emitFlat(step))
@@ -2358,6 +2485,22 @@ export const emitter = {
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
 
+      // SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
+      // `o#i` field locals and deleted `$o`, so the method closure lives in the
+      // field local, not a heap slot. Read it directly and dispatch. Without
+      // this, every path below loads from `local.get $o`, which no longer exists
+      // (watr then reports "Unknown local $o"). Mirrors the flat `.`/`[]` hooks.
+      if (typeof obj === 'string' && ctx.closure.call) {
+        const flat = ctx.func.flatObjects?.get(obj)
+        const fi = flat ? flat.names.indexOf(method) : -1
+        if (fi >= 0) {
+          const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
+          if (parsed.hasSpread)
+            return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+          return ctx.closure.call(propRead, parsed.normal)
+        }
+      }
+
       // charCodeAt with a statically in-bounds index — emit the i32
       // (OOB-impossible) contract directly; the generic path keeps the
       // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
@@ -2373,6 +2516,29 @@ export const emitter = {
         }
         return typed(stringOps(obj).charCodeAt(
           asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+      }
+
+      // splice(start, deleteCount, ...items): the one array method that both
+      // deletes and inserts. callMethod's spread machinery models per-element
+      // mutators (push/concat), not a single delete+insert, so a spread of
+      // inserts would be misapplied. Handle the full arg list here: delete-only
+      // (no inserts) falls through to the inline `.splice` emitter; any insert
+      // items route through __arr_splice, which grows/shifts in place (the
+      // caller's pointer stays valid via array forwarding) and returns the
+      // removed elements. Guard against a spread in the start/deleteCount slots
+      // (`splice(...x)`) — that form has no static arity and isn't supported.
+      if (method === 'splice' && ctx.core.emit['.splice']) {
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        const inserts = combined.slice(2)
+        const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
+        if (inserts.length && !headSpread) {
+          inc('__arr_splice')
+          return typed(['call', '$__arr_splice',
+            asI64(emit(obj)),
+            asI32(emit(combined[0])),
+            asI32(emit(combined[1])),
+            asI64(buildArrayWithSpreads(inserts))], 'f64')
+        }
       }
 
       // Function property call: fn.prop(args) → direct call to fn$prop.
@@ -2434,13 +2600,16 @@ export const emitter = {
           ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
 
           const objIsArr = lookupValType(objArg) === VAL.ARRAY
+          const n = multiCount(spreadExpr)
+          // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
+          // Map→[k,v] arrays, others pass through. Only when `collection` is loaded.
+          const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', spreadExpr] : spreadExpr
           // A materialized multi-value is not a statically-typed pointer — let
           // emitSpreadCopy resolve its kind once at runtime.
-          const srcVT = multiCount(spreadExpr) ? undefined : valTypeOf(spreadExpr)
-          const n = multiCount(spreadExpr)
+          const srcVT = n ? undefined : valTypeOf(srcExpr)
           const ir = []
           ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
-          ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
+          ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(srcExpr))])
           ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
@@ -2718,7 +2887,18 @@ export const emitter = {
       // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
       const collectionMisfit = COLLECTION_METHODS.has(method) &&
         !parsed.hasSpread && parsed.normal.length === 0
-      if (ctx.core.emit[genKey] && !collectionMisfit) {
+      const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
+        !parsed.hasSpread && parsed.normal.length > 1
+      // A proven plain-object/dict receiver never inherits the Array/collection
+      // builtins these generic emitters serve — an own property of the same name
+      // shadows them (ES prototype semantics). Skip the builtin so the dynamic
+      // property-call dispatch below reads the actual slot/sidecar closure. This
+      // is the type-based generalization of the collection/strIndex arity guards
+      // above: it is what lets self-host user methods whose names collide with
+      // builtins — `ctx.schema.find(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
+      // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
+      const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
+      if (ctx.core.emit[genKey] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
         return callMethod(obj, ctx.core.emit[genKey])
       }
 
@@ -2811,6 +2991,40 @@ export const emitter = {
       // Rest param case: collect all args (including expanded spreads) into array
       if (func?.rest) {
         const fixedParamCount = func.sig.params.length - 1
+        // A spread positioned within the fixed-param range supplies fixed params from
+        // inside the spread — they can't be sliced out statically. Build the full args
+        // array A and split it at runtime: fixed[k] = A[k], rest = A.slice(fixedParamCount).
+        // (Otherwise the static slice below is exact and skips the extra alloc + copy.)
+        if (fixedParamCount > 0 && parsed.spreads.some(s => s.pos < fixedParamCount)) {
+          const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+          const aVal = temp('ra'), aOff = tempI32('rao'), aLen = tempI32('ral'), rLen = tempI32('rln')
+          const rest = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${rLen}`], tag: 'rr' })
+          const fixedLoads = []
+          for (let k = 0; k < fixedParamCount; k++) {
+            const load = typed(['if', ['result', 'f64'],
+              ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', k]],
+              ['then', ['f64.load', ['i32.add', ['local.get', `$${aOff}`], ['i32.const', k * 8]]]],
+              ['else', undefExpr()]], 'f64')
+            fixedLoads.push(emitArgForParam(load, func.sig.params[k]))
+          }
+          const callIR = typed(['block', ['result', func.sig.results[0]],
+            ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
+            ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
+            ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]],
+            ['local.set', `$${rLen}`, ['select',
+              ['i32.sub', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]],
+              ['i32.const', 0],
+              ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]]]],
+            rest.init,
+            ['memory.copy', ['local.get', `$${rest.local}`],
+              ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
+              ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
+            ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
+          if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+          if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+          if (func.sig.unsignedResult) callIR.unsigned = true
+          return callIR
+        }
         const fixedArgs = parsed.normal.slice(0, fixedParamCount)
         // Pad missing fixed args with `undefined` so default-param init triggers per spec.
         const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
@@ -2844,8 +3058,11 @@ export const emitter = {
       const expected = func?.sig.params.length ?? args.length
       while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
       if (args.length > expected) args.length = expected
-      // Multi-value return: materialize as heap array (caller expects single pointer)
-      if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
+      // Multi-value return: materialize as heap array (caller expects single pointer).
+      // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
+      // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
+      // argument past the first.
+      if (func?.sig.results.length > 1) return materializeMulti(['()', callee, callArgs])
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
       if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
       if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
@@ -3005,11 +3222,32 @@ export function emit(node, expect) {
         const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
         const paramDecls = ['(param $__env f64)', '(param $__argc i32)']
         for (let i = 0; i < W; i++) paramDecls.push(`(param $__a${i} f64)`)
-        // Forward fixed slots; if func expects i32, convert via trunc_sat
+        // A rest param (always last) must be packed into a fresh array from the
+        // overflow inline slots — the direct-call path does this via
+        // buildArrayWithSpreads, and `=>` closures via emitClosureBody. Without
+        // it here an indirect caller's single array arg arrives AS the rest array
+        // (spread one level) instead of `[arg]`. len = clamp(argc-restIdx, 0, restSlots).
+        const restIdx = func?.rest ? sigParams.length - 1 : -1
+        let restLocals = '', restPrelude = ''
+        if (restIdx >= 0) {
+          const restSlots = W - restIdx
+          const stores = []
+          for (let i = 0; i < restSlots; i++)
+            stores.push(`(if (i32.gt_s (local.get $__rlen) (i32.const ${i})) (then (f64.store (i32.add (local.get $__roff) (i32.const ${i * 8})) (local.get $__a${restIdx + i}))))`)
+          restLocals = '(local $__rlen i32) (local $__roff i32) '
+          restPrelude =
+            `(local.set $__rlen (select (i32.sub (local.get $__argc) (i32.const ${restIdx})) (i32.const 0) (i32.gt_s (local.get $__argc) (i32.const ${restIdx})))) ` +
+            `(if (i32.gt_s (local.get $__rlen) (i32.const ${restSlots})) (then (local.set $__rlen (i32.const ${restSlots})))) ` +
+            `(local.set $__roff (call $__alloc_hdr (local.get $__rlen) (local.get $__rlen))) ` +
+            stores.join(' ') + ' '
+        }
+        // Forward fixed slots (i32 via trunc_sat); the rest slot → packed array ptr.
         const fwd = sigParams.map((p, i) =>
-          p.type === 'i32'
-            ? `(i32.trunc_sat_f64_s (local.get $__a${i}))`
-            : `(local.get $__a${i})`).join(' ')
+          i === restIdx
+            ? `(call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $__roff))`
+            : p.type === 'i32'
+              ? `(i32.trunc_sat_f64_s (local.get $__a${i}))`
+              : `(local.get $__a${i})`).join(' ')
         if ((func?.sig.results.length || 1) > 1) {
           const n = func.sig.results.length
           const arr = `${T}retarr`
@@ -3019,8 +3257,8 @@ export function emit(node, expect) {
             `(f64.store (i32.add (local.get $${arr}) (i32.const ${i * 8})) (local.get $${name}))`
           ).join(' ')
           const capture = temps.slice().reverse().map(name => `(local.set $${name})`).join(' ')
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} (call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
-          inc(trampolineName, '__alloc', '__mkptr')
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
+          inc(trampolineName, '__alloc', '__mkptr', ...(restIdx >= 0 ? ['__alloc_hdr'] : []))
         } else {
           // Convert i32/i64 results back to f64 — uniform closure ABI returns f64.
           const resType = func?.sig.results[0]
@@ -3030,8 +3268,8 @@ export function emit(node, expect) {
             : resType === 'i64'
               ? `(f64.reinterpret_i64 ${callExpr})`
               : callExpr
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${wrapped})`
-          inc(trampolineName)
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${restLocals}${restPrelude}${wrapped})`
+          inc(trampolineName, ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
@@ -3067,6 +3305,11 @@ export function emit(node, expect) {
   const [op, ...args] = node
   // WASM IR passthrough: internally-generated IR nodes (from statement flattening) pass through
   if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
+
+  // Self-describing bigint literal (`normalizeBigints`, used at the host→kernel AST
+  // boundary). args[0] is the unsigned-64 decimal computed host-side, passed straight
+  // to i64.const — no in-kernel parse, byte-identical to the raw-primitive path above.
+  if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', args[0]]], 'f64')
 
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {

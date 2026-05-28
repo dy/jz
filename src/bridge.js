@@ -70,7 +70,7 @@ export const tag = (handler, deps) => {
 export const dual = (wrap, core, fast) => {
   const h = (a, ...rest) => (fast(a) ? core(a, ...rest) : wrap(a, ...rest))
   h.deps = wrap.deps
-  Object.defineProperty(h, 'length', { value: wrap.length, configurable: true })
+  h.argc = wrap.argc ?? wrap.length
   return h
 }
 
@@ -89,7 +89,7 @@ const wrap = (fmt, call) => {
 export const call = (stdlib, sig, fmt = 'f64') => {
   const h = emitter([stdlib], (...nodes) =>
     wrap(fmt, ['call', `$${stdlib}`, ...coerce(sig, nodes)]))
-  Object.defineProperty(h, 'length', { value: sig.length, configurable: true })
+  h.argc = sig.length
   return h
 }
 
@@ -99,6 +99,6 @@ export const method = (stdlib, sig, ret = 'f64') => {
     const c = ['call', `$${stdlib}`, ...coerce(sig, nodes)]
     return typed(ret === 'i32' ? ['f64.convert_i32_s', c] : c, 'f64')
   })
-  Object.defineProperty(h, 'length', { value: sig.length, configurable: true })
+  h.argc = sig.length
   return h
 }

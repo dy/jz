@@ -12,12 +12,25 @@
 import { isI32, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
+import { valTypeOf } from './kind.js'
 import { NO_VALUE, staticValue, intLiteralValue } from './static.js'
+
+/** Byte-backed constructors whose `new X()` yields a PTR.TYPED / PTR.BUFFER value:
+ *  the typed-array views + ArrayBuffer + DataView. Mirrors autoload's TYPED_CTORS
+ *  (kept local to avoid a type↔module import cycle). Every other ctor — Map, Set,
+ *  Date, Array, RegExp, user classes — has its own VAL kind via CALLEE_VAL and must
+ *  NOT be mistaken for a typed-array construction (else its global misdispatches as
+ *  a TypedArray, e.g. `map.set(k,v)` lowering to `arr.set(src,offset)`). */
+const TYPED_FAMILY_CTORS = new Set([
+  'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'ArrayBuffer', 'DataView',
+])
 
 /** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
  *  or null if RHS isn't a typed-array/ArrayBuffer/DataView constructor. */
 export function typedElemCtor(rhs) {
   if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
+  if (!TYPED_FAMILY_CTORS.has(rhs[1].slice(4))) return null
   const args = rhs[2]
   const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
     && Array.isArray(args) && args[0] === ',' && args.length >= 4
@@ -393,8 +406,14 @@ export function exprType(expr, locals) {
     }
     return 'f64'
   }
-  // Always i32
-  if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
+  // Comparisons, logical-not, and unsigned shift always yield an i32 — a boolean,
+  // or a ToUint32 result. True even on BigInt operands (`>>>` throws on bigint, so
+  // it never reaches here with one).
+  if (['>', '<', '>=', '<=', '==', '!=', '!', '>>>'].includes(op)) return 'i32'
+  // Bitwise & signed-shift: i32 on numbers, but f64 when operands are BigInt — the
+  // result is a bigint carried in the i64-bits-as-f64 ABI, not a 32-bit int.
+  if (['&', '|', '^', '~', '<<', '>>'].includes(op))
+    return valTypeOf(expr) === VAL.BIGINT ? 'f64' : 'i32'
   // Preserve i32 if both operands i32
   if (op === '+' || op === '-' || op === '%') {
     const ta = exprType(args[0], locals)

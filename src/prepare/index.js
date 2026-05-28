@@ -22,9 +22,8 @@
  * @module prepare
  */
 
-import { parse } from 'subscript/feature/jessie'
-import { handlerArgs, refsName } from '../ast.js'
-import { ctx, err, derive } from '../ctx.js'
+import { handlerArgs, refsName, ASSIGN_OPS } from '../ast.js'
+import { ctx, err, derive, emitArity } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
@@ -35,7 +34,7 @@ import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
 import { isFuncRef } from '../ir.js'
 import {
-  CTORS, TIMER_NAMES,
+  CTORS, COLLECTION_CTORS, TIMER_NAMES,
   hasModule, includeModule,
   includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue,
   includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion,
@@ -53,6 +52,10 @@ let assignedStaticGlobals = null
 // to the same WASM local, but downstream optimizations (directClosures) gate
 // on per-decl `isReassigned`, not per-WASM-local — they'd read a stale binding.
 let funcLocalNames = []
+// Per-arrow set of local names bound to a function literal (`let g = () => …`).
+// Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
+// prohibited introspection — from a data object that merely has such a field.
+let funcValueNames = []
 
 // ES spec: identifier with \uHHHH or \u{...} escape is equivalent to the decoded
 // form. subscript preserves raw spelling in the AST; normalize once before prep.
@@ -60,6 +63,30 @@ const IDESC = /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g
 const decodeIdent = s => s.includes('\\u')
   ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
   : s
+
+// A for-loop bound `arr.length` may be snapshotted into a pre-loop local only when
+// nothing in the loop can change it. Two ways it can change: a write to the receiver
+// (`arr = …`, `arr.length = …`, `arr[k] = …`) or a call — push/pop/splice mutate
+// directly, and any call can reach `arr` through an alias the compiler can't track
+// locally (compilePendingClosures grows ctx.closure.bodies this way). Both predicates
+// recurse the whole node; nested arrow *definitions* are harmless until invoked, and
+// an invocation is itself a call node, so `callFree` already covers escaped mutators.
+const callFree = node => {
+  if (!Array.isArray(node)) return true
+  if (node[0] === '()' || node[0] === 'new') return false
+  for (let i = 1; i < node.length; i++) if (!callFree(node[i])) return false
+  return true
+}
+const writesReceiver = (node, recv) => {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') &&
+      (node[1] === recv ||
+       (Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.') && node[1][1] === recv)))
+    return true
+  for (let i = 1; i < node.length; i++) if (writesReceiver(node[i], recv)) return true
+  return false
+}
 
 const normalizeIdents = node => {
   if (!Array.isArray(node)) return
@@ -74,10 +101,14 @@ const normalizeIdents = node => {
 
 const hostReturnValType = spec => {
   if (!spec || typeof spec === 'function') return null
+  // Return type is the canonical string name ('number'/'string'/'bigint'/'f64').
+  // (Earlier this also accepted the constructor identity `ret === String` etc.,
+  // but that references host-only globals with no first-class value in jz — it
+  // broke self-hosting and was never used. String names are the portable form.)
   const ret = spec.returns ?? spec.return ?? spec.result
-  if (ret === 'number' || ret === 'f64' || ret === Number) return VAL.NUMBER
-  if (ret === 'string' || ret === String) return VAL.STRING
-  if (ret === 'bigint' || ret === BigInt) return VAL.BIGINT
+  if (ret === 'number' || ret === 'f64') return VAL.NUMBER
+  if (ret === 'string') return VAL.STRING
+  if (ret === 'bigint') return VAL.BIGINT
   return null
 }
 
@@ -276,7 +307,12 @@ function importMetaUrl() {
 
 function resolveImportMeta(spec) {
   const base = importMetaUrl()
-  try { return new URL(spec, base).href }
+  // URL resolution is a host capability (WHATWG URL parsing), injected via
+  // ctx.transform.resolveUrl rather than referencing the `URL` global — the same
+  // inversion as ctx.transform.parse. Keeps the self-host kernel (which bundles
+  // its module graph and never resolves import.meta at runtime) free of `URL`.
+  if (!ctx.transform.resolveUrl) err('import.meta resolution requires ctx.transform.resolveUrl (injected by the jz pipeline)')
+  try { return ctx.transform.resolveUrl(spec, base) }
   catch { err(`Cannot resolve import.meta specifier '${spec}' from '${base}'`) }
 }
 
@@ -335,6 +371,11 @@ export default function prepare(node) {
   staticConstScopes = []
   assignedStaticGlobals = new Set()
   funcLocalNames = [new Set()]
+  funcValueNames = [new Set()]
+  // Inject the module-include primitive so stdlib modules can pull dependency
+  // modules (e.g. object → collection) without importing autoload.js — that
+  // import would cycle (autoload imports every module via module/index.js).
+  ctx.module.include = includeModule
   includeModule('core')
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
@@ -479,6 +520,18 @@ function deleteStaticGlobal(name) {
 }
 
 const hasFunc = name => ctx.func.names.has(name)
+// A builtin name (`Map`, `Array`, `Math`, …) is shadowed when the user bound it
+// as a local (let/const/param, via `isDeclared`), a top-level function (via
+// `hasFunc`), or a top-level let/const global (via `userGlobals`). A shadowed
+// name must resolve to the user binding, so the constructor / named-call
+// fast-paths bail and fall through to `resolveCallee`, which already routes a
+// declared name to its local value. Mirrors the guard in
+// `foldNamespaceIntrospection`.
+const shadowsBuiltin = name => typeof name === 'string' &&
+  ((scopes.length && isDeclared(name)) || hasFunc(name) || ctx.scope.userGlobals?.has?.(name))
+// A local bound to a function literal in any active arrow scope (the nested-
+// closure counterpart to `hasFunc`, which only knows depth-0 lifted functions).
+const isFuncValueLocal = name => typeof name === 'string' && funcValueNames.some(s => s.has(name))
 
 const renameFunc = (func, nextName) => {
   ctx.func.names.delete(func.name)
@@ -514,9 +567,9 @@ function staticTypeofString(x) {
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
-  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && ctx.core.emit?.[x]?.length > 0) return 'function'
+  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x]) > 0) return 'function'
   const px = prep(x)
-  if (typeof px === 'string' && px.includes('.') && ctx.core.emit?.[px]?.length > 0) return 'function'
+  if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px]) > 0) return 'function'
   return null
 }
 // Builtin-namespace constructors expose `prototype`/`length`/`name` as own
@@ -613,6 +666,11 @@ function prep(node) {
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
       if (scopes.length && isDeclared(node)) return resolveScope(node)
+      // A user top-level binding (`let Math = …`) shadows a same-named builtin
+      // namespace seeded into the scope chain (`Math → math`). Resolve to the
+      // user global, not the builtin. (Mangled globals drop their original name
+      // from userGlobals, so this fires only for un-renamed user bindings.)
+      if (ctx.scope.userGlobals?.has?.(node)) return node
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -855,6 +913,23 @@ function prepDecl(op, ...inits) {
       continue
     }
     const [, name, init] = i
+    // `const alias = fn` whose RHS is a bare identifier naming a known function
+    // is a compile-time function alias — the ES `export { fn as alias }` written
+    // in declaration form (a recurring kernel idiom: paramList = extractParams,
+    // toBoolFromEmitted = truthyIR …). Resolve `alias` straight to the function
+    // so calls compile to a direct call and the export table re-exports the same
+    // mangled func. Otherwise it would box a closure into a module global that a
+    // cross-module callee resolves to the bare, unmangled name → "not in scope".
+    // Module scope + `const` only: depth>0 aliases already work as closure values,
+    // and a reassignable `let` is a genuine value binding, not an alias.
+    if (op === 'const' && depth === 0 && typeof name === 'string' && typeof init === 'string') {
+      const fn = hasFunc(init) ? init : (hasFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null)
+      if (fn) {
+        ctx.scope.chain[name] = fn
+        if (name in ctx.func.exports) ctx.func.exports[name] = fn
+        continue
+      }
+    }
     const staticStr = op === 'const' ? staticStringExpr(init) : null
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
     const normed = prep(init)
@@ -908,6 +983,10 @@ function prepDecl(op, ...inits) {
         scopes[scopes.length - 1].set(name, name)
       }
       if (typeof declName === 'string' && fnNames) fnNames.add(declName)
+      // A nested arrow stays a closure value (defFunc only lifts depth-0). Record
+      // the binding so `.caller`/`.callee` on it reads as prohibited introspection.
+      if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '=>')
+        funcValueNames[funcValueNames.length - 1]?.add(declName)
       if (op === 'const') bindStaticConst(declName, staticStr, staticArr)
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
@@ -938,15 +1017,24 @@ function prepDecl(op, ...inits) {
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
         const props = []
+        const addProp = n => { if (!props.includes(n)) props.push(n) }
+        let allKnown = true
         for (const p of normed.slice(1)) {
-          if (Array.isArray(p) && p[0] === ':') props.push(p[1])
+          // Dedupe every key (explicit AND spread-sourced) so a `k: v` that overrides
+          // a spread-provided key doesn't push a duplicate — that would shift the
+          // indices of later keys past emitObjectSpread's deduped slot assignment
+          // (its `addName` dedupes both), making `decl.laterKey` read the wrong slot.
+          if (Array.isArray(p) && p[0] === ':') addProp(p[1])
           else if (Array.isArray(p) && p[0] === '...') {
-            // Merge spread source schema into this object's schema
             const srcSchema = typeof p[1] === 'string' && ctx.schema.resolve(p[1])
-            if (srcSchema) for (const n of srcSchema) { if (!props.includes(n)) props.push(n) }
+            if (srcSchema) for (const n of srcSchema) addProp(n)
+            else allKnown = false
           }
         }
-        if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
+        // An unknown spread source makes the value a runtime HASH (see
+        // emitObjectSpread). Binding a static schema would compile `decl.prop`
+        // to a fixed slot load that misreads the hash, so leave reads dynamic.
+        if (allKnown && props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
       }
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
@@ -982,6 +1070,9 @@ function foldImportMetaResolve(callee, args) {
 // Returns the replacement IR, or `undefined` for an ordinary call.
 function dispatchConstructorCall(callee, args) {
   if (typeof callee !== 'string') return undefined
+  // A user binding named like a constructor (`let Map = …`, `let Array = …`)
+  // shadows the builtin — don't lower `Map(x)` to `new.Map`.
+  if (shadowsBuiltin(callee)) return undefined
   if (callee === 'Array') {
     const callArgs = handlerArgs(args)
     if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
@@ -1023,6 +1114,11 @@ function foldNamespaceIntrospection(callee, args) {
 // way: a bare identifier through the scope chain, an `obj.prop` member call
 // through host imports / named-call / generic-method / namespace tables, and
 // any other expression through `prep` (a callable runtime value).
+// Compiler-internal synthetic callees: emit-handled intrinsics, never user
+// function values — so a bare reference must not pull in the callable-value
+// (function table / closure) machinery.
+const INTRINSIC_CALLEES = new Set(['__iter_arr'])
+
 function resolveCallee(callee, args) {
   if (typeof callee === 'string') {
     const local = scopes.length && isDeclared(callee)
@@ -1034,12 +1130,17 @@ function resolveCallee(callee, args) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       return callee
     }
-    if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
+    if (depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
     return callee
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, prop] = callee
+    // A user binding named like a builtin namespace (`let Math = {…}`) shadows
+    // it — resolve `Math.max(…)` as a method call on the local value, not the
+    // builtin named-call. (Property reads route through the `.` handler's own
+    // shadow check.)
+    if (shadowsBuiltin(obj)) return prep(callee)
     const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
     if (key && ctx.module.hostImports?.[obj]?.[prop]) {
       const spec = ctx.module.hostImports[obj][prop]
@@ -1133,7 +1234,7 @@ const handlers = {
         // emit a dynamic property read + indirect call instead of a direct call.
         if (ctx.func.names.has(name)) {
           ctx.func.multiProp.add(`${fnBase}.${lhs[2]}`)
-          do name = `${fnBase}$${lhs[2]}$${ctx.func.uniq++}`; while (ctx.func.names.has(name))
+          do { name = `${fnBase}$${lhs[2]}$${ctx.func.uniq++}` } while (ctx.func.names.has(name))
         }
         // Build the target `.` node directly from the resolved base — re-`prep`ing
         // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure
@@ -1224,6 +1325,24 @@ const handlers = {
     return handlers['from'](fromNode[1], fromNode[2])
   },
 
+  // Mixed default+named import `import d, { n } from 'm'` — jessie emits it as a
+  // statement-level comma `[',', ['import', d], ['from', spec, src]]` (the default
+  // fragment lost its source). Reunite: bind the default, then the named specifiers,
+  // both against the shared source. (prepareModule caches by specifier, so preparing
+  // the source twice is a no-op — same as two separate `import` statements.)
+  // Any other comma is a sequence expression: fall through to generic prep.
+  ','(...items) {
+    if (items.length === 2
+      && Array.isArray(items[0]) && items[0][0] === 'import' && typeof items[0][1] === 'string'
+      && Array.isArray(items[1]) && items[1][0] === 'from') {
+      const source = items[1][2]
+      handlers['from'](items[0][1], source)
+      handlers['from'](items[1][1], source)
+      return null
+    }
+    return [',', ...items.map(prep)]
+  },
+
   'from'(specifiers, source) {
     const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err('Invalid import source')
@@ -1282,8 +1401,8 @@ const handlers = {
     }
 
     // Tier 2: Source module (bundling)
-    if (ctx.module.importSources?.[mod]) {
-      const resolved = prepareModule(mod, ctx.module.importSources[mod])
+    if (isBundledModule(mod)) {
+      const resolved = prepareModule(mod, ctx.module.importSources?.[mod])
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
@@ -1371,8 +1490,8 @@ const handlers = {
       const mod = decl[2]?.[1]
       if (!mod || typeof mod !== 'string') return null
       // Source module re-export
-      if (ctx.module.importSources?.[mod]) {
-        const resolved = prepareModule(mod, ctx.module.importSources[mod])
+      if (isBundledModule(mod)) {
+        const resolved = prepareModule(mod, ctx.module.importSources?.[mod])
         if (decl[1] === '*') {
           // export * from './mod' → register all exports
           for (const [name, mangled] of resolved.exports) {
@@ -1442,12 +1561,18 @@ const handlers = {
     depth++
     pushScope(fnScope)
     funcLocalNames.push(new Set(collectParamNames(raw)))
+    funcValueNames.push(new Set())
 
     const nextParams = []
     const bodyPrefix = []
     for (const r of raw) {
       const c = classifyParam(r)
       if (c.kind === 'rest') {
+        // A rest param is an array: the binding holds one, and every call site
+        // builds the rest array via `['[', …]`. Pull in the array emitter even
+        // when the body never names an array literal (e.g. `(...xs) => 0`),
+        // otherwise the call-site rest construction hits "Unknown op: [".
+        includeForArrayLiteral()
         nextParams.push(r)
         if (typeof c.name === 'string') fnScope.set(c.name, c.name)
       } else if (c.kind === 'plain') {
@@ -1483,6 +1608,7 @@ const handlers = {
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     popScope()
     funcLocalNames.pop()
+    funcValueNames.pop()
     depth--
     return result
   },
@@ -1502,9 +1628,13 @@ const handlers = {
     })]
   },
 
-  // Optional chaining / typeof — need ptr module
-  '?.'(obj, prop) { return ['?.', prep(obj), prop] },
-  '?.[]'(obj, idx) { return ['?.[]', prep(obj), prep(idx)] },
+  // Optional chaining / typeof — need ptr module. Optional member access pulls
+  // the same modules as plain `.`/`[]` (a method like `includes` needs string +
+  // array for emit's runtime dispatch); the only difference is the nullish guard,
+  // which is emit's concern. Without this, `obj?.m(…)` reaches emit missing the
+  // `.m` emitter and falls to the dynamic path that needs an unincluded module.
+  '?.'(obj, prop) { includeForProperty(prop); return ['?.', prep(obj), prop] },
+  '?.[]'(obj, idx) { includeForArrayAccess(); return ['?.[]', prep(obj), prep(idx)] },
   '?.()'(callee, callArgs) {
     // Parser wraps multi-args in a comma list, like '()'. Unwrap so emit gets flat positional args.
     const items = callArgs == null ? []
@@ -1551,17 +1681,19 @@ const handlers = {
   '?'(cond, then, els) { return ['?:', prep(stripBoolNot(cond)), prep(then), prep(els)] },
 
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
-  // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
-  // Property increment: obj.prop++ → obj.prop = obj.prop + 1
+  // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value.
+  // Property obj.prop++ has no dedicated ++ node (the ++ emitter is name-based),
+  // so it lowers to `obj.prop = obj.prop + 1` (returns the NEW value) — and the
+  // same -1/+1 recovery wraps it for postfix to yield the OLD value.
   '++'(a, _post) {
     const n = prep(a)
-    if (Array.isArray(n) && (n[0] === '.' || n[0] === '[]')) return ['=', n, ['+', n, [, 1]]]
-    return _post !== undefined ? ['-', ['++', n], [, 1]] : ['++', n]
+    const inc = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['+', n, [, 1]]] : ['++', n]
+    return _post !== undefined ? ['-', inc, [, 1]] : inc
   },
   '--'(a, _post) {
     const n = prep(a)
-    if (Array.isArray(n) && (n[0] === '.' || n[0] === '[]')) return ['=', n, ['-', n, [, 1]]]
-    return _post !== undefined ? ['+', ['--', n], [, 1]] : ['--', n]
+    const dec = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['-', n, [, 1]]] : ['--', n]
+    return _post !== undefined ? ['+', dec, [, 1]] : dec
   },
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
@@ -1593,7 +1725,14 @@ const handlers = {
         includeForCallableValue(); break
       }
     }
-    const result = ['()', callee, ...preppedArgs]
+    // A zero-arg call keeps its explicit `null` args slot: `['()', callee, null]`,
+    // not the slot-less `['()', callee]`. The latter is indistinguishable from a
+    // grouping `(expr)`, so a second `prep` pass (the destructuring-assignment
+    // lowering re-`prep`s its result) would re-read `x.pop()` as the grouping
+    // `(x.pop)` and drop the call. Keeping the slot makes `prep` idempotent for
+    // calls and matches `setCallArgs`'s canonical shape; `commaList(node[2])`
+    // reads it back as zero args everywhere downstream.
+    const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
 
     if (callee === 'Object.assign' && ctx.schema.register) inferAssignSchema(result)
 
@@ -1635,9 +1774,11 @@ const handlers = {
   },
 
   // Object literal - flatten comma, expand shorthand
-  '{}'(inner) {
-    // Detect block body vs object literal
-    if (Array.isArray(inner) && STMT_OPS.has(inner[0])) {
+  '{}'(...args) {
+    const inner = args[0]
+    // Block body: a single statement-op child (object props always start with
+    // ':' or '...', never a statement op, so this never misfires on a literal).
+    if (args.length === 1 && Array.isArray(inner) && STMT_OPS.has(inner[0])) {
       // Block body: push block scope for let/const shadowing
       pushScope()
       const result = ['{}', prep(inner)]
@@ -1646,10 +1787,16 @@ const handlers = {
     }
 
     includeForObjectLiteral()
-    if (inner == null) return ['{}']
-    const items = Array.isArray(inner) && inner[0] === ','
-      ? inner.slice(1)
-      : [inner]
+    if (args.length === 0 || inner == null) return ['{}']
+    // The parser emits one comma-grouped child `['{}', [',', p1, p2]]`, but prep's
+    // own output is spread `['{}', p1, p2]` (see `result` below). Accept both so
+    // prep stays idempotent: the destructuring-assignment lowering ('=' handler)
+    // re-preps a wrapper that already holds a normalized literal, and reading only
+    // the first child here would drop every property but the first — mis-sizing the
+    // schema to cap-1 and losing the rest.
+    const items = args.length === 1
+      ? (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner])
+      : args
 
     // Computed keys: `{[k]: v}` where `k` isn't compile-time foldable. jz's
     // object layout is slot-based (fixed schema at the literal site), so a
@@ -1715,23 +1862,39 @@ const handlers = {
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
       cond = stripBoolNot(cond)
-      // Hoist .length / .size / .byteLength from for-condition:
-      //   `i < arr.length` → `let __len = arr.length | 0; ... i < __len`
-      // The `| 0` forces i32 even for unknown-typed receivers (where __length
-      // returns f64). NaN→0 via i32.trunc_sat matches JS semantics: a NaN bound
-      // makes `i < NaN` false on both representations, so the loop is skipped
-      // either way. Keeping the hoisted bound i32 lets the counter `i` stay i32
-      // through the comparison and `i++`, eliminating the per-iteration
-      // f64.convert_i32_s + f64.lt + f64.add + i32.trunc_sat_f64_s sequence.
+      // Keep a `.length` / `.size` / `.byteLength` for-bound i32 without snapshotting it:
+      //   `i < arr.length` → `i < (arr.length | 0)`   (re-read every iteration)
+      // The `| 0` forces i32 even for unknown-typed receivers (where __length returns
+      // f64), so the counter `i` stays i32 through the comparison and `i++` — no
+      // per-iteration f64.convert_i32_s + f64.lt + f64.add + i32.trunc_sat round-trip.
+      // It must stay INLINE, not hoisted into a pre-loop local: JS re-reads the bound
+      // each step, and a loop body can grow/shrink the array mid-iteration — including
+      // through an alias the compiler can't see locally (e.g. `arr` shares identity with
+      // a field a called helper pushes to, as compilePendingClosures does over
+      // ctx.closure.bodies). A snapshot diverges from JS and silently truncates such loops.
       if (cond && Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || cond[0] === '>' || cond[0] === '>=')) {
         const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
         if (Array.isArray(lenExpr) && lenExpr[0] === '.' &&
             (lenExpr[2] === 'length' || lenExpr[2] === 'size' || lenExpr[2] === 'byteLength')) {
-          const lenVar = `${T}len${ctx.func.uniq++}`
-          const lenDecl = ['let', ['=', lenVar, ['|', lenExpr, [, 0]]]]
-          init = init ? [';', init, lenDecl] : lenDecl
-          if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
-          else cond = [cond[0], lenVar, cond[2]]
+          const recv = lenExpr[1]
+          const bound = ['|', lenExpr, [, 0]]
+          const lengthStable = typeof recv === 'string' &&
+            callFree(body) && callFree(step) && !writesReceiver(body, recv) && !writesReceiver(step, recv)
+          if (lengthStable) {
+            // Body can't change the bound → snapshot it once into an i32 local. Keeps
+            // the counter `i` i32 through compare + `i++` (no per-iteration f64 round
+            // trip) and gives the vectorizer the hoisted trip count it matches on.
+            const lenVar = `${T}len${ctx.func.uniq++}`
+            const lenDecl = ['let', ['=', lenVar, bound]]
+            init = init ? [';', init, lenDecl] : lenDecl
+            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
+            else cond = [cond[0], lenVar, cond[2]]
+          } else {
+            // Body may grow/shrink the array (push/pop, or alias mutation through a
+            // call) → re-read every iteration, as JS does. Still `| 0` for an i32 bound.
+            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], bound]
+            else cond = [cond[0], bound, cond[2]]
+          }
         }
       }
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
@@ -1743,14 +1906,15 @@ const handlers = {
       const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
       const idx = `${T}i${ctx.func.uniq++}`
       const lenVar = `${T}len${ctx.func.uniq++}`
-      const trivial = typeof src === 'string'
-      const arrVar = trivial ? src : `${T}arr${ctx.func.uniq++}`
+      const arrVar = `${T}arr${ctx.func.uniq++}`
+      // Normalize the source to an index-iterable once: a Set→keys / Map→[k,v]
+      // array, while an Array/String/TypedArray passes through untouched (no
+      // copy). Without this, `coll[i]` on a Set/Map reads raw open-addressing
+      // slot words instead of live entries.
       // Wrap .length in `| 0` so the hoisted bound is i32 even for unknown
       // receivers (same rationale as the for-cond hoist above).
       const lenE = ['|', ['.', arrVar, 'length'], [, 0]]
-      const decls = trivial
-        ? ['let', ['=', idx, [, 0]], ['=', lenVar, lenE]]
-        : ['let', ['=', arrVar, src], ['=', idx, [, 0]], ['=', lenVar, lenE]]
+      const decls = ['let', ['=', arrVar, ['()', '__iter_arr', src]], ['=', idx, [, 0]], ['=', lenVar, lenE]]
       const cond = ['<', idx, lenVar]
       const step = ['++', idx]
       const inner = [';', ['let', ['=', varName, ['[]', arrVar, idx]]], body]
@@ -1812,14 +1976,22 @@ const handlers = {
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     prop = typeof prop === 'string' ? prop : staticPropertyKey(prop)
-    if (prop === 'caller' || prop === 'callee') err('`.caller` and `.callee` are prohibited: deprecated stack introspection')
+    // `.caller`/`.callee` on a function value (or `arguments`) are deprecated
+    // stack introspection — prohibited as bad practice. On a plain data object
+    // they are ordinary field names (e.g. an ESTree call node's `.callee`), so
+    // the ban keys off a known-function receiver, not the bare property name.
+    if ((obj === 'arguments' || hasFunc(obj) || isFuncValueLocal(obj)) && (prop === 'caller' || prop === 'callee'))
+      err('`.caller`/`.callee` are prohibited: deprecated function stack introspection')
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
+    // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
+    // — read the property off the local value, not the builtin namespace table.
+    if (shadowsBuiltin(obj)) { includeForProperty(prop); return ['.', prep(obj), prop] }
     const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
     if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod)) {
       includeModule(mod)
       const key = mod + '.' + prop
-      if (ctx.core.emit[key]?.length > 0) includeForCallableValue()
+      if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
       return key
     }
     // Source module namespace: import * as X → X.prop resolved to mangled name
@@ -1835,7 +2007,17 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
-    if (name === 'Date' && ctorArgs.length === 1 && ctorArgs[0] == null) ctorArgs = []
+    // No GC → weakness is unobservable; a WeakSet/WeakMap is just a Set/Map keyed
+    // by reference identity (which jz's collections already are). Fold to the
+    // concrete ctor so construction and every .add/.has/.get/.set/.delete reuse it.
+    if (name === 'WeakSet') name = 'Set'
+    else if (name === 'WeakMap') name = 'Map'
+    // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and
+    // `new Map(null)`/`new Map(undefined)` are spec-equivalent to it (null/undefined
+    // → empty collection). Drop it so the emit hits the empty-collection fast path
+    // rather than lowering `prep(null)` → `[, 0]` and routing through `__map_from`.
+    // Typed arrays keep the sentinel: there `[, 0]` is a legitimate zero length.
+    if (ctorArgs.length === 1 && ctorArgs[0] == null && (name === 'Date' || COLLECTION_CTORS.includes(name))) ctorArgs = []
     // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
@@ -1995,6 +2177,20 @@ function collectReturns(node, out) {
 
 const isLit = n => Array.isArray(n) && n[0] == null
 
+/** Self-host: pre-parsed module AST for a specifier, or undefined. Linear scan over
+ *  [specifier, ast] pairs — array indexing + string `===` are the ABI-safe primitives
+ *  the kernel can read off a host-marshalled argument (dynamic-key object reads aren't). */
+function moduleAstFor(specifier) {
+  const asts = ctx.module.importAsts
+  if (!asts) return undefined
+  for (let i = 0; i < asts.length; i++) if (asts[i][0] === specifier) return asts[i][1]
+  return undefined
+}
+
+/** True when `mod` is bundled in-process — as source (host parses it) or as a
+ *  pre-parsed AST (self-host kernel). Either path routes through prepareModule. */
+const isBundledModule = mod => !!ctx.module.importSources?.[mod] || moduleAstFor(mod) !== undefined
+
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
 function prepareModule(specifier, source) {
   includeModule('core')
@@ -2017,8 +2213,17 @@ function prepareModule(specifier, source) {
   ctx.func.exports = {}
   ctx.module.currentPrefix = prefix
 
-  // Parse + prepare imported source (may trigger recursive imports)
-  let ast = parse(source)
+  // Parse + prepare imported source (may trigger recursive imports). The parser
+  // is injected via ctx.transform.parse (the host pipeline sets it) rather than
+  // imported, so prepare carries no hard dependency on a concrete parser — the
+  // same inversion as ctx.transform.jzify. The self-host kernel can't parse, so it
+  // pre-parses the whole graph on the host and passes the ASTs via importAsts;
+  // we consult those first and only parse `source` when no AST was supplied.
+  let ast = moduleAstFor(specifier)
+  if (ast === undefined) {
+    if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
+    ast = ctx.transform.parse(source)
+  }
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
   const moduleInit = prep(ast)

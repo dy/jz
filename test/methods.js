@@ -404,13 +404,13 @@ test('Regression: dynamic property access on function returns undefined', () => 
       return f.prop
     }
   `)
-  is(test(), null, 'missing property on function returns NaN / undefined')
+  is(test(), undefined, 'missing property on function returns undefined')
 })
 
 test('Regression: dynamic property access on string returns undefined', () => {
   // __hash_get was failing OOB due to missing capacity header on PTR.SSO/STRING.
   const { test } = runHost(`export let test = () => "foo".prop`)
-  is(test(), null, 'missing property on string returns NaN / undefined')
+  is(test(), undefined, 'missing property on string returns undefined')
 })
 
 test('Regression: dynamic property assignment on string fails gracefully', () => {
