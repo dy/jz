@@ -1027,8 +1027,10 @@ test('codegen: .length hoisted out of for-loop', () => {
 //
 // Tolerance is ±5% rounded to nearest 10 bytes (min 20). Tight enough to catch
 // regressions, loose enough to absorb harmless codegen jitter.
+// Pin optimize:2 — golden bytes are level-2 baselines; matrix runs at other
+// levels should not shake them.
 const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
-  const wasm = compile(src)
+  const wasm = compile(src, { optimize: 2 })
   const actual = wasm.byteLength
   const tol = Math.max(20, Math.round(expected * 0.05 / 10) * 10)
   ok(Math.abs(actual - expected) <= tol,

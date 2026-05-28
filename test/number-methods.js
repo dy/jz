@@ -59,9 +59,47 @@ test('Number: toString preserves multiple trailing zeros in integer', () => {
 
 test('Number: toString preserves trailing zero through computed value', () => {
   // The original bench bug surfaced via template-literal interpolation of an
-  // i32-shaped value. Compute a value with trailing zero so it can't fold,
+  // i32-spec'd value. Compute a value with trailing zero so it can't fold,
   // then stringify. Without the fix, "1079623680" became "107962368" (length 9).
   is(run(`export let f = () => { let n = 539811840 + 539811840; return n.toString().length }`).f(), 10)
+})
+
+// === toString(radix) — spec-compliant range validation ===
+// Per 21.1.3.6: radix coerces to integer in [2, 36]; otherwise RangeError.
+// Pre-fix: radix=1 hung the digit loop, radix=0 trapped 'remainder by zero',
+// radix=37 / -1 silently returned wrong digit strings.
+
+test('Number: toString(2) binary', () => {
+  is(run(`export let f = () => (15).toString(2).length`).f(), 4)  // "1111"
+})
+
+test('Number: toString(16) hex', () => {
+  is(run(`export let f = () => (255).toString(16).length`).f(), 2)  // "ff"
+})
+
+test('Number: toString(36) max', () => {
+  is(run(`export let f = () => (35).toString(36).length`).f(), 1)  // "z"
+})
+
+test('Number: toString(1) throws (caught)', () => {
+  is(run(`export let f = () => { try { (15).toString(1); return 0 } catch (e) { return 1 } }`).f(), 1)
+})
+
+test('Number: toString(37) throws (caught)', () => {
+  is(run(`export let f = () => { try { (15).toString(37); return 0 } catch (e) { return 1 } }`).f(), 1)
+})
+
+test('Number: toString(0) throws (caught)', () => {
+  is(run(`export let f = () => { try { (15).toString(0); return 0 } catch (e) { return 1 } }`).f(), 1)
+})
+
+test('Number: toString(-1) throws (caught)', () => {
+  is(run(`export let f = () => { try { (15).toString(-1); return 0 } catch (e) { return 1 } }`).f(), 1)
+})
+
+test('Number: toString(dyn-radix) ok then bad', () => {
+  is(run(`export let f = (r) => { try { return (255).toString(r).length } catch (e) { return -1 } }`).f(16), 2)
+  is(run(`export let f = (r) => { try { return (255).toString(r).length } catch (e) { return -1 } }`).f(50), -1)
 })
 
 // === toFixed ===

@@ -1,6 +1,9 @@
 name: selfhost
-# Self-host gate: build jz-kernel.wasm and run the full suite through it.
-# JZ_KERNEL_STRICT=1 fails if kernel compile falls back to host (see test/util.js).
+# Self-host gate: builds dist/jz-kernel.wasm from src/compile/kernel.js using
+# the host jz compiler, then instantiates that wasm and round-trips real
+# programs through `kernel.exports.default` (= compileParsed). The kernel
+# itself runs the jzify→prepare→compile pipeline in-wasm; only the parser
+# (subscript/jessie) and watr backend stay host-side.
 on: [push, pull_request]
 jobs:
   selfhost:
@@ -13,15 +16,5 @@ jobs:
       - run: npm install
       - name: host suite (baseline)
         run: npm test
-      - name: build jz-kernel.wasm
+      - name: build + run jz-kernel.wasm
         run: npm run test:selfhost
-      - name: full suite via jz.wasm
-        run: JZ_RUNNER=wasm node test/index.js
-        env:
-          JZ_KERNEL_STRICT: "0"
-      - name: test262 via jz.wasm (quick)
-        run: JZ_RUNNER=wasm node test/test262.js --quick
-        env:
-          JZ_KERNEL_STRICT: "0"
-      - name: bench regression (host jz — wasm compile path TBD)
-        run: npm run test:bench

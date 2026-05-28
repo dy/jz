@@ -428,13 +428,11 @@ export function pullStdlib(sec) {
   const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
   if (!needsMemory) ctx.scope.globals.delete('__heap')
   if (needsMemory && ctx.module.modules.core) {
-    let added = false
-    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) {
-      if (!ctx.core.includes.has(fn)) { ctx.core.includes.add(fn); added = true }
-    }
-    // Late-add: __alloc declares `['__memgrow']` and similar transitive deps;
-    // resolveIncludes ran before the add, so re-run it to pull them in.
-    if (added) resolveIncludes()
+    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) ctx.core.includes.add(fn)
+    // Late-add of allocators may pull in transitive deps (__alloc → __memgrow,
+    // etc.) that the initial resolveIncludes did not yet see; re-resolve.
+    // No-op when the alloc trio was already present.
+    resolveIncludes()
     const pages = ctx.memory.pages || 1
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sec.memory.push(['memory', ['export', '"memory"'], pages])

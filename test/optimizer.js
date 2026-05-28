@@ -390,9 +390,10 @@ test('small const-count for-loop keeps outer nested loops compact', () => {
       return acc | 0
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  // Pin level 2 — opt:3 unrolls aggressively, which this asserts is gated off.
+  const wat = jz.compile(src, { wat: true, optimize: 2 })
   ok(/\(loop\b/.test(wat), 'outer nested loops should not fully unroll')
-  const { main } = run(src)
+  const { main } = run(src, { optimize: 2 })
   is(main(), 288)
 })
 

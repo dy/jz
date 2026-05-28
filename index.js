@@ -304,15 +304,39 @@ const detectOptimizeConfig = (ast, code) => {
   return cfg
 }
 
-const jzCompileInner = (code, opts = {}) => {
-  const profiler = compileProfiler(opts.profile)
-  const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
+// Test-matrix bridge: when JZ_TEST_* env vars are set, inject them as default
+// opts so the npm test suite can be re-run under varying configurations (opt
+// levels, host, jzify, …) without source changes. User-supplied opts always win
+// — env defaults fill only what the caller left unset. Resolved once at module
+// load; no-op (single boolean check) when the env is empty (production path).
+const TEST_ENV_DEFAULTS = (() => {
+  const e = process.env || {}
+  const out = {}
+  if (e.JZ_TEST_OPTIMIZE != null) {
+    const v = e.JZ_TEST_OPTIMIZE
+    out.optimize = /^-?\d+$/.test(v) ? Number(v) : v === 'false' ? false : v
+  }
+  if (e.JZ_TEST_HOST) out.host = e.JZ_TEST_HOST
+  if (e.JZ_TEST_JZIFY) out.jzify = e.JZ_TEST_JZIFY === '1'
+  if (e.JZ_TEST_STRICT) out.strict = e.JZ_TEST_STRICT === '1'
+  return out
+})()
+const HAS_TEST_ENV = Object.keys(TEST_ENV_DEFAULTS).length > 0
 
+// Shared front-half: reset ctx, wire opts → ctx.transform/memory/module/features,
+// and inject parse/resolveUrl. Both `jzCompileInner` (full host pipeline) and
+// `compileBundle` (parse→prepare only, for the self-host kernel handoff) call
+// this so any opt added here applies uniformly to both entry points.
+const setupCtx = (code, opts) => {
+  if (HAS_TEST_ENV) {
+    const merged = { ...opts }
+    for (const k of Object.keys(TEST_ENV_DEFAULTS)) if (merged[k] == null) merged[k] = TEST_ENV_DEFAULTS[k]
+    opts = merged
+  }
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
   resetProgramFactsCache()
   ctx.error.src = code
   initWarnings(opts.warnings)
-
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
   if (opts.modules) ctx.module.importSources = opts.modules
@@ -339,16 +363,22 @@ const jzCompileInner = (code, opts = {}) => {
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
-
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
-      if (name.startsWith('__ext_')) continue;
+      if (name.startsWith('__ext_')) continue
       if (ctx.transform.host === 'wasi') throw new Error(`host:'wasi' does not support _interp['${name}']: env imports are unavailable in WASI. Implement it natively.`)
       ctx.features.external = true
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
     }
   }
+}
+
+const jzCompileInner = (code, opts = {}) => {
+  const profiler = compileProfiler(opts.profile)
+  const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
+
+  setupCtx(code, opts)
 
   let parsed = time('parse', () => parse(code))
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
@@ -437,18 +467,11 @@ const jzCompileInner = (code, opts = {}) => {
  * leaves the populated `ctx` in place, so a host replay can call
  * `compile(bundle.ast)` directly (it reads the global ctx prepare just wrote).
  * The wasm kernel instead receives `bundle.ast` marshaled across the boundary
- * and rebuilds its own ctx via in-kernel prepare.
+ * and rebuilds its own ctx via in-kernel prepare. All `jzCompileInner` opts
+ * apply (memory/imports/host/…) — both entry points share `setupCtx`.
  */
 export function compileBundle(code, opts = {}) {
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
-  resetProgramFactsCache()
-  ctx.error.src = code
-  if (opts.modules) ctx.module.importSources = opts.modules
-  ctx.transform.parse = parse
-  ctx.transform.resolveUrl = resolveUrl
-  if (opts.jzify) ctx.transform.jzify = jzify
-  if (opts.strict) ctx.transform.strict = true
-  ctx.transform.optimize = resolveOptimize(opts.optimize)
+  setupCtx(code, opts)
   let parsed = parse(code)
   if (opts.jzify) parsed = jzify(parsed)
   const ast = prepare(parsed)

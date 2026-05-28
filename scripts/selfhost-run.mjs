@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 /**
- * Run a jz test entry via the self-host kernel (host prepare → kernel compile → run).
- * Usage: node scripts/selfhost-run.mjs '<source>' [memoryPages]
+ * Run a jz source program via the prebuilt self-host kernel.
+ * Pipeline:  host parse → normalizeBigints → kernel.compileParsed → watrCompile → instantiate
+ *
+ * Usage: node scripts/selfhost-run.mjs '<source>'
+ *   Build the kernel once with: node scripts/selfhost-build.mjs
+ *   JZ_KERNEL_STRICT=1 errors instead of falling back to host jz on kernel failure.
  */
 import { readFileSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import jz, { compile } from '../index.js'
-import { resolveModuleGraph } from '../src/resolve.js'
-import { instantiate } from '../interop.js'
+import { compile } from '../index.js'
+import { instantiate, normalizeBigints } from '../interop.js'
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from 'watr/compile'
 
@@ -26,20 +29,19 @@ if (!existsSync(KERNEL)) {
   process.exit(2)
 }
 
-readFileSync(KERNEL)
-const g = resolveModuleGraph(resolve(ROOT, 'src/compile/kernel.js'), { resolveNode: true })
 const t0 = Date.now()
-const kernel = jz(g.code, { jzify: true, modules: g.modules, memory: 8192, optimize: false })
-console.log('kernel loaded in', Date.now() - t0, 'ms')
+const kernel = instantiate(readFileSync(KERNEL), { memory: 8192 })
+console.log('kernel instantiated in', Date.now() - t0, 'ms')
 
-// Self-host split: host parses, kernel runs jzify→prepare→compile, host runs watr backend.
-const ast = parse(src)
 const t1 = Date.now()
 let bin
 try {
-  const mod = kernel.exports.default(ast)
-  if (!mod || mod.length <= 1) throw new Error('empty module')
-  bin = watrCompile(mod)
+  // Host parses; normalize BigInt primitives (the marshalling layer cannot
+  // serialize them) so kernel sees the self-describing ['bigint', dec] form.
+  const ast = normalizeBigints(parse(src))
+  const ir = kernel.exports.default(ast)
+  if (!ir || ir.length <= 1) throw new Error('kernel returned empty module')
+  bin = watrCompile(ir)
   console.log('kernel compile', bin.length, 'bytes in', Date.now() - t1, 'ms')
 } catch (e) {
   if (process.env.JZ_KERNEL_STRICT) throw e
