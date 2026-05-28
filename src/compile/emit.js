@@ -1758,6 +1758,488 @@ function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
   return emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter)
 }
 
+/** Optional method call: `obj?.method(args)` — null if obj is nullish, else
+ *  `obj.method(args)`. The parser shapes the callee as ['?.', obj, method].
+ *  Receiver hoists to a temp so the nullish check and the synthetic method
+ *  dispatch (`['.', t, method]`) see the same evaluation. */
+function emitOptionalMethodCall(callee, callArgs, parsed) {
+  const [, obj, method] = callee
+  const t = `${T}om${ctx.func.uniq++}`
+  ctx.func.locals.set(t, 'f64')
+  const va = asF64(emit(obj))
+  const methodCall = emitMethodCall(['.', t, method], parsed, callArgs)
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, va],
+    ['if', ['result', 'f64'],
+      ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
+      ['then', asF64(methodCall)],
+      ['else', nullExpr()]]], 'f64')
+}
+
+/** Method-call dispatch: `obj.method(args)`. Linear strategy chain. Strategies
+ *  (first match wins):
+ *    1. SRoA flat-object method (read closure from `o#i` local)
+ *    2. charCodeAt with statically-proven in-bounds index → i32 fast path
+ *    3. splice with insert items → __arr_splice (the one method that delete+insert)
+ *    4. fn.prop direct call to fn$prop (skipped for reassigned wrapper-composition)
+ *    5. Boxed-schema receiver → delegate to inner value at slot 0 (+ writeback)
+ *    6. valueOf / toString — sidecar own-property shadow check
+ *    7. Known-type static dispatch via .${vt}:${method}
+ *    8. Unknown / guessed-ARRAY runtime ptr-type fork over string vs generic
+ *    9. Schema property closure call
+ *    10. Generic emitter (with collection/strIndex arity guards + object shadow)
+ *    11. Dynamic property closure call (with PTR.EXTERNAL fallback if non-wasi)
+ *    12. External method fallback via __ext_call (or undefined under wasi)
+ */
+function emitMethodCall(callee, parsed, callArgs) {
+  const [, obj, method] = callee
+
+  // SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
+  // `o#i` field locals and deleted `$o`, so the method closure lives in the
+  // field local, not a heap slot. Read it directly and dispatch. Without
+  // this, every path below loads from `local.get $o`, which no longer exists
+  // (watr then reports "Unknown local $o"). Mirrors the flat `.`/`[]` hooks.
+  if (typeof obj === 'string' && ctx.closure.call) {
+    const flat = ctx.func.flatObjects?.get(obj)
+    const fi = flat ? flat.names.indexOf(method) : -1
+    if (fi >= 0) {
+      const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
+      if (parsed.hasSpread)
+        return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+      return ctx.closure.call(propRead, parsed.normal)
+    }
+  }
+
+  // charCodeAt with a statically in-bounds index — emit the i32
+  // (OOB-impossible) contract directly; the generic path keeps the
+  // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
+  if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
+      && stringOps(obj)?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
+    const recv = emit(obj)
+    // jsstring carrier: receiver is an externref boundary param. Route to
+    // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out
+    // the OOB trap the builtin would otherwise raise.
+    if (recv?.type === 'externref') {
+      ctx.core.jsstring.add('charCodeAt')
+      return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
+    }
+    return typed(stringOps(obj).charCodeAt(
+      asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+  }
+
+  // splice(start, deleteCount, ...items): the one array method that both
+  // deletes and inserts. callMethod's spread machinery models per-element
+  // mutators (push/concat), not a single delete+insert, so a spread of
+  // inserts would be misapplied. Handle the full arg list here: delete-only
+  // (no inserts) falls through to the inline `.splice` emitter; any insert
+  // items route through __arr_splice, which grows/shifts in place (the
+  // caller's pointer stays valid via array forwarding) and returns the
+  // removed elements. Guard against a spread in the start/deleteCount slots
+  // (`splice(...x)`) — that form has no static arity and isn't supported.
+  if (method === 'splice' && ctx.core.emit['.splice']) {
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const inserts = combined.slice(2)
+    const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
+    if (inserts.length && !headSpread) {
+      inc('__arr_splice')
+      return typed(['call', '$__arr_splice',
+        asI64(emit(obj)),
+        asI32(emit(combined[0])),
+        asI32(emit(combined[1])),
+        asI64(buildArrayWithSpreads(inserts))], 'f64')
+    }
+  }
+
+  // Function property call: fn.prop(args) → direct call to fn$prop.
+  // Skipped when the property was reassigned (wrapper composition) — then
+  // it is a mutable slot and must be read dynamically before the call.
+  if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
+    const fname = `${obj}$${method}`
+    if (ctx.func.names.has(fname)) {
+      const func = ctx.func.map.get(fname)
+      const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
+      while (emittedArgs.length < func.sig.params.length)
+        emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+      const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
+      if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+      if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+      if (func.sig.unsignedResult) callIR.unsigned = true
+      return callIR
+    }
+  }
+
+  let vt = keyValType(obj)
+  // A reassigned slice/concat receiver may carry a stale `vt` — a reassignment
+  // inside a nested closure escapes analyzeValTypes' poisoning (its walk stops
+  // at `=>`). Drop to runtime dispatch, but only for guessy types: STRING/ARRAY
+  // dispatch correctly either way, and BUFFER/TYPED are construction proofs
+  // (`new ArrayBuffer`/`new XxxArray`) — the runtime String/Array fallback has
+  // no branch for them, so nulling `vt` would miscompile `ab.slice()` into an
+  // f64-array copy. jzify also splits every `var x = init` into `let x; x = init`,
+  // marking single-assignment vars "reassigned"; keeping definite BUFFER/TYPED
+  // is what keeps `var`-declared buffers correct.
+  if (typeof obj === 'string' && isReassigned(ctx.func.body, obj)
+    && (method === 'slice' || method === 'concat')
+    && vt !== VAL.STRING && vt !== VAL.ARRAY
+    && vt !== VAL.BUFFER && vt !== VAL.TYPED) vt = null
+
+  // Method-emitter shim — threads parsed/method through the shared dispatcher so
+  // call sites (boxed-object delegation, sidecar valueOf/toString, etc.) keep the
+  // simple `callMethod(receiver, emitter)` shape.
+  const callMethod = (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method)
+
+  // Boxed object: delegate method to inner value (slot 0)
+  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
+    const innerVt = repOf(obj)?.val
+    const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
+    if (innerEmitter) {
+      const innerName = `${obj}${T}inner`
+      if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
+      const boxBase = tempI32('bb')
+      // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
+      // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
+      const loadInner = [
+        ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
+        ['local.set', `$${innerName}`, ctx.abi.object.ops.load(['local.get', `$${boxBase}`], 0)]]
+      const result = callMethod(innerName, innerEmitter)
+      // Mutating methods may reallocate; writeback inner value to boxed slot
+      if (BOXED_MUTATORS.has(method)) {
+        const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
+        return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
+      }
+      // Non-mutating: just load inner and call
+      return typed(['block', ['result', 'f64'], ...loadInner, asF64(result)], 'f64')
+    }
+  }
+
+  // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
+  // property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
+  // the builtin emitter for any receiver that can carry a dynamic-prop
+  // sidecar — a sidecar-bearing static type (array/typed/object) OR a
+  // statically-unknown receiver (e.g. an array-element read `arr[0]`, whose
+  // type is only known at runtime). Probe the sidecar and call it when it
+  // holds a closure, else fall back to the builtin (generic when untyped:
+  // `.valueOf` returns the receiver, `.toString` runs type-aware __to_str).
+  // Parallels the member-READ check in module/core.js emitPropAccess (which
+  // stays scoped to known sidecar types). (watr's `str()` attaches
+  // `bytes.valueOf = () => s`, recovered via `.valueOf()`.)
+  if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
+      && !parsed.hasSpread && parsed.normal.length === 0
+      && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
+    const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
+    if (builtin) {
+      const objTmp = temp('vobj'), propTmp = temp('vprop')
+      inc('__dyn_get_expr', '__ptr_type')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${objTmp}`, asF64(emit(obj))],
+        ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
+          ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
+        ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
+          ['else', asF64(callMethod(objTmp, builtin))]]], 'f64')
+    }
+  }
+
+  // Known type → static dispatch
+  if (vt && ctx.core.emit[`.${vt}:${method}`]) {
+    return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
+  }
+
+  // Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
+  // analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
+  // runtime dispatch resolves whether the operand is actually a string or an array.
+  // Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
+  // emitter which already knows how to handle them.
+  const strKey = `.string:${method}`, genKey = `.${method}`
+  if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+    const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
+    const strEmitter = ctx.core.emit[strKey]
+    const genEmitter = ctx.core.emit[genKey]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(obj))],
+      ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+      ['if', ['result', 'f64'],
+        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+        ['then', callMethod(t, strEmitter)],
+        ['else', callMethod(t, genEmitter)]]], 'f64')
+  }
+
+  // Schema property function call: x.prop(args) where prop is a closure in (non-boxed) schema
+  if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
+    const idx = ctx.schema.find(obj, method)
+    if (idx >= 0 && !ctx.schema.isBoxed?.(obj)) {
+      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
+      if (parsed.hasSpread) {
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
+      }
+      return ctx.closure.call(propRead, parsed.normal)
+    }
+  }
+
+  // Schema property function call: x.prop(args) where prop is a closure in boxed schema
+  if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
+    const idx = ctx.schema.find(obj, method)
+    if (idx >= 0) {
+      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
+      return ctx.closure.call(propRead, parsed.normal)
+    }
+  }
+
+  // Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
+  // `.delete`) assumes a Map/Set receiver: a proven collection already
+  // dispatched via `.${vt}:${method}` above, so reaching here means the
+  // receiver is not a proven collection. A zero-arg call then cannot be the
+  // collection op (each needs ≥1 key/value arg) — it is a user/closure
+  // method (e.g. `new C().get()`). Skip the collection emitter so it falls
+  // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
+  const collectionMisfit = COLLECTION_METHODS.has(method) &&
+    !parsed.hasSpread && parsed.normal.length === 0
+  const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
+    !parsed.hasSpread && parsed.normal.length > 1
+  // A proven plain-object/dict receiver never inherits the Array/collection
+  // builtins these generic emitters serve — an own property of the same name
+  // shadows them (ES prototype semantics). Skip the builtin so the dynamic
+  // property-call dispatch below reads the actual slot/sidecar closure. This
+  // is the type-based generalization of the collection/strIndex arity guards
+  // above: it is what lets self-host user methods whose names collide with
+  // builtins — `ctx.schema.find(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
+  // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
+  const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
+  if (ctx.core.emit[genKey] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+    return callMethod(obj, ctx.core.emit[genKey])
+  }
+
+  // Dynamic property function call on non-external values.
+  if (ctx.closure.call) {
+    if (ctx.transform.strict)
+      err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
+    const objTmp = `${T}mobj${ctx.func.uniq++}`
+    ctx.func.locals.set(objTmp, 'f64')
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const arrayIR = buildArrayWithSpreads(combined)
+    const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
+    const propTmp = `${T}mprop${ctx.func.uniq++}`
+    ctx.func.locals.set(propTmp, 'f64')
+    if (usesDynProps(vt)) {
+      inc('__dyn_get_expr', '__ptr_type')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${objTmp}`, asF64(emit(obj))],
+        ['local.set', `$${propTmp}`, propRead],
+        ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+          ['else', undefExpr()]]], 'f64')
+    }
+    // WASI: no PTR.EXTERNAL values; closure-only dispatch is correct.
+    if (ctx.transform.host === 'wasi') {
+      inc('__dyn_get_expr', '__ptr_type')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${objTmp}`, asF64(emit(obj))],
+        ['local.set', `$${propTmp}`, propRead],
+        ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+          ['else', undefExpr()]]], 'f64')
+    }
+    inc('__dyn_get_expr', '__ext_call', '__ptr_type')
+    ctx.features.external = true
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${objTmp}`, asF64(emit(obj))],
+      ['local.set', `$${propTmp}`, propRead],
+      ['if', ['result', 'f64'],
+        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+        ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+        ['else', ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
+          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+            ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+            ['i64.reinterpret_f64', arrayIR]]]],
+          ['else', undefExpr()]]]]], 'f64')
+  }
+
+  // Unknown callee — assume external method.
+  if (ctx.transform.strict)
+    err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
+  // Under wasi there is no host `__ext_call` — the call lowers to a
+  // no-op returning `undefined`. This is by-design so polymorphic code
+  // can target js and wasi from one source; users who want fail-fast
+  // pass `strict: true` (handled above).
+  if (ctx.transform.host === 'wasi') return undefExpr()
+  inc('__ext_call')
+  ctx.features.external = true
+  const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+  const arrayIR = buildArrayWithSpreads(combined)
+  return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+    ['i64.reinterpret_f64', asF64(emit(obj))],
+    ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+    ['i64.reinterpret_f64', arrayIR]]], 'f64')
+}
+
+/** Builtin / module-emitter call: `Math.max(...)`, `JSON.parse(...)`, etc. The
+ *  emitter accepts the same `...args` flat shape as the AST (with `['...', x]`
+ *  spread markers re-inserted in original position). */
+function emitBuiltinCall(callee, parsed) {
+  if (parsed.hasSpread) {
+    const allArgs = []
+    let ni = 0
+    for (const s of parsed.spreads) {
+      while (ni < s.pos) allArgs.push(parsed.normal[ni++])
+      allArgs.push(['...', s.expr])
+    }
+    while (ni < parsed.normal.length) allArgs.push(parsed.normal[ni++])
+    return ctx.core.emit[callee](...allArgs)
+  }
+  return ctx.core.emit[callee](...parsed.normal)
+}
+
+/** Direct call to a known top-level user function — emits `(call $callee args)`.
+ *  Handles rest params (collect into trailing array), in-spread fixed params
+ *  (runtime split), default-param padding, multi-value return materialization. */
+function emitDirectFunctionCall(callee, parsed, callArgs) {
+  const func = ctx.func.map.get(callee)
+
+  // Rest param case: collect all args (including expanded spreads) into array
+  if (func?.rest) {
+    const fixedParamCount = func.sig.params.length - 1
+    // A spread positioned within the fixed-param range supplies fixed params from
+    // inside the spread — they can't be sliced out statically. Build the full args
+    // array A and split it at runtime: fixed[k] = A[k], rest = A.slice(fixedParamCount).
+    // (Otherwise the static slice below is exact and skips the extra alloc + copy.)
+    if (fixedParamCount > 0 && parsed.spreads.some(s => s.pos < fixedParamCount)) {
+      const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+      const aVal = temp('ra'), aOff = tempI32('rao'), aLen = tempI32('ral'), rLen = tempI32('rln')
+      const rest = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${rLen}`], tag: 'rr' })
+      const fixedLoads = []
+      for (let k = 0; k < fixedParamCount; k++) {
+        const load = typed(['if', ['result', 'f64'],
+          ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', k]],
+          ['then', ['f64.load', ['i32.add', ['local.get', `$${aOff}`], ['i32.const', k * 8]]]],
+          ['else', undefExpr()]], 'f64')
+        fixedLoads.push(emitArgForParam(load, func.sig.params[k]))
+      }
+      const callIR = typed(['block', ['result', func.sig.results[0]],
+        ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
+        ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
+        ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]],
+        ['local.set', `$${rLen}`, ['select',
+          ['i32.sub', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]],
+          ['i32.const', 0],
+          ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]]]],
+        rest.init,
+        ['memory.copy', ['local.get', `$${rest.local}`],
+          ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
+          ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
+        ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
+      if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+      if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+      if (func.sig.unsignedResult) callIR.unsigned = true
+      return callIR
+    }
+    const fixedArgs = parsed.normal.slice(0, fixedParamCount)
+    // Pad missing fixed args with `undefined` so default-param init triggers per spec.
+    const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
+    while (emittedFixed.length < fixedParamCount)
+      emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+
+    // Reconstruct with spreads, then take rest args
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const restArgsFinal = combined.slice(fixedParamCount)
+
+    // Build array: emit code for normal args + code to expand spreads
+    const arrayIR = buildArrayWithSpreads(restArgsFinal)
+    const callIR = typed(['call', `$${callee}`,
+      ...emittedFixed,
+      arrayIR], func.sig.results[0])
+    if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+    if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+    if (func.sig.unsignedResult) callIR.unsigned = true
+    return callIR
+  }
+
+  // Regular function call without rest params
+  if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
+  // Pad missing args with `undefined` so default-param init triggers per spec
+  // (only undefined, not null, should trigger defaults). Drop extras to match
+  // JS calling convention — emitting them anyway produces an invalid call
+  // when the callee is a fixed-arity import (e.g. `_interp`-registered host
+  // stubs) since wasm validates arg count. Use ?? rather than || so a
+  // legitimate 0-arity callee isn't bypassed.
+  const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
+  const expected = func?.sig.params.length ?? args.length
+  while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+  if (args.length > expected) args.length = expected
+  // Multi-value return: materialize as heap array (caller expects single pointer).
+  // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
+  // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
+  // argument past the first.
+  if (func?.sig.results.length > 1) return materializeMulti(['()', callee, callArgs])
+  const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
+  if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+  if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+  // Unsigned-uint32 result (every tail was `>>>`): consumer's asF64 must use
+  // `f64.convert_i32_u` instead of `_s`, preserving the [0, 2^32) range.
+  if (func?.sig.unsignedResult) callIR.unsigned = true
+  return callIR
+}
+
+/** Const-bound, non-escaping closure — direct call to its body, skipping
+ *  call_indirect. emitDecl registered name→bodyName when it saw the closure.make
+ *  IR. Returns null if arity exceeds the closure-table slot width (caller falls
+ *  through to the generic closure path). */
+function tryDirectClosureCall(callee, parsed) {
+  const bodyName = ctx.func.directClosures.get(callee)
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const n = parsed.normal.length
+  if (n > W) return null
+  // Body signature is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64.
+  // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
+  const slots = parsed.normal.map(a => asF64(emit(a)))
+  while (slots.length < W) slots.push(undefExpr())
+  return typed(['call', `$${bodyName}`,
+    asF64(emit(callee)),
+    typed(['i32.const', n], 'i32'),
+    ...slots], 'f64')
+}
+
+/** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
+ *  Uniform convention: fn.call packs all args into an array and trampolines. */
+function emitGenericClosureCall(callee, parsed) {
+  if (parsed.hasSpread) {
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const arrayIR = buildArrayWithSpreads(combined)
+    // Pass pre-built array as single already-emitted arg
+    return ctx.closure.call(emit(callee), [arrayIR], true)
+  }
+  return ctx.closure.call(emit(callee), parsed.normal)
+}
+
+/** Last-resort fallback: assume `(call $callee args)` against an import / unknown
+ *  identifier. Matches arg count to the env-import signature when known — wasm
+ *  validates arity strictly, so JS-style "pad missing / drop extra" needs to be
+ *  done here rather than by the host. */
+function emitUnknownCalleeCall(callee, argList) {
+  let calleeArity = null
+  if (typeof callee === 'string') {
+    const imp = ctx.module.imports?.find(i =>
+      Array.isArray(i) && i[0] === 'import' && i[3]?.[0] === 'func' && i[3]?.[1] === `$${callee}`)
+    if (imp) {
+      let n = 0
+      for (let k = 2; k < imp[3].length; k++) if (Array.isArray(imp[3][k]) && imp[3][k][0] === 'param') n++
+      calleeArity = n
+    }
+  }
+  const emittedArgs = argList.map(a => asF64(emit(a)))
+  if (calleeArity != null) {
+    while (emittedArgs.length < calleeArity) emittedArgs.push(undefExpr())
+    if (emittedArgs.length > calleeArity) emittedArgs.length = calleeArity
+  }
+  return typed(['call', `$${callee}`, ...emittedArgs], 'f64')
+}
+
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
@@ -2612,482 +3094,36 @@ export const emitter = {
     return ctx.closure.make(closureInfo)
   },
 
+  // Linear callee-kind dispatcher. Each strategy below is its own named function
+  // (extracted to module scope above); this body is just the routing table.
   '()': (callee, callArgs) => {
-    let argList = commaList(callArgs)
+    const argList = commaList(callArgs)
     const parsed = parseCallArgs(argList)
 
-    // Closure devirtualization: a callee that is a module global proven (by
-    // plan.js) to hold one statically-known function for the whole post-init
-    // program rewrites to that function — the known-top-level-function branch
-    // below then emits a direct `call`, dropping the indirect/trampoline path.
+    // Closure devirtualization: a module-global callee proven (by plan.js) to hold
+    // one statically-known function rewrites to that function, so the
+    // known-top-level-function branch emits a direct `call`, dropping the
+    // indirect/trampoline path.
     if (typeof callee === 'string' && ctx.func.globalDevirt?.has(callee))
       callee = ctx.func.globalDevirt.get(callee)
 
-    // Optional method call: obj?.method(args) — null if obj is nullish, else
-    // obj.method(args). The parser shapes this as ['()', ['?.', obj, method], args],
-    // distinct from the regular method call's ['.', obj, method] callee. Receiver
-    // hoists into a temp so the nullish check and the method dispatch below see
-    // the same evaluation; recursion with a synthetic '.'-callee reuses the type-
-    // aware method-dispatch in this same handler rather than duplicating it.
-    if (Array.isArray(callee) && callee[0] === '?.') {
-      const [, obj, method] = callee
-      const t = `${T}om${ctx.func.uniq++}`
-      ctx.func.locals.set(t, 'f64')
-      const va = asF64(emit(obj))
-      const methodCall = emitter['()'](['.', t, method], callArgs)
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, va],
-        ['if', ['result', 'f64'],
-          ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
-          ['then', asF64(methodCall)],
-          ['else', nullExpr()]]], 'f64')
+    if (Array.isArray(callee) && callee[0] === '?.') return emitOptionalMethodCall(callee, callArgs, parsed)
+    if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs)
+
+    if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !isUserFunc(callee))
+      return emitBuiltinCall(callee, parsed)
+
+    if (typeof callee === 'string' && ctx.func.names.has(callee) && !isBoundName(callee))
+      return emitDirectFunctionCall(callee, parsed, callArgs)
+
+    if (typeof callee === 'string' && !parsed.hasSpread && ctx.func.directClosures?.has(callee)) {
+      const direct = tryDirectClosureCall(callee, parsed)
+      if (direct) return direct
     }
 
-    // Method call: obj.method(args) → type-aware dispatch
-    if (Array.isArray(callee) && callee[0] === '.') {
-      const [, obj, method] = callee
+    if (ctx.closure.call) return emitGenericClosureCall(callee, parsed)
 
-      // SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
-      // `o#i` field locals and deleted `$o`, so the method closure lives in the
-      // field local, not a heap slot. Read it directly and dispatch. Without
-      // this, every path below loads from `local.get $o`, which no longer exists
-      // (watr then reports "Unknown local $o"). Mirrors the flat `.`/`[]` hooks.
-      if (typeof obj === 'string' && ctx.closure.call) {
-        const flat = ctx.func.flatObjects?.get(obj)
-        const fi = flat ? flat.names.indexOf(method) : -1
-        if (fi >= 0) {
-          const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
-          if (parsed.hasSpread)
-            return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-          return ctx.closure.call(propRead, parsed.normal)
-        }
-      }
-
-      // charCodeAt with a statically in-bounds index — emit the i32
-      // (OOB-impossible) contract directly; the generic path keeps the
-      // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
-      if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
-          && stringOps(obj)?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
-        const recv = emit(obj)
-        // jsstring carrier: receiver is an externref boundary param. Route to
-        // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out
-        // the OOB trap the builtin would otherwise raise.
-        if (recv?.type === 'externref') {
-          ctx.core.jsstring.add('charCodeAt')
-          return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
-        }
-        return typed(stringOps(obj).charCodeAt(
-          asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
-      }
-
-      // splice(start, deleteCount, ...items): the one array method that both
-      // deletes and inserts. callMethod's spread machinery models per-element
-      // mutators (push/concat), not a single delete+insert, so a spread of
-      // inserts would be misapplied. Handle the full arg list here: delete-only
-      // (no inserts) falls through to the inline `.splice` emitter; any insert
-      // items route through __arr_splice, which grows/shifts in place (the
-      // caller's pointer stays valid via array forwarding) and returns the
-      // removed elements. Guard against a spread in the start/deleteCount slots
-      // (`splice(...x)`) — that form has no static arity and isn't supported.
-      if (method === 'splice' && ctx.core.emit['.splice']) {
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        const inserts = combined.slice(2)
-        const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
-        if (inserts.length && !headSpread) {
-          inc('__arr_splice')
-          return typed(['call', '$__arr_splice',
-            asI64(emit(obj)),
-            asI32(emit(combined[0])),
-            asI32(emit(combined[1])),
-            asI64(buildArrayWithSpreads(inserts))], 'f64')
-        }
-      }
-
-      // Function property call: fn.prop(args) → direct call to fn$prop.
-      // Skipped when the property was reassigned (wrapper composition) — then
-      // it is a mutable slot and must be read dynamically before the call.
-      if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
-        const fname = `${obj}$${method}`
-        if (ctx.func.names.has(fname)) {
-          const func = ctx.func.map.get(fname)
-          const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-          while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
-          const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
-          if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-          if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-          if (func.sig.unsignedResult) callIR.unsigned = true
-          return callIR
-        }
-      }
-
-      let vt = keyValType(obj)
-      // A reassigned slice/concat receiver may carry a stale `vt` — a reassignment
-      // inside a nested closure escapes analyzeValTypes' poisoning (its walk stops
-      // at `=>`). Drop to runtime dispatch, but only for guessy types: STRING/ARRAY
-      // dispatch correctly either way, and BUFFER/TYPED are construction proofs
-      // (`new ArrayBuffer`/`new XxxArray`) — the runtime String/Array fallback has
-      // no branch for them, so nulling `vt` would miscompile `ab.slice()` into an
-      // f64-array copy. jzify also splits every `var x = init` into `let x; x = init`,
-      // marking single-assignment vars "reassigned"; keeping definite BUFFER/TYPED
-      // is what keeps `var`-declared buffers correct.
-      if (typeof obj === 'string' && isReassigned(ctx.func.body, obj)
-        && (method === 'slice' || method === 'concat')
-        && vt !== VAL.STRING && vt !== VAL.ARRAY
-        && vt !== VAL.BUFFER && vt !== VAL.TYPED) vt = null
-
-      // Method-emitter shim — threads parsed/method through the shared dispatcher so
-      // call sites (boxed-object delegation, sidecar valueOf/toString, etc.) keep the
-      // simple `callMethod(receiver, emitter)` shape.
-      const callMethod = (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method)
-
-      // Boxed object: delegate method to inner value (slot 0)
-      if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
-        const innerVt = repOf(obj)?.val
-        const emitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
-        if (emitter) {
-          const innerName = `${obj}${T}inner`
-          if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
-          const boxBase = tempI32('bb')
-          // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
-          // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
-          const loadInner = [
-            ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
-            ['local.set', `$${innerName}`, ctx.abi.object.ops.load(['local.get', `$${boxBase}`], 0)]]
-          const result = callMethod(innerName, emitter)
-          // Mutating methods may reallocate; writeback inner value to boxed slot
-          if (BOXED_MUTATORS.has(method)) {
-            const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
-            return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
-          }
-          // Non-mutating: just load inner and call
-          return typed(['block', ['result', 'f64'], ...loadInner, asF64(result)], 'f64')
-        }
-      }
-
-      // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
-      // property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
-      // the builtin emitter for any receiver that can carry a dynamic-prop
-      // sidecar — a sidecar-bearing static type (array/typed/object) OR a
-      // statically-unknown receiver (e.g. an array-element read `arr[0]`, whose
-      // type is only known at runtime). Probe the sidecar and call it when it
-      // holds a closure, else fall back to the builtin (generic when untyped:
-      // `.valueOf` returns the receiver, `.toString` runs type-aware __to_str).
-      // Parallels the member-READ check in module/core.js emitPropAccess (which
-      // stays scoped to known sidecar types). (watr's `str()` attaches
-      // `bytes.valueOf = () => s`, recovered via `.valueOf()`.)
-      if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
-          && !parsed.hasSpread && parsed.normal.length === 0
-          && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
-        const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
-        if (builtin) {
-          const objTmp = temp('vobj'), propTmp = temp('vprop')
-          inc('__dyn_get_expr', '__ptr_type')
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${objTmp}`, asF64(emit(obj))],
-            ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
-              ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
-            ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
-              ['else', asF64(callMethod(objTmp, builtin))]]], 'f64')
-        }
-      }
-
-      // Known type → static dispatch
-      if (vt && ctx.core.emit[`.${vt}:${method}`]) {
-        return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
-      }
-
-      // Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
-      // analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
-      // runtime dispatch resolves whether the operand is actually a string or an array.
-      // Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
-      // emitter which already knows how to handle them.
-      const strKey = `.string:${method}`, genKey = `.${method}`
-      if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
-        const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
-        ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
-        const strEmitter = ctx.core.emit[strKey]
-        const genEmitter = ctx.core.emit[genKey]
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${t}`, asF64(emit(obj))],
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-            ['then', callMethod(t, strEmitter)],
-            ['else', callMethod(t, genEmitter)]]], 'f64')
-      }
-
-      // Schema property function call: x.prop(args) where prop is a closure in boxed schema
-      if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
-        const idx = ctx.schema.find(obj, method)
-        if (idx >= 0 && !ctx.schema.isBoxed?.(obj)) {
-          const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-          if (parsed.hasSpread) {
-            const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-            return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
-          }
-          return ctx.closure.call(propRead, parsed.normal)
-        }
-      }
-
-      // Schema property function call: x.prop(args) where prop is a closure in boxed schema
-      if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
-        const idx = ctx.schema.find(obj, method)
-        if (idx >= 0) {
-          const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-          return ctx.closure.call(propRead, parsed.normal)
-        }
-      }
-
-      // Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
-      // `.delete`) assumes a Map/Set receiver: a proven collection already
-      // dispatched via `.${vt}:${method}` above, so reaching here means the
-      // receiver is not a proven collection. A zero-arg call then cannot be the
-      // collection op (each needs ≥1 key/value arg) — it is a user/closure
-      // method (e.g. `new C().get()`). Skip the collection emitter so it falls
-      // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
-      const collectionMisfit = COLLECTION_METHODS.has(method) &&
-        !parsed.hasSpread && parsed.normal.length === 0
-      const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
-        !parsed.hasSpread && parsed.normal.length > 1
-      // A proven plain-object/dict receiver never inherits the Array/collection
-      // builtins these generic emitters serve — an own property of the same name
-      // shadows them (ES prototype semantics). Skip the builtin so the dynamic
-      // property-call dispatch below reads the actual slot/sidecar closure. This
-      // is the type-based generalization of the collection/strIndex arity guards
-      // above: it is what lets self-host user methods whose names collide with
-      // builtins — `ctx.schema.find(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
-      // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
-      const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
-      if (ctx.core.emit[genKey] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
-        return callMethod(obj, ctx.core.emit[genKey])
-      }
-
-      // Dynamic property function call on non-external values.
-      if (ctx.closure.call) {
-        if (ctx.transform.strict)
-          err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
-        const objTmp = `${T}mobj${ctx.func.uniq++}`
-        ctx.func.locals.set(objTmp, 'f64')
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        const arrayIR = buildArrayWithSpreads(combined)
-        const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
-        const propTmp = `${T}mprop${ctx.func.uniq++}`
-        ctx.func.locals.set(propTmp, 'f64')
-        if (usesDynProps(vt)) {
-          inc('__dyn_get_expr', '__ptr_type')
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${objTmp}`, asF64(emit(obj))],
-            ['local.set', `$${propTmp}`, propRead],
-            ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-              ['else', undefExpr()]]], 'f64')
-        }
-        // WASI: no PTR.EXTERNAL values; closure-only dispatch is correct.
-        if (ctx.transform.host === 'wasi') {
-          inc('__dyn_get_expr', '__ptr_type')
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${objTmp}`, asF64(emit(obj))],
-            ['local.set', `$${propTmp}`, propRead],
-            ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-              ['else', undefExpr()]]], 'f64')
-        }
-        inc('__dyn_get_expr', '__ext_call', '__ptr_type')
-        ctx.features.external = true
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${objTmp}`, asF64(emit(obj))],
-          ['local.set', `$${propTmp}`, propRead],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-            ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-            ['else', ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
-              ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
-                ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-                ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-                ['i64.reinterpret_f64', arrayIR]]]],
-              ['else', undefExpr()]]]]], 'f64')
-      }
-
-      // Unknown callee - assume external method
-      if (ctx.transform.strict)
-        err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
-      // Under wasi there is no host `__ext_call` — the call lowers to a
-      // no-op returning `undefined`. This is by-design so polymorphic code
-      // can target js and wasi from one source; users who want fail-fast
-      // pass `strict: true` (handled above).
-      if (ctx.transform.host === 'wasi') return undefExpr()
-      inc('__ext_call')
-      ctx.features.external = true
-      const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-      const arrayIR = buildArrayWithSpreads(combined)
-      return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-        ['i64.reinterpret_f64', asF64(emit(obj))],
-        ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-        ['i64.reinterpret_f64', arrayIR]]], 'f64');
-    }
-
-    if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !isUserFunc(callee)) {
-      // Pass spread args through to emitter (e.g. Math.max(...arr))
-      if (parsed.hasSpread) {
-        const allArgs = []
-        let ni = 0
-        for (const s of parsed.spreads) {
-          while (ni < s.pos) allArgs.push(parsed.normal[ni++])
-          allArgs.push(['...', s.expr])
-        }
-        while (ni < parsed.normal.length) allArgs.push(parsed.normal[ni++])
-        return ctx.core.emit[callee](...allArgs)
-      }
-      return ctx.core.emit[callee](...parsed.normal)
-    }
-
-    // Direct call if callee is a known top-level function
-    if (typeof callee === 'string' && ctx.func.names.has(callee) && !isBoundName(callee)) {
-      const func = ctx.func.map.get(callee)
-
-      // Rest param case: collect all args (including expanded spreads) into array
-      if (func?.rest) {
-        const fixedParamCount = func.sig.params.length - 1
-        // A spread positioned within the fixed-param range supplies fixed params from
-        // inside the spread — they can't be sliced out statically. Build the full args
-        // array A and split it at runtime: fixed[k] = A[k], rest = A.slice(fixedParamCount).
-        // (Otherwise the static slice below is exact and skips the extra alloc + copy.)
-        if (fixedParamCount > 0 && parsed.spreads.some(s => s.pos < fixedParamCount)) {
-          const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-          const aVal = temp('ra'), aOff = tempI32('rao'), aLen = tempI32('ral'), rLen = tempI32('rln')
-          const rest = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${rLen}`], tag: 'rr' })
-          const fixedLoads = []
-          for (let k = 0; k < fixedParamCount; k++) {
-            const load = typed(['if', ['result', 'f64'],
-              ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', k]],
-              ['then', ['f64.load', ['i32.add', ['local.get', `$${aOff}`], ['i32.const', k * 8]]]],
-              ['else', undefExpr()]], 'f64')
-            fixedLoads.push(emitArgForParam(load, func.sig.params[k]))
-          }
-          const callIR = typed(['block', ['result', func.sig.results[0]],
-            ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
-            ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
-            ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]],
-            ['local.set', `$${rLen}`, ['select',
-              ['i32.sub', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]],
-              ['i32.const', 0],
-              ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', fixedParamCount]]]],
-            rest.init,
-            ['memory.copy', ['local.get', `$${rest.local}`],
-              ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
-              ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
-            ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
-          if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-          if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-          if (func.sig.unsignedResult) callIR.unsigned = true
-          return callIR
-        }
-        const fixedArgs = parsed.normal.slice(0, fixedParamCount)
-        // Pad missing fixed args with `undefined` so default-param init triggers per spec.
-        const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-        while (emittedFixed.length < fixedParamCount)
-          emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
-
-        // Reconstruct with spreads, then take rest args
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        const restArgsFinal = combined.slice(fixedParamCount)
-
-        // Build array: emit code for normal args + code to expand spreads
-        const arrayIR = buildArrayWithSpreads(restArgsFinal)
-        const callIR = typed(['call', `$${callee}`,
-          ...emittedFixed,
-          arrayIR], func.sig.results[0])
-        if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-        if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-        if (func.sig.unsignedResult) callIR.unsigned = true
-        return callIR
-      }
-
-      // Regular function call without rest params
-      if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
-      // Pad missing args with `undefined` so default-param init triggers per spec
-      // (only undefined, not null, should trigger defaults). Drop extras to match
-      // JS calling convention — emitting them anyway produces an invalid call
-      // when the callee is a fixed-arity import (e.g. `_interp`-registered host
-      // stubs) since wasm validates arg count. Use ?? rather than || so a
-      // legitimate 0-arity callee isn't bypassed.
-      const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
-      const expected = func?.sig.params.length ?? args.length
-      while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
-      if (args.length > expected) args.length = expected
-      // Multi-value return: materialize as heap array (caller expects single pointer).
-      // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
-      // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
-      // argument past the first.
-      if (func?.sig.results.length > 1) return materializeMulti(['()', callee, callArgs])
-      const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
-      if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
-      if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
-      // Unsigned-uint32 result (every tail was `>>>`): consumer's asF64 must use
-      // `f64.convert_i32_u` instead of `_s`, preserving the [0, 2^32) range.
-      if (func?.sig.unsignedResult) callIR.unsigned = true
-      return callIR
-    }
-
-    // A3: const-bound, non-escaping closure → direct call to body (skip call_indirect).
-    // emitDecl registered name → bodyName when it saw the closure.make IR. Body signature
-    // is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64. We pass the closure
-    // NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
-    if (typeof callee === 'string' && !parsed.hasSpread
-        && ctx.func.directClosures?.has(callee)) {
-      const bodyName = ctx.func.directClosures.get(callee)
-      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-      const n = parsed.normal.length
-      if (n <= W) {
-        const slots = parsed.normal.map(a => asF64(emit(a)))
-        while (slots.length < W) slots.push(undefExpr())
-        return typed(['call', `$${bodyName}`,
-          asF64(emit(callee)),
-          typed(['i32.const', n], 'i32'),
-          ...slots], 'f64')
-      }
-    }
-
-    // Closure call: callee is a variable holding a NaN-boxed closure pointer
-    // Uniform convention: fn.call packs all args into an array
-    if (ctx.closure.call) {
-      if (parsed.hasSpread) {
-        // Spread: build the args array directly (handles __spread markers)
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        const arrayIR = buildArrayWithSpreads(combined)
-        // Pass pre-built array as single already-emitted arg
-        return ctx.closure.call(emit(callee), [arrayIR], true)
-      }
-      return ctx.closure.call(emit(callee), parsed.normal)
-    }
-
-    // Unknown callee — assume direct call. Match arg count to the declared
-    // signature when the callee is a registered env import (e.g. `_interp`-
-    // wired host stubs). JS calling convention drops extras and pads missing;
-    // wasm requires exact arity, so emitting raw argList against a fixed-arity
-    // import would invalidate the module.
-    let calleeArity = null
-    if (typeof callee === 'string') {
-      const imp = ctx.module.imports?.find(i =>
-        Array.isArray(i) && i[0] === 'import' && i[3]?.[0] === 'func' && i[3]?.[1] === `$${callee}`)
-      if (imp) {
-        let n = 0
-        for (let k = 2; k < imp[3].length; k++) if (Array.isArray(imp[3][k]) && imp[3][k][0] === 'param') n++
-        calleeArity = n
-      }
-    }
-    const emittedArgs = argList.map(a => asF64(emit(a)))
-    if (calleeArity != null) {
-      while (emittedArgs.length < calleeArity) emittedArgs.push(undefExpr())
-      if (emittedArgs.length > calleeArity) emittedArgs.length = calleeArity
-    }
-    return typed(['call', `$${callee}`, ...emittedArgs], 'f64')
+    return emitUnknownCalleeCall(callee, argList)
   },
 }
 
