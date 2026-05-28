@@ -357,27 +357,19 @@ export const emitNum = v => isI32(v)
 
 // === Temp locals ===
 
-/** Allocate a temp local, returns name without $. Optional tag aids WAT readability.
- *  Skips names already registered (by analyzeBody().locals from prepare-generated
- *  names) to avoid collisions that would silently override the pre-analyzed type. */
-export function temp(tag = '') {
+/** Allocate a fresh local name with the given tag, registered as `type`. The
+ *  selfhost compiler doesn't yet handle exported-const arrow factories returning
+ *  closures, so the three temp() helpers stay as `function` declarations and
+ *  delegate to this shared core. */
+function freshLocal(type, tag) {
   let name
   do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
-  ctx.func.locals.set(name, 'f64')
+  ctx.func.locals.set(name, type)
   return name
 }
-export function tempI32(tag = '') {
-  let name
-  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
-  ctx.func.locals.set(name, 'i32')
-  return name
-}
-export function tempI64(tag = '') {
-  let name
-  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
-  ctx.func.locals.set(name, 'i64')
-  return name
-}
+export function temp    (tag = '') { return freshLocal('f64', tag) }
+export function tempI32 (tag = '') { return freshLocal('i32', tag) }
+export function tempI64 (tag = '') { return freshLocal('i64', tag) }
 
 // === IR scaffolds ===
 
