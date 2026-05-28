@@ -18,8 +18,8 @@
  *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
  *        Also calls optimizeFunc (src/optimize/index.js): `hoistPtrType` + fused peephole/inline/memarg walk.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
- *     ↓  watrOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
- *     ↓  optimizeFunc 2nd pass — re-folds rebox/unbox roundtrips that watrOptimize's inliner
+ *     ↓  watOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
+ *     ↓  optimizeFunc 2nd pass — re-folds rebox/unbox roundtrips that watOptimize's inliner
  *        re-introduces at inline boundaries (caller's boxPtrIR meets callee's
  *        i32.wrap_i64(i64.reinterpret_f64 __env)). watr's peephole doesn't cover this.
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
@@ -43,7 +43,7 @@
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
-import watrOptimize from "./src/wat/optimize.js";
+import watOptimize from "./src/wat/optimize.js";
 import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
@@ -421,8 +421,8 @@ const jzCompileInner = (code, opts = {}) => {
   // post-watr vectorizer scans for. Disable loopify when vectorize is going to run;
   // otherwise hand watr its full default pass set (inlineOnce + coalesce on, inline off).
   const watrOpts = cfg.vectorizeLaneLocal ? { loopify: false } : true
-  const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module, watrOpts)) : module
-  // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
+  const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
+  // Final peephole pass: watOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
   // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
