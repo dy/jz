@@ -10,7 +10,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
+import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
 

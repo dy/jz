@@ -783,7 +783,7 @@ export default function narrowSignatures(programFacts, ast) {
   // i32 offset (with ptrAux carrying the elem-type bits). Eliminates the
   // per-read `i32.wrap_i64 (i64.reinterpret_f64 (local.get $arr))` unbox dance
   // that today dominates hot loops dominated by typed-array indexing.
-  // Call sites coerce via emitArgForParam → ptrOffsetIR(arg, VAL.TYPED).
+  // Call sites coerce via coerceArg → ptrOffsetIR(arg, VAL.TYPED).
   // Safety: same exclusions as the OBJECT/SET/MAP/BUFFER narrowing above —
   // exported, value-used, raw, defaults, rest position.
   applyTypedPointerParamAbi(paramReps, valueUsed)

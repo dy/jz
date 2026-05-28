@@ -48,7 +48,7 @@ import { ctx, reset, err, initWarnings } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
-import { emit, emitter, emitFlat as flat, emitBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
+import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
 import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize/index.js'
 import jzify from './jzify/index.js'
 import {

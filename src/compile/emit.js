@@ -10,8 +10,8 @@
  *
  * # Dispatch
  *   `emit(node, expect?)` handles literals inline and routes arrays to ctx.core.emit[op].
- *   `emitFlat(node)` emits + drops any value (statement context; routes block bodies to emitBody).
- *   `emitBody(node)` unwraps a `{}` block and concatenates flat statement IR.
+ *   `emitVoid(node)` emits + drops any value (statement context; routes block bodies to emitBlockBody).
+ *   `emitBlockBody(node)` unwraps a `{}` block and concatenates flat statement IR.
  *
  * The emitter table (`emitter` export) is copied into ctx.core.emit by reset();
  * language modules add/override entries to extend dispatch.
@@ -40,10 +40,10 @@ import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, ptrOffsetIR, ptrTypeIR,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, dispatchByPtrType,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
-  isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
+  isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
@@ -146,69 +146,57 @@ export function emitTypeofCmp(a, b, cmpOp) {
   const t = temp()
   const va = asF64(emit(typeofExpr))
   const eq = cmpOp === 'eq'
+  // Trailing eqz-wrapper for atomic checks: `check` if eq, `!check` if ne.
+  const wrap = check => typed(eq ? check : ['i32.eqz', check], 'i32')
+  // De-Morgan'd `(X && Y)` vs `(!X || !Y)` — kept explicit so WAT output is
+  // byte-identical to the previous inlined form (watopt may shape it differently).
+  const both = (X, Y) => typed(eq ? ['i32.and', X, Y] : ['i32.or', ['i32.eqz', X], ['i32.eqz', Y]], 'i32')
+  // "isPtr AND ptr_type == kind" — shared by typeof "string" / "function" /
+  // user-supplied positive PTR codes. The tee in isPtr caches v in `t` for reuse.
+  const isPtrKind = kind => {
+    inc('__ptr_type')
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const isKind = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', kind]]
+    return both(isPtr, isKind)
+  }
+  // Static fold for known-VAL operands of "boolean"/"bigint" — saves a runtime branch.
+  const staticFold = (target) => {
+    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
+    if (vt) return typed(['i32.const', (vt === target) === eq ? 1 : 0], 'i32')
+    return null
+  }
 
   if (code === -1) {
-    // A VAL.BOOL value rides in the f64 0/1 carrier, so it would pass the
-    // `v===v` number test — but it is typeof "boolean", not "number".
-    if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL)
-      return typed(['i32.const', eq ? 0 : 1], 'i32')
-    return typed(eq
-      ? ['f64.eq', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-      : ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
+    // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
+    if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
+    return typed([eq ? 'f64.eq' : 'f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
   }
-  if (code === -2) {
-    inc('__ptr_type')
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const isStr = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]]
-    return typed(eq ? ['i32.and', isPtr, isStr]
-      : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
-  }
-  if (code === -3) {
-    const check = isNullish(va)
-    return typed(eq ? check : ['i32.eqz', check], 'i32')
-  }
-  if (code === -4) {
-    // boolean. Statically VAL.BOOL → true; any other known type → false.
-    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
-    if (vt) return typed(['i32.const', (vt === VAL.BOOL) === eq ? 1 : 0], 'i32')
-    // Unknown static type: boolean iff the carrier is a boxed-boolean atom.
-    const isBool = isBoolAtom(['local.tee', `$${t}`, va])
-    return typed(eq ? isBool : ['i32.eqz', isBool], 'i32')
-  }
+  if (code === -2) return isPtrKind(PTR.STRING)
+  if (code === -3) return wrap(isNullish(va))
+  if (code === -4) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
   if (code === -5) {
+    // object: isPtr AND not(STRING|CLOSURE) AND not nullish — typeof never matches null/undef.
     inc('__ptr_type')
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const notStrFn = ['i32.and',
       ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
       ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
     const notNullish = ['i32.eqz', isNullish(['local.get', `$${t}`])]
-    const check = ['i32.and', ['i32.and', isPtr, notStrFn], notNullish]
-    return typed(eq ? check : ['i32.eqz', check], 'i32')
+    return wrap(['i32.and', ['i32.and', isPtr, notStrFn], notNullish])
   }
-  if (code === -6) {
-    inc('__ptr_type')
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const isFn = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.CLOSURE]]
-    return typed(eq ? ['i32.and', isPtr, isFn] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isFn]], 'i32')
-  }
+  if (code === -6) return isPtrKind(PTR.CLOSURE)
   if (code === -7) {
-    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
-    if (vt) return typed(['i32.const', (vt === VAL.BIGINT) === eq ? 1 : 0], 'i32')
+    const fold = staticFold(VAL.BIGINT); if (fold) return fold
+    // bigint heuristic: finite, nonzero, sub-normal abs (boxed BigInt carrier).
     const n = ['local.tee', `$${t}`, va]
-    const isBigInt = ['i32.and',
+    return wrap(['i32.and',
       ['f64.eq', n, ['local.get', `$${t}`]],
       ['i32.and',
         ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
-        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]]
-    return typed(eq ? isBigInt : ['i32.eqz', isBigInt], 'i32')
+        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]])
   }
-  if (code >= 0) {
-    inc('__ptr_type')
-    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const check = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', code]]
-    return typed(eq ? ['i32.and', isPtr, check] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', check]], 'i32')
-  }
+  if (code >= 0) return isPtrKind(code)
   return null
 }
 
@@ -442,7 +430,7 @@ function unrollSmallConstFor(init, cond, step, body) {
   if (isReassigned(body, name)) return null
 
   const out = []
-  for (let i = 0; i < end; i++) out.push(...emitFlat(cloneWithSubst(body, name, i)))
+  for (let i = 0; i < end; i++) out.push(...emitVoid(cloneWithSubst(body, name, i)))
   return out
 }
 
@@ -488,7 +476,7 @@ function emitFinalizers() {
   const out = []
   for (let i = saved.length - 1; i >= 0; i--) {
     ctx.func.finallyStack = saved.slice(0, i)
-    out.push(...emitFlat(saved[i]))
+    out.push(...emitVoid(saved[i]))
   }
   ctx.func.finallyStack = saved
   return out
@@ -522,9 +510,24 @@ export function toBool(node) {
 
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
  *  i32 offset), else falls back to numeric WASM type coercion. */
-function emitArgForParam(ir, param) {
+function coerceArg(ir, param) {
   if (param?.ptrKind != null) return ptrOffsetIR(ir, param.ptrKind)
   return asParamType(ir, param?.type)
+}
+
+/** Pad an emitted-args array up to a signature's arity with type-appropriate
+ *  defaults (`i32.const 0` for i32 params, `undefExpr()` for f64). Mutates and
+ *  returns `args` for chaining. */
+function padArgs(args, params) {
+  while (args.length < params.length)
+    args.push(params[args.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+  return args
+}
+
+/** Emit a node list as call arguments for the given param list: per-param
+ *  coercion then arity padding. Used at every direct-call site. */
+function emitCallArgs(argNodes, params) {
+  return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k])), params)
 }
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.
@@ -546,9 +549,7 @@ export function materializeMulti(callNode) {
   const func = ctx.func.map.get(name)
   const n = func.sig.results.length
   const argList = commaList(callNode[2])
-  const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-  while (emittedArgs.length < func.sig.params.length)
-    emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+  const emittedArgs = emitCallArgs(argList, func.sig.params)
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
   const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
@@ -669,9 +670,7 @@ export function emitDecl(...inits) {
         }
         if (match && targets.length === n) {
           const argList = commaList(init[2])
-          const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-          while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+          const emittedArgs = emitCallArgs(argList, func.sig.params)
           result.push(['call', `$${init[1]}`, ...emittedArgs])
           for (let k = n - 1; k >= 0; k--)
             result.push(['local.set', `$${targets[k]}`])
@@ -691,7 +690,7 @@ export function emitDecl(...inits) {
         && Array.isArray(init) && init[0] === '()'
         && Array.isArray(init[1]) && init[1][0] === '.' && init[1][2] === 'slice') {
       const recv = init[1][1]
-      const recvVt = typeof recv === 'string' ? keyValType(recv) : valTypeOf(recv)
+      const recvVt = valTypeOf(recv)
       if (recvVt === VAL.STRING) {
         const raw = init[2]
         const sa = raw == null ? [] : Array.isArray(raw) && raw[0] === ',' ? raw.slice(1) : [raw]
@@ -844,10 +843,12 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
   if (staticVT === VAL.ARRAY) return [arrCopy(), advance]
   if (staticVT === VAL.STRING || staticVT === VAL.TYPED) return [scalarLoop(), advance]
   inc('__ptr_type')
-  return [['if',
-    ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.ARRAY]],
-    ['then', arrCopy()],
-    ['else', scalarLoop()]], advance]
+  const tt = tempI32(`${T}spt`)
+  return [
+    ['local.set', `$${tt}`, ['call', '$__ptr_type', srcI64()]],
+    dispatchByPtrType(tt, [[PTR.ARRAY, arrCopy()]], scalarLoop(), null),
+    advance,
+  ]
 }
 
 /**
@@ -963,19 +964,19 @@ export function buildArrayWithSpreads(items) {
   return block64(...ir)
 }
 
-/** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
-export function emitFlat(node) {
-  if (isBlockBody(node)) return emitBody(node)
+/** Emit node in void context: emit + drop any value. Block bodies route through emitBlockBody. */
+export function emitVoid(node) {
+  if (isBlockBody(node)) return emitBlockBody(node)
   const ir = emit(node, 'void')
   const items = flat(ir)
   if (ir?.type && ir.type !== 'void') items.push('drop')
   return items
 }
 
-/** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitFlat per statement.
+/** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitVoid per statement.
  *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
  *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
-export function emitBody(node) {
+export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
@@ -983,7 +984,7 @@ export function emitBody(node) {
   for (let i = 0; i < stmts.length; i++) {
     const s = stmts[i]
     if (s == null || typeof s === 'number') continue
-    out.push(...emitFlat(s))
+    out.push(...emitVoid(s))
     // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
     // Skip names that are reassigned later — refinement would be unsound past the assignment.
     if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
@@ -1037,6 +1038,45 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
  * and numbers share the 0/1 carrier, so `1 === trueDynamic` can only be told apart
  * when the boolean's type is statically known.
  */
+function emitLooseEq(a, b, negate) {
+  const eqOp = negate ? 'ne' : 'eq'
+  const sentinel = emitNum(negate ? 1 : 0)
+  const charCmp = emitSingleCharIndexCmp(a, b, negate); if (charCmp) return charCmp
+  const subCmp = emitSubstringEqCmp(a, b, negate); if (subCmp) return subCmp
+  // JS loose nullish equality: x == null / x == undefined.
+  // If the non-literal side has a known non-null VAL type, fold to the sentinel.
+  const nullishOf = (other) => {
+    if (valTypeOf(other)) return sentinel
+    const chk = isNullish(asF64(emit(other)))
+    return negate ? typed(['i32.eqz', chk], 'i32') : chk
+  }
+  if (isNullishLit(a)) return nullishOf(b)
+  if (isNullishLit(b)) return nullishOf(a)
+  // typeof x == 'string' → compile-time type check (prepare rewrites string to type code)
+  const tc = emitTypeofCmp(a, b, eqOp); if (tc) return tc
+  const va = emit(a), vb = emit(b)
+  if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${eqOp}`, va, vb], 'i32')
+  // Either side known-pure NUMBER (literal or typed) → f64.eq/ne is correct regardless
+  // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
+  // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
+  // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
+  const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
+  const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
+  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(va, b, vb, negate)
+  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(vb, a, va, negate)
+  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, asF64(va), asF64(vb)], 'i32')
+  // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
+  // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
+  // STRING needs __eq (heap strings can be equal by content but different pointers).
+  // BIGINT needs __eq (heap-allocated, content compare).
+  if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
+    return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+  }
+  inc('__eq')
+  const call = typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
+  return negate ? typed(['i32.eqz', call], 'i32') : call
+}
+
 function emitStrictEq(a, b, negate) {
   // `typeof x === 'type'` (prepare rewrote the literal to a numeric code) — typeof
   // always yields a string, so strict and loose agree; reuse the loose lowering.
@@ -1123,9 +1163,9 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     }
     return typed([`f64.${f64op}`, dateNum(a, va, vta), dateNum(b, vb, vtb)], 'i32')
   }
-  if (vtb === VAL.NUMBER && needsRelationalToNumber(a, vta))
+  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta))
     return typed([`f64.${f64op}`, toNumF64(a, va), asF64(vb)], 'i32')
-  if (vta === VAL.NUMBER && needsRelationalToNumber(b, vtb))
+  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb))
     return typed([`f64.${f64op}`, asF64(va), toNumF64(b, vb)], 'i32')
   // An `.unsigned` i32 operand ([0, 2^32)) can't share a signed i32 compare with a
   // possibly-signed one: mixed sign inverts the order (3 < 0xFFFFFFFF unsigned, but
@@ -1140,13 +1180,9 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }
 
-function needsRelationalToNumber(expr, vt) {
-  if (vt === VAL.STRING) return true
-  if (vt != null) return false
-  return mayReadBoxedValue(expr)
-}
-
-function needsLooseEqualityToNumber(expr, vt) {
+/** Both relational (`<` `>=` …) and loose `==`/`!=` need ToNumber on the
+ *  unknown side iff it's known-string or might dereference a boxed value. */
+function needsToNumberCoercion(expr, vt) {
   if (vt === VAL.STRING) return true
   if (vt != null) return false
   return mayReadBoxedValue(expr)
@@ -1208,16 +1244,18 @@ function arrayIndexKey(key) {
 
 // === Assignment IR helpers ===
 
-/** Build the persist callback used after `__arr_set_idx_ptr` / `__arr_set_length`,
- *  which may relocate the array header. Routes through the same cell-vs-local
- *  discipline as writeVar so boxed-locals write to the cell address. */
-function persistArrayPtr(arr) {
-  return ptr => {
-    if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
-    if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
-    return ['local.set', `$${arr}`, ptr]
-  }
+/** Write a (possibly relocated) f64 pointer back to its binding, honoring the
+ *  same cell-vs-global-vs-local discipline as writeVar. Returns the store IR
+ *  for the given f64 `ptr` expression; used as a callback by helpers that may
+ *  relocate the array header (`__arr_set_idx_ptr`, `__arr_set_length`,
+ *  `__arr_grow`, `__hash_set`). */
+function persistBindingPtr(name, ptr) {
+  if (ctx.func.boxed?.has(name)) return ['f64.store', boxedAddr(name), ptr]
+  if (isGlobal(name)) return ['global.set', `$${name}`, ptr]
+  return ['local.set', `$${name}`, ptr]
 }
+/** Curried form for call sites that pass a persist callback. */
+const persistBinding = name => ptr => persistBindingPtr(name, ptr)
 
 /** Emit an ARRAY element write via `__arr_set_idx_ptr`. The helper may relocate
  *  the array header (capacity grow); `persist` writes the new pointer back to
@@ -1311,7 +1349,7 @@ function emitElementAssign(arr, idx, val) {
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = _expect === 'void'
-  const keyType = keyValType(idx)
+  const keyType = valTypeOf(idx)
   // A provably-numeric index name — an int-certain loop counter or a NUMBER-typed
   // local — can never be a string key, so the runtime `__is_str_key` → `__dyn_set`
   // dispatch is dead. Mirrors the index *read* path (`intIndexIR`), closing the
@@ -1344,8 +1382,8 @@ function emitElementAssign(arr, idx, val) {
   }
   // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
-  if (arrIndex != null && typeof arr === 'string' && keyValType(arr) === VAL.ARRAY)
-    return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistArrayPtr(arr))
+  if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY)
+    return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistBinding(arr))
 
   // 4. Known-STRING key → __dyn_set (after schema/SRoA literal-key paths).
   if (keyType === VAL.STRING) return dynSetCall(arr, keyExpr, valueExpr)
@@ -1376,8 +1414,8 @@ function emitElementAssign(arr, idx, val) {
   }
 
   // 7. Known-ARRAY receiver, generic key.
-  if (typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
-    const persist = persistArrayPtr(arr)
+  if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
+    const persist = persistBinding(arr)
     const arrExpr = asF64(emit(arr))
     if (useRuntimeKeyDispatch) {
       inc('__dyn_set', '__is_str_key')
@@ -1391,6 +1429,10 @@ function emitElementAssign(arr, idx, val) {
 
   // 8. Polymorphic + runtime key dispatch — key kind unknown AND receiver shape
   //    possibly TypedArray (or fully opaque). Numeric branch forks on __ptr_type.
+  //    Deliberately a 2-fork (TYPED vs else) rather than reusing
+  //    emitPolymorphicElementStore's 3-fork: dynamic-key dispatch only fires when
+  //    receiver isn't statically ARRAY (Step 7 already caught that), so the
+  //    ARRAY branch would be dead code that bloats every unknown-key write.
   if (useRuntimeKeyDispatch) {
     inc('__dyn_set', '__is_str_key')
     const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
@@ -1427,7 +1469,7 @@ function emitElementAssign(arr, idx, val) {
   if (typeof arr !== 'string')
     return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, null)
   if (knownArrVT == null)
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistArrayPtr(arr))
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistBinding(arr))
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
   return withTemp(valueExpr, t => [
@@ -1449,7 +1491,7 @@ function emitPropertyAssign(obj, prop, val) {
   // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
   // `.length =` as a plain property write below. The expression value is N.
   if (prop === 'length') {
-    const recvVt = typeof obj === 'string' ? keyValType(obj) : valTypeOf(obj)
+    const recvVt = valTypeOf(obj)
     if (recvVt === VAL.ARRAY || recvVt == null) {
       inc('__arr_set_length')
       const arrTmp = `${T}aln${ctx.func.uniq++}`
@@ -1459,9 +1501,7 @@ function emitPropertyAssign(obj, prop, val) {
       // Write the relocated pointer back to a simple var receiver so later
       // reads skip the forwarding hop; complex receivers stay correct via it.
       const persist = recvVt === VAL.ARRAY && typeof obj === 'string'
-        ? ctx.func.boxed?.has(obj) ? ['f64.store', boxedAddr(obj), ['local.get', `$${arrTmp}`]]
-        : isGlobal(obj) ? ['global.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
-        : ['local.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
+        ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`])
         : null
       const body = [
         ['local.set', `$${arrTmp}`, asF64(emit(obj))],
@@ -1499,7 +1539,7 @@ function emitPropertyAssign(obj, prop, val) {
     }
   }
   if (typeof obj === 'string') {
-    const objType = keyValType(obj)
+    const objType = valTypeOf(obj)
     // OBJECT receivers (incl. JSON.parse-derived bindings) with off-schema
     // properties go through __dyn_set, which writes to the per-OBJECT
     // propsPtr at off-16 — same path as object-literal dyn shadow writes
@@ -1595,13 +1635,7 @@ function emitBulkPushSpread(objArg, parsed) {
   ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
     ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
   // Update source variable: grow may have moved the pointer.
-  if (ctx.func.boxed?.has(objArg)) {
-    ir.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(objArg)}`], ['local.get', `$${o}`]])
-  } else if (ctx.scope.globals.has(objArg) && !ctx.func.locals?.has(objArg)) {
-    ir.push(['global.set', `$${objArg}`, ['local.get', `$${o}`]])
-  } else {
-    ir.push(['local.set', `$${objArg}`, ['local.get', `$${o}`]])
-  }
+  ir.push(persistBindingPtr(objArg, ['local.get', `$${o}`]))
   ir.push(['f64.convert_i32_s', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
   return block64(...ir)
 }
@@ -1609,47 +1643,55 @@ function emitBulkPushSpread(objArg, parsed) {
 /** Single trailing spread, with optional preceding normal args. Calls methodEmitter
  *  once for the normal args (if any), then loops methodEmitter over each spread
  *  element. `unshift` walks the spread end-to-start so prepend order matches JS. */
-function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
-  const spreadExpr = parsed.spreads[0].expr
-  const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
-  ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
-  ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
+/** Emit a per-element loop over `spreadExpr`: allocate arr/len/idx locals, seed
+ *  the arr rep when the spread VT is known, run `bodyFn(arr, idx, len)` once per
+ *  element. When `reverse` is set, walks the spread from end to start (used by
+ *  `unshift` to preserve argument order under successive prepends). Returns the
+ *  IR instruction list (caller embeds it into its own block64). */
+function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
+  const arr = `${T}sp${ctx.func.uniq++}`
+  const len = `${T}splen${ctx.func.uniq++}`
+  const idx = `${T}spidx${ctx.func.uniq++}`
+  ctx.func.locals.set(arr, 'f64'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
   // Emit-time rep seeding for a fresh spread-staging local (no prior reader).
   // Without this, the loop body's `[]` read on `arr` falls back to polymorphic
   // dispatch — VAL.* on the rep elides STRING gate for ARRAY/TYPED spreads.
   const spreadVT = valTypeOf(spreadExpr)
   if (spreadVT) updateRep(arr, { val: spreadVT })
+  inc('__len')
+  const n = multiCount(spreadExpr)
+  const loopId = ctx.func.uniq++
+  const exhausted = reverse
+    ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
+    : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]
+  return [
+    ['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
+    ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]],
+    ['local.set', `$${idx}`, reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]],
+    ['block', `$break${loopId}`,
+      ['loop', `$continue${loopId}`,
+        ['br_if', `$break${loopId}`, exhausted],
+        ...bodyFn(arr, idx, len),
+        ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', reverse ? -1 : 1]]],
+        ['br', `$continue${loopId}`]]],
+  ]
+}
 
-  // In-place spread methods modify target; accumulating methods (concat) return new values.
+function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   const inPlace = SPREAD_MUTATORS.has(method)
-  // unshift prepends each arg to the front — iterating forward reverses the
-  // intended order, so walk the spread from end to start.
-  const reverseIter = method === 'unshift'
-  const ir = []
-  ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
+  // unshift prepends each arg to the front — forward iteration reverses intent.
+  const reverse = method === 'unshift'
+  const acc = `${T}acc${ctx.func.uniq++}`
+  ctx.func.locals.set(acc, 'f64')
+  const ir = [['local.set', `$${acc}`, asF64(emit(objArg))]]
   if (parsed.normal.length > 0) {
     const r = asF64(methodEmitter(objArg, ...parsed.normal))
     ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
   }
-
-  inc('__len')
-  const n = multiCount(spreadExpr)
-  ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-  ir.push(['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]])
-  ir.push(['local.set', `$${idx}`,
-    reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
-  const loopId = ctx.func.uniq++
-  const loopBody = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
-  ir.push(['block', `$break${loopId}`,
-    ['loop', `$continue${loopId}`,
-      ['br_if', `$break${loopId}`,
-        reverseIter
-          ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
-          : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-      inPlace ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
-      ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', reverseIter ? -1 : 1]]],
-      ['br', `$continue${loopId}`]]])
-
+  ir.push(...emitSpreadElementLoop(parsed.spreads[0].expr, (arr, idx) => {
+    const body = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
+    return [inPlace ? ['drop', body] : ['local.set', `$${acc}`, body]]
+  }, { reverse }))
   ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
   return block64(...ir)
 }
@@ -1658,87 +1700,35 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
  *  normal args into a single methodEmitter call, emit a per-element loop for each
  *  spread. For in-place methods chains via `objArg` (source variable); otherwise
  *  threads through an accumulator local. */
-function emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter) {
-  const inPlaceG = SPREAD_MUTATORS.has(method)
-  const combinedG = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-  inc('__len')
-
-  if (inPlaceG) {
-    const irG = []
-    let batch = []
-    const flushBatch = () => {
-      if (!batch.length) return
-      irG.push(['drop', asF64(methodEmitter(objArg, ...batch))])
-      batch = []
-    }
-    for (const item of combinedG) {
-      if (Array.isArray(item) && item[0] === '__spread') {
-        flushBatch()
-        const spreadExpr = item[1]
-        const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
-        ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
-        // Emit-time rep seeding for fresh spread-staging local (see arr-spread comment above).
-        const spreadVT = valTypeOf(spreadExpr)
-        if (spreadVT) updateRep(arrL, { val: spreadVT })
-        const n = multiCount(spreadExpr)
-        irG.push(
-          ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-          ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
-          ['local.set', `$${idxL}`, ['i32.const', 0]])
-        const loopId = ctx.func.uniq++
-        const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
-        irG.push(['block', `$break${loopId}`,
-          ['loop', `$continue${loopId}`,
-            ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
-            ['drop', loopBody],
-            ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
-            ['br', `$continue${loopId}`]]])
-      } else {
-        batch.push(item)
-      }
-    }
-    flushBatch()
-    irG.push(asF64(emit(objArg)))
-    return block64(...irG)
-  }
-
-  const accG = `${T}acc${ctx.func.uniq++}`
-  ctx.func.locals.set(accG, 'f64')
-  const irG = [['local.set', `$${accG}`, asF64(emit(objArg))]]
+function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
+  const inPlace = SPREAD_MUTATORS.has(method)
+  const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+  // Accumulator (only used when not in-place); recv passed to methodEmitter is the live target.
+  const acc = inPlace ? null : `${T}acc${ctx.func.uniq++}`
+  if (acc) ctx.func.locals.set(acc, 'f64')
+  const recv = inPlace ? objArg : acc
+  const ir = inPlace ? [] : [['local.set', `$${acc}`, asF64(emit(objArg))]]
   let batch = []
   const flushBatch = () => {
     if (!batch.length) return
-    irG.push(['local.set', `$${accG}`, asF64(methodEmitter(accG, ...batch))])
+    const r = asF64(methodEmitter(recv, ...batch))
+    ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
     batch = []
   }
-  for (const item of combinedG) {
+  for (const item of combined) {
     if (Array.isArray(item) && item[0] === '__spread') {
       flushBatch()
-      const spreadExpr = item[1]
-      const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
-      ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
-      const spreadVT = valTypeOf(spreadExpr)
-      if (spreadVT) updateRep(arrL, { val: spreadVT })
-      const n = multiCount(spreadExpr)
-      irG.push(
-        ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-        ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
-        ['local.set', `$${idxL}`, ['i32.const', 0]])
-      const loopId = ctx.func.uniq++
-      const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))
-      irG.push(['block', `$break${loopId}`,
-        ['loop', `$continue${loopId}`,
-          ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
-          ['local.set', `$${accG}`, loopBody],
-          ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
-          ['br', `$continue${loopId}`]]])
+      ir.push(...emitSpreadElementLoop(item[1], (arr, idx) => {
+        const body = asF64(methodEmitter(recv, ['[]', arr, idx]))
+        return [inPlace ? ['drop', body] : ['local.set', `$${acc}`, body]]
+      }))
     } else {
       batch.push(item)
     }
   }
   flushBatch()
-  irG.push(['local.get', `$${accG}`])
-  return block64(...irG)
+  ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
+  return block64(...ir)
 }
 
 /** Method-emitter call: directly, or via one of the spread fast paths. */
@@ -1749,7 +1739,7 @@ function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
     return emitBulkPushSpread(objArg, parsed)
   if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length)
     return emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter)
-  return emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter)
+  return emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter)
 }
 
 /** Hoist `headExpr` into a temp, evaluate it once, and yield `body(t)` when the
@@ -1847,14 +1837,12 @@ function emitMethodCall(callee, parsed, callArgs) {
     const fname = `${obj}$${method}`
     if (ctx.func.names.has(fname)) {
       const func = ctx.func.map.get(fname)
-      const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-      while (emittedArgs.length < func.sig.params.length)
-        emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
       return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
     }
   }
 
-  let vt = keyValType(obj)
+  let vt = valTypeOf(obj)
   // A reassigned slice/concat receiver may carry a stale `vt` — a reassignment
   // inside a nested closure escapes analyzeValTypes' poisoning (its walk stops
   // at `=>`). Drop to runtime dispatch, but only for guessy types: STRING/ARRAY
@@ -2081,7 +2069,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
           ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', k]],
           ['then', ['f64.load', ['i32.add', ['local.get', `$${aOff}`], ['i32.const', k * 8]]]],
           ['else', undefExpr()]], 'f64')
-        fixedLoads.push(emitArgForParam(load, func.sig.params[k]))
+        fixedLoads.push(coerceArg(load, func.sig.params[k]))
       }
       const callIR = typed(['block', ['result', func.sig.results[0]],
         ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
@@ -2098,11 +2086,9 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
         ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
       return attachSigMeta(callIR, func.sig)
     }
-    const fixedArgs = parsed.normal.slice(0, fixedParamCount)
     // Pad missing fixed args with `undefined` so default-param init triggers per spec.
-    const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
-    while (emittedFixed.length < fixedParamCount)
-      emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+    const fixedParams = func.sig.params.slice(0, fixedParamCount)
+    const emittedFixed = emitCallArgs(parsed.normal.slice(0, fixedParamCount), fixedParams)
 
     // Reconstruct with spreads, then take rest args
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -2121,10 +2107,10 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // when the callee is a fixed-arity import (e.g. `_interp`-registered host
   // stubs) since wasm validates arg count. Use ?? rather than || so a
   // legitimate 0-arity callee isn't bypassed.
-  const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
-  const expected = func?.sig.params.length ?? args.length
-  while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
-  if (args.length > expected) args.length = expected
+  const params = func?.sig.params ?? []
+  const args = func ? emitCallArgs(parsed.normal, params)
+                    : parsed.normal.map(a => coerceArg(emit(a), undefined))
+  if (func && args.length > params.length) args.length = params.length
   // Multi-value return: materialize as heap array (caller expects single pointer).
   // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
   // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
@@ -2228,7 +2214,7 @@ export const emitter = {
   ';': (...args) => {
     const out = []
     for (const a of args) {
-      out.push(...emitFlat(a))
+      out.push(...emitVoid(a))
     }
     return out
   },
@@ -2259,7 +2245,7 @@ export const emitter = {
     if (Array.isArray(args[0]) && args[0][0] === 'result')
       return typed(['block', ...args], args[0][1])
     const inner = args.length === 1 ? args[0] : [';', ...args]
-    return emitFlat(['{}', inner])
+    return emitVoid(['{}', inner])
   },
 
   'throw': expr => {
@@ -2272,14 +2258,14 @@ export const emitter = {
   },
 
   'catch': (body, errName, handler) => {
-    if (!canThrow(body)) return emitFlat(body)
+    if (!canThrow(body)) return emitVoid(body)
 
     ctx.runtime.throws = ctx.runtime.userThrows = true
     const id = ctx.func.uniq++
     ctx.func.locals.set(errName, 'f64')
     const prev = ctx.func.inTry; ctx.func.inTry = true
-    let bodyIR; try { bodyIR = emitFlat(body) } finally { ctx.func.inTry = prev }
-    const handlerIR = emitFlat(handler)
+    let bodyIR; try { bodyIR = emitVoid(body) } finally { ctx.func.inTry = prev }
+    const handlerIR = emitVoid(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
         ['try_table', ['catch', '$__jz_err', `$catch${id}`],
@@ -2295,8 +2281,8 @@ export const emitter = {
     if (!canThrow(body)) {
       const parentStack = ctx.func.finallyStack || []
       const activeStack = parentStack.concat([cleanup])
-      const bodyIR = withFinallyStack(activeStack, () => emitFlat(body))
-      const cleanupIR = isTerminator(body) ? [] : withFinallyStack(parentStack, () => emitFlat(cleanup))
+      const bodyIR = withFinallyStack(activeStack, () => emitVoid(body))
+      const cleanupIR = isTerminator(body) ? [] : withFinallyStack(parentStack, () => emitVoid(cleanup))
       return [...bodyIR, ...cleanupIR]
     }
 
@@ -2309,11 +2295,11 @@ export const emitter = {
     const prevTry = ctx.func.inTry
     ctx.func.inTry = true
     const bodyIR = withFinallyStack(activeStack, () => {
-      try { return emitFlat(body) }
+      try { return emitVoid(body) }
       finally { ctx.func.inTry = prevTry }
     })
-    const normalCleanup = withFinallyStack(parentStack, () => emitFlat(cleanup))
-    const throwCleanup = withFinallyStack(parentStack, () => emitFlat(cleanup))
+    const normalCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
+    const throwCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
 
     return ['block', `$fin_done${id}`,
       ['block', `$fin_catch${id}`, ['result', 'f64'],
@@ -2383,8 +2369,8 @@ export const emitter = {
     // Also desugar when either side has unknown type — the `+` operator picks runtime
     // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
     // silently corrupt string concatenations through unknown-typed values.
-    const vt = typeof name === 'string' ? keyValType(name) : null
-    const vtB = keyValType(val)
+    const vt = typeof name === 'string' ? valTypeOf(name) : null
+    const vtB = valTypeOf(val)
     if (vt === VAL.STRING || vtB === VAL.STRING) return emit(['=', name, ['+', name, val]])
     if ((vt == null || vtB == null) && ctx.core.stdlib['__str_concat']) return emit(['=', name, ['+', name, val]])
     return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'))
@@ -2465,15 +2451,15 @@ export const emitter = {
   '+': (a, b) => {
     if (_expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
     // String concatenation: pure string operands skip generic ToString coercion.
-    const vtA = keyValType(a)
-    const vtB = keyValType(b)
+    const vtA = valTypeOf(a)
+    const vtB = valTypeOf(b)
     if (vtA === VAL.STRING && vtB === VAL.STRING) {
       // Fused append-byte: `buf += s[i]` skips 1-char SSO construction +
       // generic concat dispatch when rhs is a string-index. The byte flows
       // straight from __char_at into memory, and the bump-extend path elides
       // the alloc+copy when lhs is the heap-top STRING.
       if (Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_byte'] && ctx.core.stdlib['__char_at']) {
-        if (keyValType(b[1]) === VAL.STRING) {
+        if (valTypeOf(b[1]) === VAL.STRING) {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
             asI64(emit(a)),
@@ -2589,71 +2575,8 @@ export const emitter = {
   },
   // === Comparisons (always i32 result) ===
 
-  '==': (a, b) => {
-    const charCmp = emitSingleCharIndexCmp(a, b)
-    if (charCmp) return charCmp
-    const subCmp = emitSubstringEqCmp(a, b)
-    if (subCmp) return subCmp
-    // JS loose nullish equality: x == null / x == undefined.
-    // If the non-literal side has a known non-null VAL type, fold to 0.
-    if (isNullishLit(a)) {
-      if (valTypeOf(b)) return emitNum(0)
-      return isNullish(asF64(emit(b)))
-    }
-    if (isNullishLit(b)) {
-      if (valTypeOf(a)) return emitNum(0)
-      return isNullish(asF64(emit(a)))
-    }
-    // typeof x == 'string' → compile-time type check (prepare rewrites string to type code)
-    const tc = emitTypeofCmp(a, b, 'eq'); if (tc) return tc
-    const va = emit(a), vb = emit(b)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
-    // Either side known-pure NUMBER (literal or typed) → f64.eq is correct regardless
-    // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
-    // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
-    // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
-    const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
-    const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
-    if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb)
-    if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va)
-    if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
-    // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
-    // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
-    // STRING needs __eq (heap strings can be equal by content but different pointers).
-    // BIGINT needs __eq (heap-allocated, content compare).
-    if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
-      return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
-    }
-    inc('__eq')
-    return typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
-  },
-  '!=': (a, b) => {
-    const charCmp = emitSingleCharIndexCmp(a, b, true)
-    if (charCmp) return charCmp
-    const subCmp = emitSubstringEqCmp(a, b, true)
-    if (subCmp) return subCmp
-    if (isNullishLit(a)) {
-      if (valTypeOf(b)) return emitNum(1)
-      return typed(['i32.eqz', isNullish(asF64(emit(b)))], 'i32')
-    }
-    if (isNullishLit(b)) {
-      if (valTypeOf(a)) return emitNum(1)
-      return typed(['i32.eqz', isNullish(asF64(emit(a)))], 'i32')
-    }
-    const tc = emitTypeofCmp(a, b, 'ne'); if (tc) return tc
-    const va = emit(a), vb = emit(b)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
-    const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
-    const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
-    if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb, true)
-    if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va, true)
-    if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
-    if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
-      return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
-    }
-    inc('__eq')
-    return typed(['i32.eqz', ['call', '$__eq', asI64(va), asI64(vb)]], 'i32')
-  },
+  '==': (a, b) => emitLooseEq(a, b, false),
+  '!=': (a, b) => emitLooseEq(a, b, true),
   '===': (a, b) => emitStrictEq(a, b, false),
   '!==': (a, b) => emitStrictEq(a, b, true),
   '<':  cmpOp('lt_s', 'lt', (a, b) => a < b),
@@ -2905,17 +2828,17 @@ export const emitter = {
     const ce = emit(cond)
     if (isLit(ce)) {
       const v = litVal(ce), truthy = v !== 0 && v === v
-      if (truthy) return emitFlat(then)
-      if (els != null) return emitFlat(els)
+      if (truthy) return emitVoid(then)
+      if (els != null) return emitVoid(els)
       return null
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.
     const thenRefs = extractRefinements(cond, new Map(), true)
     const elseRefs = extractRefinements(cond, new Map(), false)
-    const thenBody = withRefinements(thenRefs, then, () => emitFlat(then))
+    const thenBody = withRefinements(thenRefs, then, () => emitVoid(then))
     if (els != null) {
-      const elseBody = withRefinements(elseRefs, els, () => emitFlat(els))
+      const elseBody = withRefinements(elseRefs, els, () => emitVoid(els))
       return ['if', c, ['then', ...thenBody], ['else', ...elseBody]]
     }
     return ['if', c, ['then', ...thenBody]]
@@ -2941,13 +2864,13 @@ export const emitter = {
     // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
-    if (init != null) result.push(...emitFlat(init))
+    if (init != null) result.push(...emitVoid(init))
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
     loopBody.push(...freshBoxed)
-    if (needsCont) loopBody.push(['block', cont, ...emitFlat(body)])
-    else loopBody.push(...emitFlat(body))
-    if (step) loopBody.push(...emitFlat(step))
+    if (needsCont) loopBody.push(['block', cont, ...emitVoid(body)])
+    else loopBody.push(...emitVoid(body))
+    if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])
     ctx.func.stack.pop()
@@ -2967,9 +2890,9 @@ export const emitter = {
         // Block: skip if discriminant != test, otherwise execute body
         result.push(['block', skip,
           ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
-          ...emitFlat(body)])
+          ...emitVoid(body)])
       } else if (c[0] === 'default') {
-        result.push(...emitFlat(c[1]))
+        result.push(...emitVoid(c[1]))
       }
     }
 
@@ -2980,7 +2903,7 @@ export const emitter = {
   'label': (name, body) => {
     const brk = `$label${ctx.func.uniq++}`
     ctx.func.stack.push({ label: name, brk })
-    const result = ['block', brk, ...emitFlat(body)]
+    const result = ['block', brk, ...emitVoid(body)]
     ctx.func.stack.pop()
     return result
   },

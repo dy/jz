@@ -36,7 +36,7 @@ import { typedElemAux } from '../type.js'
 import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
-import { emit, emitter, emitFlat, emitBody } from './emit.js'
+import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
@@ -501,7 +501,7 @@ function emitFunc(func, funcFacts, programFacts) {
   }
 
   if (block) {
-    const stmts = emitBody(body)
+    const stmts = emitBlockBody(body)
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     // I: Skip trailing fallback when last statement is return (unreachable code)
@@ -736,7 +736,7 @@ function emitClosureBody(cb) {
       ctx.func.locals.set(name, 'i32')
       updateRep(name, fields)
     }
-    bodyIR = emitBody(cb.body)
+    bodyIR = emitBlockBody(cb.body)
   } else {
     bodyIR = [asF64(emit(cb.body))]
   }

@@ -22,14 +22,14 @@ import prepare, { GLOBALS } from '../prepare/index.js'
 import compile from './index.js'
 import { resetProgramFactsCache } from './program-facts.js'
 import {
-  emit, emitter, emitFlat, emitBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
+  emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from './emit.js'
 import { resolveOptimize } from '../optimize/index.js'
 import jzify from '../../jzify/index.js'
 
 export default function compileParsed(parsedAst, moduleAsts) {
   reset(emitter, GLOBALS, {
-    emit, flat: emitFlat, body: emitBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
+    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
   resetProgramFactsCache()
   ctx.transform.jzify = jzify
