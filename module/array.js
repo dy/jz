@@ -513,11 +513,14 @@ export default (ctx) => {
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
   // Old storage is left behind as a forwarding header so existing aliases keep
-  // seeing the current backing store after growth.
-  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr i64) (param $minCap i32) (result f64)
-    (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+  // seeing the current backing store after growth. `defensive` adds a type/bounds
+  // guard (non-array ptr → fresh 4-cap buffer) for untyped call sites; the `_known`
+  // variant skips it for hot paths that already proved the receiver is an array.
+  // Single source of truth: both stdlib entries share the grow/relocate tail.
+  const arrGrow = (name, defensive) => `(func $${name} (param $ptr i64) (param $minCap i32) (result f64)
+    ${defensive ? '(local $t i32) ' : ''}(local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
-    (local.set $t (call $__ptr_type (local.get $ptr)))
+    ${defensive ? `(local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
     (if
@@ -527,7 +530,7 @@ export default (ctx) => {
       (then
         (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_s (local.get $minCap) (i32.const 4))))
         (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap)))
-        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))
+        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))` : `(local.set $off (call $__ptr_offset (local.get $ptr)))`}
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
       (then (return (f64.reinterpret_i64 (local.get $ptr)))))
@@ -544,25 +547,8 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
 
-  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr i64) (param $minCap i32) (result f64)
-    (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
-    ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
-      (then (return (f64.reinterpret_i64 (local.get $ptr)))))
-    (local.set $newCap (select
-      (local.get $minCap)
-      (i32.shl (local.get $oldCap) (i32.const 1))
-      (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
-    (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
-    (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
-    ${headerPropsCopyIR()}
-    ${maybeDynMoveIR()}
-    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
-    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
-    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+  ctx.core.stdlib['__arr_grow'] = () => arrGrow('__arr_grow', true)
+  ctx.core.stdlib['__arr_grow_known'] = () => arrGrow('__arr_grow_known', false)
 
   // Hot for arr[i] = val (~18M calls in watr self-host). Compute base via __ptr_offset
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
