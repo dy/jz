@@ -778,6 +778,18 @@ test('jzify: Object.prototype.hasOwnProperty.call canonicalizes to instance hasO
   is(f('z'), 0)
 })
 
+test('jzify: Object.prototype.toString.call canonicalizes to object tag helper', () => {
+  const { objectTag, arrayTag, sameTag } = jz(`
+    export let objectTag = (json) => Object.prototype.toString.call(JSON.parse(json)) === "[object Object]" ? 1 : 0
+    export let arrayTag = () => Object.prototype.toString.call([1, 2]) === "[object Array]" ? 1 : 0
+    export let sameTag = (left, right) => Object.prototype.toString.call(JSON.parse(left)) === Object.prototype.toString.call(JSON.parse(right)) ? 1 : 0
+  `, { jzify: true }).exports
+  is(objectTag('{"a":1}'), 1)
+  is(arrayTag(), 1)
+  is(sameTag('{"a":1}', '{"b":2}'), 1)
+  is(sameTag('{"a":1}', '[1]'), 0)
+})
+
 test('jzify: empty Object constructor guard canonicalizes to Object.keys check', () => {
   const { f } = jz(`
     export let f = (s) => {
