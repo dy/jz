@@ -394,13 +394,16 @@ export function withTemp(val, body, tag = '') {
 
 /** Dispatch on `__ptr_type(bits)` — emits a right-leaning if/else chain over
  *  PTR constants. `cases` is `[[PTR.X, ir], …]`; `fallback` is the else IR.
- *  Centralizes the `i32.eq (call $__ptr_type bits) (i32.const PTR.X)` pattern
- *  so emitters dispatching by pointer kind stay declarative. */
-export function dispatchByPtrType(typeLocal, cases, fallback) {
+ *  `resultType` defaults to `'f64'`; pass `null` for a void dispatch (e.g.
+ *  pure memory-writing branches). Centralizes the
+ *  `i32.eq (call $__ptr_type bits) (i32.const PTR.X)` pattern so emitters
+ *  dispatching by pointer kind stay declarative. */
+export function dispatchByPtrType(typeLocal, cases, fallback, resultType = 'f64') {
   let out = fallback
+  const head = resultType ? ['if', ['result', resultType]] : ['if']
   for (let i = cases.length - 1; i >= 0; i--) {
     const [ptr, ir] = cases[i]
-    out = ['if', ['result', 'f64'],
+    out = [...head,
       ['i32.eq', ['local.get', `$${typeLocal}`], ['i32.const', ptr]],
       ['then', ir],
       ['else', out]]
@@ -477,7 +480,7 @@ export function toNumF64(node, v) {
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
   if ((v.type === 'i32' && v.ptrKind == null) || isLit(v)) return asF64(v)
-  const vt = keyValType(node)
+  const vt = valTypeOf(node)
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
   if (vt === VAL.DATE) {
     const ptr = v.ptrKind === VAL.DATE
@@ -543,7 +546,7 @@ export function toNumF64(node, v) {
  *  `__to_str` so a numeric return is rendered. A throwing method propagates as
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
-  const vt = keyValType(node)
+  const vt = valTypeOf(node)
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {
@@ -607,10 +610,6 @@ export function truthyIR(e) {
 export const toBoolFromEmitted = truthyIR
 
 // === Value-type classification ===
-
-export function keyValType(node) {
-  return typeof node === 'string' ? lookupValType(node) : valTypeOf(node)
-}
 
 export function usesDynProps(vt) {
   return vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.CLOSURE
