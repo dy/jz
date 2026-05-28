@@ -50,7 +50,7 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
 } from '../ir.js'
-import { typeofPredicate } from './infer.js'
+import { extractRefinements, withRefinements } from './flow-types.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
@@ -424,69 +424,9 @@ function emitSubstringEqCmp(a, b, negate = false) {
       ['i64.reinterpret_f64', ['local.get', `$${o}`]]])], 'i32')
 }
 
-// === Flow-sensitive type refinement ===
-// Map typeof code (from resolveTypeof in prepare.js) → VAL kind. Undef/boolean/object have no
-// single VAL refinement, so they're excluded. String/number/function do.
-const TYPEOF_CODE_TO_VAL = { [-1]: VAL.NUMBER, [-2]: VAL.STRING, [-6]: VAL.CLOSURE }
-
-/** Extract refinements from a boolean condition AST.
- *  `sense`: true = refine for then-branch, false = refine for else-branch (i.e. cond inverted).
- *  Returns a Map<name, {val?: VAL, notString?: true}>. Walks && / || / ! accordingly. */
-function extractRefinements(cond, out, sense = true) {
-  if (!Array.isArray(cond)) return out
-  const op = cond[0]
-  // ! flips sense
-  if (op === '!') return extractRefinements(cond[1], out, !sense)
-  // && under positive sense refines with union of both branches.
-  // || under negative sense (De Morgan) similarly refines the else-branch.
-  if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
-  if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
-  // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
-  if ((op === '==' || op === '===' || op === '!=' || op === '!==')) {
-    const tp = typeofPredicate(cond)
-    if (tp) {
-      const wantPositive = tp.eq ? sense : !sense
-      if (wantPositive) {
-        const val = TYPEOF_CODE_TO_VAL[tp.code]
-        if (val) mergeRefinement(out, tp.name, { val })
-      } else if (tp.code === 'string' || tp.code === -2) {
-        // Negative branch of typeof-string guard (e.g. post `if (typeof x === 'string') return`)
-        // proves the binding is not a primitive string in the suffix scope — feeds B4's
-        // length / subscript dispatch elision the same way write-shape evidence does.
-        mergeRefinement(out, tp.name, { notString: true })
-      }
-    }
-    return out
-  }
-  // Type-predicate calls under positive sense — refine by the asserted VAL.
-  // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array',
-  // 'isArray'] pair; __is_map / __is_set / __is_typed come from jzify's
-  // instanceof lowering as a bare string callee.
-  if (op === '()' && sense && typeof cond[2] === 'string') {
-    const callee = cond[1]
-    const val = predicateRefinement(callee)
-    if (val != null) { mergeRefinement(out, cond[2], { val }); return out }
-  }
-  return out
-}
-
-/** Map a call-callee shape to the VAL kind it asserts under positive sense, or null. */
-function predicateRefinement(callee) {
-  if (callee === 'Array.isArray') return VAL.ARRAY
-  if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
-    return VAL.ARRAY
-  if (callee === '__is_map') return VAL.MAP
-  if (callee === '__is_set') return VAL.SET
-  if (callee === '__is_typed') return VAL.TYPED
-  return null
-}
-
-/** Merge a refinement fact into the per-name slot. Later facts override; non-overlapping
- *  fields union. Keeps the call-side simple (always assign through this). */
-function mergeRefinement(out, name, fact) {
-  const cur = out.get(name)
-  out.set(name, cur ? { ...cur, ...fact } : fact)
-}
+// Flow-sensitive type refinement moved to ./flow-types.js (extractRefinements,
+// predicateRefinement, mergeRefinement, withRefinements). emit.js imports them
+// from there — see the import block at the top of this file.
 
 function unrollSmallConstFor(init, cond, step, body) {
   const end = smallConstForTripCount(init, cond, step)
@@ -560,24 +500,7 @@ function withFinallyStack(stack, fn) {
   finally { ctx.func.finallyStack = prev }
 }
 
-/** Apply refinements for the duration of `fn()`. Restores prior state on return/throw. */
-function withRefinements(refs, body, fn) {
-  if (!refs || refs.size === 0) return fn()
-  const cur = ctx.func.refinements
-  // Drop names that are reassigned in the body — refinement would be unsound.
-  const saved = []
-  for (const [name, val] of refs) {
-    if (isReassigned(body, name)) continue
-    saved.push([name, cur.get(name)])
-    cur.set(name, val)
-  }
-  try { return fn() }
-  finally {
-    for (const [name, prev] of saved) {
-      if (prev === undefined) cur.delete(name); else cur.set(name, prev)
-    }
-  }
-}
+// withRefinements moved to ./flow-types.js
 
 /** Coerce an AST node to an i32 boolean, folding && / || at the boolean boundary. */
 export function toBool(node) {
