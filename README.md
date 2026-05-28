@@ -127,7 +127,7 @@ JZ is a strict functional JS subset. Built-in `jzify` transform extends support 
 Not supported
   async/await  Promise  function*  yield
   delete  labels  eval  Function  with
-  Proxy  Reflect  WeakMap  WeakSet
+  Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
 ```
 
@@ -144,6 +144,7 @@ Not supported
 - **Objects are fixed-layout schemas** — key set and order fixed at the literal; `delete` is rejected; `memory.Object({…})` must match the source key order.
 - **Errors are untagged** — `throw` carries a value, not a typed `Error`; `e instanceof TypeError` does not discriminate.
 - **`Set`/`Map` iterate slot order**, not insertion order.
+- **`WeakMap`/`WeakSet` fold to `Map`/`Set`** — jz has no GC, so weakness is unobservable. The fold accepts primitive keys (real `WeakMap` would throw `TypeError`) and exposes `.size` / iteration. Use them as identity-keyed caches; do not rely on weak-reference semantics.
 - **Memory is not reclaimed automatically** — see *How does memory work?* below.
 
 For full TC39 conformance use [porffor](https://github.com/CanadaHonk/porffor); jz trades completeness for low-level numeric performance by design.

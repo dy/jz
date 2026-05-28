@@ -188,12 +188,13 @@ export function createTransform(opts) {
           b = ['{}', [';', inner]]
         }
       } else if (Array.isArray(b) && STMT_ONLY_OPS.has(b[0])) {
-        // Method shorthand `m(){ stmt }` parses to a concise-body arrow whose
-        // body is the bare statement (`['=>', p, ['if', …]]`), not a `{}` block.
-        // A concise body is returned as an expression, so a void statement would
-        // be coerced into the f64 return slot ("not enough arguments on the stack
-        // for f64.convert_i32_s"). These ops are never a real concise expression
-        // body, so re-wrap as a block.
+        // Subscript's expression grammar lets statement-only ops (`if`, `for`,
+        // `return`, `;`, …) appear in concise-body position — method shorthand
+        // `m(){ stmt }` parses to `['=>', p, stmt]` with no `{}` wrap (the body
+        // braces are structural, not a group operator). A concise body must
+        // yield a value, so these void ops would otherwise be coerced into the
+        // f64 return slot ("not enough arguments on the stack for f64.convert_i32_s").
+        // Re-wrap as a block — statement bodies belong in block form.
         b = b[0] === ';' ? ['{}', b] : ['{}', [';', b]]
       }
       const [p2, b2] = lowerArguments(params, b)

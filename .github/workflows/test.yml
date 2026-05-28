@@ -3,12 +3,26 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Core suite under different compiler configurations. Default = level 2.
+        # opt3 = size-tuned. opt0/opt1 + wasi are exploratory (some tests pin
+        # level-2 internals); not yet wired to CI but available locally.
+        variant: [default, opt3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install
-      - run: npm test
+      - name: test (${{ matrix.variant }})
+        run: |
+          case "${{ matrix.variant }}" in
+            default) npm test ;;
+            opt3)    npm run test:opt3 ;;
+          esac
       - run: npm run build:examples
+        if: matrix.variant == 'default'
       - run: git diff --exit-code -- examples/
+        if: matrix.variant == 'default'

@@ -1371,9 +1371,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
   // could appear there (struct-array consumed/built at module scope).
   if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
 
-  for (const sid of cand) {
-    if (!black.has(sid)) inlineArray.add(sid)
-  }
+  for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
 }
 
 /** Schema id when `name` is bound (codegen truth) to a structInline `Array<S>`,

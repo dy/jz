@@ -25,6 +25,15 @@
   },
   "scripts": {
     "test": "node test/index.js",
+    "test:opt0": "JZ_TEST_OPTIMIZE=0 node test/index.js",
+    "test:opt1": "JZ_TEST_OPTIMIZE=1 node test/index.js",
+    "test:opt3": "JZ_TEST_OPTIMIZE=3 node test/index.js",
+    "test:wasi": "JZ_TEST_HOST=wasi node test/index.js",
+    "test:matrix": "npm test && npm run test:opt3",
+    "test:matrix:full": "npm test && npm run test:opt0 && npm run test:opt1 && npm run test:opt3 && npm run test:wasi",
+    "test:bench": "node test/bench.js",
+    "test:selfhost": "node test/selfhost.js",
+    "test:all": "npm run test:matrix && npm run test:bench && npm run test:selfhost",
     "test262": "node test/test262.js",
     "test262:builtins": "node test/test262-builtins.js",
     "bench": "node bench/bench.mjs",
@@ -32,9 +41,7 @@
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
     "build:examples": "for dir in examples/*/; do [ -f \"$dir/build.mjs\" ] && node \"$dir/build.mjs\"; done",
-    "test:bench": "node test/bench.js",
-    "test:all": "npm test && npm run test:bench",
-    "prepublishOnly": "npm run test:all"
+    "prepublishOnly": "npm run test:matrix && npm run test:bench"
   },
   "repository": {
     "type": "git",

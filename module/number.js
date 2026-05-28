@@ -251,9 +251,17 @@ export default (ctx) => {
   // __ftoa ("NaN"/"Infinity"/"-Infinity"). Integer part uses exact i64 division
   // (magnitude bounded by jz's i64 BigInt domain); the fraction multiplies out in
   // f64, capped at 100 digits (radix fractions are implementation-defined precision).
+  //
+  // Per 21.1.3.6: radix must be an integer in [2, 36] — otherwise RangeError.
+  // The check sits at the canonical entry point so the const-radix fold path
+  // (which still calls here for any non-10 constant) and the dynamic-radix
+  // branch are validated uniformly. `(throw $__jz_err …)` is picked up by
+  // ensureThrowRuntime via stdlib scan, so callers do not need to flag throws.
   ctx.core.stdlib['__num_radix'] = `(func $__num_radix (param $val f64) (param $radix i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
     (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
+    (if (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36)))
+      (then (throw $__jz_err (f64.const 0))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.const 180)))

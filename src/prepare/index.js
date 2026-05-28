@@ -2007,9 +2007,10 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
-    // No GC → weakness is unobservable; a WeakSet/WeakMap is just a Set/Map keyed
-    // by reference identity (which jz's collections already are). Fold to the
-    // concrete ctor so construction and every .add/.has/.get/.set/.delete reuse it.
+    // No GC → weakness is unobservable. Fold WeakSet/WeakMap to Set/Map so
+    // construction and every .add/.has/.get/.set/.delete reuse the concrete
+    // emit path. Deliberate semantic deviation (also accepts primitive keys
+    // and exposes .size/iteration) — documented in README under JS divergences.
     if (name === 'WeakSet') name = 'Set'
     else if (name === 'WeakMap') name = 'Map'
     // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and

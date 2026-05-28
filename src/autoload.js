@@ -105,9 +105,11 @@ export const GENERIC_METHOD_MODULES = dict({
 })
 
 export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','WeakSet','WeakMap','Date']
-// WeakSet/WeakMap are identity-keyed collections; jz has no GC, so weakness is
-// unobservable and they behave exactly like Set/Map (the `new` handler folds
-// the names). Compilers lean on them as identity caches / cycle-detection sets.
+// WeakSet/WeakMap fold to Set/Map (the `new` handler rewrites the ctor name).
+// jz has no GC, so weakness is unobservable; this also accepts primitive keys
+// (real WeakMap throws TypeError) and exposes `.size`/iteration — a deliberate
+// semantic deviation documented in README. Compilers lean on them as identity
+// caches / cycle-detection sets and never observe the missing weak semantics.
 export const COLLECTION_CTORS = ['Set', 'Map', 'WeakSet', 'WeakMap']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 

@@ -35,7 +35,7 @@ import {
 import { typedElemAux } from '../type.js'
 import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
-import { optimizeFunc, treeshake, resolveOptimize } from '../optimize/index.js'
+import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -893,12 +893,9 @@ function emitClosureBody(cb) {
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler) {
-  // Optimize config is normally resolved by the caller (jzCompileInner / kernel.js
-  // compileParsed). The self-host kernel runs this bare `compile` directly, so guard
-  // the unresolved (`null`) state here: an absent config means "no optimization".
-  // Without this, optimize-gated passes read `cfg && cfg.x === false` with `cfg = null`
-  // and wrongly run (e.g. inlineHotInternalCalls), diverging from the host's ALL_OFF.
-  if (ctx.transform.optimize == null) ctx.transform.optimize = resolveOptimize(false)
+  // Contract: callers (jzCompileInner / kernel.js compileParsed) must set
+  // ctx.transform.optimize before reaching here — every optimize-gated pass below
+  // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.func.names.clear()
   ctx.func.map.clear()

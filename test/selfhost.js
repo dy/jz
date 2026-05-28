@@ -1,53 +1,93 @@
 /**
- * Self-host CI gate: build jz.wasm kernel and verify it compiles sample programs.
- * Run: node test/selfhost.js
- * CI: npm run test:selfhost
+ * Self-host gate: build dist/jz-kernel.wasm, instantiate it, and verify
+ * `kernel.exports.default(ast)` (= compileParsed) round-trips a real program
+ * through the in-wasm pipeline.
+ *
+ * Contract (must match scripts/selfhost-build.mjs):
+ *   host:   ast    = parse(source)                              // subscript/jessie
+ *   host:   ast    = normalizeBigints(ast)                       // marshal-safe BigInts
+ *   kernel: ir     = kernel.exports.default(ast)                 // reset→jzify→prepare→compile
+ *   host:   wasm   = watrCompile(ir)
+ *   host:   result = instantiate(wasm).exports.main()
+ *
+ * The kernel.js entry is what selfhost-build builds — its default export is
+ * `compileParsed`, the self-contained in-wasm pipeline. Building from
+ * compile/index.js exports the bare `compile()` which expects a prepared ctx
+ * the host owns, so it cannot self-host.
+ *
+ * Run: node test/selfhost.js   |   CI: npm run test:selfhost
  */
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { ok, is } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
-import jz, { compileBundle } from '../index.js'
-import { resolveModuleGraph } from '../src/resolve.js'
+import { parse } from 'subscript/feature/jessie'
 import watrCompile from 'watr/compile'
+import { instantiate, normalizeBigints } from '../interop.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUILD = join(ROOT, 'scripts/selfhost-build.mjs')
 const KERNEL = join(ROOT, 'dist/jz-kernel.wasm')
 
-const run = (script, args = [], env = {}) => {
-  const r = spawnSync(process.execPath, [script, ...args], {
-    cwd: ROOT,
-    env: { ...process.env, ...env },
-    encoding: 'utf8',
-    timeout: 600_000,
-  })
-  return r
+const ensureKernel = () => {
+  if (existsSync(KERNEL)) return
+  const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 600_000 })
+  if (r.status !== 0) {
+    console.log(r.stdout); console.log(r.stderr)
+    throw new Error(`selfhost build exit ${r.status}`)
+  }
+}
+
+// One kernel instance reused across samples — instantiation is the slow part
+// (3.5 MB wasm). Per-sample isolation is unnecessary: the kernel resets its
+// internal ctx on each compileParsed call.
+let kernel
+const getKernel = () => {
+  if (!kernel) {
+    ensureKernel()
+    kernel = instantiate(readFileSync(KERNEL), { memory: 8192 })
+  }
+  return kernel
+}
+
+const compileViaKernel = (src) => {
+  const ast = normalizeBigints(parse(src))
+  const ir = getKernel().exports.default(ast)
+  if (!Array.isArray(ir) || ir[0] !== 'module' || ir.length < 2)
+    throw new Error('kernel returned non-module IR: ' + JSON.stringify(ir)?.slice(0, 120))
+  return watrCompile(ir)
 }
 
 test('selfhost: build jz-kernel.wasm', () => {
-  const r = run(BUILD)
-  if (r.status !== 0) {
-    console.log(r.stdout)
-    console.log(r.stderr)
-  }
+  const r = spawnSync(process.execPath, [BUILD], {
+    cwd: ROOT, encoding: 'utf8', timeout: 600_000,
+  })
+  if (r.status !== 0) { console.log(r.stdout); console.log(r.stderr) }
   ok(r.status === 0, `build exit ${r.status}`)
-  ok(r.stdout.includes('jz-kernel.wasm'), 'kernel artifact written')
+  ok(r.stdout.includes('jz-kernel.wasm'), 'kernel artifact reported')
+  ok(readFileSync(KERNEL).byteLength > 100_000, 'kernel wasm has substance')
 })
 
-test('selfhost: kernel compiles sample without host fallback', () => {
-  if (!existsSync(KERNEL)) {
-    const r = run(BUILD)
-    ok(r.status === 0, 'kernel build required')
-  }
-  readFileSync(KERNEL)
-  const g = resolveModuleGraph(join(ROOT, 'src/compile/index.js'), { resolveNode: true })
-  const kernel = jz(g.code, { jzify: true, modules: g.modules, memory: 8192, optimize: false, selfHost: true })
-  const sample = 'export let main = () => 3 + 4'
-  const bundle = compileBundle(sample, { jzify: true, optimize: false })
-  const mod = kernel.exports.default(bundle.ast, bundle)
-  ok(Array.isArray(mod) && mod[0] === 'module' && mod.length > 1, 'kernel compile → module IR')
-  ok(watrCompile(mod).byteLength > 10, 'kernel compile → wasm bytes')
-}, { timeout: 600_000 })
+// Sample programs the kernel must lower correctly. Each tuple is
+// [label, source, expected-main()-result]. Picked to cover the major
+// emit paths (arith, calls, loops, strings, arrays, objects, closures).
+const SAMPLES = [
+  ['arithmetic',  'export let main = () => 3 + 4 * 5', 23],
+  ['function',    'let inc = x => x + 1; export let main = () => inc(10)', 11],
+  ['loop',        'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i; return s }', 45],
+  ['string-len',  'export let main = () => "hello world".length', 11],
+  ['array-reduce','export let main = () => [1,2,3,4,5].reduce((a,b)=>a+b, 0)', 15],
+  ['closure',     'let mk = n => (x => x + n); let add5 = mk(5); export let main = () => add5(7)', 12],
+  ['recursion',   'let fib = n => n < 2 ? n : fib(n-1) + fib(n-2); export let main = () => fib(10)', 55],
+]
+
+for (const [label, src, expected] of SAMPLES) {
+  test(`selfhost: ${label}`, () => {
+    const bin = compileViaKernel(src)
+    ok(bin.byteLength > 10, 'kernel produced wasm bytes')
+    const inst = instantiate(bin, { memory: 256 })
+    is(inst.exports.main(), expected, `main() === ${expected}`)
+  })
+}
