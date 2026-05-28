@@ -40,7 +40,7 @@ import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, ptrOffsetIR, ptrTypeIR, dispatchByPtrType,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
@@ -154,9 +154,8 @@ export function emitTypeofCmp(a, b, cmpOp) {
   // "isPtr AND ptr_type == kind" — shared by typeof "string" / "function" /
   // user-supplied positive PTR codes. The tee in isPtr caches v in `t` for reuse.
   const isPtrKind = kind => {
-    inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const isKind = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', kind]]
+    const isKind = ptrTypeEq(['local.get', `$${t}`], kind)
     return both(isPtr, isKind)
   }
   // Static fold for known-VAL operands of "boolean"/"bigint" — saves a runtime branch.
@@ -342,7 +341,7 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
     ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR]],
     asI64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
-    ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
+    ptrTypeEq(['local.get', `$${ptr}`], PTR.STRING),
     ['then', charEq],
     ['else', genericEq]]
   return typed(['block', ['result', 'i32'], ...prelude, finish(cmp)], 'i32')
@@ -1328,7 +1327,7 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist)
     ['local.get', `$${valTmp}`]]
   const elseBranch = hasTypedSet
     ? ['if', ['result', 'f64'],
-        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+        ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
         ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
         ['else', fallbackStore]]
     : fallbackStore
@@ -1337,7 +1336,7 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist)
     ['local.set', `$${idxTmp}`, idxI32],
     ['local.set', `$${valTmp}`, valueExpr],
     ['if', ['result', 'f64'],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
+      ptrTypeEq(['local.get', `$${objTmp}`], PTR.ARRAY),
       ['then', arrayBranch],
       ['else', elseBranch]])
 }
@@ -1451,7 +1450,7 @@ function emitElementAssign(arr, idx, val) {
         ['local.set', `$${idxTmp}`, asI32(typed(keyNode, 'f64'))],
         ['local.set', `$${valTmp}`, valueExpr],
         ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+          ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
           ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
           ['else', ['block', ['result', 'f64'],
             ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
@@ -1909,7 +1908,7 @@ function emitMethodCall(callee, parsed, callArgs) {
         ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
           ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
         ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+          ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
           ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
           ['else', asF64(callMethod(objTmp, builtin))]])
     }
@@ -1996,7 +1995,7 @@ function emitMethodCall(callee, parsed, callArgs) {
     if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
     const extFallback = closureOnly ? undefExpr()
       : ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
+          ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
           ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
@@ -2006,7 +2005,7 @@ function emitMethodCall(callee, parsed, callArgs) {
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
       ['if', ['result', 'f64'],
-        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+        ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
         ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
         ['else', extFallback]])
   }

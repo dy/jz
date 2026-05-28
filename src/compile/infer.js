@@ -44,7 +44,7 @@
  */
 
 import { ctx } from '../ctx.js'
-import { collectParamNames } from '../ast.js'
+import { collectParamNames, ASSIGN_OPS } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps } from '../static.js'
 import { typedElemCtor, ctorFromElemAux } from '../type.js'
@@ -232,9 +232,6 @@ const isLengthAccess = (n) =>
 const isIndexAccess = (n) =>
   Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string'
 
-const isAssignOp = (op) =>
-  typeof op === 'string' && (op === '=' || (op.length > 1 && op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>='))
-
 const isStringLiteralRhs = (rhs) =>
   Array.isArray(rhs) && (rhs[0] === 'str' || (rhs[0] == null && typeof rhs[1] === 'string'))
 
@@ -274,11 +271,11 @@ const notStringEvidence = (body, names) => {
       markStringy(node[1])
     }
     // Index write: `xs[i] = v` or compound `xs[i] op= v`.
-    if (isAssignOp(op) && isIndexAccess(node[1]) && scope.has(node[1][1]) && !stringy.has(node[1][1])) {
+    if (ASSIGN_OPS.has(op) && isIndexAccess(node[1]) && scope.has(node[1][1]) && !stringy.has(node[1][1])) {
       writes.add(node[1][1])
     }
     // Length mutation: `xs.length = n`, `xs.length += k`, `xs.length++`.
-    if (isAssignOp(op) && isLengthAccess(node[1]) && scope.has(node[1][1]) && !stringy.has(node[1][1])) {
+    if (ASSIGN_OPS.has(op) && isLengthAccess(node[1]) && scope.has(node[1][1]) && !stringy.has(node[1][1])) {
       writes.add(node[1][1])
     }
     if ((op === '++' || op === '--') && isLengthAccess(node[1]) && scope.has(node[1][1]) && !stringy.has(node[1][1])) {

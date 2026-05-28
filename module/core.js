@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, valKindToPtr } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -805,7 +805,7 @@ export default (ctx) => {
           ['local.set', `$${p}`, ['f64.reinterpret_i64',
             ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], asI64(emit(['str', prop]))]]],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${p}`]]], ['i32.const', PTR.CLOSURE]],
+            ptrTypeEq(['local.get', `$${p}`], PTR.CLOSURE),
             ['then', ['local.get', `$${p}`]],
             ['else', asF64(builtin(o))]]], 'f64')
       }

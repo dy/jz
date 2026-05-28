@@ -392,6 +392,51 @@ export function withTemp(val, body, tag = '') {
   return block64(['local.set', `$${t}`, val], ...tail)
 }
 
+/** Whole-fn structural refcount: walks `fn`, counting how many times each
+ *  array node is referenced. Used by optimizer passes to skip shared subtrees
+ *  (watr CSE may leave them) — mutating a node with refcount > 1 would also
+ *  affect references outside the current region. Single-pass O(N). */
+export function buildRefcount(fn) {
+  const refcount = new Map()
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const n = (refcount.get(node) || 0) + 1
+    refcount.set(node, n)
+    if (n > 1) return  // already counted children below
+    for (let i = 0; i < node.length; i++) walk(node[i])
+  }
+  walk(fn)
+  return refcount
+}
+
+/** Pick the next free `$__<prefix><id>` local-name id by collecting all
+ *  existing ids in a single walk. Replaces the per-pass
+ *  `while (fn.some(... === $__prefixK)) k++` (O(K·N)) with one O(N) scan. */
+export function nextLocalId(fn, prefix) {
+  const seen = new Set()
+  const needle = `$__${prefix}`
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith(needle)) {
+      const tail = n[1].slice(needle.length)
+      if (/^\d+$/.test(tail)) seen.add(+tail)
+    }
+    for (let i = 0; i < n.length; i++) walk(n[i])
+  }
+  walk(fn)
+  let id = 0
+  while (seen.has(id)) id++
+  return id
+}
+
+/** Single-kind ptr-tag predicate: `__ptr_type(bits) == ptr`. Takes the f64
+ *  carrier expression and the PTR constant. Use this when guarding one branch;
+ *  use `dispatchByPtrType` for multi-case forks. Stamps `inc('__ptr_type')`. */
+export function ptrTypeEq(f64Expr, ptr) {
+  inc('__ptr_type')
+  return typed(['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', f64Expr]], ['i32.const', ptr]], 'i32')
+}
+
 /** Dispatch on `__ptr_type(bits)` — emits a right-leaning if/else chain over
  *  PTR constants. `cases` is `[[PTR.X, ir], …]`; `fallback` is the else IR.
  *  `resultType` defaults to `'f64'`; pass `null` for a void dispatch (e.g.

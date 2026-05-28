@@ -454,8 +454,6 @@ export function narrowUint32(body, locals) {
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
     return Number.isInteger(v) && v >= 0 && v < 4294967296
   }
-  const isAssignOp = op => op[op.length - 1] === '=' &&
-    op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>='
   const banNames = n => {
     if (typeof n === 'string') disq.add(n)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
@@ -484,7 +482,7 @@ export function narrowUint32(body, locals) {
       return
     }
     if ((op === '++' || op === '--') && typeof node[1] === 'string') { disq.add(node[1]); return }
-    if (isAssignOp(op)) {
+    if (ASSIGN_OPS.has(op)) {
       const lhs = node[1]
       if (typeof lhs === 'string') {
         if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) disq.add(lhs)

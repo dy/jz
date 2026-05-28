@@ -28,7 +28,7 @@
  */
 
 import { LAYOUT, ctx } from '../ctx.js'
-import { findBodyStart } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { nanPrefixHex, atomNanHex } from '../../layout.js'
 
@@ -452,10 +452,8 @@ export function hoistAddrBase(fn) {
 
   if (regions.size === 0) return
 
-  let hoistId = 0
+  let hoistId = nextLocalId(fn, 'ab')
   const locals = []
-  // Find next free $__abN id by scanning existing locals.
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__ab${hoistId}`)) hoistId++
   for (const [, regs] of regions) {
     let usable = false
     for (const r of regs) if (r.length >= 2) { usable = true; break }
@@ -559,8 +557,7 @@ export function hoistInvariantPtrOffset(fn) {
 
   if (sites.size === 0) return
 
-  let hoistId = 0
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__po${hoistId}`)) hoistId++
+  let hoistId = nextLocalId(fn, 'po')
 
   const newLocals = []
   const snaps = []
@@ -600,20 +597,11 @@ export function hoistInvariantPtrOffsetLoop(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  let snapId = 0
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__pol${snapId}`)) snapId++
+  let snapId = nextLocalId(fn, 'pol')
   const newLocals = []
 
   // Refcount across the whole fn to skip shared subtrees (watr CSE may leave them).
-  const refcount = new Map()
-  const countRefs = (node) => {
-    if (!Array.isArray(node)) return
-    const n = (refcount.get(node) || 0) + 1
-    refcount.set(node, n)
-    if (n > 1) return
-    for (let i = 0; i < node.length; i++) countRefs(node[i])
-  }
-  countRefs(fn)
+  const refcount = buildRefcount(fn)
 
   const processLoop = (loopNode) => {
     // Recurse into inner loops first (bottom-up).
@@ -726,8 +714,7 @@ export function hoistInvariantCellLoads(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  let snapId = 0
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__sc${snapId}`)) snapId++
+  let snapId = nextLocalId(fn, 'sc')
   const newLocals = []
 
   // Build refcount of array nodes: how many positions in `fn` reference each
@@ -735,15 +722,7 @@ export function hoistInvariantCellLoads(fn) {
   // subtrees; mutating `parent[idx]` for a shared parent would also affect
   // references outside the current loop. Sites whose immediate parent has
   // refcount > 1 are skipped.
-  const refcount = new Map()
-  const countRefs = (node) => {
-    if (!Array.isArray(node)) return
-    const n = (refcount.get(node) || 0) + 1
-    refcount.set(node, n)
-    if (n > 1) return  // already counted children below
-    for (let i = 0; i < node.length; i++) countRefs(node[i])
-  }
-  countRefs(fn)
+  const refcount = buildRefcount(fn)
 
   // Process one loop node: find cell_X reads, check no writes, hoist.
   // Returns { snapDecls } — list of (local.set $snap (f64.load (local.get $cell_X))) IR
@@ -901,8 +880,7 @@ export function cseScalarLoad(fn) {
   const bases = fn.cseLoadBases
   if (!(bases instanceof Set) || bases.size === 0) return
 
-  let snapId = 0
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__cs${snapId}`)) snapId++
+  let snapId = nextLocalId(fn, 'cs')
   const newLocals = []
 
   // CSE table: key `${X}|${K}` → { snapName | null, anchorParent, anchorIdx }
@@ -1199,23 +1177,10 @@ export function csePureExprLoop(fn) {
   for (let i = bodyStart; i < fn.length; i++) scanShape(fn[i])
   if (!hasLoop || !hasTrigCall) return
 
-  let snapId = 0
-  for (const n of fn) {
-    if (!Array.isArray(n) || n[0] !== 'local' || typeof n[1] !== 'string') continue
-    const m = /^\$__pe(\d+)$/.exec(n[1])
-    if (m) { const k = +m[1]; if (k >= snapId) snapId = k + 1 }
-  }
+  let snapId = nextLocalId(fn, 'pe')
   const newLocals = []
 
-  const refcount = new Map()
-  const countRefs = (node) => {
-    if (!Array.isArray(node)) return
-    const n = (refcount.get(node) || 0) + 1
-    refcount.set(node, n)
-    if (n > 1) return
-    for (let i = 0; i < node.length; i++) countRefs(node[i])
-  }
-  countRefs(fn)
+  const refcount = buildRefcount(fn)
   const canMutateSite = (parent, node) =>
     (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1
 

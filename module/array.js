@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
@@ -266,7 +266,7 @@ export default (ctx) => {
     const t = temp('t')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.ARRAY]]], 'i32')
+      ptrTypeEq(['local.get', `$${t}`], PTR.ARRAY)], 'i32')
   }
 
   ctx.core.emit['new.Array'] = (len) => {
@@ -872,7 +872,7 @@ export default (ctx) => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
         if (ctx.module.modules['string'] && !notString) {
           return ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
+            ptrTypeEq(ptrExpr, PTR.STRING),
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
             ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])]]
         }
@@ -882,7 +882,7 @@ export default (ctx) => {
     if (ctx.module.modules['string'] && !notString)
       return typed(
         ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
+          ptrTypeEq(ptrExpr, PTR.STRING),
           ['then', stringLoad()],
           ['else', arrayLoad]],
         'f64')
