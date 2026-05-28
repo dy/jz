@@ -9,6 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq } from '../src/ir.js'
+import { inBoundsArrIdx } from '../src/type.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
@@ -795,7 +796,15 @@ export default (ctx) => {
       // the narrowing fixpoint (carried onto params via paramReps).
       const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
       const hasElemFact = rep?.arrayElemSchema != null || rep?.arrayElemValType != null
-      if (hasElemFact && keyIsNum) {
+      // Take the unchecked inline load ONLY when the index is proven in-bounds by an
+      // enclosing canonical loop `for (let i=C; i<arr.length; i++)`. Skipping the bounds
+      // check on an arbitrary numeric index is unsound: `a[1]` on a length-1 array would
+      // read the raw (uninitialized) cell instead of undefined. Constant / unproven
+      // indices fall through to __arr_idx(_known) below, which bounds-checks → UNDEF_NAN.
+      const idxProvenInBounds = hasElemFact && keyIsNum
+        && typeof arr === 'string' && typeof idx === 'string'
+        && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+      if (idxProvenInBounds) {
         inc('__ptr_offset')
         // __ptr_offset returns i32 — base local must be i32 (not the default
         // f64 NaN-box temp). Flat tee form so downstream peepholes can fold
@@ -805,6 +814,23 @@ export default (ctx) => {
         return typed(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
           vi), 'f64')
+      }
+      // Known-elem array, numeric key, NOT proven in-bounds → inline bounds-checked
+      // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
+      // inline, so watr hoists the loop-invariant len load and CSEs the base — the
+      // residual cost is a single (predictable) compare per access, not a call. Skipping
+      // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
+      if (hasElemFact && keyIsNum) {
+        inc('__ptr_offset')
+        const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
+        return typed(['if', ['result', 'f64'],
+          ['i32.lt_u',
+            ['local.tee', `$${idxI32}`, vi],
+            ['i32.load', ['i32.sub',
+              ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+              ['i32.const', 8]]]],
+          ['then', ctx.abi.array.ops.load(['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
+          ['else', undefExpr()]], 'f64')
       }
       const baseTmp = temp()
       // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;
