@@ -2642,23 +2642,33 @@ const encodeDataString = (bytes) => {
   return str + '"'
 }
 
-/** Trim trailing zeros from data content items */
+/** Trim trailing zeros from data content items.
+ *  Assembles via Uint8Array.set (not push(...spread)) — a data segment can be
+ *  hundreds of KB, and spreading it as call args overflows V8's argument stack. */
 const trimTrailingZeros = (items) => {
-  const bytes = []
+  const chunks = []
+  let total = 0
   for (const item of items) {
+    let chunk
     if (typeof item === 'string') {
-      bytes.push(...parseDataString(item))
+      chunk = parseDataString(item)
     } else if (Array.isArray(item) && item[0] === 'i8') {
-      for (let i = 1; i < item.length; i++) bytes.push(Number(item[i]) & 0xff)
+      chunk = new Uint8Array(item.length - 1)
+      for (let i = 1; i < item.length; i++) chunk[i - 1] = Number(item[i]) & 0xff
     } else {
       return items // non-trimmable item
     }
+    chunks.push(chunk)
+    total += chunk.length
   }
+  const bytes = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) { bytes.set(c, off); off += c.length }
   let end = bytes.length
   while (end > 0 && bytes[end - 1] === 0) end--
   if (end === bytes.length) return items
   if (end === 0) return []
-  return [encodeDataString(new Uint8Array(bytes.slice(0, end)))]
+  return [encodeDataString(bytes.subarray(0, end))]
 }
 
 /** Extract { memidx, offset } from an active data segment with constant offset */
