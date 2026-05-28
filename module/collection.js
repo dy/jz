@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, elemStore, elemLoad } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad } from '../src/ir.js'
 import { emit, flat, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -620,7 +620,7 @@ export default (ctx) => {
       ['local.set', `$${o}`, asF64(emit(collExpr))],
       ['local.set', `$${k}`, asI64(emit(key))],
       ['f64.convert_i32_s', ['if', ['result', 'i32'],
-        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', PTR.MAP]],
+        ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
         ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`]]],
         ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`]]]]]], 'f64')
   }
@@ -659,20 +659,18 @@ export default (ctx) => {
   // first (non-pointer numbers must report false), then compare __ptr_type tag.
   // Mirrors module/array.js's Array.isArray inline form. Result is i32 (boolean).
   ctx.core.emit['__is_map'] = (x) => {
-    inc('__ptr_type')
     const v = asF64(emit(x))
     const t = temp('imap')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.MAP]]], 'i32')
+      ptrTypeEq(['local.get', `$${t}`], PTR.MAP)], 'i32')
   }
   ctx.core.emit['__is_set'] = (x) => {
-    inc('__ptr_type')
     const v = asF64(emit(x))
     const t = temp('iset')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.SET]]], 'i32')
+      ptrTypeEq(['local.get', `$${t}`], PTR.SET)], 'i32')
   }
 
   // Generated Set probe functions

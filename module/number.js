@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, ptrTypeEq } from '../src/ir.js'
 import { ssoBitI64Hex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
@@ -1102,7 +1102,7 @@ export default (ctx) => {
         ['if', ['result', 'f64'], ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
           ['then', ['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]]]],
           ['else', ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
+            ptrTypeEq(['local.get', `$${t}`], PTR.STRING),
             ['then', ['call', '$__to_bigint', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
             ['else', ['local.get', `$${t}`]]]]]], 'f64')
     }

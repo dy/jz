@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../src/type.js'
@@ -316,7 +316,7 @@ export default (ctx) => {
               numAlloc.ptr]],
             // Pointer: array → copy elements; buffer/typed → zero-copy view on same offset
             ['else', ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.ARRAY]],
+              ptrTypeEq(['local.get', `$${src}`], PTR.ARRAY),
               ['then', ctx.core.emit[`${name}.from`](src)],
               ['else', mkPtrIR(PTR.TYPED, aux,
                 ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]], 'f64')
@@ -484,8 +484,7 @@ export default (ctx) => {
   ctx.core.emit['ArrayBuffer.isView'] = (v) => {
     if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
-    return typed(['f64.convert_i32_s',
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', va]], ['i32.const', PTR.TYPED]]], 'f64')
+    return typed(['f64.convert_i32_s', ptrTypeEq(va, PTR.TYPED)], 'f64')
   }
 
   // x instanceof Float64Array | Int32Array | … — typed-pointer predicate emitted
@@ -498,7 +497,7 @@ export default (ctx) => {
     const t = temp('ityp')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.TYPED]]], 'i32')
+      ptrTypeEq(['local.get', `$${t}`], PTR.TYPED)], 'i32')
   }
 
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.

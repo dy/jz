@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
@@ -539,7 +539,7 @@ export default (ctx) => {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${value}`]]], ['i32.const', PTR.ARRAY]],
+            ptrTypeEq(['local.get', `$${value}`], PTR.ARRAY),
             ['then', ['block', ['result', 'f64'],
               ['local.set', `$${dst2}`, ['call', '$__arr_from', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
               ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
