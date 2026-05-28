@@ -35,7 +35,7 @@ import {
 import { typedElemAux } from '../type.js'
 import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
-import { optimizeFunc, treeshake } from '../optimize/index.js'
+import { optimizeFunc, treeshake, resolveOptimize } from '../optimize/index.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -95,17 +95,18 @@ const isExported = f => {
   return false
 }
 
-/** Iterate JS-visible export names that resolve to `funcName`. Used to emit
- *  per-export ABI metadata in custom sections — one entry per JS-visible name,
- *  since the host (interop.js wrap) keys by export name. */
-function* exportNamesOf(funcName) {
+/** Collect JS-visible export names that resolve to `funcName` (as an array).
+ *  Used to emit per-export ABI metadata in custom sections — one entry per
+ *  JS-visible name, since the host (interop.js wrap) keys by export name. */
+function exportNamesOf(funcName) {
+  const names = []
   for (const [key, val] of Object.entries(ctx.func.exports)) {
-    if (val === true && key === funcName) yield key
-    else if (val === funcName) yield key
+    if ((val === true && key === funcName) || val === funcName) names.push(key)
   }
+  return names
 }
 
-const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : fn()
+const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, fn) : fn()
 
 // Per-compile func name set + map live on ctx.func.names / ctx.func.map,
 // populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
@@ -743,13 +744,15 @@ function emitClosureBody(cb) {
   // Pre-allocate cache locals for env unpacking
   const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
   if (envBase) ctx.func.locals.set(envBase, 'i32')
-  // Rest param: allocate helper locals (len + offset) before emitting decls
-  let restOff, restLen
+  // Rest param: allocate helper locals (len + offset + spill loop index) before emitting decls
+  let restOff, restLen, restIdx
   if (cb.rest) {
     restOff = `${T}restOff${ctx.func.uniq++}`
     restLen = `${T}restLen${ctx.func.uniq++}`
+    restIdx = `${T}restIdx${ctx.func.uniq++}`
     ctx.func.locals.set(restOff, 'i32')
     ctx.func.locals.set(restLen, 'i32')
+    ctx.func.locals.set(restIdx, 'i32')
     inc('__alloc_hdr', '__mkptr')
   }
 
@@ -823,20 +826,20 @@ function emitClosureBody(cb) {
     }
   }
 
-  // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
-  // len = clamp(argc - fixedParams, 0, restSlots). Rest-param closures receive
-  // at most (width - fixedParams) rest args — spread callers with
-  // more dynamic elements lose the overflow (documented limitation).
+  // Rest param: pack args a[fixedParams..argc-1] into a fresh array.
+  // len = max(argc - fixedParams, 0). The first `restSlots = width - fixedParams`
+  // come from the inline arg slots; any overflow (argc > width, only reachable via a
+  // spread call) is read straight from the caller's full args array, whose offset the
+  // spread path published in $__closure_spill. This gives unbounded variadic arity.
   if (cb.rest) {
     const fixedN = fixedParamN
     const restSlots = W - fixedN
+    ctx.scope.globals.set('__closure_spill', '(global $__closure_spill (mut i32) (i32.const 0))')
     fn.push(['local.set', `$${restLen}`,
       ['select',
         ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
         ['i32.const', 0],
         ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
-    fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
-      ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
     fn.push(['local.set', `$${restOff}`,
       ['call', '$__alloc_hdr',
         ['local.get', `$${restLen}`], ['local.get', `$${restLen}`]]])
@@ -846,6 +849,21 @@ function emitClosureBody(cb) {
           ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
           ['local.get', `$__a${fixedN + i}`]]]])
     }
+    // Overflow beyond the inline slots: copy args[width..argc-1] from the spill array
+    // (set by the spread-call site). rest[i] = spill[(fixedN+i)*8] for i in [restSlots, restLen).
+    const rid = ctx.func.uniq++
+    fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
+      ['then',
+        ['local.set', `$${restIdx}`, ['i32.const', restSlots]],
+        ['block', `$restEnd${rid}`,
+          ['loop', `$restLoop${rid}`,
+            ['br_if', `$restEnd${rid}`, ['i32.ge_s', ['local.get', `$${restIdx}`], ['local.get', `$${restLen}`]]],
+            ['f64.store',
+              ['i32.add', ['local.get', `$${restOff}`], ['i32.mul', ['local.get', `$${restIdx}`], ['i32.const', 8]]],
+              ['f64.load', ['i32.add', ['global.get', '$__closure_spill'],
+                ['i32.mul', ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', fixedN]], ['i32.const', 8]]]]],
+            ['local.set', `$${restIdx}`, ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', 1]]],
+            ['br', `$restLoop${rid}`]]]]])
     const restValue = ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]
     if (boxedParamNames.has(cb.rest)) {
       fn.push(
@@ -875,6 +893,12 @@ function emitClosureBody(cb) {
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler) {
+  // Optimize config is normally resolved by the caller (jzCompileInner / kernel.js
+  // compileParsed). The self-host kernel runs this bare `compile` directly, so guard
+  // the unresolved (`null`) state here: an absent config means "no optimization".
+  // Without this, optimize-gated passes read `cfg && cfg.x === false` with `cfg = null`
+  // and wrongly run (e.g. inlineHotInternalCalls), diverging from the host's ALL_OFF.
+  if (ctx.transform.optimize == null) ctx.transform.optimize = resolveOptimize(false)
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.func.names.clear()
   ctx.func.map.clear()

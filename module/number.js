@@ -15,7 +15,7 @@ import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
 // `__to_num` (Number coercion) and `__parseFloat` both scan a StrDecimalLiteral
@@ -143,6 +143,8 @@ export default (ctx) => {
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __radix_str: ['__mkstr'],
+    __num_radix: ['__ftoa', '__mkstr'],
     __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
     __to_bigint: ['__char_at', '__str_byteLen', '__num_to_bigint'],
@@ -208,11 +210,127 @@ export default (ctx) => {
       (br $rl)))
     (local.get $len))`
 
+  // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
+  // Signed integer → radix string for BigInt.prototype.toString(radix). Digits go
+  // 0-9 then a-z (lowercase, per spec); magnitude is taken unsigned so i64.MIN
+  // (whose two's-complement negation is itself) formats correctly via div_u/rem_u.
+  ctx.core.stdlib['__radix_str'] = `(func $__radix_str (param $val i64) (param $radix i32) (result f64)
+    (local $buf i32) (local $pos i32) (local $neg i32) (local $mag i64) (local $r i64)
+    (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32)
+    (local.set $buf (call $__alloc (i32.const 72)))
+    (local.set $r (i64.extend_i32_s (local.get $radix)))
+    (if (i64.eqz (local.get $val))
+      (then (i32.store8 (local.get $buf) (i32.const 48)) (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+    (local.set $mag (local.get $val))
+    (if (i64.lt_s (local.get $val) (i64.const 0))
+      (then (local.set $neg (i32.const 1)) (local.set $mag (i64.sub (i64.const 0) (local.get $val)))))
+    (block $mb (loop $ml
+      (br_if $mb (i64.eqz (local.get $mag)))
+      (local.set $dg (i32.wrap_i64 (i64.rem_u (local.get $mag) (local.get $r))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+        (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+      (local.set $mag (i64.div_u (local.get $mag) (local.get $r)))
+      (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+      (br $ml)))
+    (if (local.get $neg)
+      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
+    (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
+    (block $rb (loop $rl
+      (br_if $rb (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $i)) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rl)))
+    (call $__mkstr (local.get $buf) (local.get $pos)))`
+
+  // __num_radix(val: f64, radix: i32) → f64 (NaN-boxed string)
+  // Number.prototype.toString(radix) for radix != 10. Non-finite values defer to
+  // __ftoa ("NaN"/"Infinity"/"-Infinity"). Integer part uses exact i64 division
+  // (magnitude bounded by jz's i64 BigInt domain); the fraction multiplies out in
+  // f64, capped at 100 digits (radix fractions are implementation-defined precision).
+  ctx.core.stdlib['__num_radix'] = `(func $__num_radix (param $val f64) (param $radix i32) (result f64)
+    (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
+    (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
+    (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
+      (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
+    (local.set $buf (call $__alloc (i32.const 180)))
+    (local.set $r (i64.extend_i32_s (local.get $radix)))
+    (local.set $rf (f64.convert_i32_s (local.get $radix)))
+    (if (f64.lt (local.get $val) (f64.const 0))
+      (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
+    (local.set $int (f64.floor (local.get $val)))
+    (local.set $frac (f64.sub (local.get $val) (local.get $int)))
+    (local.set $iv (i64.trunc_sat_f64_u (local.get $int)))
+    (if (i64.eqz (local.get $iv))
+      (then (i32.store8 (local.get $buf) (i32.const 48)) (local.set $pos (i32.const 1)))
+      (else
+        (block $ib (loop $il
+          (br_if $ib (i64.eqz (local.get $iv)))
+          (local.set $dg (i32.wrap_i64 (i64.rem_u (local.get $iv) (local.get $r))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+            (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+          (local.set $iv (i64.div_u (local.get $iv) (local.get $r)))
+          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+          (br $il)))))
+    (if (local.get $neg)
+      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
+    (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
+    (block $rb (loop $rl
+      (br_if $rb (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $i)) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rl)))
+    (if (f64.gt (local.get $frac) (f64.const 0))
+      (then
+        (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (block $fb (loop $fl
+          (br_if $fb (f64.le (local.get $frac) (f64.const 0)))
+          (br_if $fb (i32.ge_s (local.get $fn) (i32.const 100)))
+          (local.set $frac (f64.mul (local.get $frac) (local.get $rf)))
+          (local.set $dg (i32.trunc_f64_s (f64.floor (local.get $frac))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+            (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+          (local.set $frac (f64.sub (local.get $frac) (f64.floor (local.get $frac))))
+          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+          (local.set $fn (i32.add (local.get $fn) (i32.const 1)))
+          (br $fl)))))
+    ${!ctx.memory.shared ? `
+    ;; When __mkstr packed an SSO result it allocated nothing, so the digit scratch
+    ;; ($buf, at heap top) is dead — reclaim it so a heap-top accumulator stays on
+    ;; top and \`s += n.toString(r)\` bump-extends instead of reallocating (O(n)).
+    (local.set $rv (call $__mkstr (local.get $buf) (local.get $pos)))
+    (if (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $rv)) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT}))
+      (then (global.set $__heap (local.get $buf))))
+    (local.get $rv)` : `(call $__mkstr (local.get $buf) (local.get $pos))`})`
+
   // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
   // Hot (~60M calls in watr self-host via __ftoa). bulk memory.copy is ~10× faster than
   // a hand-rolled byte loop (wasm2c lowers it to memcpy under PGO+LTO).
   ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
-    (local $off i32)
+    (local $off i32) (local $i i32) (local $packed i32) (local $b i32)
+    ;; SSO fast path: ≤4 ASCII bytes pack into the pointer with no allocation, so a
+    ;; number-format result doesn't displace a heap-top accumulator — keeping the
+    ;; canonical \`s += n.toString(r)\` builder O(n) via the bump-extend path.
+    (if (i32.le_u (local.get $len) (i32.const 4))
+      (then
+        (block $heap
+          (loop $pk
+            (if (i32.lt_u (local.get $i) (local.get $len))
+              (then
+                (local.set $b (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+                (br_if $heap (i32.ge_u (local.get $b) (i32.const 0x80)))
+                (local.set $packed (i32.or (local.get $packed) (i32.shl (local.get $b) (i32.shl (local.get $i) (i32.const 3)))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $pk))))
+          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $packed))))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
@@ -894,8 +1012,27 @@ export default (ctx) => {
 
   // === Instance method emitters ===
 
-  reg('.number:toString', ['__ftoa'], n =>
-    typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64'))
+  const ftoaDefault = (v) => typed(['call', '$__ftoa', v, ['i32.const', 0], ['i32.const', 0]], 'f64')
+  reg('.number:toString', ['__ftoa', '__num_radix'], (n, radix) => {
+    const v = asF64(emit(n))
+    if (radix == null) return ftoaDefault(v)
+    const rv = emit(radix)
+    // Constant radix folds the 10-vs-other choice at compile time; radix 10 keeps
+    // __ftoa's shortest-repr (the radix loop would emit float-noise tail digits).
+    if (Array.isArray(rv) && rv[0] === 'f64.const' && typeof rv[1] === 'number')
+      return rv[1] === 10 ? ftoaDefault(v) : typed(['call', '$__num_radix', v, ['i32.const', rv[1] | 0]], 'f64')
+    const vt = temp('rv'), rt = tempI32('rr')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${vt}`, v],
+      ['local.set', `$${rt}`, asI32(rv)],
+      ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${rt}`], ['i32.const', 10]],
+        ['then', ftoaDefault(['local.get', `$${vt}`])],
+        ['else', ['call', '$__num_radix', ['local.get', `$${vt}`], ['local.get', `$${rt}`]]]]], 'f64')
+  })
+
+  // BigInt.prototype.toString(radix) — i64-exact, default radix 10.
+  reg('.bigint:toString', ['__radix_str'], (n, radix) =>
+    typed(['call', '$__radix_str', asI64(emit(n)), radix == null ? ['i32.const', 10] : asI32(emit(radix))], 'f64'))
 
   reg('.number:toFixed', ['__ftoa'], (n, d) =>
     typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64'))

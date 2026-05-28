@@ -204,8 +204,10 @@ export function unboxBoolIR(f64expr) {
 
 /** Max arity of inline closure slots. Closures are compiled with signature
  *  (env f64, argc i32, a0..a{MAX-1} f64) → f64 — no per-call heap alloc.
- *  Calls with more args than MAX error; rest-param closures receive at most
- *  MAX rest args when invoked via spread with >MAX dynamic elements. */
+ *  Direct (non-spread) calls with more args than MAX error. Spread calls are
+ *  unbounded: the spread site publishes the full args-array offset in
+ *  $__closure_spill, and a rest-param callee reads args[MAX..argc-1] from it
+ *  (see module/function.js spread path + compile/index.js rest collection). */
 export const MAX_CLOSURE_ARITY = 8
 
 /** Matches WASM instructions that require a memory section. */
@@ -328,8 +330,8 @@ export function appendStaticSlots(slots, headerBytes = 0) {
 /** Check if emitted node is a compile-time constant. */
 export const isLit = n => (n[0] === 'i32.const' || n[0] === 'f64.const') && typeof n[1] === 'number'
 export const litVal = n => n[1]
-const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] == null
-const isUndefLit = n => Array.isArray(n) && n.length === 0
+export const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] == null
+export const isUndefLit = n => Array.isArray(n) && n.length === 0
 export const isNullishLit = n => isNullLit(n) || isUndefLit(n)
 
 /** Side-effect-free (safe for WASM select). */
@@ -758,6 +760,28 @@ export const isUndef = (f64expr) => {
   return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]], 'i32')
 }
 
+/** Check if f64 expr is exactly `null` (NULL_NAN). Returns i32.
+ *  Strict `=== null` must match only null — not undefined (use isUndef for that).
+ *  Mirror of isUndef; same peepholes on boxed sentinel literals / unboxed ptrs. */
+export const isNull = (f64expr) => {
+  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
+  if (Array.isArray(f64expr)) {
+    if (f64expr[0] === 'f64.const') {
+      const lit = String(f64expr[1])
+      if (lit.startsWith('nan:')) {
+        const bits = lit.slice(4)
+        return typed(['i32.const', bits === NULL_NAN ? 1 : 0], 'i32')
+      }
+      return typed(['i32.const', 0], 'i32')
+    }
+    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
+      const bits = String(f64expr[1][1])
+      return typed(['i32.const', bits === NULL_NAN ? 1 : 0], 'i32')
+    }
+  }
+  return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', NULL_NAN]], 'i32')
+}
+
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.
  *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq. */
 const BOOL_ATOM_MASK = '0x' + BigInt.asUintN(64, ~(1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
@@ -803,7 +827,7 @@ export function elemStore(ptr, i, val) {
  *  re-loading from ptr-8.
  *  Optional `ptrLocal`: caller already has the resolved ARRAY data pointer in
  *  an i32 local. Reuses it instead of calling __ptr_offset again. */
-export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
+export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse) {
   const arr = ptrLocal ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
   const len = lenLocal ?? tempI32('al')
   const id = ctx.func.uniq++
@@ -817,13 +841,18 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
   }
   if (!lenLocal) setup.push(
     ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
+  // Forward: i 0→len-1. Reverse (findLast*): i len-1→0, same elem indices.
+  const start = reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]
+  const done = reverse ? ['i32.lt_s', ['local.get', `$${i}`], ['i32.const', 0]]
+                       : ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]
+  const step = ['i32.const', reverse ? -1 : 1]
   setup.push(
-    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['local.set', `$${i}`, start],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ['br_if', `$brk${id}`, done],
       ['local.set', `$${item}`, elemLoad(ptr, i)],
       ...bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64')),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], step]],
       ['br', `$loop${id}`]]])
   return setup
 }

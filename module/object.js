@@ -7,12 +7,11 @@
  * @module object
  */
 
-import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, tempI64, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
-import { includeModule } from '../src/autoload.js'
 
 
 export default (ctx) => {
@@ -55,11 +54,21 @@ export default (ctx) => {
       if (Array.isArray(p) && p[0] === ':') { names.push(p[1]); values.push(p[2]) }
     }
 
-    // Use variable's merged schema if available (from Object.assign inference), else register literal schema.
-    let schemaId = ctx.schema.register(names)
+    // Use variable's merged schema if available (from Object.assign inference),
+    // else register the literal's own schema. The merged schema is adopted only
+    // when it is a *superset* of the literal's own fields — a legitimate
+    // accumulation (`let o = {}; o.x = …`) always contains every literal key.
+    // A merged schema missing any literal field is a stale cross-function name
+    // collision (ctx.schema.vars is module-global, keyed by bare name): adopting
+    // it would size the alloc to the wrong schema and overflow the object's
+    // slots, corrupting adjacent heap. The literal is authoritative for its own
+    // shape, so re-bind the variable to it for precise same-function reads.
+    const litId = ctx.schema.register(names)
+    let schemaId = litId
     if (target) {
       const merged = ctx.schema.resolve(target)
-      if (merged) schemaId = ctx.schema.idOf(target)
+      if (merged && names.every(n => merged.includes(n))) schemaId = ctx.schema.idOf(target)
+      else if (names.length) ctx.schema.vars.set(target, litId)
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
@@ -106,6 +115,15 @@ export default (ctx) => {
   // === Object static methods ===
 
   ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
+
+  // Object.is(a, b) — SameValue, which on NaN-boxed f64 values is exact bit
+  // equality. That is precisely why it diverges from `===`: +0 and -0 carry
+  // distinct bit patterns (→ false), and a NaN equals itself bit-for-bit
+  // (→ true). Objects/booleans/null/undefined compare by their fixed boxed
+  // bits, i.e. reference identity, as SameValue requires. (Two distinct heap
+  // strings would compare by pointer rather than content; jz only uses numeric
+  // Object.is — overwhelmingly `Object.is(x, -0)` — so that path never arises.)
+  ctx.core.emit['Object.is'] = (a, b) => typed(['i64.eq', asI64(emit(a)), asI64(emit(b))], 'i32')
 
   // Object.isExtensible / isSealed / isFrozen.
   // jz fixes an object's schema at construction: a `{…}` literal can
@@ -175,9 +193,13 @@ export default (ctx) => {
     if (arrayValType(obj)) return idxKeys(obj, '__len')
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
-    if (schema) return emitStringArray(schema)
-    // Receiver type unknown at compile time. Dispatch on ptr-type at
-    // runtime: HASH walks the probe table, anything else returns [].
+    // A static schema lists only the literal-known keys; a var that takes
+    // computed writes (`o[k]=v`) also carries props in its per-object dyn HASH
+    // that the schema omits. Enumerate those live (schema ∪ dyn props) — the gap
+    // that blocked metacircularity (the compiler grows dicts then enumerates).
+    if (schema && !mayHaveDynProps(obj)) return emitStringArray(schema)
+    // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
+    // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
     return emitRuntimeKeys(obj)
   }
   ctx.core.emit['Object.getOwnPropertyNames'] = ctx.core.emit['Object.keys']
@@ -237,7 +259,7 @@ export default (ctx) => {
     if (arrayValType(obj)) { inc('__arr_from'); return typed(['call', '$__arr_from', asI64(emit(obj))], 'f64') }
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
-    if (!schema) return emitRuntimeValues(obj)
+    if (!schema || mayHaveDynProps(obj)) return emitRuntimeValues(obj)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('ov'), base = tempI32('vb')
@@ -300,7 +322,7 @@ export default (ctx) => {
     }
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
-    if (!schema) return emitRuntimeEntries(obj)
+    if (!schema || mayHaveDynProps(obj)) return emitRuntimeEntries(obj)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
@@ -362,7 +384,7 @@ export default (ctx) => {
     }
     const tSchema = resolveSchema(target)
     const sourceSchemas = sources.map(resolveSchema)
-    if (!tSchema) err('Object.assign: target needs known schema')
+    if (!tSchema) return emitObjectAssignDynamic(target, sources)
     if (sourceSchemas.some(s => !s)) return emitDynamicAssign(target, sources, sourceSchemas)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
@@ -427,7 +449,7 @@ export default (ctx) => {
       // Header propsPtr lives at $off-16 (current ARRAY layout). We alias src's hash
       // by copying the slot; __dyn_move covers the shifted-array case where props
       // were migrated to the global __dyn_props.
-      includeModule('array')
+      ctx.module.include('array')
       inc('__arr_from', '__dyn_move', '__ptr_offset')
       const src = temp('ocs')
       const dst = temp('ocd')
@@ -450,7 +472,7 @@ export default (ctx) => {
     if (!schema) {
       if (protoType == null) {
         const value = temp('ocr')
-        includeModule('array')
+        ctx.module.include('array')
         inc('__arr_from', '__dyn_move', '__ptr_offset')
         const dst2 = temp('ocd')
         const srcOff2 = tempI32('ocso')
@@ -496,7 +518,7 @@ export default (ctx) => {
 // Used only after the target schema is known. Unknown HASH targets can grow by
 // returning a new pointer, which would not preserve aliases to the old value.
 function emitDynamicAssign(target, sources, sourceSchemas = sources.map(resolveSchema)) {
-  includeModule('collection')
+  ctx.module.include('collection')
   inc('__hash_set', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('adt'), s = temp('ads'), sBase = tempI32('adsb')
   const keys = temp('adk'), keysBase = tempI32('adkb'), len = tempI32('adn')
@@ -544,6 +566,56 @@ function emitDynamicAssign(target, sources, sourceSchemas = sources.map(resolveS
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }
 
+// Object.assign into a target whose schema is unknown at compile time (e.g.
+// `ctx.core.stdlibDeps` — an empty `{}` grown dynamically). Copy every source
+// key into the target's dynamic props via __dyn_set, which updates the
+// per-object hash in place: the target pointer stays stable, so no write-back
+// to the (possibly member-access) lvalue is needed. Returns the target.
+function emitObjectAssignDynamic(target, sources) {
+  ctx.module.include('collection')
+  inc('__dyn_set', '__dyn_get_any', '__ptr_offset', '__len')
+  const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
+  const keys = temp('oak'), keysBase = tempI32('oakb'), len = tempI32('oan')
+  const i = tempI32('oai'), key = temp('oakey')
+  const id = ctx.func.uniq++
+  const setKey = (keyBits, valBits) =>
+    ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]
+  const body = [['local.set', `$${t}`, asF64(emit(target))]]
+
+  for (let si = 0; si < sources.length; si++) {
+    const source = sources[si]
+    const sSchema = resolveSchema(source)
+    body.push(['local.set', `$${s}`, asF64(emit(source))])
+    if (sSchema) {
+      body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
+      for (let pi = 0; pi < sSchema.length; pi++)
+        body.push(setKey(asI64(emit(['str', String(sSchema[pi])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], pi)))
+      continue
+    }
+    body.push(
+      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak')],
+      ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$oabrk${id}_${si}`, ['loop', `$oaloop${id}_${si}`,
+        ['br_if', `$oabrk${id}_${si}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${key}`, ['f64.load',
+          ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]],
+          ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]),
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$oaloop${id}_${si}`]]])
+  }
+  body.push(['local.get', `$${t}`])
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+// A bound var is dynamically keyed when some `obj[k]=v` (non-literal key) wrote
+// to it — program-facts records these in `ctx.types.dynKeyVars`. Such an object
+// can hold props beyond its static schema, so schema-only enumeration would drop
+// them; callers route it through the runtime schema∪dyn-props merge instead.
+const mayHaveDynProps = (obj) => typeof obj === 'string' && !!ctx.types.dynKeyVars?.has(obj)
+
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
   if (Array.isArray(obj) && obj[0] === '{}')
@@ -553,6 +625,18 @@ function resolveSchema(obj) {
   const sh = shapeOf(obj)
   if (sh?.val === VAL.OBJECT && sh.names) return sh.names
   return null
+}
+
+// Schema of a spread SOURCE, for the OBJECT-vs-HASH decision. A function
+// parameter's runtime shape is caller-determined — its `resolveSchema` is an
+// inferred/union guess bound only by emit (analysis sees it as unknown). Trusting
+// it would (a) slot-index-copy from a layout the actual argument need not have and
+// (b) make emit build an OBJECT while analysis HASH-typed the binding, so reads
+// misdispatch. Treat params as unknown → dynamic runtime-key spread (always sound),
+// mirroring spreadSchema in src/kind.js so both phases agree.
+function spreadSourceSchema(obj) {
+  if (typeof obj === 'string' && ctx.func.current?.params?.some(p => p.name === obj)) return null
+  return resolveSchema(obj)
 }
 
 /**
@@ -569,22 +653,27 @@ function takeLiteralTarget() {
 }
 
 function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
-  // Collect merged schema: union of all spread source schemas + explicit props
+  // Resolve every spread source's schema. A source with no static schema means
+  // its full key set is unknown at compile time, so the merge result must be a
+  // HASH (dynamic dict) — a fixed schema would silently drop the source's keys
+  // it doesn't list. Only when EVERY source is known do we build the fixed-shape
+  // OBJECT below.
   const allNames = []
   const addName = n => { if (!allNames.includes(n)) allNames.push(n) }
+  let allKnown = true
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
-      const s = resolveSchema(p[1])
+      const s = spreadSourceSchema(p[1])
       if (s) for (const n of s) addName(n)
+      else allKnown = false
     } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
   }
-  // Pragmatic fallback: single spread source with no resolvable schema
-  // (e.g. `{ ...opts }` where opts is a parameter). Emit source directly.
-  // Alias rather than clone — safe for read-only use; mutation would affect source.
-  if (!allNames.length && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
+  // Single unknown spread `{ ...opts }` → alias the source directly. Safe for
+  // read-only use; mutation would affect the source (a true clone takes the
+  // dynamic-merge path below).
+  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...')
     return typed(asF64(emit(props[0][1])), 'f64')
-  }
-  if (!allNames.length) err('Object spread: cannot resolve source schema')
+  if (!allKnown) return emitDynamicSpread(props)
 
   const schemaId = ctx.schema.register(allNames)
   const schema = ctx.schema.list[schemaId]
@@ -595,26 +684,9 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]]]
 
   // Process props in order — later props override earlier (JS semantics)
-  let srcF
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
       const sSchema = resolveSchema(p[1])
-      if (!sSchema) {
-        // Unknown-schema source (e.g. parameter). Override each slot via runtime
-        // __dyn_get_or using existing value as fallback.
-        includeModule('collection')
-        inc('__dyn_get_or')
-        srcF ??= temp('ospf')
-        body.push(['local.set', `$${srcF}`, asF64(emit(p[1]))])
-        for (let i = 0; i < schema.length; i++) {
-          const base = ['local.get', `$${t}`]
-          body.push(ctx.abi.object.ops.store(base, i,
-            ['f64.reinterpret_i64', ['call', '$__dyn_get_or', ['i64.reinterpret_f64', ['local.get', `$${srcF}`]],
-              asI64(emit(['str', String(schema[i])])),
-              ctx.abi.object.ops.loadBits(base, i)]]))
-        }
-        continue
-      }
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])
@@ -635,6 +707,55 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
         ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])
   }
   body.push(['local.get', `$${ptr}`])
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+// Spread merge when any source schema is unknown: build a fresh HASH and copy
+// every key of each source in order (later overrides earlier — JS semantics),
+// threading explicit `k: v` props at their source position. Mirrors
+// emitDynamicAssign but seeds an empty HASH instead of an existing target.
+function emitDynamicSpread(props) {
+  ctx.module.include('collection')
+  inc('__hash_new', '__hash_set', '__dyn_get_any', '__ptr_offset', '__len')
+  const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
+  const keys = temp('dsk'), keysBase = tempI32('dskb'), len = tempI32('dsn')
+  const i = tempI32('dsi'), key = temp('dskey')
+  const id = ctx.func.uniq++
+  // `__hash_set` may rehash and return a new pointer, so thread it back into $t.
+  const setKey = (keyBits, valBits) =>
+    ['local.set', `$${t}`, ['f64.reinterpret_i64',
+      ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]]
+  const body = [['local.set', `$${t}`, ['call', '$__hash_new']]]
+
+  for (let pi = 0; pi < props.length; pi++) {
+    const p = props[pi]
+    if (Array.isArray(p) && p[0] === ':') {
+      body.push(setKey(asI64(emit(['str', String(p[1])])), asI64(emit(p[2]))))
+      continue
+    }
+    const sSchema = spreadSourceSchema(p[1])
+    body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
+    if (sSchema) {
+      body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
+      for (let si = 0; si < sSchema.length; si++)
+        body.push(setKey(asI64(emit(['str', String(sSchema[si])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si)))
+      continue
+    }
+    body.push(
+      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk')],
+      ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$dsbrk${id}_${pi}`, ['loop', `$dsloop${id}_${pi}`,
+        ['br_if', `$dsbrk${id}_${pi}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${key}`, ['f64.load',
+          ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]],
+          ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]),
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$dsloop${id}_${pi}`]]])
+  }
+  body.push(['local.get', `$${t}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }
 
@@ -688,9 +809,9 @@ function emitHashEntries(obj) {
 // IR shape from the same source — only difference is whether they enter from
 // a static type guard or a runtime ptr-type check.
 function hashKeysFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len')
+  inc('__ptr_offset', '__cap', '__len', '__coll_order')
   const off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
-  const i = tempI32('hki'), o = tempI32('hkj'), slot = tempI32('hks')
+  const i = tempI32('hki'), ord = tempI32('hkr'), slot = tempI32('hks')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
@@ -698,26 +819,23 @@ function hashKeysFromTemp(t) {
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
-    ['local.set', `$${o}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
-      ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
-        ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
-      ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
-        ['then',
-          elemStore(out.local, o,
-            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]),
-          ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+        ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+      elemStore(out.local, i,
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$loop${id}`]]],
     out.ptr]
 }
 
 function hashValuesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len')
+  inc('__ptr_offset', '__cap', '__len', '__coll_order')
   const off = tempI32('hvo'), cap = tempI32('hvc'), n = tempI32('hvn')
-  const i = tempI32('hvi'), o = tempI32('hvj'), slot = tempI32('hvs')
+  const i = tempI32('hvi'), ord = tempI32('hvr'), slot = tempI32('hvs')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hva' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
@@ -725,26 +843,23 @@ function hashValuesFromTemp(t) {
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
-    ['local.set', `$${o}`, ['i32.const', 0]],
     ['block', `$vbrk${id}`, ['loop', `$vloop${id}`,
-      ['br_if', `$vbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
-      ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
-        ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
-      ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
-        ['then',
-          elemStore(out.local, o,
-            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]),
-          ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+      ['br_if', `$vbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+        ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+      elemStore(out.local, i,
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$vloop${id}`]]],
     out.ptr]
 }
 
 function hashEntriesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len', '__alloc_hdr')
+  inc('__ptr_offset', '__cap', '__len', '__alloc_hdr', '__coll_order')
   const off = tempI32('heo'), cap = tempI32('hec'), n = tempI32('hen')
-  const i = tempI32('hei'), o = tempI32('hej'), slot = tempI32('hes'), pair = tempI32('hep')
+  const i = tempI32('hei'), ord = tempI32('her'), slot = tempI32('hes'), pair = tempI32('hep')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hea' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
@@ -752,21 +867,18 @@ function hashEntriesFromTemp(t) {
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
-    ['local.set', `$${o}`, ['i32.const', 0]],
     ['block', `$ebrk${id}`, ['loop', `$eloop${id}`,
-      ['br_if', `$ebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
-      ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
-        ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
-      ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
-        ['then',
-          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
-          ['f64.store', ['local.get', `$${pair}`],
-            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
-          ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
-          elemStore(out.local, o, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-          ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+      ['br_if', `$ebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+        ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+      ['f64.store', ['local.get', `$${pair}`],
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
+      ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$eloop${id}`]]],
     out.ptr]
@@ -799,9 +911,7 @@ function runtimeKeysFromTemp(t, tag) {
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashKeysFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
-        ['i32.and',
-          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-          ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
+        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectKeysFromTemp(t)],
         ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]]
 }
@@ -819,9 +929,7 @@ function emitRuntimeValues(obj) {
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashValuesFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
-        ['i32.and',
-          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-          ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
+        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectValuesFromTemp(t)],
         ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
 }
@@ -839,102 +947,293 @@ function emitRuntimeEntries(obj) {
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashEntriesFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
-        ['i32.and',
-          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-          ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
+        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectEntriesFromTemp(t)],
         ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
 }
 
-// Schema-keyed Object.keys: copy the schema's keys array (a jz Array of
-// STRINGs registered in __schema_tbl[sid]) into a fresh ARRAY so callers can
-// mutate without aliasing the schema substrate.
+// Object.keys for an OBJECT: enumerate BOTH the static schema keys (a jz Array
+// of STRINGs registered in __schema_tbl[sid]) AND the per-object dynamic props
+// (the HASH at off-16 of a heap object, holding keys added by computed writes
+// `o[k]=v`). A plain JS object reports all its own keys, so a fixed-schema view
+// alone would silently drop dynamically-added keys — the gap that blocked
+// metacircularity (kernel dicts grow via `o[k]=v` then enumerate via Object.keys).
+// Result is a fresh ARRAY so callers can mutate without aliasing the schema.
 function objectKeysFromTemp(t) {
-  inc('__alloc_hdr')
-  const sid = tempI32('oks'), src = tempI32('oksrc'), n = tempI32('okn'), out = tempI32('oko'), i = tempI32('oki')
+  inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  const sid = tempI32('oks'), src = tempI32('oksrc'), sn = tempI32('oksn')
+  const off = tempI32('okoff'), props = tempI64('okp'), poff = tempI32('okpo')
+  const pcap = tempI32('okpc'), dn = tempI32('okdn'), total = tempI32('oktot')
+  const out = tempI32('oko'), i = tempI32('oki'), o = tempI32('okj'), slot = tempI32('oksl'), ord = tempI32('okord')
+  const j = tempI32('okj2'), skip = tempI32('oksk')
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
+    // Static schema key count (sid from AUX bits → __schema_tbl row → koff; n@koff-8).
     ['local.set', `$${sid}`, ['i32.wrap_i64', ['i64.and',
       ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
       ['i64.const', LAYOUT.AUX_MASK]]]],
-    ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
-      ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
-      ['i64.const', LAYOUT.OFFSET_MASK]]]],
-    ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+    // Static schema keys require the table. A program whose only objects are
+    // dynamic dicts (empty `{}` + computed `o[k]=v`) never allocates __schema_tbl
+    // (assemble.js skips it when every schema is empty), leaving it 0 — reading
+    // __schema_tbl[sid] would then fault. Guard the read (sn=0 when absent); the
+    // dyn-props enumeration below still runs, so the computed props are seen.
+    ['local.set', `$${sn}`, ['i32.const', 0]],
+    ['local.set', `$${src}`, ['i32.const', 0]],
+    ['if', ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
+          ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
+          ['i64.const', LAYOUT.OFFSET_MASK]]]],
+        ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]],
+    // Per-object dyn props: heap OBJECTs (off >= __heap_start) carry a HASH
+    // propsPtr at off-16 (0 when none). Static-segment objects have no header,
+    // so they contribute no dyn keys (poff stays 0).
+    ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${dn}`, ['i32.const', 0]],
+    ['local.set', `$${poff}`, ['i32.const', 0]],
+    ['if', ['i32.ge_u', ['local.get', `$${off}`], ['global.get', '$__heap_start']],
+      ['then',
+        ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 16]]]],
+        ['if', ['i32.eq',
+            ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
+            ['i32.const', PTR.HASH]],
+          ['then',
+            // HASH forwards on growth; resolve through the chain (NOT the raw
+            // propsPtr offset) or a grown dyn-prop HASH reads its forward pointer
+            // (a heap offset) as len/cap.
+            ['local.set', `$${poff}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcap}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 4]]]],
+            ['local.set', `$${dn}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 8]]]]]]]],
+    // Over-allocate sn+dn; fill an exact count `o` and patch the length header
+    // (off-8) so dedup/tombstone gaps never expose garbage tail slots.
+    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['local.get', `$${dn}`]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
+      ['local.get', `$${total}`], ['local.get', `$${total}`]]],
+    ['local.set', `$${o}`, ['i32.const', 0]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$kbrk${id}`, ['loop', `$kloop${id}`,
-      ['br_if', `$kbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['br_if', `$kbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
       ['i64.store',
-        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]],
+        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
         ['i64.load',
           ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$kloop${id}`]]],
+    // Append dyn-prop keys in insertion order (__coll_order sorts the dn live
+    // 24-byte slots by packed seq; hash@+0, key@+8). Skip entries whose key is
+    // already in the schema — when an object literal has shadow=true (per
+    // needsDynShadow), each schema key is mirrored into propsPtr at construction
+    // so dyn-key reads hit the hash fast path; the mirror is not an enumeration
+    // entity, so Object.keys must not emit it twice.
+    ['if', ['i32.ne', ['local.get', `$${poff}`], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${poff}`], ['local.get', `$${pcap}`], ['i32.const', 24]]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$dbrk${id}`, ['loop', `$dloop${id}`,
+          ['br_if', `$dbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
+          ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+            ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+          ['local.set', `$${skip}`, ['i32.const', 0]],
+          ['local.set', `$${j}`, ['i32.const', 0]],
+          ['block', `$skbrk${id}`, ['loop', `$skloop${id}`,
+            ['br_if', `$skbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
+            ['if', ['i64.eq',
+                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
+                ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
+              ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$skbrk${id}`]]],
+            ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
+            ['br', `$skloop${id}`]]],
+          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
+            ['then',
+              ['i64.store',
+                ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
+                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
+              ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$dloop${id}`]]]]],
+    ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }
 
+// Mirror of objectKeysFromTemp emitting field VALUES: static schema slots
+// (object data at off+i*8) followed by per-object dyn-prop values (HASH slot
+// value@+16). Schema-only enumeration would drop dynamically-added props.
 function objectValuesFromTemp(t) {
-  inc('__alloc_hdr', '__ptr_offset')
-  const sid = tempI32('ovs'), src = tempI32('ovsrc'), n = tempI32('ovn')
-  const base = tempI32('ovbase'), out = tempI32('ovo'), i = tempI32('ovi')
+  inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  const sid = tempI32('ovs'), src = tempI32('ovsrc'), sn = tempI32('ovn')
+  const base = tempI32('ovbase'), props = tempI64('ovp'), poff = tempI32('ovpo')
+  const pcap = tempI32('ovpc'), dn = tempI32('ovdn'), total = tempI32('ovtot')
+  const out = tempI32('ovo'), i = tempI32('ovi'), o = tempI32('ovj'), slot = tempI32('ovsl'), ord = tempI32('ovord')
+  const j = tempI32('ovj2'), skip = tempI32('ovsk')
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
     ['local.set', `$${sid}`, ['i32.wrap_i64', ['i64.and',
       ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
       ['i64.const', LAYOUT.AUX_MASK]]]],
-    ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
-      ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
-      ['i64.const', LAYOUT.OFFSET_MASK]]]],
-    ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+    // Static schema keys require the table. A program whose only objects are
+    // dynamic dicts (empty `{}` + computed `o[k]=v`) never allocates __schema_tbl
+    // (assemble.js skips it when every schema is empty), leaving it 0 — reading
+    // __schema_tbl[sid] would then fault. Guard the read (sn=0 when absent); the
+    // dyn-props enumeration below still runs, so the computed props are seen.
+    ['local.set', `$${sn}`, ['i32.const', 0]],
+    ['local.set', `$${src}`, ['i32.const', 0]],
+    ['if', ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
+          ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
+          ['i64.const', LAYOUT.OFFSET_MASK]]]],
+        ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]],
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
+    ['local.set', `$${dn}`, ['i32.const', 0]],
+    ['local.set', `$${poff}`, ['i32.const', 0]],
+    ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
+      ['then',
+        ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
+        ['if', ['i32.eq',
+            ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
+            ['i32.const', PTR.HASH]],
+          ['then',
+            ['local.set', `$${poff}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcap}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 4]]]],
+            ['local.set', `$${dn}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 8]]]]]]]],
+    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['local.get', `$${dn}`]]],
+    ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
+    ['local.set', `$${o}`, ['i32.const', 0]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$ovbrk${id}`, ['loop', `$ovloop${id}`,
-      ['br_if', `$ovbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['br_if', `$ovbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
       ['f64.store',
-        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]],
+        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
         ['f64.load',
           ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$ovloop${id}`]]],
+    // Skip propsPtr entries whose key is in the schema — same shadow-mirror
+    // dedup as Object.keys; see objectKeysFromTemp comment.
+    ['if', ['i32.ne', ['local.get', `$${poff}`], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${poff}`], ['local.get', `$${pcap}`], ['i32.const', 24]]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$ovdbrk${id}`, ['loop', `$ovdloop${id}`,
+          ['br_if', `$ovdbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
+          ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+            ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+          ['local.set', `$${skip}`, ['i32.const', 0]],
+          ['local.set', `$${j}`, ['i32.const', 0]],
+          ['block', `$ovskbrk${id}`, ['loop', `$ovskloop${id}`,
+            ['br_if', `$ovskbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
+            ['if', ['i64.eq',
+                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
+                ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
+              ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$ovskbrk${id}`]]],
+            ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
+            ['br', `$ovskloop${id}`]]],
+          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
+            ['then',
+              ['f64.store',
+                ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
+                ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
+              ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$ovdloop${id}`]]]]],
+    ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }
 
+// Mirror of objectKeysFromTemp emitting [key, value] PAIRS: static schema slots
+// (key from schema string array, value from object data) followed by per-object
+// dyn-prop pairs (HASH slot key@+8, value@+16). Schema-only enumeration would
+// drop dynamically-added props.
 function objectEntriesFromTemp(t) {
-  inc('__alloc_hdr', '__ptr_offset')
-  const sid = tempI32('oes'), src = tempI32('oesrc'), n = tempI32('oen')
-  const base = tempI32('oebase'), out = tempI32('oeo'), i = tempI32('oei'), pair = tempI32('oep')
+  inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  const sid = tempI32('oes'), src = tempI32('oesrc'), sn = tempI32('oen')
+  const base = tempI32('oebase'), props = tempI64('oepr'), poff = tempI32('oepo')
+  const pcap = tempI32('oepc'), dn = tempI32('oedn'), total = tempI32('oetot')
+  const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej'), slot = tempI32('oesl'), ord = tempI32('oeord'), pair = tempI32('oep')
+  const j = tempI32('oej2'), skip = tempI32('oesk')
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
     ['local.set', `$${sid}`, ['i32.wrap_i64', ['i64.and',
       ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
       ['i64.const', LAYOUT.AUX_MASK]]]],
-    ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
-      ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
-      ['i64.const', LAYOUT.OFFSET_MASK]]]],
-    ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+    // Static schema keys require the table. A program whose only objects are
+    // dynamic dicts (empty `{}` + computed `o[k]=v`) never allocates __schema_tbl
+    // (assemble.js skips it when every schema is empty), leaving it 0 — reading
+    // __schema_tbl[sid] would then fault. Guard the read (sn=0 when absent); the
+    // dyn-props enumeration below still runs, so the computed props are seen.
+    ['local.set', `$${sn}`, ['i32.const', 0]],
+    ['local.set', `$${src}`, ['i32.const', 0]],
+    ['if', ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
+          ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
+          ['i64.const', LAYOUT.OFFSET_MASK]]]],
+        ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]],
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
+    ['local.set', `$${dn}`, ['i32.const', 0]],
+    ['local.set', `$${poff}`, ['i32.const', 0]],
+    ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
+      ['then',
+        ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
+        ['if', ['i32.eq',
+            ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
+            ['i32.const', PTR.HASH]],
+          ['then',
+            ['local.set', `$${poff}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcap}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 4]]]],
+            ['local.set', `$${dn}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 8]]]]]]]],
+    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['local.get', `$${dn}`]]],
+    ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
+    ['local.set', `$${o}`, ['i32.const', 0]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$oebrk${id}`, ['loop', `$oeloop${id}`,
-      ['br_if', `$oebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['br_if', `$oebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
-      ['i64.store',
-        ['local.get', `$${pair}`],
-        ['i64.load',
-          ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['i64.store', ['local.get', `$${pair}`],
+        ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+        ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
       ['f64.store',
-        ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-        ['f64.load',
-          ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-      ['f64.store',
-        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]],
+        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
         mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])],
+      ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$oeloop${id}`]]],
+    // Skip propsPtr entries whose key is in the schema — same shadow-mirror
+    // dedup as Object.keys; see objectKeysFromTemp comment.
+    ['if', ['i32.ne', ['local.get', `$${poff}`], ['i32.const', 0]],
+      ['then',
+        ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${poff}`], ['local.get', `$${pcap}`], ['i32.const', 24]]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$oedbrk${id}`, ['loop', `$oedloop${id}`,
+          ['br_if', `$oedbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
+          ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+            ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+          ['local.set', `$${skip}`, ['i32.const', 0]],
+          ['local.set', `$${j}`, ['i32.const', 0]],
+          ['block', `$oeskbrk${id}`, ['loop', `$oeskloop${id}`,
+            ['br_if', `$oeskbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
+            ['if', ['i64.eq',
+                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
+                ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
+              ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$oeskbrk${id}`]]],
+            ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
+            ['br', `$oeskloop${id}`]]],
+          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
+            ['then',
+              ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+              ['i64.store', ['local.get', `$${pair}`],
+                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
+              ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+                ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
+              ['f64.store',
+                ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
+                mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])],
+              ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$oedloop${id}`]]]]],
+    ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }

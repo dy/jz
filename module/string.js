@@ -39,9 +39,9 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 
 export default (ctx) => {
   deps({
-    __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
-    __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
-    __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
     __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice'],
@@ -825,10 +825,7 @@ export default (ctx) => {
       (then
         (local.set $newHeap
           (i32.and (i32.add (i32.add (local.get $aoff) (local.get $total)) (i32.const 7)) (i32.const -8)))
-        (if (i32.gt_u (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536)))
-          (then (if (i32.eq (memory.grow
-            (i32.shr_u (i32.add (i32.sub (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
-            (i32.const -1)) (then (unreachable)))))
+        (call $__memgrow (local.get $newHeap))
         (call $__str_copy (local.get $b)
           (i32.add (local.get $aoff) (local.get $alen))
           (local.get $blen))
@@ -862,10 +859,7 @@ export default (ctx) => {
           (then
             (local.set $newHeap
               (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 8)) (i32.const -8)))
-            (if (i32.gt_u (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536)))
-              (then (if (i32.eq (memory.grow
-                (i32.shr_u (i32.add (i32.sub (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
-                (i32.const -1)) (then (unreachable)))))
+            (call $__memgrow (local.get $newHeap))
             (i32.store8 (i32.add (local.get $aoff) (local.get $alen)) (local.get $byte))
             (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (i32.add (local.get $alen) (i32.const 1)))
             (global.set $__heap (local.get $newHeap))
@@ -1062,7 +1056,7 @@ export default (ctx) => {
   wat('__str_pad', `(func $__str_pad (param $str i64) (param $target i32) (param $pad i64) (param $before i32) (result f64)
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
     (local $str_off i32) (local $pad_off i32)
-    (local $pbits i64) (local $poff i32) (local $psso i32)
+    (local $pbits i64) (local $poff i32) (local $psso i32) (local $sp i32) (local $sb i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (f64.reinterpret_i64 (local.get $str)))))
@@ -1089,6 +1083,24 @@ export default (ctx) => {
           (else (i32.load8_u (i32.add (local.get $poff) (i32.rem_u (local.get $i) (local.get $plen)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
+    ${!ctx.memory.shared ? `
+    ;; SSO + reclaim for ≤4 ASCII results: pack into the pointer and free this pad
+    ;; allocation (at heap top) so padStart in a builder loop is allocation-neutral
+    ;; — the accumulator stays at heap top and keeps bump-extending (O(n)).
+    (if (i32.le_u (local.get $target) (i32.const 4))
+      (then
+        (block $heap
+          (local.set $i (i32.const 0)) (local.set $sp (i32.const 0))
+          (loop $pk
+            (if (i32.lt_u (local.get $i) (local.get $target))
+              (then
+                (local.set $sb (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+                (br_if $heap (i32.ge_u (local.get $sb) (i32.const 0x80)))
+                (local.set $sp (i32.or (local.get $sp) (i32.shl (local.get $sb) (i32.shl (local.get $i) (i32.const 3)))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $pk))))
+          (global.set $__heap (i32.sub (local.get $off) (i32.const 4)))
+          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $target)) (local.get $sp))))))` : ''}
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
   // Base helpers (__sso_char/__str_char/__char_at/__str_byteLen) are referenced
@@ -1341,11 +1353,19 @@ export default (ctx) => {
     return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
   })
 
-  bind('String.fromCharCode', (code) => {
-    if (code === undefined) return emit(['str', ''])
+  // String.fromCharCode(...codes) — variadic; each arg is ToUint16(ToNumber(code))
+  // → a 1-byte string, concatenated left to right (mirrors String.fromCodePoint).
+  bind('String.fromCharCode', (...codes) => {
+    if (codes.length === 0) return emit(['str', ''])
     // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
     // argument, so a throwing valueOf/toString propagates per spec.
-    return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(toNumF64(code, emit(code))))
+    const one = (node) => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(toNumF64(node, emit(node))))
+    let r = one(codes[0])
+    for (let i = 1; i < codes.length; i++) {
+      inc('__str_concat_raw')
+      r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
+    }
+    return r
   })
 
   // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.

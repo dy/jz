@@ -4,7 +4,7 @@
  */
 
 import { warn } from '../src/ctx.js'
-import { JZ_BLOCK_OPS, LABEL_BODY_OPS, paramList } from '../src/ast.js'
+import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList } from '../src/ast.js'
 import { isDestructurePat } from './hoist-vars.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
@@ -138,8 +138,15 @@ export function createTransform(opts) {
           rest.push(t)
         }
       }
-      const imports = rest.filter(s => Array.isArray(s) && s[0] === 'import')
-      const nonImports = rest.filter(s => !(Array.isArray(s) && s[0] === 'import'))
+      // ES hoists every import binding above any function body. jzify mirrors
+      // that by floating imports ahead of hoisted function decls. A combo import
+      // `import d, { n } from 'm'` parses as `[',', ['import',…], ['from',…]]`, so
+      // match the comma-wrapped form too — otherwise its bindings land after the
+      // hoisted functions that reference them ("X is not in scope").
+      const isImportStmt = s => Array.isArray(s) &&
+        (s[0] === 'import' || (s[0] === ',' && Array.isArray(s[1]) && s[1][0] === 'import'))
+      const imports = rest.filter(isImportStmt)
+      const nonImports = rest.filter(s => !isImportStmt(s))
       const all = dedupeRedecls([...imports, ...hoisted, ...nonImports])
       return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
     }
@@ -180,6 +187,14 @@ export function createTransform(opts) {
         if (inner != null && !(Array.isArray(inner) && inner[0] === ';')) {
           b = ['{}', [';', inner]]
         }
+      } else if (Array.isArray(b) && STMT_ONLY_OPS.has(b[0])) {
+        // Method shorthand `m(){ stmt }` parses to a concise-body arrow whose
+        // body is the bare statement (`['=>', p, ['if', …]]`), not a `{}` block.
+        // A concise body is returned as an expression, so a void statement would
+        // be coerced into the f64 return slot ("not enough arguments on the stack
+        // for f64.convert_i32_s"). These ops are never a real concise expression
+        // body, so re-wrap as a block.
+        b = b[0] === ';' ? ['{}', b] : ['{}', [';', b]]
       }
       const [p2, b2] = lowerArguments(params, b)
       return ['=>', p2, transform(b2)]
@@ -233,7 +248,7 @@ export function createTransform(opts) {
       if (typeof name === 'string' && ERROR_INSTANCEOF.has(name)) {
         warn('untagged-instanceof',
           `\`instanceof ${name}\` does not discriminate thrown values in jz — errors are untagged; inspect the message or value instead`,
-          { loc: Array.isArray(val) ? val.loc : null })
+          {}, Array.isArray(val) ? val.loc : null)
       }
       if (name === 'Array') return ['()', ['.', 'Array', 'isArray'], t]
       if (name === 'Map') return ['()', '__is_map', t]
@@ -249,6 +264,14 @@ export function createTransform(opts) {
         ['let', ['=', flag, [null, true]]],
         ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transform(body)]]]]
     },
+
+    // A bare statement sequence is a block scope too. `parse` only wraps
+    // function/arrow bodies in `{}`; loop/conditional bodies arrive as a raw
+    // `;`. Route them through transformScope so `function` declarations nested
+    // in a loop/if body get hoisted (→ block-top `const f = arrow`) instead of
+    // falling to the discard-IIFE path, which would scope the name inside the
+    // IIFE and leave later `f()` references dangling.
+    ';'(...args) { return transformScope([';', ...args]) },
 
     '{}'(...args) {
       const loweredObject = lowerObjectLiteralThis(args)

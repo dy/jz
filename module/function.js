@@ -197,7 +197,10 @@ export default (ctx) => {
 
     if (prebuiltArray) {
       // Spread path: decode array into inline slots. Slots beyond array len padded with UNDEF.
-      // Rest-param closures receive up to (MAX - fixedParams) spread elements (overflow lost).
+      // The full args array offset is published in $__closure_spill so a rest-param
+      // callee can recover elements beyond width W (the W inline slots hold args[0..W-1];
+      // the rest reads args[W..argc-1] straight from the spill array). Unbounded arity.
+      ctx.scope.globals.set('__closure_spill', '(global $__closure_spill (mut i32) (i32.const 0))')
       const arrT = tempI32('sa')
       const lenL = tempI32('sl')
       const setup = [
@@ -222,6 +225,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ...setup,
         ['local.set', `$${t}`, asF64(closureExpr)],
+        ['global.set', '$__closure_spill', ['local.get', `$${arrT}`]],
         ['call_indirect', ['type', '$ftN'],
           ['local.get', `$${t}`],
           ['local.get', `$${lenL}`],

@@ -83,12 +83,26 @@ export const emitter = (deps, fn) => {
   const run = (...args) => (inc(...deps), fn(...args))
   run.deps = deps
   run.pure = fn
-  // Preserve the body's arity: `typeof Math.x` folding keys off emitter `.length`
-  // to tell callable builtins (sin) from constant ones (PI). The rest-param
-  // wrapper would otherwise report 0 for everything.
-  Object.defineProperty(run, 'length', { value: fn.length, configurable: true })
+  // Carry the body's parameter count as `.argc`: the rest-param wrapper above
+  // reports `.length` 0, so a handler's logical arity must travel as plain data
+  // (read back via `emitArity`, never the masked function `.length`). Two
+  // consumers need it — `typeof Math.x` folding (callable builtin vs constant)
+  // and the `.`-emit property/method split (arity-1 reads as a value; arity ≥2
+  // is call-only).
+  run.argc = fn.length
   return run
 }
+
+/** Logical arity of an emit handler: wrapped handlers (emitter/call/method/dual)
+ *  carry it as `.argc`; bare ones expose it as the function's own `.length`. */
+export const emitArity = (h) => h?.argc ?? h?.length
+
+/** Tag an emit handler as a property getter — it yields a value when the
+ *  property is *read* (`re.source`, `m.size`), so the `.`-read path may fire it.
+ *  Untagged handlers are methods: a bare read of `m.values` must not invoke them
+ *  (that would materialize a view instead of reading the `"values"` property);
+ *  they fire only from the method-call path. Apply outermost: `getter(emitter(…))`. */
+export const getter = (fn) => (fn.getter = true, fn)
 
 /** Expand ctx.core.includes transitively via ctx.core.stdlibDeps. Call before WASM assembly.
  *  Each module co-locates its own deps with its stdlib registrations at init time. */
@@ -132,6 +146,8 @@ export function reset(proto, globals, bridge) {
     imports: [],
     modules: {},
     importSources: null,
+    importAsts: null,   // self-host: pre-parsed [specifier, ast] pairs (the kernel can't parse).
+                        // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,
     hostImportValTypes: new Map(),
     resolvedModules: new Map(),
@@ -311,19 +327,20 @@ export function initWarnings(sink) {
   ctx.warnings = { sink, seen: new Set() }
 }
 
-/** Record one advisory. No-op unless `initWarnings` wired a sink. */
-export function warn(code, message, meta = {}) {
+/** Record one advisory; `loc` is a source byte offset used only to derive
+ *  line/column — it is never persisted on the entry. No-op unless
+ *  `initWarnings` wired a sink. */
+export function warn(code, message, meta = {}, loc = null) {
   if (!ctx.warnings) return
   const key = `${code}:${meta.fn || ''}:${meta.line || ''}`
   if (ctx.warnings.seen.has(key)) return
   ctx.warnings.seen.add(key)
   const entry = { code, message, ...meta }
-  if (meta.loc != null && ctx.error.src) {
-    const before = ctx.error.src.slice(0, meta.loc)
+  if (loc != null && ctx.error.src) {
+    const before = ctx.error.src.slice(0, loc)
     entry.line = before.split('\n').length
-    entry.column = meta.loc - before.lastIndexOf('\n')
+    entry.column = loc - before.lastIndexOf('\n')
   }
-  delete entry.loc
   ctx.warnings.sink.entries.push(entry)
 }
 

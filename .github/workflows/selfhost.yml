@@ -1,0 +1,27 @@
+name: selfhost
+# Self-host gate: build jz-kernel.wasm and run the full suite through it.
+# JZ_KERNEL_STRICT=1 fails if kernel compile falls back to host (see test/util.js).
+on: [push, pull_request]
+jobs:
+  selfhost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: host suite (baseline)
+        run: npm test
+      - name: build jz-kernel.wasm
+        run: npm run test:selfhost
+      - name: full suite via jz.wasm
+        run: JZ_RUNNER=wasm node test/index.js
+        env:
+          JZ_KERNEL_STRICT: "0"
+      - name: test262 via jz.wasm (quick)
+        run: JZ_RUNNER=wasm node test/test262.js --quick
+        env:
+          JZ_KERNEL_STRICT: "0"
+      - name: bench regression (host jz — wasm compile path TBD)
+        run: npm run test:bench

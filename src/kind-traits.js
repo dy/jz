@@ -61,7 +61,7 @@ export function methodValType(method, obj, objType, ctx) {
     const elemVt = ctx.func.localReps?.get(obj)?.arrayElemValType
     if (elemVt) return elemVt
   }
-  if (method === 'add' || method === 'delete') return VAL.SET
+  if (method === 'add') return VAL.SET
   if (method === 'set') return VAL.MAP
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER

@@ -422,6 +422,73 @@ test('Regression: deeply nested anonymous literals', () => {
   is(run(`export let f = () => ({x: {y: {z: 42}}}).x.y.z`).f(), 42)
 })
 
+// When the program does any `obj[k]` with computed key elsewhere, anyDynKey
+// becomes true → every anonymous-escaping object literal shadow-writes its
+// schema keys to the per-object propsPtr (so future `o[k]` lookups can hit
+// the mirror). The schema slots and the propsPtr are then twin representations
+// of the same keys. Object.keys / values / entries / JSON.stringify must NOT
+// enumerate schema-mirrored keys twice — propsPtr-for-schema-keys is a
+// runtime mirror for dyn-key reads, not an enumeration entity. Without dedup,
+// the kernel (which uses dyn access internally → anyDynKey=true) emits
+// duplicated keys in its own JSON output, breaking metacircular byte-identity.
+// (Heap-path literals only: literals whose values are all constants take the
+// static-segment path and store no propsPtr — they hit no dedup gate.)
+test('Regression: shadow-mirrored schema keys not duplicated by JSON.stringify', () => {
+  const { f } = run(`export let f = (t, k, v) => {
+    let probe = t[k]              // forces anyDynKey
+    let x = v + 1, y = v + 2      // var values → heap-path literal
+    return JSON.stringify({a: x, b: y})
+  }`)
+  is(f({x: 9}, 'x', 10), '{"a":11,"b":12}')
+})
+
+test('Regression: shadow-mirrored schema keys not duplicated by Object.keys (bound var with dyn write)', () => {
+  // Bound-var with `o[k] = v` → dynKeyVars.has('o') → needsDynShadow('o') = true.
+  // Object literal shadow-writes its schema keys to propsPtr; off-schema 'c'
+  // is added later. Schema-only enumeration would drop 'c'; un-deduped union
+  // would emit a, b, a, b, c. Correct: a, b, c.
+  const { f } = run(`export let f = (t, k, v) => {
+    let probe = t[k]
+    let x = v + 1, y = v + 2
+    let o = {a: x, b: y}
+    o[k] = 99
+    return Object.keys(o).length
+  }`)
+  is(f({x: 9}, 'c', 10), 3)
+})
+
+test('Regression: shadow-mirrored schema keys not duplicated by Object.values', () => {
+  const { f } = run(`export let f = (t, k, v) => {
+    let probe = t[k]
+    let x = v + 1, y = v + 2
+    return Object.values({a: x, b: y}).length
+  }`)
+  is(f({x: 9}, 'x', 10), 2)
+})
+
+test('Regression: shadow-mirrored schema keys not duplicated by Object.entries', () => {
+  const { f } = run(`export let f = (t, k, v) => {
+    let probe = t[k]
+    let x = v + 1, y = v + 2
+    return Object.entries({a: x, b: y}).length
+  }`)
+  is(f({x: 9}, 'x', 10), 2)
+})
+
+// Mixed: schema keys + a runtime-added off-schema key. Schema-shadowed
+// entries on propsPtr must be skipped during enumeration; the off-schema
+// entry must still appear exactly once.
+test('Regression: shadow + off-schema dyn key — exact JSON enumeration', () => {
+  const { f } = run(`export let f = (t, k, v) => {
+    let probe = t[k]
+    let x = v + 1, y = v + 2
+    let o = {a: x, b: y}
+    o[k] = 99
+    return JSON.stringify(o)
+  }`)
+  is(f({x: 9}, 'c', 10), '{"a":11,"b":12,"c":99}')
+})
+
 // __dyn_get_t's OBJECT-schema arm is gated on `ctx.schema.list.length > 0`.
 // Setting the stdlib template at module-init time froze the gate to false
 // because schemas register lazily as the source is processed — the arm

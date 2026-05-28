@@ -589,6 +589,115 @@ test('Map: set returns same pointer (alias-safe)', () => {
 })
 
 // ============================================
+// Set/Map grow past capacity + delete
+// INIT_CAP=8, grows at 75% load (size≥6). These force ≥2 grows (8→16→32) so
+// the forwarding/rehash path runs, and exercise backward-shift delete against
+// the dense probe-chain collisions a grown table produces.
+// ============================================
+
+test('Set: grow past initial capacity keeps all members', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    for (let i = 0; i < 20; i++) s.add(i)
+    let ok = 1
+    for (let i = 0; i < 20; i++) if (!s.has(i)) ok = 0
+    return ok + s.size
+  }`)
+  is(f(), 21)  // ok=1, size=20 — no member lost across rehash
+})
+
+test('Map: grow past initial capacity keeps all entries', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    for (let i = 0; i < 20; i++) m.set(i, i * 10)
+    let sum = 0
+    for (let i = 0; i < 20; i++) sum += m.get(i)
+    return sum + m.size
+  }`)
+  is(f(), 1920)  // sum(i*10, 0..19)=1900, +size 20
+})
+
+test('Set: delete removes member and decrements size', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s.add(1); s.add(2); s.add(3)
+    let r = s.delete(2)
+    return r + (s.has(2) ? 100 : 0) + s.size
+  }`)
+  is(f(), 3)  // delete→1, has(2)→false, size→2
+})
+
+test('Map: delete removes entry and get returns undefined', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m.set(1, 10); m.set(2, 20)
+    m.delete(1)
+    return (m.get(1) === undefined ? 1 : 0) + m.size
+  }`)
+  is(f(), 2)  // get(1)→undefined, size→1
+})
+
+test('Set: delete absent member returns false (boolean, not boxed coll)', () => {
+  // Regression: methodValType inferred `.delete` as VAL.SET, so `let r = s.delete(x)`
+  // boxed the i32 result into a (truthy) NaN-box — absent deletes read as true.
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s.add(1)
+    let r = s.delete(99)
+    return (r ? 100 : 0) + s.size
+  }`)
+  is(f(), 1)  // delete(99)→false, size unchanged at 1
+})
+
+test('Set: delete preserves probe chain for survivors', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    for (let i = 0; i < 20; i++) s.add(i)
+    for (let i = 0; i < 20; i += 2) s.delete(i)
+    let ok = 1
+    for (let i = 1; i < 20; i += 2) if (!s.has(i)) ok = 0
+    for (let i = 0; i < 20; i += 2) if (s.has(i)) ok = 0
+    return ok + s.size
+  }`)
+  is(f(), 11)  // odds survive, evens gone, size→10
+})
+
+test('Map: delete after grow preserves remaining entries', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    for (let i = 0; i < 20; i++) m.set(i, i)
+    for (let i = 0; i < 10; i++) m.delete(i)
+    let sum = 0
+    for (let i = 10; i < 20; i++) sum += m.get(i)
+    return sum + m.size
+  }`)
+  is(f(), 155)  // sum(10..19)=145, +size 10
+})
+
+test('Map: delete then re-add same key', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m.set(5, 50)
+    m.delete(5)
+    m.set(5, 99)
+    return m.get(5) + m.size
+  }`)
+  is(f(), 100)  // 99 + size 1
+})
+
+test('Set: delete down to empty then re-add', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s.add(1); s.add(2)
+    s.delete(1); s.delete(2)
+    let emptied = s.size
+    s.add(7)
+    return emptied * 10 + (s.has(7) ? 1 : 0) + s.size
+  }`)
+  is(f(), 2)  // emptied=0, has(7)=1, size=1
+})
+
+// ============================================
 // Edge cases: push chain, empty pop
 // ============================================
 
