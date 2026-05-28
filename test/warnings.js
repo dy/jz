@@ -1,6 +1,7 @@
 // Compile-time advisories (opts.warnings / ctx.warn). See .work/todo.md.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import jz, { compile } from '../index.js'
 
 function warningsFor(code, opts = {}) {
@@ -76,6 +77,7 @@ test('warnings: set-map-order on JSON.stringify(map)', () => {
 })
 
 test('warnings: jsstring-declined when concat blocks externref carrier', () => {
+  if (belowOpt(2)) return  // jsstring ABI (and its decline advisory) is engaged at optimize >= 2
   const ws = warningsFor(`export let f = (s = '') => s + '!'`)
   is(ws.length, 1)
   is(ws[0].code, 'jsstring-declined')
@@ -83,6 +85,7 @@ test('warnings: jsstring-declined when concat blocks externref carrier', () => {
 })
 
 test('warnings: jsstring-declined when param is reassigned', () => {
+  if (belowOpt(2)) return  // jsstring ABI (and its decline advisory) is engaged at optimize >= 2
   const ws = warningsFor(`export let f = (s = '') => { s = s; return s.length }`)
   is(ws.length, 1)
   is(ws[0].code, 'jsstring-declined')
@@ -90,6 +93,7 @@ test('warnings: jsstring-declined when param is reassigned', () => {
 })
 
 test('warnings: simd-loop-carried on reduction-style loop', () => {
+  if (belowOpt(2)) return  // advisory only emitted when vectorizeLaneLocal runs (optimize >= 2)
   const ws = warningsFor(`
     export let f = (xs) => {
       let s = 0
@@ -101,6 +105,7 @@ test('warnings: simd-loop-carried on reduction-style loop', () => {
 })
 
 test('warnings: simd-aos-stride on interleaved index', () => {
+  if (belowOpt(2)) return  // advisory only emitted when vectorizeLaneLocal runs (optimize >= 2)
   const ws = warningsFor(`
     export let f = (a) => {
       for (let i = 0; i < 10; i++) a[i * 3] = 1

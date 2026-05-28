@@ -25,6 +25,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import jz from '../index.js'
 import { run } from './util.js'
 
@@ -194,6 +195,7 @@ test('intConst: body write to param clears intConst (validateIntConstParams)', (
 })
 
 test('inferArrElemSchema: consistent caller schemas → direct slot load', () => {
+  if (belowOpt(1)) return  // asserts schema-aware slot load eliminated __dyn_get (optimize >= 1)
   // initRows builds an array of `{x,y}` objects via .push. narrowReturnArrayElems
   // sets initRows.arrayElemSchema; runArrFixpoint propagates to runKernel's param
   // via inferArrElemSchema. The callee's `rows[i].y` becomes a direct
@@ -221,6 +223,7 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
 })
 
 test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
+  if (belowOpt(2)) return  // asserts SIMD emission — requires the vectorizer (optimize >= 2)
   // Caller passes new Float64Array(...) → inferTypedCtor resolves the elem
   // ctor → paramReps[sumArr][0].typedCtor → compile.js seeds val=TYPED + the
   // elem ctor → ptrUnboxable narrows param to i32 + len becomes a direct
@@ -275,6 +278,7 @@ test('boxedCaptures: mutated capture allocates a heap cell', () => {
 })
 
 test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () => {
+  if (belowOpt(2)) return  // asserts SIMD emission — requires the vectorizer (optimize >= 2)
   // Module-level `const buf = new Float64Array(...)` is recorded by
   // recordGlobalRep into ctx.scope.globalTypedElem. Any function
   // reading `buf[i]` / `buf.length` picks up the typed-element ctor without

@@ -1,6 +1,7 @@
 // Closures: capture, currying, callbacks, methods, ABI/arity, unboxing
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import jz, { compile } from '../index.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
@@ -749,6 +750,7 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
 })
 
 test('closure-unbox: trivial closure-call program stays compact (post-watr fusedRewrite)', () => {
+  if (belowOpt(2)) return  // size pin: the pass under test runs at optimize >= 2
   // Pin the post-watrOptimize fusedRewrite pass — without it watr's inliner
   // re-introduces a rebox/unbox roundtrip across the closure-body inline
   // boundary. Threshold tracks the ≤252b figure with small headroom.
@@ -845,6 +847,7 @@ test('func-namespace SROA: reassigned slot keeps last-write + side-effects', () 
 })
 
 test('func-namespace SROA: dynamic property machinery is eliminated', () => {
+  if (belowOpt(1)) return  // asserts SROA dissolved dyn-prop machinery — runs at optimize >= 1
   const w = wat(nsReassign)
   ok(!/__dyn_set/.test(w), 'no __dyn_set — reassigned slot dissolved to a global')
   ok(!/__dyn_get/.test(w), 'no __dyn_get — every f.prop access is a global/direct call')

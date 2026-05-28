@@ -1,5 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import jz, { compile } from '../index.js'
 
 function run(code) {
@@ -467,6 +468,9 @@ test('vectorize: SoA-3 fused map zs[i] = xs[i]*a + ys[i]*b', () => {
 })
 
 test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
+  // Compares the vectorized build against the env-level baseline; bit-equality only
+  // holds when the baseline also vectorizes (optimize >= 2) — float reductions reorder.
+  if (belowOpt(2)) return
   // Four base pointers in the inner loop — common image-processing shape.
   const src = `
     export const main = () => {
@@ -886,6 +890,7 @@ test('vectorize: Math.max reduction propagates a NaN element through the canon m
 })
 
 test('vectorize: default level 2 emits SIMD for obvious lane-local loops', () => {
+  if (belowOpt(2)) return  // asserts SIMD emission — requires the vectorizer (optimize >= 2)
   // At default optimize:true (level 2), the stable SIMD pass is enabled.
   const src = `
     export const main = () => {

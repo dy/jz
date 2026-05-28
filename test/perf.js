@@ -1,6 +1,7 @@
 // Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import jz, { compile } from '../index.js'
 
 // Helper: time N iterations, return ms
@@ -535,6 +536,7 @@ test('codegen: asF64 on int constants — no unnecessary convert', () => {
 })
 
 test('codegen: for-loop counter matches .length type — no converts in loop', () => {
+  if (belowOpt(1)) return  // convert-elision is an optimization (optimize >= 1)
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
   // .length emits as f64, so i should be f64 to avoid per-iter convert
   const loopMatch = wat.match(/\(loop[^]*?\(br \$loop/s)
@@ -740,6 +742,7 @@ test('compile profile.names emits wasm function name section', () => {
 // `__dyn_get_*`/`__to_num`/`__is_str_key`.
 
 test('codegen: JSON.parse(let SRC) walk uses slot loads — no __dyn_get/__to_num', () => {
+  if (belowOpt(1)) return  // asserts SROA slot loads replaced dynamic dispatch (optimize >= 1)
   const wat = compile(`
     let SRC = '{"items":[{"id":1,"v":10}],"meta":{"k":7}}'
     export let walk = () => {

@@ -2,6 +2,7 @@
 // intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
+import { belowOpt } from './_opt.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
@@ -730,6 +731,7 @@ test('typed-narrow: owned typed-array byteOffset is constant zero', () => {
 })
 
 test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
+  if (belowOpt(2)) return  // size pin: needs post-watr fusedRewrite (optimize >= 2)
   // Threshold tracks recorded baseline with headroom.
   const src = `
     let mk = () => new Float64Array([1.5, 2.5, 3.5])

@@ -14,6 +14,7 @@ import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
 import { run } from './util.js'
+import { belowOpt } from './_opt.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`
@@ -311,6 +312,7 @@ test('unknown coercions still use __to_num', () => {
 })
 
 test('dynamic prop reads reuse receiver type tag', () => {
+  if (belowOpt(2)) return  // receiver-tag CSE/hoisting runs at optimize >= 2
   const wat = jz.compile(`
     export const main = (o) => {
       return o.a + o.b + o.c
@@ -337,6 +339,7 @@ test('polymorphic object prop reads use typed object dispatch', () => {
 })
 
 test('small const-count for-loop unrolls', () => {
+  if (belowOpt(2)) return  // loop unrolling is a full-optimization (level 2) transform
   const src = `
     export const main = () => {
       let acc = 0
@@ -725,6 +728,7 @@ test('sourceInline: enabled by default at level 2 — inlines void hot helper', 
 })
 
 test('sourceInline: trailing-return helper inlines into `let X = call(...)` initializer', () => {
+  if (belowOpt(2)) return  // asserts the sourceInline pass ran (optimize >= 2)
   const src = `
     const sum = (arr) => {
       let s = 0
@@ -745,6 +749,7 @@ test('sourceInline: trailing-return helper inlines into `let X = call(...)` init
 })
 
 test('sourceInline: trailing-return helper inlines into `X = call(...)` assignment', () => {
+  if (belowOpt(2)) return  // asserts the sourceInline pass ran (optimize >= 2)
   const src = `
     const acc = (arr) => {
       let s = 0

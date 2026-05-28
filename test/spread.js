@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
 import { compile } from '../index.js'
+import { belowOpt } from './_opt.js'
 
 // ============================================
 // SPREAD IN ARRAY LITERALS
@@ -232,6 +233,7 @@ test('spread: chain spreads', () => {
 })
 
 test('spread: short local array literals scalarize through spread and reads', () => {
+  if (belowOpt(1)) return  // asserts scalarization eliminated array materialization (optimize >= 1)
   const wat = compile(`export let run = (n) => {
     let s = 0
     for (let i = 0; i < n; i++) {
