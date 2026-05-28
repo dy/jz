@@ -287,6 +287,9 @@ export function canonicalizeObjectIdioms(node) {
 
   const out = node.map((part, i) => i === 0 ? part : canonicalizeObjectIdioms(part))
 
+  const toStringCall = objectPrototypeToStringCall(out)
+  if (toStringCall) return ['()', '__object_toString', toStringCall.obj]
+
   const hasOwnCall = objectHasOwnPropertyCall(out)
   if (hasOwnCall) return ['()', ['.', hasOwnCall.obj, 'hasOwnProperty'], hasOwnCall.key]
 
@@ -325,10 +328,25 @@ function objectHasOwnPropertyCall(node) {
   return { obj: args[0], key: args[1] }
 }
 
+function objectPrototypeToStringCall(node) {
+  if (!Array.isArray(node) || node[0] !== '()') return null
+  const callee = node[1]
+  if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'call') return null
+  if (!isObjectPrototypeToStringRef(callee[1])) return null
+  const args = handlerArgs(node.slice(2))
+  if (args.length < 1) return null
+  return { obj: args[0] }
+}
+
 function isObjectHasOwnPropertyRef(node) {
   if (!Array.isArray(node) || node[0] !== '.' || node[2] !== 'hasOwnProperty') return false
   if (node[1] === 'Object') return true
   return Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Object' && node[1][2] === 'prototype'
+}
+
+function isObjectPrototypeToStringRef(node) {
+  return Array.isArray(node) && node[0] === '.' && node[2] === 'toString' &&
+    Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Object' && node[1][2] === 'prototype'
 }
 
 function constructorIsObject(node) {

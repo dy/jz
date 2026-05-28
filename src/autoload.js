@@ -79,6 +79,7 @@ export const CALL_MODULES = dict({
   'Object.assign': ['core', 'object'],
   'Object.create': ['core', 'object'],
   'Object.defineProperty': ['core', 'object'],
+  '__object_toString': ['core', 'object', 'string'],
   'Date.UTC': ['core', 'date'],
   'Date.parse': ['core', 'date'],
   'Date.now': ['core', 'console'],
