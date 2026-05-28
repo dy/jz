@@ -205,6 +205,8 @@ export function reset(proto, globals, bridge) {
     // by the pass owners so re-entrant analyzeBody calls don't clobber each other.
     localValTypesOverlay: null,
     localTypedElemsOverlay: null,
+    _ccBody: null,      // memo key: body node last scanned by inBoundsCharCodeAt (src/type.js)
+    ccInBounds: null,   // memo value: Set of in-bounds charCodeAt callee nodes for _ccBody
   }
 
   ctx.types = {
@@ -262,6 +264,9 @@ export function reset(proto, globals, bridge) {
     throws: false,
     userThrows: false,  // user wrote `throw`/`try`/`catch`/`finally` — keep runtime declared
                         // even when all throws are dead-code-eliminated (JS-side ABI contract).
+    staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
+    staticDataLen: 0,      // byte length of the address-0 static string block (seeded by module/number staticStr)
+    typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`
   }
 
   ctx.memory = {
