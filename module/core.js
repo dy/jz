@@ -1009,11 +1009,14 @@ export default (ctx) => {
   // === Schema helpers (centralized in module/schema.js) ===
   initSchema(ctx)
 
-  // Low-level pointer helpers callable from jz code
-  ctx.core.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')
-  ctx.core.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64')
-  ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64')
-  ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64')
+  // Low-level pointer helpers callable from jz code. Each handler inc()'s its
+  // stdlib func so the call resolves at every optimize level. At opt≥1 fusedRewrite
+  // inlines `call $__ptr_*` to bit-ops (the func is then dead-code-eliminated), but
+  // the inc() must fire first so pullStdlib has the body when watr assembles at opt0.
+  ctx.core.emit['__mkptr'] = (t, a, o) => (inc('__mkptr'), typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64'))
+  ctx.core.emit['__ptr_type'] = (p) => (inc('__ptr_type'), typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64'))
+  ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
+  ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
 
   // Error(msg) — passthrough (throw handles any value). Subclasses share the
   // same shape: jz doesn't model typed-error dispatch, so SyntaxError/TypeError/
