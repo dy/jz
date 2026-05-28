@@ -34,21 +34,29 @@ export { HEAP, LAYOUT, PTR, ATOM, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceB
 //   function — per function being lowered
 //   emit     — transient during a single AST→IR dispatch
 //
-// | Namespace | Phase    | Writers                   | Readers                    |
-// |-----------|----------|---------------------------|----------------------------|
-// | core      | compile  | reset, modules, inc()     | emit, compile, modules     |
-// | module    | compile  | prepare, index.js         | prepare, compile, emit     |
-// | scope     | compile  | analyze, compile          | compile, emit              |
-// | func      | function | compile                   | emit, modules              |
-// | types     | function | analyze                   | emit, modules              |
-// | schema    | compile  | prepare, analyze, compile | prepare, analyze, emit     |
-// | closure   | init     | modules (fn plugin)       | emit, compile              |
-// | runtime   | compile  | emit, modules             | emit, compile              |
-// | memory    | compile  | index.js                  | compile                    |
-// | error     | compile  | prepare, compile, emit    | err()                      |
-// | transform | compile  | index.js                  | prepare                    |
-// | features  | compile  | emit, modules, prepare    | compile (resolveIncludes), |
-// |           |          |                           | stdlib factories           |
+// | Namespace | Phase    | Writers                      | Readers                    |
+// |-----------|----------|------------------------------|----------------------------|
+// | core      | compile  | reset, modules, inc()        | emit, compile, modules     |
+// | module    | compile  | prepare, index.js            | prepare, compile, emit     |
+// | scope     | compile  | analyze, compile, plan       | compile, emit              |
+// | func      | function | compile, narrow              | emit, modules              |
+// | types     | function | analyze, plan                | emit, modules              |
+// | schema    | compile  | prepare, analyze, compile    | prepare, analyze, emit     |
+// | closure   | init     | modules (fn plugin)          | emit, compile              |
+// | runtime   | compile  | emit, modules                | emit, compile              |
+// | memory    | compile  | index.js                     | compile                    |
+// | error     | compile  | prepare, compile, emit       | err()                      |
+// | transform | compile  | index.js                     | prepare                    |
+// | features  | compile  | emit, modules, prepare       | compile (resolveIncludes), |
+// |           |          |                              | stdlib factories           |
+//
+// plan-phase writers (extending compile-phase): plan writes
+//   ctx.scope.{globalValTypes, globalTypedElem, globals, globalTypes} via
+//   inferModuleLetTypes / unboxConstTypedGlobals / inferModuleIntGlobals,
+//   and ctx.types.{dynKeyVars, anyDynKey} from collectProgramFacts results.
+// narrow-phase writers: narrowSignatures (under plan) temporarily swaps
+//   ctx.func.{localReps, locals, current} per-function with save/restore
+//   so per-call-site signature inference sees the right scope.
 export const ctx = {
   core: {},       // emitter table + stdlib registry (seeded by reset + modules)
   module: {},     // module graph: imports, resolved sources, module-init blocks
