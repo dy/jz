@@ -1195,6 +1195,347 @@ function arrayIndexKey(key) {
   return String(u) === key && u !== 0xffffffff ? u : null
 }
 
+// === Assignment IR helpers ===
+
+/** Build the persist callback used after `__arr_set_idx_ptr` / `__arr_set_length`,
+ *  which may relocate the array header. Routes through the same cell-vs-local
+ *  discipline as writeVar so boxed-locals write to the cell address. */
+function persistArrayPtr(arr) {
+  return ptr => {
+    if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
+    if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
+    return ['local.set', `$${arr}`, ptr]
+  }
+}
+
+/** Emit an ARRAY element write via `__arr_set_idx_ptr`. The helper may relocate
+ *  the array header (capacity grow); `persist` writes the new pointer back to
+ *  the receiver binding. Returns the stored value as the block result. */
+function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
+  const arrTmp = `${T}asi${ctx.func.uniq++}`
+  const idxTmp = `${T}asj${ctx.func.uniq++}`
+  const valTmp = `${T}asv${ctx.func.uniq++}`
+  ctx.func.locals.set(arrTmp, 'f64')
+  ctx.func.locals.set(idxTmp, 'i32')
+  ctx.func.locals.set(valTmp, 'f64')
+  inc('__arr_set_idx_ptr')
+  const body = [
+    ['local.set', `$${arrTmp}`, arrExpr],
+    ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
+    ['local.set', `$${valTmp}`, valueExpr],
+    ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+  ]
+  if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
+  body.push(['local.get', `$${valTmp}`])
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+/** Strict-mode guard for dynamic property writes — emitted in branches that
+ *  fall through to `__dyn_set` or its key-kind dispatch. */
+function ensureDynSetAllowed(arr) {
+  if (!ctx.transform.strict) return
+  const arrLabel = typeof arr === 'string' ? arr : '<expr>'
+  err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
+}
+
+/** Last-resort dynamic property write through `__dyn_set`. */
+function dynSetCall(arr, keyExpr, valueExpr) {
+  ensureDynSetAllowed(arr)
+  inc('__dyn_set')
+  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
+}
+
+/** Runtime fork by key kind: string keys go to `__dyn_set`, numeric keys go through
+ *  `numericIR(keyExpr)`. Used when key type is unknown at compile time. */
+function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
+  ensureDynSetAllowed(arr)
+  const keyTmp = temp()
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${keyTmp}`, keyExpr],
+    ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
+      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
+      ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
+}
+
+/** Build a `__ptr_type`-fork IR for `arr[idx] = val` when receiver is opaque
+ *  (non-string expr, or string-named binding of unknown VAL). Forks on
+ *  ARRAY → `__arr_set_idx_ptr` (+ optional persist), TYPED → `__typed_set_idx`,
+ *  else → raw f64.store at the OBJECT/HASH payload offset. */
+function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist) {
+  const objTmp = temp('asu')
+  const idxTmp = tempI32('asi')
+  const ptrTmp = temp('asp')
+  const valTmp = temp()
+  const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
+  inc('__ptr_type', '__arr_set_idx_ptr')
+  if (hasTypedSet) inc('__typed_set_idx')
+  const arrayBranch = persist
+    ? ['block', ['result', 'f64'],
+        ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+        persist(['local.get', `$${ptrTmp}`]),
+        ['local.get', `$${valTmp}`]]
+    : ['block', ['result', 'f64'],
+        ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+        ['local.get', `$${valTmp}`]]
+  const fallbackStore = ['block', ['result', 'f64'],
+    ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
+    ['local.get', `$${valTmp}`]]
+  const elseBranch = hasTypedSet
+    ? ['if', ['result', 'f64'],
+        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+        ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+        ['else', fallbackStore]]
+    : fallbackStore
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${objTmp}`, asF64(arrExpr)],
+    ['local.set', `$${idxTmp}`, idxI32],
+    ['local.set', `$${valTmp}`, valueExpr],
+    ['if', ['result', 'f64'],
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
+      ['then', arrayBranch],
+      ['else', elseBranch]]], 'f64')
+}
+
+/** Element assignment: `arr[idx] = val`. Linear strategy chain — first match wins.
+ *  Order matters: literal-key fast paths shadow generic stores; SRoA shadow before
+ *  schema; typed-array element write before generic f64.store. */
+function emitElementAssign(arr, idx, val) {
+  // _expect is clobbered by every sub-emit() — capture statement-position hint
+  // up front so the typed-array element-write path can elide the value materialize.
+  const void_ = _expect === 'void'
+  const keyType = keyValType(idx)
+  // A provably-numeric index name — an int-certain loop counter or a NUMBER-typed
+  // local — can never be a string key, so the runtime `__is_str_key` → `__dyn_set`
+  // dispatch is dead. Mirrors the index *read* path (`intIndexIR`), closing the
+  // read/write asymmetry on `arr[i] = …` inside refined-array loops.
+  const idxNumericName = typeof idx === 'string' &&
+    (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)
+  const useRuntimeKeyDispatch = !idxNumericName &&
+    (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
+  const keyExpr = asF64(emit(idx))
+  const valueExpr = asF64(emit(val))
+  // Literal string key, or schema-known object receiver with a static key expression.
+  const litKey = isLiteralStr(idx) ? idx[1]
+    : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
+    : null
+
+  // 1. SRoA flat object: `o['k'] = x` → `local.set $o#i` (no heap store).
+  if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+    const fo = ctx.func.flatObjects.get(arr)
+    const fi = fo.names.indexOf(litKey)
+    if (fi >= 0) {
+      const t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, valueExpr],
+        ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
+  }
+  // 2. Schema field literal key → direct payload-slot write.
+  if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
+    const slot = ctx.schema.find(arr, litKey)
+    if (slot >= 0) {
+      const t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, valueExpr],
+        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
+        ['local.get', `$${t}`]], 'f64')
+    }
+  }
+  // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
+  const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
+  if (arrIndex != null && typeof arr === 'string' && keyValType(arr) === VAL.ARRAY)
+    return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistArrayPtr(arr))
+
+  // 4. Known-STRING key → __dyn_set (after schema/SRoA literal-key paths).
+  if (keyType === VAL.STRING) return dynSetCall(arr, keyExpr, valueExpr)
+
+  // 5. Typed-array receiver → __typed_set_idx (or per-ctor element write).
+  if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
+      lookupValType(arr) === 'typed') {
+    const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
+    if (r) return r
+    // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx
+    // returns the stored value as f64, used directly as the expr result.
+    inc('__typed_set_idx')
+    return typed(['call', '$__typed_set_idx',
+      asI64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
+  }
+
+  // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
+  if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
+    const inner = ctx.schema.emitInner(arr)
+    const arrVT = lookupValType(arr) || VAL.OBJECT
+    const storeNumeric = keyNode => storeArrayPayload(inner, keyNode, valueExpr, ptr =>
+      ['f64.store', ptrOffsetIR(asF64(emit(arr)), arrVT), ptr])
+    if (useRuntimeKeyDispatch) {
+      inc('__dyn_set', '__is_str_key')
+      return dispatchByKeyKind(arr, keyExpr, valueExpr, storeNumeric)
+    }
+    return typed(storeNumeric(keyExpr), 'f64')
+  }
+
+  // 7. Known-ARRAY receiver, generic key.
+  if (typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
+    const persist = persistArrayPtr(arr)
+    const arrExpr = asF64(emit(arr))
+    if (useRuntimeKeyDispatch) {
+      inc('__dyn_set', '__is_str_key')
+      return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => storeArrayPayload(arrExpr, keyNode, valueExpr, persist))
+    }
+    return storeArrayPayload(arrExpr, keyExpr, valueExpr, persist)
+  }
+
+  const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
+  const arrVT = knownArrVT || VAL.OBJECT
+
+  // 8. Polymorphic + runtime key dispatch — key kind unknown AND receiver shape
+  //    possibly TypedArray (or fully opaque). Numeric branch forks on __ptr_type.
+  if (useRuntimeKeyDispatch) {
+    inc('__dyn_set', '__is_str_key')
+    const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
+    if (knownArrVT == null && hasTypedSet) {
+      const objTmp = temp('asu')
+      const idxTmp = tempI32('asi')
+      const valTmp = temp()
+      inc('__ptr_type', '__typed_set_idx')
+      // When arr type is unknown (could be TypedArray) and __typed_set_idx is
+      // available, dispatch the numeric branch through __ptr_type so TypedArray
+      // writes go by element type. Without this, ternary-typed arrays (e.g.
+      // `num === 4 ? new Uint32Array(4) : new Uint8Array(16)`) would silently
+      // f64.store boxed bytes regardless of element width.
+      return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => ['block', ['result', 'f64'],
+        ['local.set', `$${objTmp}`, asF64(emit(arr))],
+        ['local.set', `$${idxTmp}`, asI32(typed(keyNode, 'f64'))],
+        ['local.set', `$${valTmp}`, valueExpr],
+        ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+          ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+          ['else', ['block', ['result', 'f64'],
+            ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
+            ['local.get', `$${valTmp}`]]]]])
+    }
+    const valTmp = temp()
+    return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => ['block', ['result', 'f64'],
+      ['local.set', `$${valTmp}`, valueExpr],
+      ['f64.store', ['i32.add', ptrOffsetIR(asF64(emit(arr)), arrVT), ['i32.shl', asI32(typed(keyNode, 'f64')), ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
+      ['local.get', `$${valTmp}`]])
+  }
+
+  // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure
+  //    __ptr_type dispatch (no key-kind fork: key is provably numeric here).
+  if (typeof arr !== 'string')
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, null)
+  if (knownArrVT == null)
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistArrayPtr(arr))
+
+  // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
+  const t = temp()
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, valueExpr],
+    ['f64.store', ['i32.add', ptrOffsetIR(asF64(emit(arr)), arrVT), ['i32.shl', asI32(emit(idx)), ['i32.const', 3]]], ['local.get', `$${t}`]],
+    ['local.get', `$${t}`]], 'f64')
+}
+
+/** Property assignment: `obj.prop = val`. Strategies (first match wins):
+ *    - `arr.length = N` resize (ARRAY or unknown receiver)
+ *    - SRoA flat-object property
+ *    - Schema-known field (with dyn shadow if needed)
+ *    - OBJECT / dyn-props receiver → __dyn_set
+ *    - Hoisted-but-not-declared binding (treat as dyn)
+ *    - Non-string receiver expr → __dyn_set
+ *    Default: __hash_set on a string-named receiver. */
+function emitPropertyAssign(obj, prop, val) {
+  // arr.length = N — array resize. Intercept before the schema/object paths
+  // (`length` is never a schema field). Only ARRAY (or unknown — the runtime
+  // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
+  // `.length =` as a plain property write below. The expression value is N.
+  if (prop === 'length') {
+    const recvVt = typeof obj === 'string' ? keyValType(obj) : valTypeOf(obj)
+    if (recvVt === VAL.ARRAY || recvVt == null) {
+      inc('__arr_set_length')
+      const arrTmp = `${T}aln${ctx.func.uniq++}`
+      const nTmp = `${T}alv${ctx.func.uniq++}`
+      ctx.func.locals.set(arrTmp, 'f64')
+      ctx.func.locals.set(nTmp, 'i32')
+      // Write the relocated pointer back to a simple var receiver so later
+      // reads skip the forwarding hop; complex receivers stay correct via it.
+      const persist = recvVt === VAL.ARRAY && typeof obj === 'string'
+        ? ctx.func.boxed?.has(obj) ? ['f64.store', boxedAddr(obj), ['local.get', `$${arrTmp}`]]
+        : isGlobal(obj) ? ['global.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
+        : ['local.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
+        : null
+      const body = [
+        ['local.set', `$${arrTmp}`, asF64(emit(obj))],
+        ['local.set', `$${nTmp}`, asI32(emit(val))],
+        ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${nTmp}`]]],
+      ]
+      if (persist) body.push(persist)
+      body.push(['f64.convert_i32_s', ['local.get', `$${nTmp}`]])
+      return typed(['block', ['result', 'f64'], ...body], 'f64')
+    }
+  }
+  // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
+  const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
+  if (flatW) {
+    const fi = flatW.names.indexOf(prop)
+    if (fi >= 0) {
+      const t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, asF64(emit(val))],
+        ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
+  }
+  // Schema-based object → f64.store at fixed offset.
+  if (typeof obj === 'string' && ctx.schema.find) {
+    const idx = ctx.schema.find(obj, prop)
+    if (idx >= 0) {
+      const va = emit(obj), vv = asF64(emit(val)), t = temp()
+      const shadow = needsDynShadow(obj)
+      if (shadow) inc('__dyn_set')
+      const stmts = [
+        ['local.set', `$${t}`, vv],
+        ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
+      ]
+      if (shadow)
+        stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
+      stmts.push(['local.get', `$${t}`])
+      return typed(['block', ['result', 'f64'], ...stmts], 'f64')
+    }
+  }
+  if (typeof obj === 'string') {
+    const objType = keyValType(obj)
+    // OBJECT receivers (incl. JSON.parse-derived bindings) with off-schema
+    // properties go through __dyn_set, which writes to the per-OBJECT
+    // propsPtr at off-16 — same path as object-literal dyn shadow writes
+    // (module/object.js). __hash_set assumes HASH bucket layout and would
+    // corrupt OBJECT memory.
+    if (usesDynProps(objType) || objType === VAL.OBJECT) {
+      inc('__dyn_set')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+    }
+    if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
+      inc('__dyn_set')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+    }
+    if (objType == null && ctx.transform.host !== 'wasi') {
+      ctx.features.external = true
+    }
+    inc('__hash_set')
+    const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+    if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
+      ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
+    // Closure-captured (boxed) locals store the value at the cell address — local.tee
+    // would write to the i32 cell pointer, not the f64 value. Route through writeVar.
+    if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
+    return typed(['local.tee', `$${obj}`, setCall], 'f64')
+  }
+  if (ctx.transform.host !== 'wasi') ctx.features.external = true
+  inc('__dyn_set')
+  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+}
+
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
@@ -1369,317 +1710,10 @@ export const emitter = {
 
   '=': (name, val) => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
-    const void_ = _expect === 'void'
-    // Array index assignment: arr[i] = x
-    if (Array.isArray(name) && name[0] === '[]') {
-      const [, arr, idx] = name
-      const keyType = keyValType(idx)
-      // A provably-numeric index name — an int-certain loop counter or a
-      // NUMBER-typed local — can never be a string key, so the runtime
-      // `__is_str_key` → `__dyn_set` dispatch is dead. Mirrors the index *read*
-      // path (`intIndexIR`), closing the read/write asymmetry on `arr[i] = …`
-      // inside refined-array loops (e.g. watr's recursive AST walkers).
-      const idxNumericName = typeof idx === 'string' &&
-        (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)
-      const useRuntimeKeyDispatch = !idxNumericName &&
-        (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
-      const keyExpr = asF64(emit(idx))
-      const valueExpr = asF64(emit(val))
-      const storeArrayValue = (arrExpr, idxNode, persist) => {
-        const arrTmp = `${T}asi${ctx.func.uniq++}`
-        const idxTmp = `${T}asj${ctx.func.uniq++}`
-        const valTmp = `${T}asv${ctx.func.uniq++}`
-        ctx.func.locals.set(arrTmp, 'f64')
-        ctx.func.locals.set(idxTmp, 'i32')
-        ctx.func.locals.set(valTmp, 'f64')
-        inc('__arr_set_idx_ptr')
-        const body = [
-          ['local.set', `$${arrTmp}`, arrExpr],
-          ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
-          ['local.set', `$${valTmp}`, valueExpr],
-          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-        ]
-        if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
-        body.push(['local.get', `$${valTmp}`])
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
-      }
-      const setDyn = () => {
-        if (ctx.transform.strict)
-          err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
-        inc('__dyn_set')
-        return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
-      }
-      const dispatchKey = (numericIR) => {
-        if (ctx.transform.strict)
-          err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
-        const keyTmp = temp()
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${keyTmp}`, keyExpr],
-          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
-            ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
-            ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
-      }
-      // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
-      const litKey = isLiteralStr(idx) ? idx[1]
-        : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
-        : null
-      // SRoA flat object: `o['k'] = x` → `local.set $o#i` (no heap store).
-      if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
-        const fo = ctx.func.flatObjects.get(arr)
-        const fi = fo.names.indexOf(litKey)
-        if (fi >= 0) {
-          const t = temp()
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${t}`, valueExpr],
-            ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
-            ['local.get', `$${t}`]], 'f64')
-        }
-      }
-      if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
-        const slot = ctx.schema.find(arr, litKey)
-        if (slot >= 0) {
-          const t = temp()
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${t}`, valueExpr],
-            ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
-            ['local.get', `$${t}`]], 'f64')
-        }
-      }
-      const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
-      if (arrIndex != null && typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
-        const persist = ptr => {
-          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
-          if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
-          return ['local.set', `$${arr}`, ptr]
-        }
-        return storeArrayValue(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), persist)
-      }
-      if (keyType === VAL.STRING) return setDyn()
-      if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
-          lookupValType(arr) === 'typed') {
-        const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
-        if (r) return r
-        // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx
-        // returns the stored value as f64, used directly as the expr result.
-        inc('__typed_set_idx')
-        return typed(['call', '$__typed_set_idx',
-          asI64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
-      }
-      if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
-        const inner = ctx.schema.emitInner(arr)
-        const arrVT = lookupValType(arr) || VAL.OBJECT
-        const storeNumeric = keyNode => storeArrayValue(inner, keyNode, ptr =>
-          ['f64.store', ptrOffsetIR(asF64(emit(arr)), arrVT), ptr])
-        if (useRuntimeKeyDispatch) {
-          inc('__dyn_set', '__is_str_key')
-          return dispatchKey(storeNumeric)
-        }
-        return typed(storeNumeric(keyExpr), 'f64')
-      }
-      const va = emit(arr), vi = asI32(emit(idx)), vv = valueExpr, t = temp()
-      if (typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
-        const persist = ptr => {
-          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
-          if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
-          return ['local.set', `$${arr}`, ptr]
-        }
-        if (useRuntimeKeyDispatch) {
-          inc('__dyn_set', '__is_str_key')
-          return dispatchKey(keyNode => storeArrayValue(asF64(va), keyNode, persist))
-        }
-        return storeArrayValue(asF64(va), keyExpr, persist)
-      }
-      // arr is non-ARRAY here (VAL.ARRAY branch was taken above); safe to skip forwarding.
-      const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
-      const arrVT = knownArrVT || VAL.OBJECT
-      if (useRuntimeKeyDispatch) {
-        inc('__dyn_set', '__is_str_key')
-        // When arr type is unknown (could be TypedArray) and __typed_set_idx is
-        // available, dispatch the numeric branch through __ptr_type so TypedArray
-        // writes go by element type. Without this, ternary-typed arrays (e.g.
-        // `num === 4 ? new Uint32Array(4) : new Uint8Array(16)`) would silently
-        // f64.store boxed bytes regardless of element width.
-        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
-        if (knownArrVT == null && hasTypedSet) {
-          const objTmp = temp('asu')
-          const idxTmp = tempI32('asi')
-          inc('__ptr_type', '__typed_set_idx')
-          return dispatchKey(keyNode => {
-            const keyI32 = asI32(typed(keyNode, 'f64'))
-            return ['block', ['result', 'f64'],
-              ['local.set', `$${objTmp}`, asF64(va)],
-              ['local.set', `$${idxTmp}`, keyI32],
-              ['local.set', `$${t}`, vv],
-              ['if', ['result', 'f64'],
-                ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-                ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
-                ['else', ['block', ['result', 'f64'],
-                  ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
-                  ['local.get', `$${t}`]]]]]
-          })
-        }
-        return dispatchKey(keyNode => {
-          const keyI32 = asI32(typed(keyNode, 'f64'))
-          return ['block', ['result', 'f64'],
-            ['local.set', `$${t}`, vv],
-            ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), arrVT), ['i32.shl', keyI32, ['i32.const', 3]]], ['local.get', `$${t}`]],
-            ['local.get', `$${t}`]]
-        })
-      }
-      if (typeof arr !== 'string') {
-        const objTmp = temp('asu')
-        const idxTmp = tempI32('asi')
-        const ptrTmp = temp('asp')
-        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
-        inc('__ptr_type', '__arr_set_idx_ptr')
-        if (hasTypedSet) inc('__typed_set_idx')
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${objTmp}`, asF64(va)],
-          ['local.set', `$${idxTmp}`, vi],
-          ['local.set', `$${t}`, vv],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
-            ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
-              ['local.get', `$${t}`]]],
-            ['else', hasTypedSet ? ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
-              ['else', ['block', ['result', 'f64'],
-                ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
-                ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
-              ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
-              ['local.get', `$${t}`]]]]], 'f64')
-      }
-      if (typeof arr === 'string' && knownArrVT == null) {
-        const objTmp = temp('asu')
-        const idxTmp = tempI32('asi')
-        const ptrTmp = temp('asp')
-        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
-        inc('__ptr_type', '__arr_set_idx_ptr')
-        if (hasTypedSet) inc('__typed_set_idx')
-        const persist = ptr => {
-          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
-          if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
-          return ['local.set', `$${arr}`, ptr]
-        }
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${objTmp}`, asF64(va)],
-          ['local.set', `$${idxTmp}`, vi],
-          ['local.set', `$${t}`, vv],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
-            ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
-              persist(['local.get', `$${ptrTmp}`]),
-              ['local.get', `$${t}`]]],
-            ['else', hasTypedSet ? ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
-              ['else', ['block', ['result', 'f64'],
-                ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
-                ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
-              ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
-              ['local.get', `$${t}`]]]]], 'f64')
-      }
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, vv],
-        ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), arrVT), ['i32.shl', vi, ['i32.const', 3]]], ['local.get', `$${t}`]],
-        ['local.get', `$${t}`]], 'f64')
-    }
-    // Object property assignment: obj.prop = x
-    if (Array.isArray(name) && name[0] === '.') {
-      const [, obj, prop] = name
-      // arr.length = N — array resize. Intercept before the schema/object paths
-      // (`length` is never a schema field). Only ARRAY (or unknown — the runtime
-      // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
-      // `.length =` as a plain property write below. The expression value is N.
-      if (prop === 'length') {
-        const recvVt = typeof obj === 'string' ? keyValType(obj) : valTypeOf(obj)
-        if (recvVt === VAL.ARRAY || recvVt == null) {
-          inc('__arr_set_length')
-          const arrTmp = `${T}aln${ctx.func.uniq++}`
-          const nTmp = `${T}alv${ctx.func.uniq++}`
-          ctx.func.locals.set(arrTmp, 'f64')
-          ctx.func.locals.set(nTmp, 'i32')
-          // Write the relocated pointer back to a simple var receiver so later
-          // reads skip the forwarding hop; complex receivers stay correct via it.
-          const persist = recvVt === VAL.ARRAY && typeof obj === 'string'
-            ? ctx.func.boxed?.has(obj) ? ['f64.store', boxedAddr(obj), ['local.get', `$${arrTmp}`]]
-            : isGlobal(obj) ? ['global.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
-            : ['local.set', `$${obj}`, ['local.get', `$${arrTmp}`]]
-            : null
-          const body = [
-            ['local.set', `$${arrTmp}`, asF64(emit(obj))],
-            ['local.set', `$${nTmp}`, asI32(emit(val))],
-            ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${nTmp}`]]],
-          ]
-          if (persist) body.push(persist)
-          body.push(['f64.convert_i32_s', ['local.get', `$${nTmp}`]])
-          return typed(['block', ['result', 'f64'], ...body], 'f64')
-        }
-      }
-      // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
-      const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
-      if (flatW) {
-        const fi = flatW.names.indexOf(prop)
-        if (fi >= 0) {
-          const t = temp()
-          return typed(['block', ['result', 'f64'],
-            ['local.set', `$${t}`, asF64(emit(val))],
-            ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
-            ['local.get', `$${t}`]], 'f64')
-        }
-      }
-      // Schema-based object → f64.store at fixed offset.
-      if (typeof obj === 'string' && ctx.schema.find) {
-        const idx = ctx.schema.find(obj, prop)
-        if (idx >= 0) {
-          const va = emit(obj), vv = asF64(emit(val)), t = temp()
-          const shadow = needsDynShadow(obj)
-          if (shadow) inc('__dyn_set')
-          const stmts = [
-            ['local.set', `$${t}`, vv],
-            ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
-          ]
-          if (shadow)
-            stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
-          stmts.push(['local.get', `$${t}`])
-          return typed(['block', ['result', 'f64'], ...stmts], 'f64')
-        }
-      }
-      if (typeof obj === 'string') {
-        const objType = keyValType(obj)
-        // OBJECT receivers (incl. JSON.parse-derived bindings) with off-schema
-        // properties go through __dyn_set, which writes to the per-OBJECT
-        // propsPtr at off-16 — same path as object-literal dyn shadow writes
-        // (module/object.js). __hash_set assumes HASH bucket layout and would
-        // corrupt OBJECT memory.
-        if (usesDynProps(objType) || objType === VAL.OBJECT) {
-          inc('__dyn_set')
-          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-        }
-        if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
-          inc('__dyn_set')
-          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-        }
-        if (objType == null && ctx.transform.host !== 'wasi') {
-          ctx.features.external = true
-        }
-        inc('__hash_set')
-        const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-        if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
-          ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
-        // Closure-captured (boxed) locals store the value at the cell address — local.tee
-        // would write to the i32 cell pointer, not the f64 value. Route through writeVar.
-        if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
-        return typed(['local.tee', `$${obj}`, setCall], 'f64')
-      }
-      if (ctx.transform.host !== 'wasi') ctx.features.external = true
-      inc('__dyn_set')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-    }
+    if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
+    if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    const void_ = _expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
       inc('__to_num')
       return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)
