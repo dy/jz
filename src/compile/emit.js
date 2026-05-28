@@ -45,6 +45,7 @@ import {
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
+  block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
@@ -545,7 +546,7 @@ export function materializeMulti(callNode) {
   for (let k = 0; k < n; k++)
     ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
   ir.push(out.ptr)
-  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+  return block64(...ir)
 }
 
 /**
@@ -949,7 +950,7 @@ export function buildArrayWithSpreads(items) {
   }
 
   ir.push(out.ptr)
-  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+  return block64(...ir)
 }
 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
@@ -1227,7 +1228,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   ]
   if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
-  return typed(['block', ['result', 'f64'], ...body], 'f64')
+  return block64(...body)
 }
 
 /** Strict-mode guard for dynamic property writes — emitted in branches that
@@ -1250,11 +1251,11 @@ function dynSetCall(arr, keyExpr, valueExpr) {
 function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
   ensureDynSetAllowed(arr)
   const keyTmp = temp()
-  return typed(['block', ['result', 'f64'],
+  return block64(
     ['local.set', `$${keyTmp}`, keyExpr],
     ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
       ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
-      ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
+      ['else', numericIR(['local.get', `$${keyTmp}`])]])
 }
 
 /** Build a `__ptr_type`-fork IR for `arr[idx] = val` when receiver is opaque
@@ -1269,14 +1270,11 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist)
   const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
   inc('__ptr_type', '__arr_set_idx_ptr')
   if (hasTypedSet) inc('__typed_set_idx')
-  const arrayBranch = persist
-    ? ['block', ['result', 'f64'],
-        ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-        persist(['local.get', `$${ptrTmp}`]),
-        ['local.get', `$${valTmp}`]]
-    : ['block', ['result', 'f64'],
-        ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-        ['local.get', `$${valTmp}`]]
+  const arrSetCall = ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]
+  const arrayBranch = ['block', ['result', 'f64'],
+    ['local.set', `$${ptrTmp}`, arrSetCall],
+    ...(persist ? [persist(['local.get', `$${ptrTmp}`])] : []),
+    ['local.get', `$${valTmp}`]]
   const fallbackStore = ['block', ['result', 'f64'],
     ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
     ['local.get', `$${valTmp}`]]
@@ -1286,14 +1284,14 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist)
         ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
         ['else', fallbackStore]]
     : fallbackStore
-  return typed(['block', ['result', 'f64'],
+  return block64(
     ['local.set', `$${objTmp}`, asF64(arrExpr)],
     ['local.set', `$${idxTmp}`, idxI32],
     ['local.set', `$${valTmp}`, valueExpr],
     ['if', ['result', 'f64'],
       ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
       ['then', arrayBranch],
-      ['else', elseBranch]]], 'f64')
+      ['else', elseBranch]])
 }
 
 /** Element assignment: `arr[idx] = val`. Linear strategy chain — first match wins.
@@ -1323,24 +1321,16 @@ function emitElementAssign(arr, idx, val) {
   if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
     const fo = ctx.func.flatObjects.get(arr)
     const fi = fo.names.indexOf(litKey)
-    if (fi >= 0) {
-      const t = temp()
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, valueExpr],
-        ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
-        ['local.get', `$${t}`]], 'f64')
-    }
+    if (fi >= 0) return withTemp(valueExpr, t => [
+      ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]])
   }
   // 2. Schema field literal key → direct payload-slot write.
   if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
     const slot = ctx.schema.find(arr, litKey)
-    if (slot >= 0) {
-      const t = temp()
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, valueExpr],
-        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
-        ['local.get', `$${t}`]], 'f64')
-    }
+    if (slot >= 0) return withTemp(valueExpr, t => [
+      ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
+      ['local.get', `$${t}`]])
   }
   // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
@@ -1430,11 +1420,9 @@ function emitElementAssign(arr, idx, val) {
     return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistArrayPtr(arr))
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
-  const t = temp()
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, valueExpr],
+  return withTemp(valueExpr, t => [
     ['f64.store', ['i32.add', ptrOffsetIR(asF64(emit(arr)), arrVT), ['i32.shl', asI32(emit(idx)), ['i32.const', 3]]], ['local.get', `$${t}`]],
-    ['local.get', `$${t}`]], 'f64')
+    ['local.get', `$${t}`]])
 }
 
 /** Property assignment: `obj.prop = val`. Strategies (first match wins):
@@ -1472,20 +1460,16 @@ function emitPropertyAssign(obj, prop, val) {
       ]
       if (persist) body.push(persist)
       body.push(['f64.convert_i32_s', ['local.get', `$${nTmp}`]])
-      return typed(['block', ['result', 'f64'], ...body], 'f64')
+      return block64(...body)
     }
   }
   // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
   const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
   if (flatW) {
     const fi = flatW.names.indexOf(prop)
-    if (fi >= 0) {
-      const t = temp()
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, asF64(emit(val))],
-        ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
-        ['local.get', `$${t}`]], 'f64')
-    }
+    if (fi >= 0) return withTemp(asF64(emit(val)), t => [
+      ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]])
   }
   // Schema-based object → f64.store at fixed offset.
   if (typeof obj === 'string' && ctx.schema.find) {
@@ -1501,7 +1485,7 @@ function emitPropertyAssign(obj, prop, val) {
       if (shadow)
         stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
       stmts.push(['local.get', `$${t}`])
-      return typed(['block', ['result', 'f64'], ...stmts], 'f64')
+      return block64(...stmts)
     }
   }
   if (typeof obj === 'string') {
@@ -1524,8 +1508,8 @@ function emitPropertyAssign(obj, prop, val) {
     }
     inc('__hash_set')
     const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-    if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
-      ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
+    if (isGlobal(obj)) return block64(
+      ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`])
     // Closure-captured (boxed) locals store the value at the cell address — local.tee
     // would write to the i32 cell pointer, not the f64 value. Route through writeVar.
     if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
@@ -1609,7 +1593,7 @@ function emitBulkPushSpread(objArg, parsed) {
     ir.push(['local.set', `$${objArg}`, ['local.get', `$${o}`]])
   }
   ir.push(['f64.convert_i32_s', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
-  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+  return block64(...ir)
 }
 
 /** Single trailing spread, with optional preceding normal args. Calls methodEmitter
@@ -1657,7 +1641,7 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
       ['br', `$continue${loopId}`]]])
 
   ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
-  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+  return block64(...ir)
 }
 
 /** General spread mix: iterate combined args in original order, batch contiguous
@@ -1705,7 +1689,7 @@ function emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter) {
     }
     flushBatch()
     irG.push(asF64(emit(objArg)))
-    return typed(['block', ['result', 'f64'], ...irG], 'f64')
+    return block64(...irG)
   }
 
   const accG = `${T}acc${ctx.func.uniq++}`
@@ -1744,7 +1728,7 @@ function emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   }
   flushBatch()
   irG.push(['local.get', `$${accG}`])
-  return typed(['block', ['result', 'f64'], ...irG], 'f64')
+  return block64(...irG)
 }
 
 /** Method-emitter call: directly, or via one of the spread fast paths. */
@@ -1758,22 +1742,27 @@ function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
   return emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter)
 }
 
-/** Optional method call: `obj?.method(args)` — null if obj is nullish, else
- *  `obj.method(args)`. The parser shapes the callee as ['?.', obj, method].
- *  Receiver hoists to a temp so the nullish check and the synthetic method
- *  dispatch (`['.', t, method]`) see the same evaluation. */
+/** Optional method call: `obj?.method(args)` — `undefined` if obj is nullish
+ *  (per ES2020 optional-chaining spec), else `obj.method(args)`. The parser
+ *  shapes the callee as ['?.', obj, method]; receiver hoists to a temp so the
+ *  nullish check and the synthetic method dispatch see the same evaluation. */
 function emitOptionalMethodCall(callee, callArgs, parsed) {
   const [, obj, method] = callee
-  const t = `${T}om${ctx.func.uniq++}`
-  ctx.func.locals.set(t, 'f64')
-  const va = asF64(emit(obj))
-  const methodCall = emitMethodCall(['.', t, method], parsed, callArgs)
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, va],
+  return withNullGuard(asF64(emit(obj)), t =>
+    asF64(emitMethodCall(['.', t, method], parsed, callArgs)), 'om')
+}
+
+/** Hoist `headExpr` into a temp, evaluate it once, and yield `body(t)` when the
+ *  temp is non-nullish, else `undefined`. Shared by `?.`-shaped optional callers
+ *  (method call, chain-lift) so the nullish-guard scaffold stays in one place. */
+function withNullGuard(headExpr, body, tag = 'ng') {
+  const t = temp(tag)
+  return block64(
+    ['local.set', `$${t}`, headExpr],
     ['if', ['result', 'f64'],
-      ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
-      ['then', asF64(methodCall)],
-      ['else', nullExpr()]]], 'f64')
+      ['i32.eqz', isNullish(['local.get', `$${t}`])],
+      ['then', body(t)],
+      ['else', undefExpr()]])
 }
 
 /** Method-call dispatch: `obj.method(args)`. Linear strategy chain. Strategies
@@ -1905,10 +1894,10 @@ function emitMethodCall(callee, parsed, callArgs) {
       // Mutating methods may reallocate; writeback inner value to boxed slot
       if (BOXED_MUTATORS.has(method)) {
         const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
-        return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
+        return block64(...loadInner, asF64(result), wb)
       }
       // Non-mutating: just load inner and call
-      return typed(['block', ['result', 'f64'], ...loadInner, asF64(result)], 'f64')
+      return block64(...loadInner, asF64(result))
     }
   }
 
@@ -1930,14 +1919,14 @@ function emitMethodCall(callee, parsed, callArgs) {
     if (builtin) {
       const objTmp = temp('vobj'), propTmp = temp('vprop')
       inc('__dyn_get_expr', '__ptr_type')
-      return typed(['block', ['result', 'f64'],
+      return block64(
         ['local.set', `$${objTmp}`, asF64(emit(obj))],
         ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
           ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
         ['if', ['result', 'f64'],
           ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
           ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
-          ['else', asF64(callMethod(objTmp, builtin))]]], 'f64')
+          ['else', asF64(callMethod(objTmp, builtin))]])
     }
   }
 
@@ -1957,33 +1946,26 @@ function emitMethodCall(callee, parsed, callArgs) {
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     const strEmitter = ctx.core.emit[strKey]
     const genEmitter = ctx.core.emit[genKey]
-    return typed(['block', ['result', 'f64'],
+    return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
         ['then', callMethod(t, strEmitter)],
-        ['else', callMethod(t, genEmitter)]]], 'f64')
+        ['else', callMethod(t, genEmitter)]])
   }
 
-  // Schema property function call: x.prop(args) where prop is a closure in (non-boxed) schema
+  // Schema property closure call: `x.prop(args)` where prop is a closure slot in
+  // x's schema. Boxed schemas don't currently support spread callers (each box
+  // hands the inner value through), so spread is restricted to the non-boxed path.
   if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
-    const idx = ctx.schema.find(obj, method)
-    if (idx >= 0 && !ctx.schema.isBoxed?.(obj)) {
-      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-      if (parsed.hasSpread) {
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
-      }
-      return ctx.closure.call(propRead, parsed.normal)
-    }
-  }
-
-  // Schema property function call: x.prop(args) where prop is a closure in boxed schema
-  if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
     const idx = ctx.schema.find(obj, method)
     if (idx >= 0) {
       const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
+      if (parsed.hasSpread && !ctx.schema.isBoxed?.(obj)) {
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
+      }
       return ctx.closure.call(propRead, parsed.normal)
     }
   }
@@ -2012,41 +1994,32 @@ function emitMethodCall(callee, parsed, callArgs) {
     return callMethod(obj, ctx.core.emit[genKey])
   }
 
-  // Dynamic property function call on non-external values.
+  // Dynamic property function call on non-external values. Two emission shapes:
+  // (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
+  //     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
+  //     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
   if (ctx.closure.call) {
     if (ctx.transform.strict)
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
-    const objTmp = `${T}mobj${ctx.func.uniq++}`
-    ctx.func.locals.set(objTmp, 'f64')
+    const objTmp = temp('mobj')
+    const propTmp = temp('mprop')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
     const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
-    const propTmp = `${T}mprop${ctx.func.uniq++}`
-    ctx.func.locals.set(propTmp, 'f64')
-    if (usesDynProps(vt)) {
+    const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
+    if (closureOnly) {
       inc('__dyn_get_expr', '__ptr_type')
-      return typed(['block', ['result', 'f64'],
+      return block64(
         ['local.set', `$${objTmp}`, asF64(emit(obj))],
         ['local.set', `$${propTmp}`, propRead],
         ['if', ['result', 'f64'],
           ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
           ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-          ['else', undefExpr()]]], 'f64')
-    }
-    // WASI: no PTR.EXTERNAL values; closure-only dispatch is correct.
-    if (ctx.transform.host === 'wasi') {
-      inc('__dyn_get_expr', '__ptr_type')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${objTmp}`, asF64(emit(obj))],
-        ['local.set', `$${propTmp}`, propRead],
-        ['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
-          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-          ['else', undefExpr()]]], 'f64')
+          ['else', undefExpr()]])
     }
     inc('__dyn_get_expr', '__ext_call', '__ptr_type')
     ctx.features.external = true
-    return typed(['block', ['result', 'f64'],
+    return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
       ['if', ['result', 'f64'],
@@ -2058,7 +2031,7 @@ function emitMethodCall(callee, parsed, callArgs) {
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
             ['i64.reinterpret_f64', arrayIR]]]],
-          ['else', undefExpr()]]]]], 'f64')
+          ['else', undefExpr()]]]])
   }
 
   // Unknown callee — assume external method.
@@ -2293,9 +2266,9 @@ export const emitter = {
     const dropSpread = r => r.type ? [['drop', r]] : spread(r)
     // If last expression is void (store, etc.), add explicit return value
     if (!last.type) {
-      return typed(['block', ['result', 'f64'],
+      return block64(
         ...results.flatMap(dropSpread),
-        ['f64.const', 0]], 'f64')
+        ['f64.const', 0])
     }
     return typed(['block', ['result', last.type],
       ...results.slice(0, -1).flatMap(dropSpread), last], last.type)
@@ -2492,13 +2465,9 @@ export const emitter = {
       : [asF64(emit(val)), ['local.get', `$${t}`]]
     const result = typed(['if', ['result', 'f64'], cond, ['then', thenExpr], ['else', elseExpr]], 'f64')
     // Write back (handles boxed/global/local)
-    if (ctx.func.boxed?.has(name)) {
-      const bt = temp()
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${bt}`, result],
-        ['f64.store', boxedAddr(name), ['local.get', `$${bt}`]],
-        ['local.get', `$${bt}`]], 'f64')
-    }
+    if (ctx.func.boxed?.has(name)) return withTemp(result, bt => [
+      ['f64.store', boxedAddr(name), ['local.get', `$${bt}`]],
+      ['local.get', `$${bt}`]])
     return writeVar(name, result, void_)
   }])),
 
@@ -2565,10 +2534,9 @@ export const emitter = {
       }
       // Exactly one side is checked. Pre-eval the known side first, then the if branches on the unknown.
       const preEval = vtA == null ? ['local.set', `$${tB}`, asF64(emit(b))] : ['local.set', `$${tA}`, asF64(emit(a))]
-      return typed(['block', ['result', 'f64'],
+      return block64(
         preEval,
-        ['if', ['result', 'f64'], checkA ?? checkB, ['then', concat], ['else', add]]
-      ], 'f64')
+        ['if', ['result', 'f64'], checkA ?? checkB, ['then', concat], ['else', add]])
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a + b)
     if (_f) return _f
@@ -2879,16 +2847,16 @@ export const emitter = {
 
   'void': a => {
     const v = emit(a)
-    const dropAndUndef = (instr) => typed(['block', ['result', 'f64'], instr, 'drop', undefExpr()], 'f64')
+    const dropAndUndef = (instr) => block64(instr, 'drop', undefExpr())
     if (v == null) return undefExpr()
     const op = Array.isArray(v) ? v[0] : null
     const wasmVoid = op === 'local.set' || (typeof op === 'string' && op.endsWith('.store'))
       || op === 'memory.copy' || op === 'global.set'
     if (wasmVoid)
-      return typed(['block', ['result', 'f64'], v, undefExpr()], 'f64')
+      return block64(v, undefExpr())
     if (v.type && v.type !== 'void')
       return dropAndUndef(v)
-    return typed(['block', ['result', 'f64'], ...flat(v), undefExpr()], 'f64')
+    return block64(...flat(v), undefExpr())
   },
 
   '(': a => emit(a),
@@ -3159,22 +3127,13 @@ function liftOptionalChain(node) {
   }
   if (optIdx <= 0) return null
   const opt = path[optIdx]
-  const headExpr = opt[1]
-  const t = temp('oc')
-  let rebuilt
-  if (opt[0] === '?.') rebuilt = ['.', t, opt[2]]
-  else if (opt[0] === '?.[]') rebuilt = ['[]', t, opt[2]]
-  else rebuilt = ['()', t, ...opt.slice(2)]
-  for (let i = optIdx - 1; i >= 0; i--) {
-    const outer = path[i]
-    rebuilt = [outer[0], rebuilt, ...outer.slice(2)]
-  }
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, asF64(emit(headExpr))],
-    ['if', ['result', 'f64'],
-      ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
-      ['then', asF64(emit(rebuilt))],
-      ['else', undefExpr()]]], 'f64')
+  return withNullGuard(asF64(emit(opt[1])), t => {
+    let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
+                : opt[0] === '?.[]' ? ['[]', t, opt[2]]
+                                    : ['()', t, ...opt.slice(2)]
+    for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
+    return asF64(emit(rebuilt))
+  }, 'oc')
 }
 
 /**
