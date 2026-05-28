@@ -940,6 +940,11 @@ export function cseScalarLoad(fn) {
  *     the surrounding `local.set/tee` handles that)
  *   - `br/br_if/br_table/return/unreachable` → NO clear (pure values still valid)
  */
+// Commutative WASM binops — shared by csePureExpr + csePureExprLoop for canonical
+// operand-key ordering (a*b and b*a hash to one entry). OP_TYPE tables stay local:
+// the two passes cover deliberately different op sets.
+const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
+
 export function csePureExpr(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -957,7 +962,6 @@ export function csePureExpr(fn) {
   }
   const newLocals = []
 
-  const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
   const TARGET_OPS = new Set([
     'f64.mul', 'f64.add', 'f64.sub',
     'i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor',
@@ -1088,7 +1092,6 @@ export function csePureExprLoop(fn) {
   const canMutateSite = (parent, node) =>
     (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1
 
-  const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
   const PURE_F64_BIN = new Set(['f64.mul', 'f64.add', 'f64.sub', 'f64.div'])
   const PURE_F64_UNARY = new Set(['f64.neg', 'f64.abs', 'f64.convert_i32_s', 'f64.convert_i32_u'])
   const PURE_I32_BIN = new Set(['i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor'])

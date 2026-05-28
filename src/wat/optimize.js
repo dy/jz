@@ -9,6 +9,12 @@
 
 import compile from 'watr/compile'
 
+// Fixpoint round caps — empirical convergence bounds, not correctness limits.
+// Each pass only makes monotonic progress, so hitting a cap merely leaves a few
+// residual simplifications for the next compile rather than producing wrong output.
+const MAX_PROP_ROUNDS = 6     // forward-prop / set-get / tee fixpoint per scope
+const MAX_INLINE_ROUNDS = 16  // single-caller inline-chain depth (deep generated stdlib)
+
 // === WAT optimizer passes ===
 
 // — AST helpers (formerly watr/util.js) — every node is an s-expression
@@ -1211,7 +1217,7 @@ const propagate = (ast) => {
     // (skip a not-yet-provably-dead store, decline a not-yet-provably-single use) —
     // never wrongly. The next round re-counts and mops up. (Recounting per sub-pass
     // per scope is O(scopes·funcSize) and crippling on big modules.)
-    for (let round = 0; round < 6; round++) {
+    for (let round = 0; round < MAX_PROP_ROUNDS; round++) {
       const useCounts = countLocalUses(funcNode)
       let progressed = false
       for (const scope of scopes) {
@@ -1459,7 +1465,7 @@ const inlineOnce = (ast) => {
     for (const c of n) collectPinned(c, pinned)
   }
 
-  for (let round = 0; round < 16; round++) {
+  for (let round = 0; round < MAX_INLINE_ROUNDS; round++) {
     const funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func')
     const funcByName = new Map()
     for (const n of funcs) if (typeof n[1] === 'string') funcByName.set(n[1], n)
