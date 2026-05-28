@@ -42,20 +42,35 @@ import {
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
 
-let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
-let scopes = []  // block scope stack: [{names: Set, renames: Map}]
-let staticConstScopes = []  // lexical const facts: [{strings: Map, arrays: Map}]
-let assignedStaticGlobals = null
+// Module-level prepare state. Six independent stacks/scalars that together form
+// the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
+// at the top of `prepare()` (line ~368) — any throw inside prepare is cleared
+// on the next entry, so leak across compilations is impossible. Kept at module
+// scope (rather than ctx.prepare.*) because 78 read sites would mean a single
+// indirection on every scope query; the consolidated reset documents the set.
+let depth          // arrow nesting depth (0=top-level, >0=inside function)
+let scopes         // block scope stack: [{names: Set, renames: Map}]
+let staticConstScopes  // lexical const facts: [{strings: Map, arrays: Map}]
+let assignedStaticGlobals
 // Per-arrow set of names already declared anywhere in the function body. Used
 // to force a rename when the same identifier is declared in two sibling blocks
 // (else-if arms, separate { ... } chunks): without renaming, both decls lower
 // to the same WASM local, but downstream optimizations (directClosures) gate
 // on per-decl `isReassigned`, not per-WASM-local — they'd read a stale binding.
-let funcLocalNames = []
+let funcLocalNames
 // Per-arrow set of local names bound to a function literal (`let g = () => …`).
 // Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
 // prohibited introspection — from a data object that merely has such a field.
-let funcValueNames = []
+let funcValueNames
+
+const resetPrepState = () => {
+  depth = 0
+  scopes = []
+  staticConstScopes = []
+  assignedStaticGlobals = new Set()
+  funcLocalNames = [new Set()]
+  funcValueNames = [new Set()]
+}
 
 // ES spec: identifier with \uHHHH or \u{...} escape is equivalent to the decoded
 // form. subscript preserves raw spelling in the AST; normalize once before prep.
@@ -366,12 +381,7 @@ function recordModuleInitFacts(root) {
  * @returns {ASTNode} Normalized AST
  */
 export default function prepare(node) {
-  depth = 0
-  scopes = []
-  staticConstScopes = []
-  assignedStaticGlobals = new Set()
-  funcLocalNames = [new Set()]
-  funcValueNames = [new Set()]
+  resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
   // modules (e.g. object → collection) without importing autoload.js — that
   // import would cycle (autoload imports every module via module/index.js).

@@ -379,6 +379,43 @@ export function tempI64(tag = '') {
   return name
 }
 
+// === IR scaffolds ===
+
+/** Wrap a sequence of statements as a typed `(block (result <type>) …)`.
+ *  Default result is `f64` (the value-type for most jz emissions).
+ *  Shorthand for the `typed(['block', ['result', T], …stmts], T)` pattern that
+ *  appears in nearly every emitter — keeps call sites focused on the body. */
+export const block64 = (...stmts) => typed(['block', ['result', 'f64'], ...stmts], 'f64')
+export const blockTyped = (type, ...stmts) => typed(['block', ['result', type], ...stmts], type)
+
+/** Allocate an f64 temp, set it to `val`, run `body(name)` and yield its result.
+ *  `body` may return either a single IR node (used as the block result) or an
+ *  array of nodes whose last expression becomes the result. Eliminates the
+ *  repetitive `const t = temp(); …['local.set', $t, val]; …['local.get', $t]`
+ *  scaffold around tee-and-use patterns. */
+export function withTemp(val, body, tag = '') {
+  const t = temp(tag)
+  const out = body(t)
+  const tail = Array.isArray(out) && out.every(n => Array.isArray(n)) ? out : [out]
+  return block64(['local.set', `$${t}`, val], ...tail)
+}
+
+/** Dispatch on `__ptr_type(bits)` — emits a right-leaning if/else chain over
+ *  PTR constants. `cases` is `[[PTR.X, ir], …]`; `fallback` is the else IR.
+ *  Centralizes the `i32.eq (call $__ptr_type bits) (i32.const PTR.X)` pattern
+ *  so emitters dispatching by pointer kind stay declarative. */
+export function dispatchByPtrType(typeLocal, cases, fallback) {
+  let out = fallback
+  for (let i = cases.length - 1; i >= 0; i--) {
+    const [ptr, ir] = cases[i]
+    out = ['if', ['result', 'f64'],
+      ['i32.eq', ['local.get', `$${typeLocal}`], ['i32.const', ptr]],
+      ['then', ir],
+      ['else', out]]
+  }
+  return out
+}
+
 // === Numeric helpers ===
 
 /** WASM has no f64.rem — implement as a - trunc(a/b) * b.

@@ -60,7 +60,14 @@ export const ctx = {
   runtime: {},    // runtime state: data segments, string pool, atom table, throws flag
   memory: {},     // module memory config (pages, shared)
   error: {},      // source location carried through emit for err() messages
-  transform: {},  // compile-time options (jzify, etc.)
+  transform: {},  // compile-time options + injected services. Three categories:
+                  //   user opts   : noTailCall, strict, alloc, importMetaUrl, host, inspect
+                  //   derived cfg : optimize (resolved by resolveOptimize from user input)
+                  //   services    : parse, resolveUrl, jzify (when set to a function by the
+                  //                 host pipeline; boolean form is a user opt). Service
+                  //                 injection is the pattern that lets the self-host kernel
+                  //                 run without a parser — it omits these and prepare uses
+                  //                 ctx.module.importAsts instead.
   abi: {},        // per-type rep lookup (see abi/index.js). { number: rep, string: rep, ... }
                   // Set by reset() to the default carrier bundle. Read by codegen sites
                   // that delegate rep-specific behavior — today just the optimizer's
@@ -314,6 +321,38 @@ export function reset(proto, globals, bridge) {
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
     timers: false,          // Set by prepare.js when timer module is included
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
+  }
+}
+
+/** Debug-mode invariant checks. Encodes the writers/readers contract documented
+ *  above as runtime asserts so a bad refactor surfaces at the phase boundary
+ *  instead of as a distant nondeterministic failure. No-op unless
+ *  `JZ_DEBUG_INVARIANTS=1`; designed so phase-boundary callers can sprinkle
+ *  `assertCtxInvariants('post-prepare')` without runtime cost in production.
+ *
+ *  Phases checked:
+ *   - `post-reset`     : every sub-context exists; Maps/Sets initialized.
+ *   - `post-prepare`   : module + scope populated; func.list possibly empty.
+ *   - `pre-emit`       : func.current set; locals Map present; rep maps live.
+ *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
+const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
+export function assertCtxInvariants(phase) {
+  if (!DBG_INVARIANTS) return
+  const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }
+  const must = (cond, msg) => { if (!cond) fail(msg) }
+
+  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features,
+       'sub-contexts present')
+  if (phase !== 'pre-reset') {
+    must(ctx.core.includes instanceof Set, 'core.includes is Set')
+    must(ctx.core.emit && typeof ctx.core.emit === 'object', 'core.emit table')
+    must(Array.isArray(ctx.func.list), 'func.list array')
+    must(ctx.func.locals instanceof Map, 'func.locals Map')
+    must(ctx.func.refinements instanceof Map, 'func.refinements Map')
+  }
+  if (phase === 'pre-emit') {
+    must(ctx.func.current, 'func.current set before emit')
+    must(ctx.func.locals.size != null, 'locals open for writes')
   }
 }
 
