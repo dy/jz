@@ -28,14 +28,14 @@ src/
   ast.js static.js kind.js type.js param-reps.js
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
 module/         stdlib
-layout.js       NaN-box bit layout (compiler-free, shared with module/)
+layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, shared with module/)
 ```
 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
 
 **Stdlib registration:** use `wat(name, body)` for WAT bodies and `reg(name, deps, fn)` for emit handlers. Co-locate with `reg(name, { deps, wat, emit })` when they pair. Do not assign `ctx.core.stdlib[…]` / `ctx.core.emit[…]` directly in new code.
 
-**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array aux, integer proofs, loop-unroll helpers. **AST walks:** use `refsName`/`refsAny`/`some` from `ast.js` — don't hand-roll name scanners.
+**kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array ctor detection, integer proofs, loop-unroll helpers (the pure PTR.TYPED aux codec lives in `layout.js`). **AST walks:** use `refsName`/`refsAny`/`some` from `ast.js` — don't hand-roll name scanners.
 
 ## Architecture
 

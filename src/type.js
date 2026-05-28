@@ -2,7 +2,8 @@
  * WASM local typing + typed-array metadata + integer proofs.
  *
  * - exprType: i32 vs f64 for locals/params
- * - typedElem*: PTR.TYPED NaN-box aux encoding
+ * - typedElemCtor / ternaryCtorOfRhs: detect typed-array ctor from an AST rhs
+ *   (the pure PTR.TYPED aux codec lives in layout.js)
  * - scanBoundedLoops / inBoundsCharCodeAt: charCodeAt i32 contract proof
  * - loop unroll helpers: smallConstForTripCount, cloneWithSubst, …
  * - intCertainMap / intExprChecker: integer-shaped binding analysis
@@ -14,6 +15,7 @@ import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf } from './kind.js'
 import { NO_VALUE, staticValue, intLiteralValue } from './static.js'
+import { typedElemAux } from '../layout.js'
 
 /** Byte-backed constructors whose `new X()` yields a PTR.TYPED / PTR.BUFFER value:
  *  the typed-array views + ArrayBuffer + DataView. Mirrors autoload's TYPED_CTORS
@@ -35,46 +37,6 @@ export function typedElemCtor(rhs) {
   const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
     && Array.isArray(args) && args[0] === ',' && args.length >= 4
   return isView ? rhs[1] + '.view' : rhs[1]
-}
-
-/** Base element-type codes for PTR.TYPED aux (0–7). BigInt ctors share 7 + TYPED_ELEM_BIGINT_FLAG. */
-export const TYPED_ELEM_CODE = {
-  Int8Array: 0, Uint8Array: 1, Int16Array: 2, Uint16Array: 3,
-  Int32Array: 4, Uint32Array: 5, Float32Array: 6, Float64Array: 7,
-  BigInt64Array: 7, BigUint64Array: 7,
-}
-export const TYPED_ELEM_VIEW_FLAG = 8
-export const TYPED_ELEM_BIGINT_FLAG = 16
-
-/** Encode element-type name (+ optional view/bigint flags) to PTR.TYPED aux bits. */
-export function encodeTypedElemAux(name, isView = false) {
-  const et = TYPED_ELEM_CODE[name]
-  if (et == null) return null
-  return et | (isView ? TYPED_ELEM_VIEW_FLAG : 0) |
-    (name === 'BigInt64Array' || name === 'BigUint64Array' ? TYPED_ELEM_BIGINT_FLAG : 0)
-}
-
-/** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
- *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView). */
-export function typedElemAux(ctor) {
-  if (!ctor || !ctor.startsWith('new.')) return null
-  const isView = ctor.endsWith('.view')
-  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-  return encodeTypedElemAux(name, isView)
-}
-const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
-  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
-export { TYPED_ELEM_NAMES }
-/** Reverse of typedElemAux: pick a canonical ctor string for a 4-bit elem aux. Used
- *  to round-trip TYPED-narrowed call results through ctx.types.typedElem so the
- *  unboxed local's rep picks up the same aux. aux=7 is shared with BigInt typed
- *  arrays — Float64Array is canonical (read-side compares aux only). */
-export function ctorFromElemAux(aux) {
-  if (aux == null) return null
-  const isView = (aux & 8) !== 0
-  const name = (aux & 16) !== 0 ? 'BigInt64Array' : TYPED_ELEM_NAMES[aux & 7]
-  if (!name) return null
-  return isView ? `new.${name}.view` : `new.${name}`
 }
 
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
