@@ -4,6 +4,26 @@
  * Thin accessors shared by ir, emit, stdlib, and analyze. Keeps heavy AST
  * walkers in analyze.js without pulling them into ir.js.
  *
+ * ## Lookup priority (lookupValType / lookupNotString)
+ *
+ * A single binding can carry several pieces of type knowledge, set at different
+ * lifecycle phases. Accessors resolve them in this fixed order — first hit wins:
+ *
+ *   1. `ctx.func.refinements`           flow-sensitive (typeof/instanceof guard)
+ *   2. `ctx.func.localValTypesOverlay`  call-site / loop-iter overlay (transient)
+ *   3. `ctx.func.localReps`             per-function plan/analyze fact (durable)
+ *   4. `ctx.scope.globalValTypes`       module-level binding (durable)
+ *
+ * Writes go through `updateRep` (#3 mutator) / `updateGlobalRep` (#4 mutator).
+ * Refinements (#1) are managed by `withRefinements` in emit; overlay (#2) is
+ * scoped by call/loop-emit code and torn down when the scope exits.
+ *
+ * Mutation sites by phase:
+ *   plan.js          — initial reps from prepare-pass typing
+ *   analyze.js       — boxing decisions, schema bindings, sched facts
+ *   compile/index.js — closure-arg upgrades, propagation across calls
+ *   emit.js          — withRefinements / overlay, transient narrowing only
+ *
  * @module reps
  */
 
@@ -18,6 +38,7 @@ export const VAL = {
   BOOL: 'boolean',
 }
 
+/** Per-function ValueRep record. See lookupValType for resolution priority. */
 export const repOf = name => ctx.func.localReps?.get(name)
 
 export const updateRep = (name, fields) => {
