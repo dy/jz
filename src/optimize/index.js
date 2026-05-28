@@ -183,53 +183,88 @@ export function resolveOptimize(opt) {
  * result is unsafe across realloc, so it isn't hoisted here.)
  */
 export function hoistPtrType(fn) {
+  return regionTrackCSE(fn, {
+    matchSite(node) {
+      // (call $__ptr_type (i64.reinterpret_f64 (local.get X))) — key is X, dep is X.
+      if (node[0] !== 'call' || node[1] !== '$__ptr_type' || node.length !== 3) return null
+      const arg = node[2]
+      const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
+      if (!Array.isArray(inner) || inner[0] !== 'local.get' || typeof inner[1] !== 'string') return null
+      const x = inner[1]
+      return { key: x, deps: [x] }
+    },
+    localPrefix: 'pt',
+    localType: 'i32',
+  })
+}
+
+/** Region-tracking CSE skeleton shared by hoistPtrType and hoistAddrBase.
+ *  Walks `fn`, accumulating "regions" — sequences of structurally-identical
+ *  sites along straight-line control flow where the site's value is invariant
+ *  (no writes to its dependent locals between sites). Per region with ≥2 sites,
+ *  allocates one `$__<prefix><id>` local and rewrites the first site to
+ *  `local.tee` and the rest to `local.get`.
+ *
+ *  Control-flow semantics:
+ *    - `local.set/tee X` closes every region whose dep set includes X.
+ *    - `if`/`else` arms walk independently from the if-entry open set; after
+ *      the if, a region is open iff it was open on BOTH arms (same region ref).
+ *    - `loop` clears open before AND after — back edges may skip the original tee.
+ *    - `block` / func body — sequential walk.
+ *
+ *  `matchSite(node, parent, pi)` returns `{ key, deps }` for a CSE-able site
+ *  (key is a stable string; deps lists locals whose writes invalidate this key)
+ *  or null. Match-arm sites don't recurse into children. */
+function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  // Per X: array of regions; each region is array of {parent, idx, role: 'tee'|'get'}.
+  // Per key: array of regions; each region is array of {parent, idx, role: 'tee'|'get'}.
   const regions = new Map()
-  // Currently-open region per X (X → region array). Presence ⇔ alive.
+  // Currently-open region per key. Presence ⇔ alive.
   const open = new Map()
+  // local-name → keys depending on it (so `local.set X` closes all dependent keys).
+  const localToKeys = new Map()
 
-  const ensureRegions = (x) => {
-    let arr = regions.get(x)
-    if (!arr) { arr = []; regions.set(x, arr) }
-    return arr
+  const addDep = (name, key) => {
+    let s = localToKeys.get(name)
+    if (!s) { s = new Set(); localToKeys.set(name, s) }
+    s.add(key)
+  }
+  const closeForLocal = (name) => {
+    const s = localToKeys.get(name)
+    if (!s) return
+    for (const k of s) open.delete(k)
+    localToKeys.delete(name)
   }
 
   const walk = (node, parent, pi) => {
     if (!Array.isArray(node)) return
     const op = node[0]
 
-    if (op === 'call' && node[1] === '$__ptr_type' && node.length === 3) {
-      const arg = node[2]
-      // Post-i64 migration: arg is (i64.reinterpret_f64 (local.get X)). Peel both wrappers.
-      const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
-      if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string') {
-        const x = inner[1]
-        let region = open.get(x)
-        if (!region) {
-          region = []
-          ensureRegions(x).push(region)
-          open.set(x, region)
-          region.push({ parent, idx: pi, role: 'tee' })
-        } else {
-          region.push({ parent, idx: pi, role: 'get' })
-        }
-        return  // don't recurse — local.get inside is a read, not interesting
+    const m = matchSite(node, parent, pi)
+    if (m) {
+      let region = open.get(m.key)
+      if (!region) {
+        region = []
+        let regs = regions.get(m.key)
+        if (!regs) { regs = []; regions.set(m.key, regs) }
+        regs.push(region)
+        open.set(m.key, region)
+        for (const d of m.deps) addDep(d, m.key)
+        region.push({ parent, idx: pi, role: 'tee' })
+      } else {
+        region.push({ parent, idx: pi, role: 'get' })
       }
-      // Non-trivial arg: walk children normally
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      return
+      return  // children are local.gets — they're reads, not interesting
     }
 
     if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
       const x = node[1]
-      // Walk value first — it may contain __ptr_type X, which sees pre-write X.
+      // Walk value first — it may contain a site referencing pre-write X.
       for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      // Then close any open region for X.
-      open.delete(x)
+      closeForLocal(x)
       return
     }
 
@@ -260,8 +295,7 @@ export function hoistPtrType(fn) {
         for (let j = 1; j < elseArm.length; j++) walk(elseArm[j], elseArm, j)
         afterElse = new Map(open)
       }
-      // Merge: alive after if iff alive on BOTH paths with same region ref
-      // (so the same tee was reachable regardless of which arm executed).
+      // Merge: alive after if iff alive on BOTH paths with same region ref.
       open.clear()
       for (const [k, vT] of afterThen) {
         if (afterElse.get(k) === vT) open.set(k, vT)
@@ -270,15 +304,12 @@ export function hoistPtrType(fn) {
     }
 
     if (op === 'loop') {
-      // Conservative: any tee installed in iter N may not have run in iter N+1
-      // before reaching the same site (back-edge to loop header). Clear before+after.
       open.clear()
       for (let i = 1; i < node.length; i++) walk(node[i], node, i)
       open.clear()
       return
     }
 
-    // block / func-body / generic: walk children sequentially.
     for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
 
@@ -286,16 +317,15 @@ export function hoistPtrType(fn) {
 
   if (regions.size === 0) return
 
-  // Commit: for each X with ≥1 usable region, allocate one shared local and rewrite.
-  // Per-region threshold ≥2 (a singleton would be pure cost).
-  let hoistId = 0
+  // Commit: ≥2 sites per region to be worthwhile (a singleton is pure cost).
+  let hoistId = nextLocalId(fn, localPrefix)
   const locals = []
   for (const [, regs] of regions) {
     let usable = false
     for (const r of regs) if (r.length >= 2) { usable = true; break }
     if (!usable) continue
-    const tLocal = `$__pt${hoistId++}`
-    locals.push(['local', tLocal, 'i32'])
+    const tLocal = `$__${localPrefix}${hoistId++}`
+    locals.push(['local', tLocal, localType])
     for (const r of regs) {
       if (r.length < 2) continue
       for (let i = 0; i < r.length; i++) {
@@ -323,153 +353,27 @@ export function hoistPtrType(fn) {
  * foldMemargOffsets having normalized the base shape.
  */
 export function hoistAddrBase(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  // Per key (`$A|$B|K`): array of regions; region: array of {parent, idx, role}.
-  const regions = new Map()
-  // Open regions keyed by string key; also indexed by local name → set of keys
-  // depending on it (so `local.set X` can close any region whose key references X).
-  const open = new Map()
-  const localToKeys = new Map()
-
-  const ensureRegions = (k) => {
-    let arr = regions.get(k)
-    if (!arr) { arr = []; regions.set(k, arr) }
-    return arr
-  }
-  const addLocalDep = (name, key) => {
-    let s = localToKeys.get(name)
-    if (!s) { s = new Set(); localToKeys.set(name, s) }
-    s.add(key)
-  }
-  const closeKey = (key) => {
-    const r = open.get(key)
-    if (!r) return
-    open.delete(key)
-    // Don't bother removing from localToKeys; stale entries are filtered on close.
-  }
-  const closeForLocal = (name) => {
-    const s = localToKeys.get(name)
-    if (!s) return
-    for (const k of s) if (open.has(k)) closeKey(k)
-    localToKeys.delete(name)
-  }
-
-  // Returns { A, B, K } if node matches the pattern, else null.
-  const matchPattern = (node) => {
-    if (!Array.isArray(node) || node[0] !== 'i32.add' || node.length !== 3) return null
-    const a = node[1], b = node[2]
-    // Two orderings: (add (get A) (shl (get B) (const K))) or (add (shl …) (get A))
-    let baseGet, shlNode
-    if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' &&
-        Array.isArray(b) && b[0] === 'i32.shl' && b.length === 3) {
-      baseGet = a; shlNode = b
-    } else if (Array.isArray(b) && b[0] === 'local.get' && typeof b[1] === 'string' &&
-               Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3) {
-      baseGet = b; shlNode = a
-    } else return null
-    const idx = shlNode[1], shamt = shlNode[2]
-    if (!Array.isArray(idx) || idx[0] !== 'local.get' || typeof idx[1] !== 'string') return null
-    if (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number') return null
-    return { A: baseGet[1], B: idx[1], K: shamt[1] }
-  }
-
-  const walk = (node, parent, pi) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-
-    const m = matchPattern(node)
-    if (m) {
-      const key = `${m.A}|${m.B}|${m.K}`
-      let region = open.get(key)
-      if (!region) {
-        region = []
-        ensureRegions(key).push(region)
-        open.set(key, region)
-        addLocalDep(m.A, key)
-        addLocalDep(m.B, key)
-        region.push({ parent, idx: pi, role: 'tee' })
-      } else {
-        region.push({ parent, idx: pi, role: 'get' })
-      }
-      return  // children are local.gets — they're reads, not interesting
-    }
-
-    if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
-      const x = node[1]
-      // Walk value first — it may match patterns referencing pre-write X.
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      closeForLocal(x)
-      return
-    }
-
-    if (op === 'if') {
-      let i = 1
-      while (i < node.length && Array.isArray(node[i]) && node[i][0] === 'result') i++
-      if (i < node.length) walk(node[i], node, i)
-      i++
-      let thenArm = null, elseArm = null
-      for (; i < node.length; i++) {
-        const c = node[i]
-        if (Array.isArray(c)) {
-          if (c[0] === 'then') thenArm = c
-          else if (c[0] === 'else') elseArm = c
-        }
-      }
-      const beforeArms = new Map(open)
-      let afterThen = beforeArms
-      if (thenArm) {
-        for (let j = 1; j < thenArm.length; j++) walk(thenArm[j], thenArm, j)
-        afterThen = new Map(open)
-      }
-      open.clear()
-      for (const [k, v] of beforeArms) open.set(k, v)
-      let afterElse = beforeArms
-      if (elseArm) {
-        for (let j = 1; j < elseArm.length; j++) walk(elseArm[j], elseArm, j)
-        afterElse = new Map(open)
-      }
-      open.clear()
-      for (const [k, vT] of afterThen) {
-        if (afterElse.get(k) === vT) open.set(k, vT)
-      }
-      return
-    }
-
-    if (op === 'loop') {
-      open.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      open.clear()
-      return
-    }
-
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
-  }
-
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
-
-  if (regions.size === 0) return
-
-  let hoistId = nextLocalId(fn, 'ab')
-  const locals = []
-  for (const [, regs] of regions) {
-    let usable = false
-    for (const r of regs) if (r.length >= 2) { usable = true; break }
-    if (!usable) continue
-    const tLocal = `$__ab${hoistId++}`
-    locals.push(['local', tLocal, 'i32'])
-    for (const r of regs) {
-      if (r.length < 2) continue
-      for (let i = 0; i < r.length; i++) {
-        const { parent, idx, role } = r[i]
-        if (role === 'tee') parent[idx] = ['local.tee', tLocal, parent[idx]]
-        else parent[idx] = ['local.get', tLocal]
-      }
-    }
-  }
-  if (locals.length) fn.splice(bodyStart, 0, ...locals)
+  return regionTrackCSE(fn, {
+    matchSite(node) {
+      if (node[0] !== 'i32.add' || node.length !== 3) return null
+      const a = node[1], b = node[2]
+      // Two orderings: (add (get A) (shl (get B) (const K))) or (add (shl …) (get A))
+      let baseGet, shlNode
+      if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' &&
+          Array.isArray(b) && b[0] === 'i32.shl' && b.length === 3) {
+        baseGet = a; shlNode = b
+      } else if (Array.isArray(b) && b[0] === 'local.get' && typeof b[1] === 'string' &&
+                 Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3) {
+        baseGet = b; shlNode = a
+      } else return null
+      const idx = shlNode[1], shamt = shlNode[2]
+      if (!Array.isArray(idx) || idx[0] !== 'local.get' || typeof idx[1] !== 'string') return null
+      if (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number') return null
+      return { key: `${baseGet[1]}|${idx[1]}|${shamt[1]}`, deps: [baseGet[1], idx[1]] }
+    },
+    localPrefix: 'ab',
+    localType: 'i32',
+  })
 }
 
 /**
