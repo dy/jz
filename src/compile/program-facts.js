@@ -139,7 +139,11 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         return
       }
       if (op === '=' && args.length >= 2) {
-        walkFacts(args[1], true, inArrow, caller)
+        // RHS may be a bare function reference (`store[0] = pick3`) — record it as a
+        // value use so resolveClosureWidth sizes the closure ABI to its arity. Matches
+        // the func-ref handling in the call/let/general cases below.
+        if (isFuncRef(args[1], ctx.func.names)) acc.valueUsed.add(args[1])
+        else walkFacts(args[1], true, inArrow, caller)
         return
       }
       for (const a of args) {
