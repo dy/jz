@@ -1536,6 +1536,228 @@ function emitPropertyAssign(obj, prop, val) {
   return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
 }
 
+// === Call IR helpers ===
+
+/** Split a flat argList into normal positional args + spread positions. */
+function parseCallArgs(args) {
+  const normal = []
+  const spreads = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (Array.isArray(arg) && arg[0] === '...') {
+      spreads.push({ pos: normal.length, expr: arg[1] })
+    } else {
+      normal.push(arg)
+    }
+  }
+  return { normal, spreads, hasSpread: spreads.length > 0 }
+}
+
+/** Bulk `obj.push(...src)` fast path — single trailing spread, no normal args, named
+ *  receiver. Amortizes the per-element grow + set_len of the generic loop into one
+ *  __arr_grow / __set_len pair, then bulk-copies the source via emitSpreadCopy.
+ *  Hot path in watr's `out.push(...HANDLER[op](...))` (~24M bytes/iter on raycast). */
+function emitBulkPushSpread(objArg, parsed) {
+  const spreadExpr = parsed.spreads[0].expr
+  inc('__len'); inc('__arr_grow'); inc('__set_len'); inc('__ptr_offset')
+  const o = `${T}po${ctx.func.uniq++}`,
+        sa = `${T}psa${ctx.func.uniq++}`,
+        sl = `${T}psl${ctx.func.uniq++}`,
+        ol = `${T}pol${ctx.func.uniq++}`,
+        si = `${T}psi${ctx.func.uniq++}`,
+        base = `${T}pb${ctx.func.uniq++}`
+  ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(sa, 'f64')
+  ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
+  ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
+
+  const objIsArr = lookupValType(objArg) === VAL.ARRAY
+  const n = multiCount(spreadExpr)
+  // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
+  // Map→[k,v] arrays, others pass through. Only when `collection` is loaded.
+  const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', spreadExpr] : spreadExpr
+  // A materialized multi-value is not a statically-typed pointer — let
+  // emitSpreadCopy resolve its kind once at runtime.
+  const srcVT = n ? undefined : valTypeOf(srcExpr)
+  const ir = []
+  ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
+  ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(srcExpr))])
+  ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
+  // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
+  if (objIsArr) {
+    ir.push(['local.set', `$${ol}`,
+      ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', 8]]]])
+  } else {
+    ir.push(['local.set', `$${ol}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
+  }
+  // Single grow for the full spread (vs per-element grow check in the generic loop).
+  ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
+    ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
+  // base captured AFTER grow (grow may relocate the array).
+  ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
+  // Bulk-copy the spread: an ARRAY source is a contiguous f64 block → memory.copy.
+  ir.push(['local.set', `$${si}`, ['local.get', `$${ol}`]])
+  ir.push(...emitSpreadCopy(base, si, sa, sl, srcVT))
+  // Single set_len for the full spread.
+  ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
+    ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
+  // Update source variable: grow may have moved the pointer.
+  if (ctx.func.boxed?.has(objArg)) {
+    ir.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(objArg)}`], ['local.get', `$${o}`]])
+  } else if (ctx.scope.globals.has(objArg) && !ctx.func.locals?.has(objArg)) {
+    ir.push(['global.set', `$${objArg}`, ['local.get', `$${o}`]])
+  } else {
+    ir.push(['local.set', `$${objArg}`, ['local.get', `$${o}`]])
+  }
+  ir.push(['f64.convert_i32_s', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
+  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+}
+
+/** Single trailing spread, with optional preceding normal args. Calls methodEmitter
+ *  once for the normal args (if any), then loops methodEmitter over each spread
+ *  element. `unshift` walks the spread end-to-start so prepend order matches JS. */
+function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
+  const spreadExpr = parsed.spreads[0].expr
+  const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
+  ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
+  ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
+  // Emit-time rep seeding for a fresh spread-staging local (no prior reader).
+  // Without this, the loop body's `[]` read on `arr` falls back to polymorphic
+  // dispatch — VAL.* on the rep elides STRING gate for ARRAY/TYPED spreads.
+  const spreadVT = valTypeOf(spreadExpr)
+  if (spreadVT) updateRep(arr, { val: spreadVT })
+
+  // In-place spread methods modify target; accumulating methods (concat) return new values.
+  const inPlace = SPREAD_MUTATORS.has(method)
+  // unshift prepends each arg to the front — iterating forward reverses the
+  // intended order, so walk the spread from end to start.
+  const reverseIter = method === 'unshift'
+  const ir = []
+  ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
+  if (parsed.normal.length > 0) {
+    const r = asF64(methodEmitter(objArg, ...parsed.normal))
+    ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
+  }
+
+  inc('__len')
+  const n = multiCount(spreadExpr)
+  ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
+  ir.push(['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]])
+  ir.push(['local.set', `$${idx}`,
+    reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
+  const loopId = ctx.func.uniq++
+  const loopBody = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
+  ir.push(['block', `$break${loopId}`,
+    ['loop', `$continue${loopId}`,
+      ['br_if', `$break${loopId}`,
+        reverseIter
+          ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
+          : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+      inPlace ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
+      ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', reverseIter ? -1 : 1]]],
+      ['br', `$continue${loopId}`]]])
+
+  ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
+  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+}
+
+/** General spread mix: iterate combined args in original order, batch contiguous
+ *  normal args into a single methodEmitter call, emit a per-element loop for each
+ *  spread. For in-place methods chains via `objArg` (source variable); otherwise
+ *  threads through an accumulator local. */
+function emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter) {
+  const inPlaceG = SPREAD_MUTATORS.has(method)
+  const combinedG = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+  inc('__len')
+
+  if (inPlaceG) {
+    const irG = []
+    let batch = []
+    const flushBatch = () => {
+      if (!batch.length) return
+      irG.push(['drop', asF64(methodEmitter(objArg, ...batch))])
+      batch = []
+    }
+    for (const item of combinedG) {
+      if (Array.isArray(item) && item[0] === '__spread') {
+        flushBatch()
+        const spreadExpr = item[1]
+        const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
+        ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+        // Emit-time rep seeding for fresh spread-staging local (see arr-spread comment above).
+        const spreadVT = valTypeOf(spreadExpr)
+        if (spreadVT) updateRep(arrL, { val: spreadVT })
+        const n = multiCount(spreadExpr)
+        irG.push(
+          ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
+          ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
+          ['local.set', `$${idxL}`, ['i32.const', 0]])
+        const loopId = ctx.func.uniq++
+        const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
+        irG.push(['block', `$break${loopId}`,
+          ['loop', `$continue${loopId}`,
+            ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
+            ['drop', loopBody],
+            ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
+            ['br', `$continue${loopId}`]]])
+      } else {
+        batch.push(item)
+      }
+    }
+    flushBatch()
+    irG.push(asF64(emit(objArg)))
+    return typed(['block', ['result', 'f64'], ...irG], 'f64')
+  }
+
+  const accG = `${T}acc${ctx.func.uniq++}`
+  ctx.func.locals.set(accG, 'f64')
+  const irG = [['local.set', `$${accG}`, asF64(emit(objArg))]]
+  let batch = []
+  const flushBatch = () => {
+    if (!batch.length) return
+    irG.push(['local.set', `$${accG}`, asF64(methodEmitter(accG, ...batch))])
+    batch = []
+  }
+  for (const item of combinedG) {
+    if (Array.isArray(item) && item[0] === '__spread') {
+      flushBatch()
+      const spreadExpr = item[1]
+      const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
+      ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+      const spreadVT = valTypeOf(spreadExpr)
+      if (spreadVT) updateRep(arrL, { val: spreadVT })
+      const n = multiCount(spreadExpr)
+      irG.push(
+        ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
+        ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
+        ['local.set', `$${idxL}`, ['i32.const', 0]])
+      const loopId = ctx.func.uniq++
+      const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))
+      irG.push(['block', `$break${loopId}`,
+        ['loop', `$continue${loopId}`,
+          ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
+          ['local.set', `$${accG}`, loopBody],
+          ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
+          ['br', `$continue${loopId}`]]])
+    } else {
+      batch.push(item)
+    }
+  }
+  flushBatch()
+  irG.push(['local.get', `$${accG}`])
+  return typed(['block', ['result', 'f64'], ...irG], 'f64')
+}
+
+/** Method-emitter call: directly, or via one of the spread fast paths. */
+function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
+  if (!parsed.hasSpread) return methodEmitter(objArg, ...parsed.normal)
+  if (method === 'push' && parsed.normal.length === 0 &&
+      parsed.spreads.length === 1 && typeof objArg === 'string')
+    return emitBulkPushSpread(objArg, parsed)
+  if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length)
+    return emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter)
+  return emitGeneralSpreadMethodCall(objArg, parsed, method, methodEmitter)
+}
+
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
@@ -2392,24 +2614,7 @@ export const emitter = {
 
   '()': (callee, callArgs) => {
     let argList = commaList(callArgs)
-
-    // Helper: expand spread arguments into flat list of normal arguments + spread markers
-    // Returns { normal: [...], spreads: [(pos, expr), ...] }
-    const parseArgs = (args) => {
-      const normal = []
-      const spreads = []
-      for (let i = 0; i < args.length; i++) {
-        const arg = args[i]
-        if (Array.isArray(arg) && arg[0] === '...') {
-          spreads.push({ pos: normal.length, expr: arg[1] })
-        } else {
-          normal.push(arg)
-        }
-      }
-      return { normal, spreads, hasSpread: spreads.length > 0 }
-    }
-
-    const parsed = parseArgs(argList)
+    const parsed = parseCallArgs(argList)
 
     // Closure devirtualization: a callee that is a module global proven (by
     // plan.js) to hold one statically-known function for the whole post-init
@@ -2531,209 +2736,10 @@ export const emitter = {
         && vt !== VAL.STRING && vt !== VAL.ARRAY
         && vt !== VAL.BUFFER && vt !== VAL.TYPED) vt = null
 
-      // Helper to call method with arguments (handles spread expansion)
-      const callMethod = (objArg, methodEmitter) => {
-        if (!parsed.hasSpread) {
-          return methodEmitter(objArg, ...parsed.normal)
-        }
-
-        // Bulk push fast path: `obj.push(...src)` — single spread, no normal args, named obj.
-        // The generic single-spread loop below calls methodEmitter per iteration, which expands
-        // to a full .push (grow check + ptr_offset + store + set_len) every step. Amortising the
-        // grow + set_len across the whole spread eliminates ~3 stdlib calls per byte in watr's
-        // hot `out.push(...HANDLER[op](...))` path (~24M bytes/iter on raycast).
-        if (method === 'push' && parsed.normal.length === 0 &&
-            parsed.spreads.length === 1 && typeof objArg === 'string') {
-          const spreadExpr = parsed.spreads[0].expr
-          inc('__len'); inc('__arr_grow'); inc('__set_len'); inc('__ptr_offset')
-          const o = `${T}po${ctx.func.uniq++}`,
-                sa = `${T}psa${ctx.func.uniq++}`,
-                sl = `${T}psl${ctx.func.uniq++}`,
-                ol = `${T}pol${ctx.func.uniq++}`,
-                si = `${T}psi${ctx.func.uniq++}`,
-                base = `${T}pb${ctx.func.uniq++}`
-          ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(sa, 'f64')
-          ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
-          ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
-
-          const objIsArr = lookupValType(objArg) === VAL.ARRAY
-          const n = multiCount(spreadExpr)
-          // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
-          // Map→[k,v] arrays, others pass through. Only when `collection` is loaded.
-          const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', spreadExpr] : spreadExpr
-          // A materialized multi-value is not a statically-typed pointer — let
-          // emitSpreadCopy resolve its kind once at runtime.
-          const srcVT = n ? undefined : valTypeOf(srcExpr)
-          const ir = []
-          ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
-          ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(srcExpr))])
-          ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
-          // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
-          if (objIsArr) {
-            ir.push(['local.set', `$${ol}`,
-              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', 8]]]])
-          } else {
-            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
-          }
-          // Single grow for the full spread (vs per-element grow check in the generic loop).
-          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
-            ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
-          // base captured AFTER grow (grow may relocate the array).
-          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
-          // Bulk-copy the spread: an ARRAY source is a contiguous f64 block → memory.copy.
-          ir.push(['local.set', `$${si}`, ['local.get', `$${ol}`]])
-          ir.push(...emitSpreadCopy(base, si, sa, sl, srcVT))
-          // Single set_len for the full spread.
-          ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
-            ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
-          // Update source variable: grow may have moved the pointer.
-          if (ctx.func.boxed?.has(objArg)) {
-            ir.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(objArg)}`], ['local.get', `$${o}`]])
-          } else if (ctx.scope.globals.has(objArg) && !ctx.func.locals?.has(objArg)) {
-            ir.push(['global.set', `$${objArg}`, ['local.get', `$${o}`]])
-          } else {
-            ir.push(['local.set', `$${objArg}`, ['local.get', `$${o}`]])
-          }
-          ir.push(['f64.convert_i32_s', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
-          return typed(['block', ['result', 'f64'], ...ir], 'f64')
-        }
-
-        // Single spread at end: call method with normal args, then loop spread elements
-        if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length) {
-          const spreadExpr = parsed.spreads[0].expr
-          const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
-          ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
-          ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
-          // Emit-time rep seeding for a fresh spread-staging local (no prior reader).
-          // Without this, the loop body's `[]` read on `arr` falls back to polymorphic
-          // dispatch — VAL.* on the rep elides STRING gate for ARRAY/TYPED spreads.
-          const spreadVT = valTypeOf(spreadExpr)
-          if (spreadVT) updateRep(arr, { val: spreadVT })
-
-          // In-place spread methods modify target; accumulating methods (concat) return new values
-          const inPlace = SPREAD_MUTATORS.has(method)
-          // unshift prepends each arg to the front — iterating forward reverses the
-          // intended order, so walk the spread from end to start.
-          const reverseIter = method === 'unshift'
-          const ir = []
-          ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
-          if (parsed.normal.length > 0) {
-            const r = asF64(methodEmitter(objArg, ...parsed.normal))
-            ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
-          }
-
-          inc('__len')
-          const n = multiCount(spreadExpr)
-          ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-          ir.push(['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]])
-          ir.push(['local.set', `$${idx}`,
-            reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
-          const loopId = ctx.func.uniq++
-          const loopBody = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
-          ir.push(['block', `$break${loopId}`,
-            ['loop', `$continue${loopId}`,
-              ['br_if', `$break${loopId}`,
-                reverseIter
-                  ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
-                  : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-              inPlace ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
-              ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', reverseIter ? -1 : 1]]],
-              ['br', `$continue${loopId}`]]])
-
-          ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
-          return typed(['block', ['result', 'f64'], ...ir], 'f64')
-        }
-
-        // General spread case: iterate args in original order, batch contiguous normal
-        // args into a single call, emit a per-element loop for each spread.
-        //
-        // inPlace methods (push/unshift/add/set): call methodEmitter(objArg, ...) each
-        // time so the source variable's local gets updated (else heap grow/realloc
-        // wouldn't be visible to subsequent uses of the variable). Final value is objArg.
-        //
-        // non-inPlace (concat, etc.): chain via temp acc since return value is the new
-        // collection.
-        const inPlaceG = SPREAD_MUTATORS.has(method)
-        const combinedG = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        inc('__len')
-
-        if (inPlaceG) {
-          const irG = []
-          let batch = []
-          const flushBatch = () => {
-            if (!batch.length) return
-            irG.push(['drop', asF64(methodEmitter(objArg, ...batch))])
-            batch = []
-          }
-          for (const item of combinedG) {
-            if (Array.isArray(item) && item[0] === '__spread') {
-              flushBatch()
-              const spreadExpr = item[1]
-              const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
-              ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
-              // Emit-time rep seeding for fresh spread-staging local (see arr-spread comment above).
-              const spreadVT = valTypeOf(spreadExpr)
-              if (spreadVT) updateRep(arrL, { val: spreadVT })
-              const n = multiCount(spreadExpr)
-              irG.push(
-                ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-                ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
-                ['local.set', `$${idxL}`, ['i32.const', 0]])
-              const loopId = ctx.func.uniq++
-              const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
-              irG.push(['block', `$break${loopId}`,
-                ['loop', `$continue${loopId}`,
-                  ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
-                  ['drop', loopBody],
-                  ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
-                  ['br', `$continue${loopId}`]]])
-            } else {
-              batch.push(item)
-            }
-          }
-          flushBatch()
-          irG.push(asF64(emit(objArg)))
-          return typed(['block', ['result', 'f64'], ...irG], 'f64')
-        }
-
-        const accG = `${T}acc${ctx.func.uniq++}`
-        ctx.func.locals.set(accG, 'f64')
-        const irG = [['local.set', `$${accG}`, asF64(emit(objArg))]]
-        let batch = []
-        const flushBatch = () => {
-          if (!batch.length) return
-          irG.push(['local.set', `$${accG}`, asF64(methodEmitter(accG, ...batch))])
-          batch = []
-        }
-        for (const item of combinedG) {
-          if (Array.isArray(item) && item[0] === '__spread') {
-            flushBatch()
-            const spreadExpr = item[1]
-            const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
-            ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
-            const spreadVT = valTypeOf(spreadExpr)
-            if (spreadVT) updateRep(arrL, { val: spreadVT })
-            const n = multiCount(spreadExpr)
-            irG.push(
-              ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-              ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
-              ['local.set', `$${idxL}`, ['i32.const', 0]])
-            const loopId = ctx.func.uniq++
-            const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))
-            irG.push(['block', `$break${loopId}`,
-              ['loop', `$continue${loopId}`,
-                ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
-                ['local.set', `$${accG}`, loopBody],
-                ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
-                ['br', `$continue${loopId}`]]])
-          } else {
-            batch.push(item)
-          }
-        }
-        flushBatch()
-        irG.push(['local.get', `$${accG}`])
-        return typed(['block', ['result', 'f64'], ...irG], 'f64')
-      }
+      // Method-emitter shim — threads parsed/method through the shared dispatcher so
+      // call sites (boxed-object delegation, sidecar valueOf/toString, etc.) keep the
+      // simple `callMethod(receiver, emitter)` shape.
+      const callMethod = (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method)
 
       // Boxed object: delegate method to inner value (slot 0)
       if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
