@@ -14,7 +14,8 @@ import {
   analyzeBody, findMutations, invalidateLocalsCache,
 } from './analyze.js'
 import { staticObjectProps } from '../static.js'
-import { scanBoundedLoops, exprType, typedElemAux, typedElemCtor, ctorFromElemAux } from '../type.js'
+import { scanBoundedLoops, exprType, typedElemCtor } from '../type.js'
+import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from '../kind.js'
 import { VAL, updateRep } from '../reps.js'

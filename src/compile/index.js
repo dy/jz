@@ -32,7 +32,7 @@ import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
 } from './analyze.js'
-import { typedElemAux } from '../type.js'
+import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
