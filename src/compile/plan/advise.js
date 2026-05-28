@@ -1,8 +1,8 @@
-import { ctx, warn } from '../ctx.js'
-import { refsName, REFS_IN_EXPR } from '../ast.js'
-import { intLiteralValue } from '../static.js'
-import { VAL } from '../reps.js'
-import { adviseJsstringCarrier } from './narrow.js'
+import { ctx, warn } from '../../ctx.js'
+import { refsName, REFS_IN_EXPR } from '../../ast.js'
+import { intLiteralValue } from '../../static.js'
+import { VAL } from '../../reps.js'
+import { adviseJsstringCarrier } from '../narrow.js'
 
 /** Compile-time advisories — heap growth, Map iteration order, SIMD hints. */
 const HEAP_LOOP_OPS = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'do-while'])

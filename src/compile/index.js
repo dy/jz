@@ -52,7 +52,7 @@ import {
   boolBoxIR,
   I32_MIN, I32_MAX,
 } from '../ir.js'
-import plan from './plan.js'
+import plan from './plan/index.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix,
