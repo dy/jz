@@ -947,7 +947,7 @@ const substGets = (node, known) => {
     return node
   }
   let inner = known
-  if (op === 'block' || op === 'loop' || op === 'if') {
+  if (isBranchScope(op)) {
     let cloned = null
     walk(node, n => {
       if (!Array.isArray(n)) return
@@ -1034,7 +1034,7 @@ const forwardPropagate = (funcNode, params, useCounts) => {
     }
 
     // Invalidate at control-flow boundaries
-    if (op === 'block' || op === 'loop' || op === 'if') known.clear()
+    if (isBranchScope(op)) known.clear()
     // Calls invalidate tracked values that read state a callee can mutate
     // (memory, globals, tables, nested calls). Pure expressions over locals
     // and constants survive — callees can't reach caller locals.
@@ -1185,6 +1185,9 @@ const eliminateDeadStores = (funcNode, params, useCounts) => {
 /** Block-like nodes whose body is a straight-line instruction list (after any header). */
 const isScopeNode = (n) => Array.isArray(n) &&
   (n[0] === 'func' || n[0] === 'block' || n[0] === 'loop' || n[0] === 'then' || n[0] === 'else')
+
+/** Branch-target scopes: ops that carry an optional label/result header and can be jumped to via br/br_if. */
+const isBranchScope = (op) => op === 'block' || op === 'loop' || op === 'if'
 
 const propagate = (ast) => {
   walk(ast, (funcNode) => {
@@ -1527,11 +1530,10 @@ const inlineOnce = (ast) => {
     for (const l of locals) rename.set(l.name, `$__inl${uid}_${l.name.slice(1)}`)
     // The callee's own block/loop/if labels would shadow same-named labels in the
     // caller after nesting (and break depth resolution) — give them fresh names too.
-    const isBlockLabel = op => op === 'block' || op === 'loop' || op === 'if'
     const labelRename = new Map()
     const collectLabels = (n) => {
       if (!Array.isArray(n)) return
-      if (isBlockLabel(n[0]) && typeof n[1] === 'string' && n[1][0] === '$' && !labelRename.has(n[1]))
+      if (isBranchScope(n[0]) && typeof n[1] === 'string' && n[1][0] === '$' && !labelRename.has(n[1]))
         labelRename.set(n[1], `$__inl${uid}L_${n[1].slice(1)}`)
       for (let i = 1; i < n.length; i++) collectLabels(n[i])
     }
@@ -1542,7 +1544,7 @@ const inlineOnce = (ast) => {
       if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && rename.has(n[1]))
         return [op, rename.get(n[1]), ...n.slice(2).map(sub)]
       if (op === 'return') return ['br', exit, ...n.slice(1).map(sub)]
-      if (isBlockLabel(op) && typeof n[1] === 'string' && labelRename.has(n[1]))
+      if (isBranchScope(op) && typeof n[1] === 'string' && labelRename.has(n[1]))
         return [op, labelRename.get(n[1]), ...n.slice(2).map(sub)]
       if (isBranch(op)) return [op, ...n.slice(1).map(c => (typeof c === 'string' && labelRename.has(c)) ? labelRename.get(c) : sub(c))]
       return n.map((c, i) => i === 0 ? c : sub(c))
@@ -1887,7 +1889,7 @@ const vacuum = (ast) => {
     }
 
     // Clean out nops, drop-of-pure sequences, and empty annotations from blocks
-    if (op === 'func' || op === 'block' || op === 'loop' || op === 'then' || op === 'else') {
+    if (isScopeNode(node)) {
       const cleaned = [op]
       for (let i = 1; i < node.length; i++) {
         const child = node[i]
@@ -2465,7 +2467,7 @@ const dedupe = (ast) => {
     walk(node, (n) => {
       if (!Array.isArray(n) || typeof n[1] !== 'string' || n[1][0] !== '$') return
       const op = n[0]
-      if (op === 'param' || op === 'local' || op === 'block' || op === 'loop' || op === 'if') {
+      if (op === 'param' || op === 'local' || isBranchScope(op)) {
         localNames.add(n[1])
       }
     })

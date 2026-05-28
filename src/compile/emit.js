@@ -3134,10 +3134,15 @@ export function emit(node, expect) {
       ir.closureFuncIdx = idx
       return ir
     }
-    // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision
+    // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision.
+    // `handler.length` distinguishes the two flavors of entry: arity-0 handlers
+    // are constants (e.g. `math.PI` → emits `f64.const PI`) and can be invoked
+    // directly here. Arity-≥1 handlers expect the surrounding call node, so
+    // bare-name use of them is a first-class-value reference — wrap as a closure.
     if (node.includes('.') && ctx.core.emit[node]) {
       const handler = ctx.core.emit[node]
-      return handler.length > 0 ? builtinFunctionValue(node) : handler()
+      const isCallable = handler.length > 0
+      return isCallable ? builtinFunctionValue(node) : handler()
     }
     // Auto-import known host globals (WebAssembly, globalThis, etc.)
     const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
