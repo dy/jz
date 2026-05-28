@@ -207,6 +207,8 @@ export function reset(proto, globals, bridge) {
     localTypedElemsOverlay: null,
     _ccBody: null,      // memo key: body node last scanned by inBoundsCharCodeAt (src/type.js)
     ccInBounds: null,   // memo value: Set of in-bounds charCodeAt callee nodes for _ccBody
+    _aiBody: null,      // memo key: body node last scanned by inBoundsArrIdx (src/type.js)
+    aiInBounds: null,   // memo value: Set of in-bounds "recv\0idx" array-read keys for _aiBody
   }
 
   ctx.types = {

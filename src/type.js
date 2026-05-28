@@ -179,6 +179,58 @@ export function inBoundsCharCodeAt(ctx) {
   return set
 }
 
+/** Collect proven-in-bounds `recv[idxVar]` accesses within a canonical induction
+ *  loop. Stores `"recv\x00idxVar"` keys — `\x00` isn't a valid identifier char so
+ *  the pair is unambiguous. Stops at `=>` (a closure may run after the loop, when
+ *  `idxVar` has reached `recv.length`). */
+function collectBoundedArrIdx(node, recv, idxVar, set) {
+  if (!Array.isArray(node) || node[0] === '=>') return
+  if (node[0] === '[]' && node.length === 3 && node[1] === recv && node[2] === idxVar)
+    set.add(recv + '\x00' + idxVar)
+  for (let k = 1; k < node.length; k++) collectBoundedArrIdx(node[k], recv, idxVar, set)
+}
+
+/** Walk `node`, recording `"recv\x00idx"` pairs for `recv[idx]` reads proven within
+ *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
+ *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
+ *  the ARRAY indexed-read fast path in `module/array.js`. */
+export function scanBoundedArrIdx(node, set) {
+  if (!Array.isArray(node)) return
+  if (node[0] === 'for' && node.length === 5) {
+    const [, init, cond, step, body] = node
+    let idx = null, recv = null, boundVar = null
+    if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
+      const decls = new Map()
+      collectDecls(init, decls)
+      idx = cond[1]
+      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
+      if (start == null || start < 0) idx = null
+      let bound = cond[2]
+      if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
+      recv = lengthRecv(bound)
+    }
+    if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
+        && !isReassigned(body, idx) && !isReassigned(body, recv)
+        && (boundVar == null || !isReassigned(body, boundVar))
+        && !redeclaresName(body, idx))
+      collectBoundedArrIdx(body, recv, idx, set)
+  }
+  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set)
+}
+
+/** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven
+ *  in-bounds. Memoised per body (separate slot from the charCodeAt proof). */
+export function inBoundsArrIdx(ctx) {
+  const body = ctx.func?.body
+  if (!Array.isArray(body)) return NO_BOUNDED_CC
+  if (ctx.func._aiBody === body) return ctx.func.aiInBounds
+  const set = new Set()
+  scanBoundedArrIdx(body, set)
+  ctx.func.aiInBounds = set
+  ctx.func._aiBody = body
+  return set
+}
+
 // === Loop unroll / AST transforms (emit + plan) ===
 
 export const MAX_SMALL_FOR_UNROLL = 8
