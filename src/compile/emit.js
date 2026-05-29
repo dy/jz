@@ -40,7 +40,7 @@ import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
@@ -1928,16 +1928,9 @@ function emitMethodCall(callee, parsed, callArgs) {
       && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
     const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
     if (builtin) {
-      const objTmp = temp('vobj'), propTmp = temp('vprop')
-      inc('__dyn_get_expr', '__ptr_type')
-      return block64(
-        ['local.set', `$${objTmp}`, asF64(emit(obj))],
-        ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
-          ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
-        ['if', ['result', 'f64'],
-          ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-          ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
-          ['else', asF64(callMethod(objTmp, builtin))]])
+      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
+        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), []),  // CALL the override
+        (o) => asF64(callMethod(o, builtin)))                                // else the builtin method
     }
   }
 
