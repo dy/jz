@@ -1292,18 +1292,12 @@ const handlers = {
     const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
     const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
     const tryBody = prep(body)
+    // prep(handler) ONCE — it has side effects (uniq++, scope pushes, includes), so
+    // the no-finally catch branch must reuse `caught`, not re-prep (FE-3 fix).
     const caught = catchClause
-      ? (() => {
-          const [, errName, handler] = catchClause
-          return ['catch', tryBody, errName, prep(handler)]
-        })()
+      ? ['catch', tryBody, catchClause[1], prep(catchClause[2])]
       : tryBody
-    if (finallyClause) return ['finally', caught, prep(finallyClause[1])]
-    if (catchClause) {
-      const [, errName, handler] = catchClause
-      return ['catch', tryBody, errName, prep(handler)]
-    }
-    return tryBody
+    return finallyClause ? ['finally', caught, prep(finallyClause[1])] : caught
   },
   'throw'(expr) { return ['throw', prep(expr)] },
 
@@ -2237,6 +2231,7 @@ function prepareModule(specifier, source) {
   ctx.func.exports = {}
   ctx.module.currentPrefix = prefix
 
+  try {
   // Parse + prepare imported source (may trigger recursive imports). The parser
   // is injected via ctx.transform.parse (the host pipeline sets it) rather than
   // imported, so prepare carries no hard dependency on a concrete parser — the
@@ -2380,15 +2375,18 @@ function prepareModule(specifier, source) {
     recordModuleInitFacts(moduleInit)
   }
 
-  // Restore caller state
-  ctx.scope.chain = savedScope
-  ctx.func.exports = savedExports
-  ctx.module.currentPrefix = savedModulePrefix
-  ctx.module.moduleStack.pop()
-
   const result = { exports: moduleExports }
   ctx.module.resolvedModules.set(specifier, result)
   return result
+  } finally {
+    // ALWAYS restore caller state (FE-6): if `prep(ast)` or a recursive import threw
+    // mid-prep, skipping this would leave ctx.scope/exports/prefix/moduleStack
+    // corrupted for the rest of the pipeline.
+    ctx.scope.chain = savedScope
+    ctx.func.exports = savedExports
+    ctx.module.currentPrefix = savedModulePrefix
+    ctx.module.moduleStack.pop()
+  }
 }
 
 // =============================================================================

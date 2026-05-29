@@ -479,6 +479,8 @@ export default function jz(code, ...args) {
 
     // Serialize JS value to jz source literal. Returns null if not serializable.
     const serialize = (v) => {
+      if (v === undefined) return 'undefined'  // else falls through → treated as a
+      // host object → memory.Object(undefined) → Object.keys(undefined) crash
       if (typeof v === 'number' || typeof v === 'boolean') return String(v)
       if (v === null) return 'null'
       if (typeof v === 'string') return JSON.stringify(v)
