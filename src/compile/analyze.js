@@ -133,6 +133,14 @@ const makeTypedTracker = (store) => {
 /**
  * Unified per-body analysis — see module header for slice overview.
  * Returns cached facts; DO NOT MUTATE the returned maps.
+ *
+ * NOTE on the cache (root A): entries are body-keyed and CAN read ctx that mutates
+ * during narrowing (a `let x = f()` local's wasm type shifts when f's result
+ * narrows). The cache is therefore *intentionally staleable* — invalidateLocalsCache
+ * is placed at the phase boundaries where a stale read would matter, not "everywhere".
+ * A recompute-vs-cache assertion was tried (JZ_DEBUG_CACHE) and abandoned: it fires
+ * on benign staleness (the suite stays green through the divergence), so it can't
+ * tell a real missing-invalidation from a harmless one. See .work/todo.md.
  */
 export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
