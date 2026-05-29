@@ -44,7 +44,7 @@ import { parse } from 'subscript/feature/jessie'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
 import watOptimize from "./src/wat/optimize.js";
-import { ctx, reset, err, initWarnings } from './src/ctx.js'
+import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
@@ -379,10 +379,12 @@ const jzCompileInner = (code, opts = {}) => {
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
   setupCtx(code, opts)
+  assertCtxInvariants('post-reset')
 
   let parsed = time('parse', () => parse(code))
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
+  assertCtxInvariants('post-prepare')
 
   // Auto-detect optimization tuning from source characteristics when the user
   // hasn't provided any optimize option. At the default level its only *live*
@@ -399,6 +401,7 @@ const jzCompileInner = (code, opts = {}) => {
   }
 
   const module = time('compile', () => compile(ast, profiler))
+  assertCtxInvariants('post-compile')
 
   // host: 'wasi' — error if the wasm would import any env.__ext_* helper. Those exist
   // only to defer to a JS host's value-aware semantics; in a wasmtime/wasmer/deno

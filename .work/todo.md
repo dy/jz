@@ -1,4 +1,93 @@
-# ⟢ COMPILER STREAMLINING (audit 2026-05-28) — ACTIVE FOCUS
+# ⟢⟢ MASTER PLAN (third-party audit 2026-05-29) — AUTHORITATIVE
+
+The external audit's 5 conceptual ROOTS + 8-step sequence supersede the older
+ordering below. Fuzzer-first dependency is satisfied → execute 1→8 in order;
+do NOT start the lattice (8) before 1–5. Verify every step against the fuzzer +
+suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all green.
+
+## The 5 roots (fix the principle, not the bug)
+- **A**: analyzeBody isn't pure (reads ctx.func.localReps/scope) but caches on
+  body-node identity → 9 manual invalidations + a 2nd ctx-mutating walk
+  (analyzeValTypes) duplicating trackVal/trackTyped. (todo #3, #5)
+- **B**: narrowing has no declared lattice — phases substitute for monotonicity:
+  runFixpoint×6, clearStickyNull×3 (= non-monotonicity evidence: `undefined`(unknown)
+  conflated with `null`(conflicted)). (todo #2) **Highest leverage.**
+- **A+B meta-root**: analysis grew by accretion. Canonical fix: declare
+  `BOTTOM=Symbol('unknown') ≠ TOP=null(conflicted)`, `meet=(a,b)=>a===b?a:TOP`;
+  collapse the 10-phase script into ONE call-graph-ordered Kildall fixpoint.
+- **C**: emit writes analysis state (emitDecl→updateRep/schema.vars/directClosures;
+  array.js updateRep in `[]`; ctx.func.uniq++ from ~20 sites) → decl ordering
+  load-bearing. (surviving leak past the closed #7)
+- **D**: no authoritative registry — bridge.js bypassed by 6/8 modules;
+  addImportOnce ×3; __schema_tbl ×5; isBoundName ×4. (DRY root)
+- **E**: ValueRep open `{...prev,...fields}`, no validation; 12-field shape only
+  in a debug util (missing carrier/unsigned); typo → silent undefined. (todo #1)
+
+## Sequenced plan (audit §7) — each maps the findings it closes
+1. **✅ DONE — Correctness-gate gaps** (S, zero risk): test262 LANGUAGE in-scope
+   `fail===0` gate + `xfail` bucketing + `xpass` prune-gate (C1, mirrors builtins);
+   determinism test same-src→byte-identical across opt levels (C6); fuzzer runs all 4
+   opt levels (confirmed). The gate immediately surfaced 2 real miscompiles (below).
+2. **Document divergences** (S, no code): README — asm.js i32-wrap contract, `**0.5`
+   corners, `__ftoa` 9-sig-digit cap (MOD-5, real divergence); fix stale index.js:392
+   comment ("if level-2 flips watr on" — already on); be honest re <2K vision.
+3. **Activate the net** (S): wire `assertCtxInvariants()` into jzCompileInner (ARCH-3,
+   dead code → the refactor net); fix ctx ownership table drift (ARCH-2: core/string
+   write ctx.scope.globals from emit — now via hostGlobals; add ctx.bridge/ctx.abi rows;
+   emit reads ctx.transform); #8 is COMPLETE (no inline reversals remain — MOD-6 stale).
+4. **Mechanical DRY** (S–M, low risk): makeValTracker/makeTypedTracker (F1, kills
+   analyze.js:156 vs :580 dup); hostImport() in bridge → MOD-2 (addImportOnce ×3);
+   kill isBoundName ×4 (SMELLS-F5); closed ValueRep JSDoc typedef + dev-mode updateRep
+   key validator + add carrier/unsigned to repView (F4/E); ARCH-1 (prepare imports from
+   compile/* → move helpers to ast.js/reps.js leaves).
+5. **Seal the emit boundary** (M, fuzz-gate each step): collectDeclFacts() pre-emit pass
+   (E1/E6, Root C); sanction ctx.core.withLoop()/declareLocal() APIs (MOD-4, Root C);
+   route jzifyError through err() (SMELLS-F3, 9 sites).
+6. **Decompose mega-functions** (M): emitMethodCall 256-line cascade → flat
+   [predicate,handler] table modules push to (E2, todo #6); add emitDecl; extract
+   tryToPrimitiveSidecar(obj,prop,mode) (E4, coded twice core.js:810/emit.js:1903);
+   ctx.core.emit['.'] router.
+7. **Full CI matrix** (M, plumbing): opt0/opt1/wasi into test.yml (all pass now —
+   biggest stability gap). Step done partly with the script cleanup below.
+8. **The lattice refactor** (L, highest leverage): Roots A+B together — BOTTOM≠TOP +
+   Kildall fixpoint; delete clearStickyNull, the 10-phase script, forced invalidations.
+   todo #2/#3. ONLY after 1–5.
+
+## Optimizer (parallel track, not blocking)
+- OPT-1: the 3089-line vendored watr fork (src/wat/optimize.js) — add FORK.md + CI
+  line-delta alarm, OR land watr/optimize subpath upstream. (branch-fold already synced)
+- OPT-2: the 2nd optimizeFunc pass (index.js:425) exists only for inliner-reintroduced
+  rebox/unbox — teach fusedRewrite to fold i32.wrap_i64(i64.reinterpret_f64 x); replace
+  the `__phase:'post'` string side-channel with an explicit arg.
+- #4a cseScalarLoad explicit proof (low value, fold into emit cleanup). #4b vectorizer:
+  no-change (deliberate opt:3 tradeoff, documented).
+
+## Missing constructs to ADD (prevent future ad-hocs)
+declared lattice (→8); enforced module-registration startup check (→Root D); closed
+ValueRep typedef+validator (→4); live phase invariants (→3); generative fuzzer for
+strings/arrays/objects (currently scalar-numeric only — NaN-box/optional-chain have
+zero generative coverage); test262 language fail===0 (→1); determinism test (→1).
+
+## DONE (this milestone, committed)
+**Step 1 (correctness gates) + 2 miscompiles it caught** (pending commit): test262
+language in-scope `fail===0` + `xfail`/`xpass` machinery (12 xfail = 9 subscript
+`1.e3`-lexer gaps + 3 out-of-scope: var-hoist/redeclare, strict `.caller`); baseline
+1431→1428; determinism.js. Miscompiles fixed: (a) bare `return;` emitted `null` not
+`undefined` (emit.js NULL_IR→undefExpr; narrowI32Results already skips i32-narrow on
+hasBareReturn so f64 UNDEF carrier fits); (b) `cond ? undefined : x` surfaced `null` —
+prepare collapsed both atoms to one JZ_NULL sentinel; split JZ_UNDEF (root B's
+"undefined conflated with null" in miniature). +3 test262 (1425→1428). FINDING for
+user: subscript silently lexes `1.e3`→`(1).e3`→undefined (real upstream landmine).
+Differential fuzzer (sound, shrinking, 4-opt, contract-aware same()) + perf-fuzzer
+(broad jz≥v8 proof). 6 miscompile clusters fixed: % (exact __rem), rounding-after-
+reassign, ToInt32-handling, watr branch-fold (71/341), x*0 NaN, i32-overflow (asm.js
+contract). #7 boundary leak (host-global drain). #8 stdlib WAT dedup. Loop-counter i32
+keep (18×→par). int-contract per user (lean i32). Commits: 6e0a6dd, b686c6a, 2b25a87
+(+watr 05b8c54). Scores baseline: clean 6, maintainable 5, minimal 4 → target the roots.
+
+---
+
+# ⟢ COMPILER STREAMLINING (audit 2026-05-28) — WORK-LOG (superseded by master plan above)
 
 Goal: bring the pipeline to a shining, clear, elegant, minimal shape. Priority
 order set by user: **(P1) fix structural items §1–8 below, (P2) close the test
