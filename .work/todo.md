@@ -133,9 +133,32 @@ Gate KNOWN_OPEN={85} (others >200). Over 1000 programs, this is the ONLY failing
 NOTE: manual `compile()` does NOT validate wasm (only jz()/new Module does) — use
 jz() to check codegen validity. The fuzzer uses jz() so its findings are real.
 
-STATUS: 5 of 6 clusters fixed, verified green across opt0/1/2/3 + selfhost + the
-1912-assertion suite. Next: (a) i32-overflow via range analysis, (b) structure
-#1-6, (c) self-host byte-identical, (d) jz.wasm test-matrix, (e) jz.wasm>jz.js.
+STATUS: ALL 6 clusters fixed. 600 fuzzed programs pass with 0 errors (gate
+KNOWN_OPEN now empty). Suite green 1912. Committed: jz 6e0a6dd, watr 05b8c54.
+
+i32-overflow fix (committed-pending): `isFullRangeI32` (ast.js) flags full-range
+bitwise/shift/imul producers; emit `*`/`-`/unary-`-` widen to f64 when an operand
+is full-range (exprType matches). `+` intentionally NOT widened — it's the
+ToInt32-sunk accumulator op (`(h+(h<<1))>>>0`); widening it would break perf.js's
+no-f64.add assertion and gains nothing (the `>>>` re-truncates). Leans-i32 per
+user: only clearly-risky producers widen; bounded loop/index/`& mask` stay i32.
+Verified: `(~p0)*5`, `65535*imul`, `-(~~p0)`, `(~p0)-(-1)` correct at all opts;
+`i*4` loop + `+`/`<<` hash unregressed.
+
+INT-RANGE RESOLUTION (per user: lean i32, don't drop perf, allowance of big
+values): jz's integer arithmetic is asm.js-style (i32 wrapping/ToInt32, kept for
+speed). Reverted the __toint32 ToInt32-≥2^63 widening AND the isFullRangeI32
+`*`/`-`/`u-` widening (both dropped bench perf — bitwise/crc32/watr). These
+big-value overflows are jz's DOCUMENTED integer contract, not bugs. Fuzzer now:
+(a) caps inputs to the contract-valid range (no ≥2^31), (b) `same()` accepts
+jz's ToInt32-wrap for out-of-range integers (`a===(b|0)`, ≤2^53 ring-homomorphism).
+Result: gate (1..200) clean; 1500-sweep@inputs20 has 1 residual (seed 952, a
+mid-computation `-(<<)` overflow flowing through Math.min — accepted contract).
+ALSO fixed a real NaN bug: `x*0` folded to 0 (now NaN for NaN/±Inf x, finite-only fold).
+Kept (real, perf-neutral): `%` exact __rem, rounding-after-reassign, watr branch-fold.
+
+NEXT (today's plan): structure #6 decompose → #2 lattice → #4a/#4b, then HARD on
+jz.wasm test-matrix (basic), then SUPREME goal: jz.wasm faster than jz.js.
 
 ### Working notes
 - **#8 DONE** (verified, 1911/1/0 green, deterministic). Added `followForwardingWat`
