@@ -1553,7 +1553,7 @@ function emitPropertyAssign(obj, prop, val) {
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
-    if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
+    if (ctx.func.names.has(obj) && !isBoundName(obj)) {
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
@@ -3082,10 +3082,10 @@ export function emit(node, expect) {
   if (typeof node === 'number') return emitNum(node)
   if (typeof node === 'string') {
     // Variable read: boxed / local / param / global (check before emitter table to avoid name collisions)
-    if (ctx.func.boxed?.has(node) || ctx.func.locals?.has(node) || ctx.func.current?.params?.some(p => p.name === node) || isGlobal(node) || repOf(node)?.intConst != null)
+    if (ctx.func.boxed?.has(node) || isBoundName(node) || isGlobal(node) || repOf(node)?.intConst != null)
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
-    if (ctx.func.names.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && ctx.closure.table) {
+    if (ctx.func.names.has(node) && !isBoundName(node) && ctx.closure.table) {
       // Trampoline signature: uniform closure ABI (env f64, argc i32, a0..a{MAX-1} f64) → f64.
       // Forwards the first N inline slots to $func where N = func's fixed param count.
       const func = ctx.func.map.get(node)
@@ -3169,7 +3169,7 @@ export function emit(node, expect) {
     // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed external-ref
     // payload across the wasm↔JS global boundary (same hazard as env.print —
     // see module/console.js header). asF64() reinterprets to f64 at each read.
-    if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {
+    if (HOST_GLOBALS.has(node) && !isBoundName(node) && !isGlobal(node)) {
       if (ctx.transform.host === 'wasi') err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
       ctx.features.external = true
       ctx.core.hostGlobals.add(node)
