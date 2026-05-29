@@ -20,7 +20,7 @@ import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from '../kind.js'
 import { VAL, updateRep } from '../reps.js'
 import {
-  paramFactsOf, clearStickyNull, ensureParamRep, mergeParamFact,
+  paramFactsOf, ensureParamRep, mergeParamFact,
 } from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemValType,
@@ -118,21 +118,25 @@ function validateIntConstParams(paramReps, valueUsed) {
   }
 }
 
-function applyPointerParamAbi(paramReps, valueUsed) {
+function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, r] of reps) {
-      if (!PTR_ABI_KINDS.has(r.val)) continue
+    for (const [k] of reps) {
+      // Re-fold call sites HARD (the shared val lattice is soft, so r.val may be a
+      // partial consensus from typed sites alone) — only specialize when every site
+      // proves the same pointer kind.
+      const hv = hardParamVal(func.name, k)
+      if (!PTR_ABI_KINDS.has(hv)) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
       p.type = 'i32'
-      p.ptrKind = r.val
+      p.ptrKind = hv
     }
   }
 }
@@ -582,29 +586,35 @@ export default function narrowSignatures(programFacts, ast) {
     return (raw != null && Number.isInteger(raw) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
   }
 
+  // Per-call-site inference context for a narrowable callee. null for call sites
+  // whose callee is exported / value-used / unknown, or whose caller has no ctx.
+  const siteState = (cs) => {
+    const { callee, argList, callerFunc } = cs
+    const func = ctx.func.map.get(callee)
+    if (!func || func.exported || valueUsed.has(callee)) return null
+    const ctxEntry = callerCtx.get(callerFunc)
+    if (!ctxEntry) return null
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    const paramFacts = new Map()
+    return {
+      callee, callerFunc, argList, func, restIdx,
+      callerLocals: ctxEntry.callerLocals,
+      callerValTypes: ctxEntry.callerValTypes,
+      callerParamFacts(key) {
+        if (!paramFacts.has(key)) paramFacts.set(key, paramFactsOf(paramReps, callerFunc, key))
+        return paramFacts.get(key)
+      },
+    }
+  }
   const runCallsiteLattice = (rules) => {
     for (let s = 0; s < callSites.length; s++) {
-      const { callee, argList, callerFunc } = callSites[s]
-      const func = ctx.func.map.get(callee)
-      if (!func || func.exported || valueUsed.has(callee)) continue
-      const ctxEntry = callerCtx.get(callerFunc)
-      if (!ctxEntry) continue
-      const restIdx = func.rest ? func.sig.params.length - 1 : -1
-      const paramFacts = new Map()
-      const state = {
-        callee, callerFunc, argList, func, restIdx,
-        callerLocals: ctxEntry.callerLocals,
-        callerValTypes: ctxEntry.callerValTypes,
-        callerParamFacts(key) {
-          if (!paramFacts.has(key)) paramFacts.set(key, paramFactsOf(paramReps, callerFunc, key))
-          return paramFacts.get(key)
-        },
-      }
+      const state = siteState(callSites[s])
+      if (!state) continue
+      const { func, argList } = state
       for (let k = 0; k < func.sig.params.length; k++) {
-        const r = ensureParamRep(paramReps, callee, k)
+        const r = ensureParamRep(paramReps, state.callee, k)
         if (k >= argList.length) { for (const rule of rules) rule.missing(r, k, state); continue }
-        const arg = argList[k]
-        for (const rule of rules) rule.apply(r, arg, k, state)
+        for (const rule of rules) rule.apply(r, argList[k], k, state)
       }
     }
   }
@@ -632,7 +642,33 @@ export default function narrowSignatures(programFacts, ast) {
     const pname = state.func.sig.params[k]?.name
     return pname != null ? state.func.defaults?.[pname] : null
   }
-  const mergeRule = (field, infer) => ({
+  // Hard consensus val for (funcName, param k): the kind every live call site
+  // agrees on, or null if any site is untyped / missing / disagrees. The shared
+  // `val` lattice runs SOFT (a value can come from typed sites alone, untyped
+  // sites skipped); a consumer that *mutates the signature* off val must instead
+  // ask this — it re-folds the sites HARD so it never specializes a param that
+  // some call site can't prove. (applyPointerParamAbi is that consumer.)
+  const hardParamVal = (funcName, k) => {
+    let consensus
+    for (let s = 0; s < callSites.length; s++) {
+      if (callSites[s].callee !== funcName) continue
+      const state = siteState(callSites[s])
+      if (!state) continue
+      if (k >= state.argList.length) return null         // missing → undefined at runtime
+      const v = inferValAtSite(state.argList[k], state)
+      if (v == null) return null                         // an untyped site ⇒ not specializable
+      if (consensus === undefined) consensus = v
+      else if (consensus !== v) return null              // disagreement ⇒ TOP
+    }
+    return consensus ?? null
+  }
+  // `soft` makes apply treat a null inference as BOTTOM (skip — "this site can't
+  // tell yet") instead of TOP (poison): the monotone meet. A soft field never
+  // needs clearStickyNull; its consumers either re-validate hard (hardParamVal)
+  // or read it after a final hard settling sweep. `missing` poisons regardless —
+  // an omitted arg with no default is undefined at runtime, a real reason not to
+  // specialize, and must stay sticky.
+  const mergeRule = (field, infer, soft = false) => ({
     missing(r, k, state) {
       if (r[field] === null) return
       const def = defaultArg(state, k)
@@ -640,11 +676,19 @@ export default function narrowSignatures(programFacts, ast) {
       else r[field] = null
     },
     apply(r, arg, k, state) {
-      if (r[field] !== null) mergeParamFact(r, field, infer(arg, k, state))
+      if (r[field] === null) return
+      const v = infer(arg, k, state)
+      if (v == null) { if (!soft) r[field] = null; return }
+      mergeParamFact(r, field, v)
     },
   })
   const runFixpoint = () => runCallsiteLattice([
-    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state)),
+    // val runs SOFT (monotone): a TYPED param's val only becomes inferable after the
+    // typedCtor fixpoint + pointer-ABI enrichment, so an early hard merge would
+    // sticky-poison it (the old clearStickyNull undid that). Soft leaves it BOTTOM;
+    // the post-enrichment rerun fills it in. applyPointerParamAbi re-validates via
+    // hardParamVal; a final hard sweep settles val for emit + late consumers.
+    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), true),
     {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {
@@ -719,7 +763,7 @@ export default function narrowSignatures(programFacts, ast) {
   //     (aux carries element-type, handled separately by applyTypedPointerParamAbi).
   //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
   //   - exclude rest position (array pack/unpack stays f64).
-  applyPointerParamAbi(paramReps, valueUsed)
+  applyPointerParamAbi(paramReps, valueUsed, hardParamVal)
 
   // E: numeric (i32) result narrowing — kept here, after applyI32ParamSpecialization,
   // so a body returning `param + 1` sees param already narrowed to i32. (E2 / VAL
@@ -798,11 +842,11 @@ export default function narrowSignatures(programFacts, ast) {
   // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
   // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
   // → both VAL.TYPED, different ctors). Without this, callerValTypes carries no entry
-  // for caller's params, so inferValType returns null and paramReps[callee][k].val is
-  // sticky null. With ptrKind enriching callerValTypes, sum's arr gets val=TYPED in
-  // its rep, letting array.js skip __is_str_key + __str_idx dispatch on `arr[i]`.
+  // for caller's params, so inferValType returned null and (under the old hard merge)
+  // sticky-poisoned the param's val. The soft val merge leaves it BOTTOM instead, so
+  // this rerun — now that enrichment has put VAL.TYPED into callerValTypes — simply
+  // fills it in (array.js then skips __is_str_key + __str_idx dispatch on `arr[i]`).
   enrichCallerValTypesFromPointerParams(callerCtx)
-  clearStickyNull(paramReps, 'val')
   runFixpoint()
 
   // I: Post-E re-narrow of numeric (i32) params. The first numeric narrowing pass
@@ -820,6 +864,12 @@ export default function narrowSignatures(programFacts, ast) {
   // so the refreshed exprType view propagates.
   resetParamWasmFacts(paramReps)
   runFixpoint()
+  // Settle val HARD now that every producer (results, typedCtor, enrichment) has run
+  // and the soft lattice has converged: re-fold each param's sites and poison any
+  // whose val isn't unanimous (a site left BOTTOM = genuinely untyped). After this,
+  // r.val is sound for emit + the late/post-return consumers (applyI32ParamSpecial-
+  // ization's skipTyped guard, specializeBimorphicTyped) — which read it directly.
+  runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state))])
   // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
   // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
