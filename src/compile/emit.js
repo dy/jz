@@ -52,6 +52,7 @@ import {
   reconstructArgsWithSpreads, tcoTailRewrite,
 } from '../ir.js'
 import { extractRefinements, withRefinements } from './flow-types.js'
+import { JZ_UNDEF } from '../prepare/index.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
@@ -2329,7 +2330,10 @@ export const emitter = {
         typed(['return', ...names.map(n => ['local.get', `$${n}`])], 'void'),
       ]
     }
-    if (expr == null) return [...finalizers, typed(['return', NULL_IR], 'void')]
+    // A value-less `return;` yields `undefined` per spec (not null). The function
+    // result is never i32-narrowed when a bare return is present (see hasBareReturn
+    // guard in narrowI32Results), so the f64 UNDEF carrier is type-compatible.
+    if (expr == null) return [...finalizers, typed(['return', undefExpr()], 'void')]
     const rt = ctx.func.current?.results[0] || 'f64'
     const pk = ctx.func.current?.ptrKind
     const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
@@ -3066,8 +3070,8 @@ export function emit(node, expect) {
   // codegen to the pre-carrier `[, 1]`/`[, 0]` folding, so no perf is paid.
   if (node === true) return emitNum(1)
   if (node === false) return emitNum(0)
-  if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
-    return nullExpr()
+  if (typeof node === 'symbol') // JZ_NULL / JZ_UNDEF sentinels → null / undefined NaN
+    return node === JZ_UNDEF ? undefExpr() : nullExpr()
   if (typeof node === 'bigint') {
     // Truncate to 64 bits — `BigInt.asUintN(64, …)` semantics, same as the
     // explicit mask `node & 0xFFFFFFFFFFFFFFFFn`. Decimal form (vs. the prior
