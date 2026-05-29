@@ -649,12 +649,18 @@ const branch = (ast) => {
     // (if (i32.const 0) then else) → else
     // (if (i32.const N) then else) → then (N != 0)
     if (op === 'if') {
-      const { cond, thenBranch, elseBranch } = parseIf(node)
+      const { condIdx, cond, thenBranch, elseBranch } = parseIf(node)
       const c = getConst(cond)
       if (!c) return
       const taken = c.value !== 0 && c.value !== 0n ? thenBranch : elseBranch
       if (taken && taken.length > 1) {
         const contents = taken.slice(1)
+        // Preserve the if's block type (result/param). A typed `if` leaves a value
+        // on the stack; collapsing it to the taken branch must keep that branch's
+        // value in a same-typed block, else the contents land in a void context and
+        // the value is left dangling → "expected 0 elements on the stack for fallthru".
+        const blockType = node.slice(1, condIdx).filter(p => Array.isArray(p) && (p[0] === 'result' || p[0] === 'param'))
+        if (blockType.length) return ['block', ...blockType, ...contents]
         return contents.length === 1 ? contents[0] : ['block', ...contents]
       }
       return ['nop']

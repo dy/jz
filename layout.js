@@ -133,3 +133,19 @@ export const ATOM_HI = {
 /** OOB / canonical quiet-NaN f64 literal for WAT and IR (`nan:0x7FF8…`). */
 export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
 export const oobNanIR = () => ['f64.const', oobNanLiteral()]
+
+/** Heap forwarding-pointer follow loop (WAT fragment).
+ *  ARRAY/HASH/SET/MAP relocate on growth, leaving the old cell as a forwarding
+ *  header: cap=-1 sentinel at off-4, relocated offset at off-8. This chases the
+ *  chain to the live store. `off` is the i32 local (token incl. `$`) holding the
+ *  current offset — mutated in place. `lowGuard` adds the `off < 8` bailout
+ *  inside the loop; omit it when the caller already proved off≥8 before entry.
+ *  Emits a `(block $done (loop $follow …))` — the host func must not reuse those
+ *  labels. Single source for the 6 inline copies across core/array stdlib. */
+export const followForwardingWat = (off = '$off', { lowGuard = true } = {}) =>
+  `(block $done (loop $follow${lowGuard ? `
+      (br_if $done (i32.lt_u (local.get ${off}) (i32.const 8)))` : ''}
+      (br_if $done (i32.gt_u (local.get ${off}) (i32.shl (memory.size) (i32.const 16))))
+      (br_if $done (i32.ne (i32.load (i32.sub (local.get ${off}) (i32.const 4))) (i32.const -1)))
+      (local.set ${off} (i32.load (i32.sub (local.get ${off}) (i32.const 8))))
+      (br $follow)))`

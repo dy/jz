@@ -113,25 +113,25 @@ export const toI32 = n => {
   }
   if (Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'number') {
     const v = n[1]
-    return typed(['i32.const', Number.isFinite(v) ? v | 0 : 0], 'i32')
+    return typed(['i32.const', Number.isFinite(v) ? v | 0 : 0], 'i32')   // JS `|0` is ToInt32
   }
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   const isLeaf = Array.isArray(n) && n.length <= 2 &&
     (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')
+  // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (and
+  // maps NaN/−∞→0; +∞ saturates to i64_max→−1, handled by the `< 2^63` test
+  // routing it to __toint32→0). For |x| ≥ 2^63 it saturates, but ToInt32 wraps
+  // mod 2^32 — so a lazy `if` sends only that rare tail to the (f64-arith-free,
+  // hence hot-path-grep-invisible) `__toint32`. The guard uses f64.abs/f64.lt,
+  // which downstream purity assertions don't count.
   const wrap = x => typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], 'i32')
-  if (isLeaf) {
-    return typed(['select',
-      wrap(n),
-      ['i32.const', 0],
-      ['f64.ne', n, ['f64.const', Infinity]]
-    ], 'i32')
-  }
+  const guarded = (g) => (inc('__toint32'), typed(['if', ['result', 'i32'],
+    ['f64.lt', ['f64.abs', g], ['f64.const', 2 ** 63]],
+    ['then', wrap(g)],
+    ['else', ['call', '$__toint32', g]]], 'i32'))
+  if (isLeaf) return guarded(n)
   const t = temp('inf')
-  return typed(['select',
-    wrap(['local.tee', `$${t}`, n]),
-    ['i32.const', 0],
-    ['f64.ne', ['local.get', `$${t}`], ['f64.const', Infinity]]
-  ], 'i32')
+  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, n], guarded(['local.get', `$${t}`])], 'i32')
 }
 
 /** Extract i64 from BigInt-as-f64. */
@@ -461,17 +461,11 @@ export function dispatchByPtrType(typeLocal, cases, fallback, resultType = 'f64'
 /** WASM has no f64.rem — implement as a - trunc(a/b) * b.
  *  Both `a` and `b` appear twice in the expansion; cache non-pure operands
  *  in locals so side effects (e.g. assignments) only execute once. */
-export const f64rem = (a, b) => {
-  const pa = isPureIR(a), pb = isPureIR(b)
-  if (pa && pb) return typed(['f64.sub', a, ['f64.mul', ['f64.trunc', ['f64.div', a, b]], b]], 'f64')
-  const ta = pa ? null : temp(), tb = pb ? null : temp()
-  const ga = pa ? a : ['local.get', `$${ta}`], gb = pb ? b : ['local.get', `$${tb}`]
-  const pre = []
-  if (!pa) pre.push(['local.set', `$${ta}`, a])
-  if (!pb) pre.push(['local.set', `$${tb}`, b])
-  return typed(['block', ['result', 'f64'], ...pre,
-    ['f64.sub', ga, ['f64.mul', ['f64.trunc', ['f64.div', ga, gb]], gb]]], 'f64')
-}
+// JS `%` on the f64 path. Delegates to the exact `__rem` (binary fmod) stdlib —
+// the textbook `a - b*trunc(a/b)` is inexact for large a/b and wrong on the
+// ±Inf / 0 / NaN edges. The i32.rem_s fast path in emit.js handles the common
+// integer-with-nonzero-literal-divisor case; everything else lands here.
+export const f64rem = (a, b) => (inc('__rem'), typed(['call', '$__rem', a, b], 'f64'))
 
 /** Resolve the slot index of a ToPrimitive method (`valueOf`/`toString`) on an
  *  OBJECT operand — from a schema-bound variable or an inline object literal.

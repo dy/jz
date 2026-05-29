@@ -16,7 +16,7 @@ import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from
 import { staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
+import { ctx, inc, err, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 
@@ -297,13 +297,7 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        (block $done
-          (loop $follow
-            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))
+        ${followForwardingWat('$off', { lowGuard: true })}
         (if (result f64)
           (i32.and
             (i32.ge_u (local.get $off) (i32.const 8))
@@ -316,13 +310,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (block $done
-      (loop $follow
-        (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-        (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-        (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-        (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-        (br $follow)))
+    ${followForwardingWat('$off', { lowGuard: true })}
     (if (result f64)
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 8))
@@ -356,12 +344,7 @@ export default (ctx) => {
     ;; ARRAY fast path: follow forwarding inline, bounds-check against header len, f64.load — no $__len call.
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.ge_u (local.get $off) (i32.const 8)))
       (then
-        (block $done
-          (loop $follow
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))
+        ${followForwardingWat('$off', { lowGuard: false })}
         (return (if (result f64)
           (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
