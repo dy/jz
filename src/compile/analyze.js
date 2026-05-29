@@ -83,6 +83,53 @@ export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 
 const _bodyFactsCache = new WeakMap()
 
+// Per-name monotone fact trackers over a pluggable {get,set,delete} store. First
+// observation wins; a conflicting later one poisons the name (and clears the store
+// entry) so a sibling-scope decl (jz hoists `let` to function scope) can't lock in
+// the wrong value. The store abstracts WHERE the slice lives, letting analyzeBody
+// (local Map) and analyzeValTypes (ctx.func.localReps / ctx.types.typedElem) share
+// one definition — so the two body walks can't drift.
+const makeValTracker = (store) => {
+  const poison = new Set()
+  return (name, vt) => {
+    if (poison.has(name)) return
+    const prev = store.get(name)
+    if (!vt) { if (prev) poison.add(name); store.delete(name); return }
+    if (prev && prev !== vt) { poison.add(name); store.delete(name); return }
+    store.set(name, vt)
+  }
+}
+const makeTypedTracker = (store) => {
+  const poison = new Set()
+  const invalidate = (name) => { poison.add(name); store.delete(name) }
+  return (name, rhs) => {
+    if (poison.has(name)) return
+    const setOrInvalidate = (c) => {
+      if (c === MIXED_CTORS) return invalidate(name)
+      const prev = store.get(name)
+      if (prev && prev !== c) invalidate(name)
+      else store.set(name, c)
+    }
+    const ctor = typedElemCtor(rhs)
+    if (ctor) return setOrInvalidate(ctor)
+    // TYPED-narrowed call result carries its elem aux on f.sig.ptrAux — reverse-map
+    // to a canonical ctor so the unboxed local's rep restores the same aux.
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+      const f = ctx.func.map?.get(rhs[1])
+      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
+        const c = ctorFromElemAux(f.sig.ptrAux)
+        if (c) setOrInvalidate(c)
+      }
+      return
+    }
+    // Heterogeneous ternary (`n===16 ? new Uint8Array(16) : new Uint16Array(8)`):
+    // ctors that don't unify must invalidate so a sibling-scope decl can't lock in
+    // the wrong store width.
+    const tc = ternaryCtorOfRhs(rhs)
+    if (tc) setOrInvalidate(tc)
+  }
+}
+
 /**
  * Unified per-body analysis — see module header for slice overview.
  * Returns cached facts; DO NOT MUTATE the returned maps.
@@ -104,7 +151,6 @@ export function analyzeBody(body) {
   const arrElemValTypes = new Map()
   const typedElems = new Map()
   const escapes = new Map() // name → bool: local holds allocation, true if it escapes
-  const valPoison = new Set()
 
   const doSchemas = !!ctx.schema?.register
   // Per-walk local schema map for chained `arr.push(name)` resolution.
@@ -152,49 +198,9 @@ export function analyzeBody(body) {
     return valTypeOf(expr)
   }
 
-  const typedPoison = new Set()
-  const trackVal = (name, vt) => {
-    if (valPoison.has(name)) return
-    const prev = valTypes.get(name)
-    if (!vt) {
-      if (prev) valPoison.add(name)
-      valTypes.delete(name)
-      return
-    }
-    if (prev && prev !== vt) {
-      valPoison.add(name)
-      valTypes.delete(name)
-      return
-    }
-    valTypes.set(name, vt)
-  }
-  const invalidateTyped = (name) => {
-    typedPoison.add(name)
-    typedElems.delete(name)
-  }
-  const trackTyped = (name, rhs) => {
-    if (typedPoison.has(name)) return
-    const setOrInvalidate = (c) => {
-      if (c === MIXED_CTORS) return invalidateTyped(name)
-      const prev = typedElems.get(name)
-      if (prev && prev !== c) invalidateTyped(name)
-      else typedElems.set(name, c)
-    }
-    const ctor = typedElemCtor(rhs)
-    if (ctor) return setOrInvalidate(ctor)
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.func.map?.get(rhs[1])
-      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
-        const c = ctorFromElemAux(f.sig.ptrAux)
-        if (c) setOrInvalidate(c)
-      }
-      return
-    }
-    // Heterogeneous ternary: ctors that don't unify must invalidate so a sibling
-    // decl (jz hoists `let` to function scope) can't lock in the wrong width.
-    const tc = ternaryCtorOfRhs(rhs)
-    if (tc) setOrInvalidate(tc)
-  }
+  // Local-Map slices: the Maps satisfy the {get,set,delete} store interface directly.
+  const trackVal = makeValTracker(valTypes)
+  const trackTyped = makeTypedTracker(typedElems)
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
@@ -577,22 +583,13 @@ export function invalidateLocalsCache(body) {
  * and schema resolution.
  */
 export function analyzeValTypes(body) {
-  const valPoison = new Set()
-  const setVal = (name, vt) => {
-    if (valPoison.has(name)) return
-    const prev = ctx.func.localReps?.get(name)?.val
-    if (!vt) {
-      if (prev) valPoison.add(name)
-      updateRep(name, { val: undefined })
-      return
-    }
-    if (prev && prev !== vt) {
-      valPoison.add(name)
-      updateRep(name, { val: undefined })
-      return
-    }
-    updateRep(name, { val: vt })
-  }
+  // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
+  // when set to undefined, matching the old explicit delete).
+  const setVal = makeValTracker({
+    get: (n) => ctx.func.localReps?.get(n)?.val,
+    set: (n, vt) => updateRep(n, { val: vt }),
+    delete: (n) => updateRep(n, { val: undefined }),
+  })
   const getVal = name => ctx.func.localReps?.get(name)?.val
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
@@ -623,43 +620,14 @@ export function analyzeValTypes(body) {
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
-  // Names whose decls disagree on element ctor (e.g. two `let arr = ...` decls
-  // in different scopes — jz hoists `let` to function scope so they share a name).
-  // Once invalidated, no later setter can re-establish a definite ctor.
-  const typedPoison = new Set()
-  const invalidate = (name) => {
-    typedPoison.add(name)
-    ctx.types.typedElem?.delete(name)
-  }
-  function trackTyped(name, rhs) {
-    if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
-    if (typedPoison.has(name)) return
-    const setOrInvalidate = (c) => {
-      if (c === MIXED_CTORS) return invalidate(name)
-      const prev = ctx.types.typedElem.get(name)
-      if (prev && prev !== c) invalidate(name)
-      else ctx.types.typedElem.set(name, c)
-    }
-    const ctor = typedElemCtor(rhs)
-    if (ctor) return setOrInvalidate(ctor)
-    // TYPED-narrowed call result carries elem aux on f.sig.ptrAux — reverse-map it
-    // back to a canonical ctor string so unboxablePtrs's typedElemAux lookup
-    // (compile.js) restores the same aux on the unboxed local's rep.
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.func.map?.get(rhs[1])
-      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
-        const c = ctorFromElemAux(f.sig.ptrAux)
-        if (c) setOrInvalidate(c)
-      }
-      return
-    }
-    // Heterogeneous ternary (e.g. `n === 16 ? new Uint8Array(16) : new Uint16Array(8)`):
-    // typedElemCtor returns null for `?:`. When branches don't unify to the same ctor,
-    // poison the name so a later sibling-scope decl (jz hoists `let` to function scope)
-    // can't lock in the wrong store width.
-    const tc = ternaryCtorOfRhs(rhs)
-    if (tc) setOrInvalidate(tc)
-  }
+  // ctx.types.typedElem slice (lazily created on first write, as before — readers
+  // tolerate null). Disagreeing decls poison the name (jz hoists `let` to function
+  // scope, so sibling-scope decls share a name and must not lock in a wrong width).
+  const trackTyped = makeTypedTracker({
+    get: (n) => ctx.types.typedElem?.get(n),
+    set: (n, c) => (ctx.types.typedElem ??= new Map()).set(n, c),
+    delete: (n) => ctx.types.typedElem?.delete(n),
+  })
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —
   // callers only need the "exactly one write" verdict.
