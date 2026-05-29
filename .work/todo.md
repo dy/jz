@@ -116,7 +116,13 @@ these unless a concrete need arises; recorded so a future attempt starts from ev
 - **Root A — caching (8 invalidateLocalsCache)**: each is surgical + correct (per-func
   after a specific ctx mutation; different scopes, not consolidatable). Auto-invalidation
   (generation bump per mutation) would invalidate every call → kills the cache (perf).
-  The surgical invalidations ARE the right perf/clarity tradeoff.
+  The surgical invalidations ARE the right perf/clarity tradeoff. A debug recompute-vs-
+  cache net (JZ_DEBUG_CACHE) was BUILT + ABANDONED: it fires on benign staleness (a
+  `let x = f()` local's wasm type shifts after f's result narrows, but the suite stays
+  green through it), so it can't separate a real missing-invalidation from a harmless
+  one — false positives, not viable. Deeper lesson: the cache is *intentionally
+  staleable* (fresh where consumed critically, not "never stale"), which is why a simple
+  invariant can't guard it. (Documented in analyzeBody's header.)
 - **Root C (collectDeclFacts)**: emit's rep-writes (emit.js:755–775) read `val.ptrKind`
   / `val.ptrAux` off the EMITTED RHS — emit-time-only, can't move to a pre-pass.
   analyzeValTypes already pre-computes the AST-derivable facts; collectDeclFacts would
