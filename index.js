@@ -432,13 +432,12 @@ const jzCompileInner = (code, opts = {}) => {
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
   // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
   if (cfg.watr) {
-    const postCfg = { ...cfg, __phase: 'post' }
     // Build global name→type map from ctx.scope.globalTypes for promoteGlobals
     const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
     time('watrReopt', () => {
       const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
       const volatileGlobals = collectVolatileGlobals(funcs)
-      for (const node of funcs) optimizeFunc(node, postCfg, globalTypesMap, volatileGlobals)
+      for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post')
     })
   }
   try {

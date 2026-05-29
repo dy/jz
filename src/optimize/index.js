@@ -1065,7 +1065,7 @@ export function csePureExpr(fn) {
 
 /**
  * Post-watr nested CSE for hot fill loops (loop + trig). Reuses `$__pe` locals from
- * the pre-watr leaf pass. Deferred to `__phase === 'post'` so watr's typed-array
+ * the pre-watr leaf pass. Deferred to the `phase === 'post'` run so watr's typed-array
  * inlining is not confused by pre-watr IR rewrites (test/mem.js).
  */
 export function csePureExprLoop(fn) {
@@ -1990,8 +1990,10 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  * @param globalTypes optional global name → wasm type map (for promoteGlobals)
  * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
+ * @param phase 'pre' (default, pre-watr leaf pass) or 'post' (re-run after watr) —
+ *        gates the passes that only pay off once watr has reshaped the IR.
  */
-export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals) {
+export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre') {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantPtrOffsetLoop === false &&
@@ -2014,7 +2016,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals) {
   if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   if (!cfg || cfg.csePureExpr !== false) {
-    if (cfg && cfg.watr === true && cfg.__phase === 'post') csePureExprLoop(fn)
+    if (cfg && cfg.watr === true && phase === 'post') csePureExprLoop(fn)
     else csePureExpr(fn)
   }
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
@@ -2027,7 +2029,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals) {
   // and lets a non-trivial chunk of SIMD survive the propagate+fold pipeline.
   if (cfg && cfg.vectorizeLaneLocal === true) {
     const fullWatr = cfg.watr === true
-    const runVectorizer = (fullWatr && cfg.__phase === 'post') || (!fullWatr && cfg.__phase !== 'post')
+    const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
     if (runVectorizer) vectorizeLaneLocal(fn)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
