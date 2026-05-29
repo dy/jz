@@ -115,9 +115,18 @@ function builtinFunctionValue(name) {
 const emitNeg = (a) => {
   if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
   const v = emit(a)
-  return isLit(v) ? emitNum(-litVal(v)) : isI32Num(v)
-    ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
-    : typed(['f64.neg', toNumF64(a, v)], 'f64')
+  if (isLit(v)) return emitNum(-litVal(v))
+  if (isI32Num(v)) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
+  // f64.neg flips the sign bit, so negating a NaN yields 0xFFF8.. — a non-canonical
+  // number-NaN that overlaps the NaN-boxed value space (jz reserves 0x7FF8.. as THE
+  // number-NaN). `__is_truthy`/`__eq` compare against that exact pattern, so a sign-
+  // flipped NaN reads as a tagged value (truthy / not-NaN). Fold any NaN result back
+  // to canonical — the same invariant math.sqrt/min/max keep via `canon` (module/math.js).
+  const t = temp('ng')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, ['f64.neg', toNumF64(a, v)]],
+    ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
+      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
 }
 
 /** Try constant-folding binary arith: returns emitNum(result) or null. */
