@@ -39,6 +39,7 @@ const TESTS = [
   'invariants',
   'differential',
   'fuzz',
+  'determinism',
   'parser-bugs',
   'jsstring',
   'booleans',
