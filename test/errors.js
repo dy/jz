@@ -1,5 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 
@@ -191,6 +192,7 @@ test('prohibited: __heap conflicts with runtime', () =>
 // ============================================================================
 
 test('template: distinct functions with same name', () => {
+  if (onWasi()) return  // wasi: host import / js template interp
   const a = Object.defineProperty(x => x + 1, 'name', { value: 'same' })
   const b = Object.defineProperty(x => x * 100, 'name', { value: 'same' })
   const { exports: { f } } = jz`export let f = (x) => ${a}(x) + ${b}(x)`
@@ -251,6 +253,7 @@ test('strict: unknown-receiver method call errors', () =>
   throwsStrict('export let f = (x) => x.foo(1, 2)', 'strict mode', 'x.foo should error'))
 
 test('strict: accepts pure scalar function', () => {
+  if (onWasi()) return  // wasi: size pin / extra wasi imports differ
   const wasm = compile('export let add = (a, b) => a + b', { strict: true, optimize: { watr: true } })
   ok(wasm.byteLength === 41, `pure scalar should compile to 41 bytes in strict mode, got ${wasm.byteLength}`)
 })

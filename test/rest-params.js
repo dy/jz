@@ -1,6 +1,7 @@
 // Rest params and variadic method tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import { run } from './util.js'
 import jz, { compile } from '../index.js'
 
@@ -79,6 +80,7 @@ test('rest: variadic product', () => {
 })
 
 test('rest: fixed-arity internal calls specialize rest array away', () => {
+  if (onWasi()) return  // wasi: run-reserved export
   const wat = compile(`
     let sum = (...nums) => {
       let s = 0

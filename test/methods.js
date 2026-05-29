@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { onWasi } from './_opt.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -421,6 +422,7 @@ test('Regression: dynamic property assignment on string fails gracefully', () =>
 })
 
 test('Regression: external method returning typed array spreads into array', () => {
+  if (onWasi()) return  // wasi: js-object arg
   const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
   const { exports } = jz(`export let test = (h) => {
     let out = []
@@ -434,6 +436,7 @@ test('Regression: external method returning typed array spreads into array', () 
 })
 
 test('Regression: external method returning typed array supports direct indexing', () => {
+  if (onWasi()) return  // wasi: js-object arg
   const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
   const { exports } = jz(`export let test = (h) => {
     let bytes = h.bytes()
@@ -446,6 +449,7 @@ test('Regression: external method returning typed array supports direct indexing
 })
 
 test('Regression: array literal spread copies external typed array values', () => {
+  if (onWasi()) return  // wasi: js-object arg
   const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
   const { exports } = jz(`export let test = (h) => {
     let out = [...h.bytes()]

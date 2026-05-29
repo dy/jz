@@ -1,5 +1,6 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz from '../index.js'
 import { compile as nativeCompile } from 'watr'
 import { readFileSync, readdirSync } from 'fs'
@@ -178,10 +179,14 @@ const bugCases = [
 ]
 
 for (const [name, reason, wat] of bugCases) {
-  test(`watr bug: ${name} - ${reason}`, () => sameWasm(name, wat))
+  test(`watr bug: ${name} - ${reason}`, () => {
+    if (onWasi()) return  // wasi: host global WebAssembly
+    sameWasm(name, wat)
+  })
 }
 
 test('watr bug: custom sections - custom section not found', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const bin = compiledWatr()(`(module
     (@custom "my-section" "hello")
     (func (export "answer") (result i32) (i32.const 42)))`)
@@ -191,6 +196,7 @@ test('watr bug: custom sections - custom section not found', () => {
 })
 
 test('watr bug: branch hints - branch hints section not found', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const bin = compiledWatr()(`(module
     (func (export "test") (param i32) (result i32)
       (block (result i32)
@@ -206,12 +212,14 @@ test('watr bug: branch hints - branch hints section not found', () => {
 })
 
 test('watr: top-level package entry compiles', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const compiled = jz.compile(watrJs, { jzify: true, modules: ENTRY_MODULES })
   ok(compiled instanceof Uint8Array, 'top-level watr entry compiles to wasm bytes')
   ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'top-level watr output is valid wasm')
 })
 
 test('watr: top-level package entry instantiates', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const compiled = compiledWatr()('(module (func))')
   ok(compiled instanceof Uint8Array, 'top-level watr compile export returns wasm bytes')
   ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'compiled bytes are valid wasm')
@@ -335,6 +343,7 @@ function f64Value(wat) {
 // preserved before the final large+small addition. Exact value: 2^97+2^44+1
 // → correctly rounds to 2^97+2^45 (mantissa=1).
 test('watr-regression: f64.const large hex integer rounds correctly', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const val = f64Value('(module (func (export "f") (result f64) (f64.const +0x2000000000000100000000001)))')
   const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
   // +0x1.0000000000001p+97 = (1 + 2^-52) * 2^97
@@ -348,6 +357,7 @@ test('watr-regression: f64.const large hex integer rounds correctly', () => {
 // reference type opcodes, but were fixed in recent jz commits.
 // Kept as passing regression guards:
 test('watr-regression: ref_cast_null on null anyref', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const wat = `(module
     (type $st (struct))
     (table 10 anyref)
@@ -370,6 +380,7 @@ test('watr-regression: ref_cast_null on null anyref', () => {
 })
 
 test('watr-regression: ref_test_null_data returns 2', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   const wat = `(module
     (type $st (struct))
     (type $at (array i8))
@@ -393,6 +404,7 @@ test('watr-regression: ref_test_null_data returns 2', () => {
 // jz-compiled watr treats i64x2 lane values as f64 instead of i64,
 // producing wrong bytes for large values like 0xffffffffffffffff.
 test('watr-regression: v128.const i64x2 encodes correctly', () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   sameWasm('v128.const i64x2 max/min', `(module
     (global v128 (v128.const i64x2 0xffffffffffffffff -9223372036854775808)))`)
 })

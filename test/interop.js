@@ -12,6 +12,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import * as interop from 'jz/interop'
+import { onWasi } from './_opt.js'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ test('interop: instantiate prebuilt wasm — array in, reduce out', () => {
 })
 
 test('interop: instantiate prebuilt wasm — object schema round-trip', () => {
+  if (onWasi()) return  // wasi: external object
   // Plain arithmetic to keep the test about object marshaling, not pow precision.
   const wasm = compile(`export let f = (p) => p.x * 10 + p.y`)
   const { exports, memory } = interop.instantiate(wasm)

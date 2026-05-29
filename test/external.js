@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { onWasi } from './_opt.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {
@@ -8,6 +9,7 @@ function run(code, imports = {}) {
 }
 
 test('Read property from external object', () => {
+  if (onWasi()) return  // wasi: external object
   const { getProp } = run(`
     export const getProp = (obj) => {
       return obj.nodeType
@@ -20,6 +22,7 @@ test('Read property from external object', () => {
 })
 
 test('Call method on external object', () => {
+  if (onWasi()) return  // wasi: external object
   const { callMethod } = run(`
     export const callMethod = (obj) => {
       return obj.getAttribute('id').length
@@ -34,6 +37,7 @@ test('Call method on external object', () => {
 })
 
 test('Set property on external object', () => {
+  if (onWasi()) return  // wasi: external object
   const { setProp } = run(`
     export const setProp = (obj, val) => {
       obj.innerHTML = val
@@ -46,6 +50,7 @@ test('Set property on external object', () => {
 })
 
 test('Return external object from JZ', () => {
+  if (onWasi()) return  // wasi: external object
   const instance = jz(`
     export const createNode = (doc) => {
       return doc.createElement('div')

@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, f64ToI64 } from '../interop.js'
+import { onWasi } from './_opt.js'
 
 async function run(code) {
   const r = await WebAssembly.instantiate(compile(code))
@@ -398,6 +399,7 @@ test('shared memory: schemas accumulate across compilations', () => {
 })
 
 test('shared memory: cross-instance object passing', () => {
+  if (onWasi()) return  // wasi: shared-memory host orchestration
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
   const b = jz('export let read = (o) => o.x + o.y', { memory })
