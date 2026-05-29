@@ -9,29 +9,20 @@
  *   - a value               — consensus across all sites seen so far.
  *   - TOP    = `null`        — conflict: two sites disagreed. Sticky.
  *
- * The intended meet is monotone: meet(BOTTOM, x) = x, meet(x, x) = x,
- * meet(x, y≠x) = TOP, meet(TOP, _) = TOP. A monotone meet over a finite height-2
- * lattice converges in ONE fixpoint with no resets.
+ * The meet is monotone: meet(BOTTOM, x) = x, meet(x, x) = x, meet(x, y≠x) = TOP,
+ * meet(TOP, _) = TOP. Over a finite height-2 lattice it converges with NO resets —
+ * narrow.js's clearStickyNull (which used to un-stick a spurious "can't tell yet"
+ * poison) is gone entirely (root B closed). Two complementary policies keep it so:
  *
- * KNOWN NON-MONOTONICITY (root B — to be removed in the planned lattice refactor).
- * mergeParamFact below folds a THIRD input — `observed == null`, meaning "this
- * call site can't determine the fact *yet*" (its own dependency isn't typed) —
- * into TOP, when it should be treated as BOTTOM. narrow.js used to call
- * clearStickyNull THREE times to un-stick that spurious poison between phases.
- *
- * Two of the three are now GONE without changing the meet: the dominant case was
- * "a call arg is `f()` whose VAL result wasn't computed yet" — fixed by hoisting
- * narrowValResults (body-driven, fixpoint-internal) ABOVE the param lattice, so
- * valResult is known on the first pass and the can't-tell-yet poison never forms.
- * The ONE remaining clearStickyNull (narrow.js, post-pointer-enrichment) is a
- * genuine phase dependency: a TYPED-array param's val only becomes known after the
- * typedCtor fixpoint + pointer-ABI enrichment, which run AFTER the first val pass.
- * Eliminating it needs the monotone soft-merge (skip null = BOTTOM) — but unlike
- * arrayElem, val is consumed by applyPointerParamAbi (trusts r.val, no per-site
- * recheck) BEFORE valResult/enrichment, so a pre-consumer hard sweep over-poisons
- * the not-ready case and pure soft under-guards the genuinely-untyped case. That
- * last step is the larger A+B restructuring (reorder consumption after refinement,
- * or make the consumer site-coverage-aware). See .work/todo.md step 8.
+ *   - `val` runs SOFT (narrow.js mergeRule soft=true): a can't-tell-yet site is
+ *     skipped (stays BOTTOM), never poisoned, so a later pass — e.g. once pointer-
+ *     ABI enrichment puts VAL.TYPED into callerValTypes — simply fills it in. A
+ *     signature-mutating consumer (applyPointerParamAbi) can't trust this partial
+ *     soft value, so it re-folds the sites HARD (hardParamVal); a final hard sweep
+ *     settles `val` for emit + late readers (specializeBimorphicTyped, …).
+ *   - `schemaId` (and the others) stay HARD, but no longer get stuck: narrowValResults
+ *     is hoisted ABOVE the param lattice, so a call arg `f()` resolves to its VAL
+ *     result on the first pass and the can't-tell poison never forms.
  *
  * @module param-reps
  */
@@ -52,12 +43,14 @@ export const paramFactsOf = (paramReps, callerFunc, key) => {
   return out
 }
 
-/** Per-call-site fact merge into a param's ValueRep field (the non-monotone meet
- *  documented above — `observed == null` poisons rather than skipping; the planned
- *  refactor replaces this with a soft merge that treats null as BOTTOM). */
+/** The meet itself: fold `observed` into a param's ValueRep field. BOTTOM
+ *  (undefined) → observed; equal → unchanged; disagreement → TOP (null, sticky).
+ *  A null `observed` is "can't tell" — whether that means BOTTOM (skip) or TOP
+ *  (poison) is the *caller's* policy: narrow.js's soft mergeRule skips before
+ *  calling here; the hard mergeRule / missing-arg path poisons by passing null. */
 export const mergeParamFact = (rep, key, observed) => {
   if (rep[key] === null) return                                  // already TOP — sticky
-  if (observed == null) { rep[key] = null; return }              // NON-MONOTONE: should be BOTTOM (skip)
+  if (observed == null) { rep[key] = null; return }              // caller chose to poison (hard path)
   if (rep[key] === undefined) rep[key] = observed                // BOTTOM → first observation
   else if (rep[key] !== observed) rep[key] = null                // disagreement → TOP
 }
@@ -69,11 +62,4 @@ export const ensureParamRep = (paramReps, funcName, k) => {
   let r = m.get(k)
   if (!r) { r = {}; m.set(k, r) }
   return r
-}
-
-/** Reset sticky-null on a single field across all params program-wide. */
-export const clearStickyNull = (paramReps, key) => {
-  for (const m of paramReps.values()) for (const r of m.values()) {
-    if (r[key] === null) r[key] = undefined
-  }
 }

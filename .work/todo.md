@@ -69,26 +69,29 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
    - ✅ emitDecl (emit.js:608, wired at 'let'/'const') and ctx.core.emit['.'] router
      (core.js:726) ALREADY EXISTED — the audit's suggestions there were stale.
 7. **✅ DONE — Full CI matrix**: opt0/opt1/opt3/wasi all in test.yml, all green.
-8. **🔶 The lattice refactor** (L, highest leverage): Roots A+B. Lattice DECLARED
-   (param-reps.js: BOTTOM=undefined ≠ TOP=null). **2 of 3 clearStickyNull ELIMINATED**
-   (committed) — NOT via a meet change, but by HOISTING narrowValResults (body-driven,
-   self-fixpointing, independent of param facts) above the param lattice, so a call arg
-   like `initRows()` resolves to its VAL.ARRAY result on the FIRST pass and the
-   can't-tell-yet poison never forms. Sound (hard merge unchanged); verified full
-   gauntlet (suite 1914, matrix 5/5, fuzz 2000 clean, bench jz 1.20–1.27× — no regress).
-   First soft-merge attempt (mergeRule soft + hard sweeps) was REVERTED — over-poisoned
-   the not-ready case at the early consumer (applyPointerParamAbi trusts r.val, runs
-   before valResult); the hoist sidesteps that entirely.
-   REMAINING (1 clearStickyNull, post-pointer-enrichment): a genuine phase dep — a
-   TYPED-array param's val is only known after the typedCtor fixpoint + pointer-ABI
-   enrichment (which run after the first val pass). Eliminating it needs the monotone
-   soft-merge, but val is consumed by applyPointerParamAbi (no per-site recheck) before
-   enrichment → pre-consumer hard sweep over-poisons not-ready, pure soft under-guards
-   genuinely-untyped. So it needs the larger A+B restructuring: reorder consumption
-   after all refinement (decouple enrichment to read paramReps facts, not sig p.ptrKind
-   — but p.ptrKind is read by 6+ passes: 193/210/964/1006/1075/1153), OR make the
-   consumer site-coverage-aware. Also fold in collectDeclFacts (step 5). VERIFY: full
-   gauntlet, revert on any regression — a subtle lattice error miscompiles silently.
+8. **✅ DONE — The lattice refactor** (L, highest leverage): Roots A+B. Lattice DECLARED
+   (param-reps.js: BOTTOM=undefined ≠ TOP=null, monotone meet) and **ALL 3 clearStickyNull
+   ELIMINATED** — the function is deleted; the param lattice is now monotone (no resets).
+   Two complementary moves, no meet hack:
+     - HOIST narrowValResults (body-driven, self-fixpointing, independent of param facts)
+       above the param lattice → a call arg `f()` resolves to its VAL result on pass 1,
+       so the hard merge never sticky-poisons it (killed clearStickyNull #1+#2: val+schemaId).
+     - SOFT `val` merge (skip can't-tell = BOTTOM, never poison) → the TYPED-param case,
+       whose val is only known post-pointer-enrichment, fills in on the later rerun
+       instead of staying stuck (killed clearStickyNull #3). Soundness: the one
+       signature-mutating early consumer (applyPointerParamAbi) re-folds sites HARD via
+       hardParamVal (soft r.val may be a partial consensus); a final hard sweep settles
+       val for emit + late readers (specializeBimorphicTyped, applyI32 skipTyped guard).
+       schemaId/wasm/intConst stay hard (no stuck poison now that valResult is first).
+   Verified full gauntlet: suite 1914/0, test262 1437/0/3, fuzz 2000 (only pre-existing
+   within-contract seed 1809), matrix 5/5, bench jz 1.00–1.27× checksums-identical (no
+   regress). (An earlier soft+pre-consumer-hard-sweep attempt was reverted — the sweep
+   ran before valResult and over-poisoned not-ready; the narrowValResults hoist + the
+   hardParamVal self-validation is what made soft sound.) Also fixed a pre-existing wasi
+   Date-clock test flake surfaced by the gauntlet.
+   STILL OPEN (separate, lower-value): collectDeclFacts (step 5, Root C) + the wasm
+   field's resetParamWasmFacts non-monotonicity (exprType reads mutated sig.results —
+   needs result-wasm-type modeled as a fact). Root A (analyzeBody purity) also remains.
 
 ## Optimizer (parallel track, not blocking)
 - OPT-1: the 3089-line vendored watr fork (src/wat/optimize.js) — add FORK.md + CI
