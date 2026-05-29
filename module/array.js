@@ -26,17 +26,23 @@ function allocArray(len, cap) {
   return { local: a.local, setup: [a.init], ptr: a.ptr }
 }
 
-/** Pack literal i64 slots as a static ARRAY: writes [len][cap][slots...] into the data segment
- *  and returns a folded ARRAY pointer to the first slot. */
+/** Pack literal i64 slots as a static ARRAY into the data segment, returning a
+ *  folded ARRAY pointer to the first slot. The 16-byte header MUST match
+ *  __alloc_hdr (core.js): a zeroed dyn-props word at off-16, then len/cap at
+ *  off-8/-4. Heap arrays get that props word zeroed for free; a static array with
+ *  only an 8-byte header left off-16 pointing at adjacent data-segment bytes, so
+ *  for-in / named-prop lookup (which read off-16 as the props-sidecar pointer)
+ *  walked garbage → OOB (test262 built-ins/Object/keys sparse-array). */
 function staticArrayPtr(slots) {
   if (!ctx.runtime.data) ctx.runtime.data = ''
   while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
   const headerOff = ctx.runtime.data.length
   const len = slots.length
-  const hdr = new Uint8Array(8); new DataView(hdr.buffer).setInt32(0, len, true); new DataView(hdr.buffer).setInt32(4, len, true)
-  for (let i = 0; i < 8; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
+  const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer)
+  dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
+  for (let i = 0; i < 16; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
   appendStaticSlots(slots)
-  return mkPtrIR(PTR.ARRAY, 0, headerOff + 8)
+  return mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
 }
 
 function hoistArrayValue(arr) {

@@ -50,12 +50,14 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 built-ins suite
         env:
-          # Baseline (as of last green main, 2026-05-21): 721 passes / 0 in-scope
-          # fails / 63 xfail (out-of-scope: BigInt, Symbol, RegExp exec, …).
+          # Baseline (2026-05-29): 723 passes / 0 in-scope fails / 61 xfail
+          # (out-of-scope: BigInt, Symbol, RegExp exec, …).
           # The runner gates on pass < baseline AND any in-scope fail > 0; an
           # out-of-scope fail must be added to EXPECTED_FAIL_* in the runner.
-          # 2026-05-21: +2 — boolean→ToString in argument position unskips
-          # parseInt(boolean) and parseFloat(boolean) (formerly fed the 0/1 carrier).
+          # 2026-05-29: +2 — fixed the dyn-shadow desync (Object.assign mirror +
+          # needsDynShadow honoring anyDynKey) and the static-array 16-byte-header
+          # OOB; unskips Object/assign/ObjectOverride-sameproperty and
+          # Object/keys/15.2.3.14-6-2. Also pruned 2 stale EXPECTED_FAIL entries.
           # Lift this baseline when fixes land.
-          JZ_TEST262_BASELINE: 721
+          JZ_TEST262_BASELINE: 723
         run: npm run test:262:builtins

@@ -447,6 +447,14 @@ export default (ctx) => {
     if (sourceSchemas.some(s => !s)) return emitDynamicAssign(target, sources, sourceSchemas)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
+    // When the target carries a dynamic-props shadow (needsDynShadow), reads of an
+    // unknown-schema alias (`let r = Object.assign(t, …); r.a`) dispatch through
+    // __dyn_get_any → the hash, not the schema slot. A slot-only write would leave
+    // the hash stale, so mirror each store into __dyn_set, exactly as the object
+    // literal emit does (above). False unless a collection/dyn-key module is live,
+    // so the common fixed-schema assign keeps its slot-only fast path.
+    const shadow = needsDynShadow(target)
+    if (shadow) inc('__dyn_set')
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < sources.length; i++) {
@@ -458,6 +466,9 @@ export default (ctx) => {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
         body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase2}`], si)))
+        if (shadow)
+          body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+            asI64(emit(['str', String(tSchema[ti])])), ctx.abi.object.ops.loadBits(['local.get', `$${tBase}`], ti)]])
       }
     }
     body.push(['local.get', `$${t}`])
