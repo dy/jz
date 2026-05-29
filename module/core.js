@@ -35,7 +35,6 @@ export default (ctx) => {
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __set_len: [],
     __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
-    __typeof: ['__ptr_type', '__is_nullish'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],

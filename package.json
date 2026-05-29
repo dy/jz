@@ -41,6 +41,7 @@
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
+    "build": "node scripts/build-dist.mjs",
     "build:examples": "for dir in examples/*/; do [ -f \"$dir/build.mjs\" ] && node \"$dir/build.mjs\"; done",
     "prepublishOnly": "npm run test:all"
   },
@@ -67,6 +68,7 @@
     "wasm"
   ],
   "devDependencies": {
+    "esbuild": "^0.28.0",
     "tst": "^9.4.0"
   }
 }
