@@ -572,10 +572,17 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   is(after, before, 'heap pointer should be unchanged across rewound scalar calls')
 })
 
-test('codegen: loop counter widens to f64 when compared to f64 param', () => {
-  const wat = compile('export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }', { wat: true })
-  // When compared against f64 param n, i should be f64 to avoid per-iter convert
-  ok(wat.includes('(local $i f64)'), 'loop counter i should be f64 when compared to f64 param')
+test('codegen: integer loop counter stays i32 even against an f64 param bound', () => {
+  const wat = compile('export let f = (n) => { let acc = 0|0; for (let i = 0; i < n; i++) acc = (acc + i) | 0; return acc|0 }', { wat: true })
+  // An affine integer counter (intCertain) stays i32 even when compared to an f64
+  // param bound: widening it to f64 would make the increment AND the body
+  // arithmetic f64 (and pull a heavy per-iter ToInt32 on every `|0`) — measured
+  // ~18× vs V8. Keeping it i32 costs only one `f64.lt convert(i) n` in the compare.
+  // Sound for n ≤ 2^31; n > 2^31 is the asm.js-style integer contract.
+  // (The exported body is boundary-wrapped+inlined, so the counter local may be
+  // renamed `$__inlN_i` — match any name ending in `i`.)
+  ok(/\(local \$(?:\w+_)?i i32\)/.test(wat) && !/\(local \$(?:\w+_)?i f64\)/.test(wat),
+    'integer loop counter i stays i32 against an f64 param bound')
 })
 
 test('codegen: f64-bound counter used as a fully-i32 array index stays i32', () => {
