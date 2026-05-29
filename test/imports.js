@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 // Helper: compile and run

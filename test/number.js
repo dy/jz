@@ -1,4 +1,6 @@
-// Number and String method tests
+// Number methods (toString/toFixed/toExponential/toPrecision), numeric coercion
+// (Number()/parseFloat/unary +/String()), and template-literal interpolation.
+// String-method tests (charAt/charCodeAt/at/search/match) live in strings.js.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { run } from './util.js'
@@ -214,48 +216,4 @@ test('Template: string var interpolation', () => {
 
 test('Template: float interpolation', () => {
   is(run('export let f = () => `pi=${3.14}`.length').f(), 7)
-})
-
-// === charAt, charCodeAt, at ===
-
-test('String: charAt', () => {
-  is(run(`export let f = () => "hello".charAt(1).charCodeAt(0)`).f(), 101)
-})
-
-test('String: charCodeAt', () => {
-  is(run(`export let f = () => "ABC".charCodeAt(0)`).f(), 65)
-})
-
-test('String: charCodeAt(2)', () => {
-  is(run(`export let f = () => "ABC".charCodeAt(2)`).f(), 67)
-})
-
-test('String: at positive', () => {
-  is(run(`export let f = () => "hello".at(0).charCodeAt(0)`).f(), 104)
-})
-
-test('String: at negative', () => {
-  is(run(`export let f = () => "hello".at(-1).charCodeAt(0)`).f(), 111)
-})
-
-// === search / match ===
-
-test('String: search found', () => {
-  is(run(`export let f = () => "hello world".search("world")`).f(), 6)
-})
-
-test('String: search not found', () => {
-  is(run(`export let f = () => "hello".search("xyz")`).f(), -1)
-})
-
-test('String: match found', () => {
-  is(run(`export let f = () => "hello world".match("world").length`).f(), 1)
-})
-
-test('String: match not found', () => {
-  is(run(`export let f = () => "hello".match("xyz")`).f(), 0)
-})
-
-test('String: match result content', () => {
-  is(run(`export let f = () => "hello world".match("world")[0].length`).f(), 5)
 })

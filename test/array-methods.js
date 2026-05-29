@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 
 function run(code) {
   const wasm = compile(code)

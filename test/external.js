@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {

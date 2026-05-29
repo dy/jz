@@ -1,7 +1,7 @@
 // Rest params and variadic method tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 import { run } from './util.js'
 import jz, { compile } from '../index.js'
 
