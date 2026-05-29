@@ -18,11 +18,18 @@
  * call site can't determine the fact *yet*" (its own dependency isn't typed) —
  * into TOP, when it should be treated as BOTTOM (skip, no poison). That spurious
  * poison is why narrow.js calls clearStickyNull between phases to un-stick it and
- * re-run the fixpoint. The monotone fix already exists for the arrayElem fields
- * (narrow.js runArrElemFixpoint): a SOFT merge that skips on null and iterates to
- * a fixpoint, then ONE hard validating sweep that poisons params still unproven.
- * Generalizing that to val/schemaId/intConst/wasm deletes clearStickyNull and the
- * repeated runFixpoint()/invalidateBodyFacts dance. (See .work/todo.md step 8.)
+ * re-run the fixpoint. The monotone fix exists for the arrayElem fields (narrow.js
+ * runArrElemFixpoint): a SOFT merge that skips on null and iterates to a fixpoint,
+ * then ONE hard validating sweep that poisons params still unproven.
+ *
+ * BUT generalizing that to val/schemaId is NOT a drop-in (attempted + reverted —
+ * see .work/todo.md step 8): unlike arrayElem, val/schemaId are consumed by
+ * narrowing passes (applyPointerParamAbi, which trusts r.val without re-checking
+ * sites) that run BEFORE valResult is known. A hard sweep there over-poisons the
+ * "not computed yet" case (breaks `sumScaled(initRows(), 3)`); pure soft
+ * under-guards the "one site typed, another genuinely-untyped" case. The real fix
+ * needs the consumption reordered after all refinement, or consumers made
+ * site-coverage-aware — a larger restructuring, not a meet tweak.
  *
  * @module param-reps
  */

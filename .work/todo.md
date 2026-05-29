@@ -69,20 +69,28 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
 7. **✅ DONE — Full CI matrix**: opt0/opt1/opt3/wasi all in test.yml, all green.
 8. **The lattice refactor** (L, highest leverage, HIGHEST RISK): Roots A+B. The lattice
    is now DECLARED (src/param-reps.js header: BOTTOM=undefined ≠ TOP=null, monotone meet).
-   EXACT PLAN (the monotone fix already exists — narrow.js runArrElemFixpoint's soft
-   merge — generalize it):
-     (a) add `mergeParamFactSoft` = mergeParamFact minus the `observed==null → TOP`
-         line (null = BOTTOM = skip);
-     (b) rewrite runFixpoint's val/schemaId/intConst/wasm rules to soft-merge, iterate
-         `do{…}while(changed)` to a fixpoint, then ONE hard validating sweep that
-         poisons params still unproven (mirror runArrElemFixpoint exactly);
-     (c) delete the 3 clearStickyNull calls + the redundant runFixpoint()/
-         invalidateBodyFacts/refreshValTypes dance they patched;
-     (d) fold in collectDeclFacts (step 5) — same analysis-decoupling.
-   VERIFY: full suite + test262 + EXTENDED fuzz (≥2000 seeds) + FULL bench (perf must
-   not regress — narrowing drives i32/ptr specialization) + matrix. Revert on ANY
-   regression. This is a DEDICATED effort, not a tail-of-turn rush — a subtle lattice
-   error miscompiles silently. Do NOT start before a clean focused session.
+   ATTEMPTED the soft-merge generalization (mergeRule soft flag + hardValSchema sweeps +
+   delete clearStickyNull) — REVERTED, 1 regression (inference.js "notString + intConst
+   + arrElemSchema": `sumScaled(initRows(), 3)` returned ≠333). EVIDENCE-BACKED finding:
+     - The fix is NOT a meet tweak. val/schemaId differ from arrayElem in that their
+       CONSUMERS (applyPointerParamAbi @narrow.js:121 — trusts r.val, no per-site
+       re-check) run BEFORE narrowValResults sets valResult.
+     - A hard validating sweep placed before that consumer OVER-poisons the "arg type
+       not computed yet" case (initRows()'s VAL.ARRAY result unknown at that point) —
+       and once hard-poisoned, the soft re-run bails on null and can't recover (the old
+       clearStickyNull is exactly what un-stuck it).
+     - Pure soft (no sweep) UNDER-guards the "site A typed, site B genuinely-untyped"
+       case → unsound specialization.
+   So the soft+hard-sweep approach can't satisfy both at the early consumer.
+   REAL FIX (bigger restructuring): reorder narrowSignatures so ALL refinement
+   (incl. narrowValResults/valResult) precedes ALL consumption (applyPointer/I32/
+   TypedParamAbi) — then ONE soft-fixpoint + ONE final hard sweep works; OR make
+   applyPointerParamAbi site-coverage-aware (only specialize when every call site
+   contributed a non-BOTTOM fact). Either is a real reordering, not a swap.
+     - fold in collectDeclFacts (step 5) — same analysis-decoupling.
+   VERIFY: full suite + test262 + EXTENDED fuzz (≥2000) + FULL bench (no perf regress) +
+   matrix. Revert on ANY regression. DEDICATED effort — a subtle lattice error
+   miscompiles silently.
 
 ## Optimizer (parallel track, not blocking)
 - OPT-1: the 3089-line vendored watr fork (src/wat/optimize.js) — add FORK.md + CI
