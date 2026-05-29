@@ -41,10 +41,10 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
      updateGlobalRep validator (F4/E); repView iterates REP_FIELDS (gained carrier/
      unsigned); field set verified complete under JZ_DEBUG_INVARIANTS=1.
    - ✅ isBoundName ×4 (SMELLS-F5) — folded the 4 inline local-or-param checks.
-   - ⏸ makeValTracker/makeTypedTracker (F1) → MOVED TO STEP 8. The two trackTyped
-     (analyze.js:175 local scratch vs :634 ctx.types.typedElem) are the same logic
-     over different stores — a *symptom* of root A's two walks. Step 8 unifies the
-     walks; a factory now would be a bandage step 8 discards. Do it there.
+   - ✅ makeValTracker/makeTypedTracker (F1) — DONE. Both walks' val + typed-ctor
+     trackers (analyzeBody local Maps, analyzeValTypes ctx slices) now share one
+     factory each, store-parameterized; they can't drift. (The deeper two-walk root-A
+     issue itself remains — see Remaining frontier.) Verified determinism byte-identical.
    - ⏸ ARCH-1 (prepare→compile/* imports) → DEFERRED (low value, half-fixable).
      observeNodeFacts is a pure AST observer (movable to ast.js), but recordGlobalRep
      is stateful (writes ctx.scope/runtime, needs valTypeOf/typedElemCtor) — moving it
@@ -94,13 +94,29 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
    needs result-wasm-type modeled as a fact). Root A (analyzeBody purity) also remains.
 
 ## Optimizer (parallel track, not blocking)
-- OPT-1: the 3089-line vendored watr fork (src/wat/optimize.js) — add FORK.md + CI
-  line-delta alarm, OR land watr/optimize subpath upstream. (branch-fold already synced)
-- OPT-2: the 2nd optimizeFunc pass (index.js:425) exists only for inliner-reintroduced
-  rebox/unbox — teach fusedRewrite to fold i32.wrap_i64(i64.reinterpret_f64 x); replace
-  the `__phase:'post'` string side-channel with an explicit arg.
-- #4a cseScalarLoad explicit proof (low value, fold into emit cleanup). #4b vectorizer:
-  no-change (deliberate opt:3 tradeoff, documented).
+- OPT-1: the 3089-line src/wat/optimize.js — header now states jz OWNS it (sync is
+  jz→upstream, e.g. branch-fold port), so the silent-drift concern is largely moot;
+  a FORK.md would be low-value. Leave as-is.
+- OPT-2: ✅ `__phase:'post'` side-channel → explicit `phase` arg (done). REMAINING:
+  eliminate the 2nd optimizeFunc pass entirely by teaching fusedRewrite to fold
+  i32.wrap_i64(i64.reinterpret_f64 x) — deeper optimizer change, deferred.
+- #4a cseScalarLoad explicit proof (low value). #4b vectorizer: no-change (documented).
+
+## ⟢ Remaining frontier (all HIGH-RISK core-restructuring, diminishing returns)
+The safe + elegant fixes are done (roots B, E; F1; steps 1–8; OPT-2 side-channel).
+What's left has no clean elegant fix like root B had — each is a dedicated effort,
+gauntlet-gated, revert-on-regression, only worth it if a concrete need arises:
+- **Root A (analyzeBody purity)**: 9 manual invalidateLocalsCache calls patch the
+  body-keyed cache going stale when ctx.func.localReps / sig.ptrKind change mid-
+  narrowing. Fix = cache-version on ctx-deps or make analyzeBody pure (pass deps in).
+  Invasive (analyzeBody is called everywhere). [F1 closed the *duplicate-tracker* half.]
+- **Root C (collectDeclFacts)**: emit writes analysis state (updateRep/schema during
+  emission) → decl ordering load-bearing. Fix = a pre-emit decl-facts pass.
+- **wasm resetParamWasmFacts**: the one remaining narrowing non-monotonicity — wasm
+  param facts observe stale f64 because exprType reads sig.results before result-i32
+  narrowing. Unlike root B (clean narrowValResults hoist), this is a genuine param↔
+  result i32 CYCLE; monotone fix needs result-wasm modeled as a fact exprType reads
+  (touches exprType, used in emit too) — no contained elegant fix found.
 
 ## Missing constructs to ADD (prevent future ad-hocs)
 declared lattice (→8); enforced module-registration startup check (→Root D); closed
