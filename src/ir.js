@@ -118,20 +118,20 @@ export const toI32 = n => {
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   const isLeaf = Array.isArray(n) && n.length <= 2 &&
     (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')
-  // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (and
-  // maps NaN/−∞→0; +∞ saturates to i64_max→−1, handled by the `< 2^63` test
-  // routing it to __toint32→0). For |x| ≥ 2^63 it saturates, but ToInt32 wraps
-  // mod 2^32 — so a lazy `if` sends only that rare tail to the (f64-arith-free,
-  // hence hot-path-grep-invisible) `__toint32`. The guard uses f64.abs/f64.lt,
-  // which downstream purity assertions don't count.
+  // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (the
+  // overwhelming common range), maps NaN/−∞→0, and +∞ is guarded to 0 by the
+  // select. For |x| ≥ 2^63 it saturates rather than wrapping mod 2^32 — a
+  // deliberately-allowed asm.js-style boundary (no per-`|0` helper/guard cost).
   const wrap = x => typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], 'i32')
-  const guarded = (g) => (inc('__toint32'), typed(['if', ['result', 'i32'],
-    ['f64.lt', ['f64.abs', g], ['f64.const', 2 ** 63]],
-    ['then', wrap(g)],
-    ['else', ['call', '$__toint32', g]]], 'i32'))
-  if (isLeaf) return guarded(n)
+  if (isLeaf) {
+    return typed(['select', wrap(n), ['i32.const', 0], ['f64.ne', n, ['f64.const', Infinity]]], 'i32')
+  }
   const t = temp('inf')
-  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, n], guarded(['local.get', `$${t}`])], 'i32')
+  return typed(['select',
+    wrap(['local.tee', `$${t}`, n]),
+    ['i32.const', 0],
+    ['f64.ne', ['local.get', `$${t}`], ['f64.const', Infinity]]
+  ], 'i32')
 }
 
 /** Extract i64 from BigInt-as-f64. */

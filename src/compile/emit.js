@@ -2548,8 +2548,14 @@ export const emitter = {
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
-    if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
-    if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
+    // `x * 0` → 0 only when the other factor is provably finite (i32, or a finite
+    // literal): JS `NaN*0` / `±Inf*0` are NaN, so a non-finite f64 must fall
+    // through to `f64.mul` (which yields NaN). For finite x the dropped product is
+    // ±0 — and -0 === +0, so consumers are unaffected. The block evaluates x for
+    // its side effects before dropping.
+    const finiteFactor = (v) => isI32Num(v) || (isLit(v) && Number.isFinite(litVal(v)))
+    if (isLit(vb) && litVal(vb) === 0 && finiteFactor(va)) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
+    if (isLit(va) && litVal(va) === 0 && finiteFactor(vb)) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')

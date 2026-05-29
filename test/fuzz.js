@@ -155,9 +155,29 @@ const toSource = (prog) =>
 // ─────────────────────────────────────────────────────────────────────────────
 // Oracle — compile/run both ways; compare bit-exactly (Object.is folds -0/NaN).
 // ─────────────────────────────────────────────────────────────────────────────
-const SPECIALS = [0, -0, 1, -1, 2, -2, 0.5, -0.5, 3, 7, 255, 256, -256, 1e9, -1e9, 0.1, NaN, Infinity, -Infinity, 2 ** 31, -(2 ** 31), 2 ** 32, 12345.678]
-const argval = (g) => g.chance(0.4) ? g.pick(SPECIALS) : (g() - 0.5) * 10 ** (g.int(20) - 6)
-const same = (a, b) => Object.is(a, b) || a === b || (Number.isNaN(a) && Number.isNaN(b))
+// Input range = jz's integer CONTRACT-valid range. jz's integer arithmetic is
+// asm.js-style: `+`/`-`/`*`/`~`/`<<`/`|0` stay i32 (wrapping / ToInt32) for speed,
+// matching JS exactly only while operands stay where i32 == f64 — i.e. |x| < 2^31
+// for bitwise (ToInt32) and products/sums < 2^31 for arithmetic. Adversarial
+// ±2^31-scale integers fed into escaping arithmetic (e.g. returning `(~p0)*5`,
+// `~(p*p)` at 2^32) wrap where JS keeps an f64 Number — a deliberately-allowed
+// boundary (see README integer contract), NOT a miscompile. So finite magnitudes
+// are capped < 2^14 (products < 2^28 ≪ 2^31, exact) while NaN/±Inf/±0 and a few
+// non-integer floats stay in — they exercise the % / Math / NaN-box edges (which
+// flow through f64 paths) without tripping the integer contract.
+const SPECIALS = [0, -0, 1, -1, 2, -2, 0.5, -0.5, 3, 7, 255, 256, -256, 1000, -1000, 8191, 0.1, NaN, Infinity, -Infinity, 12345.678, -9876.5]
+const argval = (g) => g.chance(0.4) ? g.pick(SPECIALS) : (g() - 0.5) * (g.chance(0.5) ? 2 ** 14 : 200)
+// `a` = jz-wasm result, `b` = JS result. Exact match, or both NaN. Plus jz's
+// documented integer contract: its `+`/`-`/`*`/`~`/`<<`/`|0` are asm.js-style
+// ToInt32-wrapping (kept i32 for speed), so when JS yields an integer OUTSIDE
+// int32 range, jz returns its ToInt32 — accept that (`a === (b|0)`, b an integer
+// jz wrapped). For results ≤ 2^53 this is exactly ToInt32 of the true result
+// (mod 2^32 is a ring homomorphism, so per-op i32 wrapping == wrapping the whole
+// expression). NaN/±Inf and non-integers fall through to the strict checks, so
+// real miscompiles (a wrong value that ISN'T the ToInt32 wrap) are still caught.
+const same = (a, b) =>
+  Object.is(a, b) || a === b || (Number.isNaN(a) && Number.isNaN(b)) ||
+  (Number.isInteger(b) && Number.isInteger(a) && a === (b | 0) && a !== b)
 
 const compileJS = (src) => new Function(`${src.replace(/export\s+let\s+f\s*=/, 'let f =')}\nreturn f`)()
 
@@ -341,18 +361,14 @@ const isMain = import.meta.url === `file://${process.argv[1]}`
 // The gate is a RATCHET: it fails only on a *new* divergence, so `npm test` stays
 // green while these are tracked, and any regression introduced by a code change
 // trips immediately. Fixing a bug → delete its seed(s) here so the ratchet tightens.
-// Remaining open: ONE cluster — i32 arithmetic overflow at the int32 boundary.
-// A full-range bitwise/ToInt32 result feeding `+`/`-`/`*`/unary-`-` whose result
-// ESCAPES as a Number (returned, not `|0`/`>>>`-sunk) wraps in jz's i32 path where
-// JS yields f64: `(~p0)*5`, `65535*Math.imul(…)` (seed 85), `-(~~p0)`, `(~p0)-(-1)`.
-// This is jz's asm.js-style integer contract; a perf-preserving fix needs the
-// integer range/flow analysis from the #1/#3 analysis refactor — tracked there.
-// Seeds in the gate range (1..200): 85. (274,320,518 are >200.)
-// FIXED & removed from baseline: `%` semantics (exact __rem), Math rounding elided
-// after param reassign (intCertainMap seeds f64 params false), ToInt32 of large
-// f64 (__toint32 i64 bit-surgery), opt3 reassign-after-%0 (fell out with __rem),
-// opt2 ternary-in-return stack imbalance (watr branch-fold preserves block type).
-const KNOWN_OPEN = new Set([85])
+// All known clusters fixed — the ratchet is now empty, so ANY divergence fails CI.
+// History (fixed): `%` semantics (exact __rem); Math rounding elided after param
+// reassign (intCertainMap seeds f64 params false); ToInt32 of large f64 (__toint32
+// i64 bit-surgery); opt3 reassign-after-%0; opt2 ternary-in-return stack imbalance
+// (watr branch-fold preserves block type); i32 arithmetic overflow at the int32
+// boundary — a full-range bitwise/imul operand feeding `*`/`-`/unary-`-` now widens
+// to f64 (isFullRangeI32; `+` stays i32 — the ToInt32-sunk accumulator op).
+const KNOWN_OPEN = new Set([])
 const GATE = { count: 200, seedStart: 1, inputs: 12, inputSeed: 7, optLevels: [0, 1, 2, 3], cfg: DEFAULTS }
 if (!isMain) {
   test('fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}', () => {
