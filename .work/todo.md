@@ -61,11 +61,13 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
      *allocation* (emit's legit job), not an analysis-write leak — `freshLocal`/`temp`
      already exist in ir.js; adopting them at the 25 raw `uniq++` sites is a cosmetic
      DRY, not boundary-sealing. Low priority.
-6. **🔶 Decompose mega-functions** (M):
-   - ✅ emitMethodCall strategies 1–4 → LEADING_STRATEGIES table (E2). The remaining
-     8 positions thread shared vt/callMethod state and stay inline (readable, commented).
-   - ⏸ tryToPrimitiveSidecar(obj,prop,mode) (E4, coded twice core.js:810/emit.js:1903),
-     emitDecl, ctx.core.emit['.'] router — remaining, lower urgency.
+6. **✅ DONE — Decompose mega-functions** (M):
+   - ✅ emitMethodCall strategies 1–4 → LEADING_STRATEGIES table (E2). Remaining 8
+     positions thread shared vt/callMethod state and stay inline (readable, commented).
+   - ✅ sidecarOverride (E4) extracted to ir.js — the valueOf/toString ToPrimitive
+     probe, formerly coded twice (core.js read path + emit.js call path).
+   - ✅ emitDecl (emit.js:608, wired at 'let'/'const') and ctx.core.emit['.'] router
+     (core.js:726) ALREADY EXISTED — the audit's suggestions there were stale.
 7. **✅ DONE — Full CI matrix**: opt0/opt1/opt3/wasi all in test.yml, all green.
 8. **🔶 The lattice refactor** (L, highest leverage): Roots A+B. Lattice DECLARED
    (param-reps.js: BOTTOM=undefined ≠ TOP=null). **2 of 3 clearStickyNull ELIMINATED**
