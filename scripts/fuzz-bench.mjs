@@ -124,4 +124,19 @@ const run = () => {
   console.log('\nthesis check: jz is on-par-or-faster broadly iff median ≤ ~1.0× in EVERY category (not just int).')
   return summary
 }
-run()
+const summary = run()
+
+// Gate the thesis. Each category's MEDIAN jz/v8 ratio must stay at/under GATE×.
+// Real numbers sit ~0.78–0.85× (jz faster); the ceiling is generous headroom so
+// the gate trips on a genuine codegen regression (median creeping past parity)
+// but not on shared-CI timing noise — the ratio is largely noise-cancelling since
+// jz and V8 run back-to-back on the same loaded machine. Tighten toward 1.0 as the
+// win margin proves stable. Override with --gate=N. Drives bench/CI (test/bench.js).
+const GATE = Number((process.argv.find(a => a.startsWith('--gate=')) || '').slice(7)) || 1.15
+const regressions = Object.entries(summary).filter(([, s]) => !(s.med <= GATE))
+if (regressions.length) {
+  console.error(`\nFAIL: perf-fuzz median jz/v8 exceeded ${GATE}× — ` +
+    regressions.map(([c, s]) => `${c}=${Number.isFinite(s.med) ? s.med.toFixed(2) + '×' : 'no-data'}`).join(', '))
+  process.exit(1)
+}
+console.log(`PASS: every category median jz/v8 ≤ ${GATE}× (jz on-par-or-faster broadly).`)
