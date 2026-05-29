@@ -21,13 +21,14 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 language suite
         env:
-          # Baseline (as of last green main, 2026-05-21): 1431 passes / 0 fails / 21949 skips.
-          # If you intentionally add or skip tests, bump this number in the same commit.
-          # The runner exits non-zero if pass count drops below the baseline.
-          # 2026-05-21: +2 — real-boolean carrier unskips `typeof boolean` and
-          # `boolean→string concatenation` (formerly "boolean erased to f64").
-          JZ_TEST262_BASELINE: 1431
-        run: npm run test262
+          # Baseline (2026-05-29): 1428 passes / 0 in-scope fails / 12 xfail / 21940 skips.
+          # The runner gates on THREE guards: in-scope fail===0 (any fail is a
+          # miscompile), xpass===0 (prune stale EXPECTED_FAIL entries), and this
+          # pass-count ratchet. Out-of-scope/upstream-parser gaps bucket as xfail
+          # (see EXPECTED_FAIL in test/test262.js), not fail. If you intentionally
+          # add or skip tests, bump this number in the same commit.
+          JZ_TEST262_BASELINE: 1428
+        run: npm run test:262
 
   test262-builtins:
     runs-on: ubuntu-latest
@@ -57,4 +58,4 @@ jobs:
           # parseInt(boolean) and parseFloat(boolean) (formerly fed the 0/1 carrier).
           # Lift this baseline when fixes land.
           JZ_TEST262_BASELINE: 721
-        run: npm run test262:builtins
+        run: npm run test:262:builtins

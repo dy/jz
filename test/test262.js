@@ -770,26 +770,61 @@ function collectWork() {
   return { work, dirSkip }
 }
 
+// ─── Expected failures ──────────────────────────────────────────────────────
+// Tests that fail for a reason outside jz's correctness contract: a subset the
+// distilled-JS subset deliberately omits, or an upstream parser gap. They still
+// run, but bucket as `xfail` rather than `fail`, so the `fail` count gates
+// *in-scope* correctness honestly — any non-zero `fail` is a genuine miscompile.
+// If a listed file ever passes it surfaces as `xpass` so the entry can be pruned.
+// (Mirrors the builtins suite.) Paths are `relative(TEST262, file)` form.
+const EXPECTED_FAIL_PREFIXES = [
+  // subscript lexes `1.e3` as member access `(1).e3` → undefined, not the numeric
+  // literal `1000`. Digit-dot-exponent (no fractional digits) is unlexed upstream.
+  ['test/language/literals/numeric/S7.8.3_A3.3', 'subscript parser: `0.e1` (digit-dot-exponent, no fractional digits) lexed as member access — upstream parser gap'],
+]
+const EXPECTED_FAIL_FILES = new Map([
+  ['test/language/expressions/object/cpn-obj-lit-computed-property-name-from-decimal-e-notational-literal.js',
+    'subscript parser: `0.e`-notation literal as computed key — same upstream lexer gap as S7.8.3_A3.3'],
+  ['test/language/statements/for/S12.6.3_A6.js',
+    '`var` hoist out of a for-body kept live after the loop throws — var hoisting across blocks out of scope (jz scopes with let/const)'],
+  ['test/language/statements/for/head-var-bound-names-in-stmt.js',
+    '`var x` re-declared in both for-head and body — var redeclaration semantics out of scope'],
+  ['test/language/statements/function/13.2-2-s.js',
+    'strict-mode write to function `.caller` must throw TypeError — function-object/strict-mode property semantics out of scope'],
+])
+function expectedFailReason(rel) {
+  if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)
+  for (const [prefix, reason] of EXPECTED_FAIL_PREFIXES)
+    if (rel.startsWith(prefix)) return reason
+  return null
+}
+
 // ─── Worker: classify + compile/run an assigned slice of the work list ──────
 // Pure given its inputs (jz resets all state per call), so a worker's tallies
 // are identical to running the same files sequentially.
 function runChunk(items) {
   const perDir = Object.create(null)
-  const fails = []
-  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0 })
+  const fails = [], xfails = [], xpasses = []
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0 })
   for (const { file, rel, subdir } of items) {
     const d = dirOf(subdir)
     try {
       const src = readFileSync(file, 'utf-8')
       if (shouldSkip(src, rel)) { d.skip++; continue }
       const { status, error } = runTest(src, { assertHarness: needsAssertHarness(src, rel) })
-      d[status]++
-      if (status === 'fail') fails.push(`${rel}: ${error}`)
+      if (status === 'fail') {
+        const reason = expectedFailReason(rel)
+        if (reason) { d.xfail++; xfails.push(`${rel} — ${reason}`) }
+        else { d.fail++; fails.push(`${rel}: ${error}`) }
+      } else {
+        d[status]++
+        if (status === 'pass' && EXPECTED_FAIL_FILES.has(rel)) xpasses.push(rel)
+      }
     } catch {
       d.skip++
     }
   }
-  return { perDir, fails }
+  return { perDir, fails, xfails, xpasses }
 }
 
 if (!isMainThread) {
@@ -823,32 +858,37 @@ if (!isMainThread) {
 
   // Merge worker tallies with the dir-level skips counted during collection.
   const perDir = Object.create(null)
-  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0 })
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0 })
   for (const subdir in dirSkip) dirOf(subdir).skip += dirSkip[subdir]
-  const fails = []
-  for (const { perDir: wd, fails: wf } of chunkResults) {
+  const fails = [], xfails = [], xpasses = []
+  for (const { perDir: wd, fails: wf, xfails: wxf, xpasses: wxp } of chunkResults) {
     for (const subdir in wd) {
       const d = dirOf(subdir)
       d.pass += wd[subdir].pass
       d.fail += wd[subdir].fail
       d.skip += wd[subdir].skip
+      d.xfail += wd[subdir].xfail
     }
     fails.push(...wf)
+    xfails.push(...(wxf || []))
+    xpasses.push(...(wxp || []))
   }
 
-  const results = { pass: 0, fail: 0, skip: 0 }
+  const results = { pass: 0, fail: 0, skip: 0, xfail: 0 }
   for (const subdir of DIRS) {
     const d = perDir[subdir]
     if (!d) continue
-    results.pass += d.pass; results.fail += d.fail; results.skip += d.skip
-    console.log(`  ${subdir}/: ${d.pass + d.fail + d.skip} tests (pass=${d.pass} fail=${d.fail} skip=${d.skip})`)
+    results.pass += d.pass; results.fail += d.fail; results.skip += d.skip; results.xfail += d.xfail
+    const xf = d.xfail ? ` xfail=${d.xfail}` : ''
+    console.log(`  ${subdir}/: ${d.pass + d.fail + d.skip + d.xfail} tests (pass=${d.pass} fail=${d.fail} skip=${d.skip}${xf})`)
   }
-  const total = results.pass + results.fail + results.skip
+  const total = results.pass + results.fail + results.skip + results.xfail
 
   console.log(`\n── Results ── (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
   console.log(`  Pass:          ${results.pass}`)
   console.log(`  Fail:          ${results.fail}`)
   console.log(`  Skip:          ${results.skip}`)
+  console.log(`  Xfail:         ${results.xfail} (out-of-scope / upstream parser gaps — see below)`)
   console.log(`  Tracked files: ${total}/${languageTest262Files} language JS files`)
 
   const languageCoverage = languageTest262Files ? (results.pass / languageTest262Files * 100).toFixed(1) : '0.0'
@@ -857,13 +897,37 @@ if (!isMainThread) {
   console.log(`  Overall test262 coverage (pass / all JS files): ${overallCoverage}% (${results.pass}/${allTest262Files})`)
 
   if (fails.length) {
-    console.log(`\n── Sample failures ──`)
+    console.log(`\n── In-scope failures (should be 0) ──`)
     fails.sort().forEach(f => console.log(`  ✗ ${f}`))
   }
+  if (xfails.length) {
+    console.log(`\n── Expected failures (xfail — tracked, not gated) ──`)
+    xfails.sort().forEach(f => console.log(`  ⊘ ${f}`))
+  }
+  if (xpasses.length) {
+    console.log(`\n── Unexpected passes — prune from EXPECTED_FAIL ──`)
+    xpasses.sort().forEach(f => console.log(`  ✓ ${f}`))
+  }
 
-  // CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
-  // non-zero if pass count drops below the baseline. Skipped in --quick mode
-  // (which only runs a subset, so its pass count isn't comparable).
+  // CI gating, three guards (skipped in --quick mode, which runs only a subset
+  // so its counts aren't comparable):
+  //   1. fail===0 — the language suite's in-scope baseline is zero failures, so
+  //      ANY fail is a regression. Out-of-scope/upstream gaps are bucketed as
+  //      xfail (see EXPECTED_FAIL above), and unsupported syntax as skip, so a
+  //      real fail is always a jz miscompile. This catches a one-for-one
+  //      pass↔fail swap that leaves the count unchanged (invisible to guard 3).
+  //   2. xpass===0 — a file listed in EXPECTED_FAIL_FILES that now passes means
+  //      the entry is stale; prune it (keeps the expected-fail list honest).
+  //   3. pass-count ratchet — pass must not drop below JZ_TEST262_BASELINE.
+  if (!QUICK && results.fail > 0) {
+    console.error(`\nFAIL: ${results.fail} in-scope language failure(s) — a miscompile. ` +
+      `Pass-count gating alone would miss this. See the in-scope failures above.`)
+    process.exit(1)
+  }
+  if (!QUICK && xpasses.length > 0) {
+    console.error(`\nFAIL: ${xpasses.length} test(s) in EXPECTED_FAIL now pass — prune them (listed above).`)
+    process.exit(1)
+  }
   const baseline = Number(process.env.JZ_TEST262_BASELINE)
   if (!QUICK && Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
     console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
