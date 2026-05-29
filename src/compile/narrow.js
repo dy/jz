@@ -684,6 +684,16 @@ export default function narrowSignatures(programFacts, ast) {
   }
   const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArrElemSchema, phase.callerElems('arrElemSchemas'))
   const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArrElemValType, phase.callerElems('arrElemValTypes'))
+
+  // E2 (VAL-kind result inference) FIRST: it's body-driven and call-chain self-
+  // fixpointing — independent of the param lattice and the narrowing acts (it reads
+  // analyzeBody valTypes + callees' valResult, never paramReps or sig.params). Running
+  // it up front means a call arg like `initRows()` resolves to its VAL.ARRAY result on
+  // the param fixpoint's FIRST pass, so val/schemaId never get the can't-tell-yet
+  // poison that clearStickyNull used to un-stick (root B). Numeric (i32) result
+  // narrowing stays below — it benefits from i32 params being narrowed first.
+  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
+  narrowValResults(funcsWithNarrowableResult)
   runFixpoint()
   runFixpoint()
 
@@ -711,12 +721,10 @@ export default function narrowSignatures(programFacts, ast) {
   //   - exclude rest position (array pack/unpack stays f64).
   applyPointerParamAbi(paramReps, valueUsed)
 
-  // E + E2: body-driven result-type inference. Pool of narrowable funcs is shared
-  // across the i32/VAL/pointer passes — same predicate (non-raw, non-value-used,
-  // single-result).
-  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
+  // E: numeric (i32) result narrowing — kept here, after applyI32ParamSpecialization,
+  // so a body returning `param + 1` sees param already narrowed to i32. (E2 / VAL
+  // result inference ran up front — see above.) funcsWithNarrowableResult hoisted there.
   narrowI32Results(funcsWithNarrowableResult)
-  narrowValResults(funcsWithNarrowableResult)
 
   // Now that E2 set `valResult` on funcs, narrow per-func `arrayElemSchema` for
   // VAL.ARRAY-returning funcs (via push observations + call chains). Then re-run the
@@ -737,11 +745,9 @@ export default function narrowSignatures(programFacts, ast) {
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
   if (hasSchemaLiterals) observeProgramSlots(ast)
-  // Clear sticky-null on val/schemaId — first 2 passes ran with valResult unset, so
-  // call args resolving via `f.valResult` returned null and got stuck. Re-running
-  // with refreshed callerValTypes lets these flow.
-  clearStickyNull(paramReps, 'val')
-  clearStickyNull(paramReps, 'schemaId')
+  // Re-run with refreshed callerValTypes + the new program-slot observations. (No
+  // clearStickyNull needed: valResult was known before the first pass — see E2 hoist
+  // above — so val/schemaId never got the can't-tell-yet poison this used to undo.)
   runFixpoint()
   // Now that .val is refreshed, dedicated arr-elem-schema fixpoint.
   runArrFixpoint()

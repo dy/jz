@@ -16,20 +16,22 @@
  * KNOWN NON-MONOTONICITY (root B — to be removed in the planned lattice refactor).
  * mergeParamFact below folds a THIRD input — `observed == null`, meaning "this
  * call site can't determine the fact *yet*" (its own dependency isn't typed) —
- * into TOP, when it should be treated as BOTTOM (skip, no poison). That spurious
- * poison is why narrow.js calls clearStickyNull between phases to un-stick it and
- * re-run the fixpoint. The monotone fix exists for the arrayElem fields (narrow.js
- * runArrElemFixpoint): a SOFT merge that skips on null and iterates to a fixpoint,
- * then ONE hard validating sweep that poisons params still unproven.
+ * into TOP, when it should be treated as BOTTOM. narrow.js used to call
+ * clearStickyNull THREE times to un-stick that spurious poison between phases.
  *
- * BUT generalizing that to val/schemaId is NOT a drop-in (attempted + reverted —
- * see .work/todo.md step 8): unlike arrayElem, val/schemaId are consumed by
- * narrowing passes (applyPointerParamAbi, which trusts r.val without re-checking
- * sites) that run BEFORE valResult is known. A hard sweep there over-poisons the
- * "not computed yet" case (breaks `sumScaled(initRows(), 3)`); pure soft
- * under-guards the "one site typed, another genuinely-untyped" case. The real fix
- * needs the consumption reordered after all refinement, or consumers made
- * site-coverage-aware — a larger restructuring, not a meet tweak.
+ * Two of the three are now GONE without changing the meet: the dominant case was
+ * "a call arg is `f()` whose VAL result wasn't computed yet" — fixed by hoisting
+ * narrowValResults (body-driven, fixpoint-internal) ABOVE the param lattice, so
+ * valResult is known on the first pass and the can't-tell-yet poison never forms.
+ * The ONE remaining clearStickyNull (narrow.js, post-pointer-enrichment) is a
+ * genuine phase dependency: a TYPED-array param's val only becomes known after the
+ * typedCtor fixpoint + pointer-ABI enrichment, which run AFTER the first val pass.
+ * Eliminating it needs the monotone soft-merge (skip null = BOTTOM) — but unlike
+ * arrayElem, val is consumed by applyPointerParamAbi (trusts r.val, no per-site
+ * recheck) BEFORE valResult/enrichment, so a pre-consumer hard sweep over-poisons
+ * the not-ready case and pure soft under-guards the genuinely-untyped case. That
+ * last step is the larger A+B restructuring (reorder consumption after refinement,
+ * or make the consumer site-coverage-aware). See .work/todo.md step 8.
  *
  * @module param-reps
  */
