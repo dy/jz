@@ -1,7 +1,7 @@
 // Compile-time advisories (opts.warnings / ctx.warn). See .work/todo.md.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_opt.js'
+import { belowOpt, onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 function warningsFor(code, opts = {}) {

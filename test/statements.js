@@ -1,7 +1,7 @@
 // Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 

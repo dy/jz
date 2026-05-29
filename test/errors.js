@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 

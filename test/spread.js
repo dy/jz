@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
 import { compile } from '../index.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt } from './_matrix.js'
 
 // ============================================
 // SPREAD IN ARRAY LITERALS

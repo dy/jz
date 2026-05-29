@@ -1,13 +1,16 @@
 /**
- * Semantic invariant tests — structural properties of the compiled output,
- * not just functional correctness ("does the right answer come out?").
+ * Structural invariants of the compiled output — properties beyond functional
+ * correctness (the right answer can come out of wrong internal structure).
  *
- * These guard against regressions that functional tests can miss:
- * a program producing the "right" output by accident with wrong internal
- * structure (e.g., const variable still mutable, block scope merged).
+ *   - semantic: const tracking, block scope, optional-chain eval-once, type
+ *     preservation, export surface, NaN-boxing.
+ *   - layout:   layout.js is the SOLE source of NaN-box carrier i64 hex in WAT
+ *     templates — no hand-rolled discriminator literals in src/ or module/.
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { readFileSync, readdirSync, statSync } from 'fs'
+import { join, relative } from 'path'
 import { compile } from '../index.js'
 import { ctx, reset } from '../src/ctx.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
@@ -139,4 +142,45 @@ test('invariant: null pointer uses NaN pattern', () => {
   const w = wat('export let f = () => null')
   // null should compile to the special NaN pattern, not i32.const 0
   ok(w.includes('f64') || w.includes('i64'), 'null expression uses float/int ops')
+})
+
+// ============================================================================
+// Layout invariants — layout.js is the sole source of NaN-box carrier i64 hex
+// ============================================================================
+const ROOT = join(import.meta.dirname, '..')
+const SCAN = [join(ROOT, 'module'), join(ROOT, 'src')]
+const ALLOW = new Set([join(ROOT, 'layout.js')])
+
+/** Discriminator bits that must come from layout.js helpers, not hand literals. */
+const LAYOUT_I64 = [
+  /\(i64\.const 0x7FF80{8}[0-9A-Fa-f]{0,8}\)/g,
+  /\(i64\.const 0x0000400000000000\)/g,
+  /\(i64\.const 0x0000200000000000\)/g,
+]
+
+function jsFiles(dir, out = []) {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) jsFiles(p, out)
+    else if (p.endsWith('.js') && !ALLOW.has(p)) out.push(p)
+  }
+  return out
+}
+
+test('layout: NaN-box carrier i64 hex only via layout.js helpers', () => {
+  const violations = []
+  for (const dir of SCAN) {
+    for (const file of jsFiles(dir)) {
+      const src = readFileSync(file, 'utf8')
+      for (const re of LAYOUT_I64) {
+        re.lastIndex = 0
+        for (const m of src.matchAll(re)) {
+          violations.push(`${relative(ROOT, file)}: ${m[0]}`)
+        }
+      }
+    }
+  }
+  ok(violations.length === 0, violations.length
+    ? `use layout.js helpers (nanPrefixHex, ssoBitI64Hex, sliceBitI64Hex, …):\n${violations.join('\n')}`
+    : 'no hand-rolled layout hex')
 })

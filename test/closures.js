@@ -1,7 +1,7 @@
 // Closures: capture, currying, callbacks, methods, ABI/arity, unboxing
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_opt.js'
+import { belowOpt, onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 

@@ -6,7 +6,7 @@
 // non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi } from './_opt.js'
+import { onWasi } from './_matrix.js'
 import jz from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports

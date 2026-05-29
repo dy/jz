@@ -14,7 +14,7 @@ import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
 import { run } from './util.js'
-import { belowOpt, onWasi } from './_opt.js'
+import { belowOpt, onWasi } from './_matrix.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`

@@ -16,7 +16,7 @@
  *
  * Guarding (vs deleting) keeps each test live on the legs where it IS meaningful.
  *
- * @module test/_opt
+ * @module test/_matrix
  */
 
 const env = process.env.JZ_TEST_OPTIMIZE

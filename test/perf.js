@@ -1,7 +1,7 @@
 // Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_opt.js'
+import { belowOpt, onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 // Helper: time N iterations, return ms

@@ -25,7 +25,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_opt.js'
+import { belowOpt, onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
 

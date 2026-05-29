@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 function run(code) {
