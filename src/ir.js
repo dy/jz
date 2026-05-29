@@ -437,6 +437,26 @@ export function ptrTypeEq(f64Expr, ptr) {
   return typed(['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', f64Expr]], ['i32.const', ptr]], 'i32')
 }
 
+/** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
+ *  property shadows the builtin. Reads the dynamic-prop sidecar slot keyed by
+ *  `nameIR` (an emitted i64 string key) off receiver `objIR`; if it holds a
+ *  closure, yields `onOverride($p)`, else `onFallback($o)` (both f64). Shared by
+ *  the member-READ path (module/core.js — onOverride returns the closure value,
+ *  onFallback calls the arity-≤1 builtin) and the method-CALL path (emit.js —
+ *  onOverride invokes the closure, onFallback calls the builtin method). */
+export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
+  const o = temp('vo'), p = temp('vp')
+  inc('__dyn_get_expr', '__ptr_type')
+  return block64(
+    ['local.set', `$${o}`, asF64(objIR)],
+    ['local.set', `$${p}`, ['f64.reinterpret_i64',
+      ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
+    ['if', ['result', 'f64'],
+      ptrTypeEq(['local.get', `$${p}`], PTR.CLOSURE),
+      ['then', onOverride(p, o)],
+      ['else', onFallback(o)]])
+}
+
 /** Dispatch on `__ptr_type(bits)` — emits a right-leaning if/else chain over
  *  PTR constants. `cases` is `[[PTR.X, ir], …]`; `fallback` is the else IR.
  *  `resultType` defaults to `'f64'`; pass `null` for a void dispatch (e.g.

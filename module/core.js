@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, valKindToPtr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -811,16 +811,9 @@ export default (ctx) => {
         (ptVt === VAL.ARRAY || ptVt === VAL.TYPED || ptVt === VAL.OBJECT)) {
       const builtin = ctx.core.emit[`.${ptVt}:${prop}`] || ctx.core.emit[`.${prop}`]
       if (builtin && emitArity(builtin) <= 1) {
-        const o = temp('vo'), p = temp('vp')
-        inc('__dyn_get_expr', '__ptr_type')
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${o}`, asF64(emit(obj))],
-          ['local.set', `$${p}`, ['f64.reinterpret_i64',
-            ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], asI64(emit(['str', prop]))]]],
-          ['if', ['result', 'f64'],
-            ptrTypeEq(['local.get', `$${p}`], PTR.CLOSURE),
-            ['then', ['local.get', `$${p}`]],
-            ['else', asF64(builtin(o))]]], 'f64')
+        return sidecarOverride(emit(obj), asI64(emit(['str', prop])),
+          (p) => ['local.get', `$${p}`],          // READ: yield the override closure value
+          (o) => asF64(builtin(o)))               // else the arity-≤1 builtin's value
       }
     }
 
