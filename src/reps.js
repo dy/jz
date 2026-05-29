@@ -38,10 +38,48 @@ export const VAL = {
   BOOL: 'boolean',
 }
 
-/** Per-function ValueRep record. See lookupValType for resolution priority. */
+/**
+ * A binding's inferred representation. Every field optional; absence = "unknown".
+ * Written only through updateRep / updateGlobalRep, plus a few direct r.wasm /
+ * r.typedCtor mutations in narrow.js's signature fixpoint. This is the *closed*
+ * shape: REP_FIELDS is the single source of truth — it gates updateRep in debug
+ * mode and drives repView, so a typo'd key surfaces loudly instead of silently
+ * vanishing into the open `{...prev, ...fields}` spread.
+ *
+ * @typedef {Object} ValueRep
+ * @property {string}  [val]              VAL.* kind (number/array/string/…).
+ * @property {number}  [ptrKind]          PTR.* pointer class for NaN-box rebox.
+ * @property {number}  [ptrAux]           aux bits in the NaN-box (schema id / elem type).
+ * @property {number}  [schemaId]         object-shape id (OBJECT kind).
+ * @property {number}  [intConst]         proven constant integer value.
+ * @property {boolean} [intCertain]       integer-valued on every path.
+ * @property {boolean} [notString]        proven not a string (skips string-path guards).
+ * @property {number}  [arrayElemSchema]  element object-schema id for arrays.
+ * @property {string}  [arrayElemValType] element VAL.* kind for arrays.
+ * @property {string}  [carrier]          abi carrier id override (e.g. 'jsstring').
+ * @property {boolean} [unsigned]         i32 carries an unsigned value (`>>>` result).
+ * @property {*}       [jsonShape]        inferred shape for the JSON.stringify fast path.
+ * @property {string}  [typedCtor]        TypedArray ctor name (TYPED kind); null = bimorphic.
+ * @property {string}  [wasm]             wasm storage type 'i32'|'f64' (narrow.js fixpoint).
+ */
+export const REP_FIELDS = new Set([
+  'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
+  'arrayElemSchema', 'arrayElemValType', 'carrier', 'unsigned', 'jsonShape',
+  'typedCtor', 'wasm',
+])
+
+const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
+const assertRepFields = (name, fields) => {
+  for (const k in fields)
+    if (!REP_FIELDS.has(k))
+      throw new Error(`updateRep('${name}', {${k}}): unknown ValueRep field — typo, or add it to REP_FIELDS in reps.js`)
+}
+
+/** @returns {ValueRep|undefined} */
 export const repOf = name => ctx.func.localReps?.get(name)
 
 export const updateRep = (name, fields) => {
+  if (DBG_REPS) assertRepFields(name, fields)
   const m = ctx.func.localReps ||= new Map()
   const prev = m.get(name) || {}
   const next = { ...prev, ...fields }
@@ -53,6 +91,7 @@ export const updateRep = (name, fields) => {
 export const repOfGlobal = name => ctx.scope.globalReps?.get(name)
 
 export const updateGlobalRep = (name, fields) => {
+  if (DBG_REPS) assertRepFields(name, fields)
   const m = ctx.scope.globalReps ||= new Map()
   const prev = m.get(name)
   m.set(name, prev ? { ...prev, ...fields } : { ...fields })

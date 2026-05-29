@@ -33,7 +33,7 @@ import {
   analyzeStructInline, invalidateLocalsCache,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
-import { VAL, updateRep } from '../reps.js'
+import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
@@ -182,13 +182,12 @@ const pruneUnusedThrowRuntime = (sec) => {
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
 
 /** Serialize a ValueRep entry into a plain object for inspect output.
- *  Omits undefined fields so consumers can JSON-stringify without noise. */
+ *  Omits undefined fields so consumers can JSON-stringify without noise.
+ *  Iterates REP_FIELDS (the closed shape in reps.js) so it can't drift. */
 const repView = (rep) => {
   if (!rep) return null
   const out = {}
-  for (const k of ['val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString', 'arrayElemSchema', 'arrayElemValType', 'typedCtor', 'jsonShape', 'wasm']) {
-    if (rep[k] != null) out[k] = rep[k]
-  }
+  for (const k of REP_FIELDS) if (rep[k] != null) out[k] = rep[k]
   return Object.keys(out).length ? out : null
 }
 
