@@ -4,6 +4,7 @@
  */
 
 import { extractParams as paramList, objectLiteralEntries } from '../src/ast.js'
+import { err } from '../src/ctx.js'
 
 export function createClassLowering({ transform, names, JC }) {
 // === class lowering ===
@@ -179,7 +180,10 @@ function lowerObjectLiteralThis(args) {
   ]]]], null]
 }
 
-function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
+// Route through the shared compiler error channel (uniform Error shape + stack
+// cleanup for dependents). jzify runs pre-emit, so err()'s location/function
+// enrichment guards simply no-op; the `jzify:` prefix marks the phase.
+function jzifyError(msg) { err(`jzify: ${msg}`) }
 
 function lowerClass(name, heritage, body) {
   let ctorParams = null, ctorBody = null
