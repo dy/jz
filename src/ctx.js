@@ -34,21 +34,27 @@ export { HEAP, LAYOUT, PTR, ATOM, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceB
 //   function — per function being lowered
 //   emit     — transient during a single AST→IR dispatch
 //
-// | Namespace | Phase    | Writers                      | Readers                    |
-// |-----------|----------|------------------------------|----------------------------|
-// | core      | compile  | reset, modules, inc()        | emit, compile, modules     |
-// | module    | compile  | prepare, index.js            | prepare, compile, emit     |
-// | scope     | compile  | analyze, compile, plan       | compile, emit              |
-// | func      | function | compile, narrow              | emit, modules              |
-// | types     | function | analyze, plan                | emit, modules              |
-// | schema    | compile  | prepare, analyze, compile    | prepare, analyze, emit     |
-// | closure   | init     | modules (fn plugin)          | emit, compile              |
-// | runtime   | compile  | emit, modules                | emit, compile              |
-// | memory    | compile  | index.js                     | compile                    |
-// | error     | compile  | prepare, compile, emit       | err()                      |
-// | transform | compile  | index.js                     | prepare                    |
-// | features  | compile  | emit, modules, prepare       | compile (resolveIncludes), |
-// |           |          |                              | stdlib factories           |
+// | Namespace | Phase    | Writers                         | Readers                   |
+// |-----------|----------|---------------------------------|---------------------------|
+// | core      | compile  | reset, modules, inc(), emit*    | emit, compile, modules    |
+// | module    | compile  | prepare, index.js               | prepare, compile, emit    |
+// | scope     | compile  | analyze, compile, plan, modules | compile, emit             |
+// | func      | function | compile, narrow                 | emit, modules             |
+// | types     | function | analyze, plan                   | emit, modules             |
+// | schema    | compile  | prepare, analyze, compile       | prepare, analyze, emit    |
+// | closure   | init     | modules (fn plugin)             | emit, compile             |
+// | runtime   | compile  | emit, modules                   | emit, compile             |
+// | memory    | compile  | index.js                        | compile                   |
+// | error     | compile  | prepare, compile, emit          | err()                     |
+// | transform | compile  | index.js                        | prepare, compile, emit    |
+// | features  | compile  | emit, modules, prepare          | compile, stdlib factories |
+// | abi       | compile  | reset (makeAbi)                 | ir.js codegen, optimizer  |
+// | bridge    | compile  | reset (bridge.js)               | bridge.js → emit, modules |
+//
+// *emit's only `core` write is ctx.core.hostGlobals (a bare host-global reference),
+//  drained to env imports at compile (compile/index.js) — NOT to ctx.scope, so emit
+//  never writes scope. The stdlib module factories DO write ctx.scope.globals
+//  directly (core/string register __heap, __strBase, __tof_* there at compile phase).
 //
 // plan-phase writers (extending compile-phase): plan writes
 //   ctx.scope.{globalValTypes, globalTypedElem, globals, globalTypes} via
@@ -80,6 +86,10 @@ export const ctx = {
                   // Set by reset() to the default carrier bundle. Read by codegen sites
                   // that delegate rep-specific behavior — today just the optimizer's
                   // peephole hook; expanding as per-site narrowing tags individual sites.
+  bridge: {},     // emit/flat/wat dispatch, bound by reset() (see bridge.js). Lets every
+                  // module call emit() without importing the emitter — breaks the cycle.
+  features: {},   // codegen capability flags (external, sso, typedarray, …), reset() seeds
+                  // the defaults; see reset() for the field list and who flips each.
 }
 
 /** Create a child scope via shallow flat copy (metacircular-safe: no prototype chain).
