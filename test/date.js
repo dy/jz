@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { onWasi } from './_matrix.js'
 
 const run = code => jz(code).exports.f()
 const same = (actual, expected) => {
@@ -60,7 +61,12 @@ test('Date object: no-arg constructor uses current time', () => {
   const before = Date.now()
   const actual = run('export let f = () => { let d = new Date(); return d.getTime() }')
   const after = Date.now()
-  ok(actual >= before && actual <= after)
+  // On wasi the wasm reads `clock_time_get` — a different clock from the host's
+  // Date.now() — and the skew between them can exceed this µs-scale bracket, so
+  // sanity-check a plausible current epoch-ms (≈2024–2096) instead. On the JS host
+  // both sides share one clock, so the exact bracket holds.
+  if (onWasi()) ok(actual > 1.7e12 && actual < 4e12)
+  else ok(actual >= before && actual <= after)
 })
 
 test('Date object: date-only string constructor', () => {
