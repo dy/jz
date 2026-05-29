@@ -483,9 +483,13 @@ export default function prepare(node) {
   return ast
 }
 
-// Named constants → numeric literals
+// Named constants → numeric literals. `null` and `undefined` are distinct NaN-box
+// atoms (aux 1 vs 2), so they get distinct sentinels — collapsing both to one made
+// `cond ? undefined : x` surface as `null` (the value flows through emit's symbol
+// case, which can only carry one atom).
 export const JZ_NULL = Symbol('null')
-const CONSTANTS = { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_NULL }
+export const JZ_UNDEF = Symbol('undefined')
+const CONSTANTS = { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF }
 // NaN/Infinity stay as special f64 values in emit()
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
 
