@@ -35,11 +35,22 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
    dead code → the refactor net); fix ctx ownership table drift (ARCH-2: core/string
    write ctx.scope.globals from emit — now via hostGlobals; add ctx.bridge/ctx.abi rows;
    emit reads ctx.transform); #8 is COMPLETE (no inline reversals remain — MOD-6 stale).
-4. **Mechanical DRY** (S–M, low risk): makeValTracker/makeTypedTracker (F1, kills
-   analyze.js:156 vs :580 dup); hostImport() in bridge → MOD-2 (addImportOnce ×3);
-   kill isBoundName ×4 (SMELLS-F5); closed ValueRep JSDoc typedef + dev-mode updateRep
-   key validator + add carrier/unsigned to repView (F4/E); ARCH-1 (prepare imports from
-   compile/* → move helpers to ast.js/reps.js leaves).
+4. **🔶 MOSTLY DONE — Mechanical DRY** (S–M, low risk):
+   - ✅ hostImport() in bridge → MOD-2 (killed addImportOnce ×3 in timer/number/console).
+   - ✅ closed ValueRep @typedef + REP_FIELDS single-source + dev-mode updateRep/
+     updateGlobalRep validator (F4/E); repView iterates REP_FIELDS (gained carrier/
+     unsigned); field set verified complete under JZ_DEBUG_INVARIANTS=1.
+   - ✅ isBoundName ×4 (SMELLS-F5) — folded the 4 inline local-or-param checks.
+   - ⏸ makeValTracker/makeTypedTracker (F1) → MOVED TO STEP 8. The two trackTyped
+     (analyze.js:175 local scratch vs :634 ctx.types.typedElem) are the same logic
+     over different stores — a *symptom* of root A's two walks. Step 8 unifies the
+     walks; a factory now would be a bandage step 8 discards. Do it there.
+   - ⏸ ARCH-1 (prepare→compile/* imports) → DEFERRED (low value, half-fixable).
+     observeNodeFacts is a pure AST observer (movable to ast.js), but recordGlobalRep
+     is stateful (writes ctx.scope/runtime, needs valTypeOf/typedElemCtor) — moving it
+     to reps.js would invert the leaf dep and cycle. Prepare legitimately needs it
+     cross-phase, so the layering edge stays; moving only observeNodeFacts wouldn't
+     remove prepare's compile/* dependency. Not worth a partial abstraction.
 5. **Seal the emit boundary** (M, fuzz-gate each step): collectDeclFacts() pre-emit pass
    (E1/E6, Root C); sanction ctx.core.withLoop()/declareLocal() APIs (MOD-4, Root C);
    route jzifyError through err() (SMELLS-F3, 9 sites).
