@@ -157,8 +157,42 @@ mid-computation `-(<<)` overflow flowing through Math.min — accepted contract)
 ALSO fixed a real NaN bug: `x*0` folded to 0 (now NaN for NaN/±Inf x, finite-only fold).
 Kept (real, perf-neutral): `%` exact __rem, rounding-after-reassign, watr branch-fold.
 
+PERF-FUZZER (scripts/fuzz-bench.mjs) + the "is the win broad/sound?" answer:
+Built a perf-fuzzer — random hot accumulation loops across the int↔float spectrum,
+jz-wasm vs V8 timing per program. It found + I FIXED a real 18× gap: an integer
+loop counter compared to an f64 param bound was widened to f64 (f64 increment +
+f64 compare + heavy per-iter ToInt32), while V8 JITs it as int. FIX: analyzeBody's
+widenPass keeps intCertain (affine-integer) counters i32 — EXCEPT those feeding an
+f64-strided index (collectF64StridedIndexVars; preserves the game-of-life non-
+regression). Result: that loop 18× → 0.93× (on par). Sound for n ≤ 2^31.
+
+WHY 18× (user asked — it's NOT an f64 tax): jz's time is CONSTANT for a given
+loop; V8 is the variable. V8's JIT VALUE-SPECIALIZES integer-valued f64 inputs into
+a pure-int loop (`acc=(acc+3)|0` → 7ms) but runs float for fractional inputs
+(`+1.5` → 133ms ≈ jz, 1.05×). So jz MATCHES V8 on float compute; V8's extra win is
+runtime value feedback (a JIT capability AOT jz lacks), NOT a jz codegen flaw. f64
+arithmetic itself is only ~2.5× vs i32 (as expected). jz could "win" those by
+optimistically i32-ing integer-valued f64 params — but that's the IMPROPER i32 to
+avoid (wrong for 1.5), so jz correctly stays f64.
+THESIS VALIDATED with fair (non-integer) args: jz on-par-or-faster in EVERY category
+— int median 0.93× p90 1.06× (0 slower), float 0.85× p90 1.01×, mixed 0.83×. The
+advantage is BROAD and from SOUND i32 typing, not narrowing tricks. (Run:
+`node scripts/fuzz-bench.mjs`. TODO: add `bench:fuzz` npm script.)
+
 NEXT (today's plan): structure #6 decompose → #2 lattice → #4a/#4b, then HARD on
 jz.wasm test-matrix (basic), then SUPREME goal: jz.wasm faster than jz.js.
+
+SUPREME-GOAL BASELINE MEASURED (2026-05-29): built dist/jz-kernel.wasm (3.44 MB,
+JS-compiled in 7.8 s). Fair compile-speed comparison at MATCHED opt level (the
+kernel runs `resolveOptimize(false)`, so compare vs jz.js@opt0 — both emit 231 B):
+  jz.js  @opt0 : 0.64 ms/prog
+  jz.wasm      : 1.18 ms/prog   → jz.wasm is ~1.85× SLOWER (goal NOT yet met)
+  (jz.js @opt2 : 2.02 ms, 200 B — the optimized path, not the fair comparator)
+⇒ Supreme goal = close a ~1.85× gap by optimizing the self-host KERNEL's compile
+hot path (profile kernel.exports.default; the 3.44 MB kernel's prepare/compile/
+emit loops). This is a focused perf project, not done yet. Driver to reuse:
+scripts/selfhost-build.mjs + selfhost-run.mjs; measure with the host-parse +
+kernel.default + watrCompile pipeline vs compile(src,{optimize:false}).
 
 ### Working notes
 - **#8 DONE** (verified, 1911/1/0 green, deterministic). Added `followForwardingWat`

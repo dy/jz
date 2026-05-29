@@ -75,7 +75,7 @@ import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTy
 /** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
 import {
   findFreeVars, findMutations, boxedCaptures,
-  collectI32SafeIndexVars, narrowUint32, scanBindingUses,
+  collectI32SafeIndexVars, collectF64StridedIndexVars, narrowUint32, scanBindingUses,
   scanFlatObjects, scanSliceViews, USE,
 } from './analyze-scans.js'
 
@@ -458,6 +458,17 @@ export function analyzeBody(body) {
     // genuinely-fractional counter (`i = i / 3`) is still widened by the assignment
     // fixpoint below, which runs after this pass and overrides the i32 decision.
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
+  // Integer-certain locals (every definition integer-valued — a `let i=0; i+=k`
+  // affine counter) also stay i32 when compared against an f64 bound, EVEN when
+  // not an array index: an f64 counter would otherwise poison the loop body's
+  // arithmetic and the increment (f64.add per iteration instead of i32.add), the
+  // dominant cost of a hot loop like `for (i<n) acc=(acc+i)|0` — measured ~18×
+  // vs V8 before this. The compare coerces the counter once (`f64.lt convert(i) n`).
+  // Sound for n ≤ 2^31 (i stays non-negative i32); n > 2^31 is the asm.js-style
+  // integer contract. A fractional assignment poisons intCertain → widens normally.
+  const intCounters = intCertainMap(body)
+  const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
+  const keepI32 = (name) => i32SafeIdx.has(name) || (intCounters.get(name) === true && !f64IdxVars.has(name))
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
   function widenPass(node) {
     if (!Array.isArray(node)) return
@@ -465,8 +476,8 @@ export function analyzeBody(body) {
     if (CMP_OPS.has(op)) {
       const [a, b] = args
       const ta = exprType(a, locals), tb = exprType(b, locals)
-      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !i32SafeIdx.has(a)) locals.set(a, 'f64')
-      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b) && !i32SafeIdx.has(b)) locals.set(b, 'f64')
+      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !keepI32(a)) locals.set(a, 'f64')
+      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b) && !keepI32(b)) locals.set(b, 'f64')
     }
     if (op !== '=>') for (const a of args) widenPass(a)
   }

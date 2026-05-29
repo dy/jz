@@ -585,6 +585,31 @@ export function collectI32SafeIndexVars(body, locals) {
 }
 
 /**
+ * Locals that affinely feed an *f64-typed* array index (e.g. `mem[i*w + x]` with
+ * an f64 stride/global `w`). The access truncs the byte offset regardless, so
+ * keeping such a counter i32 buys no trunc savings and ADDS a per-iteration
+ * compare-convert — a net loss (the game-of-life regression). These are excluded
+ * from the integer-counter i32-keep in analyzeBody's widenPass, so they widen to
+ * f64 as before. (A counter used only in arithmetic — no f64 index — is NOT here,
+ * so it stays i32, where the i32 body + increment is the real win.)
+ */
+export function collectF64StridedIndexVars(body, locals) {
+  const set = new Set()
+  const addAffine = (node) => {
+    if (typeof node === 'string') { set.add(node); return }
+    if (Array.isArray(node) && AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
+  }
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === '[]' && !isLiteralStr(node[2]) && exprType(node[2], locals) === 'f64') addAffine(node[2])
+    if (node[0] === '=>') return
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return set
+}
+
+/**
  * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
  * Callers that need to extend (e.g. add params to locals) must clone explicitly
  * before mutating. Slice reads via `analyzeBody(body).<slice>`.
