@@ -8,7 +8,7 @@
  */
 
 import { makeAbi } from './abi/index.js'
-export { HEAP, LAYOUT, PTR, ATOM, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR } from '../layout.js'
+export { HEAP, LAYOUT, PTR, ATOM, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
 
 // === Carrier layout ===
 // Canonical bit layout lives in layout.js (compiler-free). Re-exported above for
@@ -154,6 +154,11 @@ export function reset(proto, globals, bridge) {
                             // Drained at module-assembly time into `(import "wasm:js-string" "name" …)`
                             // nodes; host wires JS-side polyfills via interop's
                             // env builder for engines without builtin support.
+    hostGlobals: new Set(), // host globals (globalThis/process/WebAssembly/…) referenced as
+                            // values. Recorded by emit on first use; drained into
+                            // `(import "env" "name" (global $name i64))` at assembly. Same
+                            // usage-gated pattern as jsstring — emit records, assembly owns
+                            // the ctx.module.imports write.
   }
 
 

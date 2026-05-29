@@ -429,15 +429,26 @@ export function exprType(expr, locals) {
   if (['&', '|', '^', '~', '<<', '>>'].includes(op))
     return valTypeOf(expr) === VAL.BIGINT ? 'f64' : 'i32'
   // Preserve i32 if both operands i32
-  if (op === '+' || op === '-' || op === '%') {
+  if (op === '+' || op === '-') {
     const ta = exprType(args[0], locals)
     const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
-    // emit widens to f64 (see emit.js `+`/`-`/`%`). exprType must agree — else
+    // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
     // narrowing the result back to i32 would trunc_sat-saturate the f64 to INT32_MAX.
     if (isUnsignedI32Expr(args[0]) || (args[1] != null && isUnsignedI32Expr(args[1]))) return 'f64'
     return 'i32'
+  }
+  // `%` is i32 only when emit takes the i32.rem_s path: both operands i32, neither
+  // unsigned, AND the divisor is a nonzero integer constant. A 0 or runtime divisor
+  // yields NaN via f64rem (f64), so result-narrowing must NOT see i32 here — else a
+  // NaN remainder gets i32.trunc_sat'd to 0. Mirrors the emit.js `%` guard exactly.
+  if (op === '%') {
+    const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
+    if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    if (isUnsignedI32Expr(args[0]) || isUnsignedI32Expr(args[1])) return 'f64'
+    const dv = staticValue(args[1])
+    return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
   }
   // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully
   // only while the exact product is f64-exact. Stay i32 when both operands are
@@ -493,7 +504,7 @@ export function exprType(expr, locals) {
 
 const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
 const INT_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!==', '!'])
-const INT_CLOSED_OPS = new Set(['+', '-', '*', '%'])
+const INT_CLOSED_OPS = new Set(['+', '-', '*'])  // `%` handled separately — int only for nonzero divisor
 const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
 
 function collectIntDefs(body) {
@@ -556,6 +567,14 @@ function makeIsIntExpr(intCertain) {
       const b = args[1] != null ? isIntExpr(args[1]) : a
       return a && b
     }
+    // `a % b` is integer-valued only when b is a provably-nonzero integer
+    // constant — `a % 0` is NaN, which is not an integer. A runtime or zero
+    // divisor leaves the expression non-int (f64), so result-narrowing won't
+    // truncate a NaN remainder to 0 and floor-elision won't drop a NaN.
+    if (op === '%') {
+      const bv = staticValue(args[1])
+      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && isIntExpr(args[0])
+    }
     if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
     if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
     if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
@@ -574,6 +593,18 @@ export function intCertainMap(body) {
   if (defs.size === 0) return new Map()
   const intCertain = new Map()
   for (const name of defs.keys()) intCertain.set(name, true)
+  // A parameter has no def in `body` — its entry value is whatever the caller
+  // passed. For an f64 param (JS-number ABI) that is an arbitrary real, so a
+  // reassigned f64 param is NOT integer-certain: a self/int reassignment
+  // (`p = p`, `p = p + 1`) would otherwise vacuously satisfy the optimistic
+  // fixpoint, since `isIntExpr(p)` reads p's own provisional `true`. Seed f64
+  // params false so the unknown entry value grounds the lattice; i32-narrowed
+  // params (integer ABI) stay certain. Seeding false is always conservative —
+  // at worst it re-applies a floor/round that was a runtime no-op — so a
+  // mismatched ctx.func.current (whole-program intExprChecker callers) can only
+  // forgo an optimization, never miscompile.
+  for (const p of ctx.func.current?.params || [])
+    if (p.type !== 'i32' && intCertain.has(p.name)) intCertain.set(p.name, false)
   const isIntExpr = makeIsIntExpr(intCertain)
   let changed = true
   while (changed) {

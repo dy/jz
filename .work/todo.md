@@ -1,3 +1,192 @@
+# ⟢ COMPILER STREAMLINING (audit 2026-05-28) — ACTIVE FOCUS
+
+Goal: bring the pipeline to a shining, clear, elegant, minimal shape. Priority
+order set by user: **(P1) fix structural items §1–8 below, (P2) close the test
+gap, (P3) the reliability list 1–6.** Focus = compiler streamlining first.
+
+Safety net: `npm test` = 1911 pass / 1 skip / 0 fail, ~40s (opt:2 default).
+Before declaring any item done, also run `npm run test:matrix:full` +
+`npm run test:selfhost`. Never commit unless asked. Stage files by name only.
+
+### P1 — structural fixes (the "what is wrong" list)
+
+- [ ] **#8 stdlib dedup** (safe warmup). Forwarding-follow WAT loop copy-pasted
+      ~6× across `module/core.js` (`__ptr_offset`) + `module/array.js`
+      (`__arr_idx`, `__arr_idx_known`, `__typed_idx`). itoa digit-reversal dup in
+      `module/number.js` (`__itoa`, `__radix_str`). → named WAT fragment consts.
+      Risk: low. Verify: full matrix (output-shape pins live in tests).
+- [ ] **#7 boundary leak** (small, clean). `emit()` writes `ctx.scope.globals` /
+      `ctx.scope.globalTypes` + pushes import for HOST_GLOBALS at
+      `src/compile/emit.js:3148-3160`. ctx.scope is prepare's domain. → move
+      host-global detection+registration into prepare's identifier path.
+      Risk: low-med. Verify: default + selfhost (kernel uses host globals?).
+- [ ] **#4a cseScalarLoad explicit proof**. Safety rests on `fn.cseLoadBases`
+      expando (`src/compile/index.js:427`); silently no-ops if a pass recreates
+      the node. → pass loadBases as explicit arg from a name-keyed map.
+      Risk: low. Verify: full matrix.
+- [ ] **#4b vectorizer reduction guard**. `vectorizeLaneLocal` vectorizes
+      `f64.add` reductions, changing float associativity, on structural match
+      alone (`src/optimize/vectorize.js` reduction path). → gate behind opt-in or
+      exactness check; default-safe. Risk: med (perf regression possible).
+      Verify: full matrix + bench (`npm run test:bench`).
+- [ ] **#5 cache staleness**. `_bodyFactsCache` keyed on body-node identity,
+      manually invalidated in 9 sites (`src/compile/analyze.js:84`). → fold into
+      #3 (single walk removes most invalidation need) or make invalidation
+      structural. Risk: med. Do alongside #3.
+- [ ] **#6 decompose mega-functions** (clarity). `prep()`+handlers
+      (`src/prepare/index.js:661-2074`), `emitMethodCall` (`emit.js:1773-2033`,
+      → split per-type into module/), `ctx.core.emit['.']` (`module/core.js:713`),
+      `analyzeBody` (~460L). Risk: low-med (mechanical). Verify: full matrix.
+- [ ] **#3 unify analysis walks** (CENTERPIECE). AST walked 8+×/fn; VAL-tracking
+      duplicated as `trackVal` (`analyze.js:156`) vs `setVal` (`analyze.js:570`),
+      `trackTyped` duplicated. → one fact-collection pass producing one bundle;
+      `analyzeValTypes` consumes `analyzeBody` output instead of re-walking.
+      Improves clarity + compile speed + reliability at once. Risk: HIGH.
+      Verify: full matrix + selfhost + bench + test262.
+- [ ] **#1 closed TypeFact shape**. ValueRep is open `{}` with ~12 orthogonal
+      optional fields (`src/reps.js`), read via ad-hoc 4-level priority chain.
+      → documented closed shape + single lookup fn. Risk: HIGH (touches every
+      rep reader). Verify: full matrix + selfhost.
+- [ ] **#2 narrowing fixpoint → lattice**. `narrowSignatures`
+      (`src/compile/narrow.js:551-829`) is a 10-phase ordered script w/ 6 nested
+      fixpoints, `clearStickyNull` ×3, `runFixpoint()` ×2 heuristic. → monotone
+      fixpoint over a declared lattice; delete sticky-null patches.
+      Risk: HIGHEST. Best done after P2 fuzzer exists. Verify: everything.
+
+### P2 — test gap (after §1–8)
+- [ ] Wire full CI matrix: opt0/opt1/opt2/opt3 × {js, wasi} (today only opt2+opt3).
+- [ ] Determinism test: same source → byte-identical wasm.
+- [ ] Memory-safety / arena-allocator adversarial tests.
+
+### P3 — reliability list (after P2)
+1. Differential fuzzer: valid-jz → {V8, wasm} → assert equal (highest value).
+2. (full CI matrix — pulled into P2)
+3. Unify analysis (= #3, pulled into P1).
+4. Determinism + mem-safety (pulled into P2).
+5. Written subset spec (grammar + semantics).
+6. Narrowing lattice (= #2, pulled into P1).
+
+### ⚑ DIFFERENTIAL FUZZER — DONE (test/fuzz.js) + FOUND REAL MISCOMPILES
+Built generative fuzzer: random jz-subset programs → run as JS (truth) vs jz-wasm
+at opt {0,1,2,3} → assert bit-exact. Seeded/reproducible, automatic shrinker,
+static well-scopedness guard (generator + shrinker emit only valid lexically-scoped
+programs; 0 malformed). Integrated as a ratchet in `npm test` (KNOWN_OPEN baseline
+of 14 seeds; trips on any NEW divergence). `npm run test:fuzz` = 5000-program sweep.
+`node test/fuzz.js --seed=N` reproduces one. Full suite green (1912 pass).
+
+**REAL BUGS FOUND (root-cause clusters, minimal repros — all confirmed vs plain jz):**
+1. **`%` semantics** (opt0+, ~6 seeds). `(p0)=>(0%0)` → jz **0**, js NaN. `p0=(0%p0)`
+   @Inf → jz NaN, js 0. In a loop `0 % i0` (i0=0) → **wasm TRAP** (integer rem lowered,
+   traps on 0 divisor instead of f64 NaN). jz `%` diverges from JS fmod on x%0 / 0%Inf.
+2. **Math.floor/ceil/round/trunc ELIDED after a param is reassigned** (opt0+, ~9 seeds).
+   `(p0)=>{p0=p0; return Math.floor(p0)}` → jz returns **unfloored** p0. `let v=Math.floor(p0);
+   p0=0; return v` also fails (a *later* `p0=` reassignment changes the earlier floor lowering).
+   Fresh `let` copy is fine. → faulty int/narrowing inference (intCertain?) on reassigned
+   params makes rounding a no-op. **Analysis-layer bug — overlaps #1/#3. Fires at opt0 = base, not optimizer.**
+3. **ToInt32 of large f64 in `~`/bitwise** (opt0). `~(p0*p0)` @2^32 → jz **0**, js -1.
+4. **Math.imul with non-integer operand** (opt0). seed85.
+5. **opt2 invalid wasm** "expected 0 elements on stack for fallthru" — ternary-in-return
+   with mixed arms: `(p0)=>{let v3=1; return (v3 ? Math.min(v3,0+p0) : 0)}`. seed71,341.
+6. **opt3 drops reassignment** after a `%0`→NaN initializer. seed34.
+
+DECISION NEEDED: fix these (fuzzer's payoff; #2 overlaps #3) BEFORE #6/#3, or proceed
+to #6/#3 with these as tracked baseline. A miscompiling compiler isn't offerable →
+lean fix-first, at least clusters 1+2 (common patterns, correctness-critical).
+
+### ⟢ MISCOMPILE FIXES (autonomous mandate 2026-05-29) — progress
+Goal: 0 fuzzer errors over 600 programs, then structure #1-6, then self-host
+byte-identical + jz.wasm test-matrix + jz.wasm faster than jz.js.
+
+FIXED (verified, suite green 1912, gate KNOWN_OPEN={71,85}):
+- **Cluster 2 (rounding-after-reassign)**: intCertainMap (type.js) now seeds f64
+  params false — a reassigned f64 param is no longer vacuously intCertain, so
+  Math.floor/ceil/round/trunc isn't wrongly elided. Conservative-safe.
+- **Cluster 1 (`%`)**: replaced inexact `a-b*trunc(a/b)` with exact `__rem`
+  (binary fmod, all IEEE edges) in module/core.js; f64rem (ir.js) calls it.
+  emit `%` i32.rem_s now requires a literal (nonzero) divisor; exprType `%` is
+  i32 only for nonzero-int-literal divisor (mirrors emit). Fixed x%0→NaN,
+  finite%Inf→finite, runtime-0 trap, float precision, 0%imul@opt2, opt3 drop.
+- **ToInt32 wrapping**: `__toint32` (core.js) does exact ToInt32 via i64
+  bit-surgery (NO f64 arith → invisible to hot-path f64.add/mul/floor greps).
+  toI32 (ir.js) keeps the fast inline `wrap(i64.trunc_sat)` for |x|<2^63 and a
+  lazy `if`-guard routes |x|≥2^63 to __toint32. Fixed `~(p*p)@2^32` etc.
+
+- **71,341 — WATR optimizer bug — FIXED upstream + synced.** `branch` pass dropped
+  the `(result T)` when folding a constant `if`, leaving a void block that dangles a
+  value ("stack for fallthru"). Fixed in ~/projects/watr/src/optimize.js (branch)
+  + CHANGELOG, AND synced to jz's fork src/wat/optimize.js (jz uses its own fork;
+  watr pkg = encoder only). watr suite green 580/0.
+
+REMAINING (1 cluster): **i32 arithmetic overflow at the int32 boundary** (85, 274,
+320, 518 + ~6 patterns/1000). A full-range bitwise/imul/shift result feeding
+`+`/`-`/`*`/unary-`-` whose result ESCAPES as a Number (returned, not `|0`/`>>>`-
+sunk) wraps in jz's i32 path; JS gives f64. e.g. `(~p0)*5`, `65535*Math.imul(…)`,
+`-(~~p0)`, `(~p0)-(-1)`. This is jz's asm.js-style integer contract — mulFitsI32
+/exprType keep i32 assuming operands bounded; bench-critical (can't blanket-widen
+`i*4`/`i+1` — lengths are dynamic, `scanBoundedLoops` gives only `i<arr.length`).
+**Proper fix = integer range/flow analysis (keep i32 only when result provably
+fits OR is ToInt32-sunk) — belongs with the #1/#3 analysis refactor.** A targeted
+direct-operand fix (widen when an operand is literally a bitwise/imul/shift node)
+would close the fuzzer seeds but needs bench verification — do carefully next.
+Gate KNOWN_OPEN={85} (others >200). Over 1000 programs, this is the ONLY failing class.
+
+NOTE: manual `compile()` does NOT validate wasm (only jz()/new Module does) — use
+jz() to check codegen validity. The fuzzer uses jz() so its findings are real.
+
+STATUS: 5 of 6 clusters fixed, verified green across opt0/1/2/3 + selfhost + the
+1912-assertion suite. Next: (a) i32-overflow via range analysis, (b) structure
+#1-6, (c) self-host byte-identical, (d) jz.wasm test-matrix, (e) jz.wasm>jz.js.
+
+### Working notes
+- **#8 DONE** (verified, 1911/1/0 green, deterministic). Added `followForwardingWat`
+  + `reverseBytesWat` to layout.js / number.js; collapsed 6 forwarding-loop copies
+  (core.js ×3, array.js ×3) + 2 itoa reversal copies. watr parses S-exprs so
+  whitespace-immaterial → byte-identical output.
+- **#7 DONE** (verified, green, deterministic). Removed BOTH emit→ctx.scope.globals
+  /globalTypes AND emit→ctx.module.imports writes. emit now records usage in
+  `ctx.core.hostGlobals` (sanctioned, like jsstring); assembly drains into imports
+  before syncImports. Hoisted HOST_GLOBALS to module const.
+- **#4b REVIEWED — no change.** Float-add reduction vectorization changes assoc by
+  ulps BUT: gated behind opt:3/'speed' (opt-in), author-documented as acceptable
+  (vectorize.js:789-791), spec-defensible. Deliberate author tradeoff — do not
+  override. Minor follow-up (optional): `adviseSimdLoops` emits "SIMD skipped, split
+  the reduction" (advise.js:292) for reduction loops that tryReduceVectorize
+  actually DOES vectorize — advisory text is misleading in that case.
+- **#4a → fold into #3.** `fn.cseLoadBases` expando is safe pre-watr (same node
+  objects); post-watr worst case is a missed CSE (safe no-op), never wrong output.
+  Legibility nit, not a live bug. Make the proof explicit (name-keyed map) when
+  reworking the analysis layer.
+- **#5 → fold into #3.** `_bodyFactsCache` staleness disappears if the analysis
+  becomes a single walk producing one fact bundle.
+
+- **#3 SCOPED (deep — needs fuzzer first).** `analyzeValTypes` (analyze.js:568)
+  ALREADY calls `analyzeBody` (line 591) and reuses its cached arrElem facts. Its
+  own `walk` (690-790) is NOT a mechanical dup of analyzeBody's `trackVal` — it is a
+  *side-effecting, context-dependent* pass: commits to localReps.{val,schemaId,
+  jsonShape,arrayElemValType,arrayElemSchema}, ctx.types.typedElem,
+  ctx.runtime.regex.vars, ctx.schema.{vars,register}, ctx.func.localProps; and reads
+  `valTypeOf` (which reads already-committed reps → incremental context dependence).
+  analyzeBody is deliberately PURE for caching. So unifying = separating pure
+  fact-collection from ctx-commitment cleanly — a real design refactor, high
+  miscompile risk. **Do AFTER the differential fuzzer exists** (the only net that
+  can prove an analysis-layer restructure preserves codegen). Same applies to #1,#2.
+
+- **#6 (decompose) — tractable, deferred to focused session.** emitMethodCall
+  (emit.js:1777, ~260L) is a clean guard-return cascade by receiver kind
+  (flat-obj / charCodeAt / splice / fn-prop / boxed / spread / generic) — extractable
+  into named helpers, but it's a hot central dispatcher; do it in a focused pass with
+  full-matrix verify, not bundled.
+
+### Concurrent (USER is doing P2 test-matrix WASI wiring in test/*.js — DO NOT TOUCH)
+- _opt.js onWasi() + onWasi() skip-guards across optimizer/perf/warnings/jsstring/errors.
+
+### Recommendation: build differential fuzzer (P3 #1) BEFORE #3/#1/#2 — it is the
+### enabling safety net for those three, the highest-value + highest-risk streamlining.
+
+### Remaining P1 active: #6 (decompose), #3 (unify walks), #1 (TypeFact), #2 (lattice)
+
+---
+
 ## jz — execution plan
 
 #### Community

@@ -16,7 +16,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat } from '../src/ctx.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -144,17 +144,64 @@ export default (ctx) => {
           (i32.or (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
             (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))))
       (then
-        (block $done
-          (loop $follow
-            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))))
+        ${followForwardingWat('$off', { lowGuard: true })}))
     (local.get $off))`
 
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))`
+
+  // Exact JS `%` (fmod) for the f64 path. wasm has no f64 remainder, and the
+  // textbook `a - b*trunc(a/b)` is both INEXACT (rounding in trunc/mul/sub for
+  // large a/b) and WRONG on the IEEE edges. This does the spec exactly:
+  //   NaN if a or b is NaN, a is ±Inf, or b is 0; a if b is ±Inf or |a|<|b|;
+  //   otherwise binary long division — scale |b| up to ≤|a|, then subtract-and-
+  //   halve back down to |b|. Every step (×2, ×0.5, aligned subtraction) is
+  //   exact in f64, so the remainder is bit-identical to JS. Sign follows the
+  //   dividend (copysign), matching `(-5)%3 === -2`, `5%(-3) === 2`, `-0%3 === -0`.
+  ctx.core.stdlib['__rem'] = `(func $__rem (param $a f64) (param $b f64) (result f64)
+    (local $x f64) (local $y f64)
+    (if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))
+    (if (f64.ne (local.get $b) (local.get $b)) (then (return (local.get $b))))
+    (local.set $x (f64.abs (local.get $a)))
+    (local.set $y (f64.abs (local.get $b)))
+    (if (i32.or (f64.eq (local.get $x) (f64.const inf)) (f64.eq (local.get $y) (f64.const 0)))
+      (then (return (f64.div (f64.const 0) (f64.const 0)))))
+    (if (i32.or (f64.eq (local.get $y) (f64.const inf)) (f64.lt (local.get $x) (local.get $y)))
+      (then (return (local.get $a))))
+    (block $up (loop $ul
+      (br_if $up (f64.gt (f64.mul (local.get $y) (f64.const 2)) (local.get $x)))
+      (local.set $y (f64.mul (local.get $y) (f64.const 2)))
+      (br $ul)))
+    (block $dn (loop $dl
+      (br_if $dn (f64.lt (local.get $y) (f64.abs (local.get $b))))
+      (if (f64.ge (local.get $x) (local.get $y)) (then (local.set $x (f64.sub (local.get $x) (local.get $y)))))
+      (local.set $y (f64.mul (local.get $y) (f64.const 0.5)))
+      (br $dl)))
+    (f64.copysign (local.get $x) (local.get $a)))`
+
+  // Exact ECMAScript ToInt32 for |x| ≥ 2^63 (the inline \`i32.wrap_i64
+  // i64.trunc_sat_f64_s\` in ir.js covers |x|<2^63 and saturates beyond it,
+  // whereas ToInt32 WRAPS mod 2^32 — e.g. (2**64)|0 === 0, not −1). Done by pure
+  // IEEE bit-surgery (NO f64 arithmetic — keeps it off the f64.add/mul/floor
+  // greps for hot-path purity), so the low 32 bits of trunc(x) are extracted
+  // exactly: read exponent e; |x|<1 or NaN/Inf → 0; build the 53-bit mantissa
+  // with its implicit leading 1; shift by e−52 (≥32 ⇒ a multiple of 2^32 ⇒ 0);
+  // wrap to i32; negate for a negative dividend (two's complement = mod 2^32).
+  ctx.core.stdlib['__toint32'] = `(func $__toint32 (param $x f64) (result i32)
+    (local $bits i64) (local $e i32) (local $m i64) (local $sh i32) (local $r i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $e (i32.and (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 52))) (i32.const 0x7FF)))
+    (if (i32.or (i32.eq (local.get $e) (i32.const 0x7FF)) (i32.lt_s (local.get $e) (i32.const 1023)))
+      (then (return (i32.const 0))))
+    (local.set $sh (i32.sub (i32.sub (local.get $e) (i32.const 1023)) (i32.const 52)))
+    (if (i32.ge_s (local.get $sh) (i32.const 32)) (then (return (i32.const 0))))
+    (local.set $m (i64.or (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)) (i64.const 0x10000000000000)))
+    (local.set $m (if (result i64) (i32.ge_s (local.get $sh) (i32.const 0))
+      (then (i64.shl (local.get $m) (i64.extend_i32_s (local.get $sh))))
+      (else (i64.shr_u (local.get $m) (i64.extend_i32_s (i32.sub (i32.const 0) (local.get $sh)))))))
+    (local.set $r (i32.wrap_i64 (local.get $m)))
+    (if (i64.lt_s (local.get $bits) (i64.const 0)) (then (local.set $r (i32.sub (i32.const 0) (local.get $r)))))
+    (local.get $r))`
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
@@ -317,12 +364,7 @@ export default (ctx) => {
     (if (result i32)
       (i32.and (i32.eq (local.get $t) (i32.const 1)) (i32.ge_u (local.get $off) (i32.const 8)))
       (then
-        (block $done
-          (loop $follow
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))
+        ${followForwardingWat('$off', { lowGuard: false })}
         (i32.load (i32.sub (local.get $off) (i32.const 8))))
       (else
         (if (result i32)
@@ -405,13 +447,7 @@ export default (ctx) => {
       (then
         (if (i32.eq (local.get $t) (i32.const 1))
           (then
-            (block $done
-              (loop $follow
-                (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-                (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-                (br $follow)))))
+            ${followForwardingWat('$off', { lowGuard: true })}))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
   // Alloc header(16) + data(cap*stride). Layout: [propsPtr@-16(f64=0), len@-8, cap@-4],

@@ -32,6 +32,7 @@
     "test:matrix": "npm test && npm run test:opt3",
     "test:matrix:full": "npm test && npm run test:opt0 && npm run test:opt1 && npm run test:opt3 && npm run test:wasi",
     "test:bench": "node test/bench.js",
+    "test:fuzz": "node test/fuzz.js --count=5000",
     "test:selfhost": "node test/selfhost.js",
     "test:all": "npm run test:matrix && npm run test:bench && npm run test:selfhost",
     "test262": "node test/test262.js",

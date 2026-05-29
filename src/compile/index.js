@@ -1087,6 +1087,14 @@ export default function compile(ast, profiler) {
 
   buildStartFn(ast, sec, closureFuncs, compilePendingClosures)
 
+  // Host globals (globalThis/process/WebAssembly/…) referenced as values are
+  // recorded in ctx.core.hostGlobals during emit; register them as env imports
+  // now (assembly owns ctx.module.imports). Drained after buildStartFn so a
+  // host global first used in a top-level statement (emitted into __start) is
+  // captured; syncImports below merges them into sec.imports.
+  for (const name of ctx.core.hostGlobals)
+    ctx.module.imports.push(['import', '"env"', `"${name}"`, ['global', `$${name}`, 'i64']])
+
   syncImports(sec)
 
   dedupClosureBodies(closureFuncs, sec)

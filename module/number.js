@@ -39,6 +39,19 @@ import { inc, PTR, LAYOUT } from '../src/ctx.js'
 // otherwise return its OOB 0; the inline load has no such guard).
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
+
+/** In-place byte reversal of buf[i..j] (WAT fragment). __itoa/__radix_str emit the
+ *  least-significant digit first, then flip the run. Caller pre-sets `j` to the last
+ *  index and leaves `i` at 0; `tmp` is scratch. Labels $rev/$revl are block-local. */
+const reverseBytesWat = (buf = '$buf', i = '$i', j = '$j', tmp = '$tmp') =>
+  `(block $rev (loop $revl
+      (br_if $rev (i32.ge_s (local.get ${i}) (local.get ${j})))
+      (local.set ${tmp} (i32.load8_u (i32.add (local.get ${buf}) (local.get ${i}))))
+      (i32.store8 (i32.add (local.get ${buf}) (local.get ${i})) (i32.load8_u (i32.add (local.get ${buf}) (local.get ${j}))))
+      (i32.store8 (i32.add (local.get ${buf}) (local.get ${j})) (local.get ${tmp}))
+      (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
+      (local.set ${j} (i32.sub (local.get ${j}) (i32.const 1)))
+      (br $revl)))`
 const chAt = idx => `(if (result i32)
         (i64.eqz (i64.and (local.get $v) (i64.const ${SSO_BIT_I64})))
         (then (i32.load8_u (i32.add (local.get $sbase) ${idx})))
@@ -199,15 +212,7 @@ export default (ctx) => {
       (br $l)))
     ;; Reverse
     (local.set $j (i32.sub (local.get $len) (i32.const 1)))
-    (block $rd (loop $rl
-      (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
-      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $i))
-        (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
-      (br $rl)))
+    ${reverseBytesWat()}
     (local.get $len))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
@@ -236,14 +241,7 @@ export default (ctx) => {
       (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
-    (block $rb (loop $rl
-      (br_if $rb (i32.ge_s (local.get $i) (local.get $j)))
-      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $i)) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
-      (br $rl)))
+    ${reverseBytesWat()}
     (call $__mkstr (local.get $buf) (local.get $pos)))`
 
   // __num_radix(val: f64, radix: i32) → f64 (NaN-boxed string)

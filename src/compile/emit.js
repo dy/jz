@@ -71,6 +71,10 @@ let _expect = null
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+// Host globals auto-imported as `(import "env" "name" (global … i64))` when
+// referenced as a value. Drained from ctx.core.hostGlobals at assembly.
+const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
+
 // An operand whose uint32 value can be *observed as a JS number* — a `>>>`
 // result, an `unsignedResult` call, or an unsigned i32.const. Its magnitude can
 // exceed signed-i32 range, so wrapping i32 arithmetic would corrupt it; widen to
@@ -2567,9 +2571,13 @@ export const emitter = {
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
     // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
     if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
+    // i32.rem_s is exact for integer operands AND fast, but it TRAPS on a zero
+    // divisor where JS yields NaN. Only take it when the divisor is a literal
+    // (necessarily nonzero — literal 0 is handled above); a runtime i32 divisor
+    // could be 0, so route it to f64rem (exact for in-range integers, NaN for 0).
     // `.unsigned` operand: `i32.rem_s` reads the uint32 as a negative signed value
     // ((2^32-1)%7 → rem_s(-1,7) = -1, not 3). Widen to f64 — see `+` above.
-    if (isI32Num(va) && isI32Num(vb) && !va.unsigned && !vb.unsigned) return typed(['i32.rem_s', va, vb], 'i32')
+    if (isLit(vb) && isI32Num(va) && isI32Num(vb) && !va.unsigned && !vb.unsigned) return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
   // === Comparisons (always i32 result) ===
@@ -3144,18 +3152,17 @@ export function emit(node, expect) {
       const isCallable = handler.length > 0
       return isCallable ? builtinFunctionValue(node) : handler()
     }
-    // Auto-import known host globals (WebAssembly, globalThis, etc.)
-    const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
+    // Auto-import known host globals (WebAssembly, globalThis, etc.). Emit only
+    // records the usage; the `(import "env" … (global … i64))` node is drained
+    // into ctx.module.imports at assembly (compile/index.js), the same way
+    // ctx.core.jsstring is — emit does not own ctx.scope / ctx.module sections.
+    // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed external-ref
+    // payload across the wasm↔JS global boundary (same hazard as env.print —
+    // see module/console.js header). asF64() reinterprets to f64 at each read.
     if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {
       if (ctx.transform.host === 'wasi') err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
       ctx.features.external = true
-      ctx.scope.globals.set(node, null)
-      // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed
-      // external-ref payload across the wasm↔JS global boundary (same hazard
-      // as env.print/setTimeout — see module/console.js header). asF64()
-      // reinterprets to f64 at every read site.
-      ctx.module.imports.push(['import', '"env"', `"${node}"`, ['global', `$${node}`, 'i64']])
-      ctx.scope.globalTypes.set(node, 'i64')
+      ctx.core.hostGlobals.add(node)
       return typed(['global.get', `$${node}`], 'i64')
     }
     const t = ctx.func.locals?.get(node) || ctx.func.current?.params.find(p => p.name === node)?.type || 'f64'
