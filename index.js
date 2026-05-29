@@ -387,13 +387,15 @@ const jzCompileInner = (code, opts = {}) => {
   assertCtxInvariants('post-prepare')
 
   // Auto-detect optimization tuning from source characteristics when the user
-  // hasn't provided any optimize option. At the default level its only *live*
-  // output is the typed-array scalarization thresholds (every other override —
-  // watr off, sortStrPool/hoistPtr on — already matches the level-2 preset), so
-  // skip the AST scan entirely unless the program touches typed arrays.
-  // NOTE: if the level-2 default ever flips watr on, drop this guard so the
-  // machine-generated-code heuristic in detectOptimizeConfig can take effect.
-  if (opts.optimize == null && ctx.module.modules.typedarray) {
+  // hasn't provided any optimize option. detectOptimizeConfig has two *live*
+  // overrides over the level-2 preset: the typed-array scalarization thresholds,
+  // and `watr: false` for large/machine-generated code (whose WAT-level CSE/DCE
+  // fights jz's already-optimized IR and inflates output). watr is ON at level 2,
+  // so that switch is a real override — run the scan when the program either
+  // touches typed arrays or is large enough for the machine-code heuristic to
+  // bite. `code.length` is the one signal free without scanning; gating on it
+  // keeps small programs (the common case) on the no-scan fast path.
+  if (opts.optimize == null && (ctx.module.modules.typedarray || code.length > 4000)) {
     const autoCfg = detectOptimizeConfig(ast, code)
     if (Object.keys(autoCfg).length) {
       ctx.transform.optimize = resolveOptimize(autoCfg)
