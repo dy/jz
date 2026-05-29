@@ -612,7 +612,13 @@ function shouldSkip(content, rel = '') {
   } else
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
-  // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
+  // Skip negative PARSE tests. Audited 2026-05-29 (after the PARSE-2 unary-base-of-`**`
+  // guard): jz REJECTS all 4389 of them — 0 silent-accepts, so this skip hides no
+  // accepts-invalid-JS miscompile (PARSE-2 was the last such class). They stay skipped
+  // only because jz rejects with its own err() (not a typed SyntaxError at the parse
+  // phase), so they can't satisfy test262's negative-parse criteria — jz is a subset
+  // compiler, not a JS syntax validator. Re-run scripts/neg-parse-audit if adding parse
+  // surface, to confirm the 0-accepts invariant holds.
   if (/negative:\s*\n\s+phase:\s+parse/.test(content)) return 'negative parse test'
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
   // (Legacy Sputnik tests `throw new Test262Error(...)` directly — jz compiles

@@ -1715,7 +1715,16 @@ const handlers = {
     return ['//', pattern, flags]
   },
 
-  '**'(a, b) { return ['**', prep(a), prep(b)] },
+  '**'(a, b) {
+    // ES2016 §13.6: an unparenthesized unary expression cannot be the base of `**`
+    // — `-x**2`, `~x**2`, `!x**2`, `+x**2`, `typeof x**2`, `void x**2` are all
+    // SyntaxErrors (the precedence is ambiguous). The parser leaves a grouping as
+    // `['()', …]`, so a parenthesized base `(-x)**2` (and `-(x**2)`, where the unary
+    // sits outside the `**`) arrives with a non-unary root op and is allowed.
+    if (Array.isArray(a) && a.length === 2 && (a[0] === '-' || a[0] === '+' || a[0] === '!' || a[0] === '~' || a[0] === 'typeof' || a[0] === 'void'))
+      err(`Unary '${a[0]}' before '**' is a SyntaxError (ES2016 §13.6) — parenthesize: (${a[0]} x) ** 2 or ${a[0]} (x ** 2)`)
+    return ['**', prep(a), prep(b)]
+  },
 
   // Function call or grouping parens
 '()'(callee, ...args) {
