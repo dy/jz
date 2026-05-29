@@ -1760,6 +1760,90 @@ function withNullGuard(headExpr, body, tag = 'ng') {
       ['else', undefExpr()]])
 }
 
+// Leading method-call strategies (chain positions 1–4). Each is *context-free* —
+// it depends only on the parsed call, not on the receiver-type analysis (`vt` /
+// `callMethod`) that emitMethodCall computes below — so they factor out into an
+// ordered, first-match-wins table. A strategy returns its IR, or `undefined` to
+// fall through to the next. (Positions 5–12 thread shared mid-function state and
+// stay inline.) New context-free strategies just push onto LEADING_STRATEGIES.
+
+// 1. SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
+// `o#i` field locals and deleted `$o`, so the method closure lives in the field
+// local, not a heap slot. Read it directly and dispatch. Without this, every
+// path below loads from `local.get $o`, which no longer exists (watr then reports
+// "Unknown local $o"). Mirrors the flat `.`/`[]` hooks.
+function tryFlatObjectMethod(callee, obj, method, parsed) {
+  if (typeof obj === 'string' && ctx.closure.call) {
+    const flat = ctx.func.flatObjects?.get(obj)
+    const fi = flat ? flat.names.indexOf(method) : -1
+    if (fi >= 0) {
+      const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
+      if (parsed.hasSpread)
+        return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+      return ctx.closure.call(propRead, parsed.normal)
+    }
+  }
+}
+
+// 2. charCodeAt with a statically in-bounds index — emit the i32 (OOB-impossible)
+// contract directly; the generic path keeps the f64/NaN JS-spec result. See
+// analyze.js inBoundsCharCodeAt.
+function tryCharCodeAtFast(callee, obj, method, parsed) {
+  if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
+      && stringOps(obj)?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
+    const recv = emit(obj)
+    // jsstring carrier: receiver is an externref boundary param. Route to
+    // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out the
+    // OOB trap the builtin would otherwise raise.
+    if (recv?.type === 'externref') {
+      ctx.core.jsstring.add('charCodeAt')
+      return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
+    }
+    return typed(stringOps(obj).charCodeAt(
+      asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+  }
+}
+
+// 3. splice(start, deleteCount, ...items): the one array method that both deletes
+// and inserts. callMethod's spread machinery models per-element mutators
+// (push/concat), not a single delete+insert, so a spread of inserts would be
+// misapplied. Handle the full arg list here: delete-only (no inserts) falls
+// through to the inline `.splice` emitter; any insert items route through
+// __arr_splice, which grows/shifts in place (the caller's pointer stays valid via
+// array forwarding) and returns the removed elements. Guard against a spread in
+// the start/deleteCount slots (`splice(...x)`) — that form has no static arity.
+function trySpliceInsert(callee, obj, method, parsed) {
+  if (method === 'splice' && ctx.core.emit['.splice']) {
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const inserts = combined.slice(2)
+    const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
+    if (inserts.length && !headSpread) {
+      inc('__arr_splice')
+      return typed(['call', '$__arr_splice',
+        asI64(emit(obj)),
+        asI32(emit(combined[0])),
+        asI32(emit(combined[1])),
+        asI64(buildArrayWithSpreads(inserts))], 'f64')
+    }
+  }
+}
+
+// 4. Function property call: fn.prop(args) → direct call to fn$prop. Skipped when
+// the property was reassigned (wrapper composition) — then it is a mutable slot
+// and must be read dynamically before the call.
+function tryFnPropCall(callee, obj, method, parsed) {
+  if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
+    const fname = `${obj}$${method}`
+    if (ctx.func.names.has(fname)) {
+      const func = ctx.func.map.get(fname)
+      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
+      return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
+    }
+  }
+}
+
+const LEADING_STRATEGIES = [tryFlatObjectMethod, tryCharCodeAtFast, trySpliceInsert, tryFnPropCall]
+
 /** Method-call dispatch: `obj.method(args)`. Linear strategy chain. Strategies
  *  (first match wins):
  *    1. SRoA flat-object method (read closure from `o#i` local)
@@ -1778,72 +1862,10 @@ function withNullGuard(headExpr, body, tag = 'ng') {
 function emitMethodCall(callee, parsed, callArgs) {
   const [, obj, method] = callee
 
-  // SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
-  // `o#i` field locals and deleted `$o`, so the method closure lives in the
-  // field local, not a heap slot. Read it directly and dispatch. Without
-  // this, every path below loads from `local.get $o`, which no longer exists
-  // (watr then reports "Unknown local $o"). Mirrors the flat `.`/`[]` hooks.
-  if (typeof obj === 'string' && ctx.closure.call) {
-    const flat = ctx.func.flatObjects?.get(obj)
-    const fi = flat ? flat.names.indexOf(method) : -1
-    if (fi >= 0) {
-      const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
-      if (parsed.hasSpread)
-        return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-      return ctx.closure.call(propRead, parsed.normal)
-    }
-  }
-
-  // charCodeAt with a statically in-bounds index — emit the i32
-  // (OOB-impossible) contract directly; the generic path keeps the
-  // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
-  if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
-      && stringOps(obj)?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
-    const recv = emit(obj)
-    // jsstring carrier: receiver is an externref boundary param. Route to
-    // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out
-    // the OOB trap the builtin would otherwise raise.
-    if (recv?.type === 'externref') {
-      ctx.core.jsstring.add('charCodeAt')
-      return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
-    }
-    return typed(stringOps(obj).charCodeAt(
-      asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
-  }
-
-  // splice(start, deleteCount, ...items): the one array method that both
-  // deletes and inserts. callMethod's spread machinery models per-element
-  // mutators (push/concat), not a single delete+insert, so a spread of
-  // inserts would be misapplied. Handle the full arg list here: delete-only
-  // (no inserts) falls through to the inline `.splice` emitter; any insert
-  // items route through __arr_splice, which grows/shifts in place (the
-  // caller's pointer stays valid via array forwarding) and returns the
-  // removed elements. Guard against a spread in the start/deleteCount slots
-  // (`splice(...x)`) — that form has no static arity and isn't supported.
-  if (method === 'splice' && ctx.core.emit['.splice']) {
-    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-    const inserts = combined.slice(2)
-    const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
-    if (inserts.length && !headSpread) {
-      inc('__arr_splice')
-      return typed(['call', '$__arr_splice',
-        asI64(emit(obj)),
-        asI32(emit(combined[0])),
-        asI32(emit(combined[1])),
-        asI64(buildArrayWithSpreads(inserts))], 'f64')
-    }
-  }
-
-  // Function property call: fn.prop(args) → direct call to fn$prop.
-  // Skipped when the property was reassigned (wrapper composition) — then
-  // it is a mutable slot and must be read dynamically before the call.
-  if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
-    const fname = `${obj}$${method}`
-    if (ctx.func.names.has(fname)) {
-      const func = ctx.func.map.get(fname)
-      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
-      return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
-    }
+  // Strategies 1–4 (context-free, order-sensitive, first match wins).
+  for (const strategy of LEADING_STRATEGIES) {
+    const r = strategy(callee, obj, method, parsed)
+    if (r !== undefined) return r
   }
 
   let vt = valTypeOf(obj)
