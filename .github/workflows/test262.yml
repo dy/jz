@@ -21,13 +21,13 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 language suite
         env:
-          # Baseline (2026-05-29): 1428 passes / 0 in-scope fails / 12 xfail / 21940 skips.
+          # Baseline (2026-05-29): 1437 passes / 0 in-scope fails / 3 xfail / 21940 skips.
           # The runner gates on THREE guards: in-scope fail===0 (any fail is a
           # miscompile), xpass===0 (prune stale EXPECTED_FAIL entries), and this
-          # pass-count ratchet. Out-of-scope/upstream-parser gaps bucket as xfail
-          # (see EXPECTED_FAIL in test/test262.js), not fail. If you intentionally
-          # add or skip tests, bump this number in the same commit.
-          JZ_TEST262_BASELINE: 1428
+          # pass-count ratchet. Out-of-scope gaps bucket as xfail (see EXPECTED_FAIL
+          # in test/test262.js), not fail. 2026-05-29: +9 — subscript 10.4.17 fixed
+          # the `1.e3` digit-dot-exponent lexer (8 numeric + 1 computed-key literal).
+          JZ_TEST262_BASELINE: 1437
         run: npm run test:262
 
   test262-builtins:
