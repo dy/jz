@@ -655,7 +655,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/JSON/stringify/value-object-abrupt.js', 'JSON.stringify abrupt-getter propagation — out of scope'],
   ['built-ins/JSON/stringify/value-object-circular.js', 'JSON.stringify circular-reference detection — out of scope'],
   ['built-ins/JSON/stringify/value-symbol.js', 'JSON.stringify of Symbol value — out of scope'],
-  ['built-ins/JSON/stringify/value-string-escape-ascii.js', 'object key insertion order — documented divergence'],
   // String
   ['built-ins/String/fromCharCode/touint16-tonumber-throws-bigint.js', 'BigInt-arg ToNumber throw — out of scope'],
   ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
@@ -671,8 +670,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Object/fromEntries/string-entry-primitive-throws.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/supports-symbols.js', 'Object.fromEntries Symbol keys — out of scope'],
-  // Set
-  ['built-ins/Set/prototype/add/preserves-insertion-order.js', 'Set iterates slot order, not insertion order — documented divergence'],
   // parseInt / parseFloat
   ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
   ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],

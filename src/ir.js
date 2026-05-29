@@ -683,9 +683,17 @@ export function needsDynShadow(target) {
   // access (fn.parse, i32.parse aliases) sees the same value as schema slots.
   const vt = typeof target === 'string' ? (ctx.func.localReps?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
   if (vt === 'closure' || usesDynProps(vt)) return true
+  // A module-wide dynamic-key access (`obj[expr]`) means ANY object may later be
+  // read through the dyn-props hash (__dyn_get_any), so every object literal is
+  // built with a shadow. Mutation sites (Object.assign, `o.k = v`) must mirror
+  // into that same shadow or a subsequent hash read returns a stale slot value.
+  // Honor anyDynKey for NAMED targets too — not just anonymous (target == null)
+  // literals — so construct-time shadowing and mutate-time mirroring agree. They
+  // desynced before: a named literal shadowed via anyDynKey, but its assign saw
+  // only dynKeyVars (which holds the *dynamically-keyed* vars, not this binding).
+  if (ctx.types?.anyDynKey) return true
   const dyn = ctx.types?.dynKeyVars
-  if (target == null) return ctx.types?.anyDynKey ?? false
-  return dyn ? dyn.has(target) : false
+  return target != null && dyn ? dyn.has(target) : false
 }
 
 // === Variable storage abstraction ===
