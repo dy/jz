@@ -27,6 +27,13 @@ export const bind = (name, handler) => {
   return handler
 }
 
+/** Register a host import once, idempotent on (module, name). Stdlib modules
+ *  call this from each use site without re-adding the env/wasi import. */
+export const hostImport = (mod, name, fn) => {
+  if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
+  ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
+}
+
 /** WAT stdlib→stdlib deps for `resolveIncludes()`. */
 export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
