@@ -53,16 +53,36 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
      remove prepare's compile/* dependency. Not worth a partial abstraction.
 5. **Seal the emit boundary** (M, fuzz-gate each step): collectDeclFacts() pre-emit pass
    (E1/E6, Root C); sanction ctx.core.withLoop()/declareLocal() APIs (MOD-4, Root C);
-   route jzifyError through err() (SMELLS-F3, 9 sites).
-6. **Decompose mega-functions** (M): emitMethodCall 256-line cascade → flat
-   [predicate,handler] table modules push to (E2, todo #6); add emitDecl; extract
-   tryToPrimitiveSidecar(obj,prop,mode) (E4, coded twice core.js:810/emit.js:1903);
-   ctx.core.emit['.'] router.
-7. **Full CI matrix** (M, plumbing): opt0/opt1/wasi into test.yml (all pass now —
-   biggest stability gap). Step done partly with the script cleanup below.
-8. **The lattice refactor** (L, highest leverage): Roots A+B together — BOTTOM≠TOP +
-   Kildall fixpoint; delete clearStickyNull, the 10-phase script, forced invalidations.
-   todo #2/#3. ONLY after 1–5.
+   route jzifyError through err() (SMELLS-F3) ✅ DONE.
+   - ⏸ collectDeclFacts() pre-emit pass (E1/E6, Root C) → DEFERRED, fold into step 8.
+     It decouples analysis-state writes from emission order — the SAME concern as the
+     lattice (analysis vs emit). Doing it separately double-churns analyze/emit; do it
+     as part of the step-8 analysis pass. declareLocal/withLoop (MOD-4) is local
+     *allocation* (emit's legit job), not an analysis-write leak — `freshLocal`/`temp`
+     already exist in ir.js; adopting them at the 25 raw `uniq++` sites is a cosmetic
+     DRY, not boundary-sealing. Low priority.
+6. **🔶 Decompose mega-functions** (M):
+   - ✅ emitMethodCall strategies 1–4 → LEADING_STRATEGIES table (E2). The remaining
+     8 positions thread shared vt/callMethod state and stay inline (readable, commented).
+   - ⏸ tryToPrimitiveSidecar(obj,prop,mode) (E4, coded twice core.js:810/emit.js:1903),
+     emitDecl, ctx.core.emit['.'] router — remaining, lower urgency.
+7. **✅ DONE — Full CI matrix**: opt0/opt1/opt3/wasi all in test.yml, all green.
+8. **The lattice refactor** (L, highest leverage, HIGHEST RISK): Roots A+B. The lattice
+   is now DECLARED (src/param-reps.js header: BOTTOM=undefined ≠ TOP=null, monotone meet).
+   EXACT PLAN (the monotone fix already exists — narrow.js runArrElemFixpoint's soft
+   merge — generalize it):
+     (a) add `mergeParamFactSoft` = mergeParamFact minus the `observed==null → TOP`
+         line (null = BOTTOM = skip);
+     (b) rewrite runFixpoint's val/schemaId/intConst/wasm rules to soft-merge, iterate
+         `do{…}while(changed)` to a fixpoint, then ONE hard validating sweep that
+         poisons params still unproven (mirror runArrElemFixpoint exactly);
+     (c) delete the 3 clearStickyNull calls + the redundant runFixpoint()/
+         invalidateBodyFacts/refreshValTypes dance they patched;
+     (d) fold in collectDeclFacts (step 5) — same analysis-decoupling.
+   VERIFY: full suite + test262 + EXTENDED fuzz (≥2000 seeds) + FULL bench (perf must
+   not regress — narrowing drives i32/ptr specialization) + matrix. Revert on ANY
+   regression. This is a DEDICATED effort, not a tail-of-turn rush — a subtle lattice
+   error miscompiles silently. Do NOT start before a clean focused session.
 
 ## Optimizer (parallel track, not blocking)
 - OPT-1: the 3089-line vendored watr fork (src/wat/optimize.js) — add FORK.md + CI
