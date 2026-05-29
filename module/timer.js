@@ -27,16 +27,11 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
-import { emit, deps } from '../src/bridge.js'
+import { emit, deps, hostImport } from '../src/bridge.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
-
-const addImportOnce = (ctx, mod, name, fn) => {
-  if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
-  ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
-}
 
 // Shared "fire a NaN-boxed closure with 0 args" trampoline. Funcref index lives
 // in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
@@ -68,7 +63,7 @@ const setupWasi = (ctx) => {
   // call_indirect always matches the $ftN type (env, argc, a0..a7)
   ctx.closure.floor = MAX_CLOSURE_ARITY
 
-  addImportOnce(ctx, 'wasi_snapshot_preview1', 'clock_time_get',
+  hostImport('wasi_snapshot_preview1', 'clock_time_get',
     ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
 
   // __time_ns() → i64 — current monotonic nanoseconds
@@ -279,9 +274,9 @@ const setupJsHost = (ctx) => {
   // canonicalization at the wasm→JS boundary (same reason as env.print —
   // see module/console.js header). delay is a real numeric f64 (no NaN-box
   // hazard), repeat is i32, return is the timer id (numeric int).
-  const needSetTimeout = () => addImportOnce(ctx, 'env', 'setTimeout',
+  const needSetTimeout = () => hostImport('env', 'setTimeout',
     ['func', '$__set_timeout', ['param', 'i64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
-  const needClearTimeout = () => addImportOnce(ctx, 'env', 'clearTimeout',
+  const needClearTimeout = () => hostImport('env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
   ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(true)

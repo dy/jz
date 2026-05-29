@@ -11,7 +11,7 @@
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, ptrTypeEq } from '../src/ir.js'
 import { ssoBitI64Hex } from '../layout.js'
-import { emit, bool, deps, reg } from '../src/bridge.js'
+import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -990,13 +990,9 @@ export default (ctx) => {
     return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
-  const addImportOnce = (ctx, mod, name, fn) => {
-    if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
-    ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
-  }
-  const needParseFloat = () => addImportOnce(ctx, 'env', 'parseFloat',
+  const needParseFloat = () => hostImport('env', 'parseFloat',
     ['func', '$__parseFloat', ['param', 'i64'], ['result', 'f64']])
-  const needParseInt = () => addImportOnce(ctx, 'env', 'parseInt',
+  const needParseInt = () => hostImport('env', 'parseInt',
     ['func', '$__parseInt', ['param', 'i64'], ['param', 'i32'], ['result', 'f64']])
 
   ctx.core.emit['Number.parseFloat'] = (x) => {

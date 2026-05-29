@@ -24,16 +24,11 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
-import { emit, deps, reg } from '../src/bridge.js'
+import { emit, deps, reg, hostImport } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
-
-const addImportOnce = (ctx, mod, name, fn) => {
-  if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
-  ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
-}
 
 // Template-literal concat chains (`a${x}b`) lower to ['()', ['.', X, 'concat'], Y]
 // in prepare. Walking left from the chain root recovers the parts in order; if the
@@ -62,10 +57,10 @@ const setupWasi = (ctx) => {
     __read_stdin: ['__mkstr'],
   })
 
-  const needFdWrite = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_write',
+  const needFdWrite = () => hostImport('wasi_snapshot_preview1', 'fd_write',
     ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
-  const needFdRead = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_read',
+  const needFdRead = () => hostImport('wasi_snapshot_preview1', 'fd_read',
     ['func', '$__fd_read', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr i64)
@@ -189,7 +184,7 @@ const setupWasi = (ctx) => {
   makeConsole('warn', 2)
   makeConsole('error', 2)
 
-  const needClock = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'clock_time_get',
+  const needClock = () => hostImport('wasi_snapshot_preview1', 'clock_time_get',
     ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
 
   reg('Date.now', {
@@ -214,9 +209,9 @@ const setupWasi = (ctx) => {
 }
 
 const setupJsHost = (ctx) => {
-  const needPrint = () => addImportOnce(ctx, 'env', 'print',
+  const needPrint = () => hostImport('env', 'print',
     ['func', '$__print', ['param', 'i64'], ['param', 'i32'], ['param', 'i32']])
-  const needNow = () => addImportOnce(ctx, 'env', 'now',
+  const needNow = () => hostImport('env', 'now',
     ['func', '$__now', ['param', 'i32'], ['result', 'f64']])
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
