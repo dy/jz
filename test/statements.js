@@ -1,6 +1,7 @@
 // Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 
@@ -431,6 +432,7 @@ test('multiple simultaneous timers', async () => {
 // host: 'js' setTimeout/setInterval lower to env imports + __invoke_closure
 // trampoline (no in-wasm queue). Lock the surface in.
 test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure export', () => {
+  if (onWasi()) return  // wasi: host timer imports
   const wasm = compile(`
     setTimeout(() => {}, 10)
     setInterval(() => {}, 5)
@@ -449,6 +451,7 @@ test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure expo
 })
 
 test('host:js timers import only the requested host functions', () => {
+  if (onWasi()) return  // wasi: host timer imports
   const timeoutMod = new WebAssembly.Module(compile(`setTimeout(() => {}, 10); export let f = () => 1`))
   const timeoutImports = WebAssembly.Module.imports(timeoutMod).map(i => i.module + '.' + i.name).sort()
   ok(timeoutImports.includes('env.setTimeout'), `expected env.setTimeout: ${timeoutImports}`)

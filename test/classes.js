@@ -6,6 +6,7 @@
 // non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
@@ -17,6 +18,7 @@ const rejects = (src, re) => {
 }
 
 test('class: fields + constructor + method', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Point {
       x = 0
@@ -30,6 +32,7 @@ test('class: fields + constructor + method', () => {
 })
 
 test('class without a constructor', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Counter { n = 10; inc() { this.n = this.n + 1; return this.n } }
     export let run = () => { let c = new Counter(); return c.inc() + c.inc() }
@@ -38,6 +41,7 @@ test('class without a constructor', () => {
 })
 
 test('class method calling another method via this', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Calc {
       v = 0
@@ -51,6 +55,7 @@ test('class method calling another method via this', () => {
 })
 
 test('uninitialized field reads as undefined', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Box { val; set(x) { this.val = x } read() { return this.val } }
     export let run = () => { let b = new Box(); let before = b.read() === undefined ? 1 : 0; b.set(42); return before * 100 + b.read() }
@@ -59,6 +64,7 @@ test('uninitialized field reads as undefined', () => {
 })
 
 test('field initializer referencing an earlier field via this', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class A { x = 7; y = this.x * 3; getY() { return this.y } }
     export let run = () => new A().getY()
@@ -67,6 +73,7 @@ test('field initializer referencing an earlier field via this', () => {
 })
 
 test('class expression', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     let Make = class { constructor(n){ this.n = n } twice(){ return this.n * 2 } }
     export let run = () => new Make(8).twice()
@@ -75,6 +82,7 @@ test('class expression', () => {
 })
 
 test('export class — factory exported, methods exercised inside jz', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     export class Adder { constructor(b){ this.b = b } plus(x){ return x + this.b } }
     export let run = () => { let a = new Adder(10); return a.plus(5) }
@@ -83,6 +91,7 @@ test('export class — factory exported, methods exercised inside jz', () => {
 })
 
 test('two instances are independent', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Cell { v = 0; set(x){ this.v = x } get(){ return this.v } }
     export let run = () => { let a = new Cell(); let b = new Cell(); a.set(3); b.set(9); return a.get() * 10 + b.get() }
@@ -91,6 +100,7 @@ test('two instances are independent', () => {
 })
 
 test('polymorphic method dispatch over a mixed array', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Sq { constructor(s){ this.s = s } area(){ return this.s * this.s } }
     class Rect { constructor(w,h){ this.w = w; this.h = h } area(){ return this.w * this.h } }
@@ -100,6 +110,7 @@ test('polymorphic method dispatch over a mixed array', () => {
 })
 
 test('private #field', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Secret { #v = 99; reveal() { return this.#v } bump() { this.#v = this.#v + 1; return this.#v } }
     export let run = () => { let s = new Secret(); return s.reveal() * 1000 + s.bump() }
@@ -108,6 +119,7 @@ test('private #field', () => {
 })
 
 test('new without parentheses', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Zero { v = 0; val(){ return this.v } }
     export let run = () => (new Zero).val()
@@ -116,6 +128,7 @@ test('new without parentheses', () => {
 })
 
 test('this inside a method-nested arrow refers to the instance', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Summer { base = 100; sumWith(xs) { return xs.reduce((acc, x) => acc + x + this.base, 0) } }
     export let run = () => new Summer().sumWith([1, 2, 3])
@@ -128,6 +141,7 @@ test('this inside a method-nested arrow refers to the instance', () => {
 // untyped call result, so the collection emitter must not be picked for a
 // zero-arg call (it would `emit()` a missing key and crash codegen).
 test('collection-named method on a direct `new` chain', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class C { constructor(v){ this.v = v } get(){ return this.v + 1 } has(){ return this.v } }
     export let run = () => new C(10).get() * 100 + new C(7).has()
@@ -136,6 +150,7 @@ test('collection-named method on a direct `new` chain', () => {
 })
 
 test('class static field and method', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Counter {
       static start = 10
@@ -149,6 +164,7 @@ test('class static field and method', () => {
 })
 
 test('class constant computed instance field lowers to fixed key', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Box {
       ["value"] = 41
@@ -160,6 +176,7 @@ test('class constant computed instance field lowers to fixed key', () => {
 })
 
 test('class constant computed instance method lowers to fixed key', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Box {
       ["value"]() { return 42 }
@@ -170,6 +187,7 @@ test('class constant computed instance method lowers to fixed key', () => {
 })
 
 test('class constant computed static field lowers to fixed key', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Counter {
       static ["start"] = 10
@@ -181,6 +199,7 @@ test('class constant computed static field lowers to fixed key', () => {
 })
 
 test('class constant computed static method lowers to fixed key', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Counter {
       static ["next"]() { return 12 }
@@ -191,6 +210,7 @@ test('class constant computed static method lowers to fixed key', () => {
 })
 
 test('class static method uses this as class binding', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Counter {
       static start = 10
@@ -202,6 +222,7 @@ test('class static method uses this as class binding', () => {
 })
 
 test('named class expression static method sees inner name', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     let Counter = class _Counter {
       static start = 10
@@ -213,6 +234,7 @@ test('named class expression static method sees inner name', () => {
 })
 
 test('class extends: constructor super and inherited method', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -228,6 +250,7 @@ test('class extends: constructor super and inherited method', () => {
 })
 
 test('class extends: default constructor forwards args', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -242,6 +265,7 @@ test('class extends: default constructor forwards args', () => {
 })
 
 test('class extends: inherited helper used by derived method', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Adapter {
       extract(item) { return item.qty + 1 }
@@ -255,6 +279,7 @@ test('class extends: inherited helper used by derived method', () => {
 })
 
 test('class extends: expression heritage member is evaluated once', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -270,6 +295,7 @@ test('class extends: expression heritage member is evaluated once', () => {
 })
 
 test('class extends: call-expression heritage is evaluated once', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -286,6 +312,7 @@ test('class extends: call-expression heritage is evaluated once', () => {
 })
 
 test('class extends: super.method call dispatches to base implementation', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -300,6 +327,7 @@ test('class extends: super.method call dispatches to base implementation', () =>
 })
 
 test('class extends: super.method call from constructor', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }
@@ -315,6 +343,7 @@ test('class extends: super.method call from constructor', () => {
 })
 
 test('class extends: super["method"] call dispatches to base implementation', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
     class Base {
       constructor(x) { this.x = x }

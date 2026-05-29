@@ -25,7 +25,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt, onWasi } from './_opt.js'
 import jz from '../index.js'
 import { run } from './util.js'
 
@@ -450,6 +450,7 @@ test('i32 range-safety: f64-fed accumulator declared f64 in WAT (never i32-narro
 // value). See research/inference.md ("Assume integer unless provably fractional").
 
 test('integer-global inference: i32 narrowing preserves integer arithmetic end-to-end', () => {
+  if (onWasi()) return  // wasi: run-reserved export
   // `N`, `acc` carry integers through param assigns, `>>>`, `+= i`. Narrowing to
   // i32 must compute identically to the f64 path for in-range values:
   // sum(0..n-1) + (n>>>1) = 499500 + 500 at n=1000.

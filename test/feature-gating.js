@@ -4,6 +4,7 @@
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { compile } from '../index.js'
+import { onWasi } from './_opt.js'
 
 // Feature gating asks: did jz pull this stdlib in? watr's `inlineOnce` +
 // `treeshake` then folds + erases helpers whose only caller has been inlined,
@@ -42,6 +43,7 @@ test('features.external OFF: typed array sum — no __ext_* imports', () => {
 })
 
 test('features.external ON: untyped .prop read — __ext_prop import present', () => {
+  if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o) => o.x`)
   is(hasImport(w, '__ext_prop'), true)
 })
@@ -57,16 +59,19 @@ test('features.external OFF: untyped ?.prop read — no __ext_prop import', () =
 })
 
 test('features.external ON: untyped .prop write — __ext_set import present', () => {
+  if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o, v) => { o.x = v }`)
   is(hasImport(w, '__ext_set'), true)
 })
 
 test('features.external ON: untyped method call — __ext_call import present', () => {
+  if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o) => o.m()`)
   is(hasImport(w, '__ext_call'), true)
 })
 
 test('features.external ON: HOST_GLOBALS reference — __ext_prop import present', () => {
+  if (onWasi()) return  // wasi: host import
   const w = wat(`export let f = () => globalThis.foo`)
   is(hasImport(w, '__ext_prop'), true)
 })
@@ -87,6 +92,7 @@ test('features.external OFF: __dyn_get_any factory collapses (no __ext_prop call
 })
 
 test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
+  if (onWasi()) return  // wasi: external object
   // Literal key `.x` folds the FNV hash at compile time → prehashed `_h` variant.
   const w = wat(`export let f = (o) => o.x`)
   ok(hasDef(w, '__dyn_get_any_t_h'))
@@ -114,6 +120,7 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
 })
 
 test('organic hash gating ON: untyped .prop pulls __dyn_get_any_t', () => {
+  if (onWasi()) return  // wasi: external object
   // Literal key `.x` folds the FNV hash at compile time → prehashed `_h` variant.
   const w = wat(`export let f = (o) => o.x`)
   ok(hasDef(w, '__dyn_get_any_t_h'))
@@ -219,6 +226,7 @@ test('features.closure ON: first-class function — closure table present', () =
 // === Runtime autowiring: passing a JS object to exported fn ===
 
 test('autowire: JS object passed to exported fn reads via EXTERNAL', async () => {
+  if (onWasi()) return  // wasi: external object / js-object arg
   // features.external must be on at compile time (untyped .prop triggers it),
   // and runtime wraps the JS object as EXTERNAL.
   const jz = (await import('../index.js')).default
@@ -227,6 +235,7 @@ test('autowire: JS object passed to exported fn reads via EXTERNAL', async () =>
 })
 
 test('autowire: JS object method call via __ext_call', async () => {
+  if (onWasi()) return  // wasi: external object / js-object arg
   const jz = (await import('../index.js')).default
   const { callMe } = jz(`export let callMe = (o) => o.greet('world')`).exports
   const obj = { greet(n) { return 'hi ' + n } }
@@ -234,6 +243,7 @@ test('autowire: JS object method call via __ext_call', async () => {
 })
 
 test('autowire: JS object .prop write goes through __ext_set', async () => {
+  if (onWasi()) return  // wasi: external object / js-object arg
   const jz = (await import('../index.js')).default
   const { setIt } = jz(`export let setIt = (o, v) => { o.x = v }`).exports
   const o = { x: 0 }

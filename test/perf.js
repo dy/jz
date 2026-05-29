@@ -1,7 +1,7 @@
 // Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt, onWasi } from './_opt.js'
 import jz, { compile } from '../index.js'
 
 // Helper: time N iterations, return ms
@@ -63,6 +63,7 @@ test('perf: fib(30) — WASM faster than JS', () => {
 })
 
 test('perf: mandelbrot escape grid — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   // Bench-shape: render a 128x128 grid inside the wasm function.
   // The buggy let-in-loop pattern (`let x2 = zx*zx`) needs the widenPass fixpoint
   // re-walk to widen x2/y2 from i32 to f64 — without it the fractional value
@@ -278,6 +279,7 @@ test('perf: mat4 multiply — WASM faster than JS', () => {
 })
 
 test('perf: poly bimorphic sum — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   const N = 8192, ROUNDS = 80
   const { exports: { run } } = jz(`
     export let run = () => {
@@ -319,6 +321,7 @@ test('perf: poly bimorphic sum — WASM faster than JS', () => {
 })
 
 test('perf: bitwise i32 chain — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   const N = 16384, ROUNDS = 64
   const { exports: { run } } = jz(`
     export let run = () => {
@@ -372,6 +375,7 @@ test('perf: bitwise i32 chain — WASM faster than JS', () => {
 })
 
 test('perf: tokenizer scan — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   const REPEAT = 256
   const { exports: { run } } = jz(`
     let BASE = 'let alpha_12 = beta + 12345; if (alpha_12 >= 99) { total = total + alpha_12; }\\n'
@@ -437,6 +441,7 @@ test('perf: tokenizer scan — WASM faster than JS', () => {
 })
 
 test('perf: callback Array.map — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   const N = 2048, INNER = 64
   const { exports: { run } } = jz(`
     export let run = () => {
@@ -470,6 +475,7 @@ test('perf: callback Array.map — WASM faster than JS', () => {
 })
 
 test('perf: aos object rows — WASM faster than JS', () => {
+  if (onWasi()) return  // wasi: run-reserved void entry
   const N = 16384, INNER = 64
   const { exports: { run } } = jz(`
     export let run = () => {
@@ -573,6 +579,7 @@ test('codegen: loop counter widens to f64 when compared to f64 param', () => {
 })
 
 test('codegen: f64-bound counter used as a fully-i32 array index stays i32', () => {
+  if (onWasi()) return  // wasi: run-reserved renames locals
   // Idiomatic hot loop: counter compared to an f64 global bound, but used as an
   // affine array index. A valid wasm32 byte-offset must fit i32 and an affine
   // index is monotone in the counter, so it provably stays in i32 range — jz keeps
@@ -590,6 +597,7 @@ test('codegen: f64-bound counter used as a fully-i32 array index stays i32', () 
 })
 
 test('codegen: nested-loop index seeded from an outer counter narrows transitively', () => {
+  if (onWasi()) return  // wasi: run-reserved renames locals
   // FFT-butterfly shape: an inner index is seeded from an outer counter and stepped
   // by an i32 stride. i32-safety back-propagates through the affine assignment/step
   // edges (i0 ← ix, i0 += id) so the whole nest stays i32 — the pattern that drove
@@ -656,6 +664,7 @@ test('codegen: integer-global inference narrows numeric globals, demoting only o
 })
 
 test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter convert)', () => {
+  if (onWasi()) return  // wasi: run-reserved renames locals
   // The payoff of integer-global inference: with `N` an i32 global, `i < N` is a
   // pure i32 compare — no `f64.convert_i32_s` widening the counter each iteration.
   const wat = compile(`
@@ -824,6 +833,7 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
 })
 
 test('perf: watr WAT compiler — WASM competitive with JS', async () => {
+  if (onWasi()) return  // wasi: host global WebAssembly
   // Bench-shape: jzify-bundled watr.compile vs. native ESM watr.compile, on the
   // same WAT corpus the bench harness uses. On the live bench, jz watr is
   // tied with V8 (1.46ms vs 1.46ms median, within noise). In this stricter
@@ -1033,6 +1043,7 @@ test('codegen: .length hoisted out of for-loop', () => {
 // Pin optimize:2 — golden bytes are level-2 baselines; matrix runs at other
 // levels should not shake them.
 const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
+  if (onWasi()) return  // wasi: size pin
   const wasm = compile(src, { optimize: 2 })
   const actual = wasm.byteLength
   const tol = Math.max(20, Math.round(expected * 0.05 / 10) * 10)

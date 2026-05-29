@@ -1,6 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz, { compile } from '../index.js'
 
 // Helper: compile and run
@@ -541,6 +542,7 @@ test('autoload: user function wins over internal emitter name', () => {
 // arg count to the declared import signature so a mismatch on either side
 // produces a valid module.
 test('import: extra args truncated to declared arity', () => {
+  if (onWasi()) return  // wasi: host import / _interp unavailable
   // Host stub declares 1 param; call site passes 5 → extras dropped, valid wasm
   const wasm = compile(
     `export let f = () => Foo(2024, 0, 1, 12, 30)`,
@@ -551,6 +553,7 @@ test('import: extra args truncated to declared arity', () => {
 })
 
 test('import: missing args padded to declared arity', () => {
+  if (onWasi()) return  // wasi: host import / _interp unavailable
   // Host stub declares 3 params; call site passes 1 → padded to 3 with NULL
   const wasm = compile(
     `export let f = () => Foo(7)`,
@@ -560,6 +563,7 @@ test('import: missing args padded to declared arity', () => {
 })
 
 test('import: zero-arg callee with arg supplied at call site', () => {
+  if (onWasi()) return  // wasi: host import / _interp unavailable
   // Caller passes 1 arg; declared sig is 0 — arg is dropped (was bypassed by
   // `||` falling through to args.length, which always matches itself).
   const wasm = compile(

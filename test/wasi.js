@@ -23,13 +23,13 @@ test('console.log: multiple args', () => {
 
 test('host:js console/time imports are demand-driven', () => {
   const consoleImports = WebAssembly.Module.imports(new WebAssembly.Module(
-    compile(`export let f = () => { console.log("x"); return 1 }`)
+    compile(`export let f = () => { console.log("x"); return 1 }`, { host: 'js' })
   )).map(i => i.module + '.' + i.name)
   ok(consoleImports.includes('env.print'), `expected env.print: ${consoleImports}`)
   ok(!consoleImports.includes('env.now'), `console.log should not import env.now: ${consoleImports}`)
 
   const timeImports = WebAssembly.Module.imports(new WebAssembly.Module(
-    compile(`export let f = () => Date.now()`)
+    compile(`export let f = () => Date.now()`, { host: 'js' })
   )).map(i => i.module + '.' + i.name)
   ok(timeImports.includes('env.now'), `expected env.now: ${timeImports}`)
   ok(!timeImports.includes('env.print'), `Date.now should not import env.print: ${timeImports}`)
@@ -40,7 +40,7 @@ test('host:js top-level console.log decodes after memory attaches', () => {
   const logged = []
   try {
     console.log = (...args) => logged.push(args.join(' '))
-    jz(`console.log("boot", undefined, null); export let f = () => 1`)
+    jz(`console.log("boot", undefined, null); export let f = () => 1`, { host: 'js' })
   } finally {
     console.log = originalLog
   }
@@ -172,7 +172,7 @@ test('WASI: _interp option throws with construct-specific message', () => {
 test('WASI: _interp does not throw under host:js', () => {
   // The reject is wasi-only; host:'js' is the existing _interp use case.
   let error
-  try { compile(`export let f = () => myFn(1)`, { _interp: { myFn: () => 42 } }) }
+  try { compile(`export let f = () => myFn(1)`, { _interp: { myFn: () => 42 }, host: 'js' }) }
   catch (e) { error = e }
   is(error, undefined)
 })
@@ -196,7 +196,7 @@ test('WASI: WebAssembly host-global reference throws', () => {
 test('WASI: host-global reference does not throw under host:js', () => {
   // host:'js' continues to auto-import host globals as before.
   let error
-  try { compile(`export let f = () => globalThis`) }
+  try { compile(`export let f = () => globalThis`, { host: 'js' }) }
   catch (e) { error = e }
   is(error, undefined)
 })

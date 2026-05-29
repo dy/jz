@@ -21,10 +21,12 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { onWasi } from './_opt.js'
 import jz from '../index.js'
 import { run } from './util.js'
 
 test('jsstring opt-in: bounded charCodeAt + length flips to externref', () => {
+  if (onWasi()) return  // wasi: jsstring externref interop
   const wat = jz.compile(`
     export const sum = (s) => {
       let n = 0
@@ -108,6 +110,7 @@ test('jsstring opt-in: param escape (concat) rejects', () => {
 })
 
 test('jsstring opt-in: string-literal default is string-discriminating proof', () => {
+  if (onWasi()) return  // wasi: jsstring externref interop
   // `s = ''` declares intent — even without `.charCodeAt`, the explicit string
   // default proves the param is meant to be a string. Flip to externref; the
   // interop wrapper substitutes the default JS-side when caller passes undef.

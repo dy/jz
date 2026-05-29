@@ -2,7 +2,7 @@
 // intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt, onWasi } from './_opt.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
@@ -395,6 +395,7 @@ test('switch: jzify strips terminal breaks inside braced cases', () => {
 })
 
 test('switch: jzify keeps destructured-param function body as statements', () => {
+  if (onWasi()) return  // wasi: js-object arg / live JS object passed to wasm
   const { f } = jz(`
     function f(x, { kind }) {
       switch (kind) {

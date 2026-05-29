@@ -1,7 +1,7 @@
 // Closures: capture, currying, callbacks, methods, ABI/arity, unboxing
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt } from './_opt.js'
+import { belowOpt, onWasi } from './_opt.js'
 import jz, { compile } from '../index.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
@@ -205,6 +205,7 @@ test('closure: captured parameter', () => {
 })
 
 test('closure: integer const capture folds into closure body', () => {
+  if (onWasi()) return  // wasi: closure ABI adds $__env param / WAT check host-specific
   const src = `
     export let f = (x) => {
       const MASK = 255
@@ -751,6 +752,7 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
 
 test('closure-unbox: trivial closure-call program stays compact (post-watr fusedRewrite)', () => {
   if (belowOpt(2)) return  // size pin: the pass under test runs at optimize >= 2
+  if (onWasi()) return  // wasi: size pin / wasi module larger due to extra imports
   // Pin the post-watrOptimize fusedRewrite pass — without it watr's inliner
   // re-introduces a rebox/unbox roundtrip across the closure-body inline
   // boundary. Threshold tracks the ≤252b figure with small headroom.

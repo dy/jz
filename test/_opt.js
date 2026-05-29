@@ -1,13 +1,20 @@
 /**
- * Optimize-level awareness for the test matrix.
+ * Test-matrix axis awareness (optimize level + host).
  *
- * `npm run test:opt0|opt1|opt3` set `JZ_TEST_OPTIMIZE`, which index.js applies as the
- * default optimize level. Most tests assert behaviour (correctness) and run at every
- * level. A handful are optimizer-OUTPUT pins — binary-size thresholds, "this pass
- * eliminated X", SIMD advisories, vectorized-vs-baseline equality — whose premise only
- * holds once the relevant pass has run. Those guard with `if (belowOpt(N)) return` so
- * they skip (not false-fail) below the level they target, keeping `test:matrix:full`
- * meaningful at every level.
+ * `npm run test:opt0|opt1|opt3` set `JZ_TEST_OPTIMIZE` and `test:wasi` sets
+ * `JZ_TEST_HOST`, which index.js applies as compile defaults. Most tests assert
+ * behaviour (correctness) and run on every leg. Two families don't:
+ *
+ *  1. Optimizer-OUTPUT pins — binary-size thresholds, "this pass eliminated X",
+ *     SIMD advisories, vectorized-vs-baseline equality — whose premise only holds
+ *     once the relevant pass ran. Guard with `if (belowOpt(N)) return`.
+ *  2. JS-host-only behaviour — host/env imports, tagged-template interpolation of
+ *     live JS values, externref/js-string interop, external (host) objects, host
+ *     timer wiring, and the callable-`run`-export-returns-a-value pattern (`run` is
+ *     the reserved void WASI command entry). These can't apply under the hostless
+ *     WASI boundary. Guard with `if (onWasi()) return`.
+ *
+ * Guarding (vs deleting) keeps each test live on the legs where it IS meaningful.
  *
  * @module test/_opt
  */
@@ -27,3 +34,11 @@ export const OPT_LEVEL =
 /** True when this run's optimize level is below `min` — an optimizer-output assertion
  *  can't hold, so the test should `return` early instead of asserting a false regression. */
 export const belowOpt = (min) => OPT_LEVEL < min
+
+/** Resolved compile host for this run ('js' default; 'wasi' under test:wasi). */
+export const HOST = process.env.JZ_TEST_HOST || 'js'
+
+/** True under the hostless WASI boundary — a JS-host-only assertion (env/host imports,
+ *  template-interpolated JS values, externref/js-string, external objects, host timers,
+ *  callable-`run`-returns-value) can't apply, so the test should `return` early. */
+export const onWasi = () => HOST === 'wasi'
