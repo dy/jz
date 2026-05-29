@@ -26,6 +26,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const BENCH = join(ROOT, 'bench/bench.mjs')
 const SIZE_SCRIPT = join(ROOT, 'scripts/bench-size.mjs')
+const FUZZBENCH = join(ROOT, 'scripts/fuzz-bench.mjs')
 
 const have = cmd => spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const ascAvailable = have('asc')
@@ -344,3 +345,17 @@ const sizeCompile = id => compile(readFileSync(join(ROOT, `bench/${id}/${id}.js`
 }).length
 test('bench: mat4 size-optimized compile ≤ 2500 B', () => { const b = sizeCompile('mat4'); ok(b <= 2500, `mat4 size-optimized compile: ${b} B exceeds 2500 B`) })
 test('bench: biquad size-optimized compile ≤ 3000 B', () => { const b = sizeCompile('biquad'); ok(b <= 3000, `biquad size-optimized compile: ${b} B exceeds 3000 B`) })
+
+// ── Perf-fuzz: jz on-par-or-faster than V8 across RANDOM int/float/mixed programs ──
+// Guards the "jz only wins on a cherry-picked corpus / via unsound i32 narrowing"
+// failure mode. scripts/fuzz-bench.mjs synthesizes hot accumulation loops across
+// the int→float→mixed spectrum, drops any miscompile (correctness sanity per
+// program), and self-gates the per-category MEDIAN jz/V8 ratio (exits non-zero
+// past 1.15×). Needs only jz — no external toolchain — so it always runs here.
+// CI-sized (~7 s); `npm run bench:fuzz` runs the heavier local thesis-check.
+test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', () => {
+  let out
+  try { out = execFileSync('node', [FUZZBENCH, '--count=30', '--n=150000', '--iters=12'], { encoding: 'utf8', cwd: ROOT }) }
+  catch (e) { ok(false, `perf-fuzz regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
+  ok(/^PASS:/m.test(out), `perf-fuzz did not report PASS:\n${out}`)
+})
