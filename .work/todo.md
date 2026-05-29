@@ -102,21 +102,30 @@ suite + perf-fuzzer. Safety net = `npm test` 1912 pass, opt0/1/2/3 + wasi all gr
   i32.wrap_i64(i64.reinterpret_f64 x) — deeper optimizer change, deferred.
 - #4a cseScalarLoad explicit proof (low value). #4b vectorizer: no-change (documented).
 
-## ⟢ Remaining frontier (all HIGH-RISK core-restructuring, diminishing returns)
-The safe + elegant fixes are done (roots B, E; F1; steps 1–8; OPT-2 side-channel).
-What's left has no clean elegant fix like root B had — each is a dedicated effort,
-gauntlet-gated, revert-on-regression, only worth it if a concrete need arises:
-- **Root A (analyzeBody purity)**: 9 manual invalidateLocalsCache calls patch the
-  body-keyed cache going stale when ctx.func.localReps / sig.ptrKind change mid-
-  narrowing. Fix = cache-version on ctx-deps or make analyzeBody pure (pass deps in).
-  Invasive (analyzeBody is called everywhere). [F1 closed the *duplicate-tracker* half.]
-- **Root C (collectDeclFacts)**: emit writes analysis state (updateRep/schema during
-  emission) → decl ordering load-bearing. Fix = a pre-emit decl-facts pass.
-- **wasm resetParamWasmFacts**: the one remaining narrowing non-monotonicity — wasm
-  param facts observe stale f64 because exprType reads sig.results before result-i32
-  narrowing. Unlike root B (clean narrowValResults hoist), this is a genuine param↔
-  result i32 CYCLE; monotone fix needs result-wasm modeled as a fact exprType reads
-  (touches exprType, used in emit too) — no contained elegant fix found.
+## ⟢ Remaining frontier — ASSESSED: fixes would NOT increase elegance/compactness
+Rigorous code-level pass (2026-05-29): each remaining root is a LOAD-BEARING or
+LEGITIMATE-PHASED pattern, not an extractable smell. A fix would ADD machinery,
+regress perf, or merge distinct concerns — i.e. *decrease* the qualities we'd be
+chasing. The clean wins are already taken (roots B, E; F1; steps 1–8; OPT-2). Leave
+these unless a concrete need arises; recorded so a future attempt starts from evidence.
+- **Root A — two walks**: analyzeValTypes ≠ a re-walk of analyzeBody — it does MORE
+  (jsonShape, ctx.schema.vars binding, regex, `.map()` typed-propagation, arr-elem
+  schema inheritance) and WRITES ctx for emit, while analyzeBody returns cached pure
+  facts for other callers. Different purposes → merging = bigger + mixes pure/effectful.
+  F1 already deduped the only truly-identical part (the val/typed trackers).
+- **Root A — caching (8 invalidateLocalsCache)**: each is surgical + correct (per-func
+  after a specific ctx mutation; different scopes, not consolidatable). Auto-invalidation
+  (generation bump per mutation) would invalidate every call → kills the cache (perf).
+  The surgical invalidations ARE the right perf/clarity tradeoff.
+- **Root C (collectDeclFacts)**: emit's rep-writes (emit.js:755–775) read `val.ptrKind`
+  / `val.ptrAux` off the EMITTED RHS — emit-time-only, can't move to a pre-pass.
+  analyzeValTypes already pre-computes the AST-derivable facts; collectDeclFacts would
+  duplicate it, not simplify. The decl-order coupling is source-order (correct), documented.
+- **wasm resetParamWasmFacts**: a correct, surgical, documented PHASED re-observation
+  (re-read wasm after result-i32 narrowing) — NOT a spurious-poison smell like
+  clearStickyNull. A soft-merge "fix" needs wasmAtSite + hardParamWasm (applyI32 trusts
+  r.wasm, no per-site recheck) + a final sweep = ~+20 lines to remove ~4, plus the
+  param↔result i32 cycle's perf-convergence risk. Adds machinery; not a compactness win.
 
 ## Missing constructs to ADD (prevent future ad-hocs)
 declared lattice (→8); enforced module-registration startup check (→Root D); closed
