@@ -465,6 +465,21 @@ function canThrow(body, seen = new Set()) {
 const isBoundName = name =>
   ctx.func.locals?.has(name) || ctx.func.current?.params?.some(p => p.name === name)
 
+// Loop-bound hoisting (see the 'for' emitter): comparison ops whose invariant side
+// is worth lifting, and the test for an immutable, loop-stable `arr.length`. Typed
+// arrays have a fixed length, so `arr.length` is loop-invariant when `arr` is a
+// typed-array var that the body never reassigns — safe to compute once.
+const HOIST_CMP = new Set(['<', '<=', '>', '>='])
+const immutableLenBound = (node, body) => {
+  // Unwrap the `| 0` i32 coercion jz wraps a loop bound in (`i < arr.length`
+  // emits `i < (arr.length | 0)`).
+  if (Array.isArray(node) && node[0] === '|' && Array.isArray(node[2]) && node[2][0] == null && node[2][1] === 0)
+    node = node[1]
+  return Array.isArray(node) && node[0] === '.' && node[2] === 'length'
+    && typeof node[1] === 'string' && lookupValType(node[1]) === VAL.TYPED
+    && !isReassigned(body, node[1])
+}
+
 // A source-defined function (carries a body) — as opposed to an imported name,
 // which `ctx.func.names` also holds but which has no body and may legitimately
 // share a name with a built-in emitter (e.g. an imported `parseInt`).
@@ -2897,8 +2912,23 @@ export const emitter = {
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
     if (init != null) result.push(...emitVoid(init))
+    // Hoist a loop-invariant immutable-length bound out of the condition. A typed
+    // array's `.length` is fixed, so `i < arr.length` otherwise reloads the header
+    // (`i32.load (base-8) >> 2`) every iteration for nothing (V8's JIT hoists it).
+    // Compute it once into a temp when `arr` is a typed-array var not reassigned in
+    // the body. Only the simple top-level comparison forms — anything fancier just
+    // keeps the per-iteration eval (correct, only misses the speedup).
+    let condForLoop = cond
+    if (cond && Array.isArray(cond) && HOIST_CMP.has(cond[0])) {
+      const side = immutableLenBound(cond[2], body) ? 2 : immutableLenBound(cond[1], body) ? 1 : 0
+      if (side) {
+        const lt = tempI32('len')
+        result.push(['local.set', `$${lt}`, asI32(emit(cond[side]))])
+        condForLoop = cond.slice(); condForLoop[side] = lt
+      }
+    }
     const loopBody = []
-    if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
+    if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz', toBool(condForLoop)]])
     loopBody.push(...freshBoxed)
     if (needsCont) loopBody.push(['block', cont, ...emitVoid(body)])
     else loopBody.push(...emitVoid(body))
