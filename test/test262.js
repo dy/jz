@@ -777,14 +777,12 @@ function collectWork() {
 // *in-scope* correctness honestly — any non-zero `fail` is a genuine miscompile.
 // If a listed file ever passes it surfaces as `xpass` so the entry can be pruned.
 // (Mirrors the builtins suite.) Paths are `relative(TEST262, file)` form.
+// (subscript 10.4.17 fixed the `1.e3` digit-dot-exponent lexer gap — the 8
+// S7.8.3_A3.3 numeric tests + the decimal-e computed-key test now pass, so their
+// former EXPECTED_FAIL entries were pruned and the baseline bumped 1428→1437.)
 const EXPECTED_FAIL_PREFIXES = [
-  // subscript lexes `1.e3` as member access `(1).e3` → undefined, not the numeric
-  // literal `1000`. Digit-dot-exponent (no fractional digits) is unlexed upstream.
-  ['test/language/literals/numeric/S7.8.3_A3.3', 'subscript parser: `0.e1` (digit-dot-exponent, no fractional digits) lexed as member access — upstream parser gap'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
-  ['test/language/expressions/object/cpn-obj-lit-computed-property-name-from-decimal-e-notational-literal.js',
-    'subscript parser: `0.e`-notation literal as computed key — same upstream lexer gap as S7.8.3_A3.3'],
   ['test/language/statements/for/S12.6.3_A6.js',
     '`var` hoist out of a for-body kept live after the loop throws — var hoisting across blocks out of scope (jz scopes with let/const)'],
   ['test/language/statements/for/head-var-bound-names-in-stmt.js',
