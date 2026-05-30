@@ -14,7 +14,7 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   forEach: ['core', 'array'], find: ['core', 'array'], findIndex: ['core', 'array'],
   findLast: ['core', 'array'], findLastIndex: ['core', 'array'],
   every: ['core', 'array'], some: ['core', 'array'], flat: ['core', 'array'], flatMap: ['core', 'array'],
-  join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'array'],
+  join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'string', 'array'],
   charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
   toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], toLocaleLowerCase: ['core', 'string'], trim: ['core', 'string'],
   trimStart: ['core', 'string'], trimEnd: ['core', 'string'],
