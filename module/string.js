@@ -1321,14 +1321,30 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ...ir], 'f64')
   })
 
-  // .charAt(i) → 1-char string from char code at index i
+  // Shared: `$iLocal` in `[0, lenIR)` → a 1-byte SSO string of the char at that
+  // index; otherwise `oobIR`. Without the bounds check `__char_at` returns 0 for an
+  // out-of-range index, which would wrap to a bogus `"\x00"` string (charAt → "",
+  // at → undefined). `sLocal` is the receiver as an f64 local.
+  const charAtOr = (sLocal, iLocal, lenIR, oobIR) =>
+    ['if', ['result', 'f64'],
+      ['i32.and',
+        ['i32.ge_s', ['local.get', iLocal], ['i32.const', 0]],
+        ['i32.lt_s', ['local.get', iLocal], lenIR]],
+      ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1,
+        ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', sLocal]], ['local.get', iLocal]])],
+      ['else', oobIR]]
+  const emptyStr = mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
+
+  // .charAt(i) → 1-char string at index i, or "" when out of range (JS spec: no
+  // negative-index wraparound — a negative or >=length index yields "").
   bind('.charAt', (str, idx) => {
-    inc('__char_at')
-    const t = tempI32('ch')
-    // Get char code, create SSO string with 1 byte
+    inc('__char_at', '__str_byteLen')
+    const s = temp('cs'), i = tempI32('ci')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__char_at', asI64(emit(str)), asI32(emit(idx))]],
-      mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, ['local.get', `$${t}`])], 'f64')
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${i}`, asI32(emit(idx))],
+      charAtOr(`$${s}`, `$${i}`,
+        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], emptyStr)], 'f64')
   })
 
   // .charCodeAt(i) → JS-spec char code: the UTF-16 code unit at `i`, or NaN
@@ -1564,18 +1580,20 @@ export default (ctx) => {
       value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')
   })
 
-  // .at(i) → charAt with negative index support
+  // .at(i) → 1-char string at index i with negative-index support, or undefined
+  // when out of range (JS spec: `i += length` for negative, then OOB → undefined).
   bind('.string:at', (str, idx) => {
     inc('__char_at', '__str_byteLen')
-    const t = tempI32('at'), s = temp('as')
+    const t = tempI32('at'), s = temp('as'), len = tempI32('al')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${len}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       ['local.set', `$${t}`, asI32(emit(idx))],
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
-        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-          ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]],
-      mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${t}`]])], 'f64')
+        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
+      charAtOr(`$${s}`, `$${t}`, ['local.get', `$${len}`],
+        ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]])], 'f64')
   })
 
   // .search(str) → indexOf (same as indexOf for string args)

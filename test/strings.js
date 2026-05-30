@@ -708,6 +708,28 @@ test('String: at negative', () => {
   is(run(`export let f = () => "hello".at(-1).charCodeAt(0)`).f(), 111)
 })
 
+test('String: charAt out of range → "" (not "\\x00")', () => {
+  is(run(`export let f = () => "abc".charAt(5)`).f(), '')   // past end
+  is(run(`export let f = () => "abc".charAt(-1)`).f(), '')  // negative (no wraparound)
+  is(run(`export let f = () => "".charAt(0)`).f(), '')      // empty receiver
+  is(run(`export let f = () => "abc".charAt(0)`).f(), 'a')  // in-range still works
+})
+
+test('String: at out of range → undefined (not "\\x00")', () => {
+  ok(run(`export let f = () => "hi".at(5)`).f() === undefined, 'past end → undefined')
+  ok(run(`export let f = () => "hi".at(-9)`).f() === undefined, 'negative past start → undefined')
+  is(run(`export let f = () => "abc".at(1)`).f(), 'b')      // in-range
+  is(run(`export let f = () => "abc".at(-1)`).f(), 'c')     // negative in-range
+})
+
+test('String: .at on an untyped param dispatches to the string handler (not array)', () => {
+  // Regression: `at: ['core','array']` in autoload routed param `.at` to the array
+  // handler (raw f64 heap read). Now lists 'string' too → runtime ptr-type branch.
+  const f = run(`export let f = (s) => s.at(0)`).f
+  is(f('hello'), 'h')
+  ok(run(`export let g = (s) => s.at(9)`).g('abc') === undefined, 'OOB on param → undefined')
+})
+
 // === search / match ===
 
 test('String: search found', () => {
