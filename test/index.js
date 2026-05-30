@@ -52,14 +52,17 @@ const argFilters = process.argv.slice(2)
 
 // Files that are wholly host-bridge / host-runtime: their compile inputs depend
 // on host options (imports/host globals, external js objects, CLI argv, host
-// timers) or a different target (WASI command entry) that the jz.wasm kernel —
-// which takes a raw AST and owns compile internally — never receives. They
-// cannot run on the self-host leg by construction (not value miscompiles), and
-// some throw uncaught (calling the real globalThis.fetch) which would abort the
-// run. Skip them under JZ_TEST_TARGET=jz.wasm so test:wasm is a clean signal of
-// genuine self-host correctness. Mixed files keep their per-test `onKernel()`
-// guards instead.
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi'])
+// timers, multi-module graphs) or a different target (WASI command entry) that
+// the jz.wasm kernel — which takes a single raw AST and owns compile internally —
+// never receives. They cannot run on the self-host leg by construction (not value
+// miscompiles), and some throw uncaught (calling the real globalThis.fetch, or
+// `Unknown module './src/compile.js'`) which would abort the run. Skip them under
+// JZ_TEST_TARGET=jz.wasm so test:wasm is a clean signal of genuine self-host
+// correctness. Mixed files keep their per-test `onKernel()` guards instead.
+//   - watr: compiles the watr WAT library, which is a multi-file module graph
+//     (`import … from './src/compile.js'` etc.); the kernel takes one parsed AST
+//     and has no host module resolver, so every case reports "Unknown module".
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length
