@@ -71,9 +71,12 @@ test('?? mixed with ||/&& without parens rejected (PARSE-4, ES2020)', () => {
     is(jz('export let f = (b, c) => { let [a = b || c] = []; return a }').exports.f(0, 9), 9)
 })
 
-test('reserved words rejected as binding names (PARSE-6)', () => {
-    rejects('export let f = () => { let let = 5; return let }', 'reserved')
+test('always-reserved `const` rejected as a binding name (PARSE-6)', () => {
     rejects('export let f = () => { let const = 5; return const }', 'reserved')
-    // normal let/const declarations are unaffected
+    // `let` is only *strict-mode* reserved — a valid identifier in sloppy JS, so jz
+    // must accept it (test262 let-non-strict-*); only the always-reserved `const` is rejected.
+    is(jz('export let f = () => { let let = 5; return let }').exports.f(), 5)
+    // `const` stays usable as a property name; normal let/const declarations unaffected.
+    is(jz('export let f = () => { let o = { const: 7 }; return o.const }').exports.f(), 7)
     is(jz('export let f = () => { let x = 5; const y = 7; return x + y }').exports.f(), 12)
 })
