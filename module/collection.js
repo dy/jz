@@ -9,10 +9,10 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad } from '../src/ir.js'
-import { emit, flat, deps, call } from '../src/bridge.js'
+import { emit, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { hasOwnContinue } from '../src/ast.js'
+import { hasOwnContinue, isBlockBody } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -1525,6 +1525,25 @@ export default (ctx) => {
 
   // === for...in on dynamic objects (HASH iteration) ===
 
+  // Flatten a statement/block to void IR — a self-host-robust inline of
+  // emitVoid+emitBlockBody (see the call site in for-in for why the bridge
+  // emitVoid can't be used here). Recurses into `{}` blocks; emits each leaf
+  // statement in void position and drops any leftover value.
+  const emitFlatVoid = (node) => {
+    if (isBlockBody(node)) {
+      if (node.length === 1) return []
+      const inner = node[1]
+      const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
+      const out = []
+      for (const s of stmts) if (s != null && typeof s !== 'number') out.push(...emitFlatVoid(s))
+      return out
+    }
+    const ir = emit(node, 'void')
+    if (ir == null) return []
+    const items = Array.isArray(ir) && (typeof ir[0] === 'string' || ir[0] == null) ? [ir] : ir
+    return ir.type && ir.type !== 'void' ? [...items, 'drop'] : items
+  }
+
   // for-in: iterate HASH entries, binding key string to loop variable.
   // Also handles OBJECT/ARRAY/etc whose dynamic props are stored at off-16
   // as a HASH (see __dyn_set). Non-HASH receivers redirect to that props HASH.
@@ -1539,7 +1558,14 @@ export default (ctx) => {
     const needsCont = hasOwnContinue(body)
     ctx.func.stack.push({ brk, loop: needsCont ? cont : loop })
     let bodyFlat
-    try { bodyFlat = flat(body) }
+    // NOTE: `flat(body)` (the bridge-dispatched emitVoid) miscompiles in this
+    // self-host call context — it returns [] for a void-postfix body
+    // (`for (k in o) n++`, lowered to `(++n)-1`), silently dropping the loop
+    // body so the kernel-compiled for-in iterates but does nothing. The exact
+    // same emit+flatten logic inlined here compiles correctly. emitFlatVoid
+    // mirrors emitVoid/emitBlockBody (minus early-return refinement narrowing,
+    // which a loop body does not need).
+    try { bodyFlat = emitFlatVoid(body) }
     finally { ctx.func.stack.pop() }
     const bodyBlock = needsCont ? [['block', cont, ...bodyFlat]] : bodyFlat
     inc('__ptr_type', '__len', '__coll_order')
