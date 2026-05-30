@@ -760,3 +760,13 @@ test('String: .concat on a dynamic (untyped) receiver', () => {
   is(run(`export let f = (s) => s.concat("-", "x")`).f('hi'), 'hi-x')
   is(run(`export let f = () => "ab".concat("cd")`).f(), 'abcd')
 })
+
+// Documented divergence: `+` on two untyped params infers numeric addition (no
+// operand proves a string), so string args yield NaN, not concatenation — `+`
+// stays a single f64.add in numeric kernels. Give one side string evidence to
+// concatenate. See README "Where does jz differ".
+test('string +: untyped params are numeric, not concat (documented divergence)', () => {
+  ok(Number.isNaN(run(`export let f = (a, b) => a + b`).f('foo', 'bar')))  // numeric +, strings → NaN
+  is(run(`export let f = (a, b) => a + b`).f(2, 3), 5)                     // numeric still works
+  is(run(`export let f = (a) => 'n' + a`).f(7), 'n7')                      // literal operand → concat
+})
