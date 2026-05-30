@@ -434,11 +434,16 @@ export default (ctx) => {
           (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
 
   // Maclaurin coefficients 1/1!…1/8! for e^x−1 = x·(1 + x/2! + x²/3! + …), Horner-nested
-  // (built programmatically so the parens stay balanced).
-  const expm1Series = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
-    .reduceRight((inner, c) => inner
-      ? `(f64.add (f64.const ${c}) (f64.mul (local.get $x) ${inner}))`
-      : `(f64.const ${c})`, '')
+  // (built with an explicit right-to-left fold so the parens stay balanced — and so the
+  // builder uses only constructs the self-host kernel can compile: Array.reduceRight is
+  // not in jz's runtime, so under the kernel it returns undefined and that token lands
+  // verbatim in the emitted WAT).
+  const expm1Coef = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
+  let expm1Series = ''
+  for (let i = expm1Coef.length - 1; i >= 0; i--)
+    expm1Series = expm1Series
+      ? `(f64.add (f64.const ${expm1Coef[i]}) (f64.mul (local.get $x) ${expm1Series}))`
+      : `(f64.const ${expm1Coef[i]})`
   wat('math.expm1', `(func $math.expm1 (param $x f64) (result f64)
     ;; expm1(x) = e^x − 1. For |x| < 0.5 sum the series directly: there e^x is within ~1.6
     ;; of 1, so exp(x)−1 cancels the leading digits (the prior naive form lost up to ~11%
