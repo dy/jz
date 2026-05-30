@@ -179,6 +179,105 @@ const same = (a, b) =>
   Object.is(a, b) || a === b || (Number.isNaN(a) && Number.isNaN(b)) ||
   (Number.isInteger(b) && Number.isInteger(a) && a === (b | 0) && a !== b)
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Integer-CONTRACT model — decides whether an input is in-contract for a program.
+// ─────────────────────────────────────────────────────────────────────────────
+// `same()` accepts a final-value i32 wrap (a === b|0). But jz narrows i32 at every
+// op, so an INTERMEDIATE that overflows ±2^31 (or is -0, which i32 can't hold, or a
+// `>>>` past 2^31 since jz keeps signed) and then flows through a NON-wrapping op
+// (Math.*, /, comparison, 1/x) yields a final value `same()` can't recognize as the
+// wrap — jz is correct PER CONTRACT, not a miscompile. This walks the AST exactly
+// like JS (so values match the JS oracle) while tracking which results jz holds as
+// i32; if any i32 result is out-of-contract for these args, the input is skipped.
+// Only i32 paths are gated — f64 / NaN / -0-via-f64 / % edges stay fully checked, so
+// a real miscompile (e.g. a sign-flipped NaN) is never masked.
+const I32MIN = -2147483648, I32MAX = 2147483647
+const outOfContract = (v) => v < I32MIN || v > I32MAX || Object.is(v, -0)
+// A bitwise/`~` operand outside i32 range needs a real ToInt32 (modulo-2^32) wrap;
+// JS does that, but jz converts via i32.trunc (saturating / precision-lossy for
+// |x| ≥ 2^31), so the result diverges. In range, ToInt32 == trunc and jz matches.
+const needsWrap = (v) => v < I32MIN || v > I32MAX
+const jsBin = (o, a, b) => {
+  switch (o) {
+    case '+': return a + b; case '-': return a - b; case '*': return a * b
+    case '/': return a / b; case '%': return a % b
+    case '&': return a & b; case '|': return a | b; case '^': return a ^ b
+    case '<<': return a << b; case '>>': return a >> b; case '>>>': return a >>> b
+    case '<': return a < b; case '>': return a > b; case '<=': return a <= b
+    case '>=': return a >= b; case '===': return a === b; case '!==': return a !== b
+  }
+}
+const MATHFN = {
+  'Math.floor': Math.floor, 'Math.ceil': Math.ceil, 'Math.round': Math.round,
+  'Math.trunc': Math.trunc, 'Math.abs': Math.abs, 'Math.sqrt': Math.sqrt,
+  'Math.min': Math.min, 'Math.max': Math.max, 'Math.imul': Math.imul,
+}
+// Returns { v, i32 } — v is the JS value, i32 marks results jz keeps as int32.
+// Sets st.oob when an i32-typed value leaves the contract-exact domain.
+const evalC = (e, env, st) => {
+  switch (e.k) {
+    case 'num': return { v: e.v, i32: Number.isInteger(e.v) }
+    case 'var': return env.get(e.n) || { v: 0, i32: false }
+    case 'un': {
+      const x = evalC(e.x, env, st)
+      if (e.o === '~') { if (needsWrap(x.v)) st.oob = true; return { v: ~x.v, i32: true } }
+      const v = -x.v
+      if (x.i32 && outOfContract(v)) st.oob = true              // i32 negate: no -0, may overflow (-(1<<31))
+      return { v, i32: x.i32 }
+    }
+    case 'bin': {
+      const l = evalC(e.l, env, st), r = evalC(e.r, env, st)
+      const o = e.o, v = jsBin(o, l.v, r.v)
+      if (o === '>>>') { if (needsWrap(l.v) || v > I32MAX) st.oob = true; return { v, i32: true } }  // jz keeps signed i32
+      if (o === '<<' || o === '>>') { if (needsWrap(l.v)) st.oob = true; return { v, i32: true } }    // LHS ToInt32'd
+      if (o === '&' || o === '|' || o === '^') { if (needsWrap(l.v) || needsWrap(r.v)) st.oob = true; return { v, i32: true } }
+      if (o === '<' || o === '>' || o === '<=' || o === '>=' || o === '===' || o === '!==')
+        return { v, i32: true }                                 // boolean 0/1 — i32 (so -(cmp) sees -0)
+      if (o === '+' || o === '-' || o === '*') {
+        const i32 = l.i32 && r.i32
+        if (i32 && outOfContract(v)) st.oob = true
+        return { v, i32 }
+      }
+      return { v, i32: false }                                  // '/', '%' → f64
+    }
+    case 'cond': {
+      const c = evalC(e.c, env, st)
+      return c.v ? evalC(e.t, env, st) : evalC(e.e, env, st)
+    }
+    case 'call': {
+      const a = e.a.map((x) => evalC(x, env, st))
+      if (e.f === 'Math.imul') return { v: Math.imul(a[0].v, a[1].v), i32: true }
+      return { v: MATHFN[e.f](...a.map((x) => x.v)), i32: false }
+    }
+  }
+}
+const execC = (stmts, env, st) => {
+  for (const s of stmts) {
+    if (st.oob) return
+    if (s.k === 'let' || s.k === 'set') env.set(s.n, evalC(s.k === 'let' ? s.init : s.x, env, st))
+    else if (s.k === 'if') { const c = evalC(s.c, env, st); c.v ? execC(s.then, env, st) : s.els && execC(s.els, env, st) }
+    else if (s.k === 'while') {
+      env.set(s.ctr, { v: 0, i32: true })
+      while (!st.oob && env.get(s.ctr).v < s.bound) {
+        execC(s.body, env, st)
+        env.set(s.ctr, { v: env.get(s.ctr).v + 1, i32: true })
+      }
+    }
+  }
+}
+// True when every i32-narrowed intermediate stays in contract for these args.
+const inContract = (prog, args) => {
+  const env = new Map()
+  prog.params.forEach((p, i) => env.set(p, { v: args[i], i32: false }))  // params are f64 to jz
+  const st = { oob: false }
+  execC(prog.body, env, st)
+  if (!st.oob) evalC(prog.ret, env, st)
+  return !st.oob
+}
+// Coverage accounting — surfaced in the CLI summary so the i32-contract skips are
+// never a silent cap (a generator change that suddenly skips everything is visible).
+const contractStats = { compared: 0, skipped: 0, nonNumeric: 0 }
+
 const compileJS = (src) => new Function(`${src.replace(/export\s+let\s+f\s*=/, 'let f =')}\nreturn f`)()
 
 // Static lexical-scope validity. JS only throws on an undeclared read when the
@@ -236,7 +335,9 @@ const check = (prog, opts) => {
   }
   for (let i = 0; i < inputs.length; i++) {
     const want = wants[i]
-    if (typeof want !== 'number') continue   // non-numeric JS result — out of scope
+    if (typeof want !== 'number') { contractStats.nonNumeric++; continue }   // non-numeric JS result — out of scope
+    if (!inContract(prog, inputs[i])) { contractStats.skipped++; continue }   // i32 contract exceeded for these args — skip
+    contractStats.compared++
     for (const opt of opts.optLevels) {
       let got, gotErr = false
       try { got = wasmFns[opt](...inputs[i]) } catch { gotErr = true }
@@ -320,6 +421,7 @@ const collectStmtExprs = (s) => {
 // Driver.
 // ─────────────────────────────────────────────────────────────────────────────
 export const fuzz = (opts) => {
+  contractStats.compared = contractStats.skipped = contractStats.nonNumeric = 0
   const findings = []
   let invalid = 0   // generator produced malformed JS — should stay 0 (scope bug if not)
   for (let i = 0; i < opts.count; i++) {
@@ -331,6 +433,7 @@ export const fuzz = (opts) => {
     if (findings.length >= (opts.maxFindings || Infinity)) break
   }
   findings.invalid = invalid
+  findings.stats = { ...contractStats }
   return findings
 }
 
@@ -407,7 +510,9 @@ if (isMain) {
     const t0 = performance.now()
     const findings = fuzz(opts)
     const ms = performance.now() - t0
+    const st = findings.stats
     console.log(`fuzzed ${opts.count} programs (seeds ${opts.seedStart}..${opts.seedStart + opts.count - 1}), opt {${optLevels}}, ${opts.inputs} inputs each — ${ms.toFixed(0)}ms${findings.invalid ? `  (${findings.invalid} malformed — generator scope bug!)` : ''}`)
+    console.log(`  inputs: ${st.compared} compared, ${st.skipped} skipped (i32 contract exceeded), ${st.nonNumeric} non-numeric`)
     if (!findings.length) console.log('✓ no divergence — jz wasm == JS for every program at every opt level')
     else {
       console.log(`✗ ${findings.length} finding(s):\n`)
