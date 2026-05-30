@@ -1417,7 +1417,12 @@ export default (ctx) => {
 
       const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
       if (schemaIdx >= 0) return typed(['i32.const', 1], 'i32')
-      if (objType === VAL.OBJECT) return typed(['i32.const', 0], 'i32')
+      // A schema MISS does not prove absence: an OBJECT can carry off-schema
+      // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-host
+      // kernel schema.find can under-resolve even an in-schema key. Don't fold to
+      // a static 0 — fall through to the runtime probe below, which reads the
+      // actual property via __dyn_get (OBJECT is in `hasDynProps`) and reports
+      // presence by non-nullish, exactly as the `.`/`[]` READ path resolves it.
     }
 
     const keyTmp = temp()
