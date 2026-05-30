@@ -1066,6 +1066,13 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
  * and numbers share the 0/1 carrier, so `1 === trueDynamic` can only be told apart
  * when the boolean's type is statically known.
  */
+// A binding the analyzer marked `nullable` (its init or some assignment was a
+// nullish literal) can hold null/undefined at runtime, so `x === null` / `x == null`
+// must NOT fold to a constant even when `val` is a definite non-null kind. Only bare
+// variable reads carry the flag; literals/fresh allocations are inherently non-null.
+const nullableOperand = (n) =>
+  typeof n === 'string' && !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
+
 function emitLooseEq(a, b, negate) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -1074,7 +1081,7 @@ function emitLooseEq(a, b, negate) {
   // JS loose nullish equality: x == null / x == undefined.
   // If the non-literal side has a known non-null VAL type, fold to the sentinel.
   const nullishOf = (other) => {
-    if (valTypeOf(other)) return sentinel
+    if (valTypeOf(other) && !nullableOperand(other)) return sentinel
     const chk = isNullish(asF64(emit(other)))
     return negate ? typed(['i32.eqz', chk], 'i32') : chk
   }
@@ -1123,7 +1130,7 @@ function emitStrictEq(a, b, negate) {
     return null  // numeric / string literal value — not a nullish sentinel
   }
   const strictSentinel = (other, undef) => {
-    if (valTypeOf(other)) return emitNum(negate ? 1 : 0)
+    if (valTypeOf(other) && !nullableOperand(other)) return emitNum(negate ? 1 : 0)
     const chk = (undef ? isUndef : isNull)(asF64(emit(other)))
     return negate ? typed(['i32.eqz', chk], 'i32') : chk
   }
