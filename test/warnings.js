@@ -116,3 +116,21 @@ test('warnings: simd-aos-stride on interleaved index', () => {
   `)
   ok(ws.some(w => w.code === 'simd-aos-stride'))
 })
+
+test('warnings: int-global-truncation when a scalar global is i32-narrowed from a param', () => {
+  // jz infers integer module globals to i32 (the size/index/stride perf win). A
+  // scalar global fed from a parameter may hold a fractional Number (DSP state) that
+  // the i32 carrier truncates — surfaced as an opt-in advisory (not demoted: the
+  // integer default is load-bearing; structurally identical to the rfft `N = n` win).
+  const ws = warningsFor(`let x1 = 0, y1 = 0
+    export let process = (inp, b0) => { let out = b0 * inp + x1; x1 = inp; y1 = out; return out }`)
+  const trunc = ws.filter(w => w.code === 'int-global-truncation')
+  ok(trunc.length >= 1, 'fires for a param-fed i32-narrowed global')
+  ok(/Float64Array/.test(trunc[0].message), 'points to Float64Array for fractional state')
+})
+
+test('warnings: no int-global-truncation for a self-contained integer counter', () => {
+  // `n = n + 1` references no parameter → no advisory (avoids false alarms on pure counters).
+  const ws = warningsFor('let n = 0; export let next = () => { n = n + 1; return n }')
+  is(ws.filter(w => w.code === 'int-global-truncation').length, 0)
+})
