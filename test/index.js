@@ -50,9 +50,22 @@ const argFilters = process.argv.slice(2)
   .filter(arg => !arg.startsWith('-'))
   .map(arg => arg.replace(/^test\//, '').replace(/\.js$/, ''))
 
-const selected = argFilters.length
+// Files that are wholly host-bridge / host-runtime: their compile inputs depend
+// on host options (imports/host globals, external js objects, CLI argv, host
+// timers) or a different target (WASI command entry) that the jz.wasm kernel —
+// which takes a raw AST and owns compile internally — never receives. They
+// cannot run on the self-host leg by construction (not value miscompiles), and
+// some throw uncaught (calling the real globalThis.fetch) which would abort the
+// run. Skip them under JZ_TEST_TARGET=jz.wasm so test:wasm is a clean signal of
+// genuine self-host correctness. Mixed files keep their per-test `onKernel()`
+// guards instead.
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi'])
+const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
+
+const selected = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
   : TESTS
+).filter(name => !(onKernelTarget && !argFilters.includes(name) && KERNEL_EXCLUDE.has(name)))
 
 if (argFilters.length && selected.length !== argFilters.length) {
   const known = new Set(TESTS)

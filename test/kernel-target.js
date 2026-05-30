@@ -24,21 +24,29 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const KERNEL = join(ROOT, 'dist/jz.wasm')
 const BUILD = join(ROOT, 'scripts/build-dist.mjs')
 
-let kernel
-const getKernel = () => {
-  if (kernel) return kernel
+// Cache the compiled Module (one expensive WebAssembly.Module compile), then
+// hand a FRESH Instance to every compile. The kernel's in-wasm reset() leaves a
+// little module state behind across compiles on a reused instance (regex capture
+// slots re-declare → "Duplicate local"); a real self-host run compiles one
+// program per instance, so a fresh instance per compile both models that and
+// keeps the test:wasm signal free of cross-compile contamination. `instantiate`
+// accepts a Module, so this is just a new Instance (fresh memory) — no recompile.
+let kernelModule
+const getKernelModule = () => {
+  if (kernelModule) return kernelModule
   if (!existsSync(KERNEL)) {
     console.log('dist/jz.wasm missing — building (npm run build)…')
     const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
     if (r.status !== 0) throw new Error(`failed to build dist/jz.wasm (exit ${r.status})`)
   }
-  kernel = instantiate(readFileSync(KERNEL), { memory: 8192 })
-  return kernel
+  kernelModule = kernelModule || instantiate(readFileSync(KERNEL), { memory: 8192 }).module
+  return kernelModule
 }
 
 export const compileViaKernel = (code, opts = {}) => {
   const ast = normalizeBigints(parse(code))
-  const ir = getKernel().exports.default(ast)
+  const kernel = instantiate(getKernelModule(), { memory: 8192 })
+  const ir = kernel.exports.default(ast)
   if (!Array.isArray(ir) || ir[0] !== 'module' || ir.length < 2)
     throw new Error('kernel returned non-module IR: ' + JSON.stringify(ir)?.slice(0, 160))
   return opts.wat ? watrPrint(ir) : watrCompile(ir)
