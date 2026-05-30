@@ -33,6 +33,9 @@ export function valTypeOf(expr) {
     return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
   }
 
+  // Self-describing boolean literal from the host→kernel AST boundary (normalizeBigints).
+  if (op === 'bool') return VAL.BOOL
+
   // Boolean-result operators: relational/equality compares and logical-not always
   // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
   if (BOOL_OPS.has(op)) return VAL.BOOL

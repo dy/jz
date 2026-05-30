@@ -154,6 +154,10 @@ export function normalizeBigints(node) {
     // Infinity is a normal f64 and survives, so it needs no marker.
     if (node.length === 2 && node[0] == null && typeof node[1] === 'number' && node[1] !== node[1])
       return ['nan']
+    // Same hazard for a boolean literal: a raw true/false coerces to 1/0 on the f64
+    // slot and loses VAL.BOOL, so the kernel returns a plain number, not a boxed bool.
+    if (node.length === 2 && node[0] == null && typeof node[1] === 'boolean')
+      return ['bool', node[1] ? 1 : 0]
     for (let i = 0; i < node.length; i++) if (i in node) node[i] = normalizeBigints(node[i])
   }
   return node
