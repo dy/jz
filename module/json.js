@@ -60,6 +60,51 @@ function literalValue(node) {
   return NOT_LIT
 }
 
+// Fold a literal AST node directly to its compact JSON string (no replacer /
+// no space). Unlike the value-level `literalValue` + `JSON.stringify` path, this
+// renders the self-host kernel boolean marker `['bool', 1|0]` as true/false:
+// the value path can't, because jz carries a boolean as a 0/1 *number*, so the
+// kernel's compile-time `JSON.stringify` of the folded value emits "1"/"0", not
+// "true"/"false" (native folds via real JS booleans and is unaffected). Scalars
+// delegate to the value path for exact number/string formatting; anything not
+// cleanly renderable (undefined, holes, function/symbol) returns NOT_LIT so the
+// caller falls back. Returns a JSON string or NOT_LIT.
+function foldJsonStr(node) {
+  if (!Array.isArray(node)) return NOT_LIT
+  const op = node[0]
+  // `['bool', carrier]` — prepare wraps the 0/1 carrier as a number-literal node
+  // `[, 0|1]` on the kernel leg (bare number in native), so unwrap before testing.
+  if (op === 'bool') {
+    const c = Array.isArray(node[1]) ? node[1][1] : node[1]
+    return c ? 'true' : 'false'
+  }
+  if (op === '[') {
+    const parts = []
+    for (let i = 1; i < node.length; i++) {
+      const s = foldJsonStr(node[i])
+      if (s === NOT_LIT) return NOT_LIT
+      parts.push(s)
+    }
+    return '[' + parts.join(',') + ']'
+  }
+  if (op === '{}') {
+    const parts = []
+    for (let i = 1; i < node.length; i++) {
+      const e = node[i]
+      if (!Array.isArray(e) || e[0] !== ':' || (typeof e[1] !== 'string' && typeof e[1] !== 'number')) return NOT_LIT
+      const s = foldJsonStr(e[2])
+      if (s === NOT_LIT) return NOT_LIT
+      parts.push(JSON.stringify(String(e[1])) + ':' + s)
+    }
+    return '{' + parts.join(',') + '}'
+  }
+  // Scalar (number / string / null / u-): exact formatting via the value path.
+  const v = literalValue(node)
+  if (v === NOT_LIT) return NOT_LIT
+  const s = JSON.stringify(v)
+  return s === undefined ? NOT_LIT : s   // undefined/function/symbol — defer
+}
+
 function jsonShapeString(ctx, expr) {
   if (typeof expr === 'string') return ctx.scope.shapeStrs?.get(expr) ?? null
   return null
@@ -1211,6 +1256,12 @@ ${localDecls}
 
   // Returns folded IR, or `undefined` when any argument is non-constant.
   function foldStringify(x, replacer, space) {
+    // No replacer / no space: try the bool-aware AST string fold first so a
+    // literal boolean renders as true/false on the self-host leg (see foldJsonStr).
+    if (replacer == null && space == null) {
+      const s = foldJsonStr(x)
+      if (s !== NOT_LIT) return asF64(emit(['str', s]))
+    }
     const val = literalValue(x)
     if (val === NOT_LIT) return undefined
 
