@@ -70,3 +70,10 @@ test('?? mixed with ||/&& without parens rejected (PARSE-4, ES2020)', () => {
     is(jz('export let f = (a, b, c) => (a ?? b) || c').exports.f(0, 5, 9), 9)
     is(jz('export let f = (b, c) => { let [a = b || c] = []; return a }').exports.f(0, 9), 9)
 })
+
+test('reserved words rejected as binding names (PARSE-6)', () => {
+    rejects('export let f = () => { let let = 5; return let }', 'reserved')
+    rejects('export let f = () => { let const = 5; return const }', 'reserved')
+    // normal let/const declarations are unaffected
+    is(jz('export let f = () => { let x = 5; const y = 7; return x + y }').exports.f(), 12)
+})
