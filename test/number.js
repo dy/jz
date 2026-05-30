@@ -217,3 +217,11 @@ test('Template: string var interpolation', () => {
 test('Template: float interpolation', () => {
   is(run('export let f = () => `pi=${3.14}`.length').f(), 7)
 })
+
+// Documented divergence: subscript parses the leading-zero form as decimal, so a
+// legacy octal literal is its decimal digits (not octal, and not the SyntaxError a
+// JS module/strict mode raises). Use 0o377 for octal. See README "Where does jz differ".
+test('Number: legacy octal literal is decimal (documented divergence)', () => {
+  is(run(`export let f = () => 0377`).f(), 377)   // not 255
+  is(run(`export let f = () => 0o377`).f(), 255)  // explicit octal is correct
+})
