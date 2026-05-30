@@ -31,3 +31,18 @@ jobs:
         if: matrix.variant == 'default'
       - run: git diff --exit-code -- examples/
         if: matrix.variant == 'default'
+
+  # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
+  # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},
+  # contract-aware oracle that skips inputs exceeding jz's documented i32 range,
+  # shrinking on mismatch) so a miscompile on a shape the curated suite misses is
+  # caught in CI. ~4 min.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run test:fuzz
