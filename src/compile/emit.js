@@ -3250,6 +3250,13 @@ export function emit(node, expect) {
   // to i64.const — no in-kernel parse, byte-identical to the raw-primitive path above.
   if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', args[0]]], 'f64')
 
+  // Self-describing NaN literal — same reason bigints are self-describing: a raw NaN
+  // number is NaN-boxing-ambiguous and degrades to 0 across the self-host kernel's
+  // value/marshalling boundary. The `NaN` global resolves to this (prepare) instead
+  // of a `[, NaN]` literal; watr emits the canonical quiet NaN. (Infinity is a normal
+  // f64 and survives, so it stays a plain literal.)
+  if (op === 'nan') return typed(['f64.const', 'nan'], 'f64')
+
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
     const v = args[0]
