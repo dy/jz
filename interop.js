@@ -143,6 +143,12 @@ export function normalizeBigints(node) {
     // would only swap the primitive and leave `[null, ['bigint', dec]]` nested.
     if (node.length === 2 && node[0] == null && typeof node[1] === 'bigint')
       return ['bigint', BigInt.asUintN(64, node[1]).toString()]
+    // Same hazard for a literal NaN (subscript parses `NaN` as the number, not an
+    // identifier): a raw NaN crossing host→kernel is NaN-boxing-ambiguous and reads
+    // back as 0. `['nan']` is self-describing (emit → canonical f64.const nan).
+    // Infinity is a normal f64 and survives, so it needs no marker.
+    if (node.length === 2 && node[0] == null && typeof node[1] === 'number' && node[1] !== node[1])
+      return ['nan']
     for (let i = 0; i < node.length; i++) if (i in node) node[i] = normalizeBigints(node[i])
   }
   return node
