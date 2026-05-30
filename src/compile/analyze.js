@@ -86,29 +86,34 @@ const _bodyFactsCache = new WeakMap()
 // Per-name monotone fact trackers over a pluggable {get,set,delete} store. First
 // observation wins; a conflicting later one poisons the name (and clears the store
 // entry) so a sibling-scope decl (jz hoists `let` to function scope) can't lock in
-// the wrong value. The store abstracts WHERE the slice lives, letting analyzeBody
-// (local Map) and analyzeValTypes (ctx.func.localReps / ctx.types.typedElem) share
-// one definition — so the two body walks can't drift.
-const makeValTracker = (store) => {
+// the wrong value. The get/set/del closures abstract WHERE the slice lives, letting
+// analyzeBody (local Map) and analyzeValTypes (ctx.func.localReps / ctx.types.typedElem)
+// share one definition — so the two body walks can't drift. Passed as three positional
+// closures rather than a {get,set,delete} store object: a Map satisfies that interface
+// natively (analyzeBody's slices) but the analyzeValTypes slices need custom logic
+// (updateRep), so the param would be polymorphic (Map | object) — which the self-host
+// kernel cannot statically type, mis-dispatching `store.set` on the object form to the
+// Map builtin. Direct closure calls sidestep method dispatch entirely.
+const makeValTracker = (get, set, del) => {
   const poison = new Set()
   return (name, vt) => {
     if (poison.has(name)) return
-    const prev = store.get(name)
-    if (!vt) { if (prev) poison.add(name); store.delete(name); return }
-    if (prev && prev !== vt) { poison.add(name); store.delete(name); return }
-    store.set(name, vt)
+    const prev = get(name)
+    if (!vt) { if (prev) poison.add(name); del(name); return }
+    if (prev && prev !== vt) { poison.add(name); del(name); return }
+    set(name, vt)
   }
 }
-const makeTypedTracker = (store) => {
+const makeTypedTracker = (get, set, del) => {
   const poison = new Set()
-  const invalidate = (name) => { poison.add(name); store.delete(name) }
+  const invalidate = (name) => { poison.add(name); del(name) }
   return (name, rhs) => {
     if (poison.has(name)) return
     const setOrInvalidate = (c) => {
       if (c === MIXED_CTORS) return invalidate(name)
-      const prev = store.get(name)
+      const prev = get(name)
       if (prev && prev !== c) invalidate(name)
-      else store.set(name, c)
+      else set(name, c)
     }
     const ctor = typedElemCtor(rhs)
     if (ctor) return setOrInvalidate(ctor)
@@ -206,9 +211,9 @@ export function analyzeBody(body) {
     return valTypeOf(expr)
   }
 
-  // Local-Map slices: the Maps satisfy the {get,set,delete} store interface directly.
-  const trackVal = makeValTracker(valTypes)
-  const trackTyped = makeTypedTracker(typedElems)
+  // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
+  const trackVal = makeValTracker(n => valTypes.get(n), (n, vt) => valTypes.set(n, vt), n => valTypes.delete(n))
+  const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n))
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
@@ -607,11 +612,11 @@ function mayBeNullish(n) {
 export function analyzeValTypes(body) {
   // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
   // when set to undefined, matching the old explicit delete).
-  const setVal = makeValTracker({
-    get: (n) => ctx.func.localReps?.get(n)?.val,
-    set: (n, vt) => updateRep(n, { val: vt }),
-    delete: (n) => updateRep(n, { val: undefined }),
-  })
+  const setVal = makeValTracker(
+    (n) => ctx.func.localReps?.get(n)?.val,
+    (n, vt) => updateRep(n, { val: vt }),
+    (n) => updateRep(n, { val: undefined }),
+  )
   const getVal = name => ctx.func.localReps?.get(name)?.val
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
@@ -645,11 +650,11 @@ export function analyzeValTypes(body) {
   // ctx.types.typedElem slice (lazily created on first write, as before — readers
   // tolerate null). Disagreeing decls poison the name (jz hoists `let` to function
   // scope, so sibling-scope decls share a name and must not lock in a wrong width).
-  const trackTyped = makeTypedTracker({
-    get: (n) => ctx.types.typedElem?.get(n),
-    set: (n, c) => (ctx.types.typedElem ??= new Map()).set(n, c),
-    delete: (n) => ctx.types.typedElem?.delete(n),
-  })
+  const trackTyped = makeTypedTracker(
+    (n) => ctx.types.typedElem?.get(n),
+    (n, c) => (ctx.types.typedElem ??= new Map()).set(n, c),
+    (n) => ctx.types.typedElem?.delete(n),
+  )
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —
   // callers only need the "exactly one write" verdict.

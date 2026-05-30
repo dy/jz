@@ -61,8 +61,16 @@ export function methodValType(method, obj, objType, ctx) {
     const elemVt = ctx.func.localReps?.get(obj)?.arrayElemValType
     if (elemVt) return elemVt
   }
-  if (method === 'add') return VAL.SET
-  if (method === 'set') return VAL.MAP
+  // `.add`/`.set` return their receiver (Set/Map, chainable) — but only when the
+  // receiver is *proven* that collection. An unknown receiver is NOT assumed
+  // Set/Map: a plain object, user class, or the self-host value-tracker `store`
+  // carries an own `add`/`set` closure whose result is whatever it returns;
+  // claiming SET/MAP would box that f64 result as a tagged pointer (corrupt read
+  // on use). A genuine Map/Set value is proven VAL.MAP/SET and still chains; an
+  // untyped Map's `.set` simply yields an untyped (but correct) pointer value.
+  // Mirrors the objType guard on map/filter/slice/concat.
+  if (method === 'add') return objType === VAL.SET ? VAL.SET : null
+  if (method === 'set') return objType === VAL.MAP ? VAL.MAP : null
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
   if (method === 'split') return VAL.ARRAY
