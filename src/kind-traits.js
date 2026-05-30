@@ -22,6 +22,15 @@ export const STRING_METHODS = new Set([
 
 export const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
 
+// Methods whose result is a boolean. Classifying them VAL.BOOL lets the export
+// boundary materialize the 0/1 carrier as a real boolean (host sees true/false,
+// not 1/0) and lets typeof/String/JSON observe it faithfully — internal branch/
+// arithmetic positions still ride the cheap 0/1 carrier. (`has`/`delete` are
+// guarded on a proven Map/Set receiver below, like `add`/`set`.)
+export const BOOL_METHODS = new Set([
+  'includes', 'some', 'every', 'startsWith', 'endsWith', 'test',
+])
+
 export const CALLEE_VAL = {
   'new.Set': VAL.SET,
   'new.Map': VAL.MAP,
@@ -71,6 +80,8 @@ export function methodValType(method, obj, objType, ctx) {
   // Mirrors the objType guard on map/filter/slice/concat.
   if (method === 'add') return objType === VAL.SET ? VAL.SET : null
   if (method === 'set') return objType === VAL.MAP ? VAL.MAP : null
+  if (BOOL_METHODS.has(method)) return VAL.BOOL
+  if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
   if (method === 'split') return VAL.ARRAY

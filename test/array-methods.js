@@ -117,20 +117,22 @@ test('.indexOf: string via variable still matches', () => {
 
 // === .includes ===
 
+// `.includes` returns a boolean — surfaced as a real true/false at the export
+// boundary (runHost decodes the NaN-boxed atom; the raw `run` instance can't).
 test('.includes: found', () => {
-  is(run(`export let f = () => [10, 20, 30].includes(20)`).f(), 1)
+  is(runHost(`export let f = () => [10, 20, 30].includes(20)`).f(), true)
 })
 
 test('.includes: not found', () => {
-  is(run(`export let f = () => [10, 20, 30].includes(99)`).f(), 0)
+  is(runHost(`export let f = () => [10, 20, 30].includes(99)`).f(), false)
 })
 
 test('.includes: string found', () => {
-  is(run(`export let f = () => ["A","B","C"].includes("B")`).f(), 1)
+  is(runHost(`export let f = () => ["A","B","C"].includes("B")`).f(), true)
 })
 
 test('.includes: string via variable still matches', () => {
-  is(run(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), 1)
+  is(runHost(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), true)
 })
 
 // === .join ===
