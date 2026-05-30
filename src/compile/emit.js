@@ -1556,6 +1556,22 @@ function emitPropertyAssign(obj, prop, val) {
       ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }
+  // Unboxed OBJECT-pointer receiver carrying its own schema on the value (ptrAux):
+  // resolve the field slot directly, mirroring emitPropAccess (core.js). A param /
+  // struct cell narrowed to an unboxed OBJECT ptr keeps its schema as `ptrAux`, not
+  // in ctx.schema.vars under the name — so schema.find(name) misses and the write
+  // would fall to __dyn_set (propsPtr) while the READ resolves the slot via ptrAux,
+  // targeting different memory (write lost). Match the read.
+  {
+    const vaProbe = emit(obj)
+    if (vaProbe?.ptrKind === VAL.OBJECT && vaProbe.ptrAux != null) {
+      const sch = ctx.schema.list[vaProbe.ptrAux]
+      const si = sch ? sch.indexOf(prop) : -1
+      if (si >= 0) return withTemp(asF64(emit(val)), t => [
+        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
+        ['local.get', `$${t}`]])
+    }
+  }
   // Schema-based object → f64.store at fixed offset.
   if (typeof obj === 'string' && ctx.schema.find) {
     const idx = ctx.schema.find(obj, prop)
