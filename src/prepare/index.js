@@ -772,6 +772,13 @@ export const GLOBALS = {
 const patternItems = (node) => node?.[0] === ',' ? node.slice(1) : [node]
 const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
 
+// Element count of a prepared inline array literal `['[', e0, e1, …]` with no
+// spread (spread → dynamic length). Returns null when not such a literal, so
+// destructuring a non-literal source keeps its runtime element reads.
+const inlineArrayLen = (e) =>
+  Array.isArray(e) && e[0] === '[' && !e.slice(1).some(x => Array.isArray(x) && x[0] === '...')
+    ? e.length - 1 : null
+
 const simpleArrayPatternItems = (pattern) => {
   if (!Array.isArray(pattern) || pattern[0] !== '[]' || pattern.length !== 2) return null
   const items = patternItems(pattern[1])
@@ -838,7 +845,7 @@ function pushPatternAssign(target, valueExpr, out, decls = null) {
   out.push(['=', target, valueExpr])
 }
 
-function expandDestruct(pattern, source, out, decls = null) {
+function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   if (!isDestructPattern(pattern)) return
 
   if (pattern[0] === '[]') {
@@ -850,6 +857,15 @@ function expandDestruct(pattern, source, out, decls = null) {
 
       if (Array.isArray(item) && item[0] === '...') {
         pushPatternAssign(item[1], ['()', ['.', source, 'slice'], [, j]], out, decls)
+        continue
+      }
+
+      // Source is a known-length inline literal and this index is past its end →
+      // the element is statically `undefined` (so any `= default` applies). Folding
+      // it here skips a provably out-of-range read — which both avoids the runtime
+      // access and dodges an optimizer miscompile of the destructuring-temp shape.
+      if (srcLen != null && j >= srcLen) {
+        pushPatternAssign(item, [, JZ_UNDEF], out, decls)
         continue
       }
 
@@ -1000,7 +1016,7 @@ function prepDecl(op, ...inits) {
         const p = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
         if (p.length) ctx.schema.vars.set(tmp, ctx.schema.register(p))
       }
-      expandDestruct(name, tmp, rest)
+      expandDestruct(name, tmp, rest, null, inlineArrayLen(normed))
       continue
     }
 
