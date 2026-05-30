@@ -751,3 +751,12 @@ test('String: match not found', () => {
 test('String: match result content', () => {
   is(run(`export let f = () => "hello world".match("world")[0].length`).f(), 5)
 })
+
+test('String: .concat on a dynamic (untyped) receiver', () => {
+  // Regression: untyped `s.concat(...)` fell through to dynamic dispatch and hit an
+  // internal "__ext_call never registered" error. Now routed via the runtime
+  // string/array ptr-type branch (string → __str_concat).
+  is(run(`export let f = (s) => s.concat("!")`).f('hi'), 'hi!')
+  is(run(`export let f = (s) => s.concat("-", "x")`).f('hi'), 'hi-x')
+  is(run(`export let f = () => "ab".concat("cd")`).f(), 'abcd')
+})
