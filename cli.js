@@ -171,7 +171,7 @@ async function handleCompile(args) {
     ...(optimize !== undefined && { optimize }),
     ...(host && { host }),
     ...(alloc === false && { alloc: false }),
-    ...(names && { profileNames: true }),
+    ...(names && { profile: { names: true } }),
     ...(Object.keys(modules).length && { modules }),
   }
 

@@ -32,9 +32,6 @@ export const REJECT_IDENTS = {
   eval: '`eval` not supported',
 }
 
-/** Ops jzify transforms rather than rejecting (prepare still rejects survivors). */
-export const JZIFY_TRANSFORM_OPS = new Set(['var', 'function', 'class', 'arguments'])
-
 /** jzify-only errors for class lowering (no prepare counterpart). */
 export const JZIFY_CLASS_ERRORS = {
   computedMember: 'non-constant computed class member names are not supported',
