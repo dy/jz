@@ -333,7 +333,9 @@ test('Math.pow / ** — positive-constant base lowers to exp (no pow/log stdlib)
   const wat = compile(`export let g = (n) => 440 * (2 ** (n / 12))`, { wat: true })
   ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided for 2 ** (n/12)')
   ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
-  ok(/\(func \$math\.exp/.test(wat), 'uses math.exp')
+  // exp route used — as a `$math.exp` func, or (since the O(1) loop-free exp is now
+  // inlinable) its inlined body, identified by the Taylor coefficient 1/6.
+  ok(/\(func \$math\.exp|0\.16666666666666666/.test(wat), 'uses math.exp (func or inlined)')
 })
 
 test('Math.cbrt', async () => {

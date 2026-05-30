@@ -410,7 +410,7 @@ export default (ctx) => {
     (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
 
   wat('math.exp', `(func $math.exp (param $x f64) (result f64)
-    (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $pow2 f64)
+    (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $k2 i32)
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     ;; +Infinity → +Infinity; finite overflow (x > 709) also rounds to +Infinity.
     (if (result f64) (f64.gt (local.get $x) (f64.const 709.0)) (then (f64.const inf)) (else
@@ -424,27 +424,29 @@ export default (ctx) => {
               (f64.mul (local.get $t) (f64.add (f64.const 0.041666666666666664)
                 (f64.mul (local.get $t) (f64.add (f64.const 0.008333333333333333)
                   (f64.mul (local.get $t) (f64.const 0.001388888888888889)))))))))))))
-        (local.set $pow2 (f64.const 1.0))
-        (if (i32.gt_s (local.get $k) (i32.const 0))
-          (then (block $done (loop $loop
-            (br_if $done (i32.le_s (local.get $k) (i32.const 0)))
-            (local.set $pow2 (f64.mul (local.get $pow2) (f64.const 2.0)))
-            (local.set $k (i32.sub (local.get $k) (i32.const 1)))
-            (br $loop)))
-            (local.set $result (f64.mul (local.get $result) (local.get $pow2))))
-          (else (if (i32.lt_s (local.get $k) (i32.const 0))
-            (then (block $done2 (loop $loop2
-              (br_if $done2 (i32.ge_s (local.get $k) (i32.const 0)))
-              (local.set $pow2 (f64.mul (local.get $pow2) (f64.const 2.0)))
-              (local.set $k (i32.add (local.get $k) (i32.const 1)))
-              (br $loop2)))
-              (local.set $result (f64.div (local.get $result) (local.get $pow2)))))))
-        (local.get $result))))))`)
+        ;; e^t · 2^k. Build 2^k in O(1) from the IEEE exponent field ((k+1023)<<52)
+        ;; instead of an O(k) multiply loop. Split k and apply twice so the full
+        ;; k ∈ [-1074, 1023] range (incl. denormals near x = -745) constructs without
+        ;; exponent overflow: 2^(k>>1) · 2^(k-(k>>1)), each exponent within [-1022, 1023].
+        (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
+        (f64.mul (f64.mul (local.get $result)
+          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
+          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
 
+  // Maclaurin coefficients 1/1!…1/8! for e^x−1 = x·(1 + x/2! + x²/3! + …), Horner-nested
+  // (built programmatically so the parens stay balanced).
+  const expm1Series = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
+    .reduceRight((inner, c) => inner
+      ? `(f64.add (f64.const ${c}) (f64.mul (local.get $x) ${inner}))`
+      : `(f64.const ${c})`, '')
   wat('math.expm1', `(func $math.expm1 (param $x f64) (result f64)
-    ;; Preserve sign of zero: expm1(±0) = ±0.
-    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))`)
+    ;; expm1(x) = e^x − 1. For |x| < 0.5 sum the series directly: there e^x is within ~1.6
+    ;; of 1, so exp(x)−1 cancels the leading digits (the prior naive form lost up to ~11%
+    ;; near 0); the series doesn't, and the leading x·(…) preserves the sign of ±0. Larger
+    ;; |x| has no cancellation, so exp(x)−1 is accurate.
+    (if (result f64) (f64.lt (f64.abs (local.get $x)) (f64.const 0.5))
+      (then (f64.mul (local.get $x) ${expm1Series}))
+      (else (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))))`)
 
   // log(x) via bit-level frexp + sqrt(2)-centered split + atanh series.
   //   x = m * 2^k   with bits-extracted k (no loop)
