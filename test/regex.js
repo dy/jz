@@ -230,15 +230,15 @@ test('regex: compile backreference', () => {
 // === Integration tests ===
 
 test('regex: basic test()', async () => {
-  is(await evaluate('/abc/.test("hello abc world")'), 1)
-  is(await evaluate('/abc/.test("hello xyz world")'), 0)
+  is(await evaluate('/abc/.test("hello abc world")'), true)
+  is(await evaluate('/abc/.test("hello xyz world")'), false)
 })
 
 test('regex: module-level variable test()', () => {
   const r = jz('const re = /abc/; export let f = (s) => re.test(s)')
   const m = r.memory
-  is(r.exports.f(m.String('xabcx')), 1)
-  is(r.exports.f(m.String('xyz')), 0)
+  is(r.exports.f(m.String('xabcx')), true)
+  is(r.exports.f(m.String('xyz')), false)
 })
 
 test('regex: RegExp constructor accepts const string expressions', () => {
@@ -267,7 +267,7 @@ test('regex: RegExp constructor folds jzified var string assignment', () => {
     var source = "cat|dog"
     export let f = () => new RegExp(source).test("dog")
   `, { jzify: true })
-  is(r.exports.f(), 1)
+  is(r.exports.f(), true)
 })
 
 test('regex: RegExp constructor folds jzified hoisted var template parts', () => {
@@ -283,50 +283,48 @@ test('regex: RegExp constructor folds jzified hoisted var template parts', () =>
 })
 
 test('regex: anchors', async () => {
-  is(await evaluate('/^hello/.test("hello world")'), 1)
-  is(await evaluate('/^world/.test("hello world")'), 0)
-  is(await evaluate('/world$/.test("hello world")'), 1)
+  is(await evaluate('/^hello/.test("hello world")'), true)
+  is(await evaluate('/^world/.test("hello world")'), false)
+  is(await evaluate('/world$/.test("hello world")'), true)
 })
 
 test('regex: quantifiers', async () => {
-  is(await evaluate('/ab*c/.test("ac")'), 1)
-  is(await evaluate('/ab*c/.test("abc")'), 1)
-  is(await evaluate('/ab+c/.test("ac")'), 0)
-  is(await evaluate('/ab+c/.test("abc")'), 1)
-  is(await evaluate('/ab?c/.test("ac")'), 1)
+  is(await evaluate('/ab*c/.test("ac")'), true)
+  is(await evaluate('/ab*c/.test("abc")'), true)
+  is(await evaluate('/ab+c/.test("ac")'), false)
+  is(await evaluate('/ab+c/.test("abc")'), true)
+  is(await evaluate('/ab?c/.test("ac")'), true)
 })
 
 test('regex: left brace literal test()', async () => {
-  is(await evaluate('/a{/.test("a{")'), 1)
-  is(await evaluate('/a{b/.test("a{b")'), 1)
-  is(await evaluate('/a{2}/.test("aa")'), 1)
+  is(await evaluate('/a{/.test("a{")'), true)
+  is(await evaluate('/a{b/.test("a{b")'), true)
+  is(await evaluate('/a{2}/.test("aa")'), true)
 })
 
 test('regex: character classes', async () => {
-  is(await evaluate('/[abc]/.test("b")'), 1)
-  is(await evaluate('/[abc]/.test("d")'), 0)
-  is(await evaluate('/[a-z]/.test("m")'), 1)
-  is(await evaluate('/[^abc]/.test("d")'), 1)
+  is(await evaluate('/[abc]/.test("b")'), true)
+  is(await evaluate('/[abc]/.test("d")'), false)
+  is(await evaluate('/[a-z]/.test("m")'), true)
+  is(await evaluate('/[^abc]/.test("d")'), true)
 })
 
 test('regex: alternation', async () => {
-  is(await evaluate('/cat|dog/.test("I have a cat")'), 1)
-  is(await evaluate('/cat|dog/.test("I have a dog")'), 1)
-  is(await evaluate('/cat|dog/.test("I have a bird")'), 0)
+  is(await evaluate('/cat|dog/.test("I have a cat")'), true)
+  is(await evaluate('/cat|dog/.test("I have a dog")'), true)
+  is(await evaluate('/cat|dog/.test("I have a bird")'), false)
 })
 
 test('regex: escape sequences', async () => {
-  is(await evaluate('/\\d/.test("abc123")'), 1)
-  is(await evaluate('/\\d/.test("abc")'), 0)
-  is(await evaluate('/\\w/.test("_test")'), 1)
-  is(await evaluate('/\\s/.test("hello world")'), 1)
+  is(await evaluate('/\\d/.test("abc123")'), true)
+  is(await evaluate('/\\d/.test("abc")'), false)
+  is(await evaluate('/\\w/.test("_test")'), true)
+  is(await evaluate('/\\s/.test("hello world")'), true)
 })
 
 test('regex: stored in variable', () => {
-  const wasm1 = compile('export let test = () => { let r = /abc/; return r.test("xabcy") }')
-  is(new WebAssembly.Instance(new WebAssembly.Module(wasm1)).exports.test(), 1)
-  const wasm2 = compile('export let test = () => { let r = /xyz/; return r.test("abc") }')
-  is(new WebAssembly.Instance(new WebAssembly.Module(wasm2)).exports.test(), 0)
+  is(jz('export let f = () => { let r = /abc/; return r.test("xabcy") }').exports.f(), true)
+  is(jz('export let f = () => { let r = /xyz/; return r.test("abc") }').exports.f(), false)
 })
 
 test('regex: str.search()', async () => {
@@ -392,153 +390,153 @@ test('regex: str.match(regex) named capture groups', () => {
 // === Greedy vs lazy quantifiers ===
 
 test('regex stress: greedy * matches maximally', async () => {
-  is(await evaluate('/a.*b/.test("aXXXb")'), 1)
-  is(await evaluate('/a.*b/.test("ab")'), 1)
-  is(await evaluate('/a.*b/.test("a")'), 0)
+  is(await evaluate('/a.*b/.test("aXXXb")'), true)
+  is(await evaluate('/a.*b/.test("ab")'), true)
+  is(await evaluate('/a.*b/.test("a")'), false)
 })
 
 test('regex stress: lazy *? matches minimally', async () => {
-  is(await evaluate('/a.*?b/.test("aXXXb")'), 1)
-  is(await evaluate('/a.*?b/.test("ab")'), 1)
+  is(await evaluate('/a.*?b/.test("aXXXb")'), true)
+  is(await evaluate('/a.*?b/.test("ab")'), true)
 })
 
 test('regex stress: greedy + requires at least one', async () => {
-  is(await evaluate('/a.+b/.test("aXb")'), 1)
-  is(await evaluate('/a.+b/.test("ab")'), 0)
+  is(await evaluate('/a.+b/.test("aXb")'), true)
+  is(await evaluate('/a.+b/.test("ab")'), false)
 })
 
 // === Repetition {n,m} ===
 
 test('regex stress: exact repetition {n}', async () => {
-  is(await evaluate('/a{3}/.test("aaa")'), 1)
-  is(await evaluate('/a{3}/.test("aa")'), 0)
-  is(await evaluate('/a{3}/.test("aaaa")'), 1)
+  is(await evaluate('/a{3}/.test("aaa")'), true)
+  is(await evaluate('/a{3}/.test("aa")'), false)
+  is(await evaluate('/a{3}/.test("aaaa")'), true)
 })
 
 test('regex stress: range repetition {n,m}', async () => {
-  is(await evaluate('/a{2,4}/.test("aa")'), 1)
-  is(await evaluate('/a{2,4}/.test("aaaa")'), 1)
-  is(await evaluate('/a{2,4}/.test("a")'), 0)
+  is(await evaluate('/a{2,4}/.test("aa")'), true)
+  is(await evaluate('/a{2,4}/.test("aaaa")'), true)
+  is(await evaluate('/a{2,4}/.test("a")'), false)
 })
 
 test('regex stress: open-ended {n,}', async () => {
-  is(await evaluate('/a{2,}/.test("aa")'), 1)
-  is(await evaluate('/a{2,}/.test("aaaaa")'), 1)
-  is(await evaluate('/a{2,}/.test("a")'), 0)
+  is(await evaluate('/a{2,}/.test("aa")'), true)
+  is(await evaluate('/a{2,}/.test("aaaaa")'), true)
+  is(await evaluate('/a{2,}/.test("a")'), false)
 })
 
 // === Anchors ===
 
 test('regex stress: ^ and $ together', async () => {
-  is(await evaluate('/^exact$/.test("exact")'), 1)
-  is(await evaluate('/^exact$/.test("not exact")'), 0)
-  is(await evaluate('/^exact$/.test("exactly")'), 0)
+  is(await evaluate('/^exact$/.test("exact")'), true)
+  is(await evaluate('/^exact$/.test("not exact")'), false)
+  is(await evaluate('/^exact$/.test("exactly")'), false)
 })
 
 test('regex stress: anchor with quantifier', async () => {
-  is(await evaluate('/^a+$/.test("aaaa")'), 1)
-  is(await evaluate('/^a+$/.test("aaab")'), 0)
-  is(await evaluate('/^a+$/.test("")'), 0)
+  is(await evaluate('/^a+$/.test("aaaa")'), true)
+  is(await evaluate('/^a+$/.test("aaab")'), false)
+  is(await evaluate('/^a+$/.test("")'), false)
 })
 
 // === Alternation edge cases ===
 
 test('regex stress: multi-branch alternation', async () => {
-  is(await evaluate('/foo|bar|baz/.test("baz")'), 1)
-  is(await evaluate('/foo|bar|baz/.test("qux")'), 0)
+  is(await evaluate('/foo|bar|baz/.test("baz")'), true)
+  is(await evaluate('/foo|bar|baz/.test("qux")'), false)
 })
 
 test('regex stress: alternation with anchors', async () => {
-  is(await evaluate('/^(cat|dog)$/.test("cat")'), 1)
-  is(await evaluate('/^(cat|dog)$/.test("catdog")'), 0)
+  is(await evaluate('/^(cat|dog)$/.test("cat")'), true)
+  is(await evaluate('/^(cat|dog)$/.test("catdog")'), false)
 })
 
 // === Nested groups ===
 
 test('regex stress: nested quantified groups', async () => {
-  is(await evaluate('/(ab)+/.test("ababab")'), 1)
-  is(await evaluate('/(ab)+/.test("abc")'), 1)
-  is(await evaluate('/(ab)+/.test("ba")'), 0)
+  is(await evaluate('/(ab)+/.test("ababab")'), true)
+  is(await evaluate('/(ab)+/.test("abc")'), true)
+  is(await evaluate('/(ab)+/.test("ba")'), false)
 })
 
 test('regex stress: non-capturing group', async () => {
-  is(await evaluate('/(?:ab)+c/.test("ababc")'), 1)
-  is(await evaluate('/(?:ab)+c/.test("abc")'), 1)
-  is(await evaluate('/(?:ab)+c/.test("ac")'), 0)
+  is(await evaluate('/(?:ab)+c/.test("ababc")'), true)
+  is(await evaluate('/(?:ab)+c/.test("abc")'), true)
+  is(await evaluate('/(?:ab)+c/.test("ac")'), false)
 })
 
 // === Character class edge cases ===
 
 test('regex stress: char class with special chars', async () => {
-  is(await evaluate('/[.+*?]/.test(".")'), 1)
-  is(await evaluate('/[.+*?]/.test("x")'), 0)
+  is(await evaluate('/[.+*?]/.test(".")'), true)
+  is(await evaluate('/[.+*?]/.test("x")'), false)
 })
 
 test('regex stress: negated class with range', async () => {
-  is(await evaluate('/[^0-9]/.test("a")'), 1)
-  is(await evaluate('/[^0-9]/.test("5")'), 0)
+  is(await evaluate('/[^0-9]/.test("a")'), true)
+  is(await evaluate('/[^0-9]/.test("5")'), false)
 })
 
 test('regex stress: \\w \\d \\s combinations', async () => {
-  is(await evaluate('/\\w+\\s\\w+/.test("hello world")'), 1)
-  is(await evaluate('/\\w+\\s\\w+/.test("hello")'), 0)
-  is(await evaluate('/\\d+\\.\\d+/.test("3.14")'), 1)
-  is(await evaluate('/\\d+\\.\\d+/.test("314")'), 0)
+  is(await evaluate('/\\w+\\s\\w+/.test("hello world")'), true)
+  is(await evaluate('/\\w+\\s\\w+/.test("hello")'), false)
+  is(await evaluate('/\\d+\\.\\d+/.test("3.14")'), true)
+  is(await evaluate('/\\d+\\.\\d+/.test("314")'), false)
 })
 
 test('regex stress: word boundary', async () => {
-  is(await evaluate('/\\bword\\b/.test("a word here")'), 1)
-  is(await evaluate('/\\bword\\b/.test("password")'), 0)
-  is(await evaluate('/\\bword\\b/.test("wordy")'), 0)
+  is(await evaluate('/\\bword\\b/.test("a word here")'), true)
+  is(await evaluate('/\\bword\\b/.test("password")'), false)
+  is(await evaluate('/\\bword\\b/.test("wordy")'), false)
 })
 
 test('regex stress: dot does not match newline', async () => {
-  is(await evaluate('/a.b/.test("axb")'), 1)
-  is(await evaluate('/a.b/.test("aXb")'), 1)
+  is(await evaluate('/a.b/.test("axb")'), true)
+  is(await evaluate('/a.b/.test("aXb")'), true)
 })
 
 test('regex stress: empty alternation branch', async () => {
-  is(await evaluate('/a|/.test("b")'), 1)
-  is(await evaluate('/a|/.test("a")'), 1)
+  is(await evaluate('/a|/.test("b")'), true)
+  is(await evaluate('/a|/.test("a")'), true)
 })
 
 // === Real-world patterns ===
 
 test('regex stress: integer pattern', async () => {
-  is(await evaluate('/^-?\\d+$/.test("42")'), 1)
-  is(await evaluate('/^-?\\d+$/.test("-7")'), 1)
-  is(await evaluate('/^-?\\d+$/.test("3.14")'), 0)
-  is(await evaluate('/^-?\\d+$/.test("")'), 0)
+  is(await evaluate('/^-?\\d+$/.test("42")'), true)
+  is(await evaluate('/^-?\\d+$/.test("-7")'), true)
+  is(await evaluate('/^-?\\d+$/.test("3.14")'), false)
+  is(await evaluate('/^-?\\d+$/.test("")'), false)
 })
 
 test('regex stress: hex color', async () => {
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#ff00aa")'), 1)
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#FF00AA")'), 0)
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#fff")'), 0)
+  is(await evaluate('/^#[0-9a-f]{6}$/.test("#ff00aa")'), true)
+  is(await evaluate('/^#[0-9a-f]{6}$/.test("#FF00AA")'), false)
+  is(await evaluate('/^#[0-9a-f]{6}$/.test("#fff")'), false)
 })
 
 test('regex stress: simple identifier', async () => {
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("_foo123")'), 1)
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("123abc")'), 0)
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("x")'), 1)
+  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("_foo123")'), true)
+  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("123abc")'), false)
+  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("x")'), true)
 })
 
 test('regex stress: IP-like pattern', async () => {
-  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1.1")'), 1)
-  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1")'), 0)
+  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1.1")'), true)
+  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1")'), false)
 })
 
 // === Lookahead ===
 
 test('regex stress: positive lookahead', async () => {
-  is(await evaluate('/\\d+(?=px)/.test("100px")'), 1)
-  is(await evaluate('/\\d+(?=px)/.test("100em")'), 0)
+  is(await evaluate('/\\d+(?=px)/.test("100px")'), true)
+  is(await evaluate('/\\d+(?=px)/.test("100em")'), false)
 })
 
 test('regex stress: negative lookahead', async () => {
-  is(await evaluate('/\\d+(?!px)/.test("100em")'), 1)
-  is(await evaluate('/foo(?!bar)/.test("foobaz")'), 1)
-  is(await evaluate('/foo(?!bar)/.test("foobar")'), 0)
+  is(await evaluate('/\\d+(?!px)/.test("100em")'), true)
+  is(await evaluate('/foo(?!bar)/.test("foobaz")'), true)
+  is(await evaluate('/foo(?!bar)/.test("foobar")'), false)
 })
 
 test('regex stress: search finds correct position', async () => {
@@ -567,13 +565,13 @@ test('regex stress: replace at boundaries', () => {
 test('regex stress: backtracking in alternation', async () => {
   // First branch "ab" matches at pos 0, but full pattern needs "abc"; must
   // backtrack to try "a" branch.
-  is(await evaluate('/(ab|a)c/.test("ac")'), 1)
+  is(await evaluate('/(ab|a)c/.test("ac")'), true)
 })
 
 test('regex stress: greedy backtrack', async () => {
   // .* greedily consumes all, then backtracks to match trailing 'c'.
-  is(await evaluate('/^.*c$/.test("abc")'), 1)
-  is(await evaluate('/^.*c$/.test("abd")'), 0)
+  is(await evaluate('/^.*c$/.test("abc")'), true)
+  is(await evaluate('/^.*c$/.test("abd")'), false)
 })
 
 // === new RegExp() with literal pattern ===
@@ -584,15 +582,15 @@ test('regex stress: greedy backtrack', async () => {
 test('new RegExp() with literal pattern', () => {
   const r = jz(`export let f = (s) => { let re = new RegExp("[a-z]+"); return re.test(s) }`)
   const m = r.memory
-  is(r.exports.f(m.String('abc')), 1)
-  is(r.exports.f(m.String('123')), 0)
+  is(r.exports.f(m.String('abc')), true)
+  is(r.exports.f(m.String('123')), false)
 })
 
 test('new RegExp() with literal flags', () => {
   const r = jz(`export let f = (s) => { let re = new RegExp("foo", "i"); return re.test(s) }`)
   const m = r.memory
-  is(r.exports.f(m.String('FOO')), 1)
-  is(r.exports.f(m.String('BAR')), 0)
+  is(r.exports.f(m.String('FOO')), true)
+  is(r.exports.f(m.String('BAR')), false)
 })
 
 test('new RegExp(dynamic) errors clearly', () => {

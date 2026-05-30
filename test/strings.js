@@ -522,31 +522,31 @@ test('string index: out-of-range returns undefined', () => {
 // === .includes ===
 
 test('string: .includes found', () => {
-  is(run(`export let f = () => "hello".includes("ell")`).f(), 1)
+  is(run(`export let f = () => "hello".includes("ell")`).f(), true)
 })
 
 test('string: .includes not found', () => {
-  is(run(`export let f = () => "hello".includes("xyz")`).f(), 0)
+  is(run(`export let f = () => "hello".includes("xyz")`).f(), false)
 })
 
 // === .startsWith ===
 
 test('string: .startsWith true', () => {
-  is(run(`export let f = () => "hello".startsWith("hel")`).f(), 1)
+  is(run(`export let f = () => "hello".startsWith("hel")`).f(), true)
 })
 
 test('string: .startsWith false', () => {
-  is(run(`export let f = () => "hello".startsWith("lo")`).f(), 0)
+  is(run(`export let f = () => "hello".startsWith("lo")`).f(), false)
 })
 
 // === .endsWith ===
 
 test('string: .endsWith true', () => {
-  is(run(`export let f = () => "hello".endsWith("lo")`).f(), 1)
+  is(run(`export let f = () => "hello".endsWith("lo")`).f(), true)
 })
 
 test('string: .endsWith false', () => {
-  is(run(`export let f = () => "hello".endsWith("hel")`).f(), 0)
+  is(run(`export let f = () => "hello".endsWith("hel")`).f(), false)
 })
 
 // === .toUpperCase ===
