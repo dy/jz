@@ -616,7 +616,7 @@ export default (ctx) => {
   }
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
-  function emitPropAccess(va, obj, prop) {
+  function emitPropAccess(va, obj, prop, fromOptional = false) {
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
     // object literal `{...}` (either directly, or through a `.prop` chain
     // walked back to one), use the literal's slot index instead of falling
@@ -669,7 +669,10 @@ export default (ctx) => {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
         if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt, prop)
-        ctx.features.external = true
+        // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
+        // PTR.EXTERNAL arm is dead unless host externals are already in play —
+        // don't force the __ext_prop import just for an optional read.
+        if (!fromOptional) ctx.features.external = true
         return emitDynGetAnyTyped(va, key, vt, prop)
       }
       inc('__hash_get', '__str_hash', '__str_eq')
@@ -853,35 +856,21 @@ export default (ctx) => {
     return optionalGuard(t, va, useFn(t))
   }
 
-  // Optional chaining: obj?.prop → null if obj is null, else obj.prop
+  // Optional chaining: obj?.prop → undefined if obj is nullish, else obj.prop.
+  // Delegate the property read to emitPropAccess — the SAME resolution the plain
+  // `.` emitter uses (passing the hoisted temp's value for the load, but the
+  // original `obj` name for schema/valType lookup). The previous hand-rolled copy
+  // diverged: it lacked emitPropAccess's `VAL.OBJECT off-schema → __dyn_get_expr`
+  // branch and fell to `__hash_get`, which mis-reads fixed-shape OBJECT memory
+  // (a self-host miscompile — `o?.x` returned undefined under the kernel).
   ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
-    const rep = typeof obj === 'string' ? repOf(obj) : null
-    const vt = rep ? rep.val : valTypeOf(obj)
     if (prop === 'length') {
+      const rep = typeof obj === 'string' ? repOf(obj) : null
+      const vt = rep ? rep.val : valTypeOf(obj)
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
       return emitLengthAccess(['local.get', `$${t}`], vt, notString)
     }
-    const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
-    if (propIdx >= 0) return emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
-    if (typeof obj === 'string') {
-      const objType = lookupValType(obj)
-      if (usesDynProps(objType))
-        return emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-      if (objType === VAL.HASH)
-        return emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
-      if (objType == null)
-        // Unknown receiver — in WASI mode use typed dispatch (no PTR.EXTERNAL values).
-        // In JS host mode use __dyn_get_any_t but don't force features.external here
-        // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
-        return ctx.transform.host === 'wasi'
-          ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-          : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-      inc('__hash_get', '__str_hash', '__str_eq')
-      return ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
-    }
-    if (valTypeOf(obj) === VAL.HASH)
-      return emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
-    return emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj), prop)
+    return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop, true)
   })
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
