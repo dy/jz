@@ -3257,6 +3257,13 @@ export function emit(node, expect) {
   // f64 and survives, so it stays a plain literal.)
   if (op === 'nan') return typed(['f64.const', 'nan'], 'f64')
 
+  // Self-describing boolean literal (`normalizeBigints` at the host→kernel boundary).
+  // A raw `true`/`false` in the marshalled AST coerces to the number 1/0 and loses its
+  // VAL.BOOL kind, so the kernel returns a plain f64 instead of a NaN-boxed boolean.
+  // args[0] is 1/0 (prepare may wrap it as a `[, 1]` literal node) — emit it as that
+  // working rep; the BOOL boxing happens at the boundary via valTypeOf('bool')=VAL.BOOL.
+  if (op === 'bool') return emit(args[0])
+
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
     const v = args[0]
