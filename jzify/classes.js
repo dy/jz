@@ -143,11 +143,6 @@ function splitCtorSuper(body) {
 const OBJ_METHOD_BODY_OPS = new Set([';', 'return', 'if', 'for', 'for-in', 'for-of',
   'while', 'do', 'switch', 'throw', 'try', 'break', 'continue'])
 
-function objectLiteralEntries(args) {
-  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
-  return raw.filter(p => p != null)
-}
-
 function isStatementBody(body) {
   return Array.isArray(body) && OBJ_METHOD_BODY_OPS.has(body[0])
 }

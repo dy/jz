@@ -28,7 +28,7 @@ import {
 } from '../../ast.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr } from '../../static.js'
-import { analyzeBody, invalidateLocalsCache } from '../analyze.js'
+import { analyzeBody } from '../analyze.js'
 import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
   fixedTypedArraysInBody, forLoopBodyIndex, withForLoopBody,

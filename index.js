@@ -189,6 +189,14 @@ jz.memory = enhanceMemory
  *   Set `profile.names = true` to also emit a standard wasm `name` custom section
  *   for profiler/debugger symbolication.
  * @param {boolean} [opts.profileNames] - Legacy alias for `profile.names`.
+ * @param {Object<string,string>} [opts.modules] - Map of module specifier → source
+ *   for compile-time `import`/`export` bundling: jz resolves the module graph
+ *   in-process from this map instead of reading from disk.
+ * @param {boolean} [opts.noTailCall] - Disable proper-tail-call emission (self/mutual
+ *   recursion uses ordinary call frames). For engines/tools without the tail-call proposal.
+ * @param {boolean} [opts.nativeTimers] - Emit a blocking `__timer_loop` in `_start` so
+ *   setTimeout/setInterval fire under a standalone runtime (e.g. the wasmtime CLI) that
+ *   has no host event loop. Default: timers defer to the JS host.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
  * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`

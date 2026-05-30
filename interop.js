@@ -25,7 +25,12 @@
  */
 
 import { wasi } from './wasi.js'
-import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, PTR } from './layout.js'
+import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
+
+// Stateless + reusable — one instance avoids a per-call allocation on the hot
+// string read/write paths (mem.String / mem.read STRING).
+const TEXT_ENC = new TextEncoder()
+const TEXT_DEC = new TextDecoder()
 
 // ── WASI linking ────────────────────────────────────────────────────────────
 
@@ -306,9 +311,9 @@ export const memory = (src) => {
     if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return ptr(4, 0x4000 | str.length, packed)  // STRING + SSO_BIT
+      return ptr(4, LAYOUT.SSO_BIT | str.length, packed)  // STRING + SSO_BIT
     }
-    const enc = new TextEncoder().encode(str)
+    const enc = TEXT_ENC.encode(str)
     const n = enc.length, raw = alloc(4 + n), m = dv()
     m.setInt32(raw, n, true)
     const off = raw + 4
@@ -417,15 +422,15 @@ export const memory = (src) => {
       new Uint8Array(out).set(new Uint8Array(mem.buffer, off, byteLen))
       return out
     }
-    if (t === 4) {  // STRING (aux bit 0x4000 = SSO inline, else heap)
+    if (t === 4) {  // STRING (aux SSO_BIT = inline, else heap)
       const a2 = aux(p)
-      if (a2 & 0x4000) {
+      if (a2 & LAYOUT.SSO_BIT) {
         const len = a2 & 0x7; let s = ''
         for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
         return s
       }
       const len = dv().getInt32(off - 4, true)
-      return new TextDecoder().decode(new Uint8Array(mem.buffer, off, len))
+      return TEXT_DEC.decode(new Uint8Array(mem.buffer, off, len))
     }
     if (t === 6) {  // OBJECT
       const m = dv(), sid = aux(p), keys = this.schemas[sid]
@@ -832,8 +837,8 @@ const jssProbeNative = () => {
       0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,        // header
       0x01, 0x06, 0x01, 0x60, 0x01, 0x6f, 0x01, 0x7f,        // type: (externref)→i32
       0x02, 0x18, 0x01,                                       // import section
-      0x0f, ...new TextEncoder().encode('wasm:js-string'),    // mod name
-      0x06, ...new TextEncoder().encode('length'),            // name
+      0x0f, ...TEXT_ENC.encode('wasm:js-string'),             // mod name
+      0x06, ...TEXT_ENC.encode('length'),                     // name
       0x00, 0x00,                                             // kind=func, type=0
     ])
     const mod = new WebAssembly.Module(bytes, { builtins: ['js-string'] })
@@ -942,7 +947,6 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
  */
 export const instantiate = (wasm, opts = {}) => {
   const state = prepareInterop(opts)
-  opts.extMap = state.extMap
   // Prefer native `wasm:js-string` builtins when the engine honors the option.
   // The option is silently accepted by V8 17+/Safari 18.4+; older engines that
   // don't recognize it either throw or ignore it — try-fallback handles both.
