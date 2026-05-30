@@ -65,6 +65,7 @@ export const PASS_NAMES = [
   'hoistPtrType',
   'hoistInvariantPtrOffset',
   'hoistInvariantPtrOffsetLoop',
+  'hoistInvariantToInt32',
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
   'hoistInvariantCellLoads',
@@ -586,6 +587,172 @@ export function hoistInvariantPtrOffsetLoop(fn) {
     if (op === 'loop') {
       const snaps = processLoop(node)
       if (snaps.length) parent.splice(idx, 0, ...snaps)
+      return
+    }
+    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
+ * Hoist loop-invariant ToInt32 expressions out of loops.
+ *
+ * jz lowers JS `|0` operations to two wasm forms:
+ *
+ *   BARE:    (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
+ *   GUARDED: (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
+ *                    (i32.const 0)
+ *                    (f64.ne (local.get X) (local.get G)))
+ *
+ * where X is a function param/local holding a numeric f64 and G is the Infinity
+ * sentinel local (a promoted-global snapshot like `$_pg0`/`$__fc0`).
+ *
+ * Both forms are pure (no traps, no memory side-effects) and loop-invariant when
+ * X (and G) are not written inside the loop. V8's wasm tier cannot hoist them
+ * because `select` and `i64.trunc_sat_f64_s` are not LICM-eligible in TurboFan
+ * (conservative aliasing). Doing it explicitly here gives ~2x wins on integer-
+ * heavy loops where multiple params each appear in ToInt32 form.
+ *
+ * Inside-out: inner loops first (same pattern as hoistInvariantPtrOffsetLoop).
+ * Keys by (form, X[, G]) so duplicates within the loop share a single snap local.
+ * Even a single site is hoisted -- LICM wins differ from CSE, count>=1 is enough.
+ */
+export function hoistInvariantToInt32(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Cheap early-out: nothing to hoist unless the function has BOTH a loop and a
+  // `trunc_sat` (the ToInt32 marker). Skips the buildRefcount walk on the common
+  // case — a loop with no fractional-operand ToInt32 — so the pass costs ~nothing
+  // where it can't fire.
+  let hasLoop = false, hasTrunc = false
+  const scanShape = (n) => {
+    if (!Array.isArray(n) || (hasLoop && hasTrunc)) return
+    if (n[0] === 'loop') hasLoop = true
+    else if (n[0] === 'i64.trunc_sat_f64_s') hasTrunc = true
+    for (let i = 1; i < n.length && !(hasLoop && hasTrunc); i++) scanShape(n[i])
+  }
+  for (let i = bodyStart; i < fn.length && !(hasLoop && hasTrunc); i++) scanShape(fn[i])
+  if (!hasLoop || !hasTrunc) return
+
+  let snapId = nextLocalId(fn, 'ti')
+  const newLocals = []
+
+  const refcount = buildRefcount(fn)
+
+  const processLoop = (loopNode) => {
+    // Bottom-up: recurse into inner loops first.
+    for (let i = 1; i < loopNode.length; i++) {
+      const child = loopNode[i]
+      if (!Array.isArray(child)) continue
+      processNode(child, loopNode, i)
+    }
+
+    // Collect all locals written anywhere in this loop body (incl. nested loops).
+    const writes = new Set()
+    const scanWrites = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'local.set' || op === 'local.tee') {
+        if (typeof node[1] === 'string') writes.add(node[1])
+        for (let i = 2; i < node.length; i++) scanWrites(node[i])
+        return
+      }
+      for (let i = 1; i < node.length; i++) scanWrites(node[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scanWrites(loopNode[i])
+
+    // Collect candidate sites, keyed canonically so duplicates share a snap.
+    // key => [{ parent, idx, node }]
+    const sites = new Map()
+
+    const collect = (node, parent, idx) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'loop') return  // already processed bottom-up; don't re-enter
+
+      // GUARDED form:
+      //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
+      //           (i32.const 0)
+      //           (f64.ne (local.get X) G))
+      // where G is either (local.get sentinel) or (f64.const Infinity).
+      // Pre-watr the sentinel is a literal f64.const; post-watr promoteGlobals
+      // has snapshotted it to a local.
+      if (op === 'select' && node.length === 4) {
+        const a = node[1], b = node[2], c = node[3]
+        if (Array.isArray(a) && a[0] === 'i32.wrap_i64' && a.length === 2 &&
+            Array.isArray(a[1]) && a[1][0] === 'i64.trunc_sat_f64_s' && a[1].length === 2 &&
+            Array.isArray(a[1][1]) && a[1][1][0] === 'local.get' && typeof a[1][1][1] === 'string' &&
+            Array.isArray(b) && b[0] === 'i32.const' && b[1] === 0 &&
+            Array.isArray(c) && c[0] === 'f64.ne' && c.length === 3 &&
+            Array.isArray(c[1]) && c[1][0] === 'local.get' && typeof c[1][1] === 'string') {
+          const X = a[1][1][1]
+          const Xne = c[1][1]
+          // G may be (local.get sentinel) or (f64.const Infinity).
+          const Gnode = c[2]
+          const Gkey = (Array.isArray(Gnode) && Gnode[0] === 'local.get' && typeof Gnode[1] === 'string')
+            ? Gnode[1]
+            : (Array.isArray(Gnode) && Gnode[0] === 'f64.const' && Gnode[1] === Infinity)
+              ? '__inf__'
+              : null
+          const Ginvariant = Gkey === '__inf__' || (Gkey !== null && !writes.has(Gkey))
+          if (Gkey !== null && X === Xne && !writes.has(X) && Ginvariant &&
+              (refcount.get(node) || 0) <= 1 &&
+              (refcount.get(parent) || 0) <= 1) {
+            const key = `G:${X}:${Gkey}`
+            let arr = sites.get(key)
+            if (!arr) { arr = []; sites.set(key, arr) }
+            arr.push({ parent, idx, node })
+            return  // don't descend into matched expr
+          }
+        }
+      }
+
+      // BARE form:
+      //   (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
+      if (op === 'i32.wrap_i64' && node.length === 2 &&
+          Array.isArray(node[1]) && node[1][0] === 'i64.trunc_sat_f64_s' && node[1].length === 2 &&
+          Array.isArray(node[1][1]) && node[1][1][0] === 'local.get' && typeof node[1][1][1] === 'string') {
+        const X = node[1][1][1]
+        if (!writes.has(X) &&
+            (refcount.get(node) || 0) <= 1 &&
+            (refcount.get(parent) || 0) <= 1) {
+          const key = `B:${X}`
+          let arr = sites.get(key)
+          if (!arr) { arr = []; sites.set(key, arr) }
+          arr.push({ parent, idx, node })
+          return  // don't descend into matched expr
+        }
+      }
+
+      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
+    }
+    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
+
+    const snaps = []
+    for (const [, arr] of sites) {
+      if (arr.length < 1) continue
+      const snapName = `$__ti${snapId++}`
+      newLocals.push(['local', snapName, 'i32'])
+      // Reuse the first matched node as the snap value (byte-identical to inlined form).
+      snaps.push(['local.set', snapName, arr[0].node])
+      for (const { parent, idx } of arr) {
+        parent[idx] = ['local.get', snapName]
+      }
+    }
+    return snaps
+  }
+
+  const processNode = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'loop') {
+      const snaps = processLoop(node)
+      if (snaps && snaps.length) parent.splice(idx, 0, ...snaps)
       return
     }
     for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
@@ -1997,6 +2164,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantPtrOffsetLoop === false &&
+      cfg.hoistInvariantToInt32 === false &&
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.hoistInvariantCellLoads === false &&
@@ -2010,6 +2178,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
   if (!cfg || cfg.hoistInvariantPtrOffsetLoop !== false) hoistInvariantPtrOffsetLoop(fn)
+  if (!cfg || cfg.hoistInvariantToInt32 !== false) hoistInvariantToInt32(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
