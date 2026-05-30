@@ -1820,6 +1820,10 @@ export default (ctx) => {
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
+  // Unqualified alias so an untyped-receiver `.concat` gets emit's runtime
+  // string-vs-array ptr-type branch (string → `.string:concat`, array → this),
+  // mirroring `.at`. A known-ARRAY receiver still dispatches here directly.
+  ctx.core.emit['.concat'] = ctx.core.emit['.array:concat']
 
   // .flat() → flatten one level of nested arrays
   ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src i64) (result f64)
