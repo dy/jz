@@ -30,10 +30,11 @@ export const REJECT_IDENTS = {
   super: '`super` not supported: no class inheritance',
   arguments: '`arguments` not supported: use rest params',
   eval: '`eval` not supported',
-  // Reserved words that are never valid binding/identifier names (strict mode /
-  // ES grammar). subscript parses them as plain identifiers; reject so they fail
-  // loudly instead of compiling to a stray local named `let`/`const`/etc.
-  let: '`let` is a reserved word, not a valid name',
+  // `const` is an always-reserved word (like `class`/`with` above) — never a valid
+  // binding/identifier name in any mode; subscript parses it as a plain identifier,
+  // so reject it. NOT `let`: `let` is only *strict-mode* reserved and is a legal
+  // identifier in sloppy JS (`var let = 5`), so rejecting it would refuse valid JS
+  // (test262 language/expressions/object/let-non-strict-*).
   const: '`const` is a reserved word, not a valid name',
 }
 
