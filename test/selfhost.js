@@ -81,6 +81,14 @@ const SAMPLES = [
   ['array-reduce','export let main = () => [1,2,3,4,5].reduce((a,b)=>a+b, 0)', 15],
   ['closure',     'let mk = n => (x => x + n); let add5 = mk(5); export let main = () => add5(7)', 12],
   ['recursion',   'let fib = n => n < 2 ? n : fib(n-1) + fib(n-2); export let main = () => fib(10)', 55],
+  // Math intrinsics whose emitters build WAT strings at compile time — guards the
+  // class of self-host bug where the builder uses a construct the kernel lacks
+  // (Math.expm1's Horner fold once used Array.reduceRight, absent from jz's runtime,
+  // so the kernel interpolated `undefined` into the WAT). Tolerance-checked in-program
+  // (returns 1/0) so the exact-equality assert below stays uniform.
+  ['math-sqrt',   'export let main = () => (Math.abs(Math.sqrt(2) - 1.4142135623730951) < 1e-9) | 0', 1],
+  ['math-exp',    'export let main = () => (Math.abs(Math.exp(0.3) - 1.3498588075760032) < 1e-6) | 0', 1],
+  ['math-expm1',  'export let main = () => (Math.abs(Math.expm1(0.3) - 0.3498588075760032) < 1e-6) | 0', 1],
 ]
 
 for (const [label, src, expected] of SAMPLES) {

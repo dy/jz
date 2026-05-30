@@ -1476,6 +1476,27 @@ export default (ctx) => {
       ['local.get', `$${acc}`]], 'f64')
   }
 
+  // .reduceRight(fn, init) — same accumulator fold as .reduce but the last
+  // arrayLoop arg (reverse) walks elements len-1→0. No map/filter fusion: the
+  // reverse-fused shapes don't occur in practice and the base case is the only
+  // form jz emits. (Previously absent despite being autoload-declared + test262-
+  // tracked — a phantom builtin that silently returned undefined.)
+  ctx.core.emit['.reduceRight'] = (arr, fn, init) => {
+    const recv = hoistArrayValue(arr)
+    const acc = temp('ra')
+    const reps = callbackArgReps(arr)
+    const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
+    const loop = arrayLoop(recv.value, (_ptr, _len, _i, item) => [
+      ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]
+    ], null, null, true)
+    return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
+      ['local.set', `$${acc}`, init ? asF64(emit(init)) : ['f64.const', 0]],
+      ...loop,
+      ['local.get', `$${acc}`]], 'f64')
+  }
+
   ctx.core.emit['.forEach'] = (arr, fn) => {
     // .map(f).forEach(g) → single loop: apply f, call g — no intermediate array
     const up = detectUpstream(arr)
