@@ -62,7 +62,10 @@ const argFilters = process.argv.slice(2)
 //   - watr: compiles the watr WAT library, which is a multi-file module graph
 //     (`import … from './src/compile.js'` etc.); the kernel takes one parsed AST
 //     and has no host module resolver, so every case reports "Unknown module".
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr'])
+//   - warnings: every case asserts on the compile-time advisory channel
+//     (`opts.warnings` Map / `inspect`), which the kernel — returning only IR —
+//     never populates. Wholly metadata, not value behaviour; nothing to self-host.
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length
