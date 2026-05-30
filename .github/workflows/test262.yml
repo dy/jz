@@ -15,7 +15,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v1
+          key: test262-shallow-v2
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v1
+          key: test262-shallow-v2
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
@@ -59,5 +59,11 @@ jobs:
           # OOB; unskips Object/assign/ObjectOverride-sameproperty and
           # Object/keys/15.2.3.14-6-2. Also pruned 2 stale EXPECTED_FAIL entries.
           # Lift this baseline when fixes land.
-          JZ_TEST262_BASELINE: 723
+          # 2026-05-30: 723 → 722. The 723 was tied to the now-stale `-v1` corpus
+          # snapshot; on current test262 the count is 722 at EVERY commit, including
+          # the last-green 8165d9a (verified by a green↔HEAD pass-set diff — identical,
+          # so no jz regression; upstream simply changed/removed one test). Bumped the
+          # cache key to `-v2` so both jobs re-clone current test262, where this run
+          # measures 722 pass / 0 in-scope fail.
+          JZ_TEST262_BASELINE: 722
         run: npm run test:262:builtins
