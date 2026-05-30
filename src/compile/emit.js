@@ -1623,13 +1623,23 @@ function emitPropertyAssign(obj, prop, val) {
       ctx.features.external = true
     }
     inc('__hash_set')
-    const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
-    if (isGlobal(obj)) return block64(
-      ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`])
-    // Closure-captured (boxed) locals store the value at the cell address — local.tee
-    // would write to the i32 cell pointer, not the f64 value. Route through writeVar.
-    if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
-    return typed(['local.tee', `$${obj}`, setCall], 'f64')
+    // `__hash_set` returns the (possibly reallocated) HASH pointer, which must be
+    // written back into `obj`. But JS `(obj.prop = v)` evaluates to `v`, not the
+    // object — so capture the value and return it. This only diverges in value
+    // position: postfix `o.p++` lowers to `(o.p = o.p+1) - 1`, `a = (o.p = v)`,
+    // `f(o.p = v)`. Returning the pointer there computes `object - 1` → garbage
+    // (the self-host regex `c.labelId++` bug). Void position discards the tail.
+    const keyBits = asI64(emit(['str', prop]))
+    return withTemp(asF64(emit(val)), t => {
+      const tget = ['local.get', `$${t}`]
+      const setCall = typed(['f64.reinterpret_i64',
+        ['call', '$__hash_set', asI64(emit(obj)), keyBits, ['i64.reinterpret_f64', tget]]], 'f64')
+      const writeback = isGlobal(obj) ? ['global.set', `$${obj}`, setCall]
+        // Closure-captured (boxed) locals store at the cell address, not the slot.
+        : ctx.func.boxed?.has(obj) ? writeVar(obj, setCall, true)
+        : ['local.set', `$${obj}`, setCall]
+      return [writeback, tget]
+    })
   }
   if (ctx.transform.host !== 'wasi') ctx.features.external = true
   inc('__dyn_set')
@@ -2561,7 +2571,7 @@ export const emitter = {
         : vt === VAL.BOOL ? emitBoolStr(n) : asF64(emit(n))
       const ea = strOperand(vtA, a)
       const eb = strOperand(vtB, b)
-      return typed(ctx.abi.string.ops.concat(ea, eb, ctx), 'f64')
+      return typed(ctx.abi.string.ops.cat(ea, eb, ctx), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])

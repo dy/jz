@@ -345,8 +345,14 @@ export const sso = {
     },
 
     /** Concat with ToString coercion on both sides. Both args: f64 slot
-     *  carriers. Returns f64 (the new STRING ptr's slot carrier). */
-    concat: (aF64, bF64, ctx) => {
+     *  carriers. Returns f64 (the new STRING ptr's slot carrier).
+     *  Named `cat`, not `concat`: under self-host this op is invoked as a
+     *  method on the statically-untyped `ctx.abi.string.ops` receiver, and the
+     *  name `concat` collides with `Array.prototype.concat` — the method-call
+     *  dispatcher's string/array runtime guess (emit.js) would hijack it into a
+     *  bogus array concat. A non-builtin name routes through dynamic property
+     *  dispatch (load the closure slot, call it) correctly. */
+    cat: (aF64, bF64, ctx) => {
       ctx.core.includes.add('__str_concat')
       return ['call', '$__str_concat', ssoI64(aF64), ssoI64(bF64)]
     },
