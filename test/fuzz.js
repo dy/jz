@@ -456,6 +456,72 @@ const report = (f, opts) => {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Typed-array mode (FUZZ-1) — exercises Float64Array element read/write/loop/reduce.
+// ─────────────────────────────────────────────────────────────────────────────
+// The scalar fuzzer never touches linear memory; this generates kernels that load,
+// mutate and store Float64Array elements in a counted loop and a reduction, then
+// diffs jz (memory-backed array) against JS (plain Float64Array) element-by-element
+// AND on the returned reduction. Element VALUE expressions use ONLY f64-stable ops
+// (+ - * / Math.sqrt/abs/min/max) over `buf[i]` and float literals: a Float64 load is
+// exact and these never i32-narrow, so jz == JS bit-for-bit with no contract caveat.
+// The loop counter `i` is i32 and is used only as the subscript — never inside a value
+// expression, where e.g. `i * -1.0` would mint a -0 that jz's i32 path can't hold (the
+// documented integer contract the scalar oracle skips; phase-2 with the contract model
+// can add index-dependent values).
+const F_LEAF = ['buf[i]', '0.5', '1.5', '2.0', '3.0', '-1.5', '10.0', '0.1', '-0.25']
+const F_MATH1 = ['Math.sqrt', 'Math.abs']
+const genFloatExpr = (g, d) => {
+  if (d <= 0 || g.chance(0.4)) return g.chance(0.55) ? 'buf[i]' : g.pick(F_LEAF)
+  switch (g.int(4)) {
+    case 0: return `(${genFloatExpr(g, d - 1)} ${g.pick(['+', '-', '*', '/'])} ${genFloatExpr(g, d - 1)})`
+    case 1: return `${g.pick(F_MATH1)}(${genFloatExpr(g, d - 1)})`
+    case 2: return `Math.${g.pick(['min', 'max'])}(${genFloatExpr(g, d - 1)}, ${genFloatExpr(g, d - 1)})`
+    default: return `(${genFloatExpr(g, d - 1)} * ${g.pick(['0.5', '2.0', '1.5', '-1.0'])})`
+  }
+}
+const typedSource = (seed) => {
+  const g = mkRng(seed)
+  const writes = Array.from({ length: 1 + g.int(2) }, () => `buf[i] = ${genFloatExpr(g, 4)};`).join(' ')
+  // Reduction over the mutated buffer so the return value also crosses the boundary.
+  return `export let f = (buf, n) => { let acc = 0.0; for (let i = 0; i < n; i++) { ${writes} acc = acc + buf[i]; } return acc; }`
+}
+const checkTyped = (seed, opts) => {
+  const src = typedSource(seed)
+  let jsFn
+  try { jsFn = compileJS(src) } catch { return { kind: 'invalid' } }
+  const g = mkRng(opts.inputSeed + seed)
+  const n = 6 + g.int(10)
+  const data = Array.from({ length: n }, () => argval(g))
+  const jsArr = Float64Array.from(data)
+  let jsRet
+  try { jsRet = jsFn(jsArr, n) } catch { return { kind: 'invalid' } }
+  if (typeof jsRet !== 'number') return null
+  for (const opt of opts.optLevels) {
+    let inst, ret, jzArr
+    try {
+      inst = jz(src, { optimize: opt })
+      const p = inst.memory.Float64Array(data)
+      ret = inst.exports.f(p, n)
+      jzArr = inst.memory.read(p)
+    } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    if (!same(ret, jsRet)) return { kind: 'mismatch-ret', opt, got: ret, want: jsRet, src }
+    for (let i = 0; i < n; i++)
+      if (!same(jzArr[i], jsArr[i])) return { kind: 'mismatch-elem', opt, idx: i, got: jzArr[i], want: jsArr[i], src }
+  }
+  return null
+}
+export const fuzzTyped = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTyped(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -482,6 +548,12 @@ if (!isMain) {
       ? `NEW miscompile(s) — a change regressed the compiler:\n\n${fresh.map(f => report(f, GATE)).join('\n\n')}`
       : `no regressions (${findings.length} known-open)`)
   })
+  test('fuzz: Float64Array element ops match JS in seeds 1..100 × opt {0,1,2,3}', () => {
+    const findings = fuzzTyped({ ...GATE, count: 100 })
+    ok(findings.length === 0, findings.length
+      ? `typed-array divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz Float64Array == JS')
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -501,7 +573,18 @@ if (isMain) {
     inputSeed: Number(arg('inputSeed', 7)),
     optLevels, cfg: DEFAULTS, maxFindings: Number(arg('maxFindings', 20)),
   }
-  if (single != null) {
+  if (process.argv.includes('--typed')) {
+    // FUZZ-1: Float64Array element read/write/loop/reduce, jz vs JS.
+    const t0 = performance.now()
+    const findings = fuzzTyped(opts)
+    console.log(`fuzzed ${opts.count} typed-array programs (seeds ${opts.seedStart}..${opts.seedStart + opts.count - 1}), opt {${optLevels}} — ${(performance.now() - t0).toFixed(0)}ms`)
+    if (!findings.length) console.log('✓ no divergence — jz Float64Array == JS for every program')
+    else {
+      console.log(`✗ ${findings.length} finding(s):\n`)
+      for (const f of findings) console.log(`seed=${f.seed} kind=${f.kind}${f.opt != null ? ` opt=${f.opt}` : ''}${f.idx != null ? ` idx=${f.idx}` : ''}\n  jz=${f.got} js=${f.want}${f.err ? ` err=${f.err}` : ''}\n  ${f.src}\n`)
+      process.exit(1)
+    }
+  } else if (single != null) {
     const prog = genProgram(Number(single), opts.cfg)
     console.log(toSource(prog))
     const r = check(prog, opts)
