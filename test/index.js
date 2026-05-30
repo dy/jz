@@ -60,4 +60,14 @@ if (argFilters.length && selected.length !== argFilters.length) {
   throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
 }
 
+// JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-hosted jz.wasm
+// kernel instead of the in-process compiler. Set the target BEFORE importing any
+// test file (they import jz from ../index.js — the same module singleton).
+if (process.env.JZ_TEST_TARGET === 'jz.wasm') {
+  const [{ _setCompileTarget }, { compileViaKernel }] = await Promise.all([
+    import('../index.js'), import('./kernel-target.js'),
+  ])
+  _setCompileTarget(compileViaKernel)
+}
+
 for (const name of selected) await import(`./${name}.js`)

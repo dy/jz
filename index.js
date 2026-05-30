@@ -198,7 +198,14 @@ jz.memory = enhanceMemory
  *   without re-running the analyzer. Pays a small serialization cost; off by default.
  * @returns {Uint8Array|string|{wasm: Uint8Array, inspect: object}|{wat: string, inspect: object}}
  */
+// Test-only compile target. When set (by test/index.js under JZ_TEST_TARGET=jz.wasm)
+// every jz.compile / compile / jz() call routes through it instead of the in-process
+// compiler — used to run the whole suite against the self-hosted jz.wasm kernel
+// (compileParsed in wasm). null in production: one boolean check on a cold path.
+let compileTarget = null
+export const _setCompileTarget = (fn) => { compileTarget = fn }
 jz.compile = (code, opts = {}) => {
+  if (compileTarget) return compileTarget(code, opts)
   try {
     return jzCompileInner(code, opts)
   } catch (e) {
