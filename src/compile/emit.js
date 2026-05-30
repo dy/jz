@@ -34,7 +34,7 @@ import {
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
 } from '../type.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -1571,6 +1571,21 @@ function emitPropertyAssign(obj, prop, val) {
         stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
       stmts.push(['local.get', `$${t}`])
       return block64(...stmts)
+    }
+  }
+  // Chained receiver (`a.b.c = v`): resolve the holder's static shape so the
+  // write targets the SAME fixed slot the READ path uses (emitPropAccess →
+  // shapeOf, core.js). Without this the write fell to __dyn_set (per-OBJECT
+  // propsPtr) while `a.b.c` reads the schema slot — different memory, so the
+  // value was lost (read returned the stale slot). This is what corrupted the
+  // self-host `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
+  if (typeof obj !== 'string') {
+    const sh = shapeOf(obj)
+    if (sh?.val === VAL.OBJECT && sh.names) {
+      const i = sh.names.indexOf(prop)
+      if (i >= 0) return withTemp(asF64(emit(val)), t => [
+        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
+        ['local.get', `$${t}`]])
     }
   }
   if (typeof obj === 'string') {
