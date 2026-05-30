@@ -33,6 +33,5 @@ export function createNames() {
     classStatic: () => `\uE003class${staticClassIdx++}`,
     classSuperArg: i => `\uE003superArg${classIdx}_${i}`,
     classSuper: i => `\uE003super${classIdx}_${i}`,
-    get classId() { return classIdx },
   }
 }
