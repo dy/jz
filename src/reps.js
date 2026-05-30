@@ -61,11 +61,14 @@ export const VAL = {
  * @property {*}       [jsonShape]        inferred shape for the JSON.stringify fast path.
  * @property {string}  [typedCtor]        TypedArray ctor name (TYPED kind); null = bimorphic.
  * @property {string}  [wasm]             wasm storage type 'i32'|'f64' (narrow.js fixpoint).
+ * @property {boolean} [nullable]         binding can hold null/undefined on some path
+ *   (init or an assignment was a nullish literal) — suppresses the `=== null` /
+ *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemValType', 'carrier', 'unsigned', 'jsonShape',
-  'typedCtor', 'wasm',
+  'typedCtor', 'wasm', 'nullable',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

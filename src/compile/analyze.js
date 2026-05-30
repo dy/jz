@@ -585,6 +585,20 @@ export function invalidateLocalsCache(body) {
 
 /** @deprecated alias — same invalidation as `invalidateLocalsCache`. */
 
+// Can this RHS expression produce null/undefined? A direct nullish literal
+// (`[null, null]` covers both null and undefined), or a `?:`/`&&`/`||` with a
+// nullish branch. Drives the `nullable` rep flag so `x === null` on a binding
+// that was ever assigned null isn't constant-folded to false (emit.js
+// strictSentinel). Conservative — opaque sources (calls, member reads) aren't
+// flagged; the fold they'd suppress is rare and a runtime nullish check is cheap.
+function mayBeNullish(n) {
+  if (!Array.isArray(n)) return false
+  if (n.length === 2 && n[0] == null && n[1] == null) return true
+  if (n[0] === '?' || n[0] === '?:') return mayBeNullish(n[2]) || mayBeNullish(n[3])
+  if (n[0] === '&&' || n[0] === '||') return mayBeNullish(n[1]) || mayBeNullish(n[2])
+  return false
+}
+
 /**
  * Analyze all local value types from declarations and assignments.
  * Writes the per-name `val` field of `ctx.func.localReps` for method dispatch
@@ -697,6 +711,7 @@ export function analyzeValTypes(body) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         const vt = valTypeOf(a[2])
         setVal(a[1], vt)
+        if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
         // returning null but may still need ctor unification (or poisoning when
@@ -756,6 +771,7 @@ export function analyzeValTypes(body) {
       walk(args[1])
       const vt = valTypeOf(args[1])
       setVal(args[0], vt)
+      if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
