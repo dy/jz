@@ -380,6 +380,26 @@ function recordModuleInitFacts(root) {
  * @param {ASTNode} node - Raw AST from parser
  * @returns {ASTNode} Normalized AST
  */
+// ES2020 §13.13: the nullish-coalescing `??` cannot be combined with `||` or `&&`
+// without parentheses — V8 raises a SyntaxError. subscript/jessie doesn't enforce
+// it, so jz would otherwise silently accept (and pick its own parse for) the mix.
+// Run on the RAW input AST: a parenthesized operand parses as `['()', …]`, so a
+// bare `??`/`||`/`&&` child is exactly the illegal unparenthesized form — and at
+// this stage no compiler-synthesized `??` (e.g. destructuring defaults) exists yet,
+// so `let [a = b || c] = arr` can't false-positive.
+function validateCoalesceMixing(n) {
+  if (!Array.isArray(n)) return
+  const op = n[0]
+  if (op === '||' || op === '&&') {
+    for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '??')
+      err(`'??' cannot be mixed with '${op}' without parentheses (ES2020) — wrap one side, e.g. (a ?? b) ${op} c`)
+  } else if (op === '??') {
+    for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && (n[i][0] === '||' || n[i][0] === '&&'))
+      err(`'??' cannot be mixed with '||' / '&&' without parentheses (ES2020) — wrap one side, e.g. a ?? (b || c)`)
+  }
+  for (let i = 1; i < n.length; i++) validateCoalesceMixing(n[i])
+}
+
 export default function prepare(node) {
   resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
@@ -387,6 +407,7 @@ export default function prepare(node) {
   // import would cycle (autoload imports every module via module/index.js).
   ctx.module.include = includeModule
   includeModule('core')
+  validateCoalesceMixing(node)  // ES2020: reject unparenthesized `??` mixed with `||`/`&&`
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
@@ -1849,6 +1870,12 @@ const handlers = {
         if (key == null) err('computed property name not supported for fixed-shape object: use a compile-time string/number key')
         return [':', key, prep(p[2])]
       }
+      // Accessors (`{ get x() {…} }` / `{ set x(v) {…} }`) parse to ['get'|'set', …].
+      // jz objects are fixed-shape slot records with no accessor protocol, so they'd
+      // otherwise fall through and compile to dead code (0 schema slots → `o.x` reads
+      // undefined). Reject loudly — silent miscompile breaks "valid jz = valid JS".
+      if (Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))
+        err('object getter/setter not supported — jz objects have no accessors; use a method or a plain property + function')
       return prep(p)
     }
     let prepped = items.map(prop)
