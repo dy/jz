@@ -19,8 +19,8 @@
  * @module compile/plan/scope
  */
 
-import { ctx } from '../../ctx.js'
-import { ASSIGN_OPS, T } from '../../ast.js'
+import { ctx, warn } from '../../ctx.js'
+import { ASSIGN_OPS, T, refsAny } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'
@@ -204,31 +204,43 @@ export const inferModuleIntGlobals = (ast) => {
     return op === '{}' || op === '[' || (op === '[]' && e.length === 2) || op === '=>' || op === 'new' || op === 'str' || op === '`'
   }
 
-  // Collect every assignment RHS (init + reassignments, program-wide).
+  // Collect every assignment RHS (init + reassignments, program-wide). `fromParam`
+  // records (global → the function it was assigned a parameter-derived value in) —
+  // a parameter is an f64 of unknown integrality, so an i32-narrowed global fed from
+  // one may silently truncate a fractional Number (DSP/filter state). We do NOT
+  // demote on this (the integer default is the load-bearing index/size perf win);
+  // we surface it on the opt-in warn channel below.
   const rhsByName = new Map()
+  const fromParam = new Map()
   for (const name of candidates) rhsByName.set(name, [])
-  const record = (name, rhs) => {
+  const record = (name, rhs, scope) => {
     if (!candidates.has(name)) return
     if (looksNonNumeric(rhs)) { candidates.delete(name); rhsByName.delete(name); return }
     rhsByName.get(name)?.push(rhs)
+    if (scope && !fromParam.has(name) && refsAny(rhs, scope.params, { skipBindingPositions: true }))
+      fromParam.set(name, scope.fn)
   }
-  const walk = (node) => {
+  const walk = (node, scope) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=' && typeof node[1] === 'string') record(node[1], node[2])
+    if (op === '=' && typeof node[1] === 'string') record(node[1], node[2], scope)
     else if ((op === 'let' || op === 'const') && node.length > 1) {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') record(d[1], d[2])
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') record(d[1], d[2], scope)
       }
     } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof node[1] === 'string' && candidates.has(node[1])) {
-      if (FRAC_COMPOUND.has(op)) fractional.add(node[1])         // `/=`, `**=` → fractional outright
-      else if (!INT_COMPOUND.has(op)) record(node[1], node[2])   // `+= -= *= %= ||= &&= ??=` → as their rhs
+      if (FRAC_COMPOUND.has(op)) fractional.add(node[1])               // `/=`, `**=` → fractional outright
+      else if (!INT_COMPOUND.has(op)) record(node[1], node[2], scope)  // `+= -= *= %= ||= &&= ??=` → as their rhs
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
+    for (let i = 1; i < node.length; i++) walk(node[i], scope)
   }
-  walk(ast)
-  for (const f of ctx.func.list) if (f.body && !f.raw) walk(f.body)
+  walk(ast, null)
+  for (const f of ctx.func.list) {
+    if (!f.body || f.raw) continue
+    const params = new Set((f.sig?.params || []).map(p => p.name))
+    walk(f.body, params.size ? { params, fn: f.name } : null)
+  }
 
   // Fixpoint: demote any candidate with a provably-fractional assignment; repeat
   // so fractionality propagates through globals that reference each other.
@@ -245,6 +257,12 @@ export const inferModuleIntGlobals = (ast) => {
     if (fractional.has(name)) continue
     ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
     ctx.scope.globalTypes.set(name, 'i32')
+    // Advisory only (off unless opts.warnings): the value flows in from a parameter,
+    // which may be a fractional Number that the i32 carrier truncates.
+    if (ctx.warnings && fromParam.has(name))
+      warn('int-global-truncation',
+        `module global '${name}' is inferred i32 (integer) but is assigned from a parameter — if it can hold a fractional Number (e.g. DSP/filter state), the fraction is truncated; store fractional state in a Float64Array instead`,
+        { fn: fromParam.get(name) })
   }
 }
 
