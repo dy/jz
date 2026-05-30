@@ -29,6 +29,7 @@
     "test:opt1": "JZ_TEST_OPTIMIZE=1 node test/index.js",
     "test:opt3": "JZ_TEST_OPTIMIZE=3 node test/index.js",
     "test:wasi": "JZ_TEST_HOST=wasi node test/index.js",
+    "test:wasm": "JZ_TEST_TARGET=jz.wasm node test/index.js",
     "test:matrix": "npm test && npm run test:opt0 && npm run test:opt1 && npm run test:opt3 && npm run test:wasi",
     "test:bench": "node test/bench.js",
     "test:fuzz": "node test/fuzz.js --count=5000",
