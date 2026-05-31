@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import { renderBenchSvg } from '../scripts/bench-svg.mjs'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -442,6 +443,18 @@ if (process.exitCode) process.exit(process.exitCode)
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
 for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case: ${id}`); process.exit(2) }
 
+// Per-(case, target) valid medians, collected to drive the geomean bench.svg.
+const grid = {}
+// The headline engines shown in bench/bench.svg (a curated JS→WASM comparison +
+// the native-C ceiling) — the full table has too many lanes to bounce.
+const SVG_TARGETS = [
+  { id: 'nat', label: 'native C', sub: 'clang -O3' },
+  { id: 'jz', label: 'jz', sub: '→ wasm' },
+  { id: 'v8', label: 'V8', sub: 'Node' },
+  { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
+  { id: 'porf', label: 'Porffor', sub: '' },
+]
+
 for (const cid of selectedCases) {
   const c = caseById[cid]
   console.log(`\n# ${c.name} (${c.id})`)
@@ -486,6 +499,9 @@ for (const cid of selectedCases) {
     csCounts[r.checksum] = (csCounts[r.checksum] || 0) + 1
   }
   const refCs = +(Object.entries(csCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? results[0].checksum)
+  // Record correct-result medians for the geomean SVG (a DIFF result is excluded).
+  grid[cid] = {}
+  for (const r of results) if (r.checksum === refCs || r.checksum === fmaCs) grid[cid][r.id] = r.medianUs
   const nat = results.find(r => r.id === 'nat')
   const baseline = nat || [...results].sort((a, b) => a.medianUs - b.medianUs)[0]
 
@@ -502,5 +518,26 @@ for (const cid of selectedCases) {
       : r.checksum === fmaCs ? 'fma'
       : 'DIFF'
     console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${parity.padStart(8)}`)
+  }
+}
+
+// Regenerate bench/bench.svg from freshly measured geomeans — only on a full run
+// (all cases present) so a filtered run can't clobber the committed artifact with
+// partial data. ratio = geomean(engine / jz) over correct-result cases both ran.
+if (selectedCases.length === allCases.length) {
+  const rows = []
+  for (const t of SVG_TARGETS) {
+    const ratios = []
+    for (const cid of selectedCases) {
+      const g = grid[cid]
+      if (g && g[t.id] != null && g.jz != null) ratios.push(g[t.id] / g.jz)
+    }
+    if (!ratios.length) continue
+    const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
+    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf' ? `runs ${ratios.length} / ${allCases.length}` : t.sub })
+  }
+  if (rows.length > 1 && rows.some(r => r.label === 'jz')) {
+    renderBenchSvg(rows)
+    console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
 }
