@@ -445,14 +445,20 @@ for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case
 
 // Per-(case, target) valid medians, collected to drive the geomean bench.svg.
 const grid = {}
-// The headline engines shown in bench/bench.svg (a curated JS→WASM comparison +
-// the native-C ceiling) — the full table has too many lanes to bounce.
+// The engines shown in bench/bench.svg: jz against the native-binary cluster
+// (C/Zig/Rust/Go), the JS/wasm field (V8/Bun/AssemblyScript/Porffor), and NumPy.
+// A target with no measured data on a run (e.g. bun absent) is simply skipped.
 const SVG_TARGETS = [
-  { id: 'nat', label: 'native C', sub: 'clang -O3' },
   { id: 'jz', label: 'jz', sub: '→ wasm' },
+  { id: 'nat', label: 'native C', sub: 'clang -O3' },
+  { id: 'zig', label: 'Zig', sub: 'ReleaseFast' },
+  { id: 'rust', label: 'Rust', sub: 'rustc -O3' },
+  { id: 'go', label: 'Go', sub: 'gc' },
   { id: 'v8', label: 'V8', sub: 'Node' },
+  { id: 'bun', label: 'Bun', sub: 'JSC' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf', label: 'Porffor', sub: '' },
+  { id: 'numpy', label: 'NumPy', sub: 'Python' },
 ]
 
 for (const cid of selectedCases) {
