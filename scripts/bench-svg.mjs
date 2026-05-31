@@ -25,13 +25,13 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 // full run; kept here so the committed SVG regenerates deterministically.
 //   ratio = geomean(engine median / jz median) over the cases the engine ran
 //           (lower = faster; jz is the 1.00× baseline). These reproduce from the
-//           per-case table in README.md. (Bun appears only when measured — it has
-//           no committed number here.)
+//           per-case table in README.md. Bun is the measured JSC geomean.
 export const SNAPSHOT = [
   { label: 'jz', sub: '→ wasm', ratio: 1.00 },
   { label: 'native C', sub: 'clang -O3', ratio: 1.13 },
   { label: 'Zig', sub: 'ReleaseFast', ratio: 1.14 },
   { label: 'Rust', sub: 'rustc -O3', ratio: 1.19 },
+  { label: 'Bun', sub: 'JavaScriptCore', ratio: 1.40 },
   { label: 'Go', sub: 'gc', ratio: 1.88 },
   { label: 'V8', sub: 'Node', ratio: 2.45 },
   { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.52 },

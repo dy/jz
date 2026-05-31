@@ -489,14 +489,20 @@ Names are stable; binary layouts are not — re-derive from the latest `interop.
 
 ## Examples
 
-Runnable browser demos — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)):
+Runnable browser demos — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)). Click any to run it live (each shows its own FPS / ms-per-frame, with a JS ⇄ jz toggle):
 
-* [game-of-life](https://dy.github.io/jz/examples/game-of-life/) — Conway's Life writing the cell grid straight into shared pixel memory.
-* [interference](https://dy.github.io/jz/examples/interference/) — two-source wave interference field rendered per frame.
-* [mandelbrot](https://dy.github.io/jz/examples/mandelbrot/) — escape-time fractal with a precomputed color table.
-* [rfft](https://dy.github.io/jz/examples/rfft/) — live log/mel spectrogram from a jz-computed real FFT, with floatbeat audio and JS⇄jz toggle.
+<table>
+<tr>
+<td width="50%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.jpg" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life written straight into shared pixel memory.</td>
+<td width="50%"><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.jpg" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
+</tr>
+<tr>
+<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.jpg" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with a precomputed color table.</td>
+<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.jpg" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
+</tr>
+</table>
 
-Source in [`examples/`](examples/). Each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` binaries are committed so the demos work when served from GitHub; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
+Source in [`examples/`](examples/) — each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` is committed so the demos run from GitHub Pages; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
 
 
 ## Alternatives
@@ -506,22 +512,25 @@ Source in [`examples/`](examples/). Each folder has a `build.mjs` and an `index.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
 * [javy](https://github.com/bytecodealliance/javy) — embeds the QuickJS engine in the module and *interprets* your source. Runs almost any JS, but ships a whole interpreter (large binary, interpreter speed) — the opposite trade from jz's AOT-compiled native WASM for a JS subset.
 
-<details>
-<summary><strong>Which one to choose?</strong></summary>
+**Which one to choose?** — up = runs more of JS unchanged; right = faster & smaller output.
 
-<br>
+```
+  runs any JS │  javy ●       ● jawsm
+  (full spec) │
+              │                    ● porffor
+              │
+   how much   │
+   JS runs    │                              ● jz
+   unchanged  │
+              │                              ● AssemblyScript ¹
+   a subset / │
+   rewrite    └──────────────────────────────────────────────▶
+               interpreter      bundled rt      AOT → native,
+               + large wasm      + JIT          tiny wasm
+                         faster · smaller output →
+```
 
-| Pick | When |
-|---|---|
-| **jz** | You write plain JS, want tiny WASM and native-class numeric/DSP speed, and your code fits the subset. |
-| **porffor** | You need full TC39 / spec completeness. |
-| **AssemblyScript** | You're comfortable writing a typed TypeScript dialect for explicit low-level control. |
-| **jawsm** | You need to run standard JS *unchanged*, with GC and closures provided by a bundled WASM runtime. |
-| **javy** | You need to run near-arbitrary JS and don't mind shipping a QuickJS interpreter inside each module. |
-
-The axis is completeness vs. cost: jz restricts the language to emit a runtime-free, native-speed binary; the others spend size/runtime (a bundled runtime, or a full interpreter) to cover more of JS.
-
-</details>
+**jz** takes a JS subset to buy native speed + tiny output (top-right sweet spot). **porffor** buys full TC39 spec at higher cost. **javy** / **jawsm** run almost anything but ship an interpreter / GC runtime. ¹ **AssemblyScript** is fast and tiny too, but it's a *TypeScript dialect* — you rewrite, not drop in JS.
 
 ## Build with
 
