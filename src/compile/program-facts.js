@@ -112,7 +112,14 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
       }
       if (op === '()' && isFuncRef(args[0], ctx.func.names)) {
-        if (!inArrow) {
+        // Record the call site even inside an arrow body. The param-inference
+        // lattice (narrow.js) must see EVERY arg a callee receives — including
+        // calls made from a closure (`mfb(() => ci(2))`) — or it over-specializes:
+        // seeing only the direct `ci(0)` site, intConst folds the param to 0 and
+        // the closure's `ci(2)` silently loses its argument. Args evaluated in the
+        // arrow's scope that the enclosing caller can't type infer as untyped →
+        // poison → conservative (no specialization), which is sound.
+        {
           const a = args[1]
           const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
           acc.callSites.push({ callee: args[0], argList, callerFunc: caller, node })
