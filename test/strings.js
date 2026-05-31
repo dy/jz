@@ -552,13 +552,16 @@ test('string: .endsWith false', () => {
 // === .toUpperCase ===
 
 test('string: .toUpperCase', () => {
-  is(run(`export let f = () => "hello".toUpperCase().length`).f(), 5)
+  is(run(`export let f = () => "hello".toUpperCase()`).f(), 'HELLO')
+  // only ASCII letters change; digits/punctuation/already-upper pass through.
+  is(run(`export let f = () => "aB3z!".toUpperCase()`).f(), 'AB3Z!')
 })
 
 // === .toLowerCase ===
 
 test('string: .toLowerCase', () => {
-  is(run(`export let f = () => "HELLO".toLowerCase().length`).f(), 5)
+  is(run(`export let f = () => "HELLO".toLowerCase()`).f(), 'hello')
+  is(run(`export let f = () => "Ab3Z!".toLowerCase()`).f(), 'ab3z!')
 })
 
 test('string: .toLocaleLowerCase', () => {
@@ -641,7 +644,7 @@ test('string: .padEnd', () => {
 // === Chaining ===
 
 test('string: chain .toUpperCase.slice', () => {
-  is(run(`export let f = () => "hello".toUpperCase().slice(0, 2).length`).f(), 2)
+  is(run(`export let f = () => "hello".toUpperCase().slice(0, 2)`).f(), 'HE')
 })
 
 // === Tagged template literals ===
