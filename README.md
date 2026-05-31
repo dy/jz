@@ -17,8 +17,8 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** — fast, portable and long-lasting.<br>
-JZ distills modern JS to its functional core — the "good parts" ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) — without the legacy semantics, feature bloat, and perf quirks.
+**Write plain JS, compile to WASM** — performant, portable, timeless.<br>
+JZ distills modern JS to its functional core (the [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) "good parts" ) — without the legacy, feature creep, and unpredictable performance.
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
