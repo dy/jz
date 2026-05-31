@@ -29,6 +29,7 @@
 
 import { LAYOUT, ctx } from '../ctx.js'
 import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
+import { T } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { nanPrefixHex, atomNanHex } from '../../layout.js'
 
@@ -64,11 +65,9 @@ export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
   'hoistPtrType',
   'hoistInvariantPtrOffset',
-  'hoistInvariantPtrOffsetLoop',
-  'hoistInvariantToInt32',
+  'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
-  'hoistInvariantCellLoads',
   'cseScalarLoad',
   'csePureExpr',
   'dropDeadZeroInit',
@@ -480,88 +479,221 @@ export function hoistInvariantPtrOffset(fn) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals, ...snaps)
 }
 
+
+// Non-trapping, side-effect-free ops whose result is a pure function of their
+// operands. Hoisting one to the pre-header is sound iff its operands are loop-
+// invariant: same value every iteration, no traps, no memory/global effects.
+// DELIBERATELY EXCLUDES trapping ops — i32/i64 div_s/u & rem_s/u (trap on 0),
+// non-saturating trunc_f64 (trap on overflow/NaN) — because hoisting a trap to
+// the pre-header would fire it even when the loop runs zero times. Loads and
+// calls are NOT here; they are admitted by `pureGiven` only under the loop's
+// effect-summary barriers (cell loads with no aliasing store/call; the read-only
+// __ptr_* call whitelist with no other call).
+// Boxed-capture cells are `freshLocal`-generated, so the name carries the T
+// (U+E000) prefix: `$<T>cell_<var>`. Built from the constant — a hand-typed
+// `'$cell_'` literal silently omits the invisible T and never matches.
+const CELL_PREFIX = '$' + T + 'cell_'
+
+// Ops V8's wasm tier (TurboFan) will NOT hoist out of a loop itself: saturating
+// f64→int truncation and `select` are not LICM-eligible there, memory loads are
+// blocked by conservative aliasing, and calls are opaque. These are the ONLY
+// things worth hoisting — V8 already does general arithmetic LICM, and hoisting
+// pure arithmetic ourselves only bloats the body and breaks the lane-vectorizer's
+// straight-line pattern match. So a subtree is hoisted only if it contains one.
+const HARD_OPS = new Set([
+  'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
+  'select', 'f64.load', 'call',
+])
+const hasHardOp = (n) => Array.isArray(n) && (HARD_OPS.has(n[0]) || n.some((c, i) => i > 0 && hasHardOp(c)))
+
+const PURE_LICM_OPS = new Set([
+  'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
+  'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
+  'i32.add', 'i32.sub', 'i32.mul', 'i32.and', 'i32.or', 'i32.xor',
+  'i32.shl', 'i32.shr_s', 'i32.shr_u', 'i32.rotl', 'i32.rotr', 'i32.clz', 'i32.ctz', 'i32.popcnt', 'i32.eqz',
+  'i64.add', 'i64.sub', 'i64.mul', 'i64.and', 'i64.or', 'i64.xor',
+  'i64.shl', 'i64.shr_s', 'i64.shr_u', 'i64.rotl', 'i64.rotr', 'i64.eqz',
+  'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
+  'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u', 'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u',
+  'i64.eq', 'i64.ne', 'i64.lt_s', 'i64.lt_u', 'i64.gt_s', 'i64.gt_u', 'i64.le_s', 'i64.le_u', 'i64.ge_s', 'i64.ge_u',
+  'f64.convert_i32_s', 'f64.convert_i32_u', 'f64.convert_i64_s', 'f64.convert_i64_u',
+  'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u', 'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u',
+  'i32.wrap_i64', 'i64.extend_i32_s', 'i64.extend_i32_u',
+  'f64.reinterpret_i64', 'i64.reinterpret_f64', 'f32.reinterpret_i32', 'i32.reinterpret_f32',
+  'f64.promote_f32', 'f32.demote_f64', 'select',
+])
+
 /**
- * Per-loop hoist of `(call $__ptr_offset (local.get X))` for locals X that are
- * loop-invariant (no `local.set/local.tee` to X anywhere in the loop body, no
- * non-safe call inside the loop). Mirrors `hoistInvariantCellLoads`.
+ * Unified loop-invariant code motion. One principle replaces the three former
+ * pattern hoists (ToInt32 / __ptr_offset / cell-load): a MAXIMAL pure subtree
+ * whose every free input is loop-invariant is computed once before the loop, in
+ * a fresh snap local.
  *
- * The function-level pass above only handles params (single hoist at func
- * entry). This pass handles assigned locals that go invariant within a loop
- * scope — the aos pattern: `let rows = []; for (...) rows.push(...)` — outside
- * the build loop, `rows` is no longer reassigned, so `__ptr_offset(rows)` is
- * loop-invariant in the consumer loop.
+ * Invariance/purity (`pureGiven`) is closed over PURE_LICM_OPS plus two memory-
+ * touching leaves admitted only under the loop's effect summary (`collectMutations`):
+ *   - (f64.load (local.get $cell_X))   iff no f64.store to $cell_X and no call in loop
+ *   - (call $__ptr_offset|__ptr_type|__ptr_aux|__len …)  iff no non-whitelisted call
+ * — exactly the old per-pass barriers, generalized. A subtree may also WRITE a
+ * local via (local.tee P E) iff P is private to the subtree (occurs nowhere else
+ * in the loop); this hoists the guarded-ToInt32 form
+ *   (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.tee P E))) 0 (f64.ne (get P) G))
+ * as a unit — which the old leaf-only matcher could not (it needed a bare local).
  *
- * Inside-out: inner loops first. After an inner-loop hoist, the outer loop now
- * contains a `(local.set $__pol (call $__ptr_offset ...))` whose call gets
- * hoisted again at the outer level, climbing the snap up to the outermost loop
- * where X is invariant. Cleanup of the chained `local.set` movs is handled by
- * watr CSE/DCE.
+ * Bottom-up (inner loops first → progressive climbing), refcount-guarded against
+ * watr's shared CSE subtrees, snaps spliced before the loop, decls at bodyStart.
+ * Idempotent: re-running sees only `(local.get $__liN)` and finds nothing to do.
  */
-export function hoistInvariantPtrOffsetLoop(fn) {
+export function hoistInvariantLoop(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  let snapId = nextLocalId(fn, 'pol')
-  const newLocals = []
+  // Cheap early-out: no loop ⇒ nothing to hoist (skip the buildRefcount walk).
+  let hasLoop = false
+  const scanLoop = (n) => {
+    if (!Array.isArray(n) || hasLoop) return
+    if (n[0] === 'loop') { hasLoop = true; return }
+    for (let i = 1; i < n.length && !hasLoop; i++) scanLoop(n[i])
+  }
+  for (let i = bodyStart; i < fn.length && !hasLoop; i++) scanLoop(fn[i])
+  if (!hasLoop) return
 
-  // Refcount across the whole fn to skip shared subtrees (watr CSE may leave them).
+  // Result wasm type of a hoistable node (for the snap local decl). null ⇒ can't
+  // type it ⇒ don't hoist. Param/local types come from the func header.
+  const localTypes = new Map()
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'local') && typeof c[1] === 'string') localTypes.set(c[1], c[2])
+  }
+  const resultType = (node) => {
+    if (!Array.isArray(node)) return null
+    const op = node[0]
+    if (op === 'select') return resultType(node[1])
+    if (op === 'call') return SAFE_OFFSET_CALLS.has(node[1]) ? 'i32' : null  // whitelist all return i32
+    if (op === 'local.get' || op === 'local.tee') return localTypes.get(node[1]) ?? null
+    const dot = op.indexOf('.')
+    if (dot < 0) return null
+    // Comparisons and `eqz` yield i32 regardless of operand type (i64.eq, f64.lt,
+    // i64.eqz, …) — so the operand-type prefix would mistype them. Catch first.
+    const m = op.slice(dot + 1)
+    if (m === 'eqz' || /^(eq|ne|lt|gt|le|ge)(_[su])?$/.test(m)) return 'i32'
+    const p = op.slice(0, dot)
+    if (p === 'i32' || p === 'i64' || p === 'f64' || p === 'f32') return p
+    return null
+  }
+
+  // Collision-proof snap ids: skip EVERY existing $__li id, not just start at the
+  // lowest free one. watr can renumber/coalesce locals between the pre- and
+  // post-watr optimize phases, leaving a non-contiguous $__li set; a lowest-free +
+  // sequential-increment scheme would then re-issue an in-use id (Duplicate local).
+  const usedLi = new Set()
+  const scanLi = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__li')) {
+      const t = n[1].slice(5); if (/^\d+$/.test(t)) usedLi.add(+t)
+    }
+    for (let i = 0; i < n.length; i++) scanLi(n[i])
+  }
+  scanLi(fn)
+  let snapCounter = 0
+  const freshSnap = () => { while (usedLi.has(snapCounter)) snapCounter++; const id = snapCounter++; usedLi.add(id); return `$__li${id}` }
+  const newLocals = []
   const refcount = buildRefcount(fn)
 
   const processLoop = (loopNode) => {
-    // Recurse into inner loops first (bottom-up).
-    for (let i = 1; i < loopNode.length; i++) {
-      const child = loopNode[i]
-      if (!Array.isArray(child)) continue
-      processNode(child, loopNode, i)
-    }
+    // Inner loops first (bottom-up) — an inner hoist creates a local.get the
+    // outer level can hoist further.
+    for (let i = 1; i < loopNode.length; i++)
+      if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i)
 
-    // Scan loop body (including nested loops) for writes to any local and for
-    // any non-safe call. Non-safe calls could realloc/move the underlying
-    // array storage and invalidate cached offsets.
-    const writes = new Set()
-    let unsafe = false
+    // The loop's effect summary (scans nested loops too — conservative).
+    const locals = new Set(), globals = new Set(), storedCells = new Set()
+    let hasUnsafeCall = false, hasAnyCall = false
     const scan = (node) => {
       if (!Array.isArray(node)) return
       const op = node[0]
-      if (op === 'local.set' || op === 'local.tee') {
-        if (typeof node[1] === 'string') writes.add(node[1])
-        for (let i = 2; i < node.length; i++) scan(node[i])
-        return
-      }
-      if (op === 'call') {
-        if (!SAFE_OFFSET_CALLS.has(node[1])) unsafe = true
-        for (let i = 2; i < node.length; i++) scan(node[i])
-        return
-      }
-      if (op === 'call_ref' || op === 'call_indirect') {
-        unsafe = true
-        for (let i = 1; i < node.length; i++) scan(node[i])
-        return
+      if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
+      if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
+      if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
+      if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
+      if (op === 'f64.store' && node.length >= 3) {
+        const a = node[1]
+        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
       }
       for (let i = 1; i < node.length; i++) scan(node[i])
     }
     for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
-    if (unsafe) return []
+    const mut = { locals, globals, storedCells, hasUnsafeCall, hasAnyCall }
 
-    // Collect call sites for invariant locals. Skip nested loops (already
-    // processed) but recurse through everything else.
-    const sites = new Map()  // localName → [{ parent, idx }]
+    // Per-local occurrence counts over the loop body — for the tee-privacy check.
+    const localCount = new Map()
+    const countLocals = (node) => {
+      if (!Array.isArray(node)) return
+      if ((node[0] === 'local.get' || node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string')
+        localCount.set(node[1], (localCount.get(node[1]) || 0) + 1)
+      for (let i = 1; i < node.length; i++) countLocals(node[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) countLocals(loopNode[i])
+    const countIn = (node, name) => {
+      if (!Array.isArray(node)) return 0
+      let c = ((node[0] === 'local.get' || node[0] === 'local.set' || node[0] === 'local.tee') && node[1] === name) ? 1 : 0
+      for (let i = 1; i < node.length; i++) c += countIn(node[i], name)
+      return c
+    }
+
+    // Pure & invariant given `bound` (locals written *within* the candidate, hence
+    // local to it). A read of a bound local is OK (its in-subtree value is the
+    // teed invariant). A free read must be unwritten by the loop.
+    const pureGiven = (node, bound) => {
+      if (!Array.isArray(node)) return true   // bare operand string/number
+      const op = node[0]
+      if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
+      if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
+      // A global is invariant only if not set directly AND no call in the loop —
+      // any callee may mutate it (no interprocedural effect analysis). (Locals are
+      // frame-private, so calls can't touch them; only direct local.set matters.)
+      if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasAnyCall
+      if (op === 'local.tee') return typeof node[1] === 'string' && pureGiven(node[2], bound)
+      if (op === 'f64.load' && node.length === 2) {
+        const a = node[1]
+        return Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
+          && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))
+      }
+      if (op === 'call') return SAFE_OFFSET_CALLS.has(node[1]) && !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
+      if (PURE_LICM_OPS.has(op)) return node.slice(1).every(c => pureGiven(c, bound))
+      return false
+    }
+
+    const isHoistable = (node) => {
+      if (!Array.isArray(node)) return false
+      const op = node[0]
+      // Skip trivial leaves: hoisting a bare get/const buys nothing.
+      if (op === 'local.get' || op === 'global.get' || op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return false
+      const bound = new Set()
+      const gatherBound = (n) => {
+        if (!Array.isArray(n)) return
+        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') bound.add(n[1])
+        for (let i = 1; i < n.length; i++) gatherBound(n[i])
+      }
+      gatherBound(node)
+      // Every local the subtree writes must be private to it (no other use in the
+      // loop) — else moving the write to the pre-header changes another reader.
+      for (const b of bound) if (localCount.get(b) !== countIn(node, b)) return false
+      // Only hoist what V8's wasm tier won't (a HARD_OP) — leave pure arithmetic
+      // for V8's own LICM and the lane-vectorizer.
+      return hasHardOp(node) && pureGiven(node, bound)
+    }
+
+    // Maximal extraction: take the largest hoistable subtree; don't descend into
+    // it. Dedup structurally so a repeated invariant expr shares one snap local.
+    const sites = new Map()  // structural key → [{ parent, idx, node }]
     const collect = (node, parent, idx) => {
       if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === 'loop') return
-      if (op === 'call' && node[1] === '$__ptr_offset' && node.length === 3) {
-        const a = node[2]
-        const inner = (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) ? a[1] : a
-        if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string'
-            && !writes.has(inner[1])
-            && (refcount.get(node) || 0) <= 1
-            && (refcount.get(parent) || 0) <= 1) {
-          let arr = sites.get(inner[1])
-          if (!arr) { arr = []; sites.set(inner[1], arr) }
-          arr.push({ parent, idx })
-        }
+      if (node[0] === 'loop') return  // already processed bottom-up
+      if (isHoistable(node) && (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1) {
+        const key = JSON.stringify(node)
+        let arr = sites.get(key); if (!arr) { arr = []; sites.set(key, arr) }
+        arr.push({ parent, idx, node })
         return
       }
       for (let i = 0; i < node.length; i++) collect(node[i], node, i)
@@ -569,22 +701,20 @@ export function hoistInvariantPtrOffsetLoop(fn) {
     for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
 
     const snaps = []
-    for (const [X, arr] of sites) {
-      if (arr.length < 1) continue
-      const snapName = `$__pol${snapId++}`
-      newLocals.push(['local', snapName, 'i32'])
-      snaps.push(['local.set', snapName, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', X]]]])
-      for (const { parent, idx } of arr) {
-        parent[idx] = ['local.get', snapName]
-      }
+    for (const [, arr] of sites) {
+      const type = resultType(arr[0].node)
+      if (type == null) continue
+      const snapName = freshSnap()
+      newLocals.push(['local', snapName, type])
+      snaps.push(['local.set', snapName, arr[0].node])  // reuse first node verbatim
+      for (const { parent, idx } of arr) parent[idx] = ['local.get', snapName]
     }
     return snaps
   }
 
   const processNode = (node, parent, idx) => {
     if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'loop') {
+    if (node[0] === 'loop') {
       const snaps = processLoop(node)
       if (snaps.length) parent.splice(idx, 0, ...snaps)
       return
@@ -593,323 +723,6 @@ export function hoistInvariantPtrOffsetLoop(fn) {
   }
 
   for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
-
-  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
-}
-
-/**
- * Hoist loop-invariant ToInt32 expressions out of loops.
- *
- * jz lowers JS `|0` operations to two wasm forms:
- *
- *   BARE:    (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
- *   GUARDED: (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
- *                    (i32.const 0)
- *                    (f64.ne (local.get X) (local.get G)))
- *
- * where X is a function param/local holding a numeric f64 and G is the Infinity
- * sentinel local (a promoted-global snapshot like `$_pg0`/`$__fc0`).
- *
- * Both forms are pure (no traps, no memory side-effects) and loop-invariant when
- * X (and G) are not written inside the loop. V8's wasm tier cannot hoist them
- * because `select` and `i64.trunc_sat_f64_s` are not LICM-eligible in TurboFan
- * (conservative aliasing). Doing it explicitly here gives ~2x wins on integer-
- * heavy loops where multiple params each appear in ToInt32 form.
- *
- * Inside-out: inner loops first (same pattern as hoistInvariantPtrOffsetLoop).
- * Keys by (form, X[, G]) so duplicates within the loop share a single snap local.
- * Even a single site is hoisted -- LICM wins differ from CSE, count>=1 is enough.
- */
-export function hoistInvariantToInt32(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  // Cheap early-out: nothing to hoist unless the function has BOTH a loop and a
-  // `trunc_sat` (the ToInt32 marker). Skips the buildRefcount walk on the common
-  // case — a loop with no fractional-operand ToInt32 — so the pass costs ~nothing
-  // where it can't fire.
-  let hasLoop = false, hasTrunc = false
-  const scanShape = (n) => {
-    if (!Array.isArray(n) || (hasLoop && hasTrunc)) return
-    if (n[0] === 'loop') hasLoop = true
-    else if (n[0] === 'i64.trunc_sat_f64_s') hasTrunc = true
-    for (let i = 1; i < n.length && !(hasLoop && hasTrunc); i++) scanShape(n[i])
-  }
-  for (let i = bodyStart; i < fn.length && !(hasLoop && hasTrunc); i++) scanShape(fn[i])
-  if (!hasLoop || !hasTrunc) return
-
-  let snapId = nextLocalId(fn, 'ti')
-  const newLocals = []
-
-  const refcount = buildRefcount(fn)
-
-  const processLoop = (loopNode) => {
-    // Bottom-up: recurse into inner loops first.
-    for (let i = 1; i < loopNode.length; i++) {
-      const child = loopNode[i]
-      if (!Array.isArray(child)) continue
-      processNode(child, loopNode, i)
-    }
-
-    // Collect all locals written anywhere in this loop body (incl. nested loops).
-    const writes = new Set()
-    const scanWrites = (node) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === 'local.set' || op === 'local.tee') {
-        if (typeof node[1] === 'string') writes.add(node[1])
-        for (let i = 2; i < node.length; i++) scanWrites(node[i])
-        return
-      }
-      for (let i = 1; i < node.length; i++) scanWrites(node[i])
-    }
-    for (let i = 1; i < loopNode.length; i++) scanWrites(loopNode[i])
-
-    // Collect candidate sites, keyed canonically so duplicates share a snap.
-    // key => [{ parent, idx, node }]
-    const sites = new Map()
-
-    const collect = (node, parent, idx) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === 'loop') return  // already processed bottom-up; don't re-enter
-
-      // GUARDED form:
-      //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
-      //           (i32.const 0)
-      //           (f64.ne (local.get X) G))
-      // where G is either (local.get sentinel) or (f64.const Infinity).
-      // Pre-watr the sentinel is a literal f64.const; post-watr promoteGlobals
-      // has snapshotted it to a local.
-      if (op === 'select' && node.length === 4) {
-        const a = node[1], b = node[2], c = node[3]
-        if (Array.isArray(a) && a[0] === 'i32.wrap_i64' && a.length === 2 &&
-            Array.isArray(a[1]) && a[1][0] === 'i64.trunc_sat_f64_s' && a[1].length === 2 &&
-            Array.isArray(a[1][1]) && a[1][1][0] === 'local.get' && typeof a[1][1][1] === 'string' &&
-            Array.isArray(b) && b[0] === 'i32.const' && b[1] === 0 &&
-            Array.isArray(c) && c[0] === 'f64.ne' && c.length === 3 &&
-            Array.isArray(c[1]) && c[1][0] === 'local.get' && typeof c[1][1] === 'string') {
-          const X = a[1][1][1]
-          const Xne = c[1][1]
-          // G may be (local.get sentinel) or (f64.const Infinity).
-          const Gnode = c[2]
-          const Gkey = (Array.isArray(Gnode) && Gnode[0] === 'local.get' && typeof Gnode[1] === 'string')
-            ? Gnode[1]
-            : (Array.isArray(Gnode) && Gnode[0] === 'f64.const' && Gnode[1] === Infinity)
-              ? '__inf__'
-              : null
-          const Ginvariant = Gkey === '__inf__' || (Gkey !== null && !writes.has(Gkey))
-          if (Gkey !== null && X === Xne && !writes.has(X) && Ginvariant &&
-              (refcount.get(node) || 0) <= 1 &&
-              (refcount.get(parent) || 0) <= 1) {
-            const key = `G:${X}:${Gkey}`
-            let arr = sites.get(key)
-            if (!arr) { arr = []; sites.set(key, arr) }
-            arr.push({ parent, idx, node })
-            return  // don't descend into matched expr
-          }
-        }
-      }
-
-      // BARE form:
-      //   (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get X)))
-      if (op === 'i32.wrap_i64' && node.length === 2 &&
-          Array.isArray(node[1]) && node[1][0] === 'i64.trunc_sat_f64_s' && node[1].length === 2 &&
-          Array.isArray(node[1][1]) && node[1][1][0] === 'local.get' && typeof node[1][1][1] === 'string') {
-        const X = node[1][1][1]
-        if (!writes.has(X) &&
-            (refcount.get(node) || 0) <= 1 &&
-            (refcount.get(parent) || 0) <= 1) {
-          const key = `B:${X}`
-          let arr = sites.get(key)
-          if (!arr) { arr = []; sites.set(key, arr) }
-          arr.push({ parent, idx, node })
-          return  // don't descend into matched expr
-        }
-      }
-
-      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
-    }
-    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
-
-    const snaps = []
-    for (const [, arr] of sites) {
-      if (arr.length < 1) continue
-      const snapName = `$__ti${snapId++}`
-      newLocals.push(['local', snapName, 'i32'])
-      // Reuse the first matched node as the snap value (byte-identical to inlined form).
-      snaps.push(['local.set', snapName, arr[0].node])
-      for (const { parent, idx } of arr) {
-        parent[idx] = ['local.get', snapName]
-      }
-    }
-    return snaps
-  }
-
-  const processNode = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'loop') {
-      const snaps = processLoop(node)
-      if (snaps && snaps.length) parent.splice(idx, 0, ...snaps)
-      return
-    }
-    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
-  }
-
-  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
-
-  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
-}
-
-/**
- * Hoist loop-invariant boxed-cell reads out of loops.
- *
- * Boxed-capture cells (`$cell_X`, allocated by the closure-capture pass) are
- * private to the enclosing function — no other code path can write to that
- * memory. So if a loop body contains `(f64.load (local.get $cell_X))` reads
- * and *no* `(f64.store (local.get $cell_X) …)` writes, the load is loop-
- * invariant and can be hoisted to a snapshot local set just before the loop.
- *
- * Necessary because V8's wasm tier doesn't perform LICM across f64.load:
- * memory may alias with f64.stores in the loop body, and even though we
- * know the cell can't alias with array stores, the engine has to assume it
- * can. Hand-hoisting unblocks register-keeping of the captured value.
- *
- * Inside-out per-loop processing — inner loops handled first, so reads
- * already replaced by snap-locals don't appear as cell reads at outer levels.
- */
-export function hoistInvariantCellLoads(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  let snapId = nextLocalId(fn, 'sc')
-  const newLocals = []
-
-  // Build refcount of array nodes: how many positions in `fn` reference each
-  // array. Earlier passes (fusedRewrite, hoistAddrBase) introduce shared
-  // subtrees; mutating `parent[idx]` for a shared parent would also affect
-  // references outside the current loop. Sites whose immediate parent has
-  // refcount > 1 are skipped.
-  const refcount = buildRefcount(fn)
-
-  // Process one loop node: find cell_X reads, check no writes, hoist.
-  // Returns { snapDecls } — list of (local.set $snap (f64.load (local.get $cell_X))) IR
-  // to emit before the loop in its parent.
-  const processLoop = (loopNode) => {
-    // Recurse first — inner loops handled bottom-up. Each inner-loop processor
-    // returns a list of pre-loop snap decls; we splice them just before the inner
-    // loop within this loop's body.
-    for (let i = 1; i < loopNode.length; i++) {
-      const child = loopNode[i]
-      if (!Array.isArray(child)) continue
-      processNode(child, loopNode, i)
-    }
-
-    // Scan this loop's body for cell reads & writes (excluding nested loop bodies,
-    // since their reads were already hoisted at their level).
-    const reads = new Map()  // cellName → array of {parent, idx}
-    const writes = new Set()
-    let hasCall = false
-    const scanWrites = (node) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
-        hasCall = true
-      }
-      // DESCEND into nested loops here — we need to know if any nested-loop
-      // body writes to cell_X (which would invalidate hoisting THIS loop's reads).
-      if (op === 'f64.store' && node.length >= 3) {
-        const addr = node[1]
-        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
-            && addr[1].startsWith('$cell_')) {
-          writes.add(addr[1])
-        }
-        // Continue scan into value expr
-        for (let i = 2; i < node.length; i++) scanWrites(node[i])
-        return
-      }
-      if (op === 'f64.load' && node.length === 2) {
-        const addr = node[1]
-        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
-            && addr[1].startsWith('$cell_')) {
-          // Defer; we'll handle in a parent-tracking second pass.
-        }
-      }
-      for (let i = 1; i < node.length; i++) scanWrites(node[i])
-    }
-    for (let i = 1; i < loopNode.length; i++) scanWrites(loopNode[i])
-    // Sound bailout: a call inside the loop could mutate a captured cell
-    // via a closure we can't see. Without escape analysis we can't prove
-    // non-aliasing, so we skip hoisting from any loop containing calls.
-    if (hasCall) return []
-
-    // Parent-tracking pass to collect read sites.
-    const collect = (node, parent, idx) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === 'loop') return
-      if (op === 'f64.load' && node.length === 2) {
-        const addr = node[1]
-        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
-            && addr[1].startsWith('$cell_')) {
-          const cell = addr[1]
-          // Skip if the f64.load node or its immediate parent is shared
-          // (refcount>1): mutating parent[idx] would propagate the rewrite to
-          // references outside this loop.
-          if (!writes.has(cell)
-              && (refcount.get(node) || 0) <= 1
-              && (refcount.get(parent) || 0) <= 1) {
-            let arr = reads.get(cell)
-            if (!arr) { arr = []; reads.set(cell, arr) }
-            arr.push({ parent, idx })
-          }
-          return
-        }
-      }
-      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
-    }
-    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
-
-    // For each cell with reads but no writes (and confirmed no calls above),
-    // hoist a snap. Single-read hoist is fine semantically: the cell address
-    // doesn't change once allocated, and snap is loaded unconditionally before
-    // the loop, then the body uses the snap local.
-    const snaps = []
-    for (const [cell, sites] of reads) {
-      if (sites.length < 1) continue
-      const snapName = `$__sc${snapId++}`
-      newLocals.push(['local', snapName, 'f64'])
-      snaps.push(['local.set', snapName, ['f64.load', ['local.get', cell]]])
-      for (const { parent, idx } of sites) {
-        parent[idx] = ['local.get', snapName]
-      }
-    }
-    return snaps
-  }
-
-  // Recursive node walker that splices snap decls before nested loops.
-  const processNode = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'loop') {
-      const snaps = processLoop(node)
-      if (snaps.length) {
-        // Splice snaps just before this loop in its parent. The parent could be
-        // a `block` or a top-level func body or any other container.
-        parent.splice(idx, 0, ...snaps)
-      }
-      return
-    }
-    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
-  }
-
-  for (let i = bodyStart; i < fn.length; i++) {
-    processNode(fn[i], fn, i)
-  }
-
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
@@ -2163,11 +1976,9 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
 export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre') {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
-      cfg.hoistInvariantPtrOffsetLoop === false &&
-      cfg.hoistInvariantToInt32 === false &&
+      cfg.hoistInvariantLoop === false &&
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
-      cfg.hoistInvariantCellLoads === false &&
       cfg.cseScalarLoad === false &&
       cfg.csePureExpr === false &&
       cfg.dropDeadZeroInit === false &&
@@ -2177,12 +1988,14 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
-  if (!cfg || cfg.hoistInvariantPtrOffsetLoop !== false) hoistInvariantPtrOffsetLoop(fn)
-  if (!cfg || cfg.hoistInvariantToInt32 !== false) hoistInvariantToInt32(fn)
+  // Unified LICM (replaces hoistInvariantToInt32 / PtrOffsetLoop / CellLoads).
+  // Run at both maturity points (idempotent): pre-fusedRewrite catches the raw
+  // ToInt32/ptr-offset/arithmetic shapes; post-hoistAddrBase catches cell loads.
+  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
-  if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
+  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   if (!cfg || cfg.csePureExpr !== false) {
     if (cfg && cfg.watr === true && phase === 'post') csePureExprLoop(fn)

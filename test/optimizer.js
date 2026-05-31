@@ -57,11 +57,11 @@ test('LICM: shared IR subtree (slice + slice-loop pattern) must not corrupt outs
 
 test('LICM: actually fires for invariant cell read in non-call loop', () => {
   // Sanity: when conditions are right (no calls, no shared IR, no writes),
-  // LICM should hoist the cell load and emit a $__sc snap local.
+  // LICM should hoist the cell load and emit a $__li snap local.
   // `inc` must *escape* (passed to `keep`) so it stays a real closure that
   // mutates the captured `i` via a heap cell — otherwise inlineLocalLambdas
   // would splice it away and `i` would just be a plain wasm local.
-  // Inspect jz output without watr — `coalesceLocals` would rename `$__sc<N>`.
+  // Inspect jz output without watr — `coalesceLocals` would rename `$__li<N>`.
   const wat = jz.compile(`
     const keep = (f) => f
     export const main = () => {
@@ -73,7 +73,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
       return s | 0
     }
   `, { wat: true, optimize: { watr: false } })
-  ok(/\$__sc\d+/.test(wat), 'expected hoisted snap local')
+  ok(/\$__li\d+/.test(wat), 'expected hoisted snap local')
 })
 
 test('LICM: does not fire when loop contains calls', () => {
@@ -86,7 +86,7 @@ test('LICM: does not fire when loop contains calls', () => {
       return s | 0
     }
   `, { wat: true })
-  ok(!/\$__sc\d+/.test(wat), 'must not hoist when loop contains a call')
+  ok(!/\$__li\d+/.test(wat), 'must not hoist when loop contains a call')
 })
 
 test('arrayElemValType: typed-array .map elides __to_num in callback', () => {
