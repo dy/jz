@@ -6,25 +6,25 @@ export const TAU = 6.283185307179586
 export const songs = [
   { name: 'circle of fifths', body:
 `(t) => {
-  // Infinite circle of fourths: the root climbs a fourth (+5 semitones, = a fifth
-  // down) every two seconds, cycling all twelve keys — C F B♭ E♭ A♭ D♭ G♭ B E A D G —
-  // and looping forever. Every chord is a saturated dominant 13 (1 3 5 ♭7 9 13), so
-  // each one is the V of the next: the ii–V pull never lands, it keeps resolving
-  // around the wheel. A guide-tone line trades 3rd↔♭7 (the notes that voice-lead),
-  // over a walking bass that approaches each new root by a chromatic step.
+  // Circle of fourths: the root climbs a fourth (+5 semitones, = a fifth down) every
+  // two seconds, cycling all twelve keys — C F B♭ E♭ A♭ D♭ G♭ B E A D G — and back.
+  // Each chord is a soft rootless dominant voicing (3 ♭7 9 13, no muddy root/5 stack),
+  // each the V of the next, so the ii–V pull keeps resolving around the wheel. Upper
+  // partials roll off for warmth; a guide-tone line trades 3rd↔♭7 over a walking bass
+  // that approaches each new root by a chromatic step.
   const bar = (t * 0.5) | 0
   const root = (bar * 5) % 12
   const next = (root + 5) % 12
-  const dom = [0, 4, 7, 10, 14, 21]
-  const sw = 0.55 + 0.45 * Math.exp(-((t * 0.5) % 1) * 1.2)
+  const voi = [4, 10, 14, 19]
+  const sw = 0.6 + 0.4 * Math.exp(-((t * 0.5) % 1) * 0.9)
   let pad = 0
-  for (let i = 0; i < 6; i++) pad += Math.sin(t*${TAU}*130.8 * 2**((root + dom[i]) / 12))
+  for (let i = 0; i < 4; i++) pad += Math.sin(t*${TAU}*196 * 2**((root + voi[i]) / 12)) * (1 - i * 0.2)
   const beat = (t * 2) % 1
   const lead = ((t * 2 | 0) % 2) ? 10 : 4
-  const arp = Math.sin(t*${TAU}*523.3 * 2**((root + lead) / 12)) * Math.exp(-beat * 3.5)
+  const arp = Math.sin(t*${TAU}*392 * 2**((root + lead) / 12)) * Math.exp(-beat * 4)
   const bn = ((t | 0) % 2) ? (next + 11) % 12 : root
-  const bass = Math.sin(t*${TAU}*65.4 * 2**(bn / 12))
-  return Math.tanh(pad*.13*sw + arp*.32 + bass*.5)
+  const bass = Math.sin(t*${TAU}*55 * 2**(bn / 12))
+  return Math.tanh(pad*.075*sw + arp*.12 + bass*.36)
 }` },
   { name: 'lofi jazz', body:
 `(t) => {
@@ -95,7 +95,7 @@ export const songBeatSrc = (song) => song.body
 export const floatbeatModuleSrc = (song) => {
   const body = songBeatSrc(song)
   return `export let beat = ${body}
-export let fill = (out, len, sr) => { let i = 0; while (i < len) { out[i] = beat(i / sr); i++ } }`
+export let fill = (out, len, sr, off) => { let i = 0; while (i < len) { out[i] = beat(off + i / sr); i++ } }`
 }
 
 /** Filesystem slug for prebuilt beat wasm (`beats/lofi-jazz.wasm`, …). */
