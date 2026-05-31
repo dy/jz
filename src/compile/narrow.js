@@ -408,11 +408,47 @@ function typedAuxOfReturn(expr, localElemMap) {
  * Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so
  * outer's call to inner contributes a known schema-id.
  */
+/** A function whose every return is the same parameter that was pointer-ABI
+ *  narrowed to an unboxed i32 (p.ptrKind set). Returns that param, else null. */
+function passthroughPtrParam(func) {
+  const exprs = returnExprs(func.body)
+  if (!exprs.length) return null
+  const name = exprs[0]
+  if (typeof name !== 'string' || !exprs.every(e => e === name)) return null
+  return func.sig.params.find(p => p.name === name && p.ptrKind) || null
+}
+
 function narrowPointerResults(funcs, paramReps) {
   let changed = true
   while (changed) {
     changed = false
     for (const func of funcs) {
+      // Pointer pass-through: every return is the same parameter that
+      // applyPointerParamAbi narrowed to an unboxed i32 pointer. The result IS that
+      // pointer, so its sig must carry the param's ptrKind (+ schemaId for OBJECT).
+      // Without this the result is a bare i32 the caller numeric-converts
+      // (`f64.convert_i32_s`) instead of reboxing — dropping the schema-id so a
+      // later `.prop` read mis-resolves to `undefined`. narrowValResults can't see
+      // this (it reads body-locals, not param facts) and narrowI32Results steals it
+      // as a numeric i32, so resolve it here from the settled param lattice.
+      if (func.sig.ptrKind == null) {
+        const pp = passthroughPtrParam(func)
+        if (pp) {
+          const aux = pp.ptrKind === VAL.OBJECT
+            ? paramFactsOf(paramReps, func, 'schemaId')?.get(pp.name) ?? null
+            : null
+          // OBJECT needs a known schema-id to rebox; a polymorphic pass-through
+          // (conflicting schemas → null) keeps its current handling.
+          if (pp.ptrKind !== VAL.OBJECT || aux != null) {
+            func.sig.results = ['i32']
+            func.sig.ptrKind = pp.ptrKind
+            func.valResult = pp.ptrKind
+            if (aux != null) func.sig.ptrAux = aux
+            changed = true
+            continue
+          }
+        }
+      }
       if (!func.valResult) continue
       if (func.sig.results[0] !== 'f64') continue
       const isBlock = isBlockBody(func.body)
