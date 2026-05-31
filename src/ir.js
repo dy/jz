@@ -211,8 +211,13 @@ export function unboxBoolIR(f64expr) {
 export const MAX_CLOSURE_ARITY = 8
 
 /** Matches WASM instructions that require a memory section. */
-// FIXME: can be simpler regex, just test second part - load vs store vs grow vs size vs memory
-export const MEM_OPS = /\b(i32\.load|i32\.store|f64\.load|f64\.store|f32\.load|f32\.store|i64\.load|i64\.store|memory\.size|memory\.grow|i32\.load8|i32\.load16|i32\.store8|i32\.store16)\b/
+// Any instruction that touches linear memory ⇒ the module must declare memory.
+// Matches every `memory.*` op (size/grow/copy/fill/init) and every typed load/store
+// incl. width suffixes (load8_u, store16, i64.load32_s, v128.load, …). The old
+// hand-enumerated list silently missed memory.copy/fill, v128.load/store and
+// i64.store8/16/32 (all used in stdlib) — a body using only those would wrongly
+// report no-memory. Broad-but-precise: only `memory.` and `<type>.load|store` match.
+export const MEM_OPS = /\b(memory\.\w+|(?:i32|i64|f32|f64|v128)\.(?:load|store)\w*)\b/
 
 export const WASM_OPS = new Set(['block','loop','if','then','else','br','br_if','call','call_indirect','return','return_call','throw','try_table','catch','nop','drop','unreachable','select','result','mut','param','func','module','memory','table','elem','data','type','import','export','local','global','ref'])
 export const SPREAD_MUTATORS = new Set(['push', 'add', 'set', 'unshift'])
@@ -803,79 +808,52 @@ export function writeVar(name, valIR, void_) {
  *  unboxed pointer locals are proven non-null by unboxablePtrs.
  *  Inlines directly: (i32.or (i64.eq bits NULL_NAN) (i64.eq bits UNDEF_NAN))
  *  rather than calling $__is_nullish — saves WASM call dispatch in V8 JIT. */
-export const isNullish = (f64expr) => {
-  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
+// Shared peephole for the NaN-box sentinel checks. When the operand's bits are
+// statically known — an unboxed pointer (never an atom → 0), a numeric `f64.const`
+// (never an atom → 0), or a boxed `(f64.const nan:…)` / `(f64.reinterpret_i64
+// (i64.const …))` literal — resolve `onBits(bitsHex)` / 0 at compile time; else
+// hand the expr to `fallback` for the runtime test. One place owns the literal set.
+const constI32 = (b) => typed(['i32.const', b ? 1 : 0], 'i32')
+const matchF64Bits = (f64expr, onBits, fallback) => {
+  if (f64expr.ptrKind != null) return constI32(0)
   if (Array.isArray(f64expr)) {
     if (f64expr[0] === 'f64.const') {
-      // Check for NaN-boxed sentinel: (f64.const nan:0x...) — matches NULL_IR/UNDEF_IR form.
       const lit = String(f64expr[1])
-      if (lit.startsWith('nan:')) {
-        const bits = lit.slice(4)
-        return typed(['i32.const', (bits === NULL_NAN || bits === UNDEF_NAN) ? 1 : 0], 'i32')
-      }
-      return typed(['i32.const', 0], 'i32')  // numeric literal — never nullish
+      return lit.startsWith('nan:') ? onBits(lit.slice(4)) : constI32(0)
     }
-    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
-      const bits = String(f64expr[1][1])
-      return typed(['i32.const', (bits === NULL_NAN || bits === UNDEF_NAN) ? 1 : 0], 'i32')
-    }
+    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const')
+      return onBits(String(f64expr[1][1]))
   }
-  // Inline the 3-op nullish test. Tee into a temp i64 so the value is computed once.
-  // For simple (local.get $x) we can just reinterpret twice — V8 CSEs it.
-  if (Array.isArray(f64expr) && f64expr[0] === 'local.get') {
-    const bits = ['i64.reinterpret_f64', f64expr]
-    return typed(['i32.or',
-      ['i64.eq', bits, ['i64.const', NULL_NAN]],
-      ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]]], 'i32')
-  }
-  // Non-trivial expr: fall back to the helper — keeps binary size stable & preserves eval once.
-  inc('__is_nullish')
-  return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', f64expr]], 'i32')
+  return fallback(f64expr)
 }
+
+export const isNullish = (f64expr) => matchF64Bits(f64expr,
+  bits => constI32(bits === NULL_NAN || bits === UNDEF_NAN),
+  (e) => {
+    // (local.get $x): inline the test, reinterpreting twice (V8 CSEs it). Other
+    // exprs call $__is_nullish — keeps binary size stable and evaluates once.
+    if (Array.isArray(e) && e[0] === 'local.get') {
+      const bits = ['i64.reinterpret_f64', e]
+      return typed(['i32.or',
+        ['i64.eq', bits, ['i64.const', NULL_NAN]],
+        ['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', UNDEF_NAN]]], 'i32')
+    }
+    inc('__is_nullish')
+    return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', e]], 'i32')
+  })
 
 /** Check if f64 expr is exactly `undefined` (UNDEF_NAN). Returns i32.
  *  Used by default-param semantics — only `undefined` (or missing arg) triggers
  *  the default; `null` should pass through. */
-export const isUndef = (f64expr) => {
-  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
-  if (Array.isArray(f64expr)) {
-    if (f64expr[0] === 'f64.const') {
-      const lit = String(f64expr[1])
-      if (lit.startsWith('nan:')) {
-        const bits = lit.slice(4)
-        return typed(['i32.const', bits === UNDEF_NAN ? 1 : 0], 'i32')
-      }
-      return typed(['i32.const', 0], 'i32')
-    }
-    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
-      const bits = String(f64expr[1][1])
-      return typed(['i32.const', bits === UNDEF_NAN ? 1 : 0], 'i32')
-    }
-  }
-  return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]], 'i32')
-}
+export const isUndef = (f64expr) => matchF64Bits(f64expr,
+  bits => constI32(bits === UNDEF_NAN),
+  (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', UNDEF_NAN]], 'i32'))
 
 /** Check if f64 expr is exactly `null` (NULL_NAN). Returns i32.
- *  Strict `=== null` must match only null — not undefined (use isUndef for that).
- *  Mirror of isUndef; same peepholes on boxed sentinel literals / unboxed ptrs. */
-export const isNull = (f64expr) => {
-  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
-  if (Array.isArray(f64expr)) {
-    if (f64expr[0] === 'f64.const') {
-      const lit = String(f64expr[1])
-      if (lit.startsWith('nan:')) {
-        const bits = lit.slice(4)
-        return typed(['i32.const', bits === NULL_NAN ? 1 : 0], 'i32')
-      }
-      return typed(['i32.const', 0], 'i32')
-    }
-    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
-      const bits = String(f64expr[1][1])
-      return typed(['i32.const', bits === NULL_NAN ? 1 : 0], 'i32')
-    }
-  }
-  return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', NULL_NAN]], 'i32')
-}
+ *  Strict `=== null` must match only null — not undefined (use isUndef for that). */
+export const isNull = (f64expr) => matchF64Bits(f64expr,
+  bits => constI32(bits === NULL_NAN),
+  (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.
  *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq. */
@@ -883,16 +861,11 @@ const BOOL_ATOM_MASK = '0x' + BigInt.asUintN(64, ~(1n << BigInt(LAYOUT.AUX_SHIFT
 
 /** Check if f64 expr is a boxed-boolean atom (TRUE_NAN or FALSE_NAN). Returns i32.
  *  Single-eval: masks the truth bit and compares to FALSE_NAN once. */
-export const isBoolAtom = (f64expr) => {
-  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
-  if (Array.isArray(f64expr) && f64expr[0] === 'f64.const' && String(f64expr[1]).startsWith('nan:')) {
-    const b = String(f64expr[1]).slice(4)
-    return typed(['i32.const', (b === TRUE_NAN || b === FALSE_NAN) ? 1 : 0], 'i32')
-  }
-  return typed(['i64.eq',
-    ['i64.and', ['i64.reinterpret_f64', f64expr], ['i64.const', BOOL_ATOM_MASK]],
-    ['i64.const', FALSE_NAN]], 'i32')
-}
+export const isBoolAtom = (f64expr) => matchF64Bits(f64expr,
+  bits => constI32(bits === TRUE_NAN || bits === FALSE_NAN),
+  (e) => typed(['i64.eq',
+    ['i64.and', ['i64.reinterpret_f64', e], ['i64.const', BOOL_ATOM_MASK]],
+    ['i64.const', FALSE_NAN]], 'i32'))
 
 // === Array layout helpers — routed through the array carrier (abi/array.js) ===
 
