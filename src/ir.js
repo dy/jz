@@ -637,8 +637,22 @@ const NUM_F64_TRUTHY_OPS = new Set([
   'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
 ])
 
+// i32 ops whose result is already a 0/1 boolean (comparisons + eqz) — safe to use
+// directly as a truthiness without a redundant `!= 0`.
+const I32_BOOL_OPS = new Set(['i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u',
+  'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u', 'i32.eqz'])
+
 export function truthyIR(e) {
-  if (e.type === 'i32') return e
+  // An i32 *constant* is a concrete number, not a known 0/1 boolean — fold it to its
+  // truthiness (nonzero → 1).
+  if (Array.isArray(e) && e[0] === 'i32.const') return typed(['i32.const', e[1] ? 1 : 0], 'i32')
+  if (e.type === 'i32') {
+    // A comparison/eqz result is already 0/1 → use directly. Any *other* i32 may be a
+    // concrete narrowed integer (e.g. `Boolean(n)` where n is an i32 number), which is
+    // NOT a 0/1 boolean — normalize via `!= 0` so its truthiness is correct.
+    if (Array.isArray(e) && I32_BOOL_OPS.has(e[0])) return e
+    return typed(['i32.ne', e, ['i32.const', 0]], 'i32')
+  }
   // Unboxed pointer offsets: truthy iff non-zero offset.
   if (e.ptrKind != null) return typed(['i32.ne', e, ['i32.const', 0]], 'i32')
   if (Array.isArray(e)) {
