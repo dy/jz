@@ -91,6 +91,9 @@ would add machinery / regress perf, not net-improve; left intentionally (see Arc
 
 ## jz — execution plan
 
+* [ ] Simplify tests: takes too long
+* [ ] Feedback by armstrong, torvalds
+
 #### Community
 
 #### Monetization
