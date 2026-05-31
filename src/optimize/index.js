@@ -626,7 +626,6 @@ export function hoistInvariantLoop(fn) {
       for (let i = 1; i < node.length; i++) scan(node[i])
     }
     for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
-    const mut = { locals, globals, storedCells, hasUnsafeCall, hasAnyCall }
 
     // Per-local occurrence counts over the loop body — for the tee-privacy check.
     const localCount = new Map()
