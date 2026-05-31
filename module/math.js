@@ -382,6 +382,17 @@ export default (ctx) => {
       (then (f64.const 1.0))
       (else (f64.const -1.0))))`)
 
+  // sin/cos over the folded range [0, π/2] use a 5-term MINIMAX polynomial in x² (Horner
+  // form, generated below). It beats the prior 6-term Taylor on both counts: one fewer
+  // multiply (faster — the floatbeat synth is sin-bound), and lower error (sin ≤ 1.9e-8,
+  // cos ≤ 1.3e-7 vs Taylor's ~6e-8 / ~5e-7) — minimax spreads error evenly across the range
+  // instead of piling unused precision near 0. Coeffs fit by scripts/minimax-trig.mjs.
+  const horner = (cs, v) => cs.reduceRight((acc, c, i) =>
+    i === cs.length - 1 ? `(f64.const ${c})`
+      : `(f64.add (f64.const ${c}) (f64.mul (local.get ${v}) ${acc}))`, '')
+  const SIN_C = [0.9999999970021226, -0.16666659972863312, 0.008333097622752228, -0.00019812490761514167, 0.000002612914984630934]
+  const COS_C = [0.9999999672703996, -0.49999926898905417, 0.04166409138162577, -0.0013857422006410998, 0.000023237650111631095]
+
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
@@ -394,12 +405,7 @@ export default (ctx) => {
       (local.set $r (f64.neg (local.get $r)))
       (local.set $sign (f64.neg (local.get $sign)))))
     (local.set $x2 (f64.mul (local.get $r) (local.get $r)))
-    (f64.mul (local.get $sign) (f64.mul (local.get $r) (f64.sub (f64.const 1.0) (f64.mul (local.get $x2)
-      (f64.sub (f64.const 0.16666666666666666) (f64.mul (local.get $x2)
-        (f64.sub (f64.const 0.008333333333333333) (f64.mul (local.get $x2)
-          (f64.sub (f64.const 0.0001984126984126984) (f64.mul (local.get $x2)
-            (f64.sub (f64.const 0.0000027557319223985893) (f64.mul (local.get $x2)
-              (f64.const 2.505210838544172e-8))))))))))))))`)
+    (f64.mul (local.get $sign) (f64.mul (local.get $r) ${horner(SIN_C, '$x2')})))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
@@ -416,12 +422,7 @@ export default (ctx) => {
       (local.set $sign (f64.neg (local.get $sign)))))
     (if (f64.lt (local.get $r) (f64.const 0.0)) (then (local.set $r (f64.neg (local.get $r)))))
     (local.set $x2 (f64.mul (local.get $r) (local.get $r)))
-    (f64.mul (local.get $sign) (f64.sub (f64.const 1.0) (f64.mul (local.get $x2)
-      (f64.sub (f64.const 0.5) (f64.mul (local.get $x2)
-        (f64.sub (f64.const 0.041666666666666664) (f64.mul (local.get $x2)
-          (f64.sub (f64.const 0.001388888888888889) (f64.mul (local.get $x2)
-            (f64.sub (f64.const 0.0000248015873015873) (f64.mul (local.get $x2)
-              (f64.const 2.7557319223985893e-7)))))))))))))`)
+    (f64.mul (local.get $sign) ${horner(COS_C, '$x2')}))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
