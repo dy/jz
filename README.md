@@ -504,12 +504,12 @@ Names are stable; binary layouts are not — re-derive from the latest `interop.
 
 <table>
 <tr>
-<td width="50%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.jpg" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life written straight into shared pixel memory.</td>
-<td width="50%"><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.jpg" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
+<td width="50%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life written straight into shared pixel memory.</td>
+<td width="50%"><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
 </tr>
 <tr>
-<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.jpg" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with a precomputed color table.</td>
-<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.jpg" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
+<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with a precomputed color table.</td>
+<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
 </tr>
 </table>
 
