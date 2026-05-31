@@ -679,8 +679,8 @@ export default (ctx) => {
       const fi = fo.names.indexOf(litKey)
       if (fi >= 0) return typed(['local.get', `$${arr}#${fi}`], 'f64')
     }
-    if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
-      const slot = ctx.schema.find(arr, litKey)
+    if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
+      const slot = ctx.schema.slotOf(arr, litKey)
       if (slot >= 0) {
         inc('__ptr_offset')
         return typed(ctx.abi.object.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]], slot), 'f64')

@@ -631,17 +631,17 @@ export default (ctx) => {
     // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
     // structInline element cell, a narrowed local): resolve the field's fixed
     // slot directly from `ptrAux` — more precise than the structural
-    // `ctx.schema.find(null, …)` and never falls to the dyn dispatcher.
+    // `ctx.schema.slotOf(null, …)` and never falls to the dyn dispatcher.
     if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
       const sch = ctx.schema.list[va.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
       if (si >= 0) return emitSchemaSlotRead(asF64(va), si)
     }
-    let schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
+    let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
     // OBJECT shape via JSON-shape propagation, the parent shape's `names`
     // gives the slot directly. Avoids the structural ambiguity of
-    // ctx.schema.find(null, prop) when multiple registered schemas share a key.
+    // ctx.schema.slotOf(null, prop) when multiple registered schemas share a key.
     if (schemaIdx < 0 && typeof obj !== 'string') {
       const sh = shapeOf(obj)
       if ((sh?.val === VAL.OBJECT || sh?.val === VAL.HASH) && sh.names) {
@@ -739,7 +739,7 @@ export default (ctx) => {
         const inner = ctx.schema.emitInner(obj)
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', inner]]], 'f64')
       }
-      const idx = ctx.schema.find(obj, prop)
+      const idx = ctx.schema.slotOf(obj, prop)
       if (idx >= 0) return emitSchemaSlotRead(asF64(emit(obj)), idx)
     }
 

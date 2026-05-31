@@ -68,8 +68,16 @@ export function initSchema(ctx) {
    *    2. Receiver is a string variable, but its valType is unknown or not OBJECT
    *    3. Receiver is not a string variable (varName == null) — no type evidence
    *    4. Structural search finds the property at inconsistent offsets across schemas
-   *  Case 4 is a real ambiguity — the caller must route to runtime dispatch. */
-  ctx.schema.find = (varName, prop) => {
+   *  Case 4 is a real ambiguity — the caller must route to runtime dispatch.
+   *
+   *  Named `slotOf`, not `find`: under self-host the compiler calls this as
+   *  `ctx.schema.find(...)` on the statically-untyped `ctx.schema` receiver, and
+   *  `find` collides with `Array.prototype.find` — the method-call dispatcher
+   *  hijacks it into a bogus array `find` (predicate scan), returning null. Every
+   *  schema-slot property read then mis-resolved through jz.wasm (e.g. a boxed
+   *  `Object.assign(arr, {p}); arr.p`). A non-builtin name dispatches correctly.
+   *  Mirrors the abi string `concat`→`cat` rename for the same root cause. */
+  ctx.schema.slotOf = (varName, prop) => {
     // Precise: variable has known schema
     const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
