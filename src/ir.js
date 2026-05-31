@@ -993,6 +993,38 @@ export function findBodyStart(fn) {
   return fn.length
 }
 
+/** Debug-mode structural check of a `(func …)` IR node. Catches the bug classes
+ *  that otherwise surface as OPAQUE watr errors several phases later — `Duplicate
+ *  local $x`, `Unknown local $x` — but here pinned to the exact name (and, via the
+ *  caller, the phase + function) that produced them, so a codegen/optimizer bug is
+ *  localized at its source instead of at watr. Self-contained: validates every
+ *  `local.{get,set,tee}` against the function header's param/local declarations,
+ *  and rejects a duplicate declaration. Returns an error string, or null if clean.
+ *  (Call-target and type-tag validation need the module symbol table + a type pass;
+ *  deferred — locals are the common codegen-bug class and need nothing external.) */
+export function verifyFn(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return null
+  const bodyStart = findBodyStart(fn)
+  const declared = new Set()
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (!Array.isArray(c) || (c[0] !== 'param' && c[0] !== 'local') || typeof c[1] !== 'string') continue
+    if (declared.has(c[1])) return `duplicate local/param ${c[1]}`
+    declared.add(c[1])
+  }
+  let bad = null
+  const walk = (n) => {
+    if (bad || !Array.isArray(n)) return
+    const op = n[0]
+    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && !declared.has(n[1])) {
+      bad = `${op} of undeclared local ${n[1]}`; return
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i])
+  return bad
+}
+
 /**
  * Tail-call rewrite: walks tail positions of an emitted IR tree and replaces
  * direct `(call $name args...)` ops with `(return_call $name args...)`.

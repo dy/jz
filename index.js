@@ -226,7 +226,8 @@ jz.compile = (code, opts = {}) => {
     // codegen leak — surface it as an internal compile error with the source
     // location we were standing on. err()-thrown errors already pass through.
     if (e?.name === 'TypeError' || e?.name === 'ReferenceError' || e?.name === 'RangeError') {
-      err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node ? '; the AST node above shows the trigger' : ''}). This is a jz bug — please report.`)
+      // Pass `e` as the cause so the original stack (the real codegen site) survives.
+      err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node ? '; the AST node above shows the trigger' : ''}). This is a jz bug — please report.`, e)
     }
     throw e
   }
