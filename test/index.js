@@ -40,6 +40,7 @@ const TESTS = [
   'differential',
   'fuzz',
   'determinism',
+  'perf-ratchet',
   'parser-bugs',
   'jsstring',
   'booleans',
@@ -65,7 +66,11 @@ const argFilters = process.argv.slice(2)
 //   - warnings: every case asserts on the compile-time advisory channel
 //     (`opts.warnings` Map / `inspect`), which the kernel — returning only IR —
 //     never populates. Wholly metadata, not value behaviour; nothing to self-host.
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings'])
+//   - perf-ratchet: a codegen-shape ratchet that compiles at optimize:2 and counts
+//     loop-body ops vs a committed baseline. The kernel runs optimize:false (ignores
+//     the level), so its op counts don't match the baseline — and it's not a value
+//     test anyway. Excluded; the in-process leg owns it.
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length

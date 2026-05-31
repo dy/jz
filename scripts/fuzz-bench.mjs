@@ -16,6 +16,7 @@
 //   node scripts/fuzz-bench.mjs                 # 60 programs/category
 //   node scripts/fuzz-bench.mjs --count=200 --iters=400 --n=20000
 import jz from '../index.js'
+import { CATEGORIES, genProgram } from './perf-corpus.mjs'
 
 const arg = (k, d) => { const m = process.argv.find(a => a.startsWith(`--${k}=`)); return m ? Number(m.slice(k.length + 3)) : d }
 const COUNT = arg('count', 60)      // programs per category
@@ -35,46 +36,8 @@ const BATCHES = arg('batches', 12)  // min-of-N timed batches (was 9)
 // hardware — V8's wasm tier is relatively slower on some CPUs — not warmup.)
 const WARM = arg('warm', 8)
 
-// ── seeded PRNG ──────────────────────────────────────────────────────────────
-const mkRng = (s) => { let x = s >>> 0; const r = () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296; r.int = n => (r() * n) | 0; r.pick = a => a[r.int(a.length)]; return r }
-
-// ── expression generators per category (vars: i, p0, p1, p2, acc) ────────────
-const VARS = ['i', 'p0', 'p1', 'p2', 'acc']
-const LITS = [1, 2, 3, 5, 7, 0.5, 1.5, 31, 255]
-const leaf = (g) => g.chance ? g.pick(VARS) : g.pick(VARS)
-const pick = (g, a) => a[g.int(a.length)]
-
-// INT: ToInt32-disciplined — every binop result wrapped, so it's the asm.js-style
-// i32 path AND exactly what JS computes (no contract gap). Pure integer work.
-const genInt = (g, d) => {
-  if (d <= 0 || g() < 0.35) return g() < 0.5 ? pick(g, VARS) : String(pick(g, [1, 2, 3, 5, 7, 31, 255, 1103515245]))
-  const o = pick(g, ['+', '-', '*', '^', '|', '&', '<<', '>>', '>>>'])
-  if (o === '*') return `Math.imul(${genInt(g, d - 1)}, ${genInt(g, d - 1)})`
-  return `((${genInt(g, d - 1)} ${o} ${genInt(g, d - 1)}) | 0)`
-}
-// FLOAT: f64 arithmetic — no bitwise, no |0. Math.sqrt/abs/min/max + * / +.
-const genFloat = (g, d) => {
-  if (d <= 0 || g() < 0.35) return g() < 0.5 ? pick(g, VARS) : String(pick(g, LITS))
-  const k = g.int(6)
-  if (k === 0) return `Math.sqrt(Math.abs(${genFloat(g, d - 1)}))`
-  if (k === 1) return `Math.min(${genFloat(g, d - 1)}, ${genFloat(g, d - 1)})`
-  const o = pick(g, ['+', '-', '*', '/'])
-  return `(${genFloat(g, d - 1)} ${o} (${genFloat(g, d - 1)} + 1.5))`  // +1.5 keeps /-divisor away from 0
-}
-const genMixed = (g, d) => g() < 0.5 ? genInt(g, d) : genFloat(g, d)
-
-const CATEGORIES = {
-  int: { gen: genInt, init: '0|0', step: (e) => `acc = (acc + (${e})) | 0`, ret: 'acc | 0' },
-  float: { gen: genFloat, init: '0', step: (e) => `acc = acc + (${e})`, ret: 'acc' },
-  mixed: { gen: genMixed, init: '0', step: (e) => `acc = acc + (${e})`, ret: 'acc' },
-}
-
-const genProgram = (cat, seed) => {
-  const g = mkRng(seed)
-  const c = CATEGORIES[cat]
-  const expr = c.gen(g, 4)
-  return `export let f = (n, p0, p1, p2) => { let acc = ${c.init}; for (let i = 0; i < n; i = i + 1) { ${c.step(expr)} } return ${c.ret} }`
-}
+// Program corpus (PRNG + per-category generators) is shared with the codegen
+// ratchet — see scripts/perf-corpus.mjs.
 
 // ── timing ───────────────────────────────────────────────────────────────────
 const compileJS = (src) => new Function(`${src.replace(/export\s+let\s+f\s*=/, 'let f =')}\nreturn f`)()
