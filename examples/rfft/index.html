@@ -8,13 +8,8 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c; font-family: sans-serif; }
   body { border-top: 2px solid #50ad7b; }
-  @font-face { font-family: wavefont; font-display: block; src: url("../lib/wavefont.woff2") format('woff2'); }
-  h1 { padding: 16px 20px 8px; font-size: 12pt; margin: 0; font-weight: 600; }
-  h1 small { font-weight: 400; opacity: .55; }
   a { color: #eee; text-decoration: none; }
   a:hover { color: #50ad7b; text-decoration: underline; }
-  h1 .src { display: inline-flex; align-items: center; margin-left: 6px; opacity: .45; vertical-align: middle; text-decoration: none; }
-  h1 .src:hover { opacity: 1; color: #eee; text-decoration: none; }
   #stage { position: absolute; top: 14px; left: 20px; right: 20px; bottom: 20px;
     display: flex; flex-direction: column; gap: 6px; }
   /* discreet source link in the corner — the only chrome, now the title is gone */
@@ -38,34 +33,23 @@
   #scale button + button { border-left: 1px solid #ffffff14; }
   #scale button.on { background: #50ad7b; color: #07140c; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
-  #wavewrap { position: relative; flex: 1 1 0; }
+  #wavewrap { position: relative; flex: 1.4 1 0; }
   #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px; background: #0a0a12; }
-  /* spectrum: wavefont bar chart over a 20 Hz..20 kHz mel axis, A-weighted */
-  #specwrap { flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; }
-  #bars { flex: 1 1 0; margin: 0; overflow: hidden; background: #0c0c14; border-radius: 6px 6px 0 0;
-    font-family: wavefont; font-variation-settings: 'wght' 160, 'ROND' 24, 'YELA' -100;
-    color: #5fd39a; line-height: 1; letter-spacing: .04ch; white-space: nowrap;
-    display: flex; align-items: flex-end; padding: 0 4px; word-break: break-all; }
-  #specaxis { position: relative; height: 13px; margin: 1px 4px 0; }
-  #specaxis b { position: absolute; top: 0; font: 600 9px/1 ui-monospace, Menlo, monospace;
-    color: #5fd39a; opacity: .65; white-space: nowrap; }
-  /* the tune's floatbeat source — hidden until the chevron on the shuffle button reveals it */
+  /* the tune's floatbeat source — hidden until the code icon on the shuffle button reveals it */
   #code { display: none; position: absolute; right: 14px; bottom: 52px; max-width: 46%; z-index: 20;
     margin: 0; padding: 12px 14px; background: rgba(7,7,12,.82); border: 1px solid #ffffff14;
     border-radius: 8px; color: #b9c2cf; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
     white-space: pre; overflow: auto; max-height: 60%; backdrop-filter: blur(3px); }
   #code.show { display: block; }
   #code .ttl { color: #50ad7b; font-weight: 700; }
+  /* dice = shuffle tune · code icon = reveal the tune's source (its click won't shuffle) */
   #shuffle { position: absolute; right: 14px; bottom: 12px; z-index: 30; cursor: pointer;
-    padding: 8px 14px; border-radius: 999px; border: 1px solid #ffffff22; background: #0008;
-    color: #eee; font-size: 13px; font-weight: 600; user-select: none;
-    display: inline-flex; align-items: center; gap: 8px; }
-  #shuffle:hover { border-color: #50ad7b; color: #50ad7b; }
-  /* chevron reveals the source; rotates when open. Its own click won't trigger a shuffle. */
-  #shuffle .chev { font-size: 11px; opacity: .6; transition: transform .15s, opacity .15s;
-    padding: 0 2px; }
-  #shuffle .chev:hover { opacity: 1; }
-  #shuffle.open .chev { transform: rotate(90deg); opacity: 1; color: #50ad7b; }
+    padding: 7px 12px; border-radius: 999px; border: 1px solid #ffffff22; background: #0008;
+    color: #eee; font-size: 15px; user-select: none; display: inline-flex; align-items: center; gap: 9px; }
+  #shuffle:hover { border-color: #50ad7b; }
+  #shuffle .code { display: inline-flex; opacity: .5; transition: opacity .15s, color .15s; }
+  #shuffle .code:hover { opacity: 1; color: #50ad7b; }
+  #shuffle.open .code { opacity: 1; color: #50ad7b; }
   #play { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     background: rgba(7,7,12,.6); cursor: pointer; }
   #play div { width: 0; height: 0; border-style: solid; border-width: 22px 0 22px 36px;
@@ -85,11 +69,7 @@
   </div>
   <div id="wavewrap">
     <canvas id="wave"></canvas>
-    <div id="shuffle">🎲 shuffle tune<span class="chev" id="codetoggle" title="show the tune's source">&#8250;</span></div>
-  </div>
-  <div id="specwrap">
-    <div id="bars"></div>
-    <div id="specaxis"></div>
+    <div id="shuffle" title="shuffle tune">🎲<span class="code" id="codetoggle" title="show the tune's source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span></div>
   </div>
 </div>
 <pre id="code"></pre>
@@ -99,8 +79,9 @@ import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
 import { songs, songDisplaySrc, songBeatSrc, songSlug } from "./songs.js";
 
-const N = 8192;                      // FFT size → N/2 = 4096 magnitude bins; bin width SR/N ≈ 5.4 Hz
-const HOP = 512;                     // samples between successive spectrogram columns (same overlap as N/8)
+const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
+                                     // transform with finer bass detail, so jz vs JS is clearly measurable
+const HOP = 512;                     // samples between successive spectrogram columns
 const urls = { js: "./rfft.js", wasm: "./rfft.wasm" };
 const TAU = 6.283185307179586;
 
@@ -120,25 +101,25 @@ const makeBeatFill = async (kind, ix) => {
   const song = songs[ix];
   if (kind === "js") {
     const beat = new Function("t", `return (${songBeatSrc(song)})(t)`);
-    return (ch, len, sr) => { for (let i = 0; i < len; i++) ch[i] = beat(i / sr); };
+    return (ch, len, sr, off) => { for (let i = 0; i < len; i++) ch[i] = beat(off + i / sr); };
   }
   const { exports, memory } = instantiate(
     new Uint8Array(await (await fetch(beatUrl(ix))).arrayBuffer())
   );
-  return (ch, len, sr) => {
+  return (ch, len, sr, off) => {
     const out = memory.Float64Array(new Float64Array(len));
-    exports.fill(out, len, sr);
+    exports.fill(out, len, sr, off);
     const samples = memory.read(out);
     for (let i = 0; i < len; i++) ch[i] = samples[i];
   };
 };
-const beatFill = async (kind, ix, ch, len, sr) => {
+const beatFill = async (kind, ix, ch, len, sr, off = 0) => {
   if (beatCache.kind !== kind || beatCache.ix !== ix)
     beatCache = { kind, ix, fill: await makeBeatFill(kind, ix) };
-  beatCache.fill(ch, len, sr);
+  beatCache.fill(ch, len, sr, off);
 };
 
-let songIx = 0;
+let songIx = Math.max(0, songs.findIndex(s => s.name === "dream pad"));   // calm, lush default
 buildSong(songIx);
 
 // Hann window — tapers each FFT frame to suppress spectral leakage.
@@ -155,12 +136,7 @@ for (let k = 0; k < 256; k++) {
   pal[k] = (255 << 24) | (bl << 16) | (g << 8) | r;
 }
 
-// wavefont: char 0x100+v is a bar of height v (0..100). A string of them is the
-// whole bar chart, drawn by the font — no per-bar canvas work. (github.com/dy/wavefont)
-const wf = (vals) => { let s = ""; for (let i = 0; i < vals.length; i++)
-  s += String.fromCharCode(0x100 + Math.max(0, Math.min(100, Math.round(vals[i])))); return s; };
-
-// full audible range — shared by both panels: spectrogram rows AND spectrum bars.
+// full audible range — drives the spectrogram rows and the waveform's spectral tint.
 const F_LO = 20, F_HI = 20000;
 
 // ── frequency scale + A-weighting ──────────────────────────────────────────────
@@ -191,7 +167,7 @@ const DB_FLOOR = -84, DB_CEIL = -34;                 // A-weighted level → bri
 // ── canvases ─────────────────────────────────────────────────────────────────
 const sg = document.getElementById("sg"), sgctx = sg.getContext("2d");
 const wave = document.getElementById("wave"), wctx = wave.getContext("2d");
-const barsEl = document.getElementById("bars"), axisEl = document.getElementById("axis");
+const axisEl = document.getElementById("axis");
 let rowLo, rowHi, rowAw, colImg, colPix;   // per-row band bin range + A-weight + reusable column
 
 // vertical frequency axis (20 Hz..20 kHz), matching the spectrum below. Labels sit at their
@@ -242,13 +218,14 @@ const fit = () => {
 };
 fit();
 drawAxis();
-window.addEventListener("resize", () => { fit(); fitSpec(); });
+window.addEventListener("resize", () => { fit(); });
 
 // ── engine + render loop ─────────────────────────────────────────────────────
 let audio, startT = 0, running = false;
+// FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
   kind: "jz",
-  meter: false,                        // the spectrogram IS the readout — no FPS panel
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
   note: "floatbeat + rfft · JS ⇄ jz",
   onSwitch: (kind) => { rebuildBuffer(kind).then(() => start(kind)); },
 });
@@ -261,7 +238,7 @@ async function start(kind) {
   const spec = engine.spectrum();      // magnitude (after rfft)
   const sr = audio.sampleRate, ch = audio.ch, len = ch.length;
   let cursor = Math.floor(sr * (audio.ctx.currentTime - startT)); // sample index of last column
-  const samp = (i) => ch[((i % len) + len) % len];                // looped read
+  const samp = (i) => ch[((i % len) + len) % len];                // looped read of the rendered buffer
   const dbSpan = DB_CEIL - DB_FLOOR;
 
   (function frame() {
@@ -284,10 +261,10 @@ async function start(kind) {
       const base = cursor - N;
       for (let i = 0; i < N; i++) inp[i] = samp(base + i) * hann[i];   // windowed frame
       const t0 = performance.now();
-      engine.rfft();                                                    // ← jz or JS
+      engine.rfft();                                                    // ← the measured workload: jz vs JS on the FFT
       work += performance.now() - t0;
-      // each row = peak magnitude across its mel band, A-weighted, mapped through a
-      // fixed dB window so loudness is absolute: quiet stays dim, partials pop bright.
+      // each row = peak magnitude across its band, A-weighted, mapped through a fixed dB
+      // window so loudness is absolute: quiet stays dim, partials pop bright.
       for (let y = 0; y < h; y++) {
         let mag = 0;
         for (let b = rowLo[y]; b <= rowHi[y]; b++) if (spec[b] > mag) mag = spec[b];
@@ -299,15 +276,14 @@ async function start(kind) {
       sgctx.putImageData(colImg, x, 0);
       waveCol(samp, cursor, x, wave.height, spec);  // one waveform column, time-aligned to this frame
     }
-    drawBars(spec);
     ui.frame(work);
   })();
 }
 
-// Spectrum as wavefont bars over the same 20 Hz..20 kHz axis, A-weighted, with peak-hold.
-const NBARS = 110, peaks = new Float64Array(NBARS), barVals = new Float64Array(NBARS);
+// The waveform's colour is mixed from NBARS A-weighted frequency bands (no bars are drawn).
+const NBARS = 110;
 const barLo = new Int32Array(NBARS), barHi = new Int32Array(NBARS), barAw = new Float64Array(NBARS);
-const fitBars = () => {                        // bar i = frequency band [barLo..barHi] of FFT bins, A-weighted
+const fitBars = () => {                        // band i = frequency range [barLo..barHi] of FFT bins, A-weighted
   const step = 1 / (NBARS - 1);
   for (let i = 0; i < NBARS; i++) {
     const p = i * step;
@@ -318,41 +294,12 @@ const fitBars = () => {                        // bar i = frequency band [barLo.
 };
 fitBars();
 
-// size the wavefont bars to the panel: tallest bar fills the height, all NBARS bars fill the
-// width. Bar advance is the 'wght' axis; letter-spacing distributes them edge-to-edge so each
-// evenly-spaced bar lands on its frequency tick below (bars are evenly spaced along the scale fraction).
-const fitSpec = () => {
-  const W = barsEl.clientWidth - 8;                        // content width (CSS padding: 0 4px)
-  barsEl.style.fontSize = barsEl.clientHeight + "px";      // value-100 bar = full panel height
-  barsEl.style.letterSpacing = "0px";
-  barsEl.textContent = String.fromCharCode(0x100 + 60).repeat(NBARS);
-  const r = document.createRange(); r.selectNodeContents(barsEl);
-  barsEl.style.letterSpacing = ((W - r.getBoundingClientRect().width) / NBARS) + "px";
-  barsEl.textContent = "";
-};
-fitSpec();
-document.fonts.ready.then(fitSpec);                        // re-measure once the bar font is live
-
-// matching horizontal frequency ruler under the bars (decade ticks, edge labels kept in frame)
-const SPEC_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-const specaxisEl = document.getElementById("specaxis");
-const drawSpecAxis = () => {
-  const fr = SPEC_HZ.map(f => frac(f));
-  const keep = keepLabels(fr, 0.04);                   // wider gap: horizontal labels are wider than tall
-  specaxisEl.innerHTML = SPEC_HZ.map((f, i) => {
-    if (!keep[i]) return "";
-    const p = fr[i], tx = p <= 0.02 ? "0" : p >= 0.98 ? "-100%" : "-50%";
-    return `<b style="left:${(p*100).toFixed(2)}%;transform:translateX(${tx})">${f >= 1000 ? f/1000 + "k" : f}</b>`;
-  }).join("");
-};
-drawSpecAxis();
-
 // scale selector — swap the frequency layout live and rebuild every mapping that depends on it.
 const scaleEl = document.getElementById("scale");
 const setScale = (name) => {
   if (!SCALES[name] || scale === SCALES[name]) return;
   scale = SCALES[name];
-  buildRows(); fitBars(); drawAxis(); drawSpecAxis();
+  buildRows(); fitBars(); drawAxis();
   sgctx.fillStyle = "#000"; sgctx.fillRect(0, 0, sg.width, sg.height);   // drop the mixed-scale history
   [...scaleEl.children].forEach(b => b.classList.toggle("on", b.dataset.s === name));
 };
@@ -361,41 +308,28 @@ scaleEl.addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (b) setScale(b.dataset.s);
 });
 
-function drawBars(spec) {
-  for (let i = 0; i < NBARS; i++) {
-    let mag = 0;
-    for (let b = barLo[i]; b <= barHi[i]; b++) if (spec[b] > mag) mag = spec[b];
-    const v = Math.max(0, Math.min(1, (20 * Math.log10(mag + 1e-7) + barAw[i] - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
-    peaks[i] = Math.max(v, peaks[i] * 0.93);
-    barVals[i] = peaks[i] * 100;
-  }
-  barsEl.textContent = wf(barVals);
-}
-
 // Scrolling waveform: one column per spectrogram column, time-aligned to it. Each
 // column is the min/max envelope of that hop's HOP samples, so the time-domain
 // signal scrolls left in lockstep with the spectral picture above it. Tint is lch():
 // log-Hz → hue (20 Hz red … 20 kHz UV), A-weighted level → lightness only.
-const WAMP = 0.42, WAVE_H0 = 12, WAVE_H1 = 312, WAVE_C = 96;
-const hzHue = (f) => WAVE_H0 + SCALES.log.fwd(f) * (WAVE_H1 - WAVE_H0);
+const WAMP = 0.42;
+// Waveform tint shares the spectrogram's exact palette: the spectral centroid (bass↔treble)
+// indexes the same dark→teal→amber→white LUT, stretched so timbre shifts read as strong colour.
 function waveColor(spec) {
-  let lSum = 0, sinH = 0, cosH = 0, w = 0;
-  const dbSpan = DB_CEIL - DB_FLOOR, step = 1 / (NBARS - 1);
+  let num = 0, den = 0;
+  const step = 1 / (NBARS - 1);
   for (let i = 0; i < NBARS; i++) {
     let mag = 0;
     for (let j = barLo[i]; j <= barHi[i]; j++) if (spec[j] > mag) mag = spec[j];
     const db = 20 * Math.log10(mag + 1e-7) + barAw[i];
-    const v = Math.max(0, Math.min(1, (db - DB_FLOOR) / dbSpan));
-    const wt = v * v * v + 0.003;                              // loud bands steer hue more
-    const rad = hzHue(SCALES.log.inv(i * step)) * TAU / 360;
-    sinH += Math.sin(rad) * wt; cosH += Math.cos(rad) * wt;
-    lSum += (26 + v * 54) * wt;                                // brightness from level only
-    w += wt;
+    const v = Math.max(0, Math.min(1, (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
+    const wt = v * v;                                          // loud bands dominate the centroid
+    num += i * step * wt; den += wt;
   }
-  if (w < 1e-6) return "lch(40% 24 250 / .88)";
-  let hue = Math.atan2(sinH / w, cosH / w) * 360 / TAU; if (hue < 0) hue += 360;
-  const light = lSum / w, chroma = WAVE_C * (0.78 + 0.22 * (light - 26) / 54);
-  return `lch(${light.toFixed(1)}% ${chroma.toFixed(1)} ${hue.toFixed(1)} / .88)`;
+  const cen = den > 1e-6 ? num / den : 0;                      // spectral centroid, 0 (bass) … 1 (treble)
+  const c = Math.max(0, Math.min(1, (cen - 0.1) / 0.55));      // stretch the mid-heavy range over the full LUT
+  const p = pal[(c * 255) | 0];                                // the very palette the spectrogram draws with
+  return `rgb(${p & 255},${(p >> 8) & 255},${(p >> 16) & 255})`;
 }
 function waveCol(samp, cursor, x, h, spec) {
   let lo = 1, hi = -1;
@@ -407,10 +341,10 @@ function waveCol(samp, cursor, x, h, spec) {
 
 // ── shuffle: swap to a different random tune, rebuild buffer, keep playing ─────
 async function rebuildBuffer(kind = ui.kind) {
-  const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 8);
+  const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 24);   // full 12-key circle (12 × 2 s) before it loops
   const buf = ctx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
   const t0 = performance.now();
-  await beatFill(kind, songIx, ch, len, sr);
+  await beatFill(kind, songIx, ch, len, sr, 0);
   lastSynthMs = performance.now() - t0;
   const fade = Math.round(sr * 0.006);                     // 6 ms raised-cosine taper hides the loop seam
   for (let i = 0; i < fade; i++) {
@@ -434,7 +368,7 @@ function shuffle() {
 }
 const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
 shuffleEl.addEventListener("click", shuffle);
-// the chevron reveals the current tune's floatbeat source; its click must not shuffle.
+// the code icon reveals the current tune's floatbeat source; its click must not shuffle.
 codeToggleEl.addEventListener("click", (e) => {
   e.stopPropagation();
   const open = codeEl.classList.toggle("show");
