@@ -17,12 +17,14 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** — fast, portable, canonical.<br>
+**Write plain JS, compile to WASM** — fast, portable, sealed.
+
 JZ distills modern JS to its functional core (the [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) "good parts" ) — without the legacy, feature creep, and unpredictable performance.
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** – test in browser, compile to wasm.
-* **Minimal** – output is close to hand-written WAT; CI gates it to stay at least as small and fast as AssemblyScript and Porffor on the bench corpus ([CONTRIBUTING](CONTRIBUTING.md#performance--size-invariant)).
+* **Minimal** – output like hand-written WAT, theoretical minimum.
+* **Performant** – native speed.
 <!-- * **Realtime** – compiles faster than `eval`, useful for live-coding and REPL. -->
 
 | Good for                    | Not for                    |
@@ -274,14 +276,14 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 </details>
 
 
-## Benchmark
+## Performance
 
 <p align="center"><img src="bench/bench.svg" alt="jz vs alternatives — geomean speed across the bench corpus" width="720"></p>
 
-Geomean runtime across [the corpus](bench/) (lower = faster) — **jz runs at native-C speed** (`clang -O3` parity, 0.96×), ~2.4× ahead of V8 and AssemblyScript; [Porffor](https://github.com/CanadaHonk/porffor) completes 4 of 12 cases. Wasm size geomean **0.86× AssemblyScript**. `test/bench.js` gates every figure, so a regression fails CI.
+Geomean runtime across [the corpus](bench/) (lower = faster). jz sits in the **native-binary cluster** — neck-and-neck with `clang -O3`, Zig, and Rust — and runs **~2.4× ahead of V8 and AssemblyScript**; Go trails near 1.9×, [Porffor](https://github.com/CanadaHonk/porffor) completes 4 of 12 cases, and NumPy's per-element Python overhead lands it far back. Wasm size geomean **0.86× AssemblyScript**. `test/bench.js` gates every figure, so a regression fails CI.
 
 <details>
-<summary><strong>Full per-case table</strong></summary>
+<summary><strong>Benchmark</strong></summary>
 <br>
 
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
