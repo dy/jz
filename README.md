@@ -309,9 +309,7 @@ _Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon 
 
 ## Interop
 
-How values cross the JS↔WASM boundary, and how to ship and run the compiled `.wasm`. The mental model is simple: numbers pass straight through, and anything heap-allocated — strings, arrays, objects — crosses as a pointer the `memory` helper reads and writes for you. Under the hood that pointer is a **NaN-boxed `f64`** into a bump-allocated heap, one boundary codec per binary, fixed at compile time.
-
-### Passing data in and out
+**Numbers cross the JS↔WASM boundary directly.** Anything heap-allocated — strings, arrays, objects — crosses as a **pointer** the `memory` helper writes and reads for you (under the hood, a NaN-boxed `f64` into a bump-allocated heap, one codec per binary). That's the whole model — the topics below are details, folded away until you need them.
 
 Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); everything else stays heap-resident behind a pointer.
 
@@ -340,7 +338,10 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 > jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
 > `memory.Object({ x: 3, y: 4 })` must use the same key order as the jz source `{ x, y }` — reversed keys produce wrong values. Strings/arrays inside objects are auto-wrapped to pointers.
 
-### Template interpolation
+<details>
+<summary><strong>Can I bake values in at compile time?</strong></summary>
+
+<br>
 
 Interpolated values are baked into the source at compile time — no post-instantiation allocation, no getter overhead. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
 
@@ -352,7 +353,12 @@ jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
-### Calling host functions
+</details>
+
+<details>
+<summary><strong>How do I call host functions (Math, console, my own)?</strong></summary>
+
+<br>
 
 Any host namespace — functions, constants, custom objects — wires in via the `imports` option. jz extracts names via `Object.getOwnPropertyNames`, so non-enumerable built-ins (`Math.sin`, `Date.now`) work automatically:
 
@@ -370,7 +376,12 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
    { imports: { window: globalThis } })
 ```
 
-### Host features & runtime services
+</details>
+
+<details>
+<summary><strong>How do runtime services lower — <code>host: 'js'</code> vs <code>'wasi'</code>?</strong></summary>
+
+<br>
 
 Two host modes select how runtime services lower. `host: 'js'` (default) imports small `env.*` services that `jz()` auto-wires; `host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno.
 
@@ -387,7 +398,12 @@ The compiled `.wasm` carries at most one import namespace — none, `env`, or `w
 
 A `host: 'wasi'` build emits only the WASI imports its lowerings use — `fd_write`, `fd_read`, `clock_time_get` (and `random_get` only with `{ randomSeed: true }`) — so it runs natively on wasmtime/wasmer/deno. For hosts without WASI (browsers, plain Node), `jz/wasi` provides a matching shim. That shim is scoped to what jz emits, **not** a general Preview 1 polyfill (`args_get`, `poll_oneoff`, `path_*`, … are absent) — run arbitrary WASI programs on a real runtime instead.
 
-### Sharing memory across modules
+</details>
+
+<details>
+<summary><strong>How do I share memory across modules?</strong></summary>
+
+<br>
 
 `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate, so objects created in one module are readable by another:
 
@@ -402,7 +418,12 @@ memory.read(a.exports.make())     // {x: 10, y: 20} — JS reads it too
 
 `jz.memory()` returns a real `WebAssembly.Memory` patched with `.read()`/`.String()`/`.Array()`/`.Object()`/`.write()`. Pass an existing one to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`. Modules sharing a memory share one bump allocator. Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-### Shipping & running the `.wasm`
+</details>
+
+<details>
+<summary><strong>How do I ship and run the compiled <code>.wasm</code>?</strong></summary>
+
+<br>
 
 Compile once, then run the binary anywhere.
 
@@ -435,6 +456,8 @@ Pure numeric modules have no imports and instantiate with standard `WebAssembly.
 ```
 
 `memory.alloc()`/`memory.reset()` are JS aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The boundary pointer is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Strip both exports with `compile(code, { alloc: false })` if you only call functions and never marshal heap values across the boundary.
+
+</details>
 
 <details>
 <summary><strong>Zero-copy strings</strong></summary>
