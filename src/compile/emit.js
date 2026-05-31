@@ -1409,8 +1409,8 @@ function emitElementAssign(arr, idx, val) {
       ['local.get', `$${t}`]])
   }
   // 2. Schema field literal key → direct payload-slot write.
-  if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
-    const slot = ctx.schema.find(arr, litKey)
+  if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
+    const slot = ctx.schema.slotOf(arr, litKey)
     if (slot >= 0) return withTemp(valueExpr, t => [
       ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
       ['local.get', `$${t}`]])
@@ -1559,7 +1559,7 @@ function emitPropertyAssign(obj, prop, val) {
   // Unboxed OBJECT-pointer receiver carrying its own schema on the value (ptrAux):
   // resolve the field slot directly, mirroring emitPropAccess (core.js). A param /
   // struct cell narrowed to an unboxed OBJECT ptr keeps its schema as `ptrAux`, not
-  // in ctx.schema.vars under the name — so schema.find(name) misses and the write
+  // in ctx.schema.vars under the name — so schema.slotOf(name) misses and the write
   // would fall to __dyn_set (propsPtr) while the READ resolves the slot via ptrAux,
   // targeting different memory (write lost). Match the read.
   {
@@ -1573,8 +1573,8 @@ function emitPropertyAssign(obj, prop, val) {
     }
   }
   // Schema-based object → f64.store at fixed offset.
-  if (typeof obj === 'string' && ctx.schema.find) {
-    const idx = ctx.schema.find(obj, prop)
+  if (typeof obj === 'string' && ctx.schema.slotOf) {
+    const idx = ctx.schema.slotOf(obj, prop)
     if (idx >= 0) {
       const va = emit(obj), vv = asF64(emit(val)), t = temp()
       const shadow = needsDynShadow(obj)
@@ -2034,8 +2034,8 @@ function emitMethodCall(callee, parsed, callArgs) {
   // Schema property closure call: `x.prop(args)` where prop is a closure slot in
   // x's schema. Boxed schemas don't currently support spread callers (each box
   // hands the inner value through), so spread is restricted to the non-boxed path.
-  if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
-    const idx = ctx.schema.find(obj, method)
+  if (typeof obj === 'string' && ctx.schema.slotOf && ctx.closure.call) {
+    const idx = ctx.schema.slotOf(obj, method)
     if (idx >= 0) {
       const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
       if (parsed.hasSpread && !ctx.schema.isBoxed?.(obj)) {
@@ -2063,7 +2063,7 @@ function emitMethodCall(callee, parsed, callArgs) {
   // property-call dispatch below reads the actual slot/sidecar closure. This
   // is the type-based generalization of the collection/strIndex arity guards
   // above: it is what lets self-host user methods whose names collide with
-  // builtins — `ctx.schema.find(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
+  // builtins — `ctx.schema.slotOf(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
   if (ctx.core.emit[genKey] && !collectionMisfit && !strIndexMisfit && !objectShadow) {

@@ -491,7 +491,7 @@ export const f64rem = (a, b) => (inc('__rem'), typed(['call', '$__rem', a, b], '
  *  OBJECT operand — from a schema-bound variable or an inline object literal.
  *  Returns -1 when the method is absent. */
 function primMethodIdx(node, name) {
-  if (typeof node === 'string') return ctx.schema.find(node, name)
+  if (typeof node === 'string') return ctx.schema.slotOf(node, name)
   const sid = objLiteralSchemaId(node)
   const props = sid != null ? ctx.schema.list[sid] : null
   return props ? props.indexOf(name) : -1
@@ -553,7 +553,7 @@ export function toNumF64(node, v) {
   // yield non-primitives a TypeError is thrown. The chosen primitive still
   // flows through `__to_num` so a string return ("−7") is parsed. An abrupt
   // completion (throwing method) propagates through the closure call.
-  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
+  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['valueOf', 'toString'])
     if (prim) {
       // No `__to_num` helper → the program provably has no strings, so the
@@ -606,7 +606,7 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
-  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
+  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {
       inc('__to_str')

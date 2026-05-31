@@ -241,7 +241,7 @@ export default (ctx) => {
           ['drop', asF64(emit(obj))],
           ['f64.const', has ? 1 : 0]], 'f64')
       }
-      if (typeof obj === 'string' && ctx.schema.find?.(obj, litKey) >= 0)
+      if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['f64.const', 1], 'f64')
     }
     return typed(['f64.convert_i32_s', emit(['in', key, obj])], 'f64')
