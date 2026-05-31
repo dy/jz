@@ -8,7 +8,7 @@
 // INSIDE loops, summed over the shared seeded corpus (scripts/perf-corpus.mjs).
 //
 // A lost optimization re-introduces loop-body work and trips the ratchet (e.g.
-// disabling hoistInvariantToInt32 takes the worst seed from 36 → 64 loop-body ops);
+// disabling hoistInvariantLoop, the unified LICM, takes mixed from 870 → 1054);
 // an improvement lowers the count — lock the gain with `node test/perf-ratchet.js
 // --update`. Pure codegen signal: no timing, machine-independent, byte-stable.
 //
