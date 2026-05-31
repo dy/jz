@@ -46,7 +46,10 @@ const getKernelModule = () => {
 export const compileViaKernel = (code, opts = {}) => {
   const ast = normalizeBigints(parse(code))
   const kernel = instantiate(getKernelModule(), { memory: 8192 })
-  const ir = kernel.exports.default(ast)
+  // Mirror the host's opt-in jzify gating (index.js): only lower full-JS forms when
+  // the test asked for it, so prohibited syntax (var/class/function/…) is rejected
+  // by the kernel exactly as the in-process compiler rejects it.
+  const ir = kernel.exports.default(ast, null, opts.jzify ? 1 : 0)
   if (!Array.isArray(ir) || ir[0] !== 'module' || ir.length < 2)
     throw new Error('kernel returned non-module IR: ' + JSON.stringify(ir)?.slice(0, 160))
   return opts.wat ? watrPrint(ir) : watrCompile(ir)
