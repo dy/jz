@@ -1,66 +1,136 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 384" width="720" height="384" role="img" aria-label="jz benchmark geomean">
-  <rect width="720" height="384" rx="10" fill="#ffffff"/>
-  <text x="20" y="30" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-size="16" font-weight="700" fill="#212529">Speed vs jz — geomean across the bench corpus</text>
-  <text x="20" y="48" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" fill="#868e96">longer bar / brisker bounce = faster · 1.00× = jz · lower is better</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 410" width="720" height="410" role="img" aria-label="jz benchmark — each ball bounces at a rate proportional to that engine's speed; jz is the 1.00× baseline">
+  <rect width="720" height="410" rx="12" fill="#ffffff" stroke="#e9ecef" stroke-width="1"/>
+  <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="16" font-weight="700" fill="#212529">Speed vs jz — geomean across the bench corpus</text>
+  <text x="20" y="52" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#868e96">faster ball = faster engine · 1.00× = jz baseline · lower is better</text>
 
-  <g font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-    <text x="150" y="91" text-anchor="end" font-size="15" font-weight="500" fill="#212529">native C</text>
-    <text x="150" y="107" text-anchor="end" font-size="10.5" fill="#868e96">clang -O3</text>
-    <rect x="166" y="89" width="484" height="8" rx="4" fill="#f1f3f5"/>
-    <rect x="166" y="89" width="484.0" height="8" rx="4" fill="#4c6ef5" opacity="0.65"/>
-    <circle cx="637.0" cy="105" r="11" fill="#4c6ef5">
-      <animate attributeName="cy" dur="0.48s" repeatCount="indefinite"
-        keyTimes="0;0.5;1" values="105;71;105"
-        calcMode="spline" keySplines="0.15 0.6 0.4 1;0.6 0 0.85 0.4"/>
-    </circle>
-    <text x="658.0" y="97" font-size="13" font-weight="500" fill="#4c6ef5">0.96×</text>
+  <defs>
+    <radialGradient id="g0" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="58%" stop-color="#1f9e57"/>
+      <stop offset="100%" stop-color="#1f9e57" stop-opacity="0.7"/>
+    </radialGradient>
+    <radialGradient id="t0" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#1f9e57" stop-opacity="0.32"/>
+    </radialGradient>
+  </defs>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="0" y="70" width="720" height="62" fill="#1f9e57" opacity="0.045"/>
+    <rect x="162" y="98" width="488" height="6" rx="3" fill="#e9ecef"/>
+    <rect x="162" y="87" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="164" y1="87" x2="164" y2="115" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <rect x="640" y="87" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="648" y1="87" x2="648" y2="115" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <text x="144" y="96" text-anchor="end" font-size="15" font-weight="500" fill="#212529">native C</text>
+    <text x="144" y="113" text-anchor="end" font-size="10.5" fill="#868e96">clang -O3</text>
+    <text x="666" y="106" font-size="14" font-weight="500" fill="#1f9e57">0.96×</text>
+    <circle cx="182.0" cy="101" r="7" fill="url(#t0)"><animate attributeName="cx" dur="1.92s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-1.632s"/></circle>
+    <circle cx="182.0" cy="101" r="10" fill="url(#g0)" stroke="#1f9e57" stroke-width="1" stroke-opacity="0.4"><animate attributeName="cx" dur="1.92s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-0.000s"/></circle>
   </g>
-  <g font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-    <text x="150" y="149" text-anchor="end" font-size="15" font-weight="700" fill="#212529">jz</text>
-    <text x="150" y="165" text-anchor="end" font-size="10.5" fill="#868e96">→ wasm</text>
-    <rect x="166" y="147" width="484" height="8" rx="4" fill="#f1f3f5"/>
-    <rect x="166" y="147" width="464.6" height="8" rx="4" fill="#e8590c" opacity="0.95"/>
-    <circle cx="617.6" cy="163" r="11" fill="#e8590c">
-      <animate attributeName="cy" dur="0.5s" repeatCount="indefinite"
-        keyTimes="0;0.5;1" values="163;129;163"
-        calcMode="spline" keySplines="0.15 0.6 0.4 1;0.6 0 0.85 0.4"/>
-    </circle>
-    <text x="638.6" y="155" font-size="13" font-weight="700" fill="#e8590c">1×</text>
+  <defs>
+    <radialGradient id="g1" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="58%" stop-color="#e8590c"/>
+      <stop offset="100%" stop-color="#e8590c" stop-opacity="0.7"/>
+    </radialGradient>
+    <radialGradient id="t1" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#e8590c" stop-opacity="0.32"/>
+    </radialGradient>
+  </defs>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="0" y="132" width="720" height="62" fill="#e8590c" opacity="0.09"/>
+    <rect x="162" y="160" width="488" height="6" rx="3" fill="#e9ecef"/>
+    <rect x="162" y="149" width="10" height="28" rx="3" fill="#e8590c"/>
+    <line x1="164" y1="149" x2="164" y2="177" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <rect x="640" y="149" width="10" height="28" rx="3" fill="#e8590c"/>
+    <line x1="648" y1="149" x2="648" y2="177" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <text x="144" y="158" text-anchor="end" font-size="15" font-weight="700" fill="#212529">jz</text>
+    <text x="144" y="175" text-anchor="end" font-size="10.5" fill="#868e96">→ wasm</text>
+    <text x="666" y="168" font-size="14" font-weight="700" fill="#e8590c">1.00×</text>
+    <circle cx="182.0" cy="163" r="7" fill="url(#t1)"><animate attributeName="cx" dur="2s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-2.070s"/></circle>
+    <circle cx="182.0" cy="163" r="10" fill="url(#g1)" stroke="#e8590c" stroke-width="1" stroke-opacity="0.4"><animate attributeName="cx" dur="2s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-0.370s"/></circle>
   </g>
-  <g font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-    <text x="150" y="207" text-anchor="end" font-size="15" font-weight="500" fill="#212529">V8</text>
-    <text x="150" y="223" text-anchor="end" font-size="10.5" fill="#868e96">Node</text>
-    <rect x="166" y="205" width="484" height="8" rx="4" fill="#f1f3f5"/>
-    <rect x="166" y="205" width="189.6" height="8" rx="4" fill="#adb5bd" opacity="0.65"/>
-    <circle cx="342.6" cy="221" r="11" fill="#adb5bd">
-      <animate attributeName="cy" dur="1.225s" repeatCount="indefinite"
-        keyTimes="0;0.5;1" values="221;187;221"
-        calcMode="spline" keySplines="0.15 0.6 0.4 1;0.6 0 0.85 0.4"/>
-    </circle>
-    <text x="363.6" y="213" font-size="13" font-weight="500" fill="#adb5bd">2.45×</text>
+  <defs>
+    <radialGradient id="g2" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="58%" stop-color="#4c6ef5"/>
+      <stop offset="100%" stop-color="#4c6ef5" stop-opacity="0.7"/>
+    </radialGradient>
+    <radialGradient id="t2" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#4c6ef5" stop-opacity="0.32"/>
+    </radialGradient>
+  </defs>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="0" y="194" width="720" height="62" fill="#4c6ef5" opacity="0.045"/>
+    <rect x="162" y="222" width="488" height="6" rx="3" fill="#e9ecef"/>
+    <rect x="162" y="211" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="164" y1="211" x2="164" y2="239" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <rect x="640" y="211" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="648" y1="211" x2="648" y2="239" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <text x="144" y="220" text-anchor="end" font-size="15" font-weight="500" fill="#212529">V8</text>
+    <text x="144" y="237" text-anchor="end" font-size="10.5" fill="#868e96">Node</text>
+    <text x="666" y="230" font-size="14" font-weight="500" fill="#4c6ef5">2.45×</text>
+    <circle cx="182.0" cy="225" r="7" fill="url(#t2)"><animate attributeName="cx" dur="4.9s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-4.905s"/></circle>
+    <circle cx="182.0" cy="225" r="10" fill="url(#g2)" stroke="#4c6ef5" stroke-width="1" stroke-opacity="0.4"><animate attributeName="cx" dur="4.9s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-0.740s"/></circle>
   </g>
-  <g font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-    <text x="150" y="265" text-anchor="end" font-size="15" font-weight="500" fill="#212529">AssemblyScript</text>
-    <text x="150" y="281" text-anchor="end" font-size="10.5" fill="#868e96">asc -O3</text>
-    <rect x="166" y="263" width="484" height="8" rx="4" fill="#f1f3f5"/>
-    <rect x="166" y="263" width="184.4" height="8" rx="4" fill="#f08c00" opacity="0.65"/>
-    <circle cx="337.4" cy="279" r="11" fill="#f08c00">
-      <animate attributeName="cy" dur="1.26s" repeatCount="indefinite"
-        keyTimes="0;0.5;1" values="279;245;279"
-        calcMode="spline" keySplines="0.15 0.6 0.4 1;0.6 0 0.85 0.4"/>
-    </circle>
-    <text x="358.4" y="271" font-size="13" font-weight="500" fill="#f08c00">2.52×</text>
+  <defs>
+    <radialGradient id="g3" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="58%" stop-color="#7048e8"/>
+      <stop offset="100%" stop-color="#7048e8" stop-opacity="0.7"/>
+    </radialGradient>
+    <radialGradient id="t3" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#7048e8" stop-opacity="0.32"/>
+    </radialGradient>
+  </defs>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="0" y="256" width="720" height="62" fill="#7048e8" opacity="0"/>
+    <rect x="162" y="284" width="488" height="6" rx="3" fill="#e9ecef"/>
+    <rect x="162" y="273" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="164" y1="273" x2="164" y2="301" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <rect x="640" y="273" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="648" y1="273" x2="648" y2="301" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <text x="144" y="282" text-anchor="end" font-size="15" font-weight="500" fill="#212529">AssemblyScript</text>
+    <text x="144" y="299" text-anchor="end" font-size="10.5" fill="#868e96">asc -O3</text>
+    <text x="666" y="292" font-size="14" font-weight="500" fill="#7048e8">2.52×</text>
+    <circle cx="182.0" cy="287" r="7" fill="url(#t3)"><animate attributeName="cx" dur="5.04s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-5.394s"/></circle>
+    <circle cx="182.0" cy="287" r="10" fill="url(#g3)" stroke="#7048e8" stroke-width="1" stroke-opacity="0.4"><animate attributeName="cx" dur="5.04s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-1.110s"/></circle>
   </g>
-  <g font-family="-apple-system,Segoe UI,Roboto,sans-serif">
-    <text x="150" y="323" text-anchor="end" font-size="15" font-weight="500" fill="#212529">Porffor</text>
-    <text x="150" y="339" text-anchor="end" font-size="10.5" fill="#868e96">runs 4 / 12</text>
-    <rect x="166" y="321" width="484" height="8" rx="4" fill="#f1f3f5"/>
-    <rect x="166" y="321" width="83.7" height="8" rx="4" fill="#e64980" opacity="0.65"/>
-    <circle cx="236.7" cy="337" r="11" fill="#e64980">
-      <animate attributeName="cy" dur="2.6s" repeatCount="indefinite"
-        keyTimes="0;0.5;1" values="337;303;337"
-        calcMode="spline" keySplines="0.15 0.6 0.4 1;0.6 0 0.85 0.4"/>
-    </circle>
-    <text x="257.7" y="329" font-size="13" font-weight="500" fill="#e64980">5.55×</text>
+  <defs>
+    <radialGradient id="g4" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="58%" stop-color="#c92a2a"/>
+      <stop offset="100%" stop-color="#c92a2a" stop-opacity="0.7"/>
+    </radialGradient>
+    <radialGradient id="t4" cx="38%" cy="32%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#c92a2a" stop-opacity="0.32"/>
+    </radialGradient>
+  </defs>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="0" y="318" width="720" height="62" fill="#c92a2a" opacity="0.045"/>
+    <rect x="162" y="346" width="488" height="6" rx="3" fill="#e9ecef"/>
+    <rect x="162" y="335" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="164" y1="335" x2="164" y2="363" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <rect x="640" y="335" width="10" height="28" rx="3" fill="#495057"/>
+    <line x1="648" y1="335" x2="648" y2="363" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.6"/>
+    <text x="144" y="344" text-anchor="end" font-size="15" font-weight="500" fill="#212529">Porffor</text>
+    <text x="144" y="361" text-anchor="end" font-size="10.5" fill="#868e96">runs 4 / 12</text>
+    <text x="666" y="354" font-size="14" font-weight="500" fill="#c92a2a">5.55×</text>
+    <circle cx="182.0" cy="349" r="7" fill="url(#t4)"><animate attributeName="cx" dur="7.5s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-7.855s"/></circle>
+    <circle cx="182.0" cy="349" r="10" fill="url(#g4)" stroke="#c92a2a" stroke-width="1" stroke-opacity="0.4"><animate attributeName="cx" dur="7.5s" repeatCount="indefinite"
+        keyTimes="0;0.5;1" values="182.0;630.0;182.0" calcMode="linear" begin="-1.480s"/></circle>
   </g>
 </svg>
