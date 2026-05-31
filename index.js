@@ -51,6 +51,7 @@ import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
 import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize/index.js'
 import jzify from './jzify/index.js'
+import { T } from './src/ast.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './interop.js'
@@ -389,6 +390,23 @@ const setupCtx = (code, opts) => {
   }
 }
 
+// U+E000 (T) prefixes every jz-generated local. The JS spec forbids it in
+// identifiers, but subscript's parser is lenient and accepts it — so a user name
+// carrying it could silently alias a compiler temp. Reject it in identifier
+// position on the RAW parse (before jzify, which legitimately mints T-prefixed
+// temps of its own). String-literal nodes are `[null, …]` and skipped, so
+// `"……"` data is fine; only walked when the char is present in source.
+const rejectReservedPrefix = (node) => {
+  if (!Array.isArray(node)) return
+  if (node.length === 2 && node[0] == null) return   // [null, X] — value literal, not an identifier
+  for (let i = 1; i < node.length; i++) {
+    const v = node[i]
+    if (typeof v === 'string') {
+      if (v.includes(T)) err(`identifier '${v.split(T).join('\\uE000')}' contains the reserved compiler prefix (U+E000) — jz uses it for generated locals; rename it`)
+    } else rejectReservedPrefix(v)
+  }
+}
+
 const jzCompileInner = (code, opts = {}) => {
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
@@ -397,6 +415,7 @@ const jzCompileInner = (code, opts = {}) => {
   assertCtxInvariants('post-reset')
 
   let parsed = time('parse', () => parse(code))
+  if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
   assertCtxInvariants('post-prepare')
