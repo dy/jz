@@ -13,10 +13,20 @@
  */
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
-import { emit, emitter, reg, deps, dual, tag, wat } from '../src/bridge.js'
+import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bridge.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
+  // Math.random seeding (opt-in via the `randomSeed` compile option). Default:
+  // deterministic xorshift32 from a fixed constant — reproducible, which the
+  // determinism suite relies on. `randomSeed: <n>` picks a fixed seed; `true`
+  // seeds once from host entropy on first use (crypto under host:'js',
+  // `random_get` under WASI) — the one path on which jz emits a randomness
+  // syscall, and only when explicitly asked.
+  const rngEntropy = ctx.transform.randomSeed === true
+  const rngSeedConst = typeof ctx.transform.randomSeed === 'number'
+    ? ((ctx.transform.randomSeed >>> 0) || 1)   // xorshift dies on 0 → floor at 1
+    : 12345
   deps({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
@@ -348,7 +358,17 @@ export default (ctx) => {
   ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
 
   // Random
-  reg('math.random', ['math.random'], () => typed(['call', '$math.random'], 'f64'))
+  reg('math.random', ['math.random'], () => {
+    // Entropy mode: pull the host randomness syscall on demand (only when
+    // Math.random is actually used) — env.rngSeed (JS host) or WASI random_get.
+    if (rngEntropy) {
+      if (ctx.transform.host === 'wasi')
+        hostImport('wasi_snapshot_preview1', 'random_get', ['func', '$__random_get', ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
+      else
+        hostImport('env', 'rngSeed', ['func', '$__env_rng_seed', ['result', 'i32']])
+    }
+    return typed(['call', '$math.random'], 'f64')
+  })
 
   // ============================================
   // WAT stdlib implementations
@@ -844,14 +864,20 @@ export default (ctx) => {
     (if (f64.eq (f64.abs (local.get $y)) (f64.const inf)) (then (return (f64.const inf))))
     (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`)
 
+  // xorshift32 → [0,1). In entropy mode a one-shot prologue replaces the fixed
+  // initial state with host entropy on first call (branch is well-predicted after).
+  const rngSeedPrologue = rngEntropy ? `(if (i32.eqz (global.get $math.rng_seeded))
+      (then (global.set $math.rng_state (call $__rng_seed)) (global.set $math.rng_seeded (i32.const 1))))
+    ` : ``
   wat('math.random', `(func $math.random (result f64)
     (local $s i32)
-    (local.set $s (global.get $math.rng_state))
+    ${rngSeedPrologue}(local.set $s (global.get $math.rng_state))
     (local.set $s (i32.xor (local.get $s) (i32.shl (local.get $s) (i32.const 13))))
     (local.set $s (i32.xor (local.get $s) (i32.shr_u (local.get $s) (i32.const 17))))
     (local.set $s (i32.xor (local.get $s) (i32.shl (local.get $s) (i32.const 5))))
     (global.set $math.rng_state (local.get $s))
-    (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`)
+    (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`,
+    rngEntropy ? ['__rng_seed'] : [])
 
   wat('math.sumPrecise', `(func $math.sumPrecise (param $arr i64) (result f64)
     ;; Exact summation via a 2304-bit fixed-point accumulator (36 i64 words,
@@ -1014,6 +1040,23 @@ export default (ctx) => {
     (local.set $res (f64.mul (f64.convert_i64_u (local.get $top)) (local.get $pow)))
     (select (f64.neg (local.get $res)) (local.get $res) (local.get $resultNeg)))`)
 
-  // Global for random state
-  ctx.scope.globals.set('math.rng_state', '(global $math.rng_state (mut i32) (i32.const 12345))')
+  // Global for random state — seeded with the fixed constant (deterministic) or,
+  // in entropy mode, overwritten from the host on first Math.random() call.
+  ctx.scope.globals.set('math.rng_state', `(global $math.rng_state (mut i32) (i32.const ${rngSeedConst}))`)
+  if (rngEntropy) {
+    ctx.scope.globals.set('math.rng_seeded', '(global $math.rng_seeded (mut i32) (i32.const 0))')
+    // One i32 of host entropy, floored at 1 (xorshift32 is dead at state 0).
+    wat('__rng_seed', ctx.transform.host === 'wasi'
+      ? `(func $__rng_seed (result i32)
+    (local $buf i32) (local $s i32)
+    (local.set $buf (call $__alloc (i32.const 4)))
+    (drop (call $__random_get (local.get $buf) (i32.const 4)))
+    (local.set $s (i32.load (local.get $buf)))
+    (select (local.get $s) (i32.const 1) (local.get $s)))`
+      : `(func $__rng_seed (result i32)
+    (local $s i32)
+    (local.set $s (call $__env_rng_seed))
+    (select (local.get $s) (i32.const 1) (local.get $s)))`,
+      ctx.transform.host === 'wasi' ? ['__alloc'] : [])
+  }
 }
