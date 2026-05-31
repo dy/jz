@@ -50,6 +50,7 @@ import { staticObjectProps } from '../static.js'
 import { typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
+import { includeForStringValue } from '../autoload.js'
 import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 
 // === typeof predicate helper ==============================================
@@ -344,7 +345,17 @@ export function recordGlobalRep(name, expr) {
   // resolve its source schema by walking the global rep's shape tree at the
   // spread site (see shape walk in analyze.js / resolveSchema in object.js).
   const sh = shapeOfObjectLiteralAst(expr)
-  if (sh) updateGlobalRep(name, { jsonShape: sh })
+  if (sh) {
+    updateGlobalRep(name, { jsonShape: sh })
+    // A module-global object is read via __dyn_get (its props live behind a
+    // runtime key, not a function-local schema slot), which emits a `['str', key]`
+    // node at compile time. Ensure the string module's `str` emitter is bound now
+    // — a string-literal-free program (`let g = {l:{a:1}}; export let f = () => g.l`)
+    // would otherwise abort late with "Unknown op: str". Scoped to globals that
+    // actually capture an object shape, so string-free local-object programs keep
+    // their minimal bundle (and golden-size pins).
+    includeForStringValue()
+  }
 }
 
 // === Call-site argument inference =========================================
