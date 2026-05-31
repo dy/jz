@@ -17,13 +17,13 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** — performant, portable, timeless.<br>
+**Write plain JS, compile to WASM** — fast, portable, canonical.<br>
 JZ distills modern JS to its functional core (the [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) "good parts" ) — without the legacy, feature creep, and unpredictable performance.
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
-* **Valid jz = valid js** — test in browser, compile to wasm.
-* **Minimal** — output is close to hand-written WAT; CI gates it to stay at least as small and fast as AssemblyScript and Porffor on the bench corpus ([CONTRIBUTING](CONTRIBUTING.md#performance--size-invariant)).
-<!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
+* **Valid jz = valid js** – test in browser, compile to wasm.
+* **Minimal** – output is close to hand-written WAT; CI gates it to stay at least as small and fast as AssemblyScript and Porffor on the bench corpus ([CONTRIBUTING](CONTRIBUTING.md#performance--size-invariant)).
+<!-- * **Realtime** – compiles faster than `eval`, useful for live-coding and REPL. -->
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
@@ -327,7 +327,8 @@ exports.rgb(100)                              // [100, 50, 20] — direct JS arr
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
-> [!WARNING] jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
+> [!WARNING]
+> jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
 > `memory.Object({ x: 3, y: 4 })` must use the same key order as the jz source `{ x, y }` — reversed keys produce wrong values. Strings/arrays inside objects are auto-wrapped to pointers.
 
 ### Template interpolation
