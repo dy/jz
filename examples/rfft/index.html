@@ -15,8 +15,12 @@
   a:hover { color: #50ad7b; text-decoration: underline; }
   h1 .src { display: inline-flex; align-items: center; margin-left: 6px; opacity: .45; vertical-align: middle; text-decoration: none; }
   h1 .src:hover { opacity: 1; color: #eee; text-decoration: none; }
-  #stage { position: absolute; top: 52px; left: 20px; right: 20px; bottom: 20px;
+  #stage { position: absolute; top: 14px; left: 20px; right: 20px; bottom: 20px;
     display: flex; flex-direction: column; gap: 6px; }
+  /* discreet source link in the corner — the only chrome, now the title is gone */
+  #src { position: fixed; left: 16px; top: 14px; z-index: 100; color: #eee; opacity: .28;
+    display: inline-flex; }
+  #src:hover { opacity: 1; color: #50ad7b; }
   #sgwrap { position: relative; flex: 3 1 0; }
   #sg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px;
     background: #000; image-rendering: pixelated; }
@@ -45,15 +49,23 @@
   #specaxis { position: relative; height: 13px; margin: 1px 4px 0; }
   #specaxis b { position: absolute; top: 0; font: 600 9px/1 ui-monospace, Menlo, monospace;
     color: #5fd39a; opacity: .65; white-space: nowrap; }
-  #code { position: absolute; right: 20px; top: 188px; max-width: 46%; z-index: 20;
-    margin: 0; padding: 12px 14px; background: rgba(7,7,12,.72); border: 1px solid #ffffff14;
+  /* the tune's floatbeat source — hidden until the chevron on the shuffle button reveals it */
+  #code { display: none; position: absolute; right: 14px; bottom: 52px; max-width: 46%; z-index: 20;
+    margin: 0; padding: 12px 14px; background: rgba(7,7,12,.82); border: 1px solid #ffffff14;
     border-radius: 8px; color: #b9c2cf; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
     white-space: pre; overflow: auto; max-height: 60%; backdrop-filter: blur(3px); }
+  #code.show { display: block; }
   #code .ttl { color: #50ad7b; font-weight: 700; }
   #shuffle { position: absolute; right: 14px; bottom: 12px; z-index: 30; cursor: pointer;
     padding: 8px 14px; border-radius: 999px; border: 1px solid #ffffff22; background: #0008;
-    color: #eee; font-size: 13px; font-weight: 600; user-select: none; }
+    color: #eee; font-size: 13px; font-weight: 600; user-select: none;
+    display: inline-flex; align-items: center; gap: 8px; }
   #shuffle:hover { border-color: #50ad7b; color: #50ad7b; }
+  /* chevron reveals the source; rotates when open. Its own click won't trigger a shuffle. */
+  #shuffle .chev { font-size: 11px; opacity: .6; transition: transform .15s, opacity .15s;
+    padding: 0 2px; }
+  #shuffle .chev:hover { opacity: 1; }
+  #shuffle.open .chev { transform: rotate(90deg); opacity: 1; color: #50ad7b; }
   #play { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     background: rgba(7,7,12,.6); cursor: pointer; }
   #play div { width: 0; height: 0; border-style: solid; border-width: 22px 0 22px 36px;
@@ -63,12 +75,7 @@
 </style>
 </head>
 <body>
-<h1>
-  Live <b>spectrogram</b> &mdash; real FFT computed by <a href="https://github.com/dy/jz">jz</a>,
-  playing a <a href="https://www.youtube.com/watch?v=tCRPUv8V22o">floatbeat</a> tune
-  <a class="src" href="https://github.com/dy/jz/tree/main/examples/rfft" title="source" aria-label="source"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
-  <small>&nbsp;· vertical = 20 Hz–20 kHz, A-weighted · log (equal octaves) / mel scale · space / click = pause · 🎲 shuffles the tune</small>
-</h1>
+<a id="src" href="https://github.com/dy/jz/tree/main/examples/rfft" title="real FFT by jz — source" aria-label="source"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
 <div id="stage">
   <div id="sgwrap">
     <canvas id="sg"></canvas>
@@ -78,7 +85,7 @@
   </div>
   <div id="wavewrap">
     <canvas id="wave"></canvas>
-    <div id="shuffle">🎲 shuffle tune</div>
+    <div id="shuffle">🎲 shuffle tune<span class="chev" id="codetoggle" title="show the tune's source">&#8250;</span></div>
   </div>
   <div id="specwrap">
     <div id="bars"></div>
@@ -241,7 +248,8 @@ window.addEventListener("resize", () => { fit(); fitSpec(); });
 let audio, startT = 0, running = false;
 const ui = hud({
   kind: "jz",
-  note: "floatbeat + rfft · same source · JS ⇄ jz",
+  meter: false,                        // the spectrogram IS the readout — no FPS panel
+  note: "floatbeat + rfft · JS ⇄ jz",
   onSwitch: (kind) => { rebuildBuffer(kind).then(() => start(kind)); },
 });
 
@@ -424,7 +432,14 @@ function shuffle() {
     start(ui.kind);
   });
 }
-document.getElementById("shuffle").addEventListener("click", shuffle);
+const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
+shuffleEl.addEventListener("click", shuffle);
+// the chevron reveals the current tune's floatbeat source; its click must not shuffle.
+codeToggleEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = codeEl.classList.toggle("show");
+  shuffleEl.classList.toggle("open", open);
+});
 
 // ── play / pause ──────────────────────────────────────────────────────────────
 // First gesture creates the AudioContext (autoplay policy). After that, clicking the

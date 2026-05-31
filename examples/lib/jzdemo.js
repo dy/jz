@@ -32,7 +32,7 @@ const FONT_URL = new URL('./linefont.woff2', import.meta.url).href
 // peg at the refresh rate), so the HUD also shows kernel ms — the real engine gap
 // regardless of vsync. The sparkline tracks FPS over time on a decaying-peak scale,
 // so a stall visibly dips the line. Clicking swaps engine and fires onSwitch(kind).
-export const hud = ({ kind = 'jz', onSwitch, note = '' }) => {
+export const hud = ({ kind = 'jz', onSwitch, note = '', meter = true }) => {
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
@@ -59,9 +59,9 @@ export const hud = ({ kind = 'jz', onSwitch, note = '' }) => {
       .jz-hud .note { margin-top: 6px; font-weight: 500; opacity: .5; font-size: 11px; }
     </style>
     <div class="jz-hud">
-      <div class="fps"><span id="jz-fps">··</span> <small>FPS</small></div>
+      ${meter ? `<div class="fps"><span id="jz-fps">··</span> <small>FPS</small></div>
       <div class="spark" id="jz-spark"></div>
-      <div class="ms" id="jz-ms" hidden><b><span id="jz-ms-v">·</span></b> <small>ms / frame compute</small></div>
+      <div class="ms" id="jz-ms" hidden><b><span id="jz-ms-v">·</span></b> <small>ms / frame compute</small></div>` : ''}
       <div class="seg">
         <button data-k="js">JS</button>
         <button data-k="jz">jz</button>
@@ -90,6 +90,7 @@ export const hud = ({ kind = 'jz', onSwitch, note = '' }) => {
   return {
     get kind() { return kind },
     frame(workMs) {
+      if (!meter) return                         // meter hidden (e.g. spectrogram demo) — toggle only
       const now = performance.now(), dt = now - last; last = now
       // A sub-4ms frame is the scheduler catching up, not a 250Hz display — cap it
       // so a startup/GC spike can't poison the EMA. Warming fps up from 0 means it
