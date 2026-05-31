@@ -1,9 +1,18 @@
 /**
- * WASI Preview 1 polyfill for jz modules.
+ * WASI shim for jz-emitted modules — NOT a general WASI Preview 1 runtime.
  *
- * Provides wasi_snapshot_preview1 imports for environments without native WASI.
- * The compiled .wasm uses standard WASI — runs natively on wasmtime/wasmer/deno.
- * This polyfill is only needed for browsers and plain Node.
+ * jz emits only the few `wasi_snapshot_preview1` imports its lowerings use:
+ * `fd_write` (console.log/error), `fd_read` (stdin), `clock_time_get`
+ * (Date.now/performance.now/timers), `random_get` (only with `{ randomSeed: true }`,
+ * to seed Math.random), plus no-op `proc_exit` / `environ_*` stubs. This shim
+ * implements exactly that set, so jz modules run in browsers and plain Node
+ * without native WASI. (The compiled `.wasm` uses standard WASI and runs on
+ * wasmtime/wasmer/deno natively — the shim is only for hosts that lack WASI.)
+ *
+ * It is deliberately NOT a complete Preview 1 polyfill: `args_get`,
+ * `fd_fdstat_get`, `fd_prestat_dir_name`, `poll_oneoff`, `path_*` etc. are absent
+ * because jz never emits them. To run an arbitrary (e.g. C-compiled) WASI program,
+ * use a real runtime — wasmtime/wasmer/deno or Node's `node:wasi`.
  *
  * @example
  *   import { instantiate } from 'jz/wasi'
@@ -64,6 +73,14 @@ export function wasi(opts = {}) {
           ? BigInt(Math.round(Date.now() * 1e6))       // realtime: ms → ns
           : BigInt(Math.round(performance.now() * 1e6)) // monotonic: ms → ns
         dv.setBigInt64(result_ptr, now, true)
+        return 0
+      },
+      // Present only for modules compiled with { randomSeed: true } — one read of
+      // OS entropy to seed Math.random. Prefers crypto; falls back to Math.random.
+      random_get(buf, buf_len) {
+        const bytes = new Uint8Array(mem.buffer, buf, buf_len)
+        if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes)
+        else for (let i = 0; i < buf_len; i++) bytes[i] = (Math.random() * 256) | 0
         return 0
       },
       proc_exit() {},

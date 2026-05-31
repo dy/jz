@@ -200,6 +200,10 @@ jz.memory = enhanceMemory
  *   has no host event loop. Default: timers defer to the JS host.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
+ * @param {number|boolean} [opts.randomSeed] - Seed for `Math.random`. Default: a
+ *   fixed constant (deterministic/reproducible). A number sets a fixed seed; `true`
+ *   seeds once from host entropy on first use (crypto under `host:'js'`, `random_get`
+ *   under WASI) for non-reproducible randomness.
  * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`
  *   (or `{ wat, inspect }` with `opts.wat`) instead of the bare output.
  *   `inspect` carries per-function inferred shapes (params, locals, JSON shapes,
@@ -377,6 +381,11 @@ const setupCtx = (code, opts) => {
   if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
+  if (opts.randomSeed !== undefined) {
+    if (opts.randomSeed !== true && !Number.isFinite(opts.randomSeed))
+      err(`opts.randomSeed must be a finite number (fixed seed — reproducible) or true (seed Math.random from host entropy on first use); got ${typeof opts.randomSeed}`)
+    ctx.transform.randomSeed = opts.randomSeed
+  }
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
   if (opts._interp) {

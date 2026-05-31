@@ -73,6 +73,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `optimize` | `false`/`0` disables optimization, `1` keeps cheap size passes, `true`/`2` is the default (every stable jz pass + full watr), `3` adds larger array/hash initial caps and inlines `f64.const` over mutable globals (trades size for speed). String aliases `'size'` (unroll/vectorize off, tight scalar caps — smallest wasm), `'balanced'` (= default), `'speed'` (full unroll + SIMD). Object form overrides individual passes/knobs (and accepts `level:` as a number or alias base). |
 | `strict: true` | Reject dynamic fallbacks such as unknown receiver method calls, `obj[k]`, and `for-in` instead of emitting JS-host dynamic dispatch. |
 | `alloc: false` | Omit raw allocator exports like `_alloc`/`_clear` when compiling standalone WASM that never marshals heap values across the host boundary. |
+| `randomSeed` | Seed for `Math.random`. Default is a fixed constant — deterministic and reproducible. A number sets a different fixed seed; `randomSeed: true` seeds once from host entropy on first use (`crypto` under `host:'js'`, `random_get` under WASI) for non-reproducible randomness. |
 | `wat: true` | `compile()` returns WAT text instead of a WASM binary. |
 | `profile` | Pass a mutable sink to collect compile-stage timings; set `profile.names = true` to also emit a WASM `name` section for profiler/debugger symbolication. |
 
@@ -373,6 +374,8 @@ Two host modes select how runtime services lower. `host: 'js'` (default) imports
 | dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
 
 The compiled `.wasm` carries at most one import namespace — none, `env`, or `wasi_snapshot_preview1` — matching the mode above. `host: 'gc'` is reserved for a planned wasm-gc backend and errors today; pair `host: 'wasi'` with `strict: true` to also fail dynamic `obj[k]`/unknown-receiver calls at compile time.
+
+A `host: 'wasi'` build emits only the WASI imports its lowerings use — `fd_write`, `fd_read`, `clock_time_get` (and `random_get` only with `{ randomSeed: true }`) — so it runs natively on wasmtime/wasmer/deno. For hosts without WASI (browsers, plain Node), `jz/wasi` provides a matching shim. That shim is scoped to what jz emits, **not** a general Preview 1 polyfill (`args_get`, `poll_oneoff`, `path_*`, … are absent) — run arbitrary WASI programs on a real runtime instead.
 
 ### Sharing memory across modules
 

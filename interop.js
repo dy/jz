@@ -777,6 +777,16 @@ const installDefaultEnvImports = (mod, imports, state) => {
     imports.env.now = (clock) =>
       clock === 1 ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) : Date.now()
   }
+  // One i32 of entropy to seed Math.random — only present when compiled with
+  // { randomSeed: true }. Prefers crypto; falls back to Math.random.
+  if (envFns.has('rngSeed') && !imports.env.rngSeed) {
+    imports.env.rngSeed = () => {
+      const a = new Uint32Array(1)
+      if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(a)
+      else a[0] = (Math.random() * 0x100000000) >>> 0
+      return a[0] | 0
+    }
+  }
   if (envFns.has('parseFloat') && !imports.env.parseFloat) {
     imports.env.parseFloat = (valBig) => {
       const s = state.mem.read(i64ToF64(valBig))
