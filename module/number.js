@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, ptrTypeEq } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
 import { ssoBitI64Hex } from '../layout.js'
 import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
@@ -1008,8 +1008,9 @@ export default (ctx) => {
   // Boolean(x) → truthiness (non-zero → 1, zero → 0)
   reg('Boolean', ['__is_truthy'], (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
-    const v = asI64(emit(x))
-    return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
+    // Via truthyIR so a NUMBER arg gets the NaN-safe f64 test (Boolean(0/0) === false
+    // on every platform); other types fall to __is_truthy inside truthyIR.
+    return typed(['f64.convert_i32_s', truthyIR(emit(x))], 'f64')
   })
 
   // === Instance method emitters ===

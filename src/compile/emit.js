@@ -2703,8 +2703,10 @@ export const emitter = {
     if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT && vt !== VAL.STRING) {
       return isNullish(asF64(v))
     }
-    inc('__is_truthy')
-    return typed(['i32.eqz', ['call', '$__is_truthy', asI64(v)]], 'i32')
+    // Route through truthyIR (not a bare __is_truthy) so a NUMBER operand uses the
+    // NaN-safe f64 test — `!(0/0)` must be `true` on every platform (x86's sign-set
+    // NaN would read as a truthy box through the bit-based __is_truthy).
+    return typed(['i32.eqz', truthyIR(v)], 'i32')
   },
 
   '?:': (a, b, c) => {

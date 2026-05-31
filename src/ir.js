@@ -630,6 +630,13 @@ export function toStrI64(node, v) {
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
  *  Peepholes: i32 → as-is; `f64.convert_i32_*(x)` → x (i32 conversion never NaN);
  *  nested `__is_truthy(x)` → x (already 0/1); literal f64 const folds to 0/1. */
+// f64 ops whose result is always a plain NUMBER (never a NaN-boxed carrier) and can
+// be NaN — their truthiness must test NaN by value, not by bit pattern (see truthyIR).
+const NUM_F64_TRUTHY_OPS = new Set([
+  'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
+  'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
+])
+
 export function truthyIR(e) {
   if (e.type === 'i32') return e
   // Unboxed pointer offsets: truthy iff non-zero offset.
@@ -671,6 +678,25 @@ export function truthyIR(e) {
           vt === VAL.CLOSURE || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.REGEX || vt === VAL.DATE) {
         return typed(['i32.eqz', isNullish(e)], 'i32')
       }
+      // A plain NUMBER is truthy iff non-zero AND not NaN. `f64.eq x x` tests NaN by
+      // VALUE (false for ANY NaN bits), so this is correct on every platform — unlike
+      // __is_truthy, which bit-compares the canonical number-NaN and so mis-reads
+      // x86's sign-set 0xFFF8.. NaN (from f64.div(0,0) / %) as a truthy box. (local.get
+      // is pure → duplicated, not teed.) Bigint carriers are reinterpret/i64 shapes
+      // and never reach here as VAL.NUMBER.
+      if (vt === VAL.NUMBER) {
+        const g = () => typed(['local.get', e[1]], 'f64')
+        return typed(['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]], 'i32')
+      }
+    }
+    // Direct number-producing f64 expression (arithmetic, or the `%` / __rem helper):
+    // same NaN-safe test, single-evaluated through a temp (the value may be a call).
+    if (NUM_F64_TRUTHY_OPS.has(e[0]) || (e[0] === 'call' && e[1] === '$__rem')) {
+      const t = temp('tb')
+      const g = () => typed(['local.get', `$${t}`], 'f64')
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${t}`, e],
+        ['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]]], 'i32')
     }
   }
   inc('__is_truthy')
