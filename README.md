@@ -213,11 +213,45 @@ After `memory.reset()` all previously returned pointers are invalid — read wha
 
 <br>
 
-Inference is mechanical and visible — not the hidden, fragile, coercive thing the "explicit > implicit" reflex assumes. It reads the same signals a human reader does: literals, operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignment flow. The chosen types appear in `--wat`; ambiguous cases fall back to NaN-boxed **f64** — a safe default, never a wrong type.
+Inference is automatic and visible — there's nothing to annotate. jz reads the same signals you do: literals, operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, assignment flow. Every local's chosen type shows up in `--wat`; anything ambiguous falls back to a NaN-boxed **f64** — always safe, never a wrong type.
 
-So there's nothing to annotate. Type annotations bundle two jobs into one syntax: hinting storage to the compiler (`let x: number` — which only duplicates what `x | 0` already tells inference) and documenting contracts at boundaries (a *docs* concern, not a *language* one). jz keeps the split clean — inference handles storage, and **valid jz = valid JS** means no parallel type system to learn. To pin a type, write code that implies it: `x | 0` keeps `x` an i32; an `s = ''` default declares a string param. (JSDoc `@type` is planned as an advisory hint, not yet enforced.) Annotations never make code faster; they only sharpen what inference already sees.
+**To pin a type, write code that implies it** — `x | 0` keeps `x` an i32; an `s = ''` default makes a string param. Annotations never make code faster (and `let x: number` isn't valid JS anyway); they'd only restate what inference already sees. JSDoc `@type` is planned as an advisory hint.
 
-The same reading extends to **module globals**: a numeric global is assumed `i32` unless an assignment *proves* it fractional (a non-integer literal, `/`, `**`, a float-valued `Math.*`, or a reference to an already-fractional value). Sizes, strides, indices, and counters — the overwhelming majority of numeric globals in purpose-focused code — are integers, so this lets `mem[y*width + x]` compile as a pure-i32 address and `i < N` as a pure-i32 guard with no per-access `trunc_sat` or per-iteration widen, all from idiomatic source. It's a deliberate, narrow trade (not the locals' "ambiguous → f64" default): a genuine fraction landing in an integer slot truncates — exactly as a fractional array index already does in both JS and jz — so the rule never widens that gap, and a global ever assigned a non-number (string, object, array) is left as the f64 box untouched.
+**Module globals** default to `i32` unless an assignment proves them fractional (a non-integer literal, `/`, `**`, a float-valued `Math.*`), so `mem[y*width + x]` compiles as a pure-i32 address with no per-access widening. A fraction landing in an integer global truncates — exactly as a fractional array index already does in JS.
+
+</details>
+
+<details>
+<summary><strong>What optimizations are applied?</strong></summary>
+
+<br>
+
+jz emits tight WAT directly, then layers these (all on by default at `optimize: 2`):
+
+- **Escape analysis** — short-lived objects/arrays never reach the heap.
+- **Arena rewind** — a function proven not to leak heap values rewinds the bump pointer on return.
+- **Type narrowing** — bitwise / counter / `Math.imul` / `charCodeAt` values stay on raw i32/f64 instead of the boxed-value path.
+- **Typed-array fusion** — monomorphic typed-array access skips index dispatch and reuses computed addresses across a hot loop.
+- **SIMD vectorization** — lane-pure array loops (`a[i] = f(a[i])`) lift to SIMD-128 (see next question).
+- **Constant loop unroll** — small fixed-count loops unroll (biquad, mat4).
+- **JSON specialization** — a constant `JSON.parse` source folds to a literal tree; a stable shape gets a generated shape-specific parser.
+- **Host-import lowering** — `host: 'js'` lowers `console` / timers / clocks to small `env.*` imports instead of bundling WASI.
+
+`--wat` shows the result; `npm run test:bench` pins every claimed win and wasm-size budget so a regression fails CI.
+
+</details>
+
+<details>
+<summary><strong>How do I make a loop vectorize (SIMD)?</strong></summary>
+
+<br>
+
+The lane-local vectorizer (on at default `optimize: 2`) lifts inner loops of shape `for (let i = 0; i < N; i++) a[i] = f(a[i], …)` to SIMD-128 when the body is **lane-pure** — output `k` depends only on inputs at `k`.
+
+- **Lifts:** in-place maps (`a[i] = a[i] * 2`), cross-array maps (`b[i] = a[i] * k + c`), structure-of-arrays (`zs[i] = xs[i]*a + ys[i]*b`, up to 4 bases), reductions (`s += a[i]`, `h ^= a[i]`, `|`, `&`).
+- **Doesn't lift:** array-of-structures (interleaved `a[i*3]`, `a[i*3+1]` — split into one typed array per field), loop-carried scalars (`s ^= s << 13`), stencils (`a[i] = a[i] + a[i-1]`), unbounded loops, mixed lane types.
+
+Check with `--wat`: a lift adds a `$__simd_loop<N>` block ahead of the scalar tail. No block ⇒ the recognizer bailed, usually on a loop-carried local or a non-`(base + i<<K)` address.
 
 </details>
 
@@ -242,6 +276,14 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 ## Benchmark
 
+<p align="center"><img src="bench/bench.svg" alt="jz vs alternatives — geomean speed across the bench corpus" width="720"></p>
+
+Geomean runtime across [the corpus](bench/) (lower = faster) — **jz runs at native-C speed** (`clang -O3` parity, 0.96×), ~2.4× ahead of V8 and AssemblyScript; [Porffor](https://github.com/CanadaHonk/porffor) completes 4 of 12 cases. Wasm size geomean **0.86× AssemblyScript**. `test/bench.js` gates every figure, so a regression fails CI.
+
+<details>
+<summary><strong>Full per-case table</strong></summary>
+<br>
+
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | [biquad](bench/biquad/biquad.js) | 6.50ms<br>3.4kB | 12.35ms<br>3.2kB | fails | 9.03ms<br>1.9kB | 6.49ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
@@ -258,42 +300,7 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 
-_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64)._
-
-Geomean size: jz **0.86× AS**. jz wasm runs at `clang -O3` speed — native-C parity at geomean 0.96× — and `test/bench.js` gates every figure so a regression fails CI.
-
-
-<details>
-<summary><strong>Optimizations</strong></summary>
-
-<br>
-High-impact summary behind the benchmark table, not an exhaustive list.
-
-| Optimization | Effect |
-|---|---|
-| Escape scalar replacement | Removes short-lived object/array literals before allocation. |
-| Stack rest-param scalarization | Fixed-arity internal calls avoid heap rest arrays. |
-| Scoped arena rewind | Safely rewinds allocations in functions proven not to return or persist heap values. |
-| Host-service import lowering | `host: 'js'` lowers console, clocks, and timers to small `env.*` imports instead of pulling WASI/string formatting into normal JS-host builds. |
-| Static and shaped runtime JSON specialization | Constant `JSON.parse` sources fold to fresh slot trees; stable `let` JSON sources use a generated runtime parser for the inferred shape. |
-| Typed-array specialization and address fusion | Monomorphic/bimorphic typed-array paths skip generic index dispatch and fuse repeated address bases/offsets in hot loops. |
-| Integer/value-type narrowing | Keeps bitwise, `Math.imul`, `charCodeAt`, loop counters, and internal narrowed returns on raw i32/f64 paths instead of generic boxed-value helpers. |
-| SIMD lane-local vectorization | Beats V8 on bitwise and keeps scalar feedback loops such as biquad untouched. |
-| Small constant loop unroll | Required for biquad and mat4 speed; size cost is pinned. |
-| OBJECT-only ternary type propagation | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
-| Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
-
-`npm run test:bench` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
-
-#### Making array loops vectorize
-
-The lane-local vectorizer (on at default `optimize: 2`) lifts inner loops of shape `for (let i=0;i<N;i++) arr[i] = f(arr[i], …)` to SIMD-128 when the body is lane-pure (the k-th output depends only on the k-th inputs).
-
-**Lifts:** in-place maps (`a[i] = a[i] * 2`), cross-array maps (`b[i] = a[i] * k + c`), **structure-of-arrays** (`zs[i] = xs[i]*a + ys[i]*b`, up to 4 base pointers), and reductions (`s += a[i]`, `h ^= a[i]`, `|`, `&`).
-
-**Doesn't lift:** **array-of-structures** (interleaved `a[i*3]`, `a[i*3+1]` — stride exceeds lane width; split into one typed array per field), loop-carried scalars (`s ^= s << 13`), stencils (`a[i] = a[i] + a[i-1]`), unbounded loops, mixed lane types in one body.
-
-Check with `--wat`: a successful lift adds a `$__simd_loop<N>` block ahead of the scalar tail. No block means the recognizer bailed — usually a loop-carried local or a non-`(base + i<<K)` address.
+_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64). A full `node bench/bench.mjs` run also regenerates the SVG above._
 
 </details>
 
@@ -495,6 +502,7 @@ Source in [`examples/`](examples/). Each folder has a `build.mjs` and an `index.
 * [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
 * [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
+* [javy](https://github.com/bytecodealliance/javy) — embeds the QuickJS engine in the module and *interprets* your source. Runs almost any JS, but ships a whole interpreter (large binary, interpreter speed) — the opposite trade from jz's AOT-compiled native WASM for a JS subset.
 
 <details>
 <summary><strong>Which one to choose?</strong></summary>
@@ -507,8 +515,9 @@ Source in [`examples/`](examples/). Each folder has a `build.mjs` and an `index.
 | **porffor** | You need full TC39 / spec completeness. |
 | **AssemblyScript** | You're comfortable writing a typed TypeScript dialect for explicit low-level control. |
 | **jawsm** | You need to run standard JS *unchanged*, with GC and closures provided by a bundled WASM runtime. |
+| **javy** | You need to run near-arbitrary JS and don't mind shipping a QuickJS interpreter inside each module. |
 
-The axis is completeness vs. cost: jz restricts the language to emit a runtime-free, native-speed binary; the others spend size/runtime to cover more of JS.
+The axis is completeness vs. cost: jz restricts the language to emit a runtime-free, native-speed binary; the others spend size/runtime (a bundled runtime, or a full interpreter) to cover more of JS.
 
 </details>
 
