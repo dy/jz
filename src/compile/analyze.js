@@ -1162,6 +1162,17 @@ export function analyzeStructInline(funcFacts, programFacts) {
     for (let i = 1; i < node.length; i++) poisonAll(node[i])
   }
 
+  // name → sid for every array tracked as structInline in some function. A
+  // module-global structInline array propagates no element schema across function
+  // boundaries (no param/return carrier), so analyzeStructInline only verifies the
+  // uses in functions that locally observe the schema. An element read of the same
+  // name in any OTHER function silently mis-reads the inline (schema-less) layout.
+  // Such cross-function arrays are blacklisted below so they fall back to boxed
+  // elements, whose reads resolve via the runtime __schema_tbl.
+  // (Kept as Map<string,number> — a Set of func objects would itself trip the very
+  // object-in-collection self-host bug this guards against.)
+  const trackedArrSid = new Map()    // name → sid
+
   for (const [func, facts] of funcFacts) {
     const body = func?.body
     const reps = facts?.localReps
@@ -1175,6 +1186,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
       if ((propsOf(sid).length || 0) < 1) continue   // K=0 — not inlinable
       cand.add(sid)
       arrName.set(name, sid)
+      trackedArrSid.set(name, sid)
     }
     if (!arrName.size) continue
 
@@ -1379,6 +1391,21 @@ export function analyzeStructInline(funcFacts, programFacts) {
   // Module inits are not walked in detail — poison any schema whose array form
   // could appear there (struct-array consumed/built at module scope).
   if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
+
+  // Cross-function module-global guard: a structInline array element-accessed in a
+  // function that does not itself track it (i.e. a shared module global) can't have
+  // its element schema verified there, so the read mis-decodes the inline layout.
+  // Blacklist such arrays — boxed elements read correctly via the runtime schema table.
+  // A function "tracks" the name iff its own localReps bound the same elem schema;
+  // any other function that merely mentions the name is an unverifiable foreign read.
+  if (trackedArrSid.size) for (const [func, facts] of funcFacts) {
+    const body = func?.body
+    if (func?.raw || body == null || typeof body !== 'object') continue
+    for (const [name, sid] of trackedArrSid) {
+      if (facts?.localReps?.get(name)?.arrayElemSchema === sid) continue
+      if (mentions(body, name)) black.add(sid)
+    }
+  }
 
   for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
 }
