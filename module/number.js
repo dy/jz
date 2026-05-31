@@ -569,7 +569,7 @@ export default (ctx) => {
   ctx.core.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
   ctx.core.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
   ctx.core.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
-  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
+  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', 'nan'], 'f64')  // `nan` token, not raw NaN (survives self-host IR marshalling — see emitNum)
 
   // === Number static methods ===
 

@@ -358,7 +358,12 @@ export const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.
 /** Emit a numeric constant with correct i32/f64 typing.
  *  `-0` is f64-only (i32 has no signed zero) — preserve the sign by emitting f64. */
 export const emitNum = v => isI32(v)
-  ? typed(['i32.const', v], 'i32') : typed(['f64.const', v], 'f64')
+  ? typed(['i32.const', v], 'i32')
+  // Emit NaN via the `nan` token, not the raw JS number: a numeric NaN literal in
+  // the IR loses its quiet-mantissa bit (0x7FF8→0x7FF0, i.e. becomes Infinity) when
+  // the self-host kernel marshals the IR back across the wasm→host boundary. The
+  // `nan` token assembles to the canonical 0x7FF8 number-NaN unambiguously.
+  : typed(['f64.const', v !== v ? 'nan' : v], 'f64')
 
 // === Temp locals ===
 
