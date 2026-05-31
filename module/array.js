@@ -260,10 +260,12 @@ export default (ctx) => {
       : ['__len', '__ptr_offset'],
   })
 
-  // Iteration methods (.map/.filter/.reduce/.forEach/...) invoke callbacks with
-  // (item, idx) internally — closure width must accommodate arity 2 even if no
-  // source-level closure has that arity.
-  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
+  // Iteration methods invoke callbacks with an implicit trailing index: .map/
+  // .filter/.forEach pass (item, idx); .reduce/.reduceRight pass (acc, item, idx).
+  // The uniform closure width must accommodate the widest of these (arity 3) even
+  // when no source-level closure declares that arity — otherwise a reduce callback
+  // routed through the closure path overflows the call_indirect signature.
+  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 3)
 
   inc('__ptr_offset', '__ptr_type', '__len', '__set_len', '__typed_idx', '__is_truthy')
 
@@ -1435,14 +1437,15 @@ export default (ctx) => {
       const upReps = callbackArgReps(up.source)
       const mapCb = makeCallback(up.fn, upReps), redCb = makeCallback(fn)
       const mget = typed(['local.get', `$${mapped}`], 'f64')
-      const fold = ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), mget]))]
+      // map preserves indices → the reduce callback's index is the loop counter.
+      const fold = i => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), mget, idxArg(redCb, i, 2)]))]
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
         // No-init: seed accumulator with the first mapped element (see base path).
-        init !== undefined ? fold
+        init !== undefined ? fold(i)
           : ['if', ['i32.eqz', ['local.get', `$${i}`]],
               ['then', ['local.set', `$${acc}`, mget]],
-              ['else', fold]]
+              ['else', fold(i)]]
       ])
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, redCb.setup,
@@ -1460,18 +1463,27 @@ export default (ctx) => {
       const filterCb = makeCallback(up.fn, upReps)
       // reduce cb signature: (acc, item, idx). Item rep mirrors upstream's item rep.
       const redCb = makeCallback(fn, [null, upReps[0], { val: VAL.NUMBER }])
-      const fold = item => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]
-      const accumulate = item => seeded
-        ? ['if', ['local.get', `$${seeded}`],
-            ['then', fold(item)],
-            ['else', ['block', ['local.set', `$${acc}`, asF64(item)], ['local.set', `$${seeded}`, ['i32.const', 1]]]]]
-        : fold(item)
+      // filter renumbers: the reduce index counts *passing* elements, not the
+      // source position, so track a dedicated filtered-position counter (only when
+      // the callback actually reads its index — else idxArg drops the arg anyway).
+      const usesIdx = redCb.usedParams ? !!redCb.usedParams[2] : true
+      const fpos = usesIdx ? tempI32('rp') : null
+      const fold = item => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item, fpos ? idxArg(redCb, fpos, 2) : null]))]
+      const bump = fpos ? [['local.set', `$${fpos}`, ['i32.add', ['local.get', `$${fpos}`], ['i32.const', 1]]]] : []
+      const accumulate = item => ['block',
+        seeded
+          ? ['if', ['local.get', `$${seeded}`],
+              ['then', fold(item)],
+              ['else', ['block', ['local.set', `$${acc}`, asF64(item)], ['local.set', `$${seeded}`, ['i32.const', 1]]]]]
+          : fold(item),
+        ...bump]
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then', accumulate(item)]]
       ])
       return typed(['block', ['result', 'f64'],
         recv.setup, filterCb.setup, redCb.setup,
+        ...(fpos ? [['local.set', `$${fpos}`, ['i32.const', 0]]] : []),
         ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
         ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
         ...loop, ['local.get', `$${acc}`]], 'f64')
@@ -1485,12 +1497,12 @@ export default (ctx) => {
     // index 1 — NOT a 0 seed folded over every element. A 0 seed is invisible
     // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
     // folds (string reduce emits a bare `0` in the joined result). Seed at i==0.
-    const fold = item => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      init !== undefined ? fold(item)
+      init !== undefined ? fold(item, i)
         : ['if', ['i32.eqz', ['local.get', `$${i}`]],
             ['then', ['local.set', `$${acc}`, asF64(item)]],
-            ['else', fold(item)]]
+            ['else', fold(item, i)]]
     ])
     return typed(['block', ['result', 'f64'],
       recv.setup,
@@ -1511,12 +1523,12 @@ export default (ctx) => {
     const reps = callbackArgReps(arr)
     const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
     // No-init: reverse walk seeds with the last element (i == len-1), folds down.
-    const fold = item => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
     const loop = arrayLoop(recv.value, (_ptr, len, i, item) => [
-      init !== undefined ? fold(item)
+      init !== undefined ? fold(item, i)
         : ['if', ['i32.eq', ['local.get', `$${i}`], ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
             ['then', ['local.set', `$${acc}`, asF64(item)]],
-            ['else', fold(item)]]
+            ['else', fold(item, i)]]
     ], null, null, true)
     return typed(['block', ['result', 'f64'],
       recv.setup,
