@@ -369,7 +369,7 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
 </details>
 
 <details>
-<summary><strong>Environment</summary>
+<summary>Environment</summary>
 
 <br>
 
@@ -502,8 +502,6 @@ Names are stable; binary layouts are not — re-derive from the latest `interop.
 
 ## Examples
 
-Runnable browser demos — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)). Click any to run it live (each shows its own FPS / ms-per-frame, with a JS ⇄ jz toggle):
-
 <table>
 <tr>
 <td width="50%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.jpg" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life written straight into shared pixel memory.</td>
@@ -514,8 +512,6 @@ Runnable browser demos — each compiles a `.js` kernel to WASM and shares a typ
 <td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.jpg" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
 </tr>
 </table>
-
-Source in [`examples/`](examples/) — each folder has a `build.mjs` and an `index.html`. Prebuilt `.wasm` is committed so the demos run from GitHub Pages; after editing a kernel, run `npm run build:examples` and commit the updated `.wasm`.
 
 
 ## Alternatives
