@@ -27,7 +27,7 @@ import {
 import { resolveOptimize } from '../optimize/index.js'
 import jzify from '../../jzify/index.js'
 
-export default function compileParsed(parsedAst, moduleAsts) {
+export default function compileParsed(parsedAst, moduleAsts, doJzify) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
@@ -35,5 +35,10 @@ export default function compileParsed(parsedAst, moduleAsts) {
   ctx.transform.jzify = jzify
   ctx.transform.optimize = resolveOptimize(false)
   ctx.module.importAsts = moduleAsts || null
-  return compile(prepare(jzify(parsedAst)))
+  // jzify (var/function/class/switch → jz-native lowering) is OPT-IN, mirroring the
+  // host compiler (index.js gates it on opts.jzify). Without it, prohibited full-JS
+  // forms reach prepare and are rejected — so the self-host leg matches native's
+  // accept/reject behavior instead of silently lowering everything.
+  const ast = doJzify ? jzify(parsedAst) : parsedAst
+  return compile(prepare(ast))
 }
