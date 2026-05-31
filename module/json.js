@@ -60,6 +60,15 @@ function literalValue(node) {
   return NOT_LIT
 }
 
+// A BigInt has no JSON representation: `JSON.stringify` of a bigint — anywhere in
+// the value graph — is a TypeError (ES JSON.stringify → SerializeJSONProperty).
+// Detects it in a resolved literal value so the caller can emit the throw rather
+// than handing the bigint to the host `JSON.stringify` (which crashes the fold).
+const literalHasBigInt = (v) =>
+  typeof v === 'bigint' ||
+  (Array.isArray(v) ? v.some(literalHasBigInt)
+    : !!v && typeof v === 'object' && Object.values(v).some(literalHasBigInt))
+
 // Fold a literal AST node directly to its compact JSON string (no replacer /
 // no space). Unlike the value-level `literalValue` + `JSON.stringify` path, this
 // renders the self-host kernel boolean marker `['bool', 1|0]` as true/false:
@@ -100,7 +109,7 @@ function foldJsonStr(node) {
   }
   // Scalar (number / string / null / u-): exact formatting via the value path.
   const v = literalValue(node)
-  if (v === NOT_LIT) return NOT_LIT
+  if (v === NOT_LIT || typeof v === 'bigint') return NOT_LIT   // bigint ⇒ TypeError, not a literal string
   const s = JSON.stringify(v)
   return s === undefined ? NOT_LIT : s   // undefined/function/symbol — defer
 }
@@ -1242,13 +1251,28 @@ ${localDecls}
   // the runtime call entirely. The runtime `__stringify` path (which ignores a
   // replacer) handles every non-constant case unchanged.
   ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
+    // An explicit `null`/`undefined` replacer is spec-equivalent to none; only a
+    // real array/function replacer changes the result. (foldStringify normalizes
+    // the same way via literalValue.) Used by both peepholes below.
+    const noReplacer = replacer == null || literalValue(replacer) == null
+    // BigInt has no JSON form — spec throws a TypeError. Emit the throw for the
+    // statically-known cases (a top-level bigint expr, or a literal tree holding
+    // one); the host fold can't render a bigint either. A function/array replacer
+    // may rewrite the value, so defer to the fold/runtime path when one is present.
+    if (noReplacer) {
+      const lv = literalValue(x)
+      if (valTypeOf(x) === VAL.BIGINT || (lv !== NOT_LIT && literalHasBigInt(lv))) {
+        ctx.runtime.throws = true
+        return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+      }
+    }
     const folded = foldStringify(x, replacer, space)
     if (folded !== undefined) return folded
     // Scalar boolean: the working-rep is the 0/1 number carrier, so the runtime
     // tag-walker would emit "0"/"1". A boolean's JSON is the bare word
-    // true/false — exactly bool. Guard on `replacer == null`: a replacer
-    // function may rewrite the top-level value, in which case fall to runtime.
-    if (replacer == null && valTypeOf(x) === VAL.BOOL) return bool(x)
+    // true/false — exactly bool. Guard on no replacer: a replacer function may
+    // rewrite the top-level value, in which case fall to runtime.
+    if (noReplacer && valTypeOf(x) === VAL.BOOL) return bool(x)
     inc('__stringify')
     const spaceIR = asI64(space == null ? undefExpr() : emit(space))
     return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')
