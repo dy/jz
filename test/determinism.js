@@ -34,3 +34,31 @@ test('determinism: stable across opt levels (each level self-consistent)', () =>
     }
   }
 })
+
+// Compilation must be independent of what was compiled before: reset() has to
+// fully clear the shared ctx between compiles. A forgotten field — a new Map left
+// unreset — leaks the prior program's state into the next, making output depend on
+// history. The same-source test above only catches that incidentally; this asserts
+// it directly: B compiled after assorted, feature-dense predecessors must stay
+// byte-identical to B compiled fresh.
+test('determinism: compilation is independent of prior compiles (no ctx leak)', () => {
+  const B = PROGRAMS[2]   // object-schema + array program — exercises many ctx namespaces
+  // A: dense across schema / closures / strings / typed arrays / globals / loops,
+  // so a leaked field in any of those would perturb the following compile of B.
+  const A = `
+    let g = 0
+    export let f = (n) => {
+      const o = { a: 1, b: 2, c: 3 }
+      const add = (x) => x + o.a
+      const buf = new Float64Array(4)
+      let s = "hello".length
+      for (let i = 0; i < (n | 0); i++) { buf[i & 3] = add(i); s += buf[i & 3] }
+      g += s
+      return s + g + o.b + o.c
+    }`
+  const refB = compile(B)
+  compile(A);           const afterA = compile(B)
+  compile(PROGRAMS[4]); const afterPoly = compile(B)
+  ok(eq(refB, afterA), 'compile(B) changed after compile(A) — prior ctx state leaked through reset()')
+  ok(eq(refB, afterPoly), 'compile(B) changed after compile(poly) — prior ctx state leaked through reset()')
+})

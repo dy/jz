@@ -28,7 +28,10 @@
  */
 
 import { LAYOUT, ctx } from '../ctx.js'
-import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
+
+// Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
+const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 import { T } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { nanPrefixHex, atomNanHex } from '../../layout.js'
@@ -2015,6 +2018,10 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     if (runVectorizer) vectorizeLaneLocal(fn)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
+  // An optimizer pass that emits a malformed local — the class that otherwise dies
+  // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
+  // here, pinned to the function and the bad name.
+  if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] optimize produced invalid IR in ${fn[1]}: ${bad}`) }
 }
 
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:

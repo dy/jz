@@ -414,7 +414,7 @@ export function warn(code, message, meta = {}, loc = null) {
 }
 
 /** Throw with source location context. */
-export function err(msg) {
+export function err(msg, cause) {
   let detail = msg
 
   if (ctx.error.loc != null && ctx.error.src) {
@@ -433,7 +433,10 @@ export function err(msg) {
     detail += `\n  current AST: ${formatErrorNode(ctx.error.node)}`
   }
 
-  const e = new Error(detail)
+  // Preserve the triggering error (if any) as the cause: when an internal jz bug
+  // is wrapped, the original stack — pointing at the actual codegen site — survives
+  // in the chain (`Error: …  [cause]: …`) instead of being replaced by this frame.
+  const e = cause !== undefined ? new Error(detail, { cause }) : new Error(detail)
   const stackLines = e.stack.split('\n')
   const firstFrame = stackLines.findIndex(line => line.trimStart().startsWith('at '))
   const frames = firstFrame >= 0 ? stackLines.slice(firstFrame) : stackLines.slice(1)

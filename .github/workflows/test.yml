@@ -47,4 +47,11 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      # JZ_DEBUG_INVARIANTS=1 turns on the per-phase structural checks (ctx
+      # invariants + verifyFn on optimizer output) so a malformed-IR bug surfaces
+      # as a localized "[ir verify] … in $fn: duplicate local $x" here instead of
+      # an opaque watr error. ~free on this job; not on by default (no per-compile
+      # tax for library users — watr is the production backstop).
       - run: npm run test:fuzz
+        env:
+          JZ_DEBUG_INVARIANTS: '1'
