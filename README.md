@@ -24,7 +24,6 @@ JZ distills modern JS to its functional core (the [Crockford](https://www.youtub
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** – test in browser, compile to wasm.
 * **Minimal** – output like hand-written WAT, theoretical minimum.
-* **Performant** – native speed.
 <!-- * **Realtime** – compiles faster than `eval`, useful for live-coding and REPL. -->
 
 | Good for                    | Not for                    |
@@ -278,10 +277,9 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 ## Performance
 
-<p align="center"><img src="bench/bench.svg" alt="jz vs alternatives — geomean speed across the bench corpus" width="720"></p>
+<img src="bench/bench.svg?v=0" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
-Geomean runtime across [the corpus](bench/) (lower = faster). jz sits in the **native-binary cluster** — neck-and-neck with `clang -O3`, Zig, and Rust — and runs **~2.4× ahead of V8 and AssemblyScript**; Go trails near 1.9×, [Porffor](https://github.com/CanadaHonk/porffor) completes 4 of 12 cases, and NumPy's per-element Python overhead lands it far back. Wasm size geomean **0.86× AssemblyScript**. `test/bench.js` gates every figure, so a regression fails CI.
-
+<!-- FIXME: just make a link to dedicated bench page and show detailed perf there - make sure the table data here is covered there -->
 <details>
 <summary><strong>Benchmark</strong></summary>
 <br>
@@ -302,16 +300,12 @@ Geomean runtime across [the corpus](bench/) (lower = faster). jz sits in the **n
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 
-_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64). A full `node bench/bench.mjs` run also regenerates the SVG above._
-
 </details>
 
 
 ## Interop
 
-**Numbers cross the JS↔WASM boundary directly.** Anything heap-allocated — strings, arrays, objects — crosses as a **pointer** the `memory` helper writes and reads for you (under the hood, a NaN-boxed `f64` into a bump-allocated heap, one codec per binary). That's the whole model — the topics below are details, folded away until you need them.
-
-Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); everything else stays heap-resident behind a pointer.
+Numbers cross the JS↔WASM boundary directly. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); everything else is heap pointer.
 
 ```js
 const { exports, memory } = jz`
@@ -334,12 +328,8 @@ exports.rgb(100)                              // [100, 50, 20] — direct JS arr
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
-> [!WARNING]
-> jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-> `memory.Object({ x: 3, y: 4 })` must use the same key order as the jz source `{ x, y }` — reversed keys produce wrong values. Strings/arrays inside objects are auto-wrapped to pointers.
-
 <details>
-<summary><strong>Can I bake values in at compile time?</strong></summary>
+<summary><strong>Interpolation</strong></summary>
 
 <br>
 
@@ -356,11 +346,11 @@ Functions are imported as host calls. Non-serializable values (host objects, cla
 </details>
 
 <details>
-<summary><strong>How do I call host functions (Math, console, my own)?</strong></summary>
+<summary><strong>Host functions, constants, objects</strong></summary>
 
 <br>
 
-Any host namespace — functions, constants, custom objects — wires in via the `imports` option. jz extracts names via `Object.getOwnPropertyNames`, so non-enumerable built-ins (`Math.sin`, `Date.now`) work automatically:
+Any host namespace — functions, constants, custom objects — wires in via the `imports` option:
 
 ```js
 // Custom function
@@ -379,7 +369,7 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
 </details>
 
 <details>
-<summary><strong>How do runtime services lower — <code>host: 'js'</code> vs <code>'wasi'</code>?</strong></summary>
+<summary><strong>Environment</summary>
 
 <br>
 
@@ -401,7 +391,7 @@ A `host: 'wasi'` build emits only the WASI imports its lowerings use — `fd_wri
 </details>
 
 <details>
-<summary><strong>How do I share memory across modules?</strong></summary>
+<summary><strong>Sharing memory across modules</strong></summary>
 
 <br>
 
@@ -421,7 +411,7 @@ memory.read(a.exports.make())     // {x: 10, y: 20} — JS reads it too
 </details>
 
 <details>
-<summary><strong>How do I ship and run the compiled <code>.wasm</code>?</strong></summary>
+<summary><strong>Shipping <code>.wasm</code></strong></summary>
 
 <br>
 
@@ -495,7 +485,7 @@ Native `wasm:js-string` lands in V8 17+ (Chrome 134+, Node 25+ via the `{ builti
 <summary><strong>Custom sections</strong></summary>
 
 <br>
-
+<!-- FIXME: is this true? Do we really need all these sections? Aren't they just low-level machinery, who needs to know it? And actually - can we not export these sections, simplify exports? -->
 jz embeds four small WebAssembly custom sections so the JS interop layer can wire boundary ABIs without re-parsing the source. They're inert for non-JS hosts (wasmtime/wasmer ignore unknown customs); `interop.js` reads them once at instantiate-time. You don't need to touch them — they're documented so external tools (linkers, custom loaders, devtools) can read them safely.
 
 | Section | Purpose |
@@ -530,13 +520,6 @@ Source in [`examples/`](examples/) — each folder has a `build.mjs` and an `ind
 
 ## Alternatives
 
-* [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
-* [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
-* [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
-* [javy](https://github.com/bytecodealliance/javy) — embeds the QuickJS engine in the module and *interprets* your source. Runs almost any JS, but ships a whole interpreter (large binary, interpreter speed) — the opposite trade from jz's AOT-compiled native WASM for a JS subset.
-
-**Which one to choose?** — up = runs more of JS unchanged; right = faster & smaller output.
-
 ```
   runs any JS │  javy ●       ● jawsm
   (full spec) │
@@ -552,8 +535,13 @@ Source in [`examples/`](examples/) — each folder has a `build.mjs` and an `ind
                + large wasm      + JIT          tiny wasm
                          faster · smaller output →
 ```
+<!-- FIXME: axes here must be speed, size vs compatibility -->
 
-**jz** takes a JS subset to buy native speed + tiny output (top-right sweet spot). **porffor** buys full TC39 spec at higher cost. **javy** / **jawsm** run almost anything but ship an interpreter / GC runtime. ¹ **AssemblyScript** is fast and tiny too, but it's a *TypeScript dialect* — you rewrite, not drop in JS.
+* [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
+* [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
+* [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
+* [javy](https://github.com/bytecodealliance/javy) — embeds the QuickJS engine in the module and *interprets* your source. Runs almost any JS, but ships a whole interpreter (large binary, interpreter speed) — the opposite trade from jz's AOT-compiled native WASM for a JS subset.
+
 
 ## Build with
 
