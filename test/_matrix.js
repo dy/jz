@@ -1,8 +1,9 @@
 /**
  * Test-matrix axis awareness (optimize level + host).
  *
- * `npm run test:opt0|opt1|opt3` set `JZ_TEST_OPTIMIZE` and `test:wasi` sets
- * `JZ_TEST_HOST`, which index.js applies as compile defaults. Most tests assert
+ * `npm run test:opt0|opt3` (the gated level extremes; `test:opt1` exists for
+ * ad-hoc use) set `JZ_TEST_OPTIMIZE` and `test:wasi` sets `JZ_TEST_HOST`, which
+ * index.js applies as compile defaults. Most tests assert
  * behaviour (correctness) and run on every leg. Two families don't:
  *
  *  1. Optimizer-OUTPUT pins — binary-size thresholds, "this pass eliminated X",

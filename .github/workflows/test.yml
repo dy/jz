@@ -7,11 +7,14 @@ jobs:
       fail-fast: false
       matrix:
         # Core suite under every compiler configuration: default = level 2,
-        # opt0/opt1/opt3 the other levels, wasi the standalone host. Level- and
+        # opt0/opt3 the level extremes, wasi the standalone host. Level- and
         # host-specific assertions are guarded by belowOpt()/onWasi() in
-        # test/_matrix.js, so all five legs are green — a miscompile that only
-        # surfaces at opt0 or under wasi is now caught in CI, not just locally.
-        variant: [default, opt0, opt1, opt3, wasi]
+        # test/_matrix.js, so all legs are green — a miscompile that only surfaces
+        # at opt0 or under wasi is caught in CI, not just locally. opt1 (light size
+        # passes only) is omitted as low-signal between opt0 and opt2 — the fuzz
+        # job below still exercises opt1 numerically; `npm run test:opt1` runs it
+        # ad-hoc.
+        variant: [default, opt0, opt3, wasi]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,7 +26,6 @@ jobs:
           case "${{ matrix.variant }}" in
             default) npm test ;;
             opt0)    npm run test:opt0 ;;
-            opt1)    npm run test:opt1 ;;
             opt3)    npm run test:opt3 ;;
             wasi)    npm run test:wasi ;;
           esac
