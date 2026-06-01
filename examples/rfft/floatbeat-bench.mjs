@@ -67,6 +67,8 @@ export let fill = (out, len, sr) => { let i = 0; while (i < len) { out[i] = beat
 
 console.log(`Notes:
   · rfft() at N=4096 is ~1.7× faster in jz (see bench.mjs).
-  · Compiler: 2** (n/k) for const base → exp; fill→beat inlining; sin guard inlined.
-  · Remaining gap vs V8 is mostly libm quality (jz Taylor sin vs V8 native).
+  · jz's sin/cos are branchless round-reduction minimax; 2** and exp share $math.exp2
+    (2^k via the IEEE exponent field). fill→beat inlining + sin guard inlined.
+  · jz now beats V8 on the inlined fill() loop for most tunes; the few it trails are
+    array/loop-bound (dynamic-length chord loops), not transcendental.
 `)
