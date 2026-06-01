@@ -2320,7 +2320,8 @@ export function sortLocalsByUse(fn, precomputedCounts) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const localIdxs = []
   let totalDecls = 0
-  for (let i = 2; i < fn.length; i++) {
+  let i
+  for (i = 2; i < fn.length; i++) {
     const c = fn[i]
     if (!Array.isArray(c)) continue
     if (c[0] === 'param' || c[0] === 'result') { totalDecls++; continue }
