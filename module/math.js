@@ -317,6 +317,8 @@ export default (ctx) => {
   const expPosPow = (base, exp) =>
     typed(['call', '$math.exp', ['f64.mul', toNumF64(exp, emit(exp)), ['f64.const', Math.log(base)]]], 'f64')
   const expPowCall = emitter(['math.exp'], (base, exp) => expPosPow(base, exp))
+  // base-2 power → dedicated $math.exp2(y) (skips exp's ×ln2 / ÷ln2 round-trip)
+  const exp2Call = emitter(['math.exp2'], (exp) => typed(['call', '$math.exp2', toNumF64(exp, emit(exp))], 'f64'))
   // Shared pow/** lowering. `expPosPow` is only for `**`: it is bit-identical to
   // $math.pow for fractional exponents (e.g. 2**(n/12)) but not for integer
   // Math.pow — exp(log(b)*y) loses ulps and misses overflow (test262 S8.5).
@@ -326,6 +328,7 @@ export default (ctx) => {
     if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
     if (allowExpPos) {
       const cb = constNum(a)
+      if (cb === 2 && n === null) return exp2Call(b)   // base 2 → dedicated 2^y
       // Integer literal exponents keep $math.pow (exact bits + overflow semantics).
       if (cb != null && cb > 0 && Number.isFinite(cb) && n === null) return expPowCall(cb, b)
     }
@@ -392,6 +395,9 @@ export default (ctx) => {
       : `(f64.add (f64.const ${c}) (f64.mul (local.get ${v}) ${acc}))`, '')
   const SIN_C = [0.9999999970021226, -0.16666659972863312, 0.008333097622752228, -0.00019812490761514167, 0.000002612914984630934]
   const COS_C = [0.9999999672703996, -0.49999926898905417, 0.04166409138162577, -0.0013857422006410998, 0.000023237650111631095]
+  // 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
+  // base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
+  const EXP2_C = [0.9999999999718757, 0.6931472000621776, 0.24022651101138348, 0.055503406819978895, 0.009618039962570888, 0.001339527923447216, 0.00015465307997344525]
 
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
@@ -451,6 +457,21 @@ export default (ctx) => {
         ;; exponent overflow: 2^(k>>1) · 2^(k-(k>>1)), each exponent within [-1022, 1023].
         (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
         (f64.mul (f64.mul (local.get $result)
+          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
+          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
+
+  // 2^y, the dedicated base-2 power. `2**y` lowers here instead of exp(y·ln2): no ×ln2
+  // (so no reciprocal cancellation against exp's ÷ln2), a poly over the tighter [-0.5,0.5],
+  // and the same O(1) IEEE-exponent build of 2^k. ~6e-9 rel. error — well inside tolerance.
+  wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
+    (local $k i32) (local $f f64) (local $k2 i32)
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
+    (if (result f64) (f64.gt (local.get $y) (f64.const 1024.0)) (then (f64.const inf)) (else
+      (if (result f64) (f64.lt (local.get $y) (f64.const -1075.0)) (then (f64.const 0.0)) (else
+        (local.set $k (i32.trunc_f64_s (f64.nearest (local.get $y))))
+        (local.set $f (f64.sub (local.get $y) (f64.convert_i32_s (local.get $k))))
+        (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
+        (f64.mul (f64.mul ${horner(EXP2_C, '$f')}
           (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
           (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
 
