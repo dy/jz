@@ -33,6 +33,7 @@ export default (ctx) => {
     'math.sin_core': ['math.isFinite'],
     'math.cos_core': ['math.isFinite'],
     'math.tan': ['math.sin', 'math.cos'],
+    'math.exp': ['math.exp2'],
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
     'math.log1p': ['math.log'],
@@ -393,42 +394,35 @@ export default (ctx) => {
   const horner = (cs, v) => cs.reduceRight((acc, c, i) =>
     i === cs.length - 1 ? `(f64.const ${c})`
       : `(f64.add (f64.const ${c}) (f64.mul (local.get ${v}) ${acc}))`, '')
-  const SIN_C = [0.9999999970021226, -0.16666659972863312, 0.008333097622752228, -0.00019812490761514167, 0.000002612914984630934]
-  const COS_C = [0.9999999672703996, -0.49999926898905417, 0.04166409138162577, -0.0013857422006410998, 0.000023237650111631095]
+  const SIN_C = [1, -0.16666660296130772, 0.008333091744946387, -0.00019811771757028443, 0.000002611054662215034]
+  const COS_C = [1, -0.4999993043717576, 0.04166402742354027, -0.0013856638518363177, 0.00002321737177898552]
   // 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
   // base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
-  const EXP2_C = [0.9999999999718757, 0.6931472000621776, 0.24022651101138348, 0.055503406819978895, 0.009618039962570888, 0.001339527923447216, 0.00015465307997344525]
+  const EXP2_C = [1, 0.6931472000619209, 0.24022650999918949, 0.05550340682450019, 0.009618048870444599, 0.0013395279077191057, 0.00015463102004723134]
 
+  // round-to-nearest reduction: r = x − n·π ∈ [−π/2, π/2]. The odd poly r·P(r²) handles
+  // r<0 on its own (sin is odd), and the even poly Q(r²) handles cos — so NO quadrant fold
+  // (no `r>π/2` / `r<0` branches), just the n-parity sign. ×(1/π) avoids a hardware divide.
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
-    (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    (local $n i32) (local $r f64) (local $r2 f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
-    (local.set $sign (f64.const 1.0))
-    (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
+    (local.set $n (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
-    (if (i32.and (local.get $n) (i32.const 1)) (then (local.set $sign (f64.const -1.0))))
-    (if (f64.gt (local.get $r) (f64.const ${Math.PI / 2})) (then (local.set $r (f64.sub (f64.const ${Math.PI}) (local.get $r)))))
-    (if (f64.lt (local.get $r) (f64.const 0.0)) (then
-      (local.set $r (f64.neg (local.get $r)))
-      (local.set $sign (f64.neg (local.get $sign)))))
-    (local.set $x2 (f64.mul (local.get $r) (local.get $r)))
-    (f64.mul (local.get $sign) (f64.mul (local.get $r) ${horner(SIN_C, '$x2')})))`)
+    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
+    (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
+    (if (result f64) (i32.and (local.get $n) (i32.const 1)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
 
   wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
-    (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    (local $n i32) (local $r f64) (local $r2 f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
-    (local.set $sign (f64.const 1.0))
-    (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
+    (local.set $n (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
-    (if (i32.and (local.get $n) (i32.const 1)) (then (local.set $sign (f64.const -1.0))))
-    (if (f64.gt (local.get $r) (f64.const ${Math.PI / 2})) (then
-      (local.set $r (f64.sub (f64.const ${Math.PI}) (local.get $r)))
-      (local.set $sign (f64.neg (local.get $sign)))))
-    (if (f64.lt (local.get $r) (f64.const 0.0)) (then (local.set $r (f64.neg (local.get $r)))))
-    (local.set $x2 (f64.mul (local.get $r) (local.get $r)))
-    (f64.mul (local.get $sign) ${horner(COS_C, '$x2')}))`)
+    (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
+    (local.set $r ${horner(COS_C, '$r2')})
+    (if (result f64) (i32.and (local.get $n) (i32.const 1)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
@@ -436,29 +430,11 @@ export default (ctx) => {
   wat('math.tan', `(func $math.tan (param $x f64) (result f64)
     (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
 
+  // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
+  // exp2's NaN/overflow/underflow guards cover exp's). Accurate to exp2's ~6e-9, better
+  // than the old 7-term Taylor, and it shares one code path with `2**`.
   wat('math.exp', `(func $math.exp (param $x f64) (result f64)
-    (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $k2 i32)
-    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    ;; +Infinity → +Infinity; finite overflow (x > 709) also rounds to +Infinity.
-    (if (result f64) (f64.gt (local.get $x) (f64.const 709.0)) (then (f64.const inf)) (else
-      (if (result f64) (f64.lt (local.get $x) (f64.const -745.0)) (then (f64.const 0.0)) (else
-        (local.set $k (i32.trunc_f64_s (f64.div (local.get $x) (f64.const ${Math.LN2}))))
-        (local.set $t (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))))
-        (local.set $t2 (f64.mul (local.get $t) (local.get $t)))
-        (local.set $result (f64.add (f64.const 1.0) (f64.add (local.get $t)
-          (f64.mul (local.get $t2) (f64.add (f64.const 0.5)
-            (f64.mul (local.get $t) (f64.add (f64.const 0.16666666666666666)
-              (f64.mul (local.get $t) (f64.add (f64.const 0.041666666666666664)
-                (f64.mul (local.get $t) (f64.add (f64.const 0.008333333333333333)
-                  (f64.mul (local.get $t) (f64.const 0.001388888888888889)))))))))))))
-        ;; e^t · 2^k. Build 2^k in O(1) from the IEEE exponent field ((k+1023)<<52)
-        ;; instead of an O(k) multiply loop. Split k and apply twice so the full
-        ;; k ∈ [-1074, 1023] range (incl. denormals near x = -745) constructs without
-        ;; exponent overflow: 2^(k>>1) · 2^(k-(k>>1)), each exponent within [-1022, 1023].
-        (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
-        (f64.mul (f64.mul (local.get $result)
-          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
-          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
+    (call $math.exp2 (f64.mul (local.get $x) (f64.const ${Math.LOG2E}))))`)
 
   // 2^y, the dedicated base-2 power. `2**y` lowers here instead of exp(y·ln2): no ×ln2
   // (so no reciprocal cancellation against exp's ÷ln2), a poly over the tighter [-0.5,0.5],
