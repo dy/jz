@@ -27,13 +27,17 @@ import {
 import { resolveOptimize } from '../optimize/index.js'
 import jzify from '../../jzify/index.js'
 
-export default function compileParsed(parsedAst, moduleAsts, doJzify) {
+export default function compileParsed(parsedAst, moduleAsts, doJzify, strict) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
   resetProgramFactsCache()
   ctx.transform.jzify = jzify
   ctx.transform.optimize = resolveOptimize(false)
+  // Mirror index.js: `{ strict: true }` makes prepare reject dynamic features
+  // (obj[k], for-in, x.foo on unknown receivers, void). Threaded from the host so
+  // the self-host leg matches native's strict accept/reject behavior.
+  ctx.transform.strict = !!strict
   ctx.module.importAsts = moduleAsts || null
   // jzify (var/function/class/switch → jz-native lowering) is OPT-IN, mirroring the
   // host compiler (index.js gates it on opts.jzify). Without it, prohibited full-JS
