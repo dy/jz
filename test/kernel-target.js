@@ -18,7 +18,8 @@ import { dirname, join } from 'node:path'
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from 'watr/compile'
 import watrPrint from 'watr/print'
-import { instantiate, normalizeBigints } from '../interop.js'
+import { instantiate } from '../interop.js'
+import { normalizeBigints } from '../src/marshal.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const KERNEL = join(ROOT, 'dist/jz.wasm')
@@ -46,10 +47,10 @@ const getKernelModule = () => {
 export const compileViaKernel = (code, opts = {}) => {
   const ast = normalizeBigints(parse(code))
   const kernel = instantiate(getKernelModule(), { memory: 8192 })
-  // Mirror the host's opt-in jzify gating (index.js): only lower full-JS forms when
-  // the test asked for it, so prohibited syntax (var/class/function/…) is rejected
-  // by the kernel exactly as the in-process compiler rejects it.
-  const ir = kernel.exports.default(ast, null, opts.jzify ? 1 : 0, opts.strict ? 1 : 0)
+  // Mirror the host's default-on jzify (index.js): lower full-JS forms unless strict,
+  // so the kernel's accept/reject behavior matches the in-process compiler — prohibited
+  // syntax (var/class/function/…) is rejected only under strict.
+  const ir = kernel.exports.default(ast, null, opts.strict ? 0 : 1, opts.strict ? 1 : 0)
   if (!Array.isArray(ir) || ir[0] !== 'module' || ir.length < 2)
     throw new Error('kernel returned non-module IR: ' + JSON.stringify(ir)?.slice(0, 160))
   return opts.wat ? watrPrint(ir) : watrCompile(ir)
