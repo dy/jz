@@ -236,7 +236,11 @@ export function createTransform(opts) {
         if (lit) return lit
       }
       const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-      if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp')) return ['new', transform(ctor), ...cargs.map(transform)]
+      // Preserve `new` for native constructors the compiler resolves under its own
+      // `new` handler (prepare/index.js): typed arrays/Array/RegExp need the `new`
+      // form, and `new URL(rel, import.meta.url)` lowers to a static href string there.
+      // User classes (lowered to factory arrows by jzify) become plain calls below.
+      if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp' || name === 'URL')) return ['new', transform(ctor), ...cargs.map(transform)]
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
       return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]
     },

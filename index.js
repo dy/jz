@@ -6,7 +6,7 @@
  *   source (string)
  *     ↓  parse (subscript/jessie) — lexing + expression-oriented AST
  *   raw AST: nested arrays `[op, ...args]`, no ctx mutation
- *     ↓  jzify (opt-in via opts.jzify) — lower full-JS subset (var/function/class/switch) to jz-native
+ *     ↓  jzify (default-on; skipped under opts.strict) — lower full-JS subset (var/function/class/switch) to jz-native
  *   desugared AST: arrow functions + let/const/if only
  *     ↓  prepare — validate (reject disallowed ops), normalize (++/--→+=/-=, scope rename),
  *        extract (functions→ctx.func.list with sig), resolve (imports→ctx.module.imports),
@@ -163,9 +163,10 @@ jz.memory = enhanceMemory
  * @param {string} code - jz source
  * @param {object} [opts]
  * @param {boolean} [opts.wat] - Return WAT text instead of binary
- * @param {boolean} [opts.strict] - Reject dynamic features (obj[k], for-in, unknown
- *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
- *   into output; large size win for static programs.
+ * @param {boolean} [opts.strict] - Enforce the pure canonical subset: skip jzify
+ *   (so full-JS syntax like var/function/class is rejected, not lowered) and reject
+ *   dynamic features (obj[k], for-in, unknown receiver method calls) at compile time.
+ *   Avoids pulling dynamic-dispatch stdlib into output; large size win for static programs.
  * @param {WebAssembly.Memory|number} [opts.memory] - Shared memory import, or
  *   initial page count. Prefer `memory: N` for owned memory.
  * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
@@ -338,7 +339,6 @@ const TEST_ENV_DEFAULTS = (() => {
     out.optimize = /^-?\d+$/.test(v) ? Number(v) : v === 'false' ? false : v
   }
   if (e.JZ_TEST_HOST) out.host = e.JZ_TEST_HOST
-  if (e.JZ_TEST_JZIFY) out.jzify = e.JZ_TEST_JZIFY === '1'
   if (e.JZ_TEST_STRICT) out.strict = e.JZ_TEST_STRICT === '1'
   return out
 })()
@@ -369,9 +369,10 @@ const setupCtx = (code, opts) => {
   // imported by prepare — see ctx.transform.parse note in prepare/index.js.
   ctx.transform.parse = parse
   ctx.transform.resolveUrl = resolveUrl
-  // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
-  // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
-  if (opts.jzify) ctx.transform.jzify = jzify
+  // jzify runs by default — accept the full JS subset (function/var/switch lowered to
+  // arrows/let/if). `strict: true` skips it, so prepare rejects disallowed JS features
+  // and the pure canonical subset is enforced. subscript handles ASI natively.
+  if (!opts.strict) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
   if (opts.host) {
@@ -426,7 +427,7 @@ const jzCompileInner = (code, opts = {}) => {
 
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
-  if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
+  if (!opts.strict) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
   assertCtxInvariants('post-prepare')
 

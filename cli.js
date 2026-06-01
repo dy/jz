@@ -7,10 +7,8 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import { pathToFileURL } from 'url'
-import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from './index.js'
-import jzifyFn from './jzify/index.js'
-import { codegen } from './src/wat/codegen.js'
+import transform from './transform.js'
 import { resolveModuleGraph } from './src/resolve.js'
 import { createRequire } from 'module'
 
@@ -27,9 +25,9 @@ function showHelp() {
 jz v${PKG.version} - min JS → WASM compiler
 
 Usage:
-  jz <file.js>              Compile JS to WASM (auto-jzify)
-  jz --strict <file.js>     Strict mode (no auto-transform)
-  jz --jzify <file.js>      Transform JS → jz (auto-derives output file)
+  jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
+  jz --strict <file.js>     Strict mode — pure canonical subset, no lowering
+  jz --jzify <file.js>      Transform JS → jz source (auto-derives output file)
   jz -e <expression>        Evaluate expression
   jz --help                 Show this help
 
@@ -52,8 +50,8 @@ Options:
   --host <js|wasi>          Runtime-service lowering (default js)
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --names                   Emit wasm name section for profilers/debuggers
-  --strict                  Strict jz mode (no auto-transform), reject dynamic fallbacks
-  --jzify                   Transform JS to jz (no compilation)
+  --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
+  --jzify                   Transform JS to jz source (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
   --resolve                 Resolve bare specifiers via Node.js module resolution
@@ -112,9 +110,7 @@ async function handleJzify(args) {
   if (!inputFile) throw new Error('No input file specified')
   if (!outputFile) outputFile = inputFile.replace(/\.js$/, '.jz')
   const code = readFileSync(inputFile, 'utf8')
-  const ast = parse(code)
-  const transformed = jzifyFn(ast)
-  const out = codegen(transformed) + '\n'
+  const out = transform(code) + '\n'
   if (outputFile === '-') {
     process.stdout.write(out)
   } else {
@@ -159,13 +155,13 @@ async function handleCompile(args) {
   const { code: codeRewritten, modules } = resolveModuleGraph(inputFile, { resolveNode })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
-  // .jz = strict (no auto-transform), .js = auto-jzify
-  // --strict forces strict for any extension
+  // jzify is default-on; strict (pure canonical subset) is opt-in.
+  // `.jz` files are treated as strict; `--strict` forces it for any extension.
+  if (inputFile.endsWith('.jz')) strict = true
   const warnings = { entries: [] }
   const opts = {
     wat,
     warnings,
-    jzify: !strict && !inputFile.endsWith('.jz'),
     strict,
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),

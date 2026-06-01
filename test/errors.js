@@ -8,9 +8,9 @@ function run(code) {
   return new WebAssembly.Instance(new WebAssembly.Module(compile(code))).exports
 }
 
-const throws = (code, match, msg) => {
+const throws = (code, match, msg, opts) => {
   let error
-  try { compile(code) } catch (e) { error = e }
+  try { compile(code, opts) } catch (e) { error = e }
   ok(error && error.message.includes(match), `${msg}: expected "${match}", got "${error?.message}"`)
 }
 
@@ -20,7 +20,7 @@ const throws = (code, match, msg) => {
 
 test('prohibited: this', () => throws('export let f = () => this.x', 'this', 'this should error'))
 test('prohibited: super', () => throws('export let f = () => super.x', 'super', 'super should error'))
-test('prohibited: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error'))
+test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
 // ============================================================================
@@ -29,14 +29,14 @@ test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
 test('prohibited: async', () => throws('async function f() {}', 'async', 'async should error'))
 test('prohibited: await', () => throws('export let f = async () => await x', 'async', 'async should error'))
-test('prohibited: class', () => throws('class Foo {}', 'class', 'class should error'))
+test('strict rejects: class', () => throws('class Foo {}', 'class', 'class should error', { strict: true }))
 test('prohibited: yield', () => throws('function* f() { yield 1 }', 'generator', 'yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
 // 'in' operator now supported for HASH key existence checks
-test('prohibited: instanceof', () => throws('x instanceof Array', 'instanceof', 'instanceof should error'))
+test('strict rejects: instanceof', () => throws('x instanceof Array', 'instanceof', 'instanceof should error', { strict: true }))
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
-test('prohibited: var', () => throws('var x = 1', 'var', 'var should error'))
-test('prohibited: function', () => throws('function f() {}', 'function', 'function should error'))
+test('strict rejects: var', () => throws('var x = 1', 'var', 'var should error', { strict: true }))
+test('strict rejects: function', () => throws('function f() {}', 'function', 'function should error', { strict: true }))
 
 // ============================================================================
 // Const enforcement
@@ -282,14 +282,14 @@ test('error: unknown import gives useful message', () => {
 
 test('error: unknown export gives useful message', () => {
   let error
-  try { compile('import { nonexistent } from "./math.js"; export let f = () => nonexistent') } catch (e) { error = e }
+  try { compile('import { nonexistent } from "./math.js"; export let f = () => nonexistent', { modules: { './math.js': 'export let add = (a, b) => a + b' } }) } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('nonexistent'), `message should mention name: ${error.message}`)
 })
 
 test('error: compile error includes source line', () => {
   let error
-  try { compile('export let f = () => { var x = 1 }') } catch (e) { error = e }
+  try { compile('export let f = () => { var x = 1 }', { strict: true }) } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('var'), `message should mention 'var': ${error.message}`)
   ok(error.message.includes('line'), `message should include source location: ${error.message}`)
@@ -372,7 +372,7 @@ test('error: location includes line number', () => {
         var x = 1
         return x
       }
-    `)
+    `, { strict: true })
   } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('line'), `message should include 'line': ${error.message}`)
@@ -389,7 +389,7 @@ test('error: location points to correct line', () => {
       '  var x = 1',   // line 3 (0-indexed) — the error
       '  return x',
       '}',
-    ].join('\n'))
+    ].join('\n'), { strict: true })
   } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('var'), `message mentions 'var': ${error.message}`)
@@ -407,7 +407,7 @@ test('error: location includes column number', () => {
       'export let f = () => {',
       '  var x = 1',  // column ~3
       '}',
-    ].join('\n'))
+    ].join('\n'), { strict: true })
   } catch (e) { error = e }
   ok(error, 'should throw')
   // The error should include some positional info
@@ -422,7 +422,7 @@ test('error: long program error points to correct region', () => {
       'export let g = (x) => x * 2',
       'export let h = () => { var y = 3; return y }',  // line 3 — the error
       'export let k = (x) => -x',
-    ].join('\n'))
+    ].join('\n'), { strict: true })
   } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('var'), `message mentions 'var': ${error.message}`)

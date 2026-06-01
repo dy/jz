@@ -12,7 +12,8 @@ import { readFileSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { compile } from '../index.js'
-import { instantiate, normalizeBigints } from '../interop.js'
+import { instantiate } from '../interop.js'
+import { normalizeBigints } from '../src/marshal.js'
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from 'watr/compile'
 
@@ -47,7 +48,7 @@ try {
 } catch (e) {
   if (!process.env.JZ_KERNEL_FALLBACK) throw e
   console.error('kernel compile FAILED:', e?.stack || e)
-  bin = compile(src, { jzify: true, optimize: false })
+  bin = compile(src, { optimize: false })
   console.log('host compile (kernel fallback)', bin.length, 'bytes in', Date.now() - t1, 'ms')
 }
 
