@@ -580,6 +580,55 @@ export const fuzzTypedMap = (opts) => {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Int32Array mode (FUZZ-1) — integer maps + an i32 sum reduction.
+// ─────────────────────────────────────────────────────────────────────────────
+// Exercises the `(i32 ± i32)|0` lowering over typed-array loads (which emit as f64
+// then ToInt32): the optimizer folds it back to i32.add/sub, which is what lets the
+// int SUM reduction vectorize to i32x4.add. Every op is `|0`-clamped so JS and jz
+// agree step-for-step under the integer contract (`same()` tolerates the wrap). The
+// returned sum crosses both the map result and the reduction.
+// `*` excluded: products of i32 values can exceed 2^53, where JS (Number) loses
+// precision before `|0` while jz wraps each step — a documented integer-contract
+// divergence, not a miscompile (the scalar fuzzer gates it via inContract). The
+// kept ops are mod-2^32 homomorphic, so jz's per-step wrap == JS's exact-then-`|0`,
+// and the small init keeps every value well inside the exact range.
+const I_LEAF = ['a[i]', '1', '2', '3', '7', '255']
+const genIntExpr = (g, d) =>
+  (d <= 0 || g.chance(0.4))
+    ? (g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF))
+    : `(${genIntExpr(g, d - 1)} ${g.pick(['+', '-', '&', '|', '^', '<<'])} ${genIntExpr(g, d - 1)})`
+const typedIntSource = (seed) => {
+  const g = mkRng(seed)
+  const N = 200 + g.int(60)
+  const map = Array.from({ length: 1 + g.int(2) }, () => `a[i] = (${genIntExpr(g, 3)}) | 0;`).join(' ')
+  return `export let f = () => { const a = new Int32Array(${N}); for (let i = 0; i < ${N}; i++) a[i] = (i * 7 - 90) | 0; for (let i = 0; i < ${N}; i++) { ${map} } let s = 0; for (let i = 0; i < ${N}; i++) s = (s + a[i]) | 0; return s | 0 }`
+}
+const checkTypedInt = (seed, opts) => {
+  const src = typedIntSource(seed)
+  let jsFn
+  try { jsFn = compileJS(src) } catch { return { kind: 'invalid' } }
+  let jsRet
+  try { jsRet = jsFn() } catch { return { kind: 'invalid' } }
+  if (typeof jsRet !== 'number') return null
+  for (const opt of opts.optLevels) {
+    let got
+    try { got = jz(src, { optimize: opt }).exports.f() } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    if (!same(got, jsRet)) return { kind: 'mismatch-ret', opt, got, want: jsRet, src }
+  }
+  return null
+}
+export const fuzzTypedInt = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTypedInt(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -618,6 +667,12 @@ if (!isMain) {
       ? `typed-map divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Float64Array map == JS')
   })
+  test('fuzz: Int32Array map + i32 sum reduction matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzTypedInt({ ...GATE, count: 120 })
+    ok(findings.length === 0, findings.length
+      ? `typed-int divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz Int32Array == JS')
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -637,7 +692,18 @@ if (isMain) {
     inputSeed: Number(arg('inputSeed', 7)),
     optLevels, cfg: DEFAULTS, maxFindings: Number(arg('maxFindings', 20)),
   }
-  if (process.argv.includes('--typed-map')) {
+  if (process.argv.includes('--typed-int')) {
+    // FUZZ-1: Int32Array map + i32 sum reduction (exercises (i32±i32)|0 fold), jz vs JS.
+    const t0 = performance.now()
+    const findings = fuzzTypedInt(opts)
+    console.log(`fuzzed ${opts.count} typed-int programs (seeds ${opts.seedStart}..${opts.seedStart + opts.count - 1}), opt {${optLevels}} — ${(performance.now() - t0).toFixed(0)}ms`)
+    if (!findings.length) console.log('✓ no divergence — jz Int32Array == JS for every program')
+    else {
+      console.log(`✗ ${findings.length} finding(s):\n`)
+      for (const f of findings) console.log(`seed=${f.seed} kind=${f.kind}${f.opt != null ? ` opt=${f.opt}` : ''}\n  jz=${f.got} js=${f.want}${f.err ? ` err=${f.err}` : ''}\n  ${f.src}\n`)
+      process.exit(1)
+    }
+  } else if (process.argv.includes('--typed-map')) {
     // FUZZ-1: pure Float64Array element map (vectorizes), jz vs JS, element-wise.
     const t0 = performance.now()
     const findings = fuzzTypedMap(opts)

@@ -9,6 +9,8 @@ function run(code) {
 }
 
 const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }
+// Same pipeline with vectorization OFF — the scalar oracle for SIMD correctness checks.
+const NOVEC = { optimize: { vectorizeLaneLocal: false, watr: true } }
 const runVec = (code, opts) => jz(code, opts).exports
 const wat = (code, opts) => compile(code, { ...opts, wat: true })
 const hasV128 = (w) =>
@@ -533,7 +535,10 @@ test('vectorize: loop-carried scalar (s ^= s << 13) must NOT lift', () => {
   ok(!/\$s__v/.test(w), 'expected no lane-local lift of loop-carried $s')
 })
 
-test('vectorize: reduction (sum += a[i]) must NOT lift', () => {
+test('vectorize: i32 sum reduction lifts to i32x4.add', () => {
+  // `(sum + a[i]) | 0` over an Int32Array compiles the `+` in f64 then ToInt32s; the
+  // optimizer folds that back to a clean i32.add (NOVEC oracle, vectorize off), which
+  // the reduction recognizer then lifts to i32x4.add. Integer sum is exact ⇒ no drift.
   const src = `
     export const main = () => {
       const N = 1024
@@ -544,10 +549,8 @@ test('vectorize: reduction (sum += a[i]) must NOT lift', () => {
       return sum | 0
     }
   `
-  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  // Reduction loop has NO store; recognizer requires at least one mem op.
-  const w = wat(src, SIMD_OPT)
-  ok(!/\$__simd_loop\d+/.test(w), 'expected no SIMD prefix on reduction')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/i32x4\.add/.test(wat(src, SIMD_OPT)), 'i32 sum reduction → i32x4.add')
 })
 
 test('vectorize: stencil (a[i] depends on a[i-1]) must NOT lift', () => {
@@ -757,9 +760,8 @@ test('vectorize: multi-stmt reduction body must NOT lift', () => {
 // ---- conditional (ternary) maps → v128.bitselect ---------------------------
 // jz lowers `cond ? X : Y` to `(if (result f64) COND (then X)(else Y))`; the
 // vectorizer lifts it to `v128.bitselect(X, Y, mask)`, mask = COND as a lane
-// comparison. NOVEC re-runs the same source with vectorization OFF — the scalar
-// oracle. (Generative coverage: `node test/fuzz.js --typed-map`.)
-const NOVEC = { optimize: { vectorizeLaneLocal: false, watr: true } }
+// comparison. NOVEC (defined up top) re-runs the same source with vectorization OFF
+// as the scalar oracle. (Generative coverage: `node test/fuzz.js --typed-map`.)
 
 test('vectorize: conditional map (distinct arms) lifts to v128.bitselect, matches scalar', () => {
   const src = `
