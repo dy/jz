@@ -117,3 +117,19 @@ Implemented the safe item end-to-end and pressure-tested the rest against the ac
 **Remaining feasibility note discovered:** a `hoistConstantPool`-pooled constant becomes a `global.get`, which `liftExprV` doesn't lift → it silently keeps a map scalar (e.g. a conditional using `0.0`, which also appears in the `!= 0` booleanization). Perf-only, fails-closed. Cheap fix queued: treat a loop-invariant `global.get` as a splat in `liftExprV`.
 
 **Verification (all green):** `npm test` (opt2) 1945/1946, opt0/opt1/opt3/wasi matrix, selfhost 11/11, `CI=1 test/bench.js` 70/70 (no perf/size regression), fuzz: typed-map 5000×4 + scalar 3000×4, zero divergence.
+
+---
+
+## Status & corrections — pass 3 (2026-06-02, int-reduction probe)
+
+Inspected the real IR for the next batch (int min/max, extending-add, IV strength reduction). The backlog under-estimated the first two — they share a root blocker.
+
+**Int sum / min/max reductions are blocked by the integer-accumulator lowering, NOT the recognizer.** `let s=0; s = (s + a[i])|0` over an Int32Array does NOT emit `i32.add` — it emits `select(i32.wrap_i64(i64.trunc_sat_f64_s(f64.add …)), …)`: compute in f64 (the integer contract — no wrap until 2⁵³), then ToInt32. Same for the `a[i] > mx ? a[i] : mx` ternary (it routes through the same f64/box/ToInt32 path). So the reduction recognizer (which matches `s = OP(s, EXPR)` with a clean binary op) never fires. Only *unambiguously*-i32 ops vectorize today: bitwise `xor`/`and`/`or` and `Math.imul`. (`Math.max` over an int array returns an f64 accumulator with an i32 load — a mixed lane/load type the recognizer also rejects.) Float64Array sum/product/min/max already vectorize fully.
+
+→ Closing the int-reduction gap is **L**, not M: it needs a *pure-i32 reduction-accumulator* path (keep `s += a[i]` as `i32.add` when the accumulator is provably i32 and `|0`-clamped each step) — which touches the integer-wrap contract — OR a recognizer for the `select(wrap(trunc(f64.add …)))` shape with correct per-step-ToInt32 reassociation. Both are contract-sensitive correctness work; do it as a dedicated task with its own fuzzing, not a quick add.
+
+**Extending-add (i8/i16→i32)** inherits the same blocker (the `+` is f64) *and* needs `extadd_pairwise` widening — L.
+
+**IV strength reduction:** independent of the above, but marginal on the wasm→V8 path (V8 strength-reduces the loaded module itself) while touching core address arithmetic — low ROI vs risk. Deprioritized.
+
+**Net:** the genuinely landed SIMD wins this session are product reductions, conditional (`?:`) maps, and the pooled-const `global.get` splat — plus the correctness fix. Int-reduction vectorization is real but contract-entangled; recommend it as a separate, fuzzed effort rather than a quick batch.
