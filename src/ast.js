@@ -68,6 +68,27 @@ export function isReassigned(body, name) {
   return false
 }
 
+// Sound over-approximation: could `name`'s array length change anywhere in `body`?
+// True if it is reassigned, has a length-mutating method called on it (push/pop/shift/
+// unshift/splice), is assigned through (`name.x = …` / `name[i] = …`, the latter may grow),
+// or is handed to a call as an argument (a callee might push to it). Lets a plain array's
+// `arr.length` loop bound be hoisted when this is false (see immutableLenBound).
+export function mutatesArrayLength(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && body[1] === name) return true
+  // write through `name` (`name.x = …`, `name[i] = …` — index write may extend length)
+  if (ASSIGN_OPS.has(op) && Array.isArray(body[1]) && (body[1][0] === '.' || body[1][0] === '[]') && body[1][1] === name) return true
+  if (op === '()') {
+    // method call on `name` (`name.push(…)` etc.) — any method, to stay sound
+    if (Array.isArray(body[1]) && body[1][0] === '.' && body[1][1] === name) return true
+    // `name` passed as a call argument — the callee could mutate it
+    for (let i = 2; i < body.length; i++) if (body[i] === name) return true
+  }
+  for (let i = 1; i < body.length; i++) if (mutatesArrayLength(body[i], name)) return true
+  return false
+}
+
 /** Normalize a call's raw arg slot: null → [], comma-group → elems, else singleton. */
 export function commaList(raw) {
   if (raw == null) return []
