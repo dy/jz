@@ -16,4 +16,4 @@ jobs:
       # Host suite baseline is covered by test.yml; this job adds only the
       # self-host gate (build dist/jz.wasm, round-trip programs through it).
       - name: build + run dist/jz.wasm
-        run: npm run test:selfhost
+        run: npm run test:self
