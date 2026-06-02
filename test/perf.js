@@ -581,6 +581,52 @@ test('codegen: ping-pong typed-array ternary select reads via direct load', () =
   is(exports.step(8), 1, 'sum reads the seeded buffer through the ternary select')
 })
 
+test('codegen: loop-invariant exported-param coercion hoists out of the loop', () => {
+  // An exported numeric param arrives as a NaN-box, so each arithmetic use emits
+  // `__to_num(p)`. When the param is never reassigned and used only numerically,
+  // the coercion is loop-invariant and must hoist to one entry rebind — not run
+  // per iteration. Regression for the de Jong attractor (4 coercions/iter ×
+  // millions): 0.98× → 1.19× over V8. Self-gating: only fires when the body
+  // already loads __to_num (here, via the global typed-array assign in `setup`).
+  const src = `
+    let buf
+    export let setup = (n) => { buf = new Float64Array(n); let i = 0; while (i < n) { buf[i] = i * 0.5 - 3.0; i = i + 1 } return n }
+    export let calc = (scale, k) => {
+      let s = 0.0, i = 0, n = 32
+      while (i < n) { s = s + buf[i] * scale * k; i = i + 1 }
+      return s
+    }
+  `
+  const wat = compile(src, { wat: true })
+  // Isolate calc's body; the hot loop must hold no per-iter __to_num.
+  const calcBody = wat.slice(wat.indexOf('(func $calc'))
+  const loopMatch = calcBody.match(/\(loop[\s\S]*?\(br /)
+  ok(loopMatch && !/call \$__to_num/.test(loopMatch[0]), 'param coercion must not remain inside the loop')
+  // Correctness: identical to the same source as plain JS, across edge values.
+  const { exports } = jz(src)
+  exports.setup(32)
+  let buf; const setup = (n) => { buf = new Float64Array(n); let i = 0; while (i < n) { buf[i] = i * 0.5 - 3.0; i = i + 1 } return n }
+  const calc = (scale, k) => { let s = 0.0, i = 0, n = 32; while (i < n) { s = s + buf[i] * scale * k; i = i + 1 } return s }
+  setup(32)
+  for (const [a, b] of [[1.5, 2.0], [0, 0], [-2.3, 3.3], [1e9, 1e-9]]) is(exports.calc(a, b), calc(a, b))
+})
+
+test('codegen: reassigned exported param is NOT coercion-hoisted', () => {
+  // The hoist assumes the param is unchanged across the loop — a reassignment
+  // breaks that, so the scan must reject it and leave per-use coercion intact.
+  const src = `
+    let buf
+    export let setup = (n) => { buf = new Float64Array(n); buf[0] = 1.0; return n }
+    export let f = (p) => { let acc = 0.0, i = 0; while (i < 10) { acc = acc + buf[0] * p; p = p * 0.5; i = i + 1 } return acc }
+  `
+  const { exports } = jz(src)
+  exports.setup(8)
+  let buf; const setup = (n) => { buf = new Float64Array(n); buf[0] = 1.0; return n }
+  const f = (p) => { let acc = 0.0, i = 0; while (i < 10) { acc = acc + buf[0] * p; p = p * 0.5; i = i + 1 } return acc }
+  setup(8)
+  for (const p of [4, -1.5, 1e8]) is(exports.f(p), f(p))   // geometric decay must match exactly
+})
+
 test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   const src = `
     export let f = () => {
