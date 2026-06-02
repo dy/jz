@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>ZzFX sound synth - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { border-top: 2px solid #50ad7b; }
+  #scope { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  /* preset bar: a centered, wrapping row of pills along the bottom */
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); }
+  #bar button { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #cfe8db; background: #ffffff10; border: 1px solid #ffffff22; border-radius: 999px;
+    padding: 9px 15px; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+    transition: background .12s, border-color .12s, color .12s, transform .06s; }
+  #bar button:hover { border-color: #50ad7b; color: #fff; }
+  #bar button:active { transform: translateY(1px); }
+  #bar button.on { background: #50ad7b; border-color: #50ad7b; color: #07120d; }
+  #bar button.dice { color: #eee; }
+  #bar button kbd { font: inherit; opacity: .4; margin-left: 6px; }
+</style>
+</head>
+<body>
+<canvas id="scope"></canvas>
+<div id="bar"></div>
+
+<script type="module">
+import { hud } from '../lib/jzdemo.js'
+import { instantiate } from '../../interop.js'
+
+// ── ZzFX presets ─────────────────────────────────────────────────────────────
+// Sparse parameter arrays (holes ⇒ default). Index → param: see zzfx.js.
+const DEFAULTS = [1, .05, 220, 0, 0, .1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+const fill = (s) => DEFAULTS.map((d, i) => s[i] === undefined ? d : s[i])
+
+const PRESETS = {
+  Coin:      [, , 1675, , .06, .24, 1, 1.82, , , 837, .06],
+  Laser:     [2, , 270, , .1, , 3, 1, , , , , , , 9, , , .5],
+  Explosion: [, , 80, .3, , .4, , 1.3, , , -9999, , , .1],
+  Jump:      [, , 539, .05, .3, .54, 1, 2.26, , , , , , , 4],
+  Powerup:   [, , 400, , , .4, 3, 2, , , , , , 3],
+  Hit:       [, , 183, .02, .02, .2, 1, 9.1, , , , , , 6],
+  Blip:      [, , 150, .05, , .05],
+  Click:     [, , 90, , , .05, , , , 3, , , , , 15],
+  Pew:       [, , 925, .04, .3, .6, 1, .3, , 6.27, -184, .09, .17],
+  Drum:      [, , 129, .01, , .15, , , , , , , , 5],
+  Piano:     [1.5, .8, 270, , .1, , 1, 1.5, , , , , , , , .1, .01],
+  HiHat:     [, , 77, .12, , .12, 3, 1.14, , , , , , 5.2, 14.1, , .05, .08],
+}
+const NAMES = Object.keys(PRESETS)
+
+// A random-but-tame sound for the dice button (shapes 0-3,5; avoids the rare
+// sin(t³) noise wave; keeps slides/jumps small so it stays musical).
+const rng = (a, b) => a + Math.random() * (b - a)
+const SHAPES = [0, 1, 2, 3, 5]
+const randomSound = () => [
+  rng(.5, 1), .05, rng(70, 1400), rng(0, .04), rng(0, .12), rng(.1, .5),
+  SHAPES[Math.floor(Math.random() * SHAPES.length)], rng(.6, 2.6),
+  rng(-4, 4), rng(-2, 2), Math.random() < .35 ? rng(-400, 400) : 0, rng(0, .1),
+  0, Math.random() < .25 ? rng(0, 6) : 0, Math.random() < .3 ? rng(0, 12) : 0,
+  0, 0, rng(.4, 1), rng(0, .2), Math.random() < .3 ? rng(0, .6) : 0,
+  Math.random() < .25 ? rng(-1200, 1200) : 0,
+]
+
+// ── engines: one source, two backends ────────────────────────────────────────
+// jz: load the prebuilt .wasm through jz/interop; the wrapped export returns a
+// view over wasm memory, so copy it out and rewind the bump allocator each call.
+// js: import the same source as an ES module (the V8 baseline for the toggle).
+const makeEngine = async (kind) => {
+  if (kind === 'js') {
+    const mod = await import('./zzfx.js')
+    return (p, rnd) => {
+      const t0 = performance.now()
+      const buf = mod.zzfxG(...p, rnd)
+      return { buf, ms: performance.now() - t0 }
+    }
+  }
+  const bytes = new Uint8Array(await (await fetch('./zzfx.wasm')).arrayBuffer())
+  const { exports, memory } = instantiate(bytes)
+  return (p, rnd) => {
+    const t0 = performance.now()
+    const view = exports.zzfxG(...p, rnd)
+    const ms = performance.now() - t0
+    const buf = Float64Array.from(view)   // survive the reset below
+    memory.reset()
+    return { buf, ms }
+  }
+}
+
+// ── audio ─────────────────────────────────────────────────────────────────────
+const SR = 44100
+let actx, playStart = -1, playDur = 0
+const audio = () => {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)()
+  if (actx.state === 'suspended') actx.resume()
+  return actx
+}
+const play = (buf) => {
+  const ctx = audio()
+  const ab = ctx.createBuffer(1, buf.length, SR)
+  ab.getChannelData(0).set(buf)
+  const src = ctx.createBufferSource()
+  src.buffer = ab; src.connect(ctx.destination); src.start()
+  playStart = ctx.currentTime; playDur = buf.length / SR
+}
+
+// ── oscilloscope ────────────────────────────────────────────────────────────
+const cv = document.getElementById('scope'), g = cv.getContext('2d')
+let W = 0, H = 0
+const resize = () => {
+  const dpr = Math.min(2, window.devicePixelRatio || 1)
+  W = cv.width = Math.floor(innerWidth * dpr)
+  H = cv.height = Math.floor(innerHeight * dpr)
+}
+addEventListener('resize', resize); resize()
+
+const draw = (buf) => {
+  g.fillStyle = '#07070c'; g.fillRect(0, 0, W, H)
+  const mid = H / 2, amp = H * 0.42
+  g.strokeStyle = '#ffffff12'; g.lineWidth = 1
+  g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
+  // min/max envelope per column — a faithful waveform regardless of zoom
+  g.strokeStyle = '#50ad7b'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
+  g.beginPath()
+  const n = buf.length, step = n / W
+  for (let x = 0; x < W; x++) {
+    let lo = 1, hi = -1
+    const s = Math.floor(x * step), e = Math.min(n, Math.floor((x + 1) * step) + 1)
+    for (let i = s; i < e; i++) { const v = buf[i]; if (v < lo) lo = v; if (v > hi) hi = v }
+    if (lo > hi) { lo = hi = 0 }
+    g.moveTo(x + .5, mid - hi * amp); g.lineTo(x + .5, mid - lo * amp + .5)
+  }
+  g.stroke()
+  // playhead during playback
+  if (actx && playStart >= 0) {
+    const prog = (actx.currentTime - playStart) / playDur
+    if (prog >= 0 && prog <= 1) {
+      const x = prog * W
+      g.strokeStyle = '#ffffffaa'; g.lineWidth = 1
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke()
+    } else if (prog > 1) playStart = -1
+  }
+}
+
+// ── state + render loop ───────────────────────────────────────────────────────
+let engine = null, gen = 0
+let current = 'Coin', curParams = fill(PRESETS.Coin), rnd = 0.5
+
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await makeEngine(kind)
+  if (my === gen) engine = e
+}
+
+const trigger = (name, params) => {
+  current = name
+  curParams = params || fill(PRESETS[name])
+  rnd = Math.random()                      // fresh frequency jitter per play
+  if (engine) play(engine(curParams, rnd).buf)
+  paintBar()
+}
+
+// rebuild the current sound every frame: the FPS/ms meter then reads pure
+// synthesis throughput, and the scope tracks the last-played variation.
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  const { buf, ms } = engine(curParams, rnd)
+  draw(buf)
+  ui.frame(ms)
+}
+
+// ── controls ───────────────────────────────────────────────────────────────
+const bar = document.getElementById('bar')
+const btns = {}
+NAMES.forEach((name, i) => {
+  const b = document.createElement('button')
+  b.textContent = name
+  if (i < 9) b.innerHTML += `<kbd>${i + 1}</kbd>`
+  b.onclick = () => trigger(name)
+  bar.appendChild(b); btns[name] = b
+})
+const dice = document.createElement('button')
+dice.className = 'dice'; dice.textContent = '🎲'; dice.title = 'random sound'
+dice.onclick = () => trigger('🎲', randomSound())
+bar.appendChild(dice)
+
+const paintBar = () => NAMES.forEach(n => btns[n].classList.toggle('on', n === current))
+addEventListener('keydown', (e) => {
+  if (e.key >= '1' && e.key <= '9') { const n = NAMES[+e.key - 1]; if (n) trigger(n) }
+  else if (e.key === '0' && NAMES[9]) trigger(NAMES[9])
+  else if (e.key === ' ' || e.key.toLowerCase() === 'r') { e.preventDefault(); trigger('🎲', randomSound()) }
+})
+
+const ui = hud({
+  kind: 'jz',
+  meter: new URLSearchParams(location.search).get('fps') !== '0',
+  src: 'https://github.com/dy/jz/tree/main/examples/zzfx',
+  onSwitch: setEngine,
+})
+
+await setEngine(ui.kind)
+paintBar()
+loop()
+</script>
+</body>
+</html>
