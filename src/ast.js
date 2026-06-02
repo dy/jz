@@ -68,6 +68,66 @@ export function isReassigned(body, name) {
   return false
 }
 
+// A deeply-constant array literal (every element a compile-time literal), safe to
+// allocate once and share. At emit time an array literal is `['[', e0, e1, …]` (flat
+// elements); an INDEX access is `['[]', base, idx]` (op `[]`) — NOT a literal.
+export function isConstLiteral(node) {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op == null) return true                                   // [null, n] / [,bool] / [null,null] primitive
+  if (op === '[') { for (let i = 1; i < node.length; i++) if (!isConstLiteral(node[i])) return false; return true }
+  return false
+}
+
+// Is `node` a pure reference-projection of a tainted name? (`t`, `t[i]`, `t.p`, chained) —
+// a value that aliases into the shared literal, so it must be tracked too.
+const isProjection = (node, tainted) => {
+  if (typeof node === 'string') return tainted.has(node)
+  return Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3 && isProjection(node[1], tainted)
+}
+const baseIsTainted = (m, tainted) => isProjection(m, tainted)   // m is a [] / . access node
+
+// Could a single shared allocation of `name` be observed to differ from per-iteration
+// allocation within `body`? It can't iff `name` and every alias derived from it by pure
+// reference-projection is only ever READ (as a `[]`/`.` base) — never written through,
+// method-called, or escaped (bare value, call arg, return, comparison). Then hoisting the
+// allocation out of a loop is sound. Conservative: any use it can't classify as a read
+// bails out (returns true = "not hoistable").
+export function constLiteralHoistable(body, name) {
+  const decls = []
+  ;(function collect(n) {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'const' || n[0] === 'let')
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') decls.push(d) }
+    for (let i = 1; i < n.length; i++) collect(n[i])
+  })(body)
+  const tainted = new Set([name])
+  for (let changed = true; changed;) {
+    changed = false
+    for (const d of decls) if (!tainted.has(d[1]) && isProjection(d[2], tainted)) { tainted.add(d[1]); changed = true }
+  }
+  // unsafe use of any tainted name?
+  return !(function bad(node) {
+    if (typeof node === 'string') return tainted.has(node)                       // bare tainted value = escape
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    // decl: the bound names are bindings, not uses — only the initializer values matter
+    if (op === 'const' || op === 'let') {
+      for (let i = 1; i < node.length; i++) { const d = node[i]; if (Array.isArray(d) && d[0] === '=') { if (bad(d[2])) return true } else if (bad(d)) return true }
+      return false
+    }
+    // read of a tainted base (`t[i]` / `t.p`): base is fine, only the index expr can be unsafe
+    if ((op === '[]' || op === '.') && node.length === 3 && typeof node[1] === 'string' && tainted.has(node[1]))
+      return op === '[]' ? bad(node[2]) : false
+    if (ASSIGN_OPS.has(op) && typeof node[1] === 'string' && tainted.has(node[1])) return true                                                       // reassign the binding
+    if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.') && baseIsTainted(node[1], tainted)) return true   // write through
+    if ((op === '++' || op === '--') && typeof node[1] === 'string' && tainted.has(node[1])) return true
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && baseIsTainted(node[1], tainted)) return true                                   // method call
+    for (let i = 1; i < node.length; i++) if (bad(node[i])) return true
+    return false
+  })(body)
+}
+
 // Sound over-approximation: could `name`'s array length change anywhere in `body`?
 // True if it is reassigned, has a length-mutating method called on it (push/pop/shift/
 // unshift/splice), is assigned through (`name.x = …` / `name[i] = …`, the latter may grow),
