@@ -561,6 +561,15 @@ function _offsetLocalStride(body, name, ind) {
   return found && ok ? stride : null
 }
 
+// True if any node in the tree writes a global. When false for a loop body,
+// every `global.get` inside it is loop-invariant — safe to splat for SIMD.
+const hasGlobalSet = (node) => {
+  if (!isArr(node)) return false
+  if (node[0] === 'global.set') return true
+  for (let i = 1; i < node.length; i++) if (hasGlobalSet(node[i])) return true
+  return false
+}
+
 // ---- Recognize a (block (loop)) pair --------------------------------------
 
 /**
@@ -683,6 +692,7 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   for (const stmt of body) {
     if (!scanForLoadsStores(stmt, null, -1)) return null
   }
+  if (body.some(hasGlobalSet)) return null  // a global write breaks the "global.get is invariant" splat
   if (!laneType) return null  // no memory ops — vectorizing buys nothing
   if (loadStoreSites.length === 0) return null
 
@@ -1146,6 +1156,13 @@ function liftExprV(expr, ctx) {
       ctx.fail = true; return null  // can't be in a value position
     }
     ctx.fail = true; return null
+  }
+
+  // Loop-invariant global (e.g. a hoistConstantPool'd const, or any global the
+  // loop never writes) → splat. The recognizer bails when the body contains a
+  // global.set, so every global.get reaching here is invariant across lanes.
+  if (op === 'global.get' && typeof expr[1] === 'string') {
+    return [info.splat, expr]
   }
 
   // NaN-canonicalization wrapper (float lanes only; integer lanes never carry
