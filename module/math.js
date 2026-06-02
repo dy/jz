@@ -403,26 +403,31 @@ export default (ctx) => {
   // round-to-nearest reduction: r = x − n·π ∈ [−π/2, π/2]. The odd poly r·P(r²) handles
   // r<0 on its own (sin is odd), and the even poly Q(r²) handles cos — so NO quadrant fold
   // (no `r>π/2` / `r<0` branches), just the n-parity sign. ×(1/π) avoids a hardware divide.
+  // The quotient is rounded with `f64.nearest` then carried as i64 via the *saturating*
+  // `trunc_sat` — JS Math.sin never throws, so the conversion must not trap on a huge
+  // argument (|x| up to ~9.2e18 reduce exactly; beyond that it saturates to finite garbage,
+  // as ULP spacing already exceeds π there — same precision ceiling as any non-Payne-Hanek
+  // reduction). i32 truncation used to trap for |x| ≳ 6.7e9.
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
-    (local $n i32) (local $r f64) (local $r2 f64)
+    (local $n i64) (local $r f64) (local $r2 f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
-    (local.set $n (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
+    (local.set $n (i64.trunc_sat_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
+    (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i64_s (local.get $n)) (f64.const ${Math.PI}))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
-    (if (result f64) (i32.and (local.get $n) (i32.const 1)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
+    (if (result f64) (i32.wrap_i64 (i64.and (local.get $n) (i64.const 1))) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
 
   wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
-    (local $n i32) (local $r f64) (local $r2 f64)
+    (local $n i64) (local $r f64) (local $r2 f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
-    (local.set $n (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
+    (local.set $n (i64.trunc_sat_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI})))))
+    (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i64_s (local.get $n)) (f64.const ${Math.PI}))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r ${horner(COS_C, '$r2')})
-    (if (result f64) (i32.and (local.get $n) (i32.const 1)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
+    (if (result f64) (i32.wrap_i64 (i64.and (local.get $n) (i64.const 1))) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
