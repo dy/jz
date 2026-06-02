@@ -59,9 +59,9 @@ const timeUs = (fn) => {
 }
 
 // Pass criteria: jz must be faster overall (geomean > 1) and no example may
-// regress below FLOOR. mandelbrot sits near 1× — V8's JIT is exceptional on the
-// tight escape loop, and jz's full-precision Math.log trails there — so the floor
-// catches real regressions without flapping on that genuine near-tie.
+// regress below FLOOR. mandelbrot is the closest race (~1.0–1.05×) — V8's JIT is
+// exceptional on the tight escape loop — so the floor leaves headroom for that
+// near-tie while still catching a real regression.
 const FLOOR = 0.9
 
 console.log('Examples — same source, jz-wasm vs V8 (ESM). per-frame hot path.\n')
