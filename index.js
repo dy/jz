@@ -214,8 +214,8 @@ jz.memory = enhanceMemory
  */
 // Test-only compile target. When set (by test/index.js under JZ_TEST_TARGET=jz.wasm)
 // every jz.compile / compile / jz() call routes through it instead of the in-process
-// compiler — used to run the whole suite against the self-hosted jz.wasm kernel
-// (compileParsed in wasm). null in production: one boolean check on a cold path.
+// compiler — used to run the whole suite against dist/jz.wasm (the jz compiler
+// compiled to wasm by jz). null in production: one boolean check on a cold path.
 let compileTarget = null
 export const _setCompileTarget = (fn) => { compileTarget = fn }
 jz.compile = (code, opts = {}) => {
@@ -346,8 +346,8 @@ const HAS_TEST_ENV = Object.keys(TEST_ENV_DEFAULTS).length > 0
 
 // Shared front-half: reset ctx, wire opts → ctx.transform/memory/module/features,
 // and inject parse/resolveUrl. Called by `jzCompileInner` (the only entry point
-// today). The self-host kernel (src/compile/kernel.js) drives reset itself rather
-// than going through this path, since it owns its module-marshalling shape.
+// today). The self-host entry (scripts/self.js) drives reset itself rather than
+// going through this path, since it needs only a minimal, interop-free setup.
 const setupCtx = (code, opts) => {
   if (HAS_TEST_ENV) {
     const merged = { ...opts }

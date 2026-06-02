@@ -887,7 +887,7 @@ function emitClosureBody(cb) {
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler) {
-  // Contract: callers (jzCompileInner / kernel.js compileParsed) must set
+  // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection

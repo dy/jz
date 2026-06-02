@@ -1,19 +1,14 @@
 /**
- * Self-host gate: build dist/jz-kernel.wasm, instantiate it, and verify
- * `kernel.exports.default(ast)` (= compileParsed) round-trips a real program
- * through the in-wasm pipeline.
+ * Self-host gate: build dist/jz.wasm, instantiate it, and verify its
+ * `default(source)` round-trips real programs through the in-wasm pipeline.
  *
- * Contract (must match scripts/selfhost-build.mjs):
- *   host:   ast    = parse(source)                              // subscript/jessie
- *   host:   ast    = normalizeBigints(ast)                       // marshal-safe BigInts
- *   kernel: ir     = kernel.exports.default(ast)                 // reset→jzify→prepare→compile
- *   host:   wasm   = watrCompile(ir)
- *   host:   result = instantiate(wasm).exports.main()
+ * Contract (matches scripts/selfhost-build.mjs + scripts/self.js):
+ *   host:   self   = instantiate(dist/jz.wasm)
+ *   wasm:   bytes  = self.default(source)   // parse → jzify → prepare → compile → watr
+ *   host:   result = instantiate(bytes).exports.main()
  *
- * The kernel.js entry is what selfhost-build builds — its default export is
- * `compileParsed`, the self-contained in-wasm pipeline. Building from
- * compile/index.js exports the bare `compile()` which expects a prepared ctx
- * the host owns, so it cannot self-host.
+ * The whole compiler runs in wasm — the host only passes the source string in and
+ * reads the wasm bytes out. dist/jz.wasm is jz, compiled by jz.
  *
  * Run: node test/selfhost.js   |   CI: npm run test:selfhost
  */
@@ -23,17 +18,14 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
-import { parse } from 'subscript/feature/jessie'
-import watrCompile from 'watr/compile'
 import { instantiate } from '../interop.js'
-import { normalizeBigints } from '../src/marshal.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUILD = join(ROOT, 'scripts/selfhost-build.mjs')
-const KERNEL = join(ROOT, 'dist/jz-kernel.wasm')
+const SELF = join(ROOT, 'dist/jz.wasm')
 
-const ensureKernel = () => {
-  if (existsSync(KERNEL)) return
+const ensureSelf = () => {
+  if (existsSync(SELF)) return
   const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 600_000 })
   if (r.status !== 0) {
     console.log(r.stdout); console.log(r.stderr)
@@ -41,37 +33,38 @@ const ensureKernel = () => {
   }
 }
 
-// One kernel instance reused across samples — instantiation is the slow part
-// (3.5 MB wasm). Per-sample isolation is unnecessary: the kernel resets its
-// internal ctx on each compileParsed call.
-let kernel
-const getKernel = () => {
-  if (!kernel) {
-    ensureKernel()
-    kernel = instantiate(readFileSync(KERNEL), { memory: 8192 })
+// One instance reused across samples — instantiation is the slow part (~4 MB
+// wasm). compileSelf resets its internal ctx on each call, so samples don't
+// contaminate each other.
+let self
+const getSelf = () => {
+  if (!self) {
+    ensureSelf()
+    self = instantiate(readFileSync(SELF), { memory: 8192 })
   }
-  return kernel
+  return self
 }
 
-const compileViaKernel = (src) => {
-  const ast = normalizeBigints(parse(src))
-  const ir = getKernel().exports.default(ast)
-  if (!Array.isArray(ir) || ir[0] !== 'module' || ir.length < 2)
-    throw new Error('kernel returned non-module IR: ' + JSON.stringify(ir)?.slice(0, 120))
-  return watrCompile(ir)
+const compileViaSelf = (src) => {
+  const s = getSelf()
+  const out = s.exports.default(s.memory.String(src))
+  const bin = s.memory.read(out)
+  const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  if (bytes.length <= 8) throw new Error('self-host returned empty wasm: ' + bytes.length + ' bytes')
+  return bytes
 }
 
-test('selfhost: build jz-kernel.wasm', () => {
+test('selfhost: build dist/jz.wasm', () => {
   const r = spawnSync(process.execPath, [BUILD], {
     cwd: ROOT, encoding: 'utf8', timeout: 600_000,
   })
   if (r.status !== 0) { console.log(r.stdout); console.log(r.stderr) }
   ok(r.status === 0, `build exit ${r.status}`)
-  ok(r.stdout.includes('jz-kernel.wasm'), 'kernel artifact reported')
-  ok(readFileSync(KERNEL).byteLength > 100_000, 'kernel wasm has substance')
+  ok(r.stdout.includes('jz.wasm'), 'self-host artifact reported')
+  ok(readFileSync(SELF).byteLength > 100_000, 'self-host wasm has substance')
 })
 
-// Sample programs the kernel must lower correctly. Each tuple is
+// Sample programs the self-host compiler must lower correctly. Each tuple is
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).
 const SAMPLES = [
@@ -94,8 +87,8 @@ const SAMPLES = [
 
 for (const [label, src, expected] of SAMPLES) {
   test(`selfhost: ${label}`, () => {
-    const bin = compileViaKernel(src)
-    ok(bin.byteLength > 10, 'kernel produced wasm bytes')
+    const bin = compileViaSelf(src)
+    ok(bin.byteLength > 10, 'self-host produced wasm bytes')
     const inst = instantiate(bin, { memory: 256 })
     is(inst.exports.main(), expected, `main() === ${expected}`)
   })
