@@ -304,34 +304,42 @@ const LANE_PURE = {
 // the op used to combine the SIMD result back into the accumulator at the
 // end) to its SIMD lane op, lane extractor, and identity element.
 //
-// Floats (add) are not strictly associative — vectorized order produces
+// Floats (add, mul) are not strictly associative — vectorized order produces
 // ulp-level differences from scalar order. Acceptable for typical use
 // (reductions over typed arrays of well-conditioned data); strict-equal
 // callers must keep the pass off.
+//
+// Integer mul (`p *= a[i]`) IS associative+commutative mod 2³² / 2⁶⁴, so its
+// vectorization is value-exact. Identity is 1 (the multiplicative neutral).
 //
 // Narrow lanes (i8/i16) intentionally absent: `s += a[i]` with a u8/u16
 // load expands the value to i32 before the add, so the accumulator's lane
 // type is always wider than the load's element type. That widening would
 // require pairwise/extending-add ops (i16x8.extadd_pairwise_*) — separate
-// recognizer.
+// recognizer. Integer min/max likewise: WASM has no scalar i32.min, so they
+// arrive as a `select`, not a binary op — a separate recognizer branch.
 const REDUCE_OPS = {
   i32: {
     'i32.add': { simd: 'i32x4.add', extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
+    'i32.mul': { simd: 'i32x4.mul', extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 1] },
     'i32.xor': { simd: 'v128.xor',  extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
     'i32.and': { simd: 'v128.and',  extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', -1] },
     'i32.or':  { simd: 'v128.or',   extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
   },
   i64: {
     'i64.add': { simd: 'i64x2.add', extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
+    'i64.mul': { simd: 'i64x2.mul', extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 1] },
     'i64.xor': { simd: 'v128.xor',  extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
     'i64.and': { simd: 'v128.and',  extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', -1] },
     'i64.or':  { simd: 'v128.or',   extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
   },
   f32: {
     'f32.add': { simd: 'f32x4.add', extract: 'f32x4.extract_lane', laneType: 'f32', constNode: ['f32.const', 0] },
+    'f32.mul': { simd: 'f32x4.mul', extract: 'f32x4.extract_lane', laneType: 'f32', constNode: ['f32.const', 1] },
   },
   f64: {
     'f64.add': { simd: 'f64x2.add', extract: 'f64x2.extract_lane', laneType: 'f64', constNode: ['f64.const', 0] },
+    'f64.mul': { simd: 'f64x2.mul', extract: 'f64x2.extract_lane', laneType: 'f64', constNode: ['f64.const', 1] },
   },
 }
 
@@ -362,6 +370,20 @@ const REDUCE_CANON = {
   'f64.min': { simd: 'f64x2.min', extract: 'f64x2.extract_lane', laneType: 'f64', identity: ['f64.const', 'inf'] },
   'f32.max': { simd: 'f32x4.max', extract: 'f32x4.extract_lane', laneType: 'f32', identity: ['f32.const', '-inf'] },
   'f32.min': { simd: 'f32x4.min', extract: 'f32x4.extract_lane', laneType: 'f32', identity: ['f32.const', 'inf'] },
+}
+
+// Scalar comparison op → SIMD lane comparison, per lane type. Used to vectorize a
+// conditional map `buf[i] = cond ? X : Y`, which jz lowers to `(if (result T) COND
+// (then X)(else Y))`: COND becomes an all-ones/all-zeros lane mask fed to
+// `v128.bitselect`. NaN behaves identically lane-wise — every ordered compare is
+// false on a NaN operand in both scalar and SIMD, and `ne` is true — so no
+// canonicalization is needed. i64x2 has no unsigned compares in baseline SIMD, so
+// those simply aren't listed (the loop stays scalar).
+const LANE_COMPARE = {
+  f64: { 'f64.eq': 'f64x2.eq', 'f64.ne': 'f64x2.ne', 'f64.lt': 'f64x2.lt', 'f64.gt': 'f64x2.gt', 'f64.le': 'f64x2.le', 'f64.ge': 'f64x2.ge' },
+  f32: { 'f32.eq': 'f32x4.eq', 'f32.ne': 'f32x4.ne', 'f32.lt': 'f32x4.lt', 'f32.gt': 'f32x4.gt', 'f32.le': 'f32x4.le', 'f32.ge': 'f32x4.ge' },
+  i32: { 'i32.eq': 'i32x4.eq', 'i32.ne': 'i32x4.ne', 'i32.lt_s': 'i32x4.lt_s', 'i32.lt_u': 'i32x4.lt_u', 'i32.gt_s': 'i32x4.gt_s', 'i32.gt_u': 'i32x4.gt_u', 'i32.le_s': 'i32x4.le_s', 'i32.le_u': 'i32x4.le_u', 'i32.ge_s': 'i32x4.ge_s', 'i32.ge_u': 'i32x4.ge_u' },
+  i64: { 'i64.eq': 'i64x2.eq', 'i64.ne': 'i64x2.ne', 'i64.lt_s': 'i64x2.lt_s', 'i64.gt_s': 'i64x2.gt_s', 'i64.le_s': 'i64x2.le_s', 'i64.ge_s': 'i64x2.ge_s' },
 }
 
 // ---- Recognizer ------------------------------------------------------------
@@ -1143,6 +1165,34 @@ function liftExprV(expr, ctx) {
       const coreV = liftExprV(m.core, ctx)
       return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
     }
+  }
+
+  // Conditional select — jz lowers `cond ? X : Y` to (if (result LT) COND (then X)
+  // (else Y)). Lift to v128.bitselect(X, Y, mask), where mask is COND as an
+  // all-ones/all-zeros lane comparison. Both branches are lane-pure (recursion
+  // forbids stores/sets) and trap-free (no liftable op traps — int div/rem aren't
+  // lane-pure), so speculatively evaluating both is safe; bitselect keeps the
+  // chosen lane. The mask is hoisted to a temp and computed FIRST: bitselect
+  // evaluates X,Y before its 3rd operand, but any address `local.tee` lives in
+  // COND and must run before the branches read it (matching scalar order).
+  if (op === 'if') {
+    if (!isArr(expr[1]) || expr[1][0] !== 'result' || expr[1][1] !== ctx.laneType) { ctx.fail = true; return null }
+    const thenN = expr[3], elseN = expr[4]
+    if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) { ctx.fail = true; return null }
+    if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) { ctx.fail = true; return null }
+    let cond = expr[2]
+    if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]  // strip `!= 0`
+    const cmpSimd = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
+    if (!cmpSimd) { ctx.fail = true; return null }
+    const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
+    const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+    const x = liftExprV(thenN[1], ctx); if (ctx.fail) return null
+    const y = liftExprV(elseN[1], ctx); if (ctx.fail) return null
+    const mtmp = `$__mask${ctx.freshIdRef.next++}`
+    ctx.extraLocals.push(['local', mtmp, 'v128'])
+    return ['block', ['result', 'v128'],
+      ['local.set', mtmp, [cmpSimd, ca, cb]],
+      ['v128.bitselect', x, y, ['local.get', mtmp]]]
   }
 
   // Lane-pure op?
