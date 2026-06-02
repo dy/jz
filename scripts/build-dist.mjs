@@ -6,11 +6,11 @@
  *   dist/jz.js   — minified single-file ESM bundle of the JS compiler (index.js
  *                  + its src/ graph + the subscript parser + watr backend). Drop
  *                  it anywhere with a JS runtime: `import jz from './jz.js'`.
- *   dist/jz.wasm — the self-host compiler KERNEL (jz's jzify→prepare→compile
- *                  pipeline compiled to wasm by jz). Its default export is
- *                  `compileParsed(ast) → IR`; a host still supplies parse +
- *                  watr (the two pieces jz can't yet run on itself). Same
- *                  artifact the selfhost gate builds — see scripts/selfhost-build.mjs.
+ *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-host). Its
+ *                  default export is `compileSelf(source) → wasm bytes`: the whole
+ *                  pipeline (parse → jzify → prepare → compile → watr-encode) runs
+ *                  in wasm, no host help. Built from scripts/self.js — same artifact
+ *                  the selfhost gate builds (scripts/selfhost-build.mjs).
  *
  * Run: npm run build
  */
@@ -40,10 +40,10 @@ await build({
 })
 console.log('wrote dist/jz.js  ', kb(jsOut))
 
-// ── dist/jz.wasm — self-host compiler kernel ─────────────────────────────────
+// ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-host) ───
 const wasmOut = resolve(OUT, 'jz.wasm')
-const g = resolveModuleGraph(resolve(ROOT, 'src/compile/kernel.js'), { resolveNode: true })
-const wasm = compile(g.code, { jzify: true, modules: g.modules, memory: 8192, optimize: false })
+const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
+const wasm = compile(g.code, { modules: g.modules, memory: 8192, optimize: false })
 new WebAssembly.Module(wasm)  // validate before writing
 writeFileSync(wasmOut, wasm)
 console.log('wrote dist/jz.wasm', kb(wasmOut))

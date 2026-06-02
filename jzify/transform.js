@@ -299,8 +299,13 @@ export function createTransform(opts) {
         return ['export', ['let', ['=', inner[1], lowerClass(inner[1], inner[2], inner[3])]]]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
+        // Route a named default-export function through the named-export path: a bare
+        // `const NAME` lifted in a bundled module loses its recursive self-reference
+        // (the default-alias resolver renames the func but not in-body call sites),
+        // so the function is dropped. Exporting NAME as a named binding makes prepare
+        // mangle it and resolve self-calls correctly; alias `default` to it.
         const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3])
-        return [';', decl, ['export', ['default', inner[1][1]]]]
+        return [';', ['export', decl], ['export', ['{}', ['as', inner[1][1], 'default']]]]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'class' && inner[1][1]) {
         return [';', ['let', ['=', inner[1][1], lowerClass(inner[1][1], inner[1][2], inner[1][3])]], ['export', ['default', inner[1][1]]]]
