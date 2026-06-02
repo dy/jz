@@ -315,24 +315,19 @@ export default (ctx) => {
   // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
   // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
   const powCall = emitter(['math.pow'], (a, b) => fn('math.pow', a, b))
-  const expPosPow = (base, exp) =>
-    typed(['call', '$math.exp', ['f64.mul', toNumF64(exp, emit(exp)), ['f64.const', Math.log(base)]]], 'f64')
-  const expPowCall = emitter(['math.exp'], (base, exp) => expPosPow(base, exp))
   // base-2 power → dedicated $math.exp2(y) (skips exp's ×ln2 / ÷ln2 round-trip)
   const exp2Call = emitter(['math.exp2'], (exp) => typed(['call', '$math.exp2', toNumF64(exp, emit(exp))], 'f64'))
-  // Shared pow/** lowering. `expPosPow` is only for `**`: it is bit-identical to
-  // $math.pow for fractional exponents (e.g. 2**(n/12)) but not for integer
-  // Math.pow — exp(log(b)*y) loses ulps and misses overflow (test262 S8.5).
+  // Shared pow/** lowering.
   const emitPow = (a, b, allowExpPos) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
-    if (allowExpPos) {
-      const cb = constNum(a)
-      if (cb === 2 && n === null) return exp2Call(b)   // base 2 → dedicated 2^y
-      // Integer literal exponents keep $math.pow (exact bits + overflow semantics).
-      if (cb != null && cb > 0 && Number.isFinite(cb) && n === null) return expPowCall(cb, b)
-    }
+    // base 2 → dedicated 2^y (exp2 is exact for integer y, and skips exp's ×ln2/÷ln2).
+    // Every other literal base keeps $math.pow: `exp(y·ln base)` would lose ulps and,
+    // worse, miss Math.pow's integer-exponent semantics — e.g. `16 ** flen` with a
+    // runtime-integer flen must reproduce the exact square-and-multiply value (2⁵² for
+    // flen=13), which only $math.pow's integer fast path delivers.
+    if (allowExpPos && constNum(a) === 2 && n === null) return exp2Call(b)
     return powCall(a, b)
   }
   ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, false), powCall.deps)
@@ -410,6 +405,9 @@ export default (ctx) => {
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
+    ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
+    ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
+    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
     (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
     (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
