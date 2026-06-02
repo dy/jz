@@ -51,7 +51,7 @@ const asyncInst = await WebAssembly.instantiate(asyncMod)
 asyncInst.exports.f(21) // 42
 ```
 
-<!-- FIXME: I feel these questions are too early on - either they should be fused into the usage example or not be folded (low-barrier). Advanced topics like WASI vs JS host should be in FAQ maybe? -->
+<!-- FIXME: I feel these questions are too early on - either they should be fused into the usage example or not be folded (low-barrier). Advanced topics like WASI vs JS host should be in FAQ maybe? I feel they're already covered in FAQ - maybe just merge them there? -->
 <details>
 <summary><strong>Passing data</strong></summary>
 
@@ -432,8 +432,9 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 ## Performance
 
-<!-- FIXME: image should have less text, just a point what's compared - geomean -->
-<img src="bench/bench.svg?v=0" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+Speed vs jz — geomean across the bench corpus.
+
+<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <sup>[Full benchmark →](bench/README.md) — jz vs Node, AssemblyScript, Porffor, C, Rust, Go, Zig, hand-written WAT, and NumPy across 12 workloads.</sup>
 
@@ -457,25 +458,13 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 ## Alternatives
 
-```mermaid
-quadrantChart
-    title JS → WASM landscape
-    x-axis "JS subset" --> "Full JS spec"
-    y-axis "Bundled runtime, big + slow" --> "AOT native, small + fast"
-    quadrant-1 "The goal"
-    quadrant-2 "AOT compiled"
-    quadrant-4 "Bundled runtime"
-    AssemblyScript: [0.10, 0.75]
-    jz: [0.30, 0.85]
-    Porffor: [0.55, 0.50]
-    jawsm: [0.80, 0.30]
-    Javy: [0.90, 0.10]
-```
+<img src="alternatives.svg?v=1" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
 
-* [**Porffor**](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM targeting full TC39. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
-* [**AssemblyScript**](https://github.com/AssemblyScript/assemblyscript) — TypeScript-like syntax → WASM. Small, performant output, requires type annotations.
-* [**jawsm**](https://github.com/drogus/jawsm) — standard JS→WASM in Rust. Ships a runtime with GC and closures in WASM.
-* [**Javy**](https://github.com/bytecodealliance/javy) — embeds QuickJS in the module and interprets your source. Runs almost any JS, but ships a full interpreter (large binary, interpreter speed) — the opposite trade from jz's AOT-compiled WASM for a JS subset.
+* [**AssemblyScript**](https://github.com/AssemblyScript/assemblyscript) — *AOT, TS-like dialect.* Small, fast output, but its own typed language with required annotations — not JavaScript.
+* [**Porffor**](https://github.com/CanadaHonk/porffor) — *AOT, growing TC39.* Ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
+* [**jawsm**](https://github.com/drogus/jawsm) — *compiled, WasmGC.* JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
+* [**Javy**](https://github.com/bytecodealliance/javy) — *embeds QuickJS.* Interprets your source; runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
+* [**ComponentizeJS / jco**](https://github.com/bytecodealliance/ComponentizeJS) — *embeds SpiderMonkey.* Emits a WASM Component via StarlingMonkey; standards-compliant and near-complete, but bundles a whole JS engine.
 
 
 ## Build with

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 116" width="720" height="116" role="img" aria-label="JS to WASM landscape — tools on a single trade-off axis from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS).">
+  <rect width="720" height="116" rx="12" fill="#ffffff"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <!-- axis -->
+    <rect x="150" y="56.5" width="450" height="3" rx="1.5" fill="#edf0f2"/>
+    <path d="M150 58 L158 53.5 L158 62.5 Z" fill="#ced4da"/>
+    <path d="M600 58 L592 53.5 L592 62.5 Z" fill="#ced4da"/>
+    <text x="140" y="62" text-anchor="end" font-size="12" font-weight="700" fill="#868e96">tiny · fast</text>
+    <text x="610" y="62" font-size="12" font-weight="700" fill="#868e96">full JS spec</text>
+
+    <!-- jz — above -->
+    <line x1="177" y1="40" x2="177" y2="56" stroke="#f0a787" stroke-width="1"/>
+    <circle cx="177" cy="58" r="6" fill="#e8590c"/>
+    <text x="177" y="35" text-anchor="middle" font-size="13" font-weight="700" fill="#e8590c">jz</text>
+
+    <!-- AssemblyScript — below -->
+    <line x1="244.5" y1="60" x2="244.5" y2="76" stroke="#ced4da" stroke-width="1"/>
+    <circle cx="244.5" cy="58" r="5" fill="#868e96"/>
+    <text x="244.5" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#343a40">AssemblyScript</text>
+
+    <!-- Porffor — above -->
+    <line x1="352.5" y1="40" x2="352.5" y2="56" stroke="#ced4da" stroke-width="1"/>
+    <circle cx="352.5" cy="58" r="5" fill="#868e96"/>
+    <text x="352.5" y="35" text-anchor="middle" font-size="13" font-weight="600" fill="#343a40">Porffor</text>
+
+    <!-- jawsm — below -->
+    <line x1="433.5" y1="60" x2="433.5" y2="76" stroke="#ced4da" stroke-width="1"/>
+    <circle cx="433.5" cy="58" r="5" fill="#868e96"/>
+    <text x="433.5" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#343a40">jawsm</text>
+
+    <!-- Javy — above -->
+    <line x1="519" y1="40" x2="519" y2="56" stroke="#ced4da" stroke-width="1"/>
+    <circle cx="519" cy="58" r="5" fill="#868e96"/>
+    <text x="519" y="35" text-anchor="middle" font-size="13" font-weight="600" fill="#343a40">Javy</text>
+
+    <!-- ComponentizeJS — below -->
+    <line x1="577.5" y1="60" x2="577.5" y2="76" stroke="#ced4da" stroke-width="1"/>
+    <circle cx="577.5" cy="58" r="5" fill="#868e96"/>
+    <text x="577.5" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#343a40">ComponentizeJS</text>
+  </g>
+</svg>

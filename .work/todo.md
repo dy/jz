@@ -91,9 +91,6 @@ would add machinery / regress perf, not net-improve; left intentionally (see Arc
 
 ## jz — execution plan
 
-* [ ] Simplify tests: takes too long
-* [ ] Feedback by armstrong, torvalds
-
 #### Community
 
 #### Monetization
@@ -117,6 +114,7 @@ JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 * [x] **FFT spectrogram** — `examples/rfft/`: floatbeat tune → jz-computed split-radix RFFT → live **log/mel spectrogram** (A-weighted per IEC 61672, equal-octave log by default, mel one click away) + momentary waveform overlay + wavefont peak-hold bars + click-to-shuffle + live code panel; JS⇄jz toggle with a **linefont FPS sparkline**. The compiler's auto i32-index narrowing makes the **idiomatic** source (no `|0`) beat V8 **1.69–1.74×** on the rfft() kernel, correctness ~1e-11, 9.9 KB wasm. Done & verified (browser + `examples/rfft/bench.mjs`). The kernel keeps its `cepstrum()` export (still benchmarked); the demo just renders the spectrum now. See Archive 2026-05-22 "RFFT i32-hoist" + "auto i32-index narrowing".
 * [ ] (later) dithering/convolution filters
 * [ ] zzfx
+* [ ] vec4 package that unlocks SIMD
 
 #### Flagship + the one compounding "make-world-know" move
 * [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
