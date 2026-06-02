@@ -920,9 +920,12 @@ export default function narrowSignatures(programFacts, ast) {
   if (jsstringEnabled()) applyJsstringBoundaryCarrier(paramReps, valueUsed)
 }
 
-/** Gate the jsstring opt-in: enabled by default for JS hosts; disabled under
- *  WASI (env imports unavailable) or when explicitly opted out via the
- *  `optimize: { jsstring: false }` knob (used by side-by-side benchmarks). */
+/** Gate the jsstring carrier on the host. ON by default for the JS host: a
+ *  js-host build is already JS-locked (it imports `env.*`), so the externref +
+ *  `wasm:js-string` carrier's JS dependency is free there, and the zero-copy
+ *  string-read path is a clear win. OFF under WASI: the carrier needs a JS host,
+ *  and wasi builds must stay portable (wasmtime/Go/Rust). Opt out on JS with
+ *  `optimize: { jsstring: false }` (e.g. side-by-side benchmarks). */
 function jsstringEnabled() {
   if (ctx.transform.host === 'wasi') return false
   if (ctx.transform.optimize?.jsstring === false) return false

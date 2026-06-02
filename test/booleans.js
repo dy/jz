@@ -8,9 +8,11 @@ import jz from '../index.js'
 
 const run = (code) => jz(code).exports.f
 const wat = (code) => jz.compile(code, { wat: true, optimize: { watr: false } })
-// `jz:i64exp` marks an export `"r":1` iff it returns a boxed i64 atom — the
-// boolean carrier's only footprint. A number-returning export has no entry.
-const boxesResult = (code) => /"r":1/.test((wat(code).match(/jz:i64exp" "(.*?)"\s*\)/)?.[1] ?? '').replace(/\\"/g, '"'))
+// A boolean-returning export boxes its 0/1 carrier into a FALSE/TRUE NaN atom —
+// `(i32.or (i32.const 4) <bit>)` fed to `$__mkptr` — inside its `$f$exp` boundary
+// wrapper, the boolean carrier's only footprint. A number-returning export has no
+// boundary wrapper at all. (Quiet-NaN ABI: the atom rides f64, no i64 carrier.)
+const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?i32\.or\s+\(i32\.const 4\)/.test(wat(code))
 
 // ============================================
 // Surface as a real boolean at the host boundary
