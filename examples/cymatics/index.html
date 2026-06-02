@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Cymatics - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { border-top: 2px solid #50ad7b; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #hint { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; z-index: 30;
+    font-size: 13px; color: #cfe8db; opacity: .7; pointer-events: none; transition: opacity .4s; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">click for sound — the plate dances to a floatbeat</div>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+let W = 0, H = 0, img, out32, px
+
+// internal resolution capped for a steady 60fps (the field is per-pixel trig)
+const sizeTo = (engine) => {
+  const dpr = Math.min(1.5, window.devicePixelRatio || 1)
+  W = Math.min(900, Math.round(innerWidth * dpr) >> 1 << 1)
+  H = Math.min(620, Math.round(innerHeight * dpr) >> 1 << 1)
+  cv.width = W; cv.height = H
+  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(W, H)
+}
+
+// ── audio: a looping floatbeat + an analyser feeding the plate's modes ──────────
+let actx, analyser, freq, started = false
+const FB = (t) => {                                   // a small jazzy floatbeat
+  const n = (t * 4) | 0, sc = [0, 3, 5, 7, 10, 12, 10, 7]
+  const f = 110 * Math.pow(2, sc[n % 8] / 12)
+  const e = Math.exp(-((t * 4) % 1) * 2.5)
+  return (Math.sin(t * f * 6.2832) * 0.6 + Math.sin(t * f * 12.566) * 0.2) * e
+}
+const startAudio = () => {
+  if (started) return; started = true
+  document.getElementById("hint").style.opacity = 0
+  actx = new (window.AudioContext || window.webkitAudioContext)()
+  const sr = actx.sampleRate, len = Math.round(sr * 8)
+  const buf = actx.createBuffer(1, len, sr), ch = buf.getChannelData(0)
+  for (let i = 0; i < len; i++) ch[i] = FB(i / sr)
+  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true
+  analyser = actx.createAnalyser(); analyser.fftSize = 256
+  freq = new Uint8Array(analyser.frequencyBinCount)
+  src.connect(analyser).connect(actx.destination); src.start()
+}
+addEventListener("pointerdown", startAudio)
+
+// ── engine + render loop ────────────────────────────────────────────────────
+let engine = null, gen = 0, t = 0
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./cymatics.js", wasm: "./cymatics.wasm" })
+  if (my !== gen) return
+  engine = e; sizeTo(engine)
+}
+addEventListener("resize", () => engine && sizeTo(engine))
+
+// map a few spectrum bands → mode numbers + amplitude (idle LFO before sound starts)
+const band = (lo, hi) => { let s = 0; for (let i = lo; i < hi; i++) s += freq[i]; return s / (hi - lo) / 255 }
+const modes = () => {
+  if (analyser) {
+    analyser.getByteFrequencyData(freq)
+    const lo = band(1, 6), mid = band(6, 24), hi = band(24, 64), lvl = band(1, 64)
+    return [3 + lo * 9, 2 + mid * 8, 4 + hi * 7, 3 + mid * 6, 0.5 + lvl * 1.6]
+  }
+  const s = Math.sin(t * 0.4), c = Math.cos(t * 0.27)
+  return [5 + s * 3, 4 + c * 2, 6 + c * 2, 3 + s * 2, 1.1]
+}
+
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  t += 1 / 60
+  const [m1, m2, m3, m4, amp] = modes()
+  const t0 = performance.now()
+  engine.frame(m1, m2, m3, m4, amp, t)
+  const ms = performance.now() - t0
+  out32.set(px); g.putImageData(img, 0, 0)
+  ui.frame(ms)
+}
+
+const ui = hud({
+  kind: "jz",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/cymatics",
+  code: "./cymatics.js",
+  nav: "cymatics",
+  onSwitch: setEngine,
+})
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>
