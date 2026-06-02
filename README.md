@@ -439,7 +439,7 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
 <td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
 <td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
-<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.3× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; a few serial-recurrence kernels (mandelbrot, attractors, raymarcher, lenia) tie or trail V8 and are kept as compiler-optimization targets. Numbers: <code>node examples/bench.mjs</code>.</sub>
+<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.5× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; the two serial-recurrence kernels (attractors, raymarcher) tie V8 — latency-bound chains with no cross-iteration parallelism — and are kept as compiler-optimization targets. Numbers: <code>node examples/bench.mjs</code>.</sub>
 
 </tr>
 <tr>

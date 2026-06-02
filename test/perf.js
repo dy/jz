@@ -554,6 +554,33 @@ test('codegen: for-loop counter matches .length type — no converts in loop', (
   }
 })
 
+test('codegen: ping-pong typed-array ternary select reads via direct load', () => {
+  // The classic double-buffer: two typed-array globals, and a hot function that
+  // picks one per pass with a ternary (`flip ? a : b`) then indexes it. The
+  // selected binding must inherit the branches' typed-array kind so `src[i]`
+  // stays a direct f64.load — NOT the dynamic `$__typed_idx` dispatch (one call
+  // per element, which it decayed to when a ternary branch was a variable name
+  // rather than a `new` literal). Regression for lenia's ring convolution,
+  // 0.31× → 1.13× over V8 once the per-tap call vanished.
+  const src = `
+    let a, b, flip = 0
+    export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n); a[0] = 1 }
+    export let step = (n) => {
+      let src = flip === 0 ? a : b
+      let dst = flip === 0 ? b : a
+      flip = 1 - flip
+      let s = 0, i = 0
+      while (i < n) { s = s + src[i]; dst[i] = src[i] * 2; i = i + 1 }
+      return s
+    }
+  `
+  const wat = compile(src, { wat: true })
+  ok(!/call \$__typed_idx/.test(wat), 'ternary-selected typed buffers must read via direct load, not $__typed_idx')
+  const { exports } = jz(src)             // same source as plain JS — correctness floor
+  exports.init(8)
+  is(exports.step(8), 1, 'sum reads the seeded buffer through the ternary select')
+})
+
 test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   const src = `
     export let f = () => {

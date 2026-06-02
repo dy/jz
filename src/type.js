@@ -52,14 +52,21 @@ export const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&
 /** Walk a `?:`/`&&`/`||` expression and return:
  *  - a single ctor string when every branch resolves to the same ctor,
  *  - MIXED_CTORS when branches resolve to different ctors,
- *  - null when no branch resolves (caller's behavior unchanged). */
-export function ternaryCtorOfRhs(rhs) {
+ *  - null when no branch resolves (caller's behavior unchanged).
+ *
+ *  `resolveName(name)` (optional) maps a *variable-name* branch to its known
+ *  typed-array ctor — without it a branch like `cond ? bufA : bufB` (two typed
+ *  bindings rather than two `new` literals) resolves to null and the binding
+ *  falls back to the dynamic `$__typed_idx` read path. The classic ping-pong
+ *  `let cur = flip ? a : b; cur[i]` needs this to keep fast typed loads. */
+export function ternaryCtorOfRhs(rhs, resolveName) {
+  if (typeof rhs === 'string') return resolveName?.(rhs) ?? null
   if (!Array.isArray(rhs)) return null
   const op = rhs[0]
   const lo = op === '?:' ? 2 : (op === '&&' || op === '||') ? 1 : 0
   if (!lo) return null
-  const a = ternaryCtorOfRhs(rhs[lo]) ?? typedElemCtor(rhs[lo])
-  const b = ternaryCtorOfRhs(rhs[lo + 1]) ?? typedElemCtor(rhs[lo + 1])
+  const a = ternaryCtorOfRhs(rhs[lo], resolveName) ?? typedElemCtor(rhs[lo])
+  const b = ternaryCtorOfRhs(rhs[lo + 1], resolveName) ?? typedElemCtor(rhs[lo + 1])
   return a && b ? (a === b ? a : MIXED_CTORS) : (a || b || null)
 }
 
