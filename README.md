@@ -124,9 +124,8 @@ Not supported
 
 jz compiles to static WASM — some behaviors diverge from V8.
 
-- **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values proven to fit `i32` wrap at ±2³¹ (asm.js `ToInt32`); keep a value f64 for exact integers beyond that.
-- **Fixed-layout objects.** Key set and order are fixed at the literal; `delete` is rejected; `memory.Object({…})` must match source order.
-<!-- FIXME: should memory.Object match source order indeed? Why? isn't schema supposed to cover that? -->
+- **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values the compiler pins to 32-bit ints wrap at ±2³¹ (like C's `int`); keep one in floating-point for exact integers beyond that.
+- **Fixed-layout objects.** Key set and order are fixed at the literal; `delete` is rejected.
 - **No GC.** Memory isn't reclaimed automatically (`memory.reset()` — see below). `WeakMap`/`WeakSet` fold to `Map`/`Set` (weakness is unobservable); `Set`/`Map` iterate slot order, not insertion order.
 - **Thin value model.** Errors are untagged — `throw` carries a value, so `e instanceof TypeError` can't discriminate. A boolean from `&&`/`||` or an untyped container crosses the host boundary as `1`/`0` (`typeof`, `String`, `JSON.stringify`, comparisons, and boolean methods return a real boolean).
 - **Rough edges.** `String()` of a non-integer keeps ~9 significant digits (`String(1/3)` → `"0.333333333"`). Legacy octal `0377` reads as decimal — use `0o377`.
@@ -213,54 +212,46 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 <details>
 <summary><strong>How do I run produced .wasm?</strong></summary>
 
-<!-- FIXME: this answer need more clear elaborating and made more comprehensive. Each method needs details -->
 <br>
-It's a standalone `.wasm` with no runtime dependency — compile once at build time and reuse the module (don't recompile jz source per request). Three ways to run it:
+It's a standalone `.wasm` with no runtime dependency — compile once at build time and reuse the module (don't recompile jz source per request). How you run it depends on **where** (JavaScript host vs standalone engine) and **what you pass** (plain numbers vs heap values like strings/arrays/objects).
 
-**In JS (browser / Node)** — instantiate with `jz/interop`, a ~15 KB-minified bridge (~6 KB gzipped; no compiler, parser, or watr) that marshals values across the boundary:
+**1. From JavaScript, numbers only — raw `WebAssembly`.** No jz dependency at all; numbers cross natively as `f64`/`i32`:
+
+```js
+const { instance } = await WebAssembly.instantiate(wasmBytes)
+instance.exports.dist(3, 4)   // 5
+```
+
+Compile with `{ alloc: false }` to drop the `_alloc`/`_clear` exports when a module only ever takes and returns numbers or multi-value arrays.
+
+**2. From JavaScript, with strings/arrays/objects — `jz/interop`.** Heap values cross as NaN-boxed pointers into linear memory, so they need a codec. `jz/interop` is a ~15 KB bridge (~6 KB gzipped; no compiler or parser) that provides one:
 
 ```js
 import { instantiate } from 'jz/interop'
 const { exports, memory } = instantiate(wasmBytes)   // bundler import or fetch()
 exports.greet(memory.String('hello'))
 ```
-<!-- FIXME: how instantiate is different from normal instantiate - answer; how memory is different? do we need them at all, why cant we just do direct WebAssembly - we can, can't we? Mention that wrapping is needed for heap values only -->
 
-**Standalone runtime** — compile with `host: 'wasi'` and run on any WASM engine:
+- `instantiate(wasmBytes)` builds the same `WebAssembly.Module` + `Instance` you'd build by hand, then wraps them: it wires the bump allocator (and the WASI / `wasm:js-string` imports if the module uses them), marshals string/array/object **arguments** into heap pointers, decodes pointer **return values** back to JS, and turns a wasm `throw` into a real JS `Error`.
+- `memory` enhances the instance's `WebAssembly.Memory` with `.String` / `.Array` / `.Object` / `.read` / `.write` so you can build and read heap values explicitly.
+- You need either of these **only** for heap values — pure-numeric calls work straight off raw `WebAssembly` (method 1).
+
+**3. Standalone engine — `host: 'wasi'`.** For runtimes with no JavaScript host (wasmtime, wasmer etc):
 
 ```sh
 jz program.js --host wasi -o program.wasm
-wasmtime program.wasm     # or: wasmer run, deno run
+wasmtime program.wasm        # runs the module's top-level code (its start section)
 ```
-<!-- FIXME: how does user pass pointer values? -->
 
-**Raw host (no `jz/interop`)** — pure numeric modules need only `WebAssembly.Module`/`Instance`; numbers cross as plain f64. To marshal heap values yourself, the wasm signature *is* the ABI — `_alloc`/`_clear` exports plus NaN-boxed f64 pointers, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js). Pass `{ alloc: false }` to drop the allocator when you only call with numbers.
-<!-- FIXME: likely this is second method, not the last one -->
+The module reaches the outside world through WASI (stdout, stdin, argv, clock), not a JS bridge. Top-level code runs on load; exported functions take and return numbers (invoke them with your engine's `--invoke`). There's no host-side marshaler in this mode — to pass a string/array/object you'd call the exported `_alloc` and write the bytes yourself (see ABI below). If you need rich values across the boundary, run it from JavaScript (method 2) instead.
 
-</details>
-
-<details>
-<summary><strong>What does it import from the host (`js` vs `wasi`)?</strong></summary>
-
-<!-- FIXME: strange question, person doesn't ask this - it points at implementation detail. What would be normal question? Host target? -->
-<br>
-
-`host: 'js'` (default) imports a few `env.*` services that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.<br>
-`host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno — no JS host needed.<br>
-The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`).
-
-| JS API | `host: 'js'` (default) | `host: 'wasi'` |
-|---|---|---|
-| `console.log()` | `env.print` — host stringifies | WASI `fd_write` |
-| `Date.now()` / `performance.now()` | `env.now` → f64 | WASI `clock_time_get` |
-| `setTimeout` / `setInterval` | `env.setTimeout` — host schedules | WASM timer queue + `__timer_tick` |
-| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
+**Marshaling by hand (any host).** Skip `jz/interop` entirely: the wasm signature *is* the ABI — `_alloc`/`_clear` exports plus NaN-boxed `f64` pointers, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js).
 
 </details>
 
 <details>
 <summary><strong>How do I pass strings, arrays, and objects?</strong></summary>
-<!-- FIXME: I feel like this goes after produced .wasm, not after js vs wasi, is it? -->
+
 <br>
 
 Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
@@ -282,7 +273,28 @@ exports.rgb(100)                              // [100, 50, 20] — auto-decoded 
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
-`memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — the key set and order must match the compiled schema.
+`memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — its keys must match a compiled schema's key set; order is free (fields are placed by name).
+
+</details>
+
+<details>
+<summary><strong>Should I compile for `js` or `wasi`?</strong></summary>
+
+<br>
+
+Pick by **where the `.wasm` runs**:
+
+- **`js`** (default) — it runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
+- **`wasi`** — it runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand (see *How do I pass strings, arrays, and objects?* — or marshal against the ABI).
+
+Either way the `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`). The difference is only in how a few runtime services are serviced:
+
+| What your code does | `js` (default) | `wasi` |
+|---|---|---|
+| `console.log()` | `env.print` — host stringifies | WASI `fd_write` |
+| `Date.now()` / `performance.now()` | `env.now` → f64 | WASI `clock_time_get` |
+| `setTimeout` / `setInterval` | `env.setTimeout` — host schedules | WASM timer queue + `__timer_tick` |
+| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
 
 </details>
 
@@ -291,8 +303,7 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 
 <br>
 
-jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 and grows the WASM memory automatically when full.
-<!-- FIXME: what are 1024 bytes used for? -->
+jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 — the first 1 KB holds static data (string/array literals laid out from offset 0, plus the bump pointer itself at byte 1020 when memory is shared across threads). It grows the WASM memory automatically when full, and if the literals overflow that 1 KB the heap simply starts past them.
 Memory is never reclaimed implicitly — a long-running program that allocates per call grows without bound. Reset between independent batches:
 
 ```js
@@ -339,7 +350,7 @@ export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
 export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
 ```
 
-Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays a **NaN-boxed f64** — always correct, but each use carries a runtime type check. That dispatch is the only cost; f64 math itself is as fast as i32. See [Writing fast jz](#performance) to keep values off the dynamic path.
+Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower). See [Writing fast jz](#performance) to keep values on the fast path.
 
 </details>
 
@@ -410,15 +421,14 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 <br>
 
-jz infers types from your code; a few habits keep it on the fast path instead of the safe dynamic one:
+Ordinary JS is already fast — jz picks the right machine type for your numbers automatically; you just write plain JS. A few habits help in tight loops:
 
-- **Typed arrays in hot loops.** Indexing a `Float64Array`/`Int32Array` is a direct load at an i32 offset (`a[y * W + x]` needs no `| 0`); a plain array falls back to runtime dispatch.
-- **Keep integers integer.** Bitwise ops, `Math.imul`, loop counters and `charCodeAt` ride on raw i32. Plain `+ - * %` run in f64 — exact to 2⁵³ and as fast as i32 — so most math needs no thought.
-- **Lane-pure loops vectorize.** `for (i…) a[i] = f(a[i], b[i])`, where output `i` reads only inputs at `i`, lifts to SIMD-128. Cross-lane work (`a[i-1]`, `s ^= s << 13`) stays scalar.
-- **Let the arena rewind.** A function that returns no heap value (string/array/object) frees its allocations on return — no `memory.reset()` needed.
-- **Zero-copy strings.** Params that only read `.length`/`.charCodeAt(i)` cross the JS boundary by reference (default for `host: 'js'`).
+- **Use typed arrays for heavy number crunching.** A `Float64Array`/`Int32Array` compiles to direct memory access; a plain `[]` array works too, just with a little more overhead.
+- **Independent iterations vectorize.** When each output depends only on the matching input — `a[i] = a[i] * 2 + b[i]` — jz computes several at once (SIMD). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
+- **Scratch allocations are freed automatically** when a function returns — as long as it doesn't hand back an array, object, or string. No manual cleanup.
+- **Strings from JS aren't copied** when you only read them (`.length`, `.charCodeAt`).
 
-`--wat` shows the result — i32 locals and a `$__simd_loop` block mean it worked.
+Curious what it produced? `jz file.js --wat` prints the readable WASM.
 
 </details>
 
