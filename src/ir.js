@@ -771,9 +771,17 @@ export function readVar(name) {
   if (ctx.func.boxed?.has(name))
     return typed(['f64.load', boxedAddr(name)], 'f64')
   if (isGlobal(name)) {
-    const node = typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
+    const gt = ctx.scope.globalTypes.get(name) || 'f64'
+    const node = typed(['global.get', `$${name}`], gt)
     const grep = repOfGlobal(name)
-    if (grep?.ptrKind != null) {
+    // ptrKind tags a raw i32 pointer offset — meaningful only for an i32-STORED
+    // global (a typed-array/buffer carrier unboxed by unboxConstTypedGlobals). An
+    // f64 global holds a NaN-boxed value: object/array reads unbox at the access
+    // site via the schema/reinterpret path, never an i32 reinterpret of the storage.
+    // Attaching ptrKind to an f64 global makes `asF64` box the f64 *as if it were an
+    // i32* (i64.extend_i32_u on a global.get of type f64 → invalid wasm). Gate on the
+    // storage type so the tag follows the declared ABI.
+    if (gt === 'i32' && grep?.ptrKind != null) {
       node.ptrKind = grep.ptrKind
       if (grep.ptrAux != null) node.ptrAux = grep.ptrAux
     }
