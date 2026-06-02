@@ -1924,67 +1924,74 @@ const vacuum = (ast) => {
 
 // ==================== PEEPHOLE ====================
 
-/** Peephole optimizations: simple algebraic identities */
+/** Peephole optimizations: simple algebraic identities.
+ *  Every rule that DROPS an operand guards on isPure: an impure operand must still
+ *  be evaluated for its side effects. The load-bearing case is a typed-array element
+ *  store, whose address is a `local.tee` inside the value expression (the element's
+ *  own read); dropping that operand (e.g. `(a[i] op a[i]) & 0`) would strand the
+ *  store with a stale address — a silent miscompile. When impure, keep the op (it
+ *  still yields the same value AND runs the operand). */
+const selfFold = (val) => (a, b) => equal(a, b) && isPure(a) ? val : null
 const PEEPHOLE = {
-  // Self-cancelling / tautological binary ops
-  'i32.sub': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.sub': (a, b) => equal(a, b) ? ['i64.const', 0n] : null,
-  'i32.xor': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.xor': (a, b) => equal(a, b) ? ['i64.const', 0n] : null,
-  'i32.eq':  (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i64.eq':  (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i32.ne':  (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.ne':  (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i32.lt_s': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i32.lt_u': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i32.gt_s': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i32.gt_u': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i32.le_s': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i32.le_u': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i32.ge_s': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i32.ge_u': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i64.lt_s': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.lt_u': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.gt_s': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.gt_u': (a, b) => equal(a, b) ? ['i32.const', 0] : null,
-  'i64.le_s': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i64.le_u': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i64.ge_s': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
-  'i64.ge_u': (a, b) => equal(a, b) ? ['i32.const', 1] : null,
+  // Self-cancelling / tautological binary ops — drop both (equal) operands.
+  'i32.sub': selfFold(['i32.const', 0]),
+  'i64.sub': selfFold(['i64.const', 0n]),
+  'i32.xor': selfFold(['i32.const', 0]),
+  'i64.xor': selfFold(['i64.const', 0n]),
+  'i32.eq':  selfFold(['i32.const', 1]),
+  'i64.eq':  selfFold(['i32.const', 1]),
+  'i32.ne':  selfFold(['i32.const', 0]),
+  'i64.ne':  selfFold(['i32.const', 0]),
+  'i32.lt_s': selfFold(['i32.const', 0]),
+  'i32.lt_u': selfFold(['i32.const', 0]),
+  'i32.gt_s': selfFold(['i32.const', 0]),
+  'i32.gt_u': selfFold(['i32.const', 0]),
+  'i32.le_s': selfFold(['i32.const', 1]),
+  'i32.le_u': selfFold(['i32.const', 1]),
+  'i32.ge_s': selfFold(['i32.const', 1]),
+  'i32.ge_u': selfFold(['i32.const', 1]),
+  'i64.lt_s': selfFold(['i32.const', 0]),
+  'i64.lt_u': selfFold(['i32.const', 0]),
+  'i64.gt_s': selfFold(['i32.const', 0]),
+  'i64.gt_u': selfFold(['i32.const', 0]),
+  'i64.le_s': selfFold(['i32.const', 1]),
+  'i64.le_u': selfFold(['i32.const', 1]),
+  'i64.ge_s': selfFold(['i32.const', 1]),
+  'i64.ge_u': selfFold(['i32.const', 1]),
 
-  // Zero/all-bits absorption
+  // Zero/all-bits absorption — drops the NON-const operand, so guard its purity.
   'i32.mul': (a, b) => {
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === 0 || cb?.value === 0) return ['i32.const', 0]
+    if (getConst(b)?.value === 0 && isPure(a)) return ['i32.const', 0]
+    if (getConst(a)?.value === 0 && isPure(b)) return ['i32.const', 0]
     return null
   },
   'i64.mul': (a, b) => {
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === 0n || cb?.value === 0n) return ['i64.const', 0n]
+    if (getConst(b)?.value === 0n && isPure(a)) return ['i64.const', 0n]
+    if (getConst(a)?.value === 0n && isPure(b)) return ['i64.const', 0n]
     return null
   },
   'i32.and': (a, b) => {
-    if (equal(a, b)) return a
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === 0 || cb?.value === 0) return ['i32.const', 0]
+    if (equal(a, b) && isPure(b)) return a
+    if (getConst(b)?.value === 0 && isPure(a)) return ['i32.const', 0]
+    if (getConst(a)?.value === 0 && isPure(b)) return ['i32.const', 0]
     return null
   },
   'i64.and': (a, b) => {
-    if (equal(a, b)) return a
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === 0n || cb?.value === 0n) return ['i64.const', 0n]
+    if (equal(a, b) && isPure(b)) return a
+    if (getConst(b)?.value === 0n && isPure(a)) return ['i64.const', 0n]
+    if (getConst(a)?.value === 0n && isPure(b)) return ['i64.const', 0n]
     return null
   },
   'i32.or': (a, b) => {
-    if (equal(a, b)) return a
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === -1 || cb?.value === -1) return ['i32.const', -1]
+    if (equal(a, b) && isPure(b)) return a
+    if (getConst(b)?.value === -1 && isPure(a)) return ['i32.const', -1]
+    if (getConst(a)?.value === -1 && isPure(b)) return ['i32.const', -1]
     return null
   },
   'i64.or': (a, b) => {
-    if (equal(a, b)) return a
-    const ca = getConst(a), cb = getConst(b)
-    if (ca?.value === -1n || cb?.value === -1n) return ['i64.const', -1n]
+    if (equal(a, b) && isPure(b)) return a
+    if (getConst(b)?.value === -1n && isPure(a)) return ['i64.const', -1n]
+    if (getConst(a)?.value === -1n && isPure(b)) return ['i64.const', -1n]
     return null
   },
 
