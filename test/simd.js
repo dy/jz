@@ -813,6 +813,25 @@ test('opt: identical-arm conditional store keeps the element address (select-fol
   is(runVec(src, NOVEC).main(), 130)
 })
 
+test('vectorize: conditional map with a pooled constant (global.get) still lifts', () => {
+  // `0.0` recurs (the compare, a branch, and the `!= 0` booleanization), so
+  // hoistConstantPool lifts it to a global. The vectorizer splats the invariant
+  // global.get instead of bailing — so the loop still reaches v128.bitselect.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i % 9) - 4
+      for (let i = 0; i < N; i++) a[i] = a[i] < 0.0 ? (0.0 - a[i]) : (a[i] + 10.0)
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/v128\.bitselect/.test(wat(src, SIMD_OPT)), 'pooled-const conditional vectorizes via global.get splat')
+})
+
 // ---- NaN-canonicalized float maps (Math.sqrt / min / max / clamp) --------
 // jz wraps every NaN-producing float builtin in a per-element canonicalizing
 // `select(C, x, x≠x)`. Each lifts faithfully to `v128.bitselect(splat(C), v, v≠v)`
