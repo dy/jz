@@ -2168,6 +2168,31 @@ function walkRewrite(node, doInline, counts) {
     if (Array.isArray(a) && a[0] === 'i32.const' && a[1] === 0) return b
   }
 
+  // f64.CMP(convert_i32 A, convert_i32 B) → i32.CMP(A, B). Comparing two i32 values is
+  // identical whether done in exact f64 or in i32 (the converts are lossless and
+  // order-preserving), so an integer comparison over typed-array loads (reads are f64)
+  // drops its f64 round-trip. eq/ne are sign-agnostic; ordered compares need matching
+  // signedness; an integer comparand constant works for the signed case. Both operands
+  // are kept, so any address `local.tee` inside them survives. Prerequisite for i32
+  // conditional-lane vectorization (the mask becomes an i32x4 compare).
+  if (op === 'f64.eq' || op === 'f64.ne' || op === 'f64.lt' || op === 'f64.gt' || op === 'f64.le' || op === 'f64.ge') {
+    const base = op.slice(4)
+    const cv = (x) => Array.isArray(x) && (x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u') && x.length === 2 ? x : null
+    const intK = (x) => Array.isArray(x) && x[0] === 'f64.const' && Number.isInteger(x[1]) && x[1] >= -2147483648 && x[1] <= 2147483647 ? x[1] : null
+    const a = node[1], b = node[2], ca = cv(a), cb = cv(b)
+    if (ca && cb) {
+      const sa = ca[0] === 'f64.convert_i32_s', sb = cb[0] === 'f64.convert_i32_s'
+      if (base === 'eq' || base === 'ne') return ['i32.' + base, ca[1], cb[1]]
+      if (sa === sb) return ['i32.' + base + (sa ? '_s' : '_u'), ca[1], cb[1]]
+    } else if (ca && ca[0] === 'f64.convert_i32_s') {
+      const k = intK(b)
+      if (k != null) return base === 'eq' || base === 'ne' ? ['i32.' + base, ca[1], ['i32.const', k]] : ['i32.' + base + '_s', ca[1], ['i32.const', k]]
+    } else if (cb && cb[0] === 'f64.convert_i32_s') {
+      const k = intK(a)
+      if (k != null) return base === 'eq' || base === 'ne' ? ['i32.' + base, ['i32.const', k], cb[1]] : ['i32.' + base + '_s', ['i32.const', k], cb[1]]
+    }
+  }
+
   // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))
   // → (i32.add (i32.shl x S) (i32.const K<<S)). Overflow-safe — both forms wrap
   // mod 2^32 identically. Unlocks memarg offset= folding for biquad-style
