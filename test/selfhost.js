@@ -25,7 +25,8 @@ import { dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
 import { parse } from 'subscript/feature/jessie'
 import watrCompile from 'watr/compile'
-import { instantiate, normalizeBigints } from '../interop.js'
+import { instantiate } from '../interop.js'
+import { normalizeBigints } from '../src/marshal.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUILD = join(ROOT, 'scripts/selfhost-build.mjs')

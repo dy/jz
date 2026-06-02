@@ -24,7 +24,7 @@
  * @module jz/interop
  */
 
-import { wasi } from './wasi.js'
+import { wasi, attachTimers } from './wasi.js'
 import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
@@ -104,17 +104,6 @@ const sectionReader = (bytes) => {
   }
 }
 
-const attachTimers = (inst) => {
-  if (!inst.exports.__timer_tick) return
-  const tick = inst.exports.__timer_tick
-  let hadTimers = false
-  const id = setInterval(() => {
-    const remaining = tick()
-    if (remaining > 0) hadTimers = true
-    if (hadTimers && remaining <= 0) clearInterval(id)
-  }, 1)
-}
-
 // ── NaN-box codec ───────────────────────────────────────────────────────────
 
 // NaN-boxing encode/decode — shared 8-byte scratch buffer
@@ -133,35 +122,6 @@ const _bi64 = (() => {
 export const i64ToF64 = _bi64.i64ToF64
 export const f64ToI64 = _bi64.f64ToI64
 
-// Rewrite native BigInt literals in a parsed AST to the marshalling-safe,
-// self-describing node `['bigint', <unsigned-64 decimal>]`. A native bigint
-// primitive can't survive the host→wasm AST boundary: `wrapVal` stringifies it
-// and jz's runtime `typeof` has no bigint case to re-detect it, so the kernel
-// would read `255n` as the string "255". The decimal here is `BigInt.asUintN(64,
-// n)` — the exact value the raw-primitive emit path (emit.js) feeds to
-// `i64.const` — so kernel and host emit byte-identical constants. Mutates in
-// place (preserving array holes and `.loc`); the AST is freshly parsed per call.
-export function normalizeBigints(node) {
-  if (Array.isArray(node)) {
-    // Literal node `[<hole/null>, <bigint>]` → flat self-describing `['bigint', dec]`.
-    // Replace the WHOLE node so `valTypeOf` sees the tag at node[0]; recursing
-    // would only swap the primitive and leave `[null, ['bigint', dec]]` nested.
-    if (node.length === 2 && node[0] == null && typeof node[1] === 'bigint')
-      return ['bigint', BigInt.asUintN(64, node[1]).toString()]
-    // Same hazard for a literal NaN (subscript parses `NaN` as the number, not an
-    // identifier): a raw NaN crossing host→kernel is NaN-boxing-ambiguous and reads
-    // back as 0. `['nan']` is self-describing (emit → canonical f64.const nan).
-    // Infinity is a normal f64 and survives, so it needs no marker.
-    if (node.length === 2 && node[0] == null && typeof node[1] === 'number' && node[1] !== node[1])
-      return ['nan']
-    // Same hazard for a boolean literal: a raw true/false coerces to 1/0 on the f64
-    // slot and loses VAL.BOOL, so the kernel returns a plain number, not a boxed bool.
-    if (node.length === 2 && node[0] == null && typeof node[1] === 'boolean')
-      return ['bool', node[1] ? 1 : 0]
-    for (let i = 0; i < node.length; i++) if (i in node) node[i] = normalizeBigints(node[i])
-  }
-  return node
-}
 // Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
 // Distinct from 0, JS NaN (payload=0), and all pointers.
 _u32[1] = ATOM_HI[ATOM.NULL]; _u32[0] = 0; export const NULL_NAN = _f64[0]
@@ -337,23 +297,22 @@ export const memory = (src) => {
   mem.wrapVal = function(v) {
     if (v === null || v === undefined) return coerce(v)
     if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
-    if (typeof v === 'string') return this.String(v)
-    // BigInt as a data value crosses the boundary as a decimal-string. wasm-side
-    // numeric parsers accept string form. Direct i64 function args go through this
-    // path too; the call wrappers below detect BigInt before adaptArgs reinterprets.
-    if (typeof v === 'bigint') return this.String(v.toString())
-    if (Array.isArray(v)) return this.Array(v)
-    if (v instanceof ArrayBuffer) return this.Buffer(v)
-    if (v instanceof DataView) return this.Buffer(v.buffer)
+    if (typeof v === 'string') return mem.String(v)
+    // BigInt as a data value crosses the boundary as a decimal-string; wasm-side
+    // numeric parsers accept string form.
+    if (typeof v === 'bigint') return mem.String(v.toString())
+    if (Array.isArray(v)) return mem.Array(v)
+    if (v instanceof ArrayBuffer) return mem.Buffer(v)
+    if (v instanceof DataView) return mem.Buffer(v.buffer)
     const typedName = v?.constructor?.name
-    if (typedName && ELEMS[typedName]) return this[typedName](v)
-    if (typeof v === 'object' || typeof v === 'function') return this.External(v)
+    if (typedName && ELEMS[typedName]) return mem[typedName](v)
+    if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
     return UNDEF_NAN
   }
 
   mem.External = function(obj) {
     if (obj === null || obj === undefined) return coerce(obj)
-    const map = this._extMap
+    const map = mem._extMap
     if (!map) return UNDEF_NAN
     let id = map.indexOf(obj)
     if (id === -1) { id = map.length; map.push(obj) }
@@ -363,14 +322,14 @@ export const memory = (src) => {
   mem.Object = function(obj) {
     const objKeys = Object.keys(obj)
     const key = objKeys.join(',')
-    const schemas = this.schemas
+    const schemas = mem.schemas
     let sid = schemas.findIndex(s => s.join(',') === key)
     if (sid === -1) {
       const matches = schemas.reduce((a, s, i) =>
         (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
       if (matches.length === 1) sid = matches[0]
       else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
-      else if (this._extMap) return this.External(obj)
+      else if (mem._extMap) return mem.External(obj)
       else throw Error(`No schema for {${key}}`)
     }
     const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
@@ -380,8 +339,8 @@ export const memory = (src) => {
     for (let i = 0; i < n; i++) {
       let v = obj[schema[i]]
       if (v === null || v === undefined) v = coerce(v)
-      else if (typeof v === 'string') v = this.String(v)
-      else if (Array.isArray(v)) v = this.Array(v)
+      else if (typeof v === 'string') v = mem.String(v)
+      else if (Array.isArray(v)) v = mem.Array(v)
       wrapped[i] = f64ToI64(v)
     }
     const dst = new BigInt64Array(mem.buffer, raw, n)
@@ -390,7 +349,7 @@ export const memory = (src) => {
   }
 
   mem.read = function(p) {
-    if (Array.isArray(p)) return p.map(v => this.read(v))  // multi-value tuple
+    if (Array.isArray(p)) return p.map(v => mem.read(v))  // multi-value tuple
     if (p === p) return p  // regular number passthrough (NaN fails ===)
     const t = type(p), a = aux(p), off = offset(p)
     if (t === 0 && off === 0) {
@@ -399,13 +358,13 @@ export const memory = (src) => {
       if (a === 4) return false
       if (a === 5) return true
     }
-    if (t === 11 && this._extMap) return this._extMap[off]
+    if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 1) {  // ARRAY
       let m = dv(), aOff = off
       // Follow forwarding pointers (cap === -1 means array was reallocated)
       while (m.getInt32(aOff - 4, true) === -1) aOff = m.getInt32(aOff - 8, true)
       const len = m.getInt32(aOff - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(aOff + i * 8, true))
+      for (let i = 0; i < len; i++) out[i] = mem.read(m.getFloat64(aOff + i * 8, true))
       return out
     }
     if (t === 3) {  // TYPED
@@ -437,10 +396,10 @@ export const memory = (src) => {
       return TEXT_DEC.decode(new Uint8Array(mem.buffer, off, len))
     }
     if (t === 6) {  // OBJECT
-      const m = dv(), sid = aux(p), keys = this.schemas[sid]
+      const m = dv(), sid = aux(p), keys = mem.schemas[sid]
       if (!keys) return p
       const obj = {}
-      for (let i = 0; i < keys.length; i++) obj[keys[i]] = this.read(m.getFloat64(off + i * 8, true))
+      for (let i = 0; i < keys.length; i++) obj[keys[i]] = mem.read(m.getFloat64(off + i * 8, true))
       return obj
     }
     if (t === 7) {  // HASH
@@ -449,8 +408,8 @@ export const memory = (src) => {
       for (let i = 0, found = 0; i < cap && found < size; i++) {
         const hash = m.getFloat64(off + i * 24, true)
         if (hash !== 0) {
-          const key = this.read(m.getFloat64(off + i * 24 + 8, true))
-          obj[key] = this.read(m.getFloat64(off + i * 24 + 16, true))
+          const key = mem.read(m.getFloat64(off + i * 24 + 8, true))
+          obj[key] = mem.read(m.getFloat64(off + i * 24 + 16, true))
           found++
         }
       }
@@ -461,7 +420,7 @@ export const memory = (src) => {
       const set = new Set()
       for (let i = 0; i < cap && set.size < size; i++) {
         const hash = m.getFloat64(off + i * 16, true)
-        if (hash !== 0) set.add(this.read(m.getFloat64(off + i * 16 + 8, true)))
+        if (hash !== 0) set.add(mem.read(m.getFloat64(off + i * 16 + 8, true)))
       }
       return set
     }
@@ -470,7 +429,7 @@ export const memory = (src) => {
       const map = new Map()
       for (let i = 0; i < cap && map.size < size; i++) {
         const hash = m.getFloat64(off + i * 24, true)
-        if (hash !== 0) map.set(this.read(m.getFloat64(off + i * 24 + 8, true)), this.read(m.getFloat64(off + i * 24 + 16, true)))
+        if (hash !== 0) map.set(mem.read(m.getFloat64(off + i * 24 + 8, true)), mem.read(m.getFloat64(off + i * 24 + 16, true)))
       }
       return map
     }
@@ -500,7 +459,7 @@ export const memory = (src) => {
         for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
       }
     } else if (t === 6) {
-      const schema = this.schemas[aux(p)]
+      const schema = mem.schemas[aux(p)]
       if (!schema) throw Error(`write: unknown schema`)
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
@@ -543,19 +502,8 @@ export const wrap = (memSrc, inst) => {
         restFuncs.set(typeof entry === 'string' ? entry : entry.name, typeof entry === 'string' ? 0 : entry.fixed)
     } catch (e) { /* ignore */ }
   }
-  // i64-ABI exports: boundary-wrapped funcs whose NaN-boxed pointer params/
-  // result ride i64 to dodge V8's NaN canonicalization. Map: name → { p, r }
-  // with p = bit mask of i64 params, r = 1 iff result is i64. JS side
-  // reinterprets f64↔BigInt only at those positions (see
-  // synthesizeBoundaryWrappers).
-  const i64Exp = new Map(), EMPTY_SET = new Set()
-  const i64Bytes = customSection(mod, 'jz:i64exp')
-  if (i64Bytes) {
-    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p), r: e.r }) }
-    catch { /* ignore */ }
-  }
   // externref-param exports: positions where the wasm side takes an externref
-  // (e.g. jsstring boundary opt-in). JS values at these positions pass through
+  // (jsstring carrier — js-host only). JS values at these positions pass through
   // unchanged — no `mem.wrapVal` (would NaN-box into f64, defeating the point).
   // `def` (optional) maps idx → default-string for jsstring params whose
   // default substitution happens JS-side (the wasm side never sees null).
@@ -572,7 +520,6 @@ export const wrap = (memSrc, inst) => {
       }
     } catch { /* ignore */ }
   }
-
   const mem = memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
@@ -588,118 +535,52 @@ export const wrap = (memSrc, inst) => {
     throw wrapped
   }
   const exports = {}
-  // Per-position carrier swap: f64 stays Number, i64 positions reinterpret to
-  // BigInt before the call and back to Number after. p is a Set of i64 param
-  // indices; r = result is i64. Numeric (f64) positions pass through unchanged.
-  const adaptArgs = (a, p) => p.size === 0 ? a : a.map((x, i) => p.has(i) ? f64ToI64(x) : x)
-  const adaptRet = (ret, r) => r ? i64ToF64(ret) : ret
-  // Externref positions skip mem.wrapVal — the raw JS value (string, object,
-  // …) flows through as externref. mem.wrapVal would NaN-box it.
-  const wrapArg = (ext, i, x) => ext?.has(i) ? x : mem.wrapVal(x)
-
-  // Arity-specialized wrapper: rest-spread + .map() + .apply() costs ~85ns/call
-  // on hot loops (mandelbrot benchmark: 51ms wrapped vs 35ms direct over 200K
-  // calls). Generating positional `function(a0, a1, ...)` via Function lets V8
-  // fully inline the WASM call. Falls back to the spread-form wrapper if the
-  // Function constructor is unavailable (CSP) or arity is unusually large.
-  // `ext` is a Set of externref param positions — those slots skip wrap/coerce
-  // and pass the JS value directly (jsstring carrier: JS string → externref).
-  // `ext.def` (optional Map idx→string) carries jsstring-literal defaults that
-  // are substituted JS-side when the caller passes `undefined`.
-  const makeFastWrapper = (fn, len, p, r, decode_, wrap_, ext) => {
-    const params = [], wrapped = []
-    const defs = ext?.def
-    const defArgs = [], defNames = []
-    for (let i = 0; i < len; i++) {
-      const a = `a${i}`
-      params.push(a)
-      if (ext?.has(i)) {
-        if (defs?.has(i)) {
-          const dn = `def${i}`
-          defNames.push(dn); defArgs.push(defs.get(i))
-          wrapped.push(`(${a} === undefined ? ${dn} : ${a})`)
-        } else {
-          wrapped.push(a)
-        }
-        continue
-      }
-      const w = wrap_ ? `wrap_(${a})` : `coerce(${a})`
-      wrapped.push(p.has(i) ? `f64ToI64(${w})` : w)
-    }
-    const callExpr = `fn(${wrapped.join(',')})`
-    const retExpr = r ? `i64ToF64(${callExpr})` : callExpr
-    const body = `return function(${params.join(',')}) {\n` +
-      `  try { return decode_(${retExpr}) } catch (e) { decodeThrown(e) }\n` +
-      `}`
-    return new Function('fn', 'wrap_', 'coerce', 'decode_', 'f64ToI64', 'i64ToF64', 'decodeThrown', ...defNames, body)(
-      fn, wrap_, coerce, decode_, f64ToI64, i64ToF64, decodeThrown, ...defArgs)
-  }
+  // Wrap one positional arg. Externref slots (jsstring carrier) pass the JS
+  // value straight through — `mem.wrapVal` would NaN-box it — substituting a
+  // jsstring literal default for a missing arg. Every other slot marshals via
+  // `box`: `coerce` for pure-scalar modules, `mem.wrapVal` for heap modules.
+  // Quiet-NaN ABI: every export value is f64, so there is no per-position i64
+  // carrier — args flow straight to the wasm call, results straight to decode/read.
+  const wrapArgAt = (ext, i, x, box) =>
+    ext?.has(i) ? (x === undefined && ext.def?.has(i) ? ext.def.get(i) : x) : box(x)
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
   if (!mem) {
     for (const [name, fn] of Object.entries(realInst.exports)) {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
-      const sig = i64Exp.get(name)
-      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
       const ext = extExp.get(name)
       const len = fn.length
-      try {
-        exports[name] = makeFastWrapper(fn, len, p, r, decode, null, ext)
-        continue
-      } catch { /* CSP fallback */ }
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          const wasmArgs = adaptArgs(args.map((x, i) => {
-            if (!ext?.has(i)) return coerce(x)
-            return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
-          }), p)
-          return decode(adaptRet(fn(...wasmArgs), r))
+          return decode(fn(...args.map((x, i) => wrapArgAt(ext, i, x, coerce))))
         } catch (e) { decodeThrown(e) }
       }
     }
     return exports
   }
   const memWrapVal = mem.wrapVal.bind(mem)
-  const memRead = mem.read.bind(mem)
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
-      const sig = i64Exp.get(name)
-      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
       const ext = extExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map((x, i) => {
-          if (!ext?.has(i)) return mem.wrapVal(x)
-          return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
-        })
+        const a = args.slice(0, fixed).map((x, i) => wrapArgAt(ext, i, x, memWrapVal))
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
         try {
-          const ret = fn.apply(null, adaptArgs(a, p))
-          return mem.read(adaptRet(ret, r))
+          return mem.read(fn.apply(null, a))
         } catch (error) {
           decodeThrown(error)
         }
       }
     } else if (typeof fn === 'function') {
-      const sig = i64Exp.get(name)
-      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
       const ext = extExp.get(name)
       const len = fn.length
-      try {
-        exports[name] = makeFastWrapper(fn, len, p, r, memRead, memWrapVal, ext)
-        continue
-      } catch { /* CSP fallback */ }
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          const boxed = args.map((x, i) => {
-            if (!ext?.has(i)) return mem.wrapVal(x)
-            return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
-          })
-          const ret = fn.apply(null, adaptArgs(boxed, p))
-          return mem.read(adaptRet(ret, r))
+          return mem.read(fn.apply(null, args.map((x, i) => wrapArgAt(ext, i, x, memWrapVal))))
         } catch (error) {
           decodeThrown(error)
         }

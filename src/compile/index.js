@@ -563,17 +563,16 @@ function synthesizeBoundaryWrappers() {
   for (const func of ctx.func.list) {
     if (!isBoundaryWrapped(func)) continue
     const { name, sig } = func
-    // Per-position i64 carrier: only swap to i64 where a NaN-boxed pointer
-    // actually crosses the boundary (param.ptrKind set, or result with
-    // sig.ptrKind set). Numeric narrowing (i32 trunc-sat / convert) keeps f64
-    // so callers seeing the raw export get a plain Number for numerics.
-    // jsstring params bypass both i64 and f64 — they flow as externref end-to-end.
-    const paramI64 = sig.params.map(p => p.ptrKind != null)
-    // A VAL.BOOL result is boxed to a NaN-box atom here, so it crosses as i64
-    // (same carrier as a pointer result), even though the inner func returns the
-    // plain 0/1 number carrier.
+    // Quiet NaN-box ABI: every boundary value is f64. A number is a plain f64; a
+    // tagged value (heap pointer, null/undef/bool atom) is an f64 whose quiet-NaN
+    // (0x7FF8…) payload carries the tag. Quiet-NaN payloads are preserved across the
+    // JS↔wasm call boundary by every real engine (and non-JS hosts don't canonicalize
+    // at all), so no i64 carrier is needed — the wasm signature is self-describing
+    // (f64 everywhere) and a consumer discriminates a tagged value by the NaN prefix.
+    // Env requirement: a non-canonicalizing NaN boundary. To support a canonicalizing
+    // engine, a per-position i64 carrier would re-enter here (param/result type i64 +
+    // `i64.reinterpret_f64`) plus a `jz:i64exp` section for interop.js.
     const resultBool = func.valResult === VAL.BOOL && sig.ptrKind == null
-    const resultI64 = sig.ptrKind != null || resultBool
     // Inline `(export ...)` attribute only when the func decl carried the
     // inline-export keyword (`export function foo`). For re-exports
     // (`function foo; export { foo as bar }`) the `name` is the *internal*
@@ -583,19 +582,17 @@ function synthesizeBoundaryWrappers() {
     const wrapNode = func.exported
       ? ['func', `$${name}$exp`, ['export', `"${name}"`]]
       : ['func', `$${name}$exp`]
-    sig.params.forEach((p, i) => {
-      const t = p.jsstring ? 'externref' : (paramI64[i] ? 'i64' : 'f64')
-      wrapNode.push(['param', `$${p.name}`, t])
+    // jsstring params flow as externref end-to-end; every other boundary value is f64.
+    sig.params.forEach((p) => {
+      wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : 'f64'])
     })
-    wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
-    const args = sig.params.map((p, i) => {
+    wrapNode.push(['result', 'f64'])
+    const args = sig.params.map((p) => {
       const get = ['local.get', `$${p.name}`]
       // jsstring: externref flows through unchanged — inner func also takes externref.
       if (p.jsstring) return get
-      if (p.ptrKind != null) {
-        // ptrKind: i64 carrier carries NaN-box bits → wrap to i32 offset
-        return ['i32.wrap_i64', get]
-      }
+      // ptrKind param: the f64 NaN-box carries the pointer — extract the i32 offset.
+      if (p.ptrKind != null) return ['i32.wrap_i64', ['i64.reinterpret_f64', get]]
       if (p.type === 'f64') return get
       // Numeric narrowing: f64 → i32 truncate
       return ['i32.trunc_sat_f64_s', get]
@@ -620,9 +617,7 @@ function synthesizeBoundaryWrappers() {
     } else {
       body = callIR
     }
-    wrapNode.push(resultI64 ? ['i64.reinterpret_f64', body] : body)
-    func._exportUsesI64 = resultI64 || paramI64.some(Boolean)
-    func._exportI64Sig = { params: paramI64, result: resultI64 }
+    wrapNode.push(body)
     // Track externref param positions so interop.js can pass JS values
     // raw (skipping `mem.wrapVal`) at those slots. Today this only fires
     // for `jsstring`-tagged params; future externref carriers wire here too.
@@ -1160,26 +1155,6 @@ export default function compile(ast, profiler) {
   }
   if (restParamFuncs.length)
     sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
-
-  // Custom section: per-export i64 ABI map. Each entry describes an export
-  // whose boundary wrapper carries NaN-boxed pointers via i64 (rather than
-  // f64) to dodge V8's NaN canonicalization. Format: { name, p, r } where p
-  // is an array of i64 param indices and r is 1 if result is i64. host.js
-  // wrap() reinterprets BigInt↔f64 at i64 positions; numeric f64 positions
-  // stay as Numbers on the JS side.
-  const i64Exports = []
-  for (const f of ctx.func.list) {
-    if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportUsesI64) continue
-    const p = []
-    f._exportI64Sig.params.forEach((b, i) => { if (b) p.push(i) })
-    const r = f._exportI64Sig.result ? 1 : 0
-    // One entry per JS-visible export name (inline + non-aliased + aliased
-    // re-exports). `exportNamesOf` yields every name that resolves to f —
-    // wrap() looks up by export name, not by internal symbol.
-    for (const exportName of exportNamesOf(f.name)) i64Exports.push({ name: exportName, p, r })
-  }
-  if (i64Exports.length)
-    sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Custom section: per-export externref param positions. interop.js reads
   // this to pass JS arguments straight through at those positions (no
