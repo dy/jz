@@ -333,8 +333,12 @@ b.exports.read(a.exports.make())  // 30 — same memory, merged schemas
 memory.read(a.exports.make())     // {x: 10, y: 20}
 ```
 
-Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`.<br>
-Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface. <!-- FIXME: elaborate -->
+Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`.
+
+Each compiled module exposes two call surfaces:
+
+- **`.exports`** — the JS-wrapped surface: it marshals JS arguments into the heap and decodes pointer return values back to JS values (and turns a wasm `throw` into an `Error`). Use it by default — it's also how you hand a value from one module to another, as in the example above (the value is re-marshaled through the shared memory).
+- **`.instance.exports`** — the raw `WebAssembly.Instance` exports: numbers pass through untouched, and a pointer return comes back as a raw NaN-boxed handle. Decode it on the host with `memory.read(ptr)`. Don't pass a raw pointer back *in* as an argument, though — the JS↔wasm `f64` boundary canonicalizes its NaN payload and the pointer is lost; let `.exports` marshal across instead.
 
 </details>
 
@@ -358,12 +362,37 @@ Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is us
 <summary><strong>Can jz compile itself?</strong></summary>
 
 <br>
-<!-- FIXME: call it just test:self -->
-Yes — the full test suite runs against the self-hosted compiler (`npm run test:selfhost`). jz compiles its own kernel (the inner compiler without the parser/optimizer) to WASM and runs the same tests through it. The kernel compiles correctly; the full toolchain is not yet self-hosted.
-<!-- FIXME: we removed kernel long ago -->
+
+Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is jz compiled by jz.
+
+`npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
+
 </details>
 
-<!-- FIXME: add question how does it work - short graph overview of the pipeline, hint/link into contributing, elaborate contributing -->
+<details>
+<summary><strong>How does jz work?</strong></summary>
+
+<br>
+
+A source string flows through six stages into wasm bytes — no IR leaves the process, the whole thing is one pass per `compile()`:
+
+```
+ your .js
+   │ parse      jessie parser (subscript) → AST
+   │ jzify      lower legacy JS to the canonical subset (var/function/class/==/…)
+   │ prepare    resolve & bundle imports, normalize the AST
+   │ compile    type inference (i32 vs f64) + emit WAT IR; module/ handlers lower operators
+   │ optimize   WAT-level passes — CSE, DCE, const-fold, inline, peephole
+   │ encode     watr: WAT → WASM binary
+   ▼
+ .wasm
+```
+
+Each stage lives in its own place: parsing in [`subscript`](https://github.com/dy/subscript)'s jessie grammar, [`jzify/`](jzify/) for the legacy-JS lowering, [`src/prepare/`](src/prepare/) for module bundling, [`src/compile/`](src/compile/) for inference + codegen (with built-ins in [`module/`](module/) and heap layout in [`src/abi/`](src/abi/)), [`src/optimize/`](src/optimize/) + [`src/wat/`](src/wat/) for the WAT passes, and [`watr`](https://github.com/dy/watr) for the final encode. Shared compile state is one `ctx` object ([`src/ctx.js`](src/ctx.js)).
+
+Contributions welcome — pick the stage your change touches, add a case to the matching `test/*.js`, and run `npm test` (or `npm run test:all` for the full matrix + self-host + bench gate). A good first issue: a built-in method that doesn't lower yet — add an emitter in `module/`, mirror V8's result in a test.
+
+</details>
 
 
 <details>

@@ -10,7 +10,7 @@
  * The whole compiler runs in wasm — the host only passes the source string in and
  * reads the wasm bytes out. dist/jz.wasm is jz, compiled by jz.
  *
- * Run: node test/selfhost.js   |   CI: npm run test:selfhost
+ * Run: node test/selfhost.js   |   CI: npm run test:self
  */
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
