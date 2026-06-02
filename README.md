@@ -27,6 +27,11 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
 
+<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+
+<sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
+
+
 
 ## Usage
 
@@ -426,16 +431,6 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
 
 </details>
-
-
-## Performance
-
-Speed vs jz — geomean across the bench corpus.
-
-<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
-
-<sup>[Full benchmark →](bench/README.md) — jz vs Node, AssemblyScript, Porffor, C, Rust, Go, Zig, hand-written WAT, and NumPy across 12 workloads.</sup>
-
 
 ## Examples
 
