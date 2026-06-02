@@ -12,6 +12,7 @@
  */
 import { parse } from 'subscript/feature/jessie'
 import { compile as watrCompile } from 'watr'
+import watrPrint from 'watr/print'
 import { ctx, reset } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import compileAst from '../src/compile/index.js'
@@ -38,4 +39,29 @@ export default function compileSelf(source, strict) {
   const parsed = parse(source)
   const ast = strict ? parsed : jzify(parsed)
   return watrCompile(compileAst(prepare(ast)))
+}
+
+/**
+ * WAT-text variant of the self-host pipeline: source → WAT string (watr/print of the
+ * same `compileAst(prepare(ast))` tree compileSelf encodes to bytes). Lets the
+ * `JZ_TEST_TARGET=jz.wasm` leg satisfy white-box `compile(src,{wat:true}).match(...)`
+ * codegen-shape assertions — the self-host produces the same WAT IR as native, so the
+ * shape checks validate self-host codegen instead of failing as a feature gap. No
+ * watr-level WAT optimization runs (matches optimize:false), mirroring native
+ * `compile({wat:true, optimize:false})`.
+ * @param {string} source - JS source
+ * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
+ * @returns {string} WAT text
+ */
+export function compileWat(source, strict) {
+  reset(emitter, GLOBALS, {
+    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
+  })
+  resetProgramFactsCache()
+  ctx.transform.jzify = jzify
+  ctx.transform.optimize = resolveOptimize(false)
+  ctx.transform.strict = !!strict
+  const parsed = parse(source)
+  const ast = strict ? parsed : jzify(parsed)
+  return watrPrint(compileAst(prepare(ast)))
 }

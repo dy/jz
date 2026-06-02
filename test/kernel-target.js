@@ -42,6 +42,12 @@ const getSelfModule = () => {
 
 export const compileViaKernel = (code, opts = {}) => {
   const self = instantiate(getSelfModule(), { memory: 8192 })
+  // `--wat` IS supported on this leg via the wasm's `compileWat` export: same
+  // source→compileAst(prepare(ast)) pipeline, but watr/print of the WAT IR instead of
+  // byte encoding. White-box `compile(src,{wat:true}).match(...)` codegen-shape tests
+  // then validate self-host codegen (it emits the same WAT IR as native). No watr-level
+  // WAT optimization runs, matching native `compile({wat:true, optimize:false})`.
+  if (opts.wat) return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0))
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
   // syntax) to match the native compiler's accept/reject behavior.
   const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0)
