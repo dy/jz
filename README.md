@@ -49,94 +49,6 @@ const asyncInst = await WebAssembly.instantiate(asyncMod)
 asyncInst.exports.f(21) // 42
 ```
 
-<!-- FIXME: I feel these questions are too early on - either they should be fused into the usage example or not be folded (low-barrier). Advanced topics like WASI vs JS host should be in FAQ maybe? I feel they're already covered in FAQ - maybe just merge them there? -->
-<details>
-<summary><strong>Passing data</strong></summary>
-
-<br>
-
-Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
-
-```js
-const { exports, memory } = jz`
-  export let greet = (s) => s.length
-  export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
-  export let rgb = (c) => [c, c * 0.5, c * 0.2]
-  export let process = (buf) => buf.map(x => x * 2)
-`
-
-// Pass in
-exports.greet(memory.String('hello'))        // 5
-exports.dist(memory.Object({ x: 3, y: 4 }))  // 5
-
-// Get back
-exports.rgb(100)                              // [100, 50, 20] — auto-decoded JS array
-memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
-```
-
-`memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — the key set and order must match the compiled schema.
-
-</details>
-
-<details>
-<summary><strong>Template literals</strong></summary>
-
-<br>
-
-Interpolated values are baked into the source at compile time. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
-
-```js
-jz`export let f = () => ${'hello'}.length`               // 5
-jz`export let f = () => ${[10, 20, 30]}[1]`              // 20
-jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3
-
-const scale = (x) => x * 10
-jz`export let f = (n) => ${scale}(n) + 1`                // f(2) → 21, host-called
-```
-Interpolated functions become host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
-</details>
-
-<details>
-<summary><strong>Host imports</strong></summary>
-
-<br>
-
-Any host namespace — functions, constants, custom objects — wires in via the `imports` option:
-
-```js
-// Custom function
-jz('import { log } from "host"; export let f = (x) => { log(x); return x }',
-   { imports: { host: { log: console.log } } })
-
-// Whole namespace — sin, cos, PI, … all auto-wired
-jz('import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
-   { imports: { math: Math } })
-
-// globalThis works too
-jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
-   { imports: { window: globalThis } })
-```
-
-</details>
-
-<details>
-<summary><strong>Host modes: `js`, `wasi`</strong></summary>
-
-<br>
-
-`host: 'js'` (default) imports a few `env.*` services (table below) that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.<br>
-`host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno — no JS host needed.<br>
-The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`).
-
-| JS API | `host: 'js'` (default) | `host: 'wasi'` |
-|---|---|---|
-| `console.log()` | `env.print` — host stringifies | WASI `fd_write` |
-| `Date.now()` / `performance.now()` | `env.now` → f64 | WASI `clock_time_get` |
-| `setTimeout` / `setInterval` | `env.setTimeout` — host schedules | WASM timer queue + `__timer_tick` |
-| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
-
-</details>
-
 <details>
 <summary><strong>Options</strong></summary><br>
 
@@ -188,7 +100,7 @@ JZ is a **strict functional JS subset**. Built-in jzify transform extends suppor
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
-│ JZ compat (default)                                                    │
+│ JZ default (jzify)                                                     │
 │   var  function  arguments  switch  new Foo()                          │
 |   class  new  this  extends  super  static  #private                   │
 │   ==  !=  instanceof  undefined                                        |
@@ -260,7 +172,41 @@ Transitive imports work (main → math → utils → …); circular imports erro
 
 <br>
 
-Two kinds of import. `import … from './math.jz'` **bundles** another jz module at compile time (above). `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace, e.g. `{ imports: { math: Math } }`. Numbers pass directly; strings, arrays, and objects cross via `memory.*`. See the **Host imports** fold under [Usage](#usage).
+Two kinds of import. `import … from './math.jz'` **bundles** another jz module at compile time (above). `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
+
+```js
+// Custom function
+jz('import { log } from "host"; export let f = (x) => { log(x); return x }',
+   { imports: { host: { log: console.log } } })
+
+// Whole namespace — sin, cos, PI, … all auto-wired
+jz('import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
+   { imports: { math: Math } })
+
+// globalThis works too
+jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
+   { imports: { window: globalThis } })
+```
+
+</details>
+
+<details>
+<summary><strong>Can I interpolate values (template literals)?</strong></summary>
+
+<br>
+
+`jz` is a tagged template — interpolated values are baked into the source at compile time. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
+
+```js
+jz`export let f = () => ${'hello'}.length`               // 5
+jz`export let f = () => ${[10, 20, 30]}[1]`              // 20
+jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3
+
+const scale = (x) => x * 10
+jz`export let f = (n) => ${scale}(n) + 1`                // f(2) → 21, host-called
+```
+
+Interpolated functions become host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
 </details>
 
@@ -286,6 +232,52 @@ wasmtime program.wasm     # or: wasmer run, deno run
 ```
 
 **Raw host (no `jz/interop`)** — pure numeric modules need only `WebAssembly.Module`/`Instance`; numbers cross as plain f64. To marshal heap values yourself, the wasm signature *is* the ABI — `_alloc`/`_clear` exports plus NaN-boxed f64 pointers, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js). Pass `{ alloc: false }` to drop the allocator when you only call with numbers.
+
+</details>
+
+<details>
+<summary><strong>What does it import from the host (`js` vs `wasi`)?</strong></summary>
+
+<br>
+
+`host: 'js'` (default) imports a few `env.*` services that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.<br>
+`host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno — no JS host needed.<br>
+The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`).
+
+| JS API | `host: 'js'` (default) | `host: 'wasi'` |
+|---|---|---|
+| `console.log()` | `env.print` — host stringifies | WASI `fd_write` |
+| `Date.now()` / `performance.now()` | `env.now` → f64 | WASI `clock_time_get` |
+| `setTimeout` / `setInterval` | `env.setTimeout` — host schedules | WASM timer queue + `__timer_tick` |
+| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
+
+</details>
+
+<details>
+<summary><strong>How do I pass strings, arrays, and objects?</strong></summary>
+
+<br>
+
+Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
+
+```js
+const { exports, memory } = jz`
+  export let greet = (s) => s.length
+  export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
+  export let rgb = (c) => [c, c * 0.5, c * 0.2]
+  export let process = (buf) => buf.map(x => x * 2)
+`
+
+// Pass in
+exports.greet(memory.String('hello'))        // 5
+exports.dist(memory.Object({ x: 3, y: 4 }))  // 5
+
+// Get back
+exports.rgb(100)                              // [100, 50, 20] — auto-decoded JS array
+memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
+```
+
+`memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — the key set and order must match the compiled schema.
 
 </details>
 
@@ -333,7 +325,7 @@ Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Mem
 <summary><strong>Why no type annotations?</strong></summary>
 
 <br>
-
+<!-- FIXME: a bit tldrs and some claims are not correct. We'd need to be more short and illustrative here -->
 Annotations would break the core promise: `let x: i32` isn't valid JS, so the file couldn't run, test, or debug as JS. jz infers types from signals you already write — literals (`0` vs `0.5`), operators (`|`/`<<` ⇒ i32), method calls, and how a value flows — pinning each to `i32`, `f64`, string, struct, or typed array where provable. Anything ambiguous stays a NaN-boxed f64: always correct, just not the fastest. So you write ordinary JS and get native types for free, and the same source still runs in any JS engine. `--wat` shows what was inferred; *Optimization hints* below covers how to nudge it.
 
 </details>
@@ -341,7 +333,7 @@ Annotations would break the core promise: `let x: i32` isn't valid JS, so the fi
 <details>
 <summary><strong>Optimization hints?</strong></summary>
 <br>
-
+<!-- FIXME: A bit too technical and tldr - I would shorten or even make it a separate section maybe? Or under performance - as details? -->
 jz infers types from source — literals, operators, method calls, assignment flow. Anything ambiguous falls back to NaN-boxed f64 (correct, but slower). The hints below help the compiler pick a faster representation.
 
 **Integers ride on i32 where it's safe.** Bitwise ops (`|`, `&`, `<<`, `>>>`), `Math.imul`, loop counters, `charCodeAt`, and integer `const`/`let` compile to raw i32 — no NaN-box. Indexing a **typed array** (or known array) computes the offset in pure i32: `a[y * W + x]` needs no `x | 0` and does no widening. General `+ - * %` compute in **f64** — exact to 2⁵³, the same speed as i32, and JS-faithful (a product never silently wraps at 2³¹). Indexing an **untyped** value falls back to f64 offsets — pass a typed array in hot loops.
@@ -384,7 +376,7 @@ jz emits WAT directly, then layers these (all on by default at `optimize: 2`):
 - **Host-import lowering** — `host: 'js'` lowers `console` / timers / clocks to small `env.*` imports instead of bundling WASI.
 <!-- FIXME: are these all optimizations? Can they be generalized/extended more? Any extra optimizations possible? -->
 `--wat` shows the result. Size and speed budgets are gated in CI (`npm run test:bench`).
-
+<!-- FIXME: you have said about --wat multiple times in readme - remove the tautologies like this please -->
 </details>
 <!-- FIXME: we should cover size and its optimizations as well, and make a pass for shrinking produced WASM -->
 
@@ -392,9 +384,9 @@ jz emits WAT directly, then layers these (all on by default at `optimize: 2`):
 <summary><strong>Can jz compile itself?</strong></summary>
 
 <br>
-
+<!-- FIXME: call it just test:self -->
 Yes — the full test suite runs against the self-hosted compiler (`npm run test:selfhost`). jz compiles its own kernel (the inner compiler without the parser/optimizer) to WASM and runs the same tests through it. The kernel compiles correctly; the full toolchain is not yet self-hosted.
-<!-- FIXME: what is kernel? We need to completely compile itself -->
+<!-- FIXME: we removed kernel long ago -->
 </details>
 
 <!-- FIXME: add question how does it work - short graph overview of the pipeline, hint/link into contributing, elaborate contributing -->
@@ -414,7 +406,7 @@ wasm2c program.opt.wasm -o program.c
 cc -O3 program.c -o program
 ```
 
-The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C — beating V8 on 19 of 21 bench cases on an M4 Max. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
+The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
 
 </details>
 
@@ -454,13 +446,13 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 ## Alternatives
 
-<img src="alternatives.svg?v=1" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
+<img src="alternatives.svg?v=2" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
 
-* [**AssemblyScript**](https://github.com/AssemblyScript/assemblyscript) — *AOT, TS-like dialect.* Small, fast output, but its own typed language with required annotations — not JavaScript.
-* [**Porffor**](https://github.com/CanadaHonk/porffor) — *AOT, growing TC39.* Ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
-* [**jawsm**](https://github.com/drogus/jawsm) — *compiled, WasmGC.* JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
-* [**Javy**](https://github.com/bytecodealliance/javy) — *embeds QuickJS.* Interprets your source; runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
-* [**ComponentizeJS / jco**](https://github.com/bytecodealliance/ComponentizeJS) — *embeds SpiderMonkey.* Emits a WASM Component via StarlingMonkey; standards-compliant and near-complete, but bundles a whole JS engine.
+* [**AssemblyScript**](https://github.com/AssemblyScript/assemblyscript) — TypeScript-like dialect → WASM. Small, fast output, but requires type annotations — not JavaScript.
+* [**Porffor**](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
+* [**jawsm**](https://github.com/drogus/jawsm) — JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
+* [**Javy**](https://github.com/bytecodealliance/javy) — interprets your source via an embedded QuickJS. Runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
+* [**ComponentizeJS / jco**](https://github.com/bytecodealliance/ComponentizeJS) — emits a WASM Component via an embedded SpiderMonkey (StarlingMonkey). Standards-compliant and near-complete, but bundles a whole JS engine.
 
 
 ## Build with
