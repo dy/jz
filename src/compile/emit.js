@@ -22,8 +22,8 @@
  */
 
 import {
-  commaList, T, isBlockBody, isReassigned, mutatesArrayLength, hasOwnContinue, hasOwnBreakOrContinue,
-  extractParams, classifyParam,
+  commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
+  hasOwnContinue, hasOwnBreakOrContinue, extractParams, classifyParam,
 } from '../ast.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
@@ -490,6 +490,29 @@ const immutableLenBound = (node, body) => {
   if (vt === VAL.TYPED) return !isReassigned(body, node[1])
   if (vt === VAL.ARRAY) return !mutatesArrayLength(body, node[1])
   return false
+}
+
+// Pull `const x = <array/object literal>` decls out of a loop body when the literal is
+// deeply constant and `x` is provably read-only + non-escaping in the loop (so a single
+// shared allocation is sound) — otherwise the constant table is re-allocated every
+// iteration. Returns { hoisted: [decl…], body: strippedBody } or null. Only top-level
+// statements of the loop body are considered.
+const extractHoistableLiterals = (body) => {
+  let stmts, rebuild
+  if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';') {
+    stmts = body[1].slice(1); rebuild = kept => ['{}', [';', ...kept]]
+  } else if (Array.isArray(body) && body[0] === ';') {
+    stmts = body.slice(1); rebuild = kept => kept.length === 1 ? kept[0] : [';', ...kept]
+  } else return null
+  const hoisted = [], kept = []
+  for (const s of stmts) {
+    const lit = Array.isArray(s) && (s[0] === 'const' || s[0] === 'let') && s.length === 2
+      && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' ? s[1][2] : null
+    if (lit && Array.isArray(lit) && lit[0] === '[' && isConstLiteral(lit) && constLiteralHoistable(body, s[1][1]))
+      hoisted.push(s)
+    else kept.push(s)
+  }
+  return hoisted.length ? { hoisted, body: rebuild(kept) } : null
 }
 
 // A source-defined function (carries a body) — as opposed to an imported name,
@@ -2959,6 +2982,14 @@ export const emitter = {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
     }
+    // Lift constant array/object literals out of the loop (allocate once, not per
+    // iteration) when they are read-only + non-escaping inside it. Strip them from the
+    // body up front so freshBoxed / continue analysis see the reduced body.
+    let preLoopLits = []
+    if (!ctx.transform.optimize || ctx.transform.optimize.hoistConstLit !== false) {
+      const ex = extractHoistableLiterals(body)
+      if (ex) { preLoopLits = ex.hoisted; body = ex.body }
+    }
     const id = ctx.func.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
     // The cont wrapper is only needed if the body has a `continue` AND there is a step
@@ -2974,6 +3005,7 @@ export const emitter = {
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
     if (init != null) result.push(...emitVoid(init))
+    for (const lit of preLoopLits) result.push(...emitVoid(lit))   // allocate hoisted literals once
     // Hoist a loop-invariant immutable-length bound out of the condition. A typed
     // array's `.length` is fixed, so `i < arr.length` otherwise reloads the header
     // (`i32.load (base-8) >> 2`) every iteration for nothing (V8's JIT hoists it).
