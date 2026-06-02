@@ -9,12 +9,10 @@
   html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: sans-serif; }
   body { border-top: 2px solid #bc18d4; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #100707; cursor: cell; user-select: none; }
-  #edge { position: absolute; bottom: 40px; right: 40px; color: #fff; display: none; text-shadow: 0 1px 2px #000; -ms-user-select: none; user-select: none; }
 </style>
 </head>
 <body>
 <canvas></canvas>
-<div id="edge">Might be blurry because MS Edge does not support 'image-rendering: crisp-edges' (yet) :-(</div>
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 
@@ -81,10 +79,6 @@ for (const ty of ["mousemove", "touchmove", "mousedown"]) {
     const rect = canvas.getBoundingClientRect();
     engine.fill((loc.clientX - rect.left) >>> 1, (loc.clientY - rect.top) >>> 1, 0.5);
   });
-}
-
-if (navigator.userAgent.includes(" Edge/")) {
-  document.getElementById("edge").style.display = "block";
 }
 </script>
 </body>
