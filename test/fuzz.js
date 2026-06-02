@@ -593,10 +593,17 @@ export const fuzzTypedMap = (opts) => {
 // kept ops are mod-2^32 homomorphic, so jz's per-step wrap == JS's exact-then-`|0`,
 // and the small init keeps every value well inside the exact range.
 const I_LEAF = ['a[i]', '1', '2', '3', '7', '255']
-const genIntExpr = (g, d) =>
-  (d <= 0 || g.chance(0.4))
-    ? (g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF))
-    : `(${genIntExpr(g, d - 1)} ${g.pick(['+', '-', '&', '|', '^', '<<'])} ${genIntExpr(g, d - 1)})`
+const iLeaf = (g) => g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF)
+const genIntExpr = (g, d) => {
+  if (d <= 0 || g.chance(0.4)) return iLeaf(g)
+  // Comparisons over LEAVES only (bounded operands): a comparison must never consume
+  // a non-`|0`'d arithmetic intermediate, which can overflow i32 (e.g. `(a<<a)`), where
+  // JS keeps the exact Number and jz wraps — a contract divergence, not a miscompile.
+  // The 0/1 result then feeds the homomorphic arithmetic below. Exercises the
+  // f64.cmp(convert,convert) → i32.cmp fold soundly.
+  if (g.chance(0.2)) return `(${iLeaf(g)} ${g.pick(['<', '>', '<=', '>=', '===', '!=='])} ${iLeaf(g)})`
+  return `(${genIntExpr(g, d - 1)} ${g.pick(['+', '-', '&', '|', '^', '<<'])} ${genIntExpr(g, d - 1)})`
+}
 const typedIntSource = (seed) => {
   const g = mkRng(seed)
   const N = 200 + g.int(60)
