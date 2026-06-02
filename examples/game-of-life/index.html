@@ -44,7 +44,7 @@ ctx.imageSmoothingEnabled = false;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/game-of-life", onSwitch: start });
+const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/game-of-life", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
 
 let engine; // current engine — interaction handlers below read this
 let gen = 0;
