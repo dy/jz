@@ -19,8 +19,9 @@
 import { loadEngine, hud } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
-// Internal resolution: 100×75 keeps jz near 60fps (conv is heavy: 440 kernel entries per cell)
-const IW = 100, IH = 75
+// Internal resolution: 160×120 gives the kernel radius room for life while staying
+// playable (the ring convolution is the heavy part — ~230 kernel entries per cell at R=9)
+const IW = 160, IH = 120
 cv.width = IW; cv.height = IH
 
 const img = g.createImageData(IW, IH)

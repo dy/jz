@@ -51,7 +51,7 @@ const EXAMPLES = [
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
   { name: 'lenia', frame: 'frame ×1', opt: true,
-    make: (e) => { e.resize(100, 75); e.seed(); return () => e.frame(0.1) } },
+    make: (e) => { e.resize(160, 120); e.seed(); return () => e.frame(0.1) } },
 
   { name: 'raymarcher', frame: 'frame(t)', opt: true,
     make: (e) => { e.resize(320, 200); let t = 0; return () => e.frame(t += 0.02) } },

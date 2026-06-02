@@ -18,7 +18,7 @@ export let resize = (w, h) => {
 
   // Precompute smooth ring kernel: weight(r) = exp(-((r/R-0.5)^2)/(2*0.15^2)) for r in (0,R]
   // R=12, sigma_r=0.15. Collect all (dx,dy) where 0<dist<=R, compute & normalize weights.
-  let R = 12
+  let R = 9
   let sigma_r = 0.15
   let inv2sr2 = 1.0 / (2.0 * sigma_r * sigma_r)
   let sigma = 0.017
@@ -72,16 +72,21 @@ export let resize = (w, h) => {
 }
 
 export let seed = () => {
-  // Fill a central patch (~30% of each dimension) with random [0,1]
-  let pw = (W * 0.3) | 0
-  let ph = (H * 0.3) | 0
+  // Primordial soup: low-amplitude noise over a broad central region, biased near the
+  // growth peak μ≈0.15 so cells start inside the growth window and sustain (a full-range
+  // [0,1] seed sits mostly above μ+σ and just decays to nothing). buf reset to read cellA.
+  buf = 0
+  let i = 0, n = W * H
+  while (i < n) { cellA[i] = 0.0; cellB[i] = 0.0; i++ }
+  let pw = (W * 0.7) | 0
+  let ph = (H * 0.7) | 0
   let x0 = ((W - pw) >> 1)
   let y0 = ((H - ph) >> 1)
   let cy = y0
   while (cy < y0 + ph) {
     let cx = x0
     while (cx < x0 + pw) {
-      cellA[cy * W + cx] = Math.random()
+      cellA[cy * W + cx] = Math.random() * 0.5
       cx++
     }
     cy++
