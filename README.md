@@ -2,7 +2,7 @@
 
 ## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![test262](https://github.com/dy/jz/actions/workflows/test262.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test262.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
-**JZ** (_javascript zero_) is **minimal functional JS subset** that compiles to WASM.
+**JZ** (_javascript zero_) is **minimal functional JS** that compiles to WASM.
 
 
 ```js
@@ -51,6 +51,7 @@ const asyncInst = await WebAssembly.instantiate(asyncMod)
 asyncInst.exports.f(21) // 42
 ```
 
+<!-- FIXME: I feel these questions are too early on - either they should be fused into the usage example or not be folded (low-barrier). Advanced topics like WASI vs JS host should be in FAQ maybe? -->
 <details>
 <summary><strong>Passing data</strong></summary>
 
@@ -125,8 +126,8 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
 
 <br>
 
-`host: 'js'` (default) imports a few `env.*` services (table below) that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.
-`host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno — no JS host needed.
+`host: 'js'` (default) imports a few `env.*` services (table below) that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.<br>
+`host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno — no JS host needed.<br>
 The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`).
 
 | JS API | `host: 'js'` (default) | `host: 'wasi'` |
@@ -135,8 +136,6 @@ The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi
 | `Date.now()` / `performance.now()` | `env.now` → f64 | WASI `clock_time_get` |
 | `setTimeout` / `setInterval` | `env.setTimeout` — host schedules | WASM timer queue + `__timer_tick` |
 | dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
-
-<sup>`env.now` returns f64, not i64: `performance.now()` is fractional and `Date.now()` overflows i32, while f64 carries both exactly and skips i64↔BigInt boundary marshalling — the same `double` choice Emscripten makes.</sup>
 
 </details>
 
@@ -177,12 +176,12 @@ jz --help                  # help
 
 ## Language
 
-Ordinary JS compiles by default: the built-in **jzify** pass lowers the outer ring (`var`/`function`/`class`/…) into the canonical **JZ** subset. `strict` mode skips jzify and enforces the inner subset directly, rejecting everything outside it.
+JZ is a **strict functional JS subset**. Built-in jzify transform extends support to legacy patterns.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │ JZ                                                                 │ │
+│ │ JZ strict                                                          │ │
 │ │   let/const  =>  ...xs  destructuring  import/export               │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
 │ │   try/catch/finally  throw                                         │ │
@@ -191,7 +190,7 @@ Ordinary JS compiles by default: the built-in **jzify** pass lowers the outer ri
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
-│ JZify                                                                  │
+│ JZ compat (default)                                                    │
 │   var  function  arguments  switch  new Foo()                          │
 |   class  new  this  extends  super  static  #private                   │
 │   ==  !=  instanceof  undefined                                        |
@@ -213,10 +212,11 @@ Not supported
 
 <br>
 
-jz compiles to static WASM — some behaviors diverge from V8. `--wat` shows exactly what was emitted.
+jz compiles to static WASM — some behaviors diverge from V8.
 
-- **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values proven to fit `i32` wrap at ±2³¹ (asm.js `ToInt32`); keep a value f64 for exact integers beyond that. `--wat` shows which locals are `i32`.
+- **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values proven to fit `i32` wrap at ±2³¹ (asm.js `ToInt32`); keep a value f64 for exact integers beyond that.
 - **Fixed-layout objects.** Key set and order are fixed at the literal; `delete` is rejected; `memory.Object({…})` must match source order.
+<!-- FIXME: should memory.Object match source order indeed? Why? isn't schema supposed to cover that? -->
 - **No GC.** Memory isn't reclaimed automatically (`memory.reset()` — see below). `WeakMap`/`WeakSet` fold to `Map`/`Set` (weakness is unobservable); `Set`/`Map` iterate slot order, not insertion order.
 - **Thin value model.** Errors are untagged — `throw` carries a value, so `e instanceof TypeError` can't discriminate. A boolean from `&&`/`||` or an untyped container crosses the host boundary as `1`/`0` (`typeof`, `String`, `JSON.stringify`, comparisons, and boolean methods return a real boolean).
 - **Rough edges.** `String()` of a non-integer keeps ~9 significant digits (`String(1/3)` → `"0.333333333"`). Legacy octal `0377` reads as decimal — use `0o377`.
@@ -449,20 +449,21 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with a precomputed color table.</td>
 <td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
 </tr>
+<tr>
+<td colspan="2"><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sound-effect synth, compiled as-is and synthesized ~2× faster than V8.</td>
+</tr>
 </table>
 
 
 ## Alternatives
 
-<!-- FIXME: expected axis: size, speed, completeness, what ekse? -->
 ```mermaid
 quadrantChart
     title JS → WASM landscape
-    x-axis "subset" --> "full spec"
-    y-axis "Bundled runtime / interpreter" --> "AOT → native, tiny output"
+    x-axis "JS subset" --> "Full JS spec"
+    y-axis "Bundled runtime, big + slow" --> "AOT native, small + fast"
     quadrant-1 "The goal"
     quadrant-2 "AOT compiled"
-    quadrant-3 ""
     quadrant-4 "Bundled runtime"
     AssemblyScript: [0.10, 0.75]
     jz: [0.30, 0.85]
