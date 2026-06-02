@@ -1883,8 +1883,10 @@ const vacuum = (ast) => {
       return ['nop']
     }
 
-    // (select x x cond) → x
-    if (op === 'select' && node.length >= 4 && equal(node[1], node[2])) return node[1]
+    // (select x x cond) → x — only when cond is PURE. An impure cond may set a
+    // local that a later op reads (e.g. an address `local.tee` the matching store
+    // reuses); dropping it would leave that local stale. Keep the select otherwise.
+    if (op === 'select' && node.length >= 4 && equal(node[1], node[2]) && isPure(node[3])) return node[1]
 
     if (op === 'if') {
       const { cond, thenBranch, elseBranch } = parseIf(node)
