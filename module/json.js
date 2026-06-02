@@ -1017,9 +1017,17 @@ export default (ctx) => {
   // word[0]; AND-check word[1..] against the bytes after the parse position.
   // Past-end reads land in the 0xFF sentinel pad, which matches nothing.
   const litMatch = (word) => {
-    const tests = [...word].slice(1).map((c, i) =>
-      `(i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const ${i + 1})))) (i32.const ${c.charCodeAt(0)}))`)
-    return tests.reduce((a, b) => `(i32.and ${a} ${b})`)
+    // Index with charCodeAt rather than `[...word]` spread: jz (self-host) does not
+    // spread a string into a char array, so the spread form yields an empty test set
+    // and the literal match folds to a constant-false `(if 0 …)` — breaking
+    // JSON.parse of true/false/null once jz compiles its own parser. The first char
+    // is already matched by the caller's `ch` switch, so compare offsets 1..len-1.
+    let acc = ''
+    for (let i = 1; i < word.length; i++) {
+      const t = `(i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const ${i})))) (i32.const ${word.charCodeAt(i)}))`
+      acc = acc ? `(i32.and ${acc} ${t})` : t
+    }
+    return acc
   }
   const litCase = (ch, word, valIR, adv) => `(if (i32.eq (local.get $ch) (i32.const ${ch}))
       (then (if ${litMatch(word)}
