@@ -158,8 +158,8 @@ Yes. Standard `import`/`export` syntax is bundled at compile time into a single 
 
 ```js
 const { exports } = jz(
-  'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
-  { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
+  'import { add } from "./math.js"; export let f = (a, b) => add(a, b)',
+  { modules: { './math.js': 'export let add = (a, b) => a + b' } }
 )
 ```
 
@@ -172,7 +172,7 @@ Transitive imports work (main → math → utils → …); circular imports erro
 
 <br>
 
-Two kinds of import. `import … from './math.jz'` **bundles** another jz module at compile time (above). `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
+Yes. `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
 
 ```js
 // Custom function
@@ -213,6 +213,7 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 <details>
 <summary><strong>How do I run produced .wasm?</strong></summary>
 
+<!-- FIXME: this answer need more clear elaborating and made more comprehensive. Each method needs details -->
 <br>
 It's a standalone `.wasm` with no runtime dependency — compile once at build time and reuse the module (don't recompile jz source per request). Three ways to run it:
 
@@ -223,6 +224,7 @@ import { instantiate } from 'jz/interop'
 const { exports, memory } = instantiate(wasmBytes)   // bundler import or fetch()
 exports.greet(memory.String('hello'))
 ```
+<!-- FIXME: how instantiate is different from normal instantiate - answer; how memory is different? do we need them at all, why cant we just do direct WebAssembly - we can, can't we? Mention that wrapping is needed for heap values only -->
 
 **Standalone runtime** — compile with `host: 'wasi'` and run on any WASM engine:
 
@@ -230,14 +232,17 @@ exports.greet(memory.String('hello'))
 jz program.js --host wasi -o program.wasm
 wasmtime program.wasm     # or: wasmer run, deno run
 ```
+<!-- FIXME: how does user pass pointer values? -->
 
 **Raw host (no `jz/interop`)** — pure numeric modules need only `WebAssembly.Module`/`Instance`; numbers cross as plain f64. To marshal heap values yourself, the wasm signature *is* the ABI — `_alloc`/`_clear` exports plus NaN-boxed f64 pointers, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js). Pass `{ alloc: false }` to drop the allocator when you only call with numbers.
+<!-- FIXME: likely this is second method, not the last one -->
 
 </details>
 
 <details>
 <summary><strong>What does it import from the host (`js` vs `wasi`)?</strong></summary>
 
+<!-- FIXME: strange question, person doesn't ask this - it points at implementation detail. What would be normal question? Host target? -->
 <br>
 
 `host: 'js'` (default) imports a few `env.*` services that `jz()` and `jz/interop` wire to the JS host automatically — overridable via `opts.imports.env`.<br>
@@ -255,7 +260,7 @@ The compiled `.wasm` carries at most one import namespace (none, `env`, or `wasi
 
 <details>
 <summary><strong>How do I pass strings, arrays, and objects?</strong></summary>
-
+<!-- FIXME: I feel like this goes after produced .wasm, not after js vs wasi, is it? -->
 <br>
 
 Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
@@ -282,12 +287,12 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 </details>
 
 <details>
-<summary><strong>How does memory work? How do I reset it?</strong></summary>
+<summary><strong>How does memory work?</strong></summary>
 
 <br>
 
 jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 and grows the WASM memory automatically when full.
-
+<!-- FIXME: what are 1024 bytes used for? -->
 Memory is never reclaimed implicitly — a long-running program that allocates per call grows without bound. Reset between independent batches:
 
 ```js
@@ -317,7 +322,8 @@ b.exports.read(a.exports.make())  // 30 — same memory, merged schemas
 memory.read(a.exports.make())     // {x: 10, y: 20}
 ```
 
-Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`. Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
+Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`.<br>
+Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface. <!-- FIXME: elaborate -->
 
 </details>
 
@@ -325,60 +331,17 @@ Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Mem
 <summary><strong>Why no type annotations?</strong></summary>
 
 <br>
-<!-- FIXME: a bit tldrs and some claims are not correct. We'd need to be more short and illustrative here -->
-Annotations would break the core promise: `let x: i32` isn't valid JS, so the file couldn't run, test, or debug as JS. jz infers types from signals you already write — literals (`0` vs `0.5`), operators (`|`/`<<` ⇒ i32), method calls, and how a value flows — pinning each to `i32`, `f64`, string, struct, or typed array where provable. Anything ambiguous stays a NaN-boxed f64: always correct, just not the fastest. So you write ordinary JS and get native types for free, and the same source still runs in any JS engine. `--wat` shows what was inferred; *Optimization hints* below covers how to nudge it.
+
+Because `let x: i32` isn't valid JS — annotations would break the promise that valid jz runs and tests as plain JS. So jz reads the types from signals you already write:
+
+```js
+export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
+export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
+```
+
+Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays a **NaN-boxed f64** — always correct, but each use carries a runtime type check. That dispatch is the only cost; f64 math itself is as fast as i32. See [Writing fast jz](#performance) to keep values off the dynamic path.
 
 </details>
-
-<details>
-<summary><strong>Optimization hints?</strong></summary>
-<br>
-<!-- FIXME: A bit too technical and tldr - I would shorten or even make it a separate section maybe? Or under performance - as details? -->
-jz infers types from source — literals, operators, method calls, assignment flow. Anything ambiguous falls back to NaN-boxed f64 (correct, but slower). The hints below help the compiler pick a faster representation.
-
-**Integers ride on i32 where it's safe.** Bitwise ops (`|`, `&`, `<<`, `>>>`), `Math.imul`, loop counters, `charCodeAt`, and integer `const`/`let` compile to raw i32 — no NaN-box. Indexing a **typed array** (or known array) computes the offset in pure i32: `a[y * W + x]` needs no `x | 0` and does no widening. General `+ - * %` compute in **f64** — exact to 2⁵³, the same speed as i32, and JS-faithful (a product never silently wraps at 2³¹). Indexing an **untyped** value falls back to f64 offsets — pass a typed array in hot loops.
-
-**Let the arena rewind.** A function proven not to leak heap values (no returned strings/arrays/objects) rewinds the bump pointer on return — no manual `memory.reset()` needed per call.
-<!-- FIXME: give example -->
-
-**Help SIMD fire.** The vectorizer lifts `for (let i = 0; i < N; i++) a[i] = f(a[i], …)` to SIMD-128 when the body is **lane-pure** — output `k` depends only on inputs at `k`.
-<!-- FIXME: what is lane-pure? -->
-
-- **Lifts:** in-place maps (`a[i] = a[i] * 2`), cross-array maps (`b[i] = a[i] * k + c`), structure-of-arrays (up to 4 bases), reductions (`s += a[i]`, `h ^= a[i]`).
-<!-- FIXME: we need to elaborate sructure-of-arrays -->
-- **Doesn't lift:** array-of-structures (interleaved `a[i*3]` — split into one typed array per field), loop-carried scalars (`s ^= s << 13`), stencils (`a[i-1]`), unbounded loops.
-<!-- FIXME: we need to try array-of-structures optimization -->
-<!-- FIXME: Where and what else vectorizing possible? -->
-
-**Avoid string copies (JS host).** String params that only use `.length` and bounded `.charCodeAt(i)` in a loop qualify for the zero-copy `wasm:js-string` carrier — the JS string passes by reference, no allocation. Trigger it with a `.charCodeAt` use, a `s = ''` default, or call-site string evidence. On by default for `host: 'js'` (already JS-bound via `env.*`, so the carrier is free); opt out with `optimize: { jsstring: false }`. WASI builds always copy — the carrier needs a JS host, so wasi output stays portable to wasmtime/Go/Rust.
-<!-- FIXME: what is copying? need example. And need to investigate if possible optimization -->
-
-**Check the output.** `--wat` shows exactly what was emitted — which locals are i32, whether a `$__simd_loop` block appeared, and how tight the inner loop is.
-<!-- FIXME: need to give size optimization hints as well -->
-<!-- FIXME: need to improve size metrics to be on par with handwritten wasm -->
-
-</details>
-
-<details>
-<summary><strong>What optimizations are applied?</strong></summary>
-
-<br>
-
-jz emits WAT directly, then layers these (all on by default at `optimize: 2`):
-
-- **Escape analysis** — short-lived objects/arrays never reach the heap.
-- **Arena rewind** — a function proven not to leak heap values rewinds the bump pointer on return.
-- **Type narrowing** — bitwise / counter / `Math.imul` / `charCodeAt` values stay on raw i32/f64 instead of the boxed-value path.
-- **Typed-array fusion** — monomorphic typed-array access skips index dispatch and reuses computed addresses across a hot loop.
-- **SIMD vectorization** — lane-pure array loops lift to SIMD-128.
-- **Constant loop unroll** — small fixed-count loops unroll (biquad, mat4).
-- **JSON specialization** — a constant `JSON.parse` source folds to a literal tree; a stable shape gets a generated shape-specific parser.
-- **Host-import lowering** — `host: 'js'` lowers `console` / timers / clocks to small `env.*` imports instead of bundling WASI.
-<!-- FIXME: are these all optimizations? Can they be generalized/extended more? Any extra optimizations possible? -->
-`--wat` shows the result. Size and speed budgets are gated in CI (`npm run test:bench`).
-<!-- FIXME: you have said about --wat multiple times in readme - remove the tautologies like this please -->
-</details>
-<!-- FIXME: we should cover size and its optimizations as well, and make a pass for shrinking produced WASM -->
 
 <details>
 <summary><strong>Can jz compile itself?</strong></summary>
@@ -441,6 +404,56 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
+
+<details>
+<summary><strong>Writing fast jz</strong></summary>
+
+<br>
+
+jz infers types from your code; a few habits keep it on the fast path instead of the safe dynamic one:
+
+- **Typed arrays in hot loops.** Indexing a `Float64Array`/`Int32Array` is a direct load at an i32 offset (`a[y * W + x]` needs no `| 0`); a plain array falls back to runtime dispatch.
+- **Keep integers integer.** Bitwise ops, `Math.imul`, loop counters and `charCodeAt` ride on raw i32. Plain `+ - * %` run in f64 — exact to 2⁵³ and as fast as i32 — so most math needs no thought.
+- **Lane-pure loops vectorize.** `for (i…) a[i] = f(a[i], b[i])`, where output `i` reads only inputs at `i`, lifts to SIMD-128. Cross-lane work (`a[i-1]`, `s ^= s << 13`) stays scalar.
+- **Let the arena rewind.** A function that returns no heap value (string/array/object) frees its allocations on return — no `memory.reset()` needed.
+- **Zero-copy strings.** Params that only read `.length`/`.charCodeAt(i)` cross the JS boundary by reference (default for `host: 'js'`).
+
+`--wat` shows the result — i32 locals and a `$__simd_loop` block mean it worked.
+
+</details>
+
+<details>
+<summary><strong>What optimizations applied</strong></summary>
+
+<br>
+
+jz emits WAT and optimizes it across an AST pass and a WAT-IR pass — all on at the default `optimize: 2`. The headline transforms:
+
+- **Type narrowing** — a whole-program pass pins parameters and results to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path.
+- **Escape analysis** — fixed-size arrays, objects and typed arrays with static access become WASM locals instead of heap allocations.
+- **Arena rewind** — a function proven not to leak a heap value restores the bump pointer on return.
+- **Loops & expressions** — invariant hoisting, common-subexpression elimination, typed-array address reuse, and small fixed-count unrolling (mat4, biquad).
+- **SIMD** — lane-pure array loops lift to SIMD-128.
+- **Smaller encoding** — tree-shaking, dead-store elimination, local and string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling.
+
+Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, and JS strings stay zero-copy. Levels: `0`–`3`, or `'size'`/`'balanced'`/`'speed'`, or a per-pass object — `'balanced'` (= `2`) is the default; `'speed'` trades a little size for speed (inlines constants, larger buffers); `'size'` drops unrolling and SIMD.
+
+</details>
+
+<details>
+<summary><strong>Output size</strong></summary>
+
+<br>
+
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and **~25× smaller than Porffor** (which bundles a JS engine); most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~6 kB. Shrink it further:
+
+- **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
+- **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
+- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
+
+Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
+
+</details>
 
 
 
