@@ -2140,6 +2140,34 @@ function walkRewrite(node, doInline, counts) {
       return a[1]
   }
 
+  // (i32 ± i32) | 0 that round-tripped through f64. jz computes integer +/- in f64
+  // then ToInt32-clamps (the universal value model: typed-array reads are f64), emitting
+  //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s [local.tee T] (f64.add/sub (convert A) (convert B)))) FALLBACK COND)
+  // For i32 A,B this equals i32.add/sub(A,B) EXACTLY — the f64 add/sub of two i32s is
+  // lossless (|x| < 2^32 < 2^53) and the wrap is two's-complement, identical to the
+  // select's ToInt32; FALLBACK/COND compute the same value, so the whole select collapses
+  // (T becomes dead). Drops the round-trip generally and lets the vectorizer see i32.add
+  // reductions over int arrays. `convert_i32_*` proves each operand is a real i32.
+  if (op === 'select' && node.length >= 4) {
+    const v = node[1]
+    if (Array.isArray(v) && v[0] === 'i32.wrap_i64' && Array.isArray(v[1]) && v[1][0] === 'i64.trunc_sat_f64_s' && v[1].length === 2) {
+      let inner = v[1][1]
+      if (Array.isArray(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]
+      if (Array.isArray(inner) && (inner[0] === 'f64.add' || inner[0] === 'f64.sub') && inner.length === 3) {
+        const conv = x => Array.isArray(x) && (x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u') && x.length === 2
+        if (conv(inner[1]) && conv(inner[2]))
+          return [inner[0] === 'f64.add' ? 'i32.add' : 'i32.sub', inner[1][1], inner[2][1]]
+      }
+    }
+  }
+  // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
+  // after the fold above, so the accumulator update is a bare i32.add the recognizer matches.
+  if (op === 'i32.or' && node.length === 3) {
+    const a = node[1], b = node[2]
+    if (Array.isArray(b) && b[0] === 'i32.const' && b[1] === 0) return a
+    if (Array.isArray(a) && a[0] === 'i32.const' && a[1] === 0) return b
+  }
+
   // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))
   // → (i32.add (i32.shl x S) (i32.const K<<S)). Overflow-safe — both forms wrap
   // mod 2^32 identically. Unlocks memarg offset= folding for biquad-style
