@@ -27,12 +27,6 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
 
-<!-- FIXME: remove paddings from image -->
-<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
-
-<sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
-
-
 
 ## Usage
 
@@ -448,6 +442,14 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <td colspan="2"><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sound-effect synth, compiled as-is and synthesized ~2× faster than V8.</td>
 </tr>
 </table>
+
+
+## Performance
+
+<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+
+<sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
+
 
 
 ## Alternatives
