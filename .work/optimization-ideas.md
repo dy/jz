@@ -133,3 +133,20 @@ Inspected the real IR for the next batch (int min/max, extending-add, IV strengt
 **IV strength reduction:** independent of the above, but marginal on the wasm→V8 path (V8 strength-reduces the loaded module itself) while touching core address arithmetic — low ROI vs risk. Deprioritized.
 
 **Net:** the genuinely landed SIMD wins this session are product reductions, conditional (`?:`) maps, and the pooled-const `global.get` splat — plus the correctness fix. Int-reduction vectorization is real but contract-entangled; recommend it as a separate, fuzzed effort rather than a quick batch.
+
+---
+
+## Status & corrections — pass 4 (int sum reductions DONE + a systemic miscompile fixed)
+
+Pursued the int-reduction rework. It was NOT the contract-changing L effort pass 3 feared — the clean lever is a peephole, and pursuing it surfaced (via a new fuzzer) a pre-existing systemic correctness bug worth more than the feature.
+
+**DONE — i32 sum reductions vectorize.** `(i32 ± i32)|0` over typed-array loads lowers to `select(i32.wrap_i64(i64.trunc_sat_f64_s(f64.add/sub(convert A, convert B))), …)` (the universal-f64-then-ToInt32 model). `fusedRewrite` now folds that → `i32.add/sub(A, B)` (EXACT — the f64 add/sub of two i32s is lossless, wrap == two's-complement; fallback/cond compute the same ToInt32), plus `i32.or X 0 → X`. Runs before the vectorizer, so `s += a[i]` over an Int32Array now lifts to `i32x4.add`. Also a general win: drops the f64 round-trip for every `(i32±i32)|0`. No contract change — same wrap semantics.
+
+**FIXED — systemic watr miscompile (the real prize).** The new Int32Array fuzzer (`--typed-int`) immediately caught a pre-existing silent miscompile, live at opt2/opt3 on main: the `PEEPHOLE` algebraic folds (`x & 0 → 0`, `x ^ x → 0`, `x*0`, idempotent `x & x → x`, self-comparisons…) dropped an operand without a purity check. When that operand held a typed-array element's address `local.tee`, the store went stale (`a[i] = (…) & 0` left the element unchanged). Same family as the `(select x x cond)` fix. Now all operand-dropping folds guard on `isPure`. This affects any computed element write, not just reductions.
+
+**Still open (genuinely different mechanisms, not the f64-fold):**
+- **Int min/max reductions** — `m = a[i] > m ? a[i] : m` routes through a `select`, not `f64.add`; the fold above doesn't touch it. Needs a select-pattern branch in the reduction recognizer + a select-based horizontal fold (no scalar `i32.min`). M.
+- **Extending-add (i8/i16→i32)** — the fold makes the byte/short load i32, but the reduction's lane type (i8 load vs i32 accumulator) still needs `extadd_pairwise` widening. M.
+- **IV strength reduction** — still deprioritized (marginal on the wasm→V8 path).
+
+**Verification:** full opt matrix + selfhost + bench gate (70/70) + fuzz (typed-int 5000×4, typed-map 2000×4, scalar 3000×4), zero divergence.
