@@ -17,7 +17,7 @@ dist(3, 4) // 5
 
 _"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches, floats-only math, hashmap objects, locked SIMD, legacy, [quirks](https://github.com/denysdovhan/wtfjs) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Go or C and shipped as WASM.
 
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**. No legacy, no spec creep; no runtime, no GC, [near-native speed](#performance). **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.<br><br>
 
 
 | Good for                    | Not for                    |
@@ -27,6 +27,7 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
 
+<!-- FIXME: remove paddings from image -->
 <img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
