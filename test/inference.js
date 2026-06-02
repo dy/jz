@@ -490,3 +490,55 @@ test('integer-global inference: numeric-init global reassigned to a string stays
   ex.setStr()
   is(ex.get(), 'hello', 'string value round-trips — global was not narrowed to i32')
 })
+
+// ──────────────────────────────────────────── hoisted integer index offset → i32
+
+test('i32-offset: hoisted row offset `let o = y*n` narrows to i32 for a typed-array index', () => {
+  // `let o = y*n` is f64-typed (variable-stride product) but integer-valued and
+  // feeds an array index — it must narrow to i32, giving pure-i32 addressing with
+  // no per-access widening, like the inline `a[y*n+x]` form. Observed at
+  // `optimize: false` where the offset survives as a local.
+  const wat = jz.compile(`
+    export let f = () => {
+      let n = 64
+      let a = new Float64Array(4096)
+      let s = 0
+      for (let y = 0; y < n; y++) {
+        let o = y * n
+        for (let x = 0; x < n; x++) s += a[o + x]
+      }
+      return s
+    }
+  `, { wat: true, optimize: false })
+  ok(/\(local \$o i32\)/.test(wat), 'offset `o` is typed i32 (no per-access f64 widening)')
+})
+
+test('i32-offset: hoisted offset computes correct in-bounds values', () => {
+  const ex = run(`
+    export let f = () => {
+      let n = 100
+      let a = new Float64Array(n * n)
+      for (let y = 0; y < n; y++) { let o = y * n; for (let x = 0; x < n; x++) a[o + x] = o + x }
+      return a[99 * 100 + 99]
+    }
+  `)
+  is(ex.f(), 9999, 'hoisted-offset write/read round-trips exactly')
+})
+
+test('i32-offset: fractional intermediate is NOT narrowed to i32 (no truncation)', () => {
+  const ex = run(`export let f = () => { let z = 0.5; let p = z * z + z; return p }`)
+  is(ex.f(), 0.75, 'fractional arithmetic stays f64 — not truncated to 0')
+})
+
+test('i32-offset: a fractional-derived index truncates at access, not earlier', () => {
+  const ex = run(`
+    export let f = () => {
+      let a = new Float64Array(8)
+      a[3] = 42
+      let i = 1.5
+      let j = i * 2
+      return a[j]
+    }
+  `)
+  is(ex.f(), 42, 'j = 3.0 truncates at the access → reads a[3]')
+})

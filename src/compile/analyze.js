@@ -524,7 +524,12 @@ export function analyzeBody(body) {
           const a = node[i]
           if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
             const name = a[1], rhs = a[2]
-            if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64') {
+            // keepI32 (index-safe / integer-certain) vars are proven integer-valued
+            // even when the RHS types f64 — a hoisted product `o = y*w` is f64-typed
+            // but integer and feeds an array index. widenPass already keeps these
+            // i32; don't let the assignment fixpoint re-widen them. (Fractional and
+            // out-of-i32-range vars are not keepI32, so they still widen.)
+            if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64' && !keepI32(name)) {
               locals.set(name, 'f64'); widened = true
             }
           }
@@ -532,13 +537,13 @@ export function analyzeBody(body) {
       }
       if (op === '=' && typeof node[1] === 'string') {
         const name = node[1], rhs = node[2]
-        if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64') {
+        if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64' && !keepI32(name)) {
           locals.set(name, 'f64'); widened = true
         }
       }
       if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
         const name = node[1]
-        if (locals.get(name) === 'i32' && exprType([op[0], name, node[2]], locals) === 'f64') {
+        if (locals.get(name) === 'i32' && exprType([op[0], name, node[2]], locals) === 'f64' && !keepI32(name)) {
           locals.set(name, 'f64'); widened = true
         }
       }
