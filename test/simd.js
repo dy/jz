@@ -692,6 +692,41 @@ test('vectorize: f64 sum reduction lifts (associativity tolerated)', () => {
   ok(/f64x2\.add/.test(wat(src, SIMD_OPT)), 'expected f64x2.add')
 })
 
+test('vectorize: i32 product (Math.imul) reduction lifts to i32x4.mul (exact mod 2^32)', () => {
+  // Integer mul is associative+commutative mod 2^32, so the vectorized product
+  // equals the scalar product bit-for-bit even as it wraps.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i % 6) + 1
+      let p = 1
+      for (let i = 0; i < N; i++) p = Math.imul(p, a[i])
+      return p | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/i32x4\.mul/.test(wat(src, SIMD_OPT)), 'expected i32x4.mul')
+})
+
+test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
+  // Powers of two multiply exactly in any order ⇒ no ulp drift between the
+  // vectorized and scalar fold; product is exactly 1.0.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i & 1) ? 2 : 0.5
+      let p = 1
+      for (let i = 0; i < N; i++) p *= a[i]
+      return (p * 1024) | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  is(runVec(src, SIMD_OPT).main(), 1024)
+  ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
+})
+
 test('vectorize: reduction tail correctness when N is not a multiple of LANES', () => {
   const src = `
     export const main = () => {
@@ -717,6 +752,65 @@ test('vectorize: multi-stmt reduction body must NOT lift', () => {
     }
   `
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
+// ---- conditional (ternary) maps → v128.bitselect ---------------------------
+// jz lowers `cond ? X : Y` to `(if (result f64) COND (then X)(else Y))`; the
+// vectorizer lifts it to `v128.bitselect(X, Y, mask)`, mask = COND as a lane
+// comparison. NOVEC re-runs the same source with vectorization OFF — the scalar
+// oracle. (Generative coverage: `node test/fuzz.js --typed-map`.)
+const NOVEC = { optimize: { vectorizeLaneLocal: false, watr: true } }
+
+test('vectorize: conditional map (distinct arms) lifts to v128.bitselect, matches scalar', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i % 9) - 4
+      for (let i = 0; i < N; i++) a[i] = a[i] < 1.0 ? (a[i] * 2.0) : (a[i] - 3.0)
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/v128\.bitselect/.test(wat(src, SIMD_OPT)), 'conditional map → v128.bitselect')
+})
+
+test('vectorize: conditional map matches scalar across all comparison ops', () => {
+  for (const cmp of ['<', '>', '<=', '>=', '===', '!==']) {
+    const src = `
+      export const main = () => {
+        const N = 256
+        const a = new Float64Array(N)
+        for (let i = 0; i < N; i++) a[i] = (i % 7) - 3
+        for (let i = 0; i < N; i++) a[i] = (a[i] ${cmp} 0.0) ? (a[i] * 2.0) : (a[i] - 1.0)
+        let s = 0
+        for (let i = 0; i < N; i++) s += a[i]
+        return s | 0
+      }
+    `
+    is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  }
+})
+
+test('opt: identical-arm conditional store keeps the element address (select-fold regression)', () => {
+  // `cond ? K : K` folds the value to K, but COND holds the element's address
+  // `local.tee`; the old `(select x x cond)→x` dropped it, leaving the store stale
+  // (the element kept its init). Both arms = 2.0 ⇒ every element must become 2.0.
+  const src = `
+    export const main = () => {
+      const N = 65
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i - 30) * 0.5
+      for (let i = 0; i < N; i++) a[i] = (a[i] > 0.5) ? 2.0 : (1.0 + 1.0)
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), 130)        // 65 elements × 2.0
+  is(runVec(src, NOVEC).main(), 130)
 })
 
 // ---- NaN-canonicalized float maps (Math.sqrt / min / max / clamp) --------

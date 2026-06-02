@@ -522,6 +522,64 @@ export const fuzzTyped = (opts) => {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pure-MAP mode (FUZZ-1) — the loop that ACTUALLY vectorizes.
+// ─────────────────────────────────────────────────────────────────────────────
+// `checkTyped` above mixes a store and a reduction in one loop, so `acc` is
+// loop-carried and the loop never lifts to SIMD. This generates a PURE element
+// map — `buf[i] = f(buf[i], consts)` with no cross-lane dataflow — which the
+// vectorizer DOES lift. Such a map is bit-exact by construction: lane k computes
+// exactly what scalar element k computes, with the same ops in the same order
+// (no reassociation), so jz == JS for ANY data including NaN/±Inf/±0 — no contract
+// caveat. The value expression includes `?:` conditionals (clamp / ReLU /
+// threshold), which is the generative coverage for conditional-lane vectorization.
+const genFloatCond = (g, d) => `(${genFloatExpr(g, d)} ${g.pick(CMP)} ${genFloatExpr(g, d)})`
+const genFloatVal = (g, d) =>
+  (d > 0 && g.chance(0.32))
+    ? `((${genFloatCond(g, d - 1)}) ? ${genFloatVal(g, d - 1)} : ${genFloatVal(g, d - 1)})`
+    : genFloatExpr(g, d)
+// The array is INTERNAL with a CONSTANT length: a param-array map keeps `n` as an
+// f64 (so the bound test is `f64.lt`, which the vectorizer skips) and lowers the
+// element WRITE through the dynamic-assign path — neither vectorizes. An internal
+// `new Float64Array(N)` with `i < N` gives the clean `i32`-bounded `f64.load`/
+// `f64.store` loop the vectorizer lifts. We seed it with a spread spanning the
+// comparison boundaries (negative/zero/positive) and return it for an element-wise
+// diff (Object.is — exact, distinguishes ±0, treats NaN==NaN).
+const typedMapSource = (seed) => {
+  const g = mkRng(seed)
+  const N = 60 + g.int(8)   // 60..67: even & odd ⇒ exercises the SIMD body AND the scalar tail
+  const body = Array.from({ length: 1 + g.int(2) }, () => `buf[i] = ${genFloatVal(g, 4)};`).join(' ')
+  return `export let f = () => { const buf = new Float64Array(${N}); for (let i = 0; i < ${N}; i++) buf[i] = (i - 30) * 0.5; for (let i = 0; i < ${N}; i++) { ${body} } return buf }`
+}
+const checkTypedMap = (seed, opts) => {
+  const src = typedMapSource(seed)
+  let jsFn
+  try { jsFn = compileJS(src) } catch { return { kind: 'invalid' } }
+  let jsArr
+  try { jsArr = jsFn() } catch { return { kind: 'invalid' } }
+  if (!(jsArr instanceof Float64Array)) return null
+  for (const opt of opts.optLevels) {
+    let jzArr
+    try {
+      const inst = jz(src, { optimize: opt })
+      jzArr = inst.memory.read(inst.exports.f())
+    } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    for (let i = 0; i < jsArr.length; i++)
+      if (!Object.is(jzArr[i], jsArr[i])) return { kind: 'mismatch-elem', opt, idx: i, got: jzArr[i], want: jsArr[i], src }
+  }
+  return null
+}
+export const fuzzTypedMap = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTypedMap(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,6 +612,12 @@ if (!isMain) {
       ? `typed-array divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Float64Array == JS')
   })
+  test('fuzz: Float64Array pure-map (incl. ?:) matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzTypedMap({ ...GATE, count: 120 })
+    ok(findings.length === 0, findings.length
+      ? `typed-map divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz Float64Array map == JS')
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,7 +637,18 @@ if (isMain) {
     inputSeed: Number(arg('inputSeed', 7)),
     optLevels, cfg: DEFAULTS, maxFindings: Number(arg('maxFindings', 20)),
   }
-  if (process.argv.includes('--typed')) {
+  if (process.argv.includes('--typed-map')) {
+    // FUZZ-1: pure Float64Array element map (vectorizes), jz vs JS, element-wise.
+    const t0 = performance.now()
+    const findings = fuzzTypedMap(opts)
+    console.log(`fuzzed ${opts.count} typed-map programs (seeds ${opts.seedStart}..${opts.seedStart + opts.count - 1}), opt {${optLevels}} — ${(performance.now() - t0).toFixed(0)}ms`)
+    if (!findings.length) console.log('✓ no divergence — jz Float64Array map == JS for every program')
+    else {
+      console.log(`✗ ${findings.length} finding(s):\n`)
+      for (const f of findings) console.log(`seed=${f.seed} kind=${f.kind}${f.opt != null ? ` opt=${f.opt}` : ''}${f.idx != null ? ` idx=${f.idx}` : ''}\n  jz=${f.got} js=${f.want}${f.err ? ` err=${f.err}` : ''}\n  ${f.src}\n`)
+      process.exit(1)
+    }
+  } else if (process.argv.includes('--typed')) {
     // FUZZ-1: Float64Array element read/write/loop/reduce, jz vs JS.
     const t0 = performance.now()
     const findings = fuzzTyped(opts)
