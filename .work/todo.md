@@ -37,6 +37,22 @@ exit 0. Verify every change against suite + fuzzer + matrix.
   measured), OPT-B/OPT-C (watr-off only fires when optimize==null; vectorize is
   L2-default + opt-out-able).
 
+## Compiler optimizations — backlog (detail + analysis: `.work/optimization-ideas.md`)
+Ranked by ROI. [S/M/L] effort · speed|size. Verify each: `npm test` + matrix + fuzzer + `CI=1 node test/bench.js`.
+> **FUZZ-1 (DONE):** `node test/fuzz.js --typed-map` — pure-map internal-array kernels (const bound ⇒ actually vectorize) incl. `?:` conditionals, diffed element-wise vs JS across opt{0,1,2,3}. Verified 5000×4 green + gate (seeds 1..120) in `npm test`. This is the generative coverage the items below ride on. (The prior `--typed` combined map+reduce never vectorized — loop-carried `acc` + f64 bound.)
+> **Correctness win — FUZZ-1 caught it immediately (seed 1039):** fixed a pre-existing opt2 miscompile. `(select x x cond)→x` in `src/wat/optimize.js` (vacuum) dropped an *impure* condition — when `cond` held the element's address `local.tee`, conditional typed-array stores went stale (element kept its init). Now gated on `isPure(cond)`. Regression test added (`test/simd.js`).
+1. [x] **SIMD product reductions** (`*=` over i32/i64/f32/f64) [S·speed] — DONE: `REDUCE_OPS` extended (`src/optimize/vectorize.js:317`) + 2 tests; verified suite + opt3 + bench gate + 2k-fuzz green.
+1b. [ ] **SIMD int min/max reductions** [M·speed] — NOT the trivial case the analysis assumed: WASM has no scalar `i32.min`, so int min/max arrive as a `select` AND the horizontal fold can't reuse a binary op → needs a new recognizer branch. (Float min/max already vectorize via `REDUCE_CANON`.)
+2. [ ] **Pointer-spec threshold tune**: `specializeMkptr` MIN_USES 5→3, `specializePtrBase` 20→10 [S·size] — `src/optimize/index.js:1677,1805`.
+3. [ ] **Single-use runtime-helper inlining** [M·size] — biggest size lever (recovers ~25–30% wasm-opt slack); extend WAT inliner `src/wat/optimize.js`.
+4. [ ] **Induction-variable strength reduction** (`ptr += stride` vs `base+(i<<k)`) [M·speed] — extend `hoistAddrBase` `src/optimize/index.js:358`.
+5. [ ] **Tail-call optimization** (`return_call` for `return f(…)`) [M·speed+recursion] — `src/compile/emit.js`.
+6. [x] **Conditional-lane vectorization** (ReLU/clamp/threshold) [M·speed] — DONE: `if`-expr recognizer → `v128.bitselect` + `LANE_COMPARE` table (`src/optimize/vectorize.js`); mask hoisted to a temp FIRST so the condition's address tee runs before the branches read it; fails-closed. Tests + 5k typed-map fuzz green. Min/max-shaped conds (relu/clamp) still fold to the existing min/max canon path.
+7. [ ] **charCodeAt SIMD scan** (`i8x16.eq`+`any_true`) [L·speed] — strategic for parser workloads; new recognizer.
+8. [ ] **AoS→SoA** [L] — DEFER; `simd-aos-stride` advice ("split to SoA") suffices.
+Cheap generalizations: **lift pooled-const `global.get` as a splat in `liftExprV`** (a `hoistConstantPool` global is loop-invariant; today it keeps a conditional/any map scalar when a const like `0.0` is pooled — perf-only, fails-closed) [S·speed]; cross-`if` CSE (`csePureExpr` clears table per-arm, optimize/index.js:979); inline heuristic AST-nodes→emitted-WAT-size; scalarization cap 32→64 (plan/common.js:114); LICM global-read hoist across arena-safe callees (optimize/index.js:657 + safeCallees).
+Size reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic target ≈1.5–2× with `alloc:false`+`optimize:'size'`, NOT byte-parity.
+
 ## Dead-code + interop hygiene (one PR, all S)
 Dead import plan/inline.js:31 (invalidateLocalsCache); dead export
 JZIFY_TRANSFORM_OPS op-policy.js:36; shadowed objectLiteralEntries jzify/classes.js:146
@@ -113,7 +129,7 @@ JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 * [ ] **QOI codec** (~300 readable lines) — competes with surma's 904 B hand-WAT on *size*; ties to color-space
 * [x] **FFT spectrogram** — `examples/rfft/`: floatbeat tune → jz-computed split-radix RFFT → live **log/mel spectrogram** (A-weighted per IEC 61672, equal-octave log by default, mel one click away) + momentary waveform overlay + wavefont peak-hold bars + click-to-shuffle + live code panel; JS⇄jz toggle with a **linefont FPS sparkline**. The compiler's auto i32-index narrowing makes the **idiomatic** source (no `|0`) beat V8 **1.69–1.74×** on the rfft() kernel, correctness ~1e-11, 9.9 KB wasm. Done & verified (browser + `examples/rfft/bench.mjs`). The kernel keeps its `cepstrum()` export (still benchmarked); the demo just renders the spectrum now. See Archive 2026-05-22 "RFFT i32-hoist" + "auto i32-index narrowing".
 * [ ] (later) dithering/convolution filters
-* [ ] zzfx
+* [x] zzfx
 * [ ] vec4 package that unlocks SIMD
 
 #### Flagship + the one compounding "make-world-know" move
