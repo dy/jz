@@ -426,15 +426,26 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 <table>
 <tr>
-<td width="50%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life written straight into shared pixel memory.</td>
-<td width="50%"><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/lenia/"><img src="examples/thumbs/lenia.webp" width="100%" alt="Lenia"></a><br><b>lenia</b> — continuous cellular automaton; smooth-kernel "digital life".</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/reaction-diffusion/"><img src="examples/thumbs/reaction-diffusion.webp" width="100%" alt="Reaction-diffusion"></a><br><b>reaction-diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
 </tr>
 <tr>
-<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with a precomputed color table.</td>
-<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT, with floatbeat audio.</td>
+<td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
+<td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
+<td><a href="https://dy.github.io/jz/examples/cymatics/"><img src="examples/thumbs/cymatics.webp" width="100%" alt="Cymatics"></a><br><b>cymatics</b> — a Chladni plate whose nodal lines dance to a live floatbeat.</td>
 </tr>
 <tr>
-<td colspan="2"><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sound-effect synth, compiled as-is and synthesized ~2× faster than V8.</td>
+<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
+<td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
+<td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
+<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.3× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; a few serial-recurrence kernels (mandelbrot, attractors, raymarcher, lenia) tie or trail V8 and are kept as compiler-optimization targets. Numbers: <code>node examples/bench.mjs</code>.</sub>
+
+</tr>
+<tr>
+<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
+<td><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sfx synth, compiled as-is.</td>
+<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — endless procedural-jazz floatbeat; tap to shuffle.</td>
 </tr>
 </table>
 
