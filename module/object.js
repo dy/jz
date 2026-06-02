@@ -101,19 +101,27 @@ export default (ctx) => {
     // R: Static data segment for objects of pure-literal property values (own-memory only).
     // Even with shadow needed, we can skip alloc + N stores; just feed literal values to __dyn_set.
     const shadow = needsDynShadow(target)
+    // When the literal adopts a superset/merged schema (schemaId !== litId), the
+    // field order in `schema` can differ from the literal's `names`, so each value
+    // must land at its named slot `schema.indexOf(name)` — a positional `slot = i`
+    // store would scatter values into the wrong (or another field's) slots.
+    const slotOf = schemaId === litId ? (i => i) : (i => schema.indexOf(names[i]))
     if (values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       const emitted = values.map(emit)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(asF64(v)))
       if (slots.every(b => b !== null)) {
-        const off = appendStaticSlots(slots)
+        // Reorder into schema-slot order before laying out the static segment.
+        const ordered = emitted.map(() => null), orderedBits = emitted.map(() => null)
+        for (let i = 0; i < values.length; i++) { ordered[slotOf(i)] = emitted[i]; orderedBits[slotOf(i)] = slots[i] }
+        const off = appendStaticSlots(orderedBits)
         const staticPtr = mkPtrIR(PTR.OBJECT, schemaId, off)
         if (!shadow) return staticPtr
         inc('__dyn_set')
         const body = [['local.set', `$${ptr}`, staticPtr]]
         for (let i = 0; i < schema.length; i++)
           body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]],
-            asI64(emit(['str', String(schema[i])])), asI64(emitted[i])]])
+            asI64(emit(['str', String(schema[i])])), asI64(ordered[i])]])
         body.push(['local.get', `$${ptr}`])
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
@@ -123,7 +131,7 @@ export default (ctx) => {
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
     for (let i = 0; i < values.length; i++)
-      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], i, asF64(emit(values[i]))))
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), asF64(emit(values[i]))))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
       inc('__dyn_set')
