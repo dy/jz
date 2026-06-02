@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Lenia - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { border-top: 2px solid #50ad7b; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+// Internal resolution: 100×75 keeps jz near 60fps (conv is heavy: 440 kernel entries per cell)
+const IW = 100, IH = 75
+cv.width = IW; cv.height = IH
+
+const img = g.createImageData(IW, IH)
+const out32 = new Uint32Array(img.data.buffer)
+let px = null
+
+let engine = null, gen = 0
+
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./lenia.js", wasm: "./lenia.wasm" })
+  if (my !== gen) return
+  engine = e
+  px = engine.resize(IW, IH)
+  engine.seed()
+}
+
+// Re-seed on click anywhere
+document.addEventListener("pointerdown", () => { if (engine) { px = engine.resize(IW, IH); engine.seed() } })
+
+const ui = hud({
+  kind: "jz",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/lenia",
+  code: "./lenia.js",
+  nav: "lenia",
+  onSwitch: setEngine,
+})
+
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine || !px) return
+  const t0 = performance.now()
+  engine.frame(0.1)
+  const ms = performance.now() - t0
+  out32.set(px)
+  g.putImageData(img, 0, 0)
+  ui.frame(ms)
+}
+
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>
