@@ -68,25 +68,24 @@ const randomSound = () => [
 ]
 
 // ── engines: one source, two backends ────────────────────────────────────────
-// jz: load the prebuilt .wasm through jz/interop; the wrapped export returns a
-// view over wasm memory, so copy it out and rewind the bump allocator each call.
-// js: import the same source as an ES module (the V8 baseline for the toggle).
+// The exact same zzfxG runs both ways. js: import as an ES module (the V8 baseline).
+// jz: load the prebuilt .wasm through jz/interop — the wrapped export returns the
+// sample array; rewind the bump allocator after each call so the loop never leaks.
 const makeEngine = async (kind) => {
   if (kind === 'js') {
     const mod = await import('./zzfx.js')
-    return (p, rnd) => {
+    return (p) => {
       const t0 = performance.now()
-      const buf = mod.zzfxG(...p, rnd)
+      const buf = mod.zzfxG(...p)
       return { buf, ms: performance.now() - t0 }
     }
   }
   const bytes = new Uint8Array(await (await fetch('./zzfx.wasm')).arrayBuffer())
   const { exports, memory } = instantiate(bytes)
-  return (p, rnd) => {
+  return (p) => {
     const t0 = performance.now()
-    const view = exports.zzfxG(...p, rnd)
+    const buf = exports.zzfxG(...p)
     const ms = performance.now() - t0
-    const buf = Float64Array.from(view)   // survive the reset below
     memory.reset()
     return { buf, ms }
   }
@@ -149,29 +148,32 @@ const draw = (buf) => {
 
 // ── state + render loop ───────────────────────────────────────────────────────
 let engine = null, gen = 0
-let current = 'Coin', curParams = fill(PRESETS.Coin), rnd = 0.5
+let current = 'Coin', curParams = fill(PRESETS.Coin)
+
+let displayBuf = null
 
 const setEngine = async (kind) => {
   const my = ++gen
   const e = await makeEngine(kind)
-  if (my === gen) engine = e
+  if (my === gen) { engine = e; displayBuf = null }   // refresh scope with the new engine
 }
 
 const trigger = (name, params) => {
   current = name
   curParams = params || fill(PRESETS[name])
-  rnd = Math.random()                      // fresh frequency jitter per play
-  if (engine) play(engine(curParams, rnd).buf)
+  if (engine) { const { buf } = engine(curParams); displayBuf = buf; play(buf) }
   paintBar()
 }
 
-// rebuild the current sound every frame: the FPS/ms meter then reads pure
-// synthesis throughput, and the scope tracks the last-played variation.
+// Re-synthesize the current sound every frame so the FPS/ms meter reads pure
+// synthesis throughput (jz vs V8 on identical code). The scope shows the last
+// triggered buffer — the zzfxG randomness would otherwise wobble it every frame.
 const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
-  const { buf, ms } = engine(curParams, rnd)
-  draw(buf)
+  const { buf, ms } = engine(curParams)
+  if (!displayBuf) displayBuf = buf
+  draw(displayBuf)
   ui.frame(ms)
 }
 
