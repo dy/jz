@@ -1,6 +1,6 @@
 <img src="jz.svg" alt="jz logo" width="120"/>
 
-## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![test262](https://github.com/dy/jz/actions/workflows/test262.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test262.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
+## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
 **JZ** (_javascript zero_) is **minimal functional JS** that compiles to WASM.
 
@@ -15,9 +15,9 @@ dist(3, 4) // 5
 
 ## Why?
 
-_"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches, floats-only math, hashmap objects, locked SIMD, legacy, [quirks](https://github.com/denysdovhan/wtfjs) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Go or C and shipped as WASM.
+_"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches, floats-only math, hashmap objects, locked SIMD, legacy, [quirks](https://github.com/denysdovhan/wtfjs) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Zig, Go or C and shipped as WASM.
 
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.<br><br>
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
 
 
 | Good for                    | Not for                    |
@@ -42,7 +42,6 @@ add(2, 3)  // 5
 // Compile only — raw WASM binary
 const wasm = compile('export let f = (x) => x * 2')
 
-// Compile speed: ~2–60 ms depending on source size (no optimizer overhead)
 // Async startup
 const asyncMod = await WebAssembly.compile(wasm)
 const asyncInst = await WebAssembly.instantiate(asyncMod)
@@ -86,7 +85,7 @@ jz --help                  # help
 
 ## Language
 
-JZ is a **strict functional JS subset**. Built-in jzify transform extends support to legacy patterns.
+JZ is a **strict modern functional JS subset**. Built-in jzify transform extends support to legacy patterns.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -113,26 +112,19 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
+### Differences with JS
 
-
-## FAQ
-
-<details>
-<summary><strong>Where does jz differ from JavaScript?</strong></summary>
-
-<br>
-
-jz compiles to static WASM — some behaviors diverge from V8.
-
+<!-- FIXME: are these all differences? Or there's more? Also - it feels the info is not well-structured and maybe not fully true -->
 - **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values the compiler pins to 32-bit ints wrap at ±2³¹ (like C's `int`); keep one in floating-point for exact integers beyond that.
 - **Fixed-layout objects.** Key set and order are fixed at the literal; `delete` is rejected.
-- **No GC.** Memory isn't reclaimed automatically (`memory.reset()` — see below). `WeakMap`/`WeakSet` fold to `Map`/`Set` (weakness is unobservable); `Set`/`Map` iterate slot order, not insertion order.
+- **No GC.** Memory isn't reclaimed automatically (see `memory.reset()`). `WeakMap`/`WeakSet` fold to `Map`/`Set` (weakness is unobservable); `Set`/`Map` iterate slot order, not insertion order.
 - **Thin value model.** Errors are untagged — `throw` carries a value, so `e instanceof TypeError` can't discriminate. A boolean from `&&`/`||` or an untyped container crosses the host boundary as `1`/`0` (`typeof`, `String`, `JSON.stringify`, comparisons, and boolean methods return a real boolean).
 - **Rough edges.** `String()` of a non-integer keeps ~9 significant digits (`String(1/3)` → `"0.333333333"`). Legacy octal `0377` reads as decimal — use `0o377`.
 
 jz trades completeness for low-level numeric performance by design; for full TC39 conformance, see [alternatives](#alternatives).
 
-</details>
+
+## FAQ
 
 <details>
 <summary><strong>Can I use existing npm packages or JS libraries?</strong></summary>
@@ -439,8 +431,6 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
 <td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
 <td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
-<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.5× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; only the SDF raymarcher ties V8 — a latency-bound marching chain with no cross-iteration parallelism — and is kept as a compiler-optimization target. Numbers: <code>node examples/bench.mjs</code>.</sub>
-
 </tr>
 <tr>
 <td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
@@ -448,6 +438,8 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — endless procedural-jazz floatbeat; tap to shuffle.</td>
 </tr>
 </table>
+
+<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.5× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; only the SDF raymarcher ties V8 — a latency-bound marching chain with no cross-iteration parallelism — and is kept as a compiler-optimization target. Numbers: <code>node examples/bench.mjs</code>.</sub>
 
 
 ## Performance

@@ -131,6 +131,7 @@ JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 * [ ] (later) dithering/convolution filters
 * [x] zzfx
 * [ ] vec4 package that unlocks SIMD
+* [ ] stdlib.io
 
 #### Flagship + the one compounding "make-world-know" move
 * [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
