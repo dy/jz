@@ -45,7 +45,7 @@ const GRAY = '#adb5bd'   // every other ball — minimal, one accent
 
 /** Build the animated SVG string from rows `[{ label, sub?, ratio }]`. */
 export function benchSvg(rows) {
-  const W = 720, rowH = 50, top = 74, bottom = 30
+  const W = 720, rowH = 50, top = 20, bottom = 30
   const H = top + rows.length * rowH + bottom
 
   const labelW = 156, numW = 54, pad = 16
@@ -87,8 +87,6 @@ export function benchSvg(rows) {
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — each ball runs back and forth at a rate proportional to that engine's speed; jz is the 1.00× baseline, lower is faster">
   <rect width="${W}" height="${H}" rx="12" fill="#ffffff"/>
-  <text x="22" y="34" font-family="${FONT}" font-size="16" font-weight="700" fill="#212529">Speed vs jz — geomean across the bench corpus</text>
-  <text x="22" y="54" font-family="${FONT}" font-size="12" fill="#868e96">faster ball = faster engine · 1.00× = jz · lower is better</text>
 ${rows.map(lane).join('')}
 </svg>
 `

@@ -6,6 +6,8 @@
  *   dist/jz.js   — minified single-file ESM bundle of the JS compiler (index.js
  *                  + its src/ graph + the subscript parser + watr backend). Drop
  *                  it anywhere with a JS runtime: `import jz from './jz.js'`.
+ *   dist/interop.js — minified jz/interop bridge (host runtime: instantiate +
+ *                  value marshalling, no compiler). ~15 kB / ~6 kB gzipped.
  *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-host). Its
  *                  default export is `compileSelf(source) → wasm bytes`: the whole
  *                  pipeline (parse → jzify → prepare → compile → watr-encode) runs
@@ -39,6 +41,20 @@ await build({
   outfile: jsOut,
 })
 console.log('wrote dist/jz.js  ', kb(jsOut))
+
+// ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
+const interopOut = resolve(OUT, 'interop.js')
+await build({
+  entryPoints: [resolve(ROOT, 'interop.js')],
+  bundle: true,
+  minify: true,
+  format: 'esm',
+  platform: 'neutral',
+  target: 'es2022',
+  legalComments: 'none',
+  outfile: interopOut,
+})
+console.log('wrote dist/interop.js', kb(interopOut))
 
 // ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-host) ───
 const wasmOut = resolve(OUT, 'jz.wasm')
