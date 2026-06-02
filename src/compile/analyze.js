@@ -107,6 +107,13 @@ const makeValTracker = (get, set, del) => {
 const makeTypedTracker = (get, set, del) => {
   const poison = new Set()
   const invalidate = (name) => { poison.add(name); del(name) }
+  // Resolve a variable-name ternary branch to its known typed-array ctor: a
+  // local typed binding (`get`), or a module global promoted typed by plan
+  // (`inferModuleLetTypes` populates `globalTypedElem`, copied into
+  // `ctx.types.typedElem` per-func). Lets `let cur = flip ? bufA : bufB` keep
+  // the fast typed-load path instead of decaying to `$__typed_idx`.
+  const resolveName = (n) =>
+    get(n) ?? ctx.types.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null
   return (name, rhs) => {
     if (poison.has(name)) return
     const setOrInvalidate = (c) => {
@@ -130,7 +137,7 @@ const makeTypedTracker = (get, set, del) => {
     // Heterogeneous ternary (`n===16 ? new Uint8Array(16) : new Uint16Array(8)`):
     // ctors that don't unify must invalidate so a sibling-scope decl can't lock in
     // the wrong store width.
-    const tc = ternaryCtorOfRhs(rhs)
+    const tc = ternaryCtorOfRhs(rhs, resolveName)
     if (tc) setOrInvalidate(tc)
   }
 }
