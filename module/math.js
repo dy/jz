@@ -493,6 +493,7 @@ export default (ctx) => {
   // Edge cases: NaN→NaN, ≤0 distinguishes 0→-Inf, <0→NaN; +Inf passes through.
   wat('math.log', `(func $math.log (param $x f64) (result f64)
     (local $bits i64) (local $k i32) (local $m f64) (local $s f64) (local $z f64)
+    (local $f f64) (local $w f64) (local $t1 f64) (local $t2 f64) (local $hfsq f64)
     (if (f64.ne (local.get $x) (local.get $x))
       (then (return (local.get $x))))
     (if (f64.le (local.get $x) (f64.const 0.0))
@@ -523,21 +524,27 @@ export default (ctx) => {
       (then
         (local.set $m (f64.mul (local.get $m) (f64.const 0.5)))
         (local.set $k (i32.add (local.get $k) (i32.const 1)))))
-    (local.set $s (f64.div (f64.sub (local.get $m) (f64.const 1.0))
-                           (f64.add (local.get $m) (f64.const 1.0))))
+    ;; s = f/(2+f) with f = m−1 (= (m−1)/(m+1)); then the fdlibm even/odd-split
+    ;; polynomial. Two parallel Horner chains (t1 over even powers, t2 over odd)
+    ;; cut the dependency chain ~in half vs one 9-deep Horner — more ILP, fewer
+    ;; terms — and reconstruct log(m) = f − hfsq + s·(hfsq + t1 + t2). ~1 ulp.
+    (local.set $f (f64.sub (local.get $m) (f64.const 1.0)))
+    (local.set $s (f64.div (local.get $f) (f64.add (local.get $f) (f64.const 2.0))))
     (local.set $z (f64.mul (local.get $s) (local.get $s)))
-    ;; Horner: 1 + z/3 + z²/5 + z³/7 + z⁴/9 + z⁵/11 + z⁶/13 + z⁷/15 + z⁸/17
+    (local.set $w (f64.mul (local.get $z) (local.get $z)))
+    (local.set $t1 (f64.mul (local.get $w) (f64.add (f64.const 0.3999999999940941908)
+      (f64.mul (local.get $w) (f64.add (f64.const 0.2222219843214978396)
+        (f64.mul (local.get $w) (f64.const 0.1531383769920937332)))))))
+    (local.set $t2 (f64.mul (local.get $z) (f64.add (f64.const 0.6666666666666735130)
+      (f64.mul (local.get $w) (f64.add (f64.const 0.2857142874366239149)
+        (f64.mul (local.get $w) (f64.add (f64.const 0.1818357216161805012)
+          (f64.mul (local.get $w) (f64.const 0.1479819860511658591)))))))))
+    (local.set $hfsq (f64.mul (f64.const 0.5) (f64.mul (local.get $f) (local.get $f))))
     (f64.add
       (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))
-      (f64.mul (f64.const 2.0) (f64.mul (local.get $s) (f64.add (f64.const 1.0)
-        (f64.mul (local.get $z) (f64.add (f64.const 0.3333333333333333)
-          (f64.mul (local.get $z) (f64.add (f64.const 0.2)
-            (f64.mul (local.get $z) (f64.add (f64.const 0.14285714285714285)
-              (f64.mul (local.get $z) (f64.add (f64.const 0.1111111111111111)
-                (f64.mul (local.get $z) (f64.add (f64.const 0.09090909090909091)
-                  (f64.mul (local.get $z) (f64.add (f64.const 0.07692307692307693)
-                    (f64.mul (local.get $z) (f64.add (f64.const 0.06666666666666667)
-                      (f64.mul (local.get $z) (f64.const 0.058823529411764705)))))))))))))))))))))`)
+      (f64.add (f64.sub (local.get $f) (local.get $hfsq))
+        (f64.mul (local.get $s) (f64.add (local.get $hfsq)
+          (f64.add (local.get $t1) (local.get $t2))))))))`)
 
   wat('math.log2', `(func $math.log2 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`)
