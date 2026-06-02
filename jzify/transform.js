@@ -163,7 +163,17 @@ export function createTransform(opts) {
       if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
         const [, name, params, body] = callee[1]
         const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
-        return [';', ['let', ['=', name, ['=>', arrowParams(p2), wrapArrowBody(b2)]]], ['()', name, ...rest.map(transform)]]
+        // `(function name(){…})(args)` — the named binding must be lowered as a
+        // self-contained EXPRESSION (it can sit in concise-arrow-body / argument
+        // position), so wrap the `let name = arrow; name(args)` in a block IIFE
+        // rather than emitting a bare `;`-sequence. A statement-sequence in
+        // expression position never reaches the `'=>'` handler's block-wrap (that
+        // runs before this transform), and emit miscompiles a `let`-closure decl in
+        // a concise `;`-body. Mirrors the bare-`function name` lowering below.
+        return ['()', ['=>', null, ['{}', [';',
+          ['let', ['=', name, ['=>', arrowParams(p2), wrapArrowBody(b2)]]],
+          ['return', ['()', name, ...rest.map(transform)]],
+        ]]], null]
       }
     },
 
