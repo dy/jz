@@ -1718,7 +1718,12 @@ const handlers = {
     return ['+', pa, pb]
   },
   '-'(a, b) {
-    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' ? [, -na[1]] : ['u-', na] }
+    // Fold `-<numeric literal>` to a literal, but NOT a bigint: jz's own `typeof` reports
+    // a bigint value as 'number' too (its carrier is an f64), so under self-host this test
+    // alone wrongly folds `-5n`, and negating the bigint here yields garbage (-2^63+5).
+    // `typeof !== 'bigint'` excludes it in both engines (real JS: 'bigint'; jz: matches
+    // 'bigint'). Bigint negation then flows to emit's i64.sub(0,·) path correctly.
+    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' ? [, -na[1]] : ['u-', na] }
     return ['-', prep(a), prep(b)]
   },
 
