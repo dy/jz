@@ -295,6 +295,9 @@ const tryUnrollRowLenFor = (forNode, tables) => {
   if (!Array.isArray(forNode) || forNode[0] !== 'for' || forNode.length !== 5) return null
   const trip = parseRowLenForTrip(forNode[1], forNode[2], forNode[3])
   if (!trip) return null
+  // `ci` must be a variable (outer loop index) — a constant index like `a[1]`
+  // means the bound is always the same value, so per-row unrolling doesn't apply.
+  if (typeof trip.ci !== 'string') return null
   const tab = tables.get(trip.rowlen)
   if (!tab || tab.max > MAX_ROWLEN_PAD_UNROLL || tab.max < 2) return null
   const body = forNode[4]
@@ -310,11 +313,16 @@ const tryUnrollRowLenFor = (forNode, tables) => {
       out.push(cloneWithSubst(body, new Map([[trip.idx, [null, k]]]), new Map()))
     }
   } else {
-    // Variable row lengths (e.g. waltz 5/4/4/5): keep a short loop for the
-    // common prefix, peel one guarded tail iteration for the longest row.
+    // Variable row lengths (e.g. waltz 5/4/4/5): a short loop for the common
+    // prefix (min iterations), then one guarded tail per possible extra row
+    // length (min..max-1). The guards are monotonic in `k` — `bound` is loop-
+    // invariant across them — so they run exactly `bound` iterations in total
+    // for any `min <= bound <= max` (not just `max === min + 1`).
     out.push(['for', idxInit, ['<', trip.idx, [null, tab.min]], step, body])
-    const tail = cloneWithSubst(body, new Map([[trip.idx, [null, tab.min]]]), new Map())
-    out.push(['if', ['<', [null, tab.min], clonePlain(bound)], tail])
+    for (let k = tab.min; k < tab.max; k++) {
+      const tail = cloneWithSubst(body, new Map([[trip.idx, [null, k]]]), new Map())
+      out.push(['if', ['<', [null, k], clonePlain(bound)], tail])
+    }
   }
   return out.length === 1 ? out[0] : [';', ...out]
 }
