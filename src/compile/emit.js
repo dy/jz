@@ -683,7 +683,10 @@ export function emitDecl(...inits) {
         if (!ctx.scope.globalTypes.has(i)) result.push(['global.set', `$${i}`, undef])
         continue
       }
-      result.push(['local.set', `$${i}`, undef])
+      // An i32-typed local (a narrowed integer index feeder) can't hold the f64
+      // NaN-box undef sentinel — and wasm zero-inits locals anyway, so a 0 init is
+      // equivalent for the assigned-before-read pattern that earns i32.
+      result.push(['local.set', `$${i}`, ctx.func.locals.get(i) === 'i32' ? ['i32.const', 0] : undef])
       continue
     }
     if (!Array.isArray(i) || i[0] !== '=') continue

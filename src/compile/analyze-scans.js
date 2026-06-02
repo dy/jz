@@ -537,6 +537,11 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
  * widening; the assignment fixpoint that follows still widens any local with an
  * f64-typed RHS (`i = i / 3`), overriding membership here.
  */
+// An integer literal that fits signed i32 — the only constant a promoted i32
+// local may hold. A larger integer (`0xFFFFFFFF`, a NaN-box mask) is emitted as
+// an f64.const, so treating it as an i32 leaf would store f64 into an i32 local.
+const isI32Lit = (v) => typeof v === 'number' && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+
 export function collectI32SafeIndexVars(body, locals) {
   const safe = new Set()
   // Collect names reachable from `node` through affine ops only, into `sink`.
@@ -545,31 +550,66 @@ export function collectI32SafeIndexVars(body, locals) {
     if (!Array.isArray(node)) return
     if (AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i], sink)
   }
-  const edges = []  // { target, rhs } for affine assignment/step propagation
-  const walk = (node) => {
+  // Pass 1: record assignment edges (back-prop) + a name→definitions map (for the
+  // integer-shape test). `+= …` reconstructs to `name + …` so its shape includes
+  // the prior value.
+  const edges = []
+  const defs = new Map()
+  const addDef = (name, rhs) => { (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs) }
+  const collect = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    // Direct seed: computed member `obj[idx]` whose index is *already fully i32*.
-    // Only then does keeping its counters i32 eliminate a real per-access trunc.
-    // If the index carries an f64 operand (an f64 stride/global, e.g. `mem[y*w+x]`
-    // with f64 `w`), the access truncs regardless — narrowing the counter would add
-    // a compare-convert for zero trunc savings (net loss), so we leave it to widen.
-    if (op === '[]' && !isLiteralStr(node[2]) && exprType(node[2], locals) === 'i32') addAffine(node[2], safe)
-    // Record assignment edges (decl init, `=`, and `+= -= *=` steps).
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') edges.push({ target: d[1], rhs: d[2] })
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { edges.push({ target: d[1], rhs: d[2] }); addDef(d[1], d[2]) }
       }
-    } else if (op === '=' && typeof node[1] === 'string') {
-      edges.push({ target: node[1], rhs: node[2] })
-    } else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') {
-      edges.push({ target: node[1], rhs: node[2] })
-    }
-    if (op === '=>') return  // nested arrows are separate scopes with their own counters
-    for (let i = 1; i < node.length; i++) walk(node[i])
+    } else if (op === '=' && typeof node[1] === 'string') { edges.push({ target: node[1], rhs: node[2] }); addDef(node[1], node[2]) }
+    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { edges.push({ target: node[1], rhs: node[2] }); addDef(node[1], [op[0], node[1], node[2]]) }
+    if (op === '=>') return
+    for (let i = 1; i < node.length; i++) collect(node[i])
   }
-  walk(body)
+  collect(body)
+
+  // Integer-shaped AND i32-representable: provably an integer through `+ - * << u-`
+  // (AFFINE_INDEX_OPS — excludes `/`/`**`/fractional ops) over leaves that are
+  // i32-typed, i32-range integer literals, or other integer-shaped locals. Lets a
+  // hoisted offset `let o = y*w` (f64-typed product, integer-valued) qualify as an
+  // index leaf before narrowing. A fractional leaf, an out-of-i32-range literal, or
+  // a param of unknown type disqualifies — so no truncation and no f64.const→i32.
+  const isIntShaped = (node, seen) => {
+    if (typeof node === 'number') return isI32Lit(node)
+    if (typeof node === 'string') {
+      if (exprType(node, locals) === 'i32') return true
+      if (seen.has(node)) return true  // recursion through a self-step — other defs still gate
+      const ds = defs.get(node)
+      if (!ds || !ds.length) return false  // param / unknown source — not provably integer
+      seen.add(node)
+      const r = ds.every(d => isIntShaped(d, seen))
+      seen.delete(node)
+      return r
+    }
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op == null) return isI32Lit(node[1])  // [null, value] literal
+    if (!AFFINE_INDEX_OPS.has(op)) return false
+    for (let i = 1; i < node.length; i++) if (node[i] != null && !isIntShaped(node[i], new Set(seen))) return false
+    return true
+  }
+
+  // Pass 2: seed from array indices already i32 OR integer-shaped (the latter
+  // rescues hoisted integer offsets the type pass left at f64). A fractional index
+  // (`mem[y*w+x]` with fractional `w`) is not integer-shaped → still truncs per
+  // access and is left to widen, preserving the prior guard.
+  const seed = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '[]' && !isLiteralStr(node[2]) && (exprType(node[2], locals) === 'i32' || isIntShaped(node[2], new Set()))) addAffine(node[2], safe)
+    if (op === '=>') return
+    for (let i = 1; i < node.length; i++) seed(node[i])
+  }
+  seed(body)
+
   // Back-propagate to a fixpoint: feeders of a bounded index var are bounded.
   let changed = true
   while (changed) {
@@ -581,6 +621,11 @@ export function collectI32SafeIndexVars(body, locals) {
       for (const s of src) if (!safe.has(s)) { safe.add(s); changed = true }
     }
   }
+  // Promote integer-shaped index feeders the type pass left at f64 (a hoisted
+  // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
+  // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.
+  // Skip boxed (closure-captured) cells — those live as f64 in memory.
+  for (const n of safe) if (locals.get(n) === 'f64' && !ctx.func.boxed?.has(n) && isIntShaped(n, new Set())) locals.set(n, 'i32')
   return safe
 }
 
