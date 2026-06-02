@@ -1030,6 +1030,12 @@ export default function compile(ast, profiler) {
   if (ast) {
     const evalConst = n => {
       if (typeof n === 'number') return n
+      // A reference to an already-folded integer const (`const NEW = CALL + 1`):
+      // resolve it from constInts so const-referencing-const initializers fold too.
+      // Without this they stay unfolded → decl defaults to 0 AND emitDecl skips the
+      // (const) runtime init → the binding reads 0 (e.g. subscript's NEW=CALL+1 → the
+      // `new` keyword registers with precedence 0 and never dispatches).
+      if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
       if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return n[1]
       if (!Array.isArray(n)) return null
       const [op, a, b] = n
@@ -1049,22 +1055,33 @@ export default function compile(ast, profiler) {
       : Array.isArray(n) && n[0] === 'const' ? [n] : []
     const stmts = [...topStmts(ast)]
     for (const mi of ctx.module.moduleInits || []) stmts.push(...topStmts(mi))
-    for (const s of stmts) {
-      if (!Array.isArray(s) || s[0] !== 'const') continue
-      for (const decl of s.slice(1)) {
-        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-        const [, name, init] = decl
-        if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
-        const v = evalConst(init)
-        if (v == null || !isFinite(v)) continue
-        const isInt = Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX
-        ctx.scope.globals.set(name, isInt
-          ? `(global $${name} i32 (i32.const ${v}))`
-          : `(global $${name} f64 (f64.const ${v}))`)
-        ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
-        // Cache integer values for cross-call const-arg propagation: `f(N)` where
-        // `const N = 8` should observe the param as intConst=8.
-        if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
+    // Fixpoint: a const may reference one declared later or in another module
+    // (`NEW = CALL + 1`). Each pass folds every now-resolvable initializer (its refs
+    // already in constInts); repeat until none change so order/cross-module refs resolve.
+    const foldedDecls = new Set()
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const s of stmts) {
+        if (!Array.isArray(s) || s[0] !== 'const') continue
+        for (const decl of s.slice(1)) {
+          if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+          const [, name, init] = decl
+          if (foldedDecls.has(name)) continue
+          if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
+          const v = evalConst(init)
+          if (v == null || !isFinite(v)) continue
+          foldedDecls.add(name)
+          changed = true
+          const isInt = Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX
+          ctx.scope.globals.set(name, isInt
+            ? `(global $${name} i32 (i32.const ${v}))`
+            : `(global $${name} f64 (f64.const ${v}))`)
+          ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
+          // Cache integer values for cross-call const-arg propagation: `f(N)` where
+          // `const N = 8` should observe the param as intConst=8.
+          if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
+        }
       }
     }
   }
