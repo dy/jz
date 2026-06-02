@@ -150,3 +150,15 @@ Pursued the int-reduction rework. It was NOT the contract-changing L effort pass
 - **IV strength reduction** — still deprioritized (marginal on the wasm→V8 path).
 
 **Verification:** full opt matrix + selfhost + bench gate (70/70) + fuzz (typed-int 5000×4, typed-map 2000×4, scalar 3000×4), zero divergence.
+
+---
+
+## Status & corrections — pass 5 (tail-call already done; int-comparison fold; int-conditional scoped)
+
+**Tail-call optimization — ALREADY IMPLEMENTED.** `src/ir.js` `tcoTailRewrite` rewrites `call → return_call` in all tail positions (function tail, both if-arms, block tail), type-checked, with a `noTailCall` opt-out for wasm2c. Verified: self-recursion, mutual recursion, statement & ternary forms, deep recursion (`sum(2e6)`/`ev(2e6)` no overflow). The earlier "not implemented" claim was wrong — no work needed. (Only gap: closures route through a runtime helper `call`, already TCO'd; no `call_indirect` tail path, low value.)
+
+**DONE — integer comparison fold** (`aa5a195`). `f64.cmp(convert_i32 A, convert_i32 B) → i32.cmp(A, B)` in fusedRewrite (exact: comparing two i32s is identical as f64 or i32). Cheaper int-comparison codegen (parsers/scanners) and the prerequisite for i32 conditional-lane vectorization (the mask becomes an i32x4 compare). Int fuzzer extended with leaf-only comparisons (a comparison must not consume a non-`|0`'d overflowing intermediate — the contract edge the scalar fuzzer gates). Verified full matrix + bench + 6000×4 int fuzz.
+
+**SCOPED — int conditional + min/max vectorization (`#1b`, the deep value-model piece).** Current IR for `a[i] = (a[i]>0 ? a[i]+a[i] : 0)|0` over Int32Array is now `ToInt32(if (result f64) i32_cond f64_then f64_else)` — the cond is already i32 (comparison fold), but the **if-result is f64**, so it won't vectorize. Fix (all exact): `ToInt32(if C A B) ≡ if(result i32) C ToInt32(A) ToInt32(B)` — push ToInt32 into the branches when *both* are provably integer-valued f64. Needs: (1) an `isIntF64(node)` predicate (`f64.convert_i32_*`, integer `f64.const`, `f64.add/sub/mul` of such, recursively); (2) a fusedRewrite fold `ToInt32_select(if (result f64) C A B) → (if (result i32) C (wrap(trunc A)) (wrap(trunc B)))` guarded by isIntF64 on both arms (the select's fallback handles |x|≥2³ⁱ, which integer branches never reach, so the fast `wrap(trunc)` path is exact); (3) generalize the sum fold to also match the *bare* `wrap(trunc(f64.add(convert,convert)))` (not just the select-wrapped form) so the pushed branches collapse to i32.add; then the bitselect handler (LANE_COMPARE has i32) vectorizes. Plus int-conditional fuzzer coverage (ternary with leaf-cond + integer branches — sound: ToInt32 of the selected branch matches JS). **Int min/max reductions** then follow as a select-reduction recognizer (`m = cond ? a[i] : m` → i32x4.max_s/min_s + select-based horizontal fold).
+
+This is intricate, correctness-critical work (3 interlocking exact folds) in the area where FUZZ-1 already caught two silent miscompiles this session — best executed fresh, not at the tail of a long session. Recommend it as the next focused task; the plan above is execution-ready.
