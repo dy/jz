@@ -775,8 +775,11 @@ export function emitDecl(...inits) {
     }
     if (isGlobal(name)) {
       // Unboxed pointer const globals carry the raw i32 offset; init coerces via asPtrOffset.
+      // Only an i32-STORED global is a raw pointer carrier — an f64 global holds a
+      // NaN-boxed value, so coercing its init to an i32 offset (asPtrOffset → i32.wrap)
+      // would store i32 into an f64 global (invalid wasm). Mirror readVar's storage gate.
       const grep = repOfGlobal(name)
-      if (grep?.ptrKind != null) {
+      if ((ctx.scope.globalTypes.get(name) || 'f64') === 'i32' && grep?.ptrKind != null) {
         result.push(['global.set', `$${name}`, asPtrOffset(val, grep.ptrKind)])
         continue
       }
