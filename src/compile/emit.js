@@ -22,7 +22,7 @@
  */
 
 import {
-  commaList, T, isBlockBody, isReassigned, hasOwnContinue, hasOwnBreakOrContinue,
+  commaList, T, isBlockBody, isReassigned, mutatesArrayLength, hasOwnContinue, hasOwnBreakOrContinue,
   extractParams, classifyParam,
 } from '../ast.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
@@ -475,18 +475,21 @@ const isBoundName = name =>
   ctx.func.locals?.has(name) || ctx.func.current?.params?.some(p => p.name === name)
 
 // Loop-bound hoisting (see the 'for' emitter): comparison ops whose invariant side
-// is worth lifting, and the test for an immutable, loop-stable `arr.length`. Typed
-// arrays have a fixed length, so `arr.length` is loop-invariant when `arr` is a
-// typed-array var that the body never reassigns — safe to compute once.
+// is worth lifting, and the test for an immutable, loop-stable `arr.length`. A typed
+// array's length is fixed, so it is loop-invariant whenever `arr` is not reassigned.
+// A plain array's length CAN change (push/pop/index-grow/length=), so it is hoistable
+// only when the loop body provably never mutates it — `mutatesArrayLength` decides that.
 const HOIST_CMP = new Set(['<', '<=', '>', '>='])
 const immutableLenBound = (node, body) => {
   // Unwrap the `| 0` i32 coercion jz wraps a loop bound in (`i < arr.length`
   // emits `i < (arr.length | 0)`).
   if (Array.isArray(node) && node[0] === '|' && Array.isArray(node[2]) && node[2][0] == null && node[2][1] === 0)
     node = node[1]
-  return Array.isArray(node) && node[0] === '.' && node[2] === 'length'
-    && typeof node[1] === 'string' && lookupValType(node[1]) === VAL.TYPED
-    && !isReassigned(body, node[1])
+  if (!(Array.isArray(node) && node[0] === '.' && node[2] === 'length' && typeof node[1] === 'string')) return false
+  const vt = lookupValType(node[1])
+  if (vt === VAL.TYPED) return !isReassigned(body, node[1])
+  if (vt === VAL.ARRAY) return !mutatesArrayLength(body, node[1])
+  return false
 }
 
 // A source-defined function (carries a body) — as opposed to an imported name,
