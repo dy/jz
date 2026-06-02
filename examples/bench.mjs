@@ -61,6 +61,9 @@ const EXAMPLES = [
 
   { name: 'zzfx', frame: 'zzfxG Coin',
     make: (e, mem) => mem ? () => { e.zzfxG(...COIN); mem.reset() } : () => e.zzfxG(...COIN) },
+
+  { name: 'jukebox', frame: 'fill 2.6s',
+    make: (e, mem) => { const L = 44100 * 2.6 | 0; return mem ? () => { e.fill(L, 44100, 7); mem.reset() } : () => e.fill(L, 44100, 7) } },
 ]
 
 // Auto-calibrated median µs/op: warm, size a batch to ~30ms, take the best-of-9
