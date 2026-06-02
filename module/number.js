@@ -1120,11 +1120,18 @@ export default (ctx) => {
       ['i64.shr_s', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')
   }
 
-  // BigInt.asUintN(bits, bigint) — truncate to unsigned N-bit
+  // BigInt.asUintN(bits, bigint) — truncate to unsigned N-bit.
+  // (val << (64 - bits)) >>> (64 - bits) — logical shift zero-extends the low `bits`.
+  // The naive `val & ((1 << bits) - 1)` mask is wrong at bits=64: i64.shl shifts mod 64,
+  // so `1 << 64` is `1 << 0 = 1`, making the mask `0` and asUintN(64,·) collapse to 0 —
+  // which also zeroed every bigint *literal* (emit reinterprets `Nn` via
+  // BigInt.asUintN(64,·).toString() through this very handler in the self-host).
   ctx.core.emit['BigInt.asUintN'] = (bits, val) => {
     const vbits = asI32(emit(bits)), vval = asI64(emit(val))
-    // val & ((1 << bits) - 1)
-    return typed(['f64.reinterpret_i64',
-      ['i64.and', vval, ['i64.sub', ['i64.shl', ['i64.const', 1], ['i64.extend_i32_s', vbits]], ['i64.const', 1]]]], 'f64')
+    const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
+    const t = tempI64('bu')
+    return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],
+      ['local.set', `$${t}`, shift],
+      ['i64.shr_u', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')
   }
 }
