@@ -816,6 +816,54 @@ test('vectorize: Math.max(m, a[i]) int reduction stays scalar (computes in f64)'
   ok(!/i32x4\.max_s/.test(wat(src, SIMD_OPT)), 'Math.max int reduction not lifted to i32x4 (f64 path)')
 })
 
+// ---- byte-scan (memchr) → i8x16.eq + bitmask -------------------------------
+// A pure "find first index where buf[i] ==/!= byte" loop scans 16 bytes per step; the
+// first match is located via i8x16.bitmask + i32.ctz, with the original loop as the
+// <16-byte tail. ~8× over the scalar scan on V8. (Generative: node test/fuzz.js below.)
+const byteScan = (cmp, delimDecl, delim, fill) => `
+  export const main = () => {
+    const b = new Uint8Array(100)
+    for (let i = 0; i < 100; i++) b[i] = (${fill}) & 255
+    ${delimDecl}
+    let i = 0
+    while (i < 100) { if (b[i] ${cmp} ${delim}) break; i = (i + 1) | 0 }
+    return i | 0
+  }
+`
+
+test('vectorize: byte scan === const lifts to i8x16.eq + finds exact first match', () => {
+  for (const pos of [0, 7, 16, 17, 63, 64, 99]) {
+    // place the only `44` byte at `pos`; every other byte is 1 (never 44)
+    const src = byteScan('===', '', '44', `i === ${pos} ? 44 : 1`)
+    is(runVec(src, SIMD_OPT).main(), pos)
+    is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  }
+  ok(/i8x16\.eq/.test(wat(byteScan('===', '', '44', 'i*9+1'), SIMD_OPT)), 'expected i8x16.eq')
+})
+
+test('vectorize: byte scan !== const (skip-while-equal) matches scalar', () => {
+  const src = byteScan('!==', '', '7', 'i < 40 ? 7 : i')   // first non-7 at index 40
+  is(runVec(src, SIMD_OPT).main(), 40)
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/i8x16\.eq/.test(wat(src, SIMD_OPT)), 'expected i8x16.eq (inverted mask for !=)')
+})
+
+test('vectorize: byte scan with runtime delimiter is guarded (out-of-range → scalar tail)', () => {
+  // delimiter comes from data (runtime); the SIMD path runs only when it is a byte in
+  // [0,255]. An out-of-range runtime delimiter must still give the scalar result (no match).
+  const inRange = byteScan('===', 'let t = (b[0] + 3) | 0;', 't', 'i*5+10')
+  is(runVec(inRange, SIMD_OPT).main(), runVec(inRange).main())
+  ok(/i8x16\.eq/.test(wat(inRange, SIMD_OPT)), 'runtime delimiter still vectorizes (guarded)')
+  const outOfRange = byteScan('===', 'let t = (b[0] + 1000) | 0;', 't', 'i*5+10')
+  is(runVec(outOfRange, SIMD_OPT).main(), runVec(outOfRange).main())  // both return 100 (no match)
+})
+
+test('vectorize: byte scan no-match returns the bound', () => {
+  const src = byteScan('===', '', '200', 'i')   // bytes 0..99, never 200
+  is(runVec(src, SIMD_OPT).main(), 100)
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
 // ---- conditional (ternary) maps → v128.bitselect ---------------------------
 // jz lowers `cond ? X : Y` to `(if (result f64) COND (then X)(else Y))`; the
 // vectorizer lifts it to `v128.bitselect(X, Y, mask)`, mask = COND as a lane
