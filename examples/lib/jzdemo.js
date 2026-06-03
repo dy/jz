@@ -14,7 +14,7 @@ import { instantiate } from '../../interop.js'
 // Geometry · Audio, three to a row for a 3×4 README grid.
 export const EXAMPLES = [
   'game-of-life', 'lenia', 'reaction-diffusion',
-  'interference', 'plasma', 'cymatics', 'chladni',
+  'interference', 'plasma', 'chladni',
   'mandelbrot', 'attractors', 'raymarcher',
   'rfft', 'zzfx', 'jukebox',
 ]
