@@ -686,6 +686,18 @@ export default (ctx) => {
   ctx.core.emit['.getDay'] = ctx.core.emit['.getUTCDay']
   ctx.core.emit[`.${VAL.DATE}:getDay`] = ctx.core.emit[`.${VAL.DATE}:getUTCDay`]
 
+  ctx.core.emit['.getHours'] = ctx.core.emit['.getUTCHours']
+  ctx.core.emit[`.${VAL.DATE}:getHours`] = ctx.core.emit[`.${VAL.DATE}:getUTCHours`]
+
+  ctx.core.emit['.getMinutes'] = ctx.core.emit['.getUTCMinutes']
+  ctx.core.emit[`.${VAL.DATE}:getMinutes`] = ctx.core.emit[`.${VAL.DATE}:getUTCMinutes`]
+
+  ctx.core.emit['.getSeconds'] = ctx.core.emit['.getUTCSeconds']
+  ctx.core.emit[`.${VAL.DATE}:getSeconds`] = ctx.core.emit[`.${VAL.DATE}:getUTCSeconds`]
+
+  ctx.core.emit['.getMilliseconds'] = ctx.core.emit['.getUTCMilliseconds']
+  ctx.core.emit[`.${VAL.DATE}:getMilliseconds`] = ctx.core.emit[`.${VAL.DATE}:getUTCMilliseconds`]
+
   // ── UTC setter emit handlers ──────────────────────────────────────────────
 
   const emitDatePtr = (dateExpr) =>

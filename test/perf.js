@@ -1137,7 +1137,10 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // read isn't already bounds-guarded. Costs stdlib bytes, speeds up Number()/
 // parseFloat string parsing — off the jessie parse path (parse emits no
 // __char_at calls). Deliberate size↔speed trade.
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5216)
+// 5216→5669: __ftoa's large-value path now recovers and emits the fractional digits
+// (so `String(1073741824.5)` keeps its fraction) and clamps the big-integer digit
+// extraction so values below 1e21 no longer trap. A correctness fix that costs bytes.
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5669)
 // Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
 // per-object dyn props the literal's static schema doesn't enumerate. Reads
 // (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
@@ -1157,6 +1160,8 @@ golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; 
 // returned 0. Correct codegen pulls in `__str_cmp` (lexicographic three-way) plus
 // `__to_num` (string ToNumber) and their transitive stdlib, which dominates. The
 // growth is the cost of the parser actually working.
+// 6736→7149: same __ftoa fraction-recovery + big-int-clamp correctness fix as the
+// known-shape pin above (this program pulls in number→string via its stdlib).
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''
@@ -1165,7 +1170,7 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 6736)
+}`, 7149)
 // Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
 // local only when nothing in the body can mutate `buf` (no writes to it, no
 // calls — any call may reach `buf` through an alias the compiler can't track).

@@ -225,3 +225,17 @@ test('Number: legacy octal literal is decimal (documented divergence)', () => {
   is(run(`export let f = () => 0377`).f(), 377)   // not 255
   is(run(`export let f = () => 0o377`).f(), 255)  // explicit octal is correct
 })
+
+// === Regression: String() large-value fraction-drop + trap ===
+// Pre-fix, the __ftoa fit loop reduced precision until the scaled integer fit i32, which
+// (a) dropped the fractional part once floor(val) exceeded ~2^31, and (b) trapped on the
+// large-integer digit-extraction path for values just below the 1e21 exponential threshold
+// (a per-digit subtraction could go slightly negative under f64 rounding → i32.trunc_f64_u trap).
+test('Number: String() preserves the fraction when the integer part exceeds 2^31', () => {
+  is(run(`export let f = () => String(1073741824.5)`).f(), String(1073741824.5))   // '1073741824.5'
+  is(run(`export let f = () => String(4294967295.5)`).f(), String(4294967295.5))   // '4294967295.5'
+})
+
+test('Number: String() does not trap for large values below 1e21', () => {
+  is(run(`export let f = () => String(999999900000000000000)`).f(), String(999999900000000000000))
+})

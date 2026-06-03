@@ -124,6 +124,36 @@ test('Date local getters: UTC-backed aliases', () => {
   same(r[3], 3)
 })
 
+test('Date local time getters: UTC-backed aliases', () => {
+  const r = run(`export let f = () => {
+    let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123))
+    return [d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()]
+  }`)
+  same(r[0], 10)
+  same(r[1], 30)
+  same(r[2], 45)
+  same(r[3], 123)
+})
+
+test('Date local time getters: epoch zero does not throw', () => {
+  same(run('export let f = () => { let d = new Date(0); return d.getHours() }'), 0)
+  same(run('export let f = () => { let d = new Date(0); return d.getUTCHours() }'), 0)
+  same(run('export let f = () => { let d = new Date(0); return d.getMinutes() }'), 0)
+  same(run('export let f = () => { let d = new Date(0); return d.getSeconds() }'), 0)
+  same(run('export let f = () => { let d = new Date(0); return d.getMilliseconds() }'), 0)
+})
+
+test('Date local time getters: NaN date propagates NaN', () => {
+  const r = run(`export let f = () => {
+    let d = new Date(NaN)
+    return [d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()]
+  }`)
+  ok(Number.isNaN(r[0]))
+  ok(Number.isNaN(r[1]))
+  ok(Number.isNaN(r[2]))
+  ok(Number.isNaN(r[3]))
+})
+
 test('Date object: relational comparison uses time value', () => {
   same(run('export let f = () => { let a = new Date(0); let b = new Date(1); return a < b ? 1 : 0 }'), 1)
   same(run('export let f = () => { let a = new Date(2); let b = new Date(1); return a > b ? 1 : 0 }'), 1)

@@ -364,7 +364,8 @@ test('regex: str.split(regex)', async () => {
 
 test('regex: regex.exec()', async () => {
   is(evalStr('/abc/.exec("xabcy")[0]'), 'abc')
-  is(await evaluate('/xyz/.exec("abc")'), 0)
+  // exec() returns null on no-match (matches JS; was 0 before exec() returned NULL_NAN)
+  is(await evaluate('/xyz/.exec("abc")'), null)
 })
 
 test('regex: regex.exec() named capture groups', async () => {
@@ -598,4 +599,82 @@ test('new RegExp(dynamic) errors clearly', () => {
     () => jz(`export let f = (s) => { let re = new RegExp(s); return re.test("abc") }`),
     /string-literal pattern|dynamic regex/i
   )
+})
+
+// === Regression: exec() /g lastIndex advancement ===
+
+test('regex: exec /g loop collects all matches', () => {
+  // JS oracle: while ((m = /ab/g.exec(s))) loop → 3 matches in 'ab cd ab ef ab'
+  // Before fix: lastIndex never advanced → infinite loop (count hit safety limit)
+  const r = jz(`
+    let re = /ab/g
+    export let f = (s) => {
+      let count = 0, m = re.exec(s)
+      while (m !== null) { count++; if (count > 10) return -1; m = re.exec(s) }
+      return count
+    }
+  `)
+  const mem = r.memory
+  is(r.exports.f(mem.String('ab cd ab ef ab')), 3)  // JS gives 3
+  is(r.exports.f(mem.String('xabx')), 1)             // 1 match
+  is(r.exports.f(mem.String('no match here')), 0)    // 0 matches; also resets lastIndex
+  // After reset, a subsequent call should start fresh
+  is(r.exports.f(mem.String('ab')), 1)
+})
+
+test('regex: exec /g returns null on no-match (not 0)', async () => {
+  // Matches JS: /xyz/.exec("abc") === null
+  is(await evaluate('/xyz/.exec("abc")'), null)
+})
+
+test('regex: exec /g lastIndex advances correctly', () => {
+  // lastIndex should advance to end of each match
+  const r = jz(`
+    let re = /\\d+/g
+    export let f = (s) => {
+      let total = 0, m = re.exec(s)
+      while (m !== null) {
+        total += m[0].length
+        if (total > 100) return -1
+        m = re.exec(s)
+      }
+      return total
+    }
+  `)
+  const mem = r.memory
+  // '12 345 6' → matches '12'(len 2), '345'(len 3), '6'(len 1) → total 6
+  const jsOracle = (() => { const re = /\d+/g, s = '12 345 6'; let t = 0, m; while ((m = re.exec(s))) t += m[0].length; return t })()
+  is(r.exports.f(mem.String('12 345 6')), jsOracle)
+})
+
+// === Regression: \s missing VT (0x0B) and FF (0x0C) ===
+
+test('regex: \\s matches VT (\\x0B) and FF (\\x0C)', () => {
+  // JS: /\s/.test('\x0B') === true, /\s/.test('\x0C') === true
+  // Before fix: only matched SP TAB LF CR
+  const r = jz(`export let f = (s) => /\\s/.test(s)`)
+  const mem = r.memory
+  is(r.exports.f(mem.String('\x0B')), true)  // VT — was false before fix
+  is(r.exports.f(mem.String('\x0C')), true)  // FF — was false before fix
+  is(r.exports.f(mem.String(' ')),   true)   // SP still matches
+  is(r.exports.f(mem.String('\t')),  true)   // TAB still matches
+  is(r.exports.f(mem.String('\n')),  true)   // LF still matches
+  is(r.exports.f(mem.String('\r')),  true)   // CR still matches
+  is(r.exports.f(mem.String('a')),   false)  // non-whitespace still fails
+})
+
+test('regex: [\\s] class also matches VT and FF', () => {
+  // \s inside character class should also get VT/FF
+  const r = jz(`export let f = (s) => /[\\s]/.test(s)`)
+  const mem = r.memory
+  is(r.exports.f(mem.String('\x0B')), true)
+  is(r.exports.f(mem.String('\x0C')), true)
+})
+
+test('regex: split on \\s+ splits on VT and FF', () => {
+  // 'a\x0Bb'.split(/\s+/) in JS → ['a', 'b'] (VT is whitespace)
+  const r = jz(`export let f = (s) => s.split(/\\s+/).length`)
+  const mem = r.memory
+  is(r.exports.f(mem.String('a\x0Bb')), 2)  // VT splits
+  is(r.exports.f(mem.String('a\x0Cb')), 2)  // FF splits
 })

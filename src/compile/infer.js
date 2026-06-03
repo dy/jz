@@ -134,7 +134,7 @@ const STRING_ONLY_METHODS = new Set([
   'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
   'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'normalize', 'localeCompare',
   'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
-  'matchAll', 'match', 'replace', 'replaceAll', 'split',
+  'matchAll', 'match', 'replace', 'replaceAll', 'split', 'lastIndexOf',
 ])
 const ARRAY_ONLY_POISON = new Set([
   'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',

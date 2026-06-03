@@ -201,6 +201,9 @@ export default (ctx) => {
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
+    // __str_join uses __typed_idx when typedarray is loaded (plain arrays promoted to
+    // Int32Array by promoteIntArrayLiterals can produce PTR.TYPED results via .map()).
+    __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
   })
 
   // .map invokes with arity 1; .forEach/.find/.some/.every/.filter/.findIndex

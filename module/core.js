@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -957,7 +957,7 @@ export default (ctx) => {
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
-      ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object']
+      ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object', 'boolean']
       for (const s of ctx.runtime.typeofStrs)
         ctx.scope.globals.set(`__tof_${s}`, `(global $__tof_${s} (mut f64) (f64.const 0))`)
     }
@@ -991,6 +991,9 @@ export default (ctx) => {
     ;; typeof null === "object" — the historical JS quirk, distinct from undefined.
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
       (then (return (global.get $__tof_object))))
+    ;; Boolean atoms (FALSE_NAN / TRUE_NAN) — carry at the JS boundary.
+    (if (i64.eq (i64.and (local.get $v) (i64.const 0xFFFFFFFEFFFFFFFF)) (i64.const ${FALSE_NAN}))
+      (then (return (global.get $__tof_boolean))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if ${stringTest}
       (then (return (global.get $__tof_string))))

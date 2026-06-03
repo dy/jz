@@ -592,3 +592,46 @@ test('Regression: ternary only evaluates the live branch', () => {
   is(result[0], 0)
   is(result[1], 1)
 })
+
+// Regression: local-variable integer array fed through .map().join() produced
+// garbage floats ('8.48e-314,...') instead of the correct string.
+//
+// Root cause: promoteIntArrayLiterals rewrites `let a=[1,2,3]` to
+// `new Int32Array([1,2,3])` for SIMD optimization. The SIMD .map() then
+// produces a PTR.TYPED (Int32Array) result. __str_join was reading elements
+// with an 8-byte (f64) stride, but typed arrays have 4-byte stride for i32.
+// Fix: __str_join dispatches to __typed_idx for PTR.TYPED receivers.
+test('Regression: local-var integer array .map().join() matches JS (integers)', () => {
+  const { f } = runHost(`export function f() {
+    let a = [1, 2, 3]
+    return a.map(x => x * 2).join(',')
+  }`)
+  is(f(), [1, 2, 3].map(x => x * 2).join(','))  // '2,4,6'
+})
+
+test('Regression: local-var integer array .map().join() matches JS (inline form parity)', () => {
+  const { f, g } = runHost(`
+    export function f() { let a = [1, 2, 3]; return a.map(x => x * 2).join(',') }
+    export function g() { return [1, 2, 3].map(x => x * 2).join(',') }
+  `)
+  is(f(), '2,4,6')
+  is(g(), '2,4,6')
+  is(f(), g())
+})
+
+test('Regression: local-var integer array .map().join() with floats', () => {
+  const { f } = runHost(`export function f() {
+    let a = [1.5, 2.5, 3.5]
+    return a.map(x => x * 2).join(',')
+  }`)
+  is(f(), [1.5, 2.5, 3.5].map(x => x * 2).join(','))  // '3,5,7'
+})
+
+test('Regression: stored map result .join() on local-var integer array', () => {
+  const { f } = runHost(`export function f() {
+    let a = [4, 5, 6]
+    let b = a.map(x => x * 3)
+    return b.join('-')
+  }`)
+  is(f(), [4, 5, 6].map(x => x * 3).join('-'))  // '12-15-18'
+})
