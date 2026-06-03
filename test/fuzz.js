@@ -730,6 +730,45 @@ export const fuzzTypedIVSR = (opts) => {
   return findings
 }
 
+// memchr-shaped Uint8Array scans ("find first index where b[i] ==/!= delim") — the byte-
+// scan SIMD recognizer's target. Covers eq/ne, constant + runtime delimiters, and
+// deliberately out-of-[0,255] targets (so the runtime guard must fall back to the scalar
+// tail). The found index is exact, so JS and jz must agree byte-for-byte.
+const typedByteScanSource = (seed) => {
+  const g = mkRng(seed)
+  const N = 32 + g.int(200)
+  const K = 1 + g.int(255), C = g.int(256)
+  const cmp = g.chance(0.5) ? '===' : '!=='
+  let decl = '', delim
+  const r = g.int(3)
+  if (r === 0) delim = String(g.int(300) - 20)              // const, sometimes out of range
+  else if (r === 1) { decl = `let t = (b[0] + ${g.int(300) - 20}) | 0;`; delim = 't' }  // runtime, maybe out of range
+  else { decl = `let t = ${g.int(256)};`; delim = 't' }     // runtime in range
+  return `export let f = () => { const b = new Uint8Array(${N}); for (let i = 0; i < ${N}; i++) b[i] = ((i * ${K} + ${C}) & 255); ${decl} let i = 0; while (i < ${N}) { if (b[i] ${cmp} ${delim}) break; i = (i + 1) | 0 } return i | 0 }`
+}
+const checkTypedByteScan = (seed, opts) => {
+  const src = typedByteScanSource(seed)
+  let jsRet
+  try { jsRet = compileJS(src)() } catch { return { kind: 'invalid' } }
+  if (typeof jsRet !== 'number') return null
+  for (const opt of opts.optLevels) {
+    let got
+    try { got = jz(src, { optimize: opt }).exports.f() } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    if (!same(got, jsRet)) return { kind: 'mismatch-ret', opt, got, want: jsRet, src }
+  }
+  return null
+}
+export const fuzzTypedByteScan = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTypedByteScan(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
@@ -786,6 +825,12 @@ if (!isMain) {
     ok(findings.length === 0, findings.length
       ? `typed-ivsr divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz IV-SR == JS')
+  })
+  test('fuzz: Uint8Array memchr byte scan (SIMD i8x16) matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzTypedByteScan({ ...GATE, count: 120 })
+    ok(findings.length === 0, findings.length
+      ? `byte-scan divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz byte-scan == JS')
   })
 }
 
