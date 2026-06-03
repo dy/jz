@@ -45,9 +45,23 @@ export const compileViaKernel = (code, opts = {}) => {
   // `--wat` IS supported on this leg via the wasm's `compileWat` export: same
   // source→compileAst(prepare(ast)) pipeline, but watr/print of the WAT IR instead of
   // byte encoding. White-box `compile(src,{wat:true}).match(...)` codegen-shape tests
-  // then validate self-host codegen (it emits the same WAT IR as native). No watr-level
-  // WAT optimization runs, matching native `compile({wat:true, optimize:false})`.
-  if (opts.wat) return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0))
+  // then validate self-host codegen (it emits the same WAT IR as native).
+  if (opts.wat) {
+    // Forward an explicit optimize config so the self-host runs the same compile-level
+    // passes (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and
+    // emits the same shapes. `watr` is forced OFF: the watr-level WAT pass isn't part of
+    // compileWat's pipeline anyway, and turning it off moves the deferred passes
+    // (vectorize) into compileAst's pre-phase so they actually run. No explicit optimize
+    // → optimize:false (unchanged default, keeps optimize-invariant shape tests stable).
+    let optJSON = 0
+    if (opts.optimize !== undefined && opts.optimize !== false && opts.optimize !== 0) {
+      const o = (opts.optimize && typeof opts.optimize === 'object')
+        ? { ...opts.optimize, watr: false }
+        : { level: opts.optimize === true ? 2 : opts.optimize, watr: false }
+      optJSON = self.memory.String(JSON.stringify(o))
+    }
+    return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSON))
+  }
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
   // syntax) to match the native compiler's accept/reject behavior.
   const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0)

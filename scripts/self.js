@@ -54,13 +54,13 @@ export default function compileSelf(source, strict) {
  * @returns {string} WAT text
  */
 
-export function compileWat(source, strict) {
+export function compileWat(source, strict, optJSON) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
   resetProgramFactsCache()
   ctx.transform.jzify = jzify
-  ctx.transform.optimize = resolveOptimize(false)
+  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
   ctx.transform.strict = !!strict
   const parsed = parse(source)
   const ast = strict ? parsed : jzify(parsed)
