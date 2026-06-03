@@ -392,31 +392,6 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 </details>
 
-## Examples
-
-<table>
-<tr>
-<td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/lenia/"><img src="examples/thumbs/lenia.webp" width="100%" alt="Lenia"></a><br><b>lenia</b> — continuous cellular automaton; smooth-kernel "digital life".</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/reaction-diffusion/"><img src="examples/thumbs/reaction-diffusion.webp" width="100%" alt="Reaction-diffusion"></a><br><b>reaction-diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
-</tr>
-<tr>
-<td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
-<td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
-<td><a href="https://dy.github.io/jz/examples/cymatics/"><img src="examples/thumbs/cymatics.webp" width="100%" alt="Cymatics"></a><br><b>cymatics</b> — a Chladni plate whose nodal lines dance to a live floatbeat.</td>
-</tr>
-<tr>
-<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
-<td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
-<td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
-</tr>
-<tr>
-<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
-<td><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sfx synth, compiled as-is.</td>
-<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — endless procedural-jazz floatbeat; tap to shuffle.</td>
-</tr>
-</table>
-
 
 ## Performance
 
@@ -468,22 +443,48 @@ Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries gener
 </details>
 
 
+## Examples
+
+<table>
+<tr>
+<td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/lenia/"><img src="examples/thumbs/lenia.webp" width="100%" alt="Lenia"></a><br><b>lenia</b> — continuous cellular automaton; smooth-kernel "digital life".</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/reaction-diffusion/"><img src="examples/thumbs/reaction-diffusion.webp" width="100%" alt="Reaction-diffusion"></a><br><b>reaction-diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
+</tr>
+<tr>
+<td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
+<td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
+<td><a href="https://dy.github.io/jz/examples/cymatics/"><img src="examples/thumbs/cymatics.webp" width="100%" alt="Cymatics"></a><br><b>cymatics</b> — a Chladni plate whose nodal lines dance to a live floatbeat.</td>
+</tr>
+<tr>
+<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
+<td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
+<td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
+</tr>
+<tr>
+<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
+<td><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sfx synth, compiled as-is.</td>
+<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — endless procedural-jazz floatbeat; tap to shuffle.</td>
+</tr>
+</table>
+
+
 
 ## Alternatives
 
 <img src="alternatives.svg?v=2" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
 
-* [**AssemblyScript**](https://github.com/AssemblyScript/assemblyscript) — TypeScript-like dialect → WASM. Small, fast output, but requires type annotations — not JavaScript.
-* [**Porffor**](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
-* [**jawsm**](https://github.com/drogus/jawsm) — JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
-* [**Javy**](https://github.com/bytecodealliance/javy) — interprets your source via an embedded QuickJS. Runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
-* [**ComponentizeJS / jco**](https://github.com/bytecodealliance/ComponentizeJS) — emits a WASM Component via an embedded SpiderMonkey (StarlingMonkey). Standards-compliant and near-complete, but bundles a whole JS engine.
+* [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-like dialect → WASM. Small, fast output, but requires type annotations — not JavaScript.
+* [Porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
+* [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
+* [Javy](https://github.com/bytecodealliance/javy) — interprets your source via an embedded QuickJS. Runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
+* [ComponentizeJS / jco](https://github.com/bytecodealliance/ComponentizeJS) — emits a WASM Component via an embedded SpiderMonkey (StarlingMonkey). Standards-compliant and near-complete, but bundles a whole JS engine.
 
 
 ## Built with
 
-* [subscript](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs. Jessie subset keeps the grammar small and deterministic.
-* [watr](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into valid `.wasm`.
+* [**subscript**](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs. Jessie subset keeps the grammar small and deterministic.
+* [**watr**](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into valid `.wasm`.
 
 
 <p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>
