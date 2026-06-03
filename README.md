@@ -15,9 +15,9 @@ dist(3, 4) // 5
 
 ## Why?
 
-_"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches, floats-only math, hashmap objects, locked SIMD, legacy, [quirks](https://github.com/denysdovhan/wtfjs) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Zig, Go or C and shipped as WASM.
+_"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches,  locked SIMD, legacy ([wtfjs](https://github.com/denysdovhan/wtfjs)) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Zig, Go or C and shipped as WASM.
 
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM** with inferred types. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
 
 
 | Good for                    | Not for                    |
@@ -112,16 +112,23 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
-### Differences with JS
+<details>
+<summary><strong>Differences with JS</strong></summary>
 
-<!-- FIXME: are these all differences? Or there's more? Also - it feels the info is not well-structured and maybe not fully true -->
-- **Static numeric types.** `(a, b) => a + b` infers `f64.add` — numeric, not concatenation (give one side a string literal or `= ''` seed to concatenate). Values the compiler pins to 32-bit ints wrap at ±2³¹ (like C's `int`); keep one in floating-point for exact integers beyond that.
-- **Fixed-layout objects.** Key set and order are fixed at the literal; `delete` is rejected.
-- **No GC.** Memory isn't reclaimed automatically (see `memory.reset()`). `WeakMap`/`WeakSet` fold to `Map`/`Set` (weakness is unobservable); `Set`/`Map` iterate slot order, not insertion order.
-- **Thin value model.** Errors are untagged — `throw` carries a value, so `e instanceof TypeError` can't discriminate. A boolean from `&&`/`||` or an untyped container crosses the host boundary as `1`/`0` (`typeof`, `String`, `JSON.stringify`, comparisons, and boolean methods return a real boolean).
-- **Rough edges.** `String()` of a non-integer keeps ~9 significant digits (`String(1/3)` → `"0.333333333"`). Legacy octal `0377` reads as decimal — use `0o377`.
+<br>
+
+- **Numbers are f64, but proven-integer values use 32-bit math.** `a + b` is numeric (`f64.add`) — concatenate by giving one side a string (`"" + x`). Where the compiler can *prove* a value only ever holds an integer (a loop counter, anything `| 0`), it keeps it in an `i32` for speed, which **wraps at ±2³¹** like C's `int`; a `0.0` initializer doesn't change the proof, so keep the math genuinely fractional when you need exact integers past 2³¹. Also: `==` does *not* coerce (`1 == "1"` is `false`); `0377` is decimal `377` (use `0o377`); `1n`/`BigInt` are i64 internally and reach JS as tiny floats, not BigInts.
+- **Strings are UTF-8 bytes, not UTF-16 code units.** `.length`, `s[i]`, `charCodeAt`, `slice`, `indexOf`, and regex all index *bytes*: `"中".length` is `3`, `"😀".length` is `4`. ASCII matches JS exactly; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim`/`localeCompare` handle ASCII only.
+- **Objects have a fixed shape.** Keys and order are frozen at the literal. You can read and write a *new* key (`o.k = v`), but `Object.keys`/`for…in`/spread/`Object.assign` only see the literal's keys; `delete o.x`, getters/setters, and `arr.length = n` are rejected at compile. Classes are plain objects with per-instance methods (no prototype chain), so `x instanceof SomeClass` is really just an "is it an object" test. Typed-array reads past the end return `0` (not `undefined`); writes past the end corrupt linear memory.
+- **Number → string keeps ~9 significant digits.** `String(1/3)` → `"0.333333333"`, and `String(0.1 + 0.2)` → `"0.3"` (the float artifact is hidden). `toFixed`/`toPrecision` round half-to-even, so `(2.5).toFixed(0)` → `"2"` where V8 gives `"3"`.
+- **No GC, thin values.** Memory isn't reclaimed — call `memory.reset()` between batches. `WeakMap`/`WeakSet` are plain `Map`/`Set`, and both keep insertion order like JS. Errors are untagged: `throw` carries a bare value and many built-in faults (e.g. `null.x`) don't throw at all, so `e instanceof TypeError` can't discriminate. A `boolean` reaches the host as a real boolean through `typeof`/`String`/`JSON.stringify`/comparisons, but as an operand of `&&`/`||` or stored in a container it crosses as `1`/`0`.
+- **A few built-ins are limited by design.** Regex matches UTF-8 bytes (per the string model above); `Math.random()` is deterministic unless compiled with `randomSeed`; `Date` getters report UTC (no local timezone). `matchAll` isn't implemented (compile error), and `str.replace(x, fn)` with a function replacer is a compile error rather than a silent miscompile.
+<!-- FIXME: these methods should work, that is unreasonable difference -->
+<!-- FIXME: estimate how reasonable is that to keep these deviations -->
 
 jz trades completeness for low-level numeric performance by design; for full TC39 conformance, see [alternatives](#alternatives).
+
+</details>
 
 
 ## FAQ
