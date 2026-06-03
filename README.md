@@ -12,10 +12,11 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
+<!-- FIXME: REPL, examples (gallery page), used by (color-space, web-audio-api) -->
 
 ## Why?
 
-jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM** with inferred types. No legacy, no spec creep; no runtime, no GC, near-native speed with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM.
+jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM.
 
 
 | Good for                    | Not for                    |
@@ -106,7 +107,7 @@ jz is a **strict modern functional JS subset**. Built-in jzify transform extends
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
   async/await  Promise  function*  yield
-  delete  labels  eval  Function  with
+  delete  eval  Function  with
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
 ```
@@ -114,9 +115,9 @@ Not supported
 <details>
 <summary><strong>Differences with JS</strong></summary>
 
-- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `==`/`!=` don't coerce (`1 == "1"` is `false`); `BigInt` is i64, returned as a number.
+- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `==`/`!=` don't coerce (`1 == "1"` is `false`); `BigInt` is i64, returned to JS as a Number (lossy above 2⁵³, like `Number(bigint)`). `x >>> 0` is unsigned only when returned/used directly — bound to a variable and reused it keeps the signed i32 (`let u = x >>> 0` reads back negative for `x < 0`).
 - **Strings are UTF-8 bytes**, not UTF-16 — `.length`, indexing, `charCodeAt`, `slice`, `indexOf`, regex all count bytes (`"中".length` is `3`). ASCII matches JS; non-ASCII diverges; case/`trim` are ASCII-only.
-- **Objects are fixed-shape** — `Object.keys`/`for…in`/spread see only the literal's keys (you can still read/write new keys, they just don't enumerate); `delete`, getters/setters and `arr.length = n` are compile errors. Classes are plain objects, no prototype chain, so `instanceof` is just an "is it an object" test. Out-of-bounds typed-array reads give `0`, writes corrupt memory.
+- **Objects are fixed-shape** — `Object.keys`/`for…in`/spread see only the literal's keys (you can still read/write new keys, they just don't enumerate); `delete`, getters/setters and typed-array `.length =` assignment are compile errors. Classes are plain objects, no prototype chain, so `instanceof` is just an "is it an object" test. Out-of-bounds typed-array reads give `0`, writes corrupt memory.
 - **No GC** — memory isn't reclaimed; call `memory.reset()` between batches. `WeakMap`/`WeakSet` lower to `Map`/`Set` (`strict` rejects them).
 - **Smaller corners:** `String(n)` keeps ~9 significant digits and `toFixed` rounds ties-to-even (`(2.5).toFixed(0)` → `"2"`); errors are untagged and some faults (`null.x`) don't throw, so `e instanceof TypeError` can't discriminate; a `boolean` in a container or behind `&&`/`||` crosses as `1`/`0`; `Math.random` is deterministic (set `randomSeed`); `Date` is UTC.
 
@@ -163,7 +164,7 @@ Yes. `import … from 'host'` with the `{ imports }` option **wires a runtime bi
 jz('import { log } from "host"; export let f = (x) => { log(x); return x }',
    { imports: { host: { log: console.log } } })
 
-// Whole namespace — sin, cos, PI, … all auto-wired
+// Whole namespace — sin, cos, PI, … all auto-wired (functions as imports, numeric constants folded)
 jz('import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
    { imports: { math: Math } })
 
@@ -221,10 +222,10 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 **Where it runs** depends on the host:
 
 - **Numbers only, raw `WebAssembly`** — no jz dependency at all: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop `_alloc`/`_clear` for pure-numeric modules.
-- **Heap values, shipping just the `.wasm`** — `import { instantiate } from 'jz/interop'`. The ~15 KB bridge (~6 KB gzipped; no compiler or parser) builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec above (plus WASI / `wasm:js-string` imports if the module uses them).
+- **Heap values, shipping just the `.wasm`** — `import { instantiate } from 'jz/interop'`. The bridge (~37 KB of source, ~6 KB gzipped once minified; no compiler or parser) builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec above (plus WASI / `wasm:js-string` imports if the module uses them).
 - **Standalone engine, `host: 'wasi'`** — `jz program.js --host wasi`, then `wasmtime program.wasm`. The module reaches the world through WASI (stdout, argv, clock), not a JS bridge; top-level code runs on load, exports take/return numbers. No host-side marshaler here — pass heap values by calling `_alloc` against the ABI, or run it from JavaScript instead.
 
-Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge under ~15 KB.
+Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge small (~6 KB gzipped, minified).
 
 </details>
 
@@ -342,14 +343,14 @@ wasm2c program.opt.wasm -o program.c
 cc -O3 program.c -o program
 ```
 
-The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
+The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lowers to standalone native code that beats V8 on the watr example corpus (19/21 wins, 2 ties, M4 Max). Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
 
 </details>
 
 <details>
 <summary><strong>How big is the output?</strong></summary>
 
-No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~6 kB. Shrink it further:
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
 
 - **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
 - **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
@@ -380,6 +381,8 @@ jz vs alternatives — geomean speed across the bench corpus. [Full benchmark �
 
 <img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
+<sub>Local snapshot (M4 Max, darwin/arm64). CI gates jz vs V8/AssemblyScript/Porffor on every push; the Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
+
 <details>
 <summary><strong>Optimizations</strong></summary>
 
@@ -397,6 +400,10 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 
 ## Examples
+
+**▶ [Floatbeat playground](https://dy.github.io/jz/examples/playground/)** — type a formula, hear it. The editor recompiles jz → WASM **in your browser** on every keystroke (no server, no build step) — the one demo where you watch the compiler itself run. [![playground](examples/thumbs/playground.webp)](https://dy.github.io/jz/examples/playground/)
+
+The rest ship as pre-built `.wasm` (same source runs as plain JS — flip the toggle to compare):
 
 <table>
 <tr>
@@ -417,7 +424,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 <tr>
 <td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
 <td><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sfx synth, compiled as-is.</td>
-<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — endless procedural-jazz floatbeat; tap to shuffle.</td>
+<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — looping procedural-jazz arpeggio floatbeat; tap to play/pause.</td>
 </tr>
 </table>
 
