@@ -265,6 +265,17 @@ export function hasOwnContinue(body) {
   return false
 }
 
+/** Does `body` contain `continue <label>` targeting the given label? Descends through nested
+ *  loops (a labeled continue crosses loop boundaries) but not into closures. */
+export function hasLabeledContinueTo(body, label) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'continue' && body[1] === label) return true
+  if (op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasLabeledContinueTo(body[i], label)) return true
+  return false
+}
+
 export function hasOwnBreakOrContinue(body) {
   if (!Array.isArray(body)) return false
   const op = body[0]
