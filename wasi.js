@@ -28,6 +28,8 @@
  * @param {function} [opts.write] - Custom write: (fd, text) => void
  * @param {function} [opts.read] - Custom read: (fd, buf: Uint8Array) => bytesRead
  */
+const TEXT_DEC = new TextDecoder()  // reused across every fd_write (was per-iov alloc)
+
 export function wasi(opts = {}) {
   let mem = null
   const fallbackWrite = (fd, text) => {
@@ -61,7 +63,7 @@ export function wasi(opts = {}) {
         for (let i = 0; i < iovs_len; i++) {
           const ptr = dv.getUint32(iovs + i * 8, true)
           const len = dv.getUint32(iovs + i * 8 + 4, true)
-          write(fd, new TextDecoder().decode(new Uint8Array(mem.buffer, ptr, len)))
+          write(fd, TEXT_DEC.decode(new Uint8Array(mem.buffer, ptr, len)))
           written += len
         }
         dv.setUint32(nwritten, written, true)
