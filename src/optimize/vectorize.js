@@ -72,6 +72,64 @@ function matchCanonSelect(sel, laneType) {
   return { val, C }
 }
 
+// Replace every `(local.tee N v)` with `(local.get N)` so a value that tee's its
+// address in one place (the comparison) and reloads it in another (the chosen branch)
+// compares structurally equal. Used only for matching — emission keeps the tee.
+function normTee(n) {
+  if (!isArr(n)) return n
+  if (n[0] === 'local.tee' && n.length === 3) return ['local.get', n[1]]
+  return n.map(normTee)
+}
+
+// Recognize an integer min/max reduction body. WASM has no scalar i32.min/max, so
+// `m = max(m, a[i])` — written `Math.max(m,a[i])|0` or `a[i]>m?a[i]:m` — lowers, after
+// the ToInt32-through-`?:` fold, to a select-shaped body:
+//   (local.set m (if (result i32) COND (then BR_T) (else BR_E)))   [or the (select …) form]
+// where {BR_T,BR_E} = {laneLoad, m} and COND is a signed i32 comparison of the two.
+// Returns { exprNode, isMax } — exprNode is the lane expr carrying the address tee (fed
+// to liftExprV); null when not a clean min/max. All four comparison directions × two
+// branch orderings collapse to `isMax` below. gt/ge (and lt/le) are equivalent for the
+// RESULT — equal operands tie to the same value — so only the direction axis matters.
+function matchIntMinMaxReduce(rhs, accName) {
+  if (!isArr(rhs)) return null
+  let cond, T, E
+  if (rhs[0] === 'if') {
+    let i = 1
+    if (!(isArr(rhs[i]) && rhs[i][0] === 'result' && rhs[i][1] === 'i32')) return null
+    i++
+    if (rhs.length !== i + 3) return null
+    cond = rhs[i]
+    const thenB = rhs[i + 1], elseB = rhs[i + 2]
+    if (!(isArr(thenB) && thenB[0] === 'then' && thenB.length === 2)) return null
+    if (!(isArr(elseB) && elseB[0] === 'else' && elseB.length === 2)) return null
+    T = thenB[1]; E = elseB[1]
+  } else if (rhs[0] === 'select' && rhs.length === 4) {
+    T = rhs[1]; E = rhs[2]; cond = rhs[3]            // (select a b c) = a if c else b
+  } else return null
+  // Which branch is the accumulator, which is the lane EXPR.
+  let exprBr, takeExprWhenTrue
+  if (isLocalGet(E, accName) && !isLocalGet(T, accName)) { exprBr = T; takeExprWhenTrue = true }
+  else if (isLocalGet(T, accName) && !isLocalGet(E, accName)) { exprBr = E; takeExprWhenTrue = false }
+  else return null
+  // Strip a boolean-normalizing `(i32.ne X 0)` around the comparison (as liftExprV does).
+  let cmp = cond
+  if (isArr(cmp) && cmp[0] === 'i32.ne' && isI32Const(cmp[2]) && cmp[2][1] === 0) cmp = cmp[1]
+  if (!isArr(cmp) || cmp.length !== 3) return null
+  const dir = { 'i32.gt_s': 'gt', 'i32.ge_s': 'gt', 'i32.lt_s': 'lt', 'i32.le_s': 'lt' }[cmp[0]]
+  if (!dir) return null
+  // Comparison operands must be {acc, EXPR}; take the non-acc side as the canonical lane
+  // expr (it carries the address tee). exprIsLeftOfCmp records its position.
+  let condExpr, exprIsLeftOfCmp
+  if (isLocalGet(cmp[2], accName)) { condExpr = cmp[1]; exprIsLeftOfCmp = true }
+  else if (isLocalGet(cmp[1], accName)) { condExpr = cmp[2]; exprIsLeftOfCmp = false }
+  else return null
+  // The compared expr and the chosen branch must be the SAME lane (tee vs reload aside).
+  if (!exprEq(normTee(condExpr), normTee(exprBr))) return null
+  // cond true ⟺ EXPR > acc  ⇒  picking EXPR-when-true is a max; picking-when-false a min.
+  const predExprGreater = dir === 'gt' ? exprIsLeftOfCmp : !exprIsLeftOfCmp
+  return { exprNode: condExpr, isMax: takeExprWhenTrue === predExprGreater }
+}
+
 // Match the un-flattened canon, emitted when a Math.* result feeds another op
 // in expression position:
 //   (block (result T) (local.set $t CORE) (select C (local.get $t) (T.ne …)))
@@ -860,11 +918,26 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
     accName = stmt[1]
     if (typeof accName !== 'string') return null
     const rhs = stmt[2]
-    if (!isArr(rhs) || rhs.length !== 3) return null
-    opName = rhs[0]
-    reduceEntry = REDUCE_OP_LOOKUP.get(opName)
-    if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
-    exprNode = rhs[2]
+    if (!isArr(rhs)) return null
+    const minmax = matchIntMinMaxReduce(rhs, accName)
+    if (minmax) {
+      // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
+      // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
+      // op's neutral — INT_MIN for max, INT_MAX for min.
+      reduceEntry = {
+        simd: minmax.isMax ? 'i32x4.max_s' : 'i32x4.min_s',
+        extract: 'i32x4.extract_lane', laneType: 'i32',
+        identity: ['i32.const', minmax.isMax ? -2147483648 : 2147483647],
+        minmaxSelect: true, isMax: minmax.isMax,
+      }
+      exprNode = minmax.exprNode
+    } else {
+      if (rhs.length !== 3) return null
+      opName = rhs[0]
+      reduceEntry = REDUCE_OP_LOOKUP.get(opName)
+      if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
+      exprNode = rhs[2]
+    }
   } else if (bodyLen === 2) {
     const s1 = loopNode[3], s2 = loopNode[4]
     if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3) return null
@@ -971,21 +1044,38 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
     ]
   ]
 
-  // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
-  let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
-  for (let k = 1; k < lanes; k++) {
-    horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
+  // Horizontal fold + merge into the live accumulator.
+  const extraDecls = []
+  let mergeStmts
+  if (reduceEntry.minmaxSelect) {
+    // No scalar i32.max/min — fold via select through an i32 temp (no exponential
+    // operand duplication): ht = lane0; ht = minmax(ht, lane_k); acc = minmax(acc, ht).
+    // `select(a,b,(gt|lt)_s a b)` = a when it's the larger/smaller, i.e. minmax(a,b).
+    const cmpOp = reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s'
+    const ht = `$__simd_h${id}`
+    extraDecls.push(['local', ht, 'i32'])
+    const lane = (k) => ['i32x4.extract_lane', k, ['local.get', simdAccName]]
+    const minmaxSel = (a, b) => ['select', a, b, [cmpOp, a, b]]
+    mergeStmts = [['local.set', ht, lane(0)]]
+    for (let k = 1; k < lanes; k++) mergeStmts.push(['local.set', ht, minmaxSel(lane(k), ['local.get', ht])])
+    mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
+  } else {
+    // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
+    let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
+    for (let k = 1; k < lanes; k++) {
+      horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
+    }
+    // Merge the SIMD result into the live accumulator. For canon (min/max) the
+    // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
+    // range still crosses as the canonical NaN when the scalar tail is empty.
+    const merged = [opName, ['local.get', accName], horiz]
+    mergeStmts = canonC == null
+      ? [['local.set', accName, merged]]
+      : [['local.set', accName, merged],
+         ['local.set', accName,
+           ['select', canonC, ['local.get', accName],
+             [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
   }
-  // Merge the SIMD result into the live accumulator. For canon (min/max) the
-  // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
-  // range still crosses as the canonical NaN when the scalar tail is empty.
-  const merged = [opName, ['local.get', accName], horiz]
-  const mergeStmts = canonC == null
-    ? [['local.set', accName, merged]]
-    : [['local.set', accName, merged],
-       ['local.set', accName,
-         ['select', canonC, ['local.get', accName],
-           [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
   // Overshoot-safe SIMD bound: stop while a full `lanes`-wide load stays in
   // range, for ANY induction start (the min/max idiom seeds m=a[0] and starts
   // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
@@ -997,6 +1087,7 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
+    ...extraDecls,
   ]
   return { wrapper, newLocalDecls }
 }
