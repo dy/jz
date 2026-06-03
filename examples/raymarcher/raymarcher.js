@@ -62,11 +62,12 @@ let sdf = (px2, py, pz) => {
 // Surface normal by central differences (6 sdf calls per pixel hit, cheap)
 let EPS = 0.002
 
-// March along ray (ox,oy,oz) + dir*(dx,dy,dz). Returns packed result:
-// steps in high bits, hit distance in float — but jz only has f64, so we
-// return a single float encoding both: we pass steps and tt separately via
-// module-level scratch to keep the function signature simple and avoid objects.
-let scratchTT = 0.0
+// March along ray (ox,oy,oz) + dir*(dx,dy,dz). Returns the hit distance `tt`
+// (a positive Number) on a hit, or -1 on a miss — so the fractional distance
+// rides the f64 return value, never a module global. (jz narrows a scalar f64
+// global that's only ever assigned an unproven-integer value to i32 for index
+// speed, which would truncate `tt`; the step count IS an integer, so it travels
+// safely in the `scratchSteps` i32 global, read right after the call.)
 let scratchSteps = 0
 
 let march = (ox, oy, oz, dx, dy, dz) => {
@@ -78,21 +79,18 @@ let march = (ox, oy, oz, dx, dy, dz) => {
     let pz = oz + dz * tt
     let d = sdf(px2, py, pz)
     if (d < 0.001) {
-      scratchTT = tt
       scratchSteps = k
-      return 1
+      return tt           // hit: positive distance
     }
     tt = tt + d
     if (tt > 20.0) {
-      scratchTT = tt
       scratchSteps = k
-      return 0
+      return -1.0         // miss
     }
     k++
   }
-  scratchTT = tt
   scratchSteps = k
-  return 0
+  return -1.0             // miss — step budget exhausted
 }
 
 export let frame = (t) => {
@@ -146,12 +144,11 @@ export let frame = (t) => {
       rdY = rdY * invRdLen
       rdZ = rdZ * invRdLen
 
-      let hit = march(eyeX, eyeY, eyeZ, rdX, rdY, rdZ)
-      let tt = scratchTT
+      let tt = march(eyeX, eyeY, eyeZ, rdX, rdY, rdZ)
       let steps = scratchSteps
 
       let r = 0, g = 0, bl = 0
-      if (hit) {
+      if (tt >= 0.0) {
         // Surface position
         let hx = eyeX + rdX * tt
         let hy = eyeY + rdY * tt
