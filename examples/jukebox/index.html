@@ -22,32 +22,39 @@
 import { instantiate } from "../../interop.js"
 import { hud } from "../lib/jzdemo.js"
 
-const SR = 44100, LOOP = 2.6, LEN = Math.round(SR * LOOP)
+const SR = 44100, CHUNK = Math.round(SR * 0.5)   // stream + draw the tune in ½-second chunks
 
 // ── engines: same jukebox.js as V8 baseline + compiled wasm ──────────────────
+// engine(len, seed, off) → { out, ms }: synthesize `len` samples starting at absolute
+// sample index `off`, so chunk k+1 butts seamlessly onto chunk k (continuous time).
 const makeEngine = async (kind) => {
   if (kind === "js") {
     const mod = await import("./jukebox.js")
-    return (seed) => { const t0 = performance.now(); const out = mod.fill(LEN, SR, seed); return { out, ms: performance.now() - t0 } }
+    return (len, seed, off) => { const t0 = performance.now(); const out = mod.fill(len, SR, seed, off); return { out, ms: performance.now() - t0 } }
   }
   const { exports, memory } = instantiate(new Uint8Array(await (await fetch("./jukebox.wasm")).arrayBuffer()))
-  return (seed) => {
-    const t0 = performance.now(); const view = exports.fill(LEN, SR, seed); const ms = performance.now() - t0
+  return (len, seed, off) => {
+    const t0 = performance.now(); const view = exports.fill(len, SR, seed, off); const ms = performance.now() - t0
     const out = Float64Array.from(view); memory.reset(); return { out, ms }
   }
 }
 
-// ── audio: loop the current tune; shuffle swaps in a freshly-synthesized one ──
-let actx, src = null, playStart = 0
+// ── audio: stream the tune as gapless ½-s chunks scheduled just ahead of the
+// playhead — `off` advances every chunk so the melody runs forever, no loop.
+// A shuffle reseeds and restarts the stream from the top. ─────────────────────
+let actx, playing = false, off = 0, nextTime = 0, streamStart = 0, queued = []
 const audio = () => { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); return actx }
-const playLoop = (samples) => {
-  const ctx = audio()
-  const buf = ctx.createBuffer(1, samples.length, SR)
-  buf.getChannelData(0).set(samples)
-  src?.stop()
-  src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; src.connect(ctx.destination); src.start()
-  playStart = ctx.currentTime
+const stopQueued = () => { for (const s of queued) { try { s.stop() } catch {} } queued = [] }
+const schedule = () => {
+  while (nextTime < actx.currentTime + 0.3) {                  // keep ~0.3 s queued ahead of the playhead
+    const { out } = engine(CHUNK, seed, off)
+    const buf = actx.createBuffer(1, CHUNK, SR); buf.getChannelData(0).set(out)
+    const s = actx.createBufferSource(); s.buffer = buf; s.connect(actx.destination); s.start(nextTime)
+    queued.push(s); if (queued.length > 6) queued.shift()
+    nextTime += CHUNK / SR; off += CHUNK
+  }
 }
+const startStream = () => { audio(); stopQueued(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; schedule() }
 
 // ── scope ─────────────────────────────────────────────────────────────────────
 const cv = document.getElementById("scope"), g = cv.getContext("2d")
@@ -65,28 +72,30 @@ const draw = (buf) => {
     g.moveTo(x + .5, mid - hi * amp); g.lineTo(x + .5, mid - lo * amp + .5)
   }
   g.stroke()
-  if (actx) {                                            // playhead
-    const p = ((actx.currentTime - playStart) % LOOP) / LOOP
-    g.strokeStyle = "#ffffffaa"; g.beginPath(); g.moveTo(p * W, 0); g.lineTo(p * W, H); g.stroke()
-  }
 }
 
 // ── state + loop ───────────────────────────────────────────────────────────
-let engine = null, gen = 0, seed = 1, lastShuffle = 0
-const setEngine = async (kind) => { const my = ++gen; const e = await makeEngine(kind); if (my === gen) { engine = e; if (actx) playLoop(e(seed).out) } }
-const shuffle = () => { seed = (seed * 1103515245 + 12345) >>> 8 & 1023; if (engine) playLoop(engine(seed).out) }
+// Swapping JS⇄jz is seamless: both engines emit identical samples at the same
+// `off`, so the running stream just picks up the new engine on its next chunk.
+let engine = null, gen = 0, seed = 1, previewOff = 0
+const setEngine = async (kind) => { const my = ++gen; const e = await makeEngine(kind); if (my === gen) engine = e }
+const shuffle = () => { seed = (seed * 1103515245 + 12345) >>> 8 & 1023; if (playing) startStream() }
 addEventListener("pointerdown", () => {
   document.getElementById("hint").style.opacity = 0
-  if (!actx) { audio(); if (engine) playLoop(engine(seed).out) } else shuffle()
+  if (!engine) return
+  playing ? shuffle() : startStream()
 })
 
 const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
-  const { out, ms } = engine(seed)                       // per-frame synth → live throughput meter
+  if (playing) schedule()                                // keep audio queued ahead
+  // Scope + meter: synth one ½-s window per frame — at the playhead while playing
+  // (scrolls in lockstep with the sound), rolling forward before playback starts.
+  const head = playing ? Math.max(0, Math.round((actx.currentTime - streamStart) * SR)) : (previewOff += CHUNK)
+  const { out, ms } = engine(CHUNK, seed, head)
   draw(out)
   ui.frame(ms)
-  if (actx && actx.currentTime - lastShuffle > 12) { lastShuffle = actx.currentTime; shuffle() }  // drift to a new tune
 }
 
 const ui = hud({
