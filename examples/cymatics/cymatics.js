@@ -1,11 +1,12 @@
-// Cymatics — a Chladni standing-wave plate. Per pixel, sum a few audio-driven sine
-// modes and light up the nodal lines, where the sum crosses zero and the "sand"
-// settles:  u(x,y) = Σ sin(nπx±φ)·sin(mπy∓φ) ,  brightness = 1/(1+(u·k)²).
-// Each pixel is independent and trig-heavy (the y-modes hoist per row, and there are
-// no per-pixel divides) — the same throughput shape as interference, which jz runs
-// ~1.9× faster than V8. Same source = V8 baseline (imported) and compiled wasm. The
-// demo drives the mode numbers m1..m4 and amplitude from a live floatbeat's spectrum,
-// so the plate dances to the music.
+// Cymatics — a Chladni standing-wave plate, the way sand dances on a vibrating
+// *disc*: concentric radial waves crossed with angular modes, lighting up the
+// nodal lines where the surface is still. In polar (r,θ) from the centre:
+//   u(r,θ) = Σ sin(kᵢ·π·r ± t)·cos(mᵢ·θ ± t),  brightness peaks where u≈0.
+// kᵢ set the ring frequencies, mᵢ the number of spokes — the demo drives both
+// (and amplitude) from a live floatbeat's spectrum, so the plate blooms with the
+// music. Each pixel is independent and trig-heavy (sqrt + atan2 + a handful of
+// sin/cos, no per-pixel divides) — jz's throughput sweet spot. Same source = V8
+// baseline (imported) and compiled wasm.
 let W = 0, H = 0, px, invW = 0, invH = 0
 
 export let resize = (w, h) => {
@@ -17,17 +18,16 @@ export let frame = (m1, m2, m3, m4, amp, t) => {
   let PI = Math.PI
   let j = 0, py = 0
   while (py < H) {
-    let y = py * invH
-    // y-only modes: independent of x, evaluate once per row
-    let a1 = Math.sin(m2 * PI * y)
-    let a2 = Math.sin(m4 * PI * y - t)
-    let a3 = Math.sin((m2 + m4) * PI * y)
+    let dy = py * invH - 0.5             // [-0.5, 0.5] — fills the canvas (anamorphic on wide screens)
     let qx = 0
     while (qx < W) {
-      let x = qx * invW
-      let u = Math.sin(m1 * PI * x + t) * a1
-            + Math.sin(m3 * PI * x) * a2
-            + 0.5 * Math.sin((m1 + m3) * PI * x) * a3
+      let dx = qx * invW - 0.5
+      let rd = Math.sqrt(dx * dx + dy * dy) * 2.6   // 0 at centre, ~1 mid-edge
+      let th = Math.atan2(dy, dx)
+      // concentric rings (radial) modulated by angular spokes (Bessel-ish disc modes)
+      let u = Math.sin(m1 * PI * rd - t) * Math.cos(m2 * th)
+            + Math.sin(m3 * PI * rd + t) * Math.cos(m4 * th)
+            + 0.5 * Math.sin((m1 + m3) * PI * rd) * Math.cos((m2 + m4) * th + t)
       u = u * amp
       // divide-free ridge: a smooth bump peaking on the nodal lines (u≈0). A divide
       // here stalls the per-pixel chain and kills cross-pixel ILP, so keep it to muls.
