@@ -21,6 +21,18 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = join(ROOT, 'dist/jz.wasm')
 const BUILD = join(ROOT, 'scripts/build-dist.mjs')
 
+// Native's optimize default for an unspecified `optimize` — level 2 (resolveOptimize(undefined)),
+// overridable by JZ_TEST_OPTIMIZE the same way index.js's TEST_ENV_DEFAULTS applies it. The
+// kernel doesn't pass through setupCtx, so the wat branch reconstructs the same default to keep
+// optimize-dependent shape tests comparing like-for-like.
+const DEFAULT_OPT = (() => {
+  const v = process.env.JZ_TEST_OPTIMIZE
+  if (v == null) return 2
+  if (/^-?\d+$/.test(v)) return Number(v)
+  if (v === 'false') return false
+  return v  // 'size' | 'speed'
+})()
+
 // Cache the compiled Module (one expensive WebAssembly.Module compile), then hand a
 // FRESH Instance to every compile. The wasm's in-wasm reset() leaves a little module
 // state behind across compiles on a reused instance (regex capture slots re-declare →
@@ -47,18 +59,26 @@ export const compileViaKernel = (code, opts = {}) => {
   // byte encoding. White-box `compile(src,{wat:true}).match(...)` codegen-shape tests
   // then validate self-host codegen (it emits the same WAT IR as native).
   if (opts.wat) {
-    // Forward an explicit optimize config so the self-host runs the same compile-level
-    // passes (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and
-    // emits the same shapes. `watr` is forced OFF: the watr-level WAT pass isn't part of
-    // compileWat's pipeline anyway, and turning it off moves the deferred passes
-    // (vectorize) into compileAst's pre-phase so they actually run. No explicit optimize
-    // → optimize:false (unchanged default, keeps optimize-invariant shape tests stable).
+    // Forward an optimize config so the self-host runs the same COMPILE-level passes
+    // (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and emits the
+    // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
+    // (resolveOptimize(undefined), as TEST_ENV_DEFAULTS / JZ_TEST_OPTIMIZE applies it) —
+    // not optimize:false, else every level-2 shape test compares native-level-2 codegen
+    // against kernel-level-0 and diverges. `watr` is forced OFF: compileWat prints
+    // compileAst(prepare(ast)) directly and does not run watOptimize (the watr-level CSE/
+    // DCE/inline pass still infinite-loops when self-compiled on some folded-OBJECT IR,
+    // e.g. `const o = JSON.parse('{"x":42}'); o.x`), and turning it off relocates the
+    // deferred passes (vectorize) into compileAst's pre-phase. Explicit optimize:false / 0
+    // stays off.
     let optJSON = 0
-    if (opts.optimize !== undefined && opts.optimize !== false && opts.optimize !== 0) {
-      const o = (opts.optimize && typeof opts.optimize === 'object')
-        ? { ...opts.optimize, watr: false }
-        : { level: opts.optimize === true ? 2 : opts.optimize, watr: false }
-      optJSON = self.memory.String(JSON.stringify(o))
+    if (opts.optimize !== false && opts.optimize !== 0) {
+      const base = opts.optimize == null ? DEFAULT_OPT : opts.optimize
+      if (base !== false && base !== 0) {
+        const o = (base && typeof base === 'object')
+          ? { ...base, watr: false }
+          : { level: base === true ? 2 : base, watr: false }
+        optJSON = self.memory.String(JSON.stringify(o))
+      }
     }
     return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSON))
   }
