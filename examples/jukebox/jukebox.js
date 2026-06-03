@@ -3,11 +3,15 @@
 // loop never sounds the same twice. The synth layers a plucked walking bass, an
 // FM-bell arpeggio over seventh-chord voicings, and a soft pad. Per sample it's a
 // handful of independent oscillators + envelopes — jz's audio sweet spot (same source
-// is the V8 baseline and the compiled wasm). fill() allocates the sample buffer and
-// returns it; the host reads it back and rewinds the bump allocator.
+// is the V8 baseline and the compiled wasm).
+//
+// `off` is the absolute sample index of the first sample, so the host streams the
+// tune in gapless chunks — chunk k+1 picks up exactly where chunk k left off and the
+// melody never loops. fill() returns the synthesized buffer (a view over wasm memory
+// for jz); the host copies it out and rewinds the bump allocator.
 let PI2 = 6.283185307179586
 
-export let fill = (len, sr, seed) => {
+export let fill = (len, sr, seed, off) => {
   let b = new Float64Array(len)
   let invSr = 1.0 / sr
 
@@ -23,7 +27,7 @@ export let fill = (len, sr, seed) => {
 
   let i = 0
   while (i < len) {
-    let t = i * invSr
+    let t = (off + i) * invSr
     let beat = t * invSpb
     let bar = (beat * 0.25) | 0
 
