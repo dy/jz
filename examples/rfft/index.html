@@ -217,14 +217,14 @@ drawAxis();
 window.addEventListener("resize", () => { fit(); });
 
 // ── streaming engine + render loop ───────────────────────────────────────────
-let audio = null, node = null, running = false, paused = false;
-let off = 0;                          // running sample index of the live stream (continuous time)
+let audio = null, running = false, paused = false;
 let seedA = 0, seedB = 0;             // current chord and, during a shuffle, the incoming one
-let xfStart = 0, xfLen = 1;           // crossfade window [xfStart, xfStart+xfLen) in samples
-let tmpA = null, tmpB = null;         // per-chunk synthesis scratch
-const SPEC_RING = 1 << 16, RMASK = SPEC_RING - 1;   // ring of recent stream samples the spectrogram FFTs (> N + chunk)
+let xfStart = 0, xfLen = 1;           // crossfade window [xfStart, xfStart+xfLen) in generated-sample coords
+let genOff = 0, nextTime = 0, streamStart = 0, scheduled = [];   // look-ahead scheduler state
+let tmpA = null, tmpB = null, tmpMix = null;        // per-chunk synthesis scratch
+const CHUNK = 2048;                   // samples per scheduled chunk (~46 ms @ 44.1k)
+const SPEC_RING = 1 << 16, RMASK = SPEC_RING - 1;   // ring of recent stream samples the spectrogram FFTs
 const ring = new Float64Array(SPEC_RING);
-let emitted = 0;                      // total samples pushed to the ring / output
 
 // FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
@@ -236,32 +236,36 @@ const ui = hud({
   onSwitch: (kind) => start(kind),    // reload FFT + beat engines; the live stream stays seamless (jz==JS samples)
 });
 
-// The audio stream: synthesize the tune in BUF-sample chunks with the LIVE seed,
-// crossfading seedA→seedB across [xfStart, xfStart+xfLen). A shuffle only moves those
-// markers, never re-synthesizes a buffer, so it never blocks (≈2 ms/chunk vs ~330 ms).
+// Audio = a look-ahead scheduler (like the jukebox): synthesize the tune in small
+// chunks with the LIVE seed and schedule them back-to-back on the AUDIO thread, so
+// the heavy per-frame spectrogram FFT on the main thread can never starve playback
+// (a ScriptProcessor here clicked every buffer for exactly that reason). seedA→seedB
+// crossfades across [xfStart, xfStart+xfLen); a shuffle just moves those markers.
 function startStream() {
-  const { ctx } = audio, sr = ctx.sampleRate, BUF = 8192;
-  tmpA = new Float64Array(BUF); tmpB = new Float64Array(BUF);
-  node = ctx.createScriptProcessor(BUF, 0, 1);
-  node.onaudioprocess = (e) => {
-    const out = e.outputBuffer.getChannelData(0), L = out.length, fill = beatCache.fill;
-    if (!fill) { out.fill(0); return; }              // engine still compiling — brief silence
-    fill(tmpA, L, sr, off, seedA);
-    if (seedA !== seedB && off < xfStart + xfLen) {  // crossfade region — blend the two chords
-      fill(tmpB, L, sr, off, seedB);
-      for (let i = 0; i < L; i++) {
-        let x = (off + i - xfStart) / xfLen; x = x < 0 ? 0 : x > 1 ? 1 : x;
+  tmpA = new Float64Array(CHUNK); tmpB = new Float64Array(CHUNK); tmpMix = new Float64Array(CHUNK);
+  genOff = 0; nextTime = audio.ctx.currentTime + 0.12; streamStart = nextTime; scheduled = [];
+}
+function schedule() {
+  const { ctx } = audio, sr = ctx.sampleRate, fill = beatCache.fill;
+  if (!fill) return;
+  while (nextTime < ctx.currentTime + 0.28) {        // keep ~0.28 s queued ahead of the playhead
+    fill(tmpA, CHUNK, sr, genOff, seedA);
+    let chunk = tmpA;
+    if (seedA !== seedB && genOff < xfStart + xfLen) {   // crossfade region — blend the two chords
+      fill(tmpB, CHUNK, sr, genOff, seedB);
+      for (let i = 0; i < CHUNK; i++) {
+        let x = (genOff + i - xfStart) / xfLen; x = x < 0 ? 0 : x > 1 ? 1 : x;
         x = x * x * (3 - 2 * x);                      // smoothstep
-        out[i] = tmpA[i] * (1 - x) + tmpB[i] * x;
+        tmpMix[i] = tmpA[i] * (1 - x) + tmpB[i] * x;
       }
-    } else {
-      if (seedA !== seedB) seedA = seedB;             // fade finished — settle on the new chord
-      out.set(tmpA);
-    }
-    for (let i = 0; i < L; i++) ring[(emitted + i) & RMASK] = out[i];   // feed the spectrogram
-    emitted += L; off += L;
-  };
-  node.connect(ctx.destination);
+      chunk = tmpMix;
+    } else if (seedA !== seedB) seedA = seedB;         // fade finished — settle on the new chord
+    const buf = ctx.createBuffer(1, CHUNK, sr); buf.getChannelData(0).set(chunk);
+    const s = ctx.createBufferSource(); s.buffer = buf; s.connect(ctx.destination); s.start(nextTime);
+    scheduled.push(s); if (scheduled.length > 16) scheduled.shift();
+    for (let i = 0; i < CHUNK; i++) ring[(genOff + i) & RMASK] = chunk[i];   // feed the spectrogram
+    nextTime += CHUNK / sr; genOff += CHUNK;
+  }
 }
 
 let gen = 0;
@@ -273,17 +277,20 @@ async function start(kind) {
   const inp = engine.init(N);          // Float64Array: JS buffer or wasm view
   const spec = engine.spectrum();      // magnitude (after rfft)
   const rsamp = (i) => ring[i & RMASK];          // read the live stream by absolute sample index
-  let cursor = emitted;                          // last drawn spectrogram column, in emitted-sample coords
+  const sr = audio.ctx.sampleRate;
+  let cursor = Math.floor((audio.ctx.currentTime - streamStart) * sr);   // playhead, in generated-sample coords
   const dbSpan = DB_CEIL - DB_FLOOR;
 
   (function frame() {
     if (my !== gen) return;
     requestAnimationFrame(frame);
+    schedule();                                    // keep the audio queue filled (the audio thread plays it)
 
+    const target = Math.floor((audio.ctx.currentTime - streamStart) * sr);   // playhead — what's actually heard now
     const w = sg.width, h = sg.height;
-    let cols = Math.floor((emitted - cursor) / HOP);
+    let cols = Math.floor((target - cursor) / HOP);
     if (cols <= 0) { ui.frame(null); return; }            // paused or no new audio yet
-    if (cols > w) { cursor = emitted - w * HOP; cols = w; }   // fell behind (tab hidden) — jump to live
+    if (cols > w) { cursor = target - w * HOP; cols = w; }   // fell behind (tab hidden) — jump to live
 
     sgctx.drawImage(sg, -cols, 0);                 // scroll spectrogram left
     wctx.globalCompositeOperation = "copy";        // scroll waveform overlay in lockstep
@@ -385,7 +392,7 @@ function shuffle() {
   if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
   seedA = seedB;                                       // commit any in-flight target as the base
   seedB = (seedB + 1 + (Math.random() * 23 | 0)) % 24; // a fresh key + starting chord, same voice
-  xfStart = off; xfLen = Math.round(audio.sampleRate * 1.4);
+  xfStart = genOff; xfLen = Math.round(audio.sampleRate * 1.4);
 }
 const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
 shuffleEl.addEventListener("click", shuffle);
