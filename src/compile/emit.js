@@ -23,7 +23,7 @@
 
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
-  hasOwnContinue, hasOwnBreakOrContinue, extractParams, classifyParam,
+  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam,
 } from '../ast.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
@@ -692,6 +692,9 @@ export function emitDecl(...inits) {
     if (!Array.isArray(i) || i[0] !== '=') continue
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
+    // Flag bindings initialized to a nullish literal so arithmetic on them coerces (null→0,
+    // undefined→NaN) rather than propagating the raw sentinel. See toNumF64 / maybeNullish.
+    if (isNullishLit(init)) ctx.func.maybeNullish?.add(name)
 
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
@@ -832,7 +835,7 @@ export function emitDecl(...inits) {
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
     } else {
-      coerced = localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
+      coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
     }
     if (!(isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length))
       result.push(['local.set', `$${name}`, coerced])
@@ -2479,6 +2482,7 @@ export const emitter = {
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    if (isNullishLit(val)) ctx.func.maybeNullish?.add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = _expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
       inc('__to_num')
@@ -2984,7 +2988,13 @@ export const emitter = {
 
   'for': (init, cond, step, body) => {
     if (body === undefined) return err('for-in/for-of not supported')
-    if (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false) {
+    // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
+    // can target this loop's continue point. The immediately-enclosed loop consumes it.
+    const myLabel = ctx.func.pendingLabel; ctx.func.pendingLabel = null
+    const labeledContinue = myLabel != null && hasLabeledContinueTo(body, myLabel)
+    // Don't unroll a loop that is the target of a `continue <label>` — unrolling would lose the
+    // continue edge. (Plain loops with no labeled-continue still unroll.)
+    if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
     }
@@ -3001,10 +3011,11 @@ export const emitter = {
     // The cont wrapper is only needed if the body has a `continue` AND there is a step
     // expression — `continue` must jump to before the step. Without a step, `continue`
     // can target the loop label directly, saving a redundant `block`.
-    const needsCont = step && hasOwnContinue(body)
+    const needsCont = step && (hasOwnContinue(body) || labeledContinue)
     const cont = needsCont ? `$cont${id}` : loop
     ctx.func.stack.push({ brk, loop: cont })
     const frame = ctx.func.stack[ctx.func.stack.length - 1]
+    if (myLabel != null) frame.contLabel = myLabel   // so `continue <myLabel>` targets this loop's step/test
     // Per-iteration fresh cells for boxed locals declared in the body — allocated
     // at body entry so a closure declared before its binding captures the right
     // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
@@ -3065,7 +3076,10 @@ export const emitter = {
   'label': (name, body) => {
     const brk = `$label${ctx.func.uniq++}`
     ctx.func.stack.push({ label: name, brk })
+    // Hand the label to the immediately-enclosed loop so `continue name` can target it.
+    ctx.func.pendingLabel = name
     const result = ['block', brk, ...emitVoid(body)]
+    ctx.func.pendingLabel = null   // clear if the body wasn't a loop (nothing consumed it)
     ctx.func.stack.pop()
     return result
   },
@@ -3077,8 +3091,11 @@ export const emitter = {
     return [...emitFinalizers(), ['br', target]]
   },
   'continue': (label) => {
-    if (label != null) err(`continue label '${label}' is not supported`)
-    return [...emitFinalizers(), ['br', loopTop().loop]]
+    if (label == null) return [...emitFinalizers(), ['br', loopTop().loop]]
+    // Labeled continue: target the continue point of the loop that adopted this label.
+    const frame = ctx.func.stack.findLast(f => f.contLabel === label)
+    if (!frame) err(`continue label '${label}' is not in scope`)
+    return [...emitFinalizers(), ['br', frame.loop]]
   },
 
   // === Call ===

@@ -489,6 +489,14 @@ export function exprType(expr, locals) {
   // through, instead of widening the local to f64 because exprType defaulted.
   if (op === '()') {
     if (args[0] === 'math.imul' || args[0] === 'math.clz32') return 'i32'
+    // SIMD intrinsics → v128 lane vector, except lane-extract / reductions which
+    // hand a scalar back (i32x4.lane / v128.anyTrue / v128.allTrue → i32;
+    // f32x4.lane → f64). See module/simd.js.
+    if (typeof args[0] === 'string' && (args[0].startsWith('f32x4.') || args[0].startsWith('i32x4.') || args[0].startsWith('f64x2.') || args[0].startsWith('v128.'))) {
+      if (args[0] === 'f32x4.lane') return 'f64'
+      if (args[0] === 'i32x4.lane' || args[0] === 'v128.anyTrue' || args[0] === 'v128.allTrue') return 'i32'
+      return 'v128'
+    }
     // charCodeAt: i32 when the index is provably in `[0, recv.length)` (an
     // induction variable bounded by `recv.length` — OOB impossible). Otherwise
     // f64: the JS-spec OOB result is NaN, which is not representable as i32.

@@ -42,6 +42,9 @@ import {
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
 
+// SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
+const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
+
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
 // at the top of `prepare()` (line ~368) — any throw inside prepare is cleared
@@ -128,6 +131,14 @@ const hostReturnValType = spec => {
 }
 
 const addHostImport = (mod, name, alias, spec) => {
+  // A numeric host constant (e.g. `Math.PI` via `{ imports: { math: Math } }`) has no callable
+  // ABI — record it so references fold to an f64 literal (see prep's identifier resolution) instead
+  // of emitting a 0-arg func import that can't be read as a value ("'PI' is not in scope").
+  if (typeof spec === 'number') {
+    if (!ctx.scope.hostConsts) ctx.scope.hostConsts = {}
+    ctx.scope.hostConsts[alias] = spec
+    return
+  }
   const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
   // User-supplied imports carry NaN-boxed values via i64 (not f64) so V8 cannot
   // canonicalize the NaN payload across the wasm↔JS function boundary —
@@ -706,6 +717,9 @@ function prep(node) {
       // user global, not the builtin. (Mangled globals drop their original name
       // from userGlobals, so this fires only for un-renamed user bindings.)
       if (ctx.scope.userGlobals?.has?.(node)) return node
+      // Host numeric constant (`Math.PI` etc.) → fold to its f64 literal. Placed after the
+      // local/user-global checks above so a same-named binding still shadows it.
+      if (ctx.scope.hostConsts && node in ctx.scope.hostConsts) return [, ctx.scope.hostConsts[node]]
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -718,6 +732,10 @@ function prep(node) {
 
   const [op, ...args] = node
   if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited. It diverges from JS by evaluating to 0.')
+  // jz's `==`/`!=` already never coerce (identical to `===`/`!==`), so default mode accepts them.
+  // strict enforces the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
+  if ((op === '==' || op === '!=') && ctx.transform.strict)
+    err(`strict mode: \`${op}\` is prohibited — use \`${op}=\`. (jz's \`${op}\` doesn't coerce, but the canonical subset is \`===\`/\`!==\` only.)`)
   if (op == null) {
     if (typeof args[0] === 'string') {
       includeForStringValue()
@@ -1192,6 +1210,12 @@ function resolveCallee(callee, args) {
     // builtin named-call. (Property reads route through the `.` handler's own
     // shadow check.)
     if (shadowsBuiltin(obj)) return prep(callee)
+    // SIMD intrinsic namespaces resolve members directly to their emit key, ahead of
+    // generic-method dispatch — they're pure namespaces (never runtime values), and
+    // names like `f32x4.add` must not be mistaken for the generic `.add` (Set/Map).
+    if (typeof obj === 'string' && typeof prop === 'string' && SIMD_NS.has(obj) && !(scopes.length && isDeclared(obj)) && !ctx.scope.userGlobals?.has?.(obj)) {
+      includeModule(obj); return `${obj}.${prop}`
+    }
     const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
     if (key && ctx.module.hostImports?.[obj]?.[prop]) {
       const spec = ctx.module.hostImports[obj][prop]
@@ -1523,6 +1547,17 @@ const handlers = {
     const c = prep(stripBoolNot(cond))
     pushScope(); const b = prep(body); popScope()
     return ['while', c, b]
+  },
+  // do { body } while (cond) → flag-guarded while: `flag=true; while (flag||cond) { flag=false; body }`.
+  // jzify lowers this in default mode (jzify/transform.js), but strict mode skips jzify — without
+  // this prepare-stage twin, strict `do-while` reaches emit as a raw 'do' and dies ("Unknown op: do"),
+  // contradicting the README's strict-subset list. Re-prep the synthetic tree so scope/normalize apply.
+  'do': (body, cond) => {
+    const flag = `${T}do${ctx.func.uniq++}`
+    return prep([';',
+      ['let', ['=', flag, [null, true]]],
+      ['while', ['||', flag, cond],
+        ['{}', [';', ['=', flag, [null, false]], body]]]])
   },
 
   'export': decl => {

@@ -1,6 +1,7 @@
 const TESTS = [
   'errors',
   'math',
+  'simd-intrinsics',
   'bytebeat',
   'imports',
   'statements',
