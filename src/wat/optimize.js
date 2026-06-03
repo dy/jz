@@ -883,12 +883,26 @@ const isTinyConst = (node) => {
   return false
 }
 
+/** A pure local→local copy value `(local.get $src)`, with $src ≠ the local being set.
+ *  Substituting it for a `(local.get $dst)` is byte-neutral (local.get for local.get),
+ *  so — unlike a reused wide constant — it can never grow an instruction, and it turns
+ *  the copy `$dst = $src` into a dead store the next pass drops. Self-copies are
+ *  excluded: they're no-ops that would re-trigger `changed` every round. (Propagating a
+ *  copy lengthens $src's live range, which can rarely cost coalesceLocals a slot — a
+ *  few bytes — but net-shrinks across the corpus, e.g. −1.7 KB on the watr self-host.) */
+const isLocalCopy = (val, dest) =>
+  Array.isArray(val) && val[0] === 'local.get' && val.length === 2 &&
+  typeof val[1] === 'string' && val[1] !== dest
+
 /** Can this tracked value be substituted for a local.get?
  *  - single use of a pure value: always shrinks (drops the set, the lone get, the decl);
- *  - any use of a tiny constant: byte-neutral at worst, still drops the set + decl.
+ *  - any use of a tiny constant: byte-neutral at worst, still drops the set + decl;
+ *  - any use of a pure local copy: byte-neutral, frees the copy as a dead store.
  *  Anything else (a wide constant reused many times, an impure expr) could inflate
- *  or reorder side effects, so it's left alone. */
-const canSubst = (k) => (k.pure && k.singleUse) || isTinyConst(k.val)
+ *  or reorder side effects, so it's left alone. Copy validity (the source not being
+ *  reassigned between copy and use) is enforced by the same purgeRefs/branch-clear
+ *  machinery that guards every tracked value. */
+const canSubst = (k) => (k.pure && k.singleUse) || isTinyConst(k.val) || k.copy
 
 /** Drop tracked values that read `$name`: rewriting `$name` makes them stale. */
 const purgeRefs = (known, name) => {
@@ -1040,7 +1054,8 @@ const forwardPropagate = (funcNode, params, useCounts) => {
       known.set(instr[1], {
         val: instr[2], pure: isPure(instr[2]),
         readsMem: readsMemory(instr[2]),
-        singleUse: uses.gets <= 1 && uses.sets <= 1 && uses.tees === 0
+        singleUse: uses.gets <= 1 && uses.sets <= 1 && uses.tees === 0,
+        copy: isLocalCopy(instr[2], instr[1])
       })
       continue
     }
@@ -1190,6 +1205,35 @@ const eliminateDeadStores = (funcNode, params, useCounts) => {
 }
 
 /**
+ * Drop `(local.set $x A)` when the very next statement re-sets $x without reading it
+ * first (A pure). The two writes are adjacent, so A's value is overwritten before any
+ * observation — it's dead. The whole-function {@link eliminateDeadStores} misses this:
+ * it only fires when $x is read NOWHERE, whereas here $x is live later, just not
+ * between these two writes. Pairs with copy-propagation, which rewrites
+ * `$x=$y; $x=f($x)` to `$x=$y; $x=f($y)` — an adjacent dead store this removes,
+ * collapsing the round-trip jz's value-model lowering leaves behind.
+ * @param {Array} funcNode  a straight-line scope (body / block / loop / then / else)
+ * @param {Set<string>} params
+ */
+const eliminateAdjacentDeadStores = (funcNode, params) => {
+  let changed = false
+  for (let i = 1; i < funcNode.length - 1; i++) {
+    const a = funcNode[i], b = funcNode[i + 1]
+    // `a` must be a plain set (a tee leaves its value on the stack — not removable);
+    // `b` may be a set OR a tee (both overwrite the local before `a`'s value is read).
+    if (!Array.isArray(a) || a[0] !== 'local.set' || a.length !== 3) continue
+    if (!Array.isArray(b) || (b[0] !== 'local.set' && b[0] !== 'local.tee') || b.length !== 3 || b[1] !== a[1]) continue
+    if (params.has(a[1]) || !isPure(a[2])) continue
+    // Dead only if b's value doesn't read $x before overwriting it.
+    let reads = false
+    walk(b[2], n => { if (Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'local.tee') && n[1] === a[1]) reads = true })
+    if (reads) continue
+    funcNode.splice(i, 1); changed = true; i--
+  }
+  return changed
+}
+
+/**
  * Propagate values through locals and eliminate single-use/dead locals.
  * Constants propagate to all uses; pure single-use exprs inline into get site.
  * Multi-pass with batch counting for convergence.
@@ -1231,6 +1275,7 @@ const propagate = (ast) => {
         if (eliminateSetGetPairs(scope, params, useCounts)) progressed = true
         if (createLocalTees(scope, params, useCounts)) progressed = true
         if (eliminateDeadStores(scope, params, useCounts)) progressed = true
+        if (eliminateAdjacentDeadStores(scope, params)) progressed = true
       }
       if (!progressed) break
     }

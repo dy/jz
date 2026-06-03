@@ -13,6 +13,7 @@ import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
+import { optimize as watOptimize } from '../src/wat/optimize.js'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 
@@ -1649,4 +1650,40 @@ test('arenaRewind: an allocation that is returned must persist (no rewind)', () 
     export let main = () => { let a = mk(); return a[0] + a[1] + a[2] }
   `)
   is(ex.main(), 6)
+})
+
+// ── WAT copy-propagation (src/wat/optimize.js) ──────────────────────────────
+// The value-model lowering leaves local round-trips `$b = $a; $b = f($b)`; copy-prop
+// rewrites the use to $a and the adjacent-dead-store pass drops the now-dead copy.
+const watStr = n => JSON.stringify(n)
+
+test('wat copy-prop: collapses a local copy round-trip, dropping the copy', () => {
+  const mod = ['module',
+    ['func', '$f', ['param', '$a', 'i32'], ['result', 'i32'],
+      ['local', '$b', 'i32'],
+      ['local.set', '$b', ['local.get', '$a']],
+      ['local.set', '$b', ['i32.add', ['local.get', '$b'], ['i32.const', 1]]],
+      ['local.get', '$b'],
+    ],
+  ]
+  const out = watStr(watOptimize(mod, 'propagate locals'))
+  ok(!out.includes('["local.get","$b"]'), 'every $b read folded away')
+  ok(out.includes('["local.get","$a"]'), 'the add now reads the copy source $a directly')
+  // The whole round-trip should collapse to the bare expression.
+  ok((out.match(/local\.set/g) || []).length === 0, 'the dead copy + the temp set are gone')
+})
+
+test('wat copy-prop: a copy whose source is later reassigned is NOT propagated past it', () => {
+  // $b = $a; $a = 9; use $b  →  $b must keep the OLD $a, so the copy may not fold to $a.
+  const mod = ['module',
+    ['func', '$f', ['param', '$a', 'i32'], ['result', 'i32'],
+      ['local', '$b', 'i32'],
+      ['local.set', '$b', ['local.get', '$a']],
+      ['local.set', '$a', ['i32.const', 9]],
+      ['i32.add', ['local.get', '$b'], ['local.get', '$a']],
+    ],
+  ]
+  // Correctness via execution: run the same program through jz end-to-end.
+  const ex = jz('export const f = (a) => { let b = a; a = 9; return (b + a) | 0 }')
+  is(ex.exports.f(3), 12)   // 3 + 9, NOT 9 + 9
 })
