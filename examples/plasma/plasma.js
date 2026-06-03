@@ -4,10 +4,27 @@
 // v ∈ [-1,1] is mapped to a teal↔magenta palette via integer channel ramps —
 // no per-pixel divides, pure trig + multiply → jz's fast sin/cos pipeline wins.
 let W = 0, H = 0, px, invW = 0, invH = 0
+let pal                                  // 3 RGB palette stops: lo / mid / hi (9 ints, 0..255)
 
 export let resize = (w, h) => {
   W = w; H = h; invW = 1.0 / w; invH = 1.0 / h
-  px = new Uint32Array(w * h); return px
+  px = new Uint32Array(w * h)
+  pal = new Int32Array(9)
+  // default: teal → white → magenta (the original look) until setPalette overrides
+  pal[0] = 0;   pal[1] = 200; pal[2] = 200    // lo  (teal)
+  pal[3] = 255; pal[4] = 255; pal[5] = 255    // mid (white)
+  pal[6] = 255; pal[7] = 40;  pal[8] = 200    // hi  (magenta)
+  return px
+}
+
+// Swap the colour ramp live. Three RGB stops the value sweeps through:
+// lo at v=-1, mid at v=0, hi at v=+1. Channels are integers, so the Int32Array
+// element store is exact (a scalar f64 global assigned a param would be i32-
+// narrowed and truncate — here the values ARE integers, so it's lossless).
+export let setPalette = (loR, loG, loB, midR, midG, midB, hiR, hiG, hiB) => {
+  pal[0] = loR;  pal[1] = loG;  pal[2] = loB
+  pal[3] = midR; pal[4] = midG; pal[5] = midB
+  pal[6] = hiR;  pal[7] = hiG;  pal[8] = hiB
 }
 
 // sine-based fbm: 5 octaves, freq doubling (2,4,8,16,32), amp halving (0.5,0.25,...)
@@ -80,26 +97,24 @@ export let frame = (t) => {
       if (norm < 0) norm = 0
       if (norm > 255) norm = 255
 
-      // teal(0)↔white(128)↔magenta(255) palette, shift-based (no divides):
-      //   r: low=0, mid=255, high=255  → ramp up then stay
-      //   g: low=200, mid=255, high=80 → bright mid
-      //   b: low=200, mid=255, high=200 → stays teal/blue
-      // Implemented as two linear segments joined at norm==128:
+      // Two-segment integer lerp through the palette stops (no divides; >>7 = ÷128):
+      //   norm 0..127   → lo → mid      norm 128..255 → mid → hi
       let r_, g_, b_
       if (norm < 128) {
         let h_ = norm          // 0..127
-        // teal→white: r 0→255, g 200→255, b 200→255
-        r_ = (h_ * 2) | 0                        // 0..254
-        g_ = 200 + ((h_ * 55) >> 7) | 0          // 200..255  (55/128 ≈ 0.43)
-        b_ = 200 + ((h_ * 55) >> 7) | 0
+        r_ = pal[0] + (((pal[3] - pal[0]) * h_) >> 7)
+        g_ = pal[1] + (((pal[4] - pal[1]) * h_) >> 7)
+        b_ = pal[2] + (((pal[5] - pal[2]) * h_) >> 7)
       } else {
         let h_ = norm - 128    // 0..127
-        // white→magenta: r stays ~255, g 255→40, b 255→200
-        r_ = 255
-        g_ = 255 - ((h_ * 215) >> 7) | 0         // 255..40
-        b_ = 255 - ((h_ * 55) >> 7) | 0          // 255..200
+        r_ = pal[3] + (((pal[6] - pal[3]) * h_) >> 7)
+        g_ = pal[4] + (((pal[7] - pal[4]) * h_) >> 7)
+        b_ = pal[5] + (((pal[8] - pal[5]) * h_) >> 7)
       }
       if (r_ > 255) r_ = 255
+      if (g_ > 255) g_ = 255
+      if (b_ > 255) b_ = 255
+      if (r_ < 0) r_ = 0
       if (g_ < 0) g_ = 0
       if (b_ < 0) b_ = 0
 

@@ -10,16 +10,39 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   body { border-top: 2px solid #50ad7b; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #pal { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 40;
+    font: 13px ui-monospace, Menlo, monospace; color: #cfe8db; background: #0a0a12cc;
+    border: 1px solid #50ad7b88; border-radius: 999px; padding: 7px 16px; cursor: pointer;
+    backdrop-filter: blur(6px); transition: border-color .2s, color .2s; }
+  #pal:hover { border-color: #50ad7b; color: #fff; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="pal" title="randomize palette">🎨 palette</button>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
 let W = 0, H = 0, img, out32, px
+
+// ── palette: three RGB stops the plasma value sweeps through (lo → mid → hi) ──
+// HSL→RGB, then a hue-rotating triad (poline-ish): a dark base, a light off-hue
+// mid, and a vivid double-offset high — varied but always harmonious.
+const hsl = (h, s, l) => {
+  h = (((h % 360) + 360) % 360) / 360
+  const a = s * Math.min(l, 1 - l)
+  const f = n => { const k = (n + h * 12) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))) }
+  return [f(0), f(8), f(4)]
+}
+const randomPalette = () => {
+  const h0 = Math.random() * 360, off = (20 + Math.random() * 130) * (Math.random() < 0.5 ? -1 : 1)
+  return [...hsl(h0, 0.72, 0.24), ...hsl(h0 + off, 0.62, 0.74), ...hsl(h0 + 2 * off, 0.80, 0.52)]
+}
+let palette = null
+const applyPalette = (p) => { palette = p; if (engine?.setPalette) engine.setPalette(...p) }
+document.getElementById("pal").onclick = () => applyPalette(randomPalette())
 
 const sizeTo = (engine) => {
   const dpr = Math.min(1.5, window.devicePixelRatio || 1)
@@ -36,6 +59,7 @@ const setEngine = async (kind) => {
   const e = await loadEngine(kind, { js: "./plasma.js", wasm: "./plasma.wasm" })
   if (my !== gen) return
   engine = e; sizeTo(engine)
+  if (palette) engine.setPalette(...palette)   // keep the chosen palette across JS⇄jz
 }
 addEventListener("resize", () => engine && sizeTo(engine))
 
@@ -59,6 +83,7 @@ const ui = hud({
   onSwitch: setEngine,
 })
 await setEngine(ui.kind)
+applyPalette(randomPalette())     // start on a fresh random palette
 loop()
 </script>
 </body>
