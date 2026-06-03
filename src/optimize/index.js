@@ -1674,7 +1674,12 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     '$__typed_idx': { params: ['i64', 'i32'],        result: 'f64' },
     '$__str_idx':   { params: ['i64', 'i32'],        result: 'f64' },
   }
-  const MIN_USES = 5
+  // 4 is the measured break-even: a specialized helper (trampoline / inline i64.const
+  // template) costs ~12 B to define and saves ~2–4 B per site, so 4 sites amortize it.
+  // Lower (3) net-inflates the watr self-host; 5 leaves 4-use combos on the table. The
+  // sibling specializePtrBase threshold (20) is already optimal — its combos cluster far
+  // above 20 (the ~2 k-site $__strBase relativization) with nothing in the 5–19 band.
+  const MIN_USES = 4
 
   // Build literal-arg signature key for a call node. Returns null if no args are literal.
   // Key format: 'T:V' per literal arg, 'D' per dynamic; indexed by position.
