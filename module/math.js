@@ -148,6 +148,25 @@ export default (ctx) => {
         ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
   }
 
+  // sqrt(x) needs no NaN-canon when its argument is provably ≥ 0 with no spurious NaN:
+  // the result is then a normal non-negative f64 (or +0 / +inf, or a propagated input
+  // NaN that is already canonical), never a freshly-minted ±NaN. A sum of pure squares
+  // — the vector-length idiom sqrt(x*x + y*y + …) — is exactly that: every term is ≥ +0
+  // (even ±0·±0 = +0, ±inf² = +inf), the sum never cancels to inf−inf, and any NaN can
+  // only come from a NaN input (already the canonical number-NaN). So a distance /
+  // normalize loop sheds the per-sqrt select + f64.ne + local on its critical path.
+  // `pure` excludes call/load/tee, so two structurally-equal operands of a `*` really
+  // are the same value (a genuine square), not two side-effecting evaluations.
+  const pureF64 = (n) => !Array.isArray(n) ? true :
+    (n[0] === 'local.get' || n[0] === 'global.get' || n[0] === 'f64.const' || n[0] === 'i32.const' || n[0] === 'i64.const') ? true :
+    (n[0] === 'f64.add' || n[0] === 'f64.sub' || n[0] === 'f64.mul' || n[0] === 'f64.div' || n[0] === 'f64.neg' || n[0] === 'f64.abs' || n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') ? n.slice(1).every(pureF64) : false
+  const sameIR = (a, b) => Array.isArray(a) !== Array.isArray(b) ? false : !Array.isArray(a) ? a === b : (a.length === b.length && a.every((x, i) => sameIR(x, b[i])))
+  const nonNegF64 = (n) => !Array.isArray(n) ? false :
+    n[0] === 'f64.mul' ? (pureF64(n[1]) && sameIR(n[1], n[2])) :     // x·x ≥ 0
+    n[0] === 'f64.add' ? (nonNegF64(n[1]) && nonNegF64(n[2])) :      // (≥0) + (≥0) ≥ 0
+    n[0] === 'f64.const' ? (typeof n[1] === 'number' && n[1] >= 0) : false
+  const sqrtIR = (a) => { const ir = f('f64.sqrt', a); return nonNegF64(ir[1]) ? ir : canon(ir) }
+
   // Constants
   ctx.core.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
   ctx.core.emit['math.E'] = () => typed(['f64.const', Math.E], 'f64')
@@ -173,7 +192,7 @@ export default (ctx) => {
   // Built-in WASM ops. sqrt/min/max mint a fresh NaN (sqrt of a negative, min/max
   // with a NaN operand) whose sign is platform-nondeterministic — `canon` folds it
   // back to the canonical pattern. abs/floor/ceil/trunc never produce a new NaN.
-  ctx.core.emit['math.sqrt'] = a => canon(f('f64.sqrt', a))
+  ctx.core.emit['math.sqrt'] = a => sqrtIR(a)
   ctx.core.emit['math.abs'] = a => f('f64.abs', a)
   ctx.core.emit['math.floor'] = a => fInt('f64.floor', a)
   ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
@@ -321,7 +340,7 @@ export default (ctx) => {
   const emitPow = (a, b, allowExpPos) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
-    if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
+    if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
     // base 2 → dedicated 2^y (exp2 is exact for integer y, and skips exp's ×ln2/÷ln2).
     // Every other literal base keeps $math.pow: `exp(y·ln base)` would lose ulps and,
     // worse, miss Math.pow's integer-exponent semantics — e.g. `16 ** flen` with a
