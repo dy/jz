@@ -16,4 +16,15 @@ import { parse, token } from 'subscript/feature/jessie'
 
 token('NaN', 200, a => !a && ['nan'])
 
+// `true`/`false` parse to the self-describing `['bool', 1|0]` marker rather than
+// subscript's `[, true]`/`[, false]` value-literal. The raw JS boolean degrades to
+// the bare number 1/0 as the literal flows through the self-host kernel's
+// parse/marshalling path, so `valTypeOf` reads VAL.NUMBER and the value loses its
+// VAL.BOOL kind — `typeof true` returns "number", `JSON.stringify(true)` yields "1".
+// The marker (op `'bool'`) is type-tagged by op, not by its degradable payload, so
+// valTypeOf returns VAL.BOOL unconditionally; emit lowers it to the same 0/1 carrier
+// (no perf cost). Same rationale as the `NaN` → `['nan']` override above.
+token('true', 200, a => !a && ['bool', 1])
+token('false', 200, a => !a && ['bool', 0])
+
 export { parse }
