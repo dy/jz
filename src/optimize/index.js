@@ -297,9 +297,11 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
         for (let j = 1; j < elseArm.length; j++) walk(elseArm[j], elseArm, j)
         afterElse = new Map(open)
       }
+      // Merge: alive after if iff alive on BOTH paths with same region ref.
       open.clear()
-      let __mc = 0
-      for (const [k, vT] of afterThen) { if (++__mc > 100000) throw Error('MERGE-FOROF-OVERFLOW ' + __mc) } // DIAGNOSTIC: just iterate afterThen
+      for (const [k, vT] of afterThen) {
+        if (afterElse.get(k) === vT) open.set(k, vT)
+      }
       return
     }
 
