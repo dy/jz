@@ -227,6 +227,18 @@ test('WASI: parseFloat lowers without env imports', () => {
   is(inst.exports.f(), 5)
 })
 
+test('WASI: parseInt lowers without env imports', () => {
+  const wasm = compile(`export let f = () =>
+    (parseInt("42") === 42) +
+    (parseInt("0xff") === 255) +
+    (parseInt("ff", 16) === 255) +
+    (parseInt("-123") === -123) +
+    (Number.parseInt("11", 2) === 3)`, { host: 'wasi' })
+  is(envImports(wasm).length, 0)
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), {})
+  is(inst.exports.f(), 5)
+})
+
 test('WASI: prop assignment on unknown-type receiver — no env imports', () => {
   const wasm = compile(`export let f = (x, v) => { x.foo = v; return 1 }`, { host: 'wasi' })
   is(envImports(wasm).length, 0)

@@ -1044,6 +1044,11 @@ export default (ctx) => {
   const strInputI64 = (x) => valTypeOf(x) === VAL.BOOL ? asI64(bool(x)) : asI64(emit(x))
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
+    if (ctx.transform.host === 'wasi') {
+      inc('__parseInt')
+      const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
+      return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
+    }
     needParseInt()
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
     return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
