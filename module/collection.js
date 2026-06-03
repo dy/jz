@@ -1010,6 +1010,10 @@ export default (ctx) => {
     (local $props i64) (local $off i32)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
+    ;; Real-number receiver (f===f — pointers are NaN-boxed) has no props: bail before
+    ;; treating its bits as a heap offset (\`(5).foo\`/\`(5)[k]\` → undefined, not OOB).
+    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (return (i64.const ${UNDEF_NAN}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
@@ -1122,6 +1126,10 @@ export default (ctx) => {
 
   ctx.core.stdlib['__dyn_get_expr_t'] = `(func $__dyn_get_expr_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
     (local $val i64)
+    ;; Real-number receiver → no props; its garbage tag could match HASH and hit the
+    ;; __hash_get_local fallback below (heap read at a bogus offset → OOB).
+    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (return (i64.const ${UNDEF_NAN}))))
     (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
     (if (result i64)
       (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
@@ -1135,6 +1143,9 @@ export default (ctx) => {
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
   ctx.core.stdlib['__dyn_get_expr_t_h'] = `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
     (local $val i64)
+    ;; Real-number receiver → no props; guard the HASH fallback OOB (see __dyn_get_expr_t).
+    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (return (i64.const ${UNDEF_NAN}))))
     (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
     (if (result i64)
       (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
@@ -1164,14 +1175,20 @@ export default (ctx) => {
       : `(i64.const ${UNDEF_NAN})`
     return `(func $__dyn_get_any_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
     (local $val i64)
-    (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-      (then (call $__hash_get_local (local.get $obj) (local.get $key)))
+    ;; A real number receiver (f===f — NaN-boxed pointers are NaN) has no dynamic
+    ;; props: \`(5).foo\` is undefined. Without this guard the bits are reinterpreted as
+    ;; a pointer and \`__dyn_get_t\` reads heap at a bogus offset → OOB for large values.
+    (if (result i64) (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (i64.const ${UNDEF_NAN}))
       (else
-        (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
-        (if (result i64)
-          (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-          (then (local.get $val))
-          (else ${extArm})))))`
+        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+          (then (call $__hash_get_local (local.get $obj) (local.get $key)))
+          (else
+            (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
+            (if (result i64)
+              (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
+              (then (local.get $val))
+              (else ${extArm})))))))`
   }
 
   // Prehashed variant of __dyn_get_any_t for constant string keys: the FNV hash
@@ -1186,14 +1203,18 @@ export default (ctx) => {
       : `(i64.const ${UNDEF_NAN})`
     return `(func $__dyn_get_any_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
     (local $val i64)
-    (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-      (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
+    ;; Real-number receiver → no dynamic props (see __dyn_get_any_t); guard the OOB.
+    (if (result i64) (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (i64.const ${UNDEF_NAN}))
       (else
-        (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
-        (if (result i64)
-          (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-          (then (local.get $val))
-          (else ${extArm})))))`
+        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+          (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
+          (else
+            (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
+            (if (result i64)
+              (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
+              (then (local.get $val))
+              (else ${extArm})))))))`
   }
 
   // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).

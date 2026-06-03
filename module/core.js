@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr } from '../src/ir.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -677,6 +677,10 @@ export default (ctx) => {
         if (!fromOptional) ctx.features.external = true
         return emitDynGetAnyTyped(va, key, vt, prop)
       }
+      // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
+      // undefined. Without this the value falls to the __hash_get fallback, which
+      // reinterprets the primitive's bits as a HASH pointer and reads heap → OOB.
+      if (vt === VAL.NUMBER || vt === VAL.BOOL || vt === VAL.BIGINT) return undefExpr()
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get', asI64(va), key]], 'f64')
     }
