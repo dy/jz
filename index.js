@@ -332,7 +332,9 @@ const detectOptimizeConfig = (ast, code) => {
 // — env defaults fill only what the caller left unset. Resolved once at module
 // load; no-op (single boolean check) when the env is empty (production path).
 const TEST_ENV_DEFAULTS = (() => {
-  const e = process.env || {}
+  // Guard bare `process` — the compiler bundle must load in browsers/Workers too
+  // (this IIFE runs at module import; an unguarded ref throws ReferenceError there).
+  const e = (typeof process !== 'undefined' && process.env) || {}
   const out = {}
   if (e.JZ_TEST_OPTIMIZE != null) {
     const v = e.JZ_TEST_OPTIMIZE
