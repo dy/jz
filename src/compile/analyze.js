@@ -600,8 +600,6 @@ export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') _bodyFactsCache.delete(body)
 }
 
-/** @deprecated alias — same invalidation as `invalidateLocalsCache`. */
-
 // Can this RHS expression produce null/undefined? A direct nullish literal
 // (`[null, null]` covers both null and undefined), or a `?:`/`&&`/`||` with a
 // nullish branch. Drives the `nullable` rep flag so `x === null` on a binding
