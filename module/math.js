@@ -30,8 +30,8 @@ export default (ctx) => {
   deps({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
-    'math.sin_core': ['math.isFinite'],
-    'math.cos_core': ['math.isFinite'],
+    'math.sin_core': [],
+    'math.cos_core': [],
     'math.tan': ['math.sin', 'math.cos'],
     'math.exp': ['math.exp2'],
     'math.expm1': ['math.exp'],
@@ -224,11 +224,11 @@ export default (ctx) => {
   // Trig — isSinCoreFastPath skips the $math.sin/$math.cos wrapper call.
   ctx.core.emit['math.sin'] = dual(
     emitter(['math.sin'], a => fn('math.sin', a)),
-    emitter(['math.sin_core', 'math.isFinite'], a => fn('math.sin_core', a)),
+    emitter(['math.sin_core'], a => fn('math.sin_core', a)),
     isSinCoreFastPath)
   ctx.core.emit['math.cos'] = dual(
     emitter(['math.cos'], a => fn('math.cos', a)),
-    emitter(['math.cos_core', 'math.isFinite'], a => fn('math.cos_core', a)),
+    emitter(['math.cos_core'], a => fn('math.cos_core', a)),
     isSinCoreFastPath)
   reg('math.tan', ['math.tan'], a => fn('math.tan', a))
 
@@ -402,17 +402,24 @@ export default (ctx) => {
   // For |x| ≲ 1e15 the second pass is a no-op (q2 = 0) and the result is bit-identical to a
   // single reduction. The odd poly r·P(r²) handles r<0 on its own (sin is odd); the sign is the
   // parity of the total quotient, taken in f64 as q − 2·round(q/2). ×(1/π) avoids a divide.
+  // The isFinite guard is unnecessary: ±Inf and NaN flow through the reduction (Inf−Inf·π = NaN)
+  // and the poly to NaN on their own — exactly Math.sin's answer — so the common (finite) path
+  // pays nothing for it. The second reduction pass only corrects an r that the first pass left
+  // outside [−π/2, π/2]; for in-range r (every bounded arg, plus ±Inf/NaN) q2 is 0 and the pass
+  // is a no-op, so gating it on |r| > π/2 is bit-identical for ALL inputs while sparing the
+  // common case ~6 ops. Both are generic wins for every sin/cos/tan/exp-via-trig call site.
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
     ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
     (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
     (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
-    (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
-    (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
-    (local.set $q (f64.add (local.get $q) (local.get $q2)))
+    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${Math.PI / 2}))
+      (then
+        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
+        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
+        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
@@ -423,12 +430,13 @@ export default (ctx) => {
 
   wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
-    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
-    (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
-    (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
-    (local.set $q (f64.add (local.get $q) (local.get $q2)))
+    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${Math.PI / 2}))
+      (then
+        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
+        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
+        (local.set $q (f64.add (local.get $q) (local.get $q2)))))
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r ${horner(COS_C, '$r2')})
