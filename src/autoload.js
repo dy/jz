@@ -5,7 +5,9 @@ import * as mods from '../module/index.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
+export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string',
+  // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
+  f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
 export const PROP_MODULES = Object.assign(Object.create(null), {
   push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],

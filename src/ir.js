@@ -538,17 +538,38 @@ function toPrimitiveChain(node, v, order) {
   return typed(['block', blk, ...body], 'i64')
 }
 
+const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
+
+/** ToNumber for a runtime value that may carry a nullish sentinel: null→+0, undefined→NaN,
+ *  anything else → itself. `valIR` must be side-effect-free (a local read) — it is duplicated,
+ *  so each occurrence gets a fresh clone. Used for bindings flagged in ctx.func.maybeNullish;
+ *  a real number isn't either sentinel, so it falls through the `else` unchanged. */
+const coerceNullishToNum = (valIR) => typed(
+  ['if', ['result', 'f64'],
+    ['i64.eq', ['i64.reinterpret_f64', cloneIR(valIR)], ['i64.const', NULL_NAN]],
+    ['then', ['f64.const', 0]],
+    ['else', ['if', ['result', 'f64'],
+      ['i64.eq', ['i64.reinterpret_f64', cloneIR(valIR)], ['i64.const', UNDEF_NAN]],
+      ['then', ['f64.const', 'nan']],
+      ['else', cloneIR(valIR)]]]],
+  'f64')
+
 /** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
  *  Skips coercion when static type proves the value is already numeric
  *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT). When the full
  *  string-parsing `__to_num` isn't loaded (no string module → no strings can
  *  exist) nullish *literals* still fold statically (null→+0, undefined→NaN);
- *  non-literal values pass through uncoerced. */
+ *  non-literal values pass through uncoerced — except bindings flagged
+ *  maybeNullish, which get a runtime nullish coerce (null-flow correctness). */
 export function toNumF64(node, v) {
   // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
   if ((v.type === 'i32' && v.ptrKind == null) || isLit(v)) return asF64(v)
+  // A binding assigned a nullish literal may hold null/undefined here — coerce per ToNumber
+  // (null→+0, undefined→NaN); a real number falls through unchanged. Only flagged bindings pay
+  // this, so the numeric kernels jz optimizes for (which never assign null) stay untouched.
+  if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
   if (vt === VAL.DATE) {
@@ -848,7 +869,7 @@ export function writeVar(name, valIR, void_) {
       ? valIR
       : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(valIR)]], 'i32')
   } else {
-    coerced = t === 'f64' ? asF64(valIR) : asI32(valIR)
+    coerced = t === 'v128' ? valIR : t === 'f64' ? asF64(valIR) : asI32(valIR)
   }
   if (void_) return typed(['local.set', `$${name}`, coerced], 'void')
   const teeNode = typed(['local.tee', `$${name}`, coerced], t)
