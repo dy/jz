@@ -80,3 +80,19 @@ test('always-reserved `const` rejected as a binding name (PARSE-6)', () => {
     is(jz('export let f = () => { let o = { const: 7 }; return o.const }').exports.f(), 7)
     is(jz('export let f = () => { let x = 5; const y = 7; return x + y }').exports.f(), 12)
 })
+
+test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () => {
+    // Every UnaryExpression base is a JS SyntaxError — precedence is ambiguous.
+    rejects('export let f = (x) => -x ** 2', '13.6')
+    rejects('export let f = (x) => +x ** 2', '13.6')
+    rejects('export let f = (x) => ~x ** 2', '13.6')
+    rejects('export let f = (x) => !x ** 2', '13.6')
+    rejects('export let f = (x) => typeof x ** 2', '13.6')
+    rejects('export let f = (x) => void x ** 2', '13.6')
+    // PARSE-2B: `delete` was the one UnaryExpression missing from the guard — it
+    // silently compiled before. `delete o[k] ** 2` is a SyntaxError in every JS engine.
+    rejects('export let f = (o, k) => delete o[k] ** 2', '13.6')
+    // Parenthesizing either side disambiguates → valid in both JS and jz.
+    is(jz('export let f = (x) => (-x) ** 2').exports.f(3), 9)
+    is(jz('export let f = (x) => -(x ** 2)').exports.f(3), -9)
+})

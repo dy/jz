@@ -1753,11 +1753,11 @@ const handlers = {
 
   '**'(a, b) {
     // ES2016 §13.6: an unparenthesized unary expression cannot be the base of `**`
-    // — `-x**2`, `~x**2`, `!x**2`, `+x**2`, `typeof x**2`, `void x**2` are all
-    // SyntaxErrors (the precedence is ambiguous). The parser leaves a grouping as
-    // `['()', …]`, so a parenthesized base `(-x)**2` (and `-(x**2)`, where the unary
+    // — `-x**2`, `~x**2`, `!x**2`, `+x**2`, `typeof x**2`, `void x**2`, `delete o[k]**2`
+    // are all SyntaxErrors (the precedence is ambiguous). The parser leaves a grouping
+    // as `['()', …]`, so a parenthesized base `(-x)**2` (and `-(x**2)`, where the unary
     // sits outside the `**`) arrives with a non-unary root op and is allowed.
-    if (Array.isArray(a) && a.length === 2 && (a[0] === '-' || a[0] === '+' || a[0] === '!' || a[0] === '~' || a[0] === 'typeof' || a[0] === 'void'))
+    if (Array.isArray(a) && a.length === 2 && (a[0] === '-' || a[0] === '+' || a[0] === '!' || a[0] === '~' || a[0] === 'typeof' || a[0] === 'void' || a[0] === 'delete'))
       err(`Unary '${a[0]}' before '**' is a SyntaxError (ES2016 §13.6) — parenthesize: (${a[0]} x) ** 2 or ${a[0]} (x ** 2)`)
     return ['**', prep(a), prep(b)]
   },
@@ -2072,12 +2072,16 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
-    // No GC → weakness is unobservable. Fold WeakSet/WeakMap to Set/Map so
-    // construction and every .add/.has/.get/.set/.delete reuse the concrete
-    // emit path. Deliberate semantic deviation (also accepts primitive keys
-    // and exposes .size/iteration) — documented in README under JS divergences.
-    if (name === 'WeakSet') name = 'Set'
-    else if (name === 'WeakMap') name = 'Map'
+    // No GC → weakness is unobservable, so we fold WeakSet/WeakMap to Set/Map right here:
+    // construction and every .add/.has/.get/.set/.delete reuse the concrete emit path.
+    // The fold lives in prepare, not jzify — so `strict` (which only skips jzify) wouldn't
+    // drop it on its own; we reject explicitly. It's a deviation anyway (accepts primitive
+    // keys, exposes .size/iteration), not a true subset member — there, use Set/Map directly.
+    if (name === 'WeakSet' || name === 'WeakMap') {
+      const concrete = name === 'WeakSet' ? 'Set' : 'Map'
+      if (ctx.transform.strict) err(`strict mode: ${name} is not in the canonical subset — use ${concrete} (jz has no GC, so weak references are unobservable).`)
+      name = concrete
+    }
     // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and
     // `new Map(null)`/`new Map(undefined)` are spec-equivalent to it (null/undefined
     // → empty collection). Drop it so the emit hits the empty-collection fast path

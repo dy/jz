@@ -198,6 +198,21 @@ test('features.map ON: new Map pulls map stdlibs', () => {
   ok(hasDef(w, '__map_get'))
 })
 
+// No GC → weakness is unobservable, so WeakMap/WeakSet fold to Map/Set in default mode:
+// they route through the very same stdlib (and so also accept primitive keys). strict
+// rejects them — see test/errors.js. Folding happens in src/prepare, not jzify.
+test('WeakMap folds to Map: new WeakMap pulls map stdlibs', () => {
+  const w = wat(`export let f = () => { let m = new WeakMap(); m.set('k', 1); return m.get('k') }`)
+  ok(hasDef(w, '__map_set'))
+  ok(hasDef(w, '__map_get'))
+})
+
+test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
+  const w = wat(`export let f = () => { let s = new WeakSet(); s.add(1); return s.has(1) }`)
+  ok(hasDef(w, '__set_add'))
+  ok(hasDef(w, '__set_has'))
+})
+
 test('alloc:false omits allocator helper exports', () => {
   const src = `export let f = () => {
     let a = [1, 2, 3]
