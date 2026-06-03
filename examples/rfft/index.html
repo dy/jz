@@ -38,7 +38,7 @@
     white-space: pre; overflow: auto; max-height: 60%; backdrop-filter: blur(3px); }
   #code.show { display: block; }
   #code .ttl { color: #50ad7b; font-weight: 700; }
-  /* dice = shuffle tune · code icon = reveal the tune's source (its click won't shuffle) */
+  /* dice = shuffle chord · code icon = reveal the tune's source (its click won't shuffle) */
   #shuffle { position: absolute; right: 14px; bottom: 12px; z-index: 30; cursor: pointer;
     padding: 7px 12px; border-radius: 999px; border: 1px solid #ffffff22; background: #0008;
     color: #eee; font-size: 15px; user-select: none; display: inline-flex; align-items: center; gap: 9px; }
@@ -64,7 +64,7 @@
   </div>
   <div id="wavewrap">
     <canvas id="wave"></canvas>
-    <div id="shuffle" title="shuffle tune">🎲<span class="code" id="codetoggle" title="show the tune's source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span></div>
+    <div id="shuffle" title="shuffle chord">🎲<span class="code" id="codetoggle" title="show the tune's source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span></div>
   </div>
 </div>
 <pre id="code"></pre>
@@ -90,32 +90,34 @@ const buildSong = (i) => {
     songDisplaySrc(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 };
 
-let beatCache = { kind: "", ix: -1, fill: null };
-const beatUrl = (ix) => new URL(`./beats/${songSlug(songs[ix])}.wasm`, document.baseURI).href;
-const makeBeatFill = async (kind, ix) => {
-  const song = songs[ix];
+let beatCache = { kind: "", fill: null };
+const beatUrl = () => new URL(`./beats/${songSlug(songs[0])}.wasm`, document.baseURI).href;
+const makeBeatFill = async (kind) => {
+  const song = songs[0];
   if (kind === "js") {
-    const beat = new Function("t", `return (${songBeatSrc(song)})(t)`);
-    return (ch, len, sr, off) => { for (let i = 0; i < len; i++) ch[i] = beat(off + i / sr); };
+    const beat = new Function("t", "sd", `return (${songBeatSrc(song)})(t, sd)`);
+    return (ch, len, sr, off, sd) => { for (let i = 0; i < len; i++) ch[i] = beat(off + i / sr, sd); };
   }
   const { exports, memory } = instantiate(
-    new Uint8Array(await (await fetch(beatUrl(ix))).arrayBuffer())
+    new Uint8Array(await (await fetch(beatUrl())).arrayBuffer())
   );
-  return (ch, len, sr, off) => {
+  return (ch, len, sr, off, sd) => {
     const out = memory.Float64Array(new Float64Array(len));
-    exports.fill(out, len, sr, off);
+    exports.fill(out, len, sr, off, sd);
     const samples = memory.read(out);
     for (let i = 0; i < len; i++) ch[i] = samples[i];
   };
 };
-const beatFill = async (kind, ix, ch, len, sr, off = 0) => {
-  if (beatCache.kind !== kind || beatCache.ix !== ix)
-    beatCache = { kind, ix, fill: await makeBeatFill(kind, ix) };
-  beatCache.fill(ch, len, sr, off);
+// One tune, seeded — the chord seed is a runtime argument, so the compiled fill is
+// reused across shuffles; only the seed changes.
+const beatFill = async (kind, ch, len, sr, off, sd) => {
+  if (beatCache.kind !== kind)
+    beatCache = { kind, fill: await makeBeatFill(kind) };
+  beatCache.fill(ch, len, sr, off, sd);
 };
 
-let songIx = Math.max(0, songs.findIndex(s => s.name === "dream pad"));   // calm, lush default
-buildSong(songIx);
+let seed = 0;             // 🎲 picks a new one in 0..23 — a fresh key + starting chord
+buildSong(0);
 
 // Hann window — tapers each FFT frame to suppress spectral leakage.
 const hann = new Float64Array(N);
@@ -336,12 +338,12 @@ function waveCol(samp, cursor, x, h, spec) {
   wctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
 }
 
-// ── shuffle: swap to a different random tune, rebuild buffer, keep playing ─────
+// ── shuffle: reseed to a fresh chord/key, rebuild buffer, keep playing ─────────
 async function rebuildBuffer(kind = ui.kind) {
-  const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 24);   // full 12-key circle (12 × 2 s) before it loops
+  const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 32);   // one full 8-bar cycle (8 × 4 s) before it loops
   const buf = ctx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
   const t0 = performance.now();
-  await beatFill(kind, songIx, ch, len, sr, 0);
+  await beatFill(kind, ch, len, sr, 0, seed);
   lastSynthMs = performance.now() - t0;
   const fade = Math.round(sr * 0.006);                     // 6 ms raised-cosine taper hides the loop seam
   for (let i = 0; i < fade; i++) {
@@ -356,8 +358,7 @@ async function rebuildBuffer(kind = ui.kind) {
 }
 function shuffle() {
   if (!running) return;
-  songIx = (songIx + 1 + (Math.random() * (songs.length - 1) | 0)) % songs.length;
-  buildSong(songIx);
+  seed = (seed + 1 + (Math.random() * 23 | 0)) % 24;   // a fresh key + starting chord — same voice, new harmony
   rebuildBuffer(ui.kind).then(() => {
     if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
     start(ui.kind);

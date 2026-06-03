@@ -1,86 +1,47 @@
-// Floatbeat tunes for the rfft demo — plain JS bodies, jz-compatible subset.
-// Each body is `(t) => { ... }` with TAU inlined (no free variables).
+// The rfft demo's floatbeat voice — one evolving tune, seeded. A plain JS body
+// (jz-compatible subset) with TAU inlined, so the very same source compiles to
+// wasm (jz) and runs under V8 (new Function). The 🎲 reseeds it: same instrument
+// and changes, a different key and starting chord — switch the chord, not the song.
 
 export const TAU = 6.283185307179586
 
 export const songs = [
-  { name: 'circle of fifths', body:
-`(t) => {
-  // Circle of fourths: the root climbs a fourth (+5 semitones, = a fifth down) every
-  // two seconds, cycling all twelve keys — C F B♭ E♭ A♭ D♭ G♭ B E A D G — and back.
-  // Each chord is a soft rootless dominant voicing (3 ♭7 9 13, no muddy root/5 stack),
-  // each the V of the next, so the ii–V pull keeps resolving around the wheel. Upper
-  // partials roll off for warmth; a guide-tone line trades 3rd↔♭7 over a walking bass
-  // that approaches each new root by a chromatic step.
-  const bar = (t * 0.5) | 0
-  const root = (bar * 5) % 12
-  const next = (root + 5) % 12
-  const voi = [4, 10, 14, 19]
-  const sw = 0.6 + 0.4 * Math.exp(-((t * 0.5) % 1) * 0.9)
-  let pad = 0
-  for (let i = 0; i < 4; i++) pad += Math.sin(t*${TAU}*196 * 2**((root + voi[i]) / 12)) * (1 - i * 0.2)
-  const beat = (t * 2) % 1
-  const lead = ((t * 2 | 0) % 2) ? 10 : 4
-  const arp = Math.sin(t*${TAU}*392 * 2**((root + lead) / 12)) * Math.exp(-beat * 4)
-  const bn = ((t | 0) % 2) ? (next + 11) % 12 : root
-  const bass = Math.sin(t*${TAU}*55 * 2**(bn / 12))
-  return Math.tanh(pad*.075*sw + arp*.12 + bass*.36)
-}` },
-  { name: 'lofi jazz', body:
-`(t) => {
-  // ii–V–I–vi in C: Dm7 G7 Cmaj7 Am7, two seconds each, with a soft arpeggio
-  const prog = [[2,5,9,12],[7,11,14,17],[0,4,7,11],[9,12,16,19]]
-  const ch = prog[(t*.5|0) % 4]
-  let pad = 0
-  for (let i = 0; i < 4; i++) pad += Math.sin(t*${TAU}*130.8 * 2**(ch[i]/12))
-  const a = (t*4) % 1
-  const arp = Math.sin(t*${TAU}*523.3 * 2**(ch[(t*4|0)%4]/12)) * Math.exp(-a*5)
-  const bass = Math.sin(t*${TAU}*65.4 * 2**(ch[0]/12))
-  return Math.tanh(pad*.16 + arp*.35 + bass*.5)
-}` },
-  { name: 'rhodes', body:
-`(t) => {
-  // the four chords, I–V–vi–IV: Cmaj7 G7 Am7 Fmaj7 on a warm FM Rhodes that swells
-  const prog = [[0,4,7,11],[7,11,14,17],[9,12,16,19],[5,9,12,16]]
-  const ch = prog[(t*.5|0) % 4]
-  const sw = Math.exp(-((t*.5)%1) * .7)
-  let v = 0
-  for (let i = 0; i < 4; i++) { const f = 261.6 * 2**(ch[i]/12); v += Math.sin(t*${TAU}*f + 1.8*Math.sin(t*${TAU}*f)) }
-  const bass = Math.sin(t*${TAU}*65.4 * 2**(ch[0]/12))
-  return Math.tanh(v*.16*sw + bass*.5)
-}` },
-  { name: 'bossa', body:
-`(t) => {
-  // bossa nova — maj7/m7 comp pushed off the beat over a soft root–fifth bass
-  const prog = [[0,4,7,11],[2,5,9,12],[7,11,14,17],[0,4,7,11]]
-  const ch = prog[(t*.5|0) % 4]
-  let comp = 0
-  for (let i = 0; i < 4; i++) comp += Math.sin(t*${TAU}*261.6 * 2**(ch[i]/12))
-  const hit = Math.exp(-((t*2)%1) * 6) * (((t*2|0)%2) ? 1 : .45)
-  const bass = Math.sin(t*${TAU}*98 * 2**(ch[0]/12)) * (((t*4|0)%2) ? .6 : 1)
-  return Math.tanh(comp*.15*hit + bass*.5)
-}` },
-  { name: 'dream pad', body:
-`(t) => {
-  // slow lush pad — Cmaj9 ⇄ Am9, shimmering detune, breathing very gently
-  const prog = [[0,4,7,11,14],[9,12,16,19,23]]
-  const ch = prog[(t*.25|0) % 2]
-  let v = 0
-  for (let i = 0; i < 5; i++) { const f = 130.8 * 2**(ch[i]/12); v += Math.sin(t*${TAU}*f) + Math.sin(t*${TAU}*f*1.003) }
-  const breath = .6 + .4*Math.sin(t*${TAU}*.125)
-  return Math.tanh(v*.11 * breath)
-}` },
-  { name: 'blue waltz', body:
-`(t) => {
-  // minor jazz waltz in 3/4 — Cm9 Fm7 G7 Cm9, a wistful lilt
-  const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
-  const ch = prog[(t*.5|0) % 4]
-  const beat = (t*3) % 1
-  let pad = 0
-  for (let i = 0; i < ch.length; i++) pad += Math.sin(t*${TAU}*130.8 * 2**(ch[i]/12))
-  const pluck = Math.sin(t*${TAU}*523.3 * 2**(ch[(t*3|0)%ch.length]/12)) * Math.exp(-beat*4)
-  const bass = Math.sin(t*${TAU}*65.4 * 2**(ch[0]/12)) * (((t*3|0)%3===0) ? 1 : .5)
-  return Math.tanh(pad*.13 + pluck*.3 + bass*.5)
+  { name: 'after hours', body:
+`(t, sd) => {
+  // A warm detuned pad over an 8-bar jazz cycle — Cmaj9 Am9 Fmaj9 G9 Em9 Am9 Dm9 G9
+  // (I vi IV V iii vi ii V), each chord crossfading into the next so nothing clicks.
+  // Every voicing is rootless (3·5·7·9) for that open, smoky colour; a soft sub
+  // traces the root. The seed transposes the key and rotates the starting chord,
+  // so a shuffle drops you on a fresh harmony in the same voice.
+  const seq = [
+    [0, 4, 7, 11, 14],   // Cmaj9
+    [9, 3, 7, 10, 14],   // Am9
+    [5, 4, 7, 11, 14],   // Fmaj9
+    [7, 4, 7, 10, 14],   // G9  (dominant)
+    [4, 3, 7, 10, 14],   // Em9
+    [9, 3, 7, 10, 14],   // Am9
+    [2, 3, 7, 10, 14],   // Dm9
+    [7, 4, 7, 10, 14],   // G9  (dominant)
+  ]
+  const barLen = 4
+  const fb = t / barLen, bar = fb | 0, ph = fb - bar
+  const key = (sd | 0) % 12, rot = ((sd | 0) * 3) % 8
+  const A = seq[(bar + rot) % 8], B = seq[(bar + 1 + rot) % 8]
+  // crossfade the last 28% of each bar into the next chord (smoothstep — no click)
+  let xf = ph < 0.72 ? 0 : (ph - 0.72) / 0.28
+  xf = xf * xf * (3 - 2 * xf)
+  let padA = 0, padB = 0
+  for (let k = 1; k <= 4; k++) {
+    const fa = 130.81 * 2 ** ((key + A[0] + A[k]) / 12)   // C3 reference
+    padA += Math.sin(t*${TAU}*fa) + Math.sin(t*${TAU}*fa*1.003)   // two slightly detuned sines = warmth
+    const fc = 130.81 * 2 ** ((key + B[0] + B[k]) / 12)
+    padB += Math.sin(t*${TAU}*fc) + Math.sin(t*${TAU}*fc*1.003)
+  }
+  const pad = padA * (1 - xf) + padB * xf
+  const ba = 65.41 * 2 ** ((key + A[0]) / 12), bc = 65.41 * 2 ** ((key + B[0]) / 12)   // C2 sub
+  const bass = Math.sin(t*${TAU}*ba) * (1 - xf) + Math.sin(t*${TAU}*bc) * xf
+  const breath = 0.72 + 0.28 * Math.sin(t*${TAU}*0.05)   // slow swell, ~20 s
+  return Math.tanh((pad * 0.05 + bass * 0.42) * breath)
 }` },
 ]
 
@@ -91,13 +52,13 @@ export const songDisplaySrc = (song) =>
 /** jz/JS callable body — already has TAU numeric. */
 export const songBeatSrc = (song) => song.body
 
-/** Compile a floatbeat module: beat(t) + fill(out,len,sr). */
+/** Compile a floatbeat module: beat(t, sd) + fill(out, len, sr, off, sd). */
 export const floatbeatModuleSrc = (song) => {
   const body = songBeatSrc(song)
   return `export let beat = ${body}
-export let fill = (out, len, sr, off) => { let i = 0; while (i < len) { out[i] = beat(off + i / sr); i++ } }`
+export let fill = (out, len, sr, off, sd) => { let i = 0; while (i < len) { out[i] = beat(off + i / sr, sd); i++ } }`
 }
 
-/** Filesystem slug for prebuilt beat wasm (`beats/lofi-jazz.wasm`, …). */
+/** Filesystem slug for prebuilt beat wasm (`beats/after-hours.wasm`). */
 export const songSlug = (song) =>
   song.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
