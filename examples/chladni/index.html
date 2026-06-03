@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Chladni plate - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { border-top: 2px solid #50ad7b; display: grid; place-items: center; }
+  #c { display: block; image-rendering: pixelated; box-shadow: 0 0 60px #0006; }
+  /* the driving frequency — the soul of the Camerata generator (after Demian Conrad) */
+  #hz { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
+    font: 600 13px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em; color: #cfe8db;
+    opacity: .8; pointer-events: none; text-shadow: 0 0 8px #000; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hz"></div>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d"), hzEl = document.getElementById("hz")
+let S = 0, img, out32, px
+
+// Square plate, centred — the nodal figure is defined on [0,1]² so we render it square.
+const sizeTo = (engine) => {
+  const dpr = Math.min(2, window.devicePixelRatio || 1)
+  const cssSide = Math.max(160, Math.min(innerWidth, innerHeight) - 40)
+  S = Math.min(760, Math.round(cssSide * dpr) >> 1 << 1)
+  cv.width = cv.height = S
+  cv.style.width = cv.style.height = cssSide + "px"
+  img = g.createImageData(S, S); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(S, S)
+}
+
+let engine = null, gen = 0, t = 0
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./chladni.js", wasm: "./chladni.wasm" })
+  if (my !== gen) return
+  engine = e; sizeTo(engine)
+}
+addEventListener("resize", () => engine && sizeTo(engine))
+
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  t += 1 / 60
+  // sweep the frequency like Camerata's "time of day" — a slow ease through the modes,
+  // low (simple figures) ⇄ high (dense lattices). (Audio-driven later.)
+  const freq = 40 + (0.5 - 0.5 * Math.cos(t * 0.09)) * 1960
+  const t0 = performance.now()
+  engine.frame(freq)
+  const ms = performance.now() - t0
+  out32.set(px); g.putImageData(img, 0, 0)
+  hzEl.textContent = (freq | 0) + " Hz"
+  ui.frame(ms)
+}
+
+const ui = hud({
+  kind: "jz",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/chladni",
+  code: "./chladni.js",
+  nav: "chladni",
+  onSwitch: setEngine,
+})
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>

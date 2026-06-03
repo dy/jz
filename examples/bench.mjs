@@ -44,6 +44,9 @@ const EXAMPLES = [
   { name: 'cymatics', frame: 'frame ×1',
     make: (e) => { e.resize(900, 600); let t = 0; return () => e.frame(7, 5, 3, 9, 1.2, t += 0.02) } },
 
+  { name: 'chladni', frame: 'frame(freq)',
+    make: (e) => { e.resize(760, 760); let f = 40; return () => e.frame(f = f < 2000 ? f + 7 : 40) } },
+
   { name: 'reaction-diffusion', frame: 'frame (8 substeps)',
     make: (e) => { e.resize(448, 448); e.seed(); return () => e.frame() } },
 
