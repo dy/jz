@@ -40,7 +40,7 @@
  * @module jz
  */
 
-import { parse } from 'subscript/feature/jessie'
+import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
 import watOptimize from "./src/wat/optimize.js";

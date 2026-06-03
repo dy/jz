@@ -10,7 +10,7 @@
  * run); this is why the self-host entry is its own minimal, interop-free module and
  * lives in the build layer rather than in the sealed compiler source.
  */
-import { parse } from 'subscript/feature/jessie'
+import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
 import { ctx, reset } from '../src/ctx.js'
@@ -53,6 +53,7 @@ export default function compileSelf(source, strict) {
  * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
  * @returns {string} WAT text
  */
+
 export function compileWat(source, strict) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
