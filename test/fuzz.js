@@ -687,6 +687,49 @@ export const fuzzTypedIntMinMax = (opts) => {
   return findings
 }
 
+// Affine Int32Array loops that do NOT vectorize (an early break/continue), so the
+// vectorizer falls through to induction-variable strength reduction — `a[i]` addressing
+// becomes a strided pointer. Differential vs JS validates the IV-SR transform keeps the
+// pointer in lockstep with `i` across break/continue control flow. Every op is `|0`-clamped
+// so JS and jz agree under the integer contract (`same()` tolerates the wrap).
+const IVSR_BODIES = [
+  'if (a[i] > T) break; acc = (acc + a[i]) | 0;',
+  'if (a[i] < 0) continue; acc = (acc ^ a[i]) | 0;',
+  'acc = (acc + a[i]) | 0; if (acc > T) break;',
+  'if ((a[i] & 1) === 0) continue; acc = (acc - a[i]) | 0;',
+  'acc = (acc | a[i]) | 0; if (i > T) break;',
+]
+const typedIVSRSource = (seed) => {
+  const g = mkRng(seed)
+  const N = 64 + g.int(200)
+  const K = 1 + g.int(50), C = g.int(4000) - 2000
+  const T = g.int(4000) - 1000
+  const body = g.pick(IVSR_BODIES).replace(/\bT\b/g, String(T))
+  return `export let f = () => { const a = new Int32Array(${N}); for (let i = 0; i < ${N}; i++) a[i] = ((i * ${K} + ${C}) % 4001 - 2000) | 0; let acc = 0; for (let i = 0; i < ${N}; i++) { ${body} } return acc | 0 }`
+}
+const checkTypedIVSR = (seed, opts) => {
+  const src = typedIVSRSource(seed)
+  let jsRet
+  try { jsRet = compileJS(src)() } catch { return { kind: 'invalid' } }
+  if (typeof jsRet !== 'number') return null
+  for (const opt of opts.optLevels) {
+    let got
+    try { got = jz(src, { optimize: opt }).exports.f() } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    if (!same(got, jsRet)) return { kind: 'mismatch-ret', opt, got, want: jsRet, src }
+  }
+  return null
+}
+export const fuzzTypedIVSR = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTypedIVSR(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
@@ -737,6 +780,12 @@ if (!isMain) {
     ok(findings.length === 0, findings.length
       ? `typed-int-minmax divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Int32Array min/max == JS')
+  })
+  test('fuzz: Int32Array affine break/continue loop (IV strength reduction) matches JS', () => {
+    const findings = fuzzTypedIVSR({ ...GATE, count: 120 })
+    ok(findings.length === 0, findings.length
+      ? `typed-ivsr divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz IV-SR == JS')
   })
 }
 
