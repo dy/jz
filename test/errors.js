@@ -37,6 +37,10 @@ test('strict rejects: instanceof', () => throws('x instanceof Array', 'instanceo
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
 test('strict rejects: var', () => throws('var x = 1', 'var', 'var should error', { strict: true }))
 test('strict rejects: function', () => throws('function f() {}', 'function', 'function should error', { strict: true }))
+// WeakMap/WeakSet are folded to Map/Set in default mode (no GC → weakness unobservable),
+// but that fold is a deviation, not a true subset member — strict rejects them outright.
+test('strict rejects: WeakMap', () => throws('export let f = () => new WeakMap()', 'WeakMap', 'WeakMap should error in strict', { strict: true }))
+test('strict rejects: WeakSet', () => throws('export let f = () => new WeakSet()', 'WeakSet', 'WeakSet should error in strict', { strict: true }))
 
 // ============================================================================
 // Const enforcement
