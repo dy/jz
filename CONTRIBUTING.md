@@ -83,7 +83,9 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 
 - **Speed** (`-O` speed-tuned build): jz median ≤ V8, AssemblyScript (`asc -O3`)
   and Porffor on every comparable case, and ≤ them on geomean.
-- **Native parity**: jz wasm runs at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
+- **Native parity** *(asserted only when `clang` is on PATH — i.e. locally; CI
+  runners have no clang, so this pin is printed but not gated there)*: jz wasm runs
+  at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
   (jz *beats* native C on `poly`, `mat4`, `aos`, `tokenizer`, `sort`, ties
   `mandelbrot`). Two cases trail native and are pinned `near`, not as a parity
   claim: `biquad` is wasm-v1 ISA-bound (no scalar `fma` — hand-written WAT ties
@@ -91,8 +93,10 @@ fast and at least as small as the alternatives.** Concretely, enforced by
   guarantee; the `near` per-case pins are regression backstops.
 - **Size** (`optimize: 'size'` build): jz wasm ≤ AssemblyScript (`asc -Oz --converge`)
   and ≤ Porffor on every comparable case, and ≤ them on geomean.
-- **No codegen slack**: `wasm-opt -Oz` must not be able to meaningfully shrink
-  jz's own output — anything it removes is a jz size bug.
+- **Codegen slack**: `wasm-opt -Oz` should find little to remove in jz's own
+  output — whatever it shrinks is latent size headroom. Gated with margin today
+  (`WASMOPT_SLACK_MIN=0.70` in `test/bench.js` — ~25–30% slack on size builds);
+  target is 0.95+, ratcheted down as codegen tightens.
 - **Correctness floor**: `test/differential.js` fuzzes jz-compiled wasm against
   the same source run as plain JS — "smallest/fastest" never via a wrong answer.
 
