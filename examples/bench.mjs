@@ -41,9 +41,6 @@ const EXAMPLES = [
   { name: 'plasma', frame: 'frame(t)',
     make: (e) => { e.resize(640, 400); let t = 0; return () => e.frame(t += 0.02) } },
 
-  { name: 'cymatics', frame: 'frame ×1',
-    make: (e) => { e.resize(900, 600); let t = 0; return () => e.frame(7, 5, 3, 9, 1.2, t += 0.02) } },
-
   { name: 'chladni', frame: 'frame(freq)',
     make: (e) => { e.resize(760, 760); let f = 40; return () => e.frame(f = f < 2000 ? f + 7 : 40) } },
 

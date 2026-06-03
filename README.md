@@ -443,7 +443,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 <tr>
 <td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
 <td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
-<td><a href="https://dy.github.io/jz/examples/cymatics/"><img src="examples/thumbs/cymatics.webp" width="100%" alt="Cymatics"></a><br><b>cymatics</b> — a Chladni plate whose nodal lines dance to a live floatbeat.</td>
+<td><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b> — Camerata-style plate; frequency sweeps the nodal figure.</td>
 </tr>
 <tr>
 <td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
