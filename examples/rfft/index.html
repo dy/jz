@@ -244,7 +244,7 @@ async function synthBuffer(sd) {
   const ch = new Float64Array(len), STEP = Math.round(sr), tmp = new Float64Array(STEP);
   for (let s = 0; s < len; s += STEP) {
     const L = Math.min(STEP, len - s);
-    beatCache.fill(tmp, L, sr, s, sd);
+    beatCache.fill(tmp, L, sr, s / sr, sd);             // fill's `off` is a TIME offset in seconds (beat(off + i/sr))
     ch.set(L < STEP ? tmp.subarray(0, L) : tmp, s);
     await new Promise(r => requestAnimationFrame(r));   // yield — keep the UI responsive (no 330 ms block)
   }
