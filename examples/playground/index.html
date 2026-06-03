@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0" />
+<title>Floatbeat playground — jz compiles in your browser</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  :root { --bg:#07070c; --fg:#eee; --accent:#50ad7b; --err:#e2566a; --dim:#8aa; }
+  html,body { height:100%; margin:0; background:var(--bg); color:var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { display:flex; flex-direction:column; border-top:2px solid var(--accent); overflow:hidden; }
+  header { display:flex; align-items:baseline; gap:.6em; padding:8px 12px; font-size:13px; }
+  header b { color:var(--accent); font-weight:600; }
+  header .tag { color:var(--dim); }
+  header a { color:var(--dim); margin-left:auto; text-decoration:none; }
+  header a:hover { color:var(--fg); }
+  main { flex:1; display:flex; min-height:0; }
+  .pane { flex:1; min-width:0; display:flex; flex-direction:column; }
+  #editor { flex:1; resize:none; border:0; outline:0; padding:12px; tab-size:2;
+    background:#0b0b12; color:#dfe; font:inherit; font-size:13px; line-height:1.5;
+    caret-color:var(--accent); white-space:pre; }
+  #right { border-left:1px solid #1a1a24; position:relative; }
+  #scope { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #wat { position:absolute; inset:0; margin:0; padding:12px; overflow:auto; display:none;
+    background:#0b0b12ee; color:#bcd; font-size:12px; line-height:1.45; white-space:pre; }
+  footer { display:flex; align-items:center; gap:14px; padding:7px 12px; font-size:12px;
+    background:#0b0b12; border-top:1px solid #1a1a24; min-height:18px; }
+  footer .ok { color:var(--accent); }
+  footer .bad { color:var(--err); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  button { font:inherit; font-size:12px; background:#13131c; color:var(--fg);
+    border:1px solid #2a2a38; border-radius:5px; padding:3px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { color:var(--accent); border-color:var(--accent); }
+  footer .spacer { margin-left:auto; }
+  #hint { position:absolute; left:0; right:0; bottom:14px; text-align:center; z-index:5;
+    color:#cfe8db; opacity:.8; font-size:13px; pointer-events:none; transition:opacity .4s; }
+</style>
+</head>
+<body>
+<header>
+  <b>jz</b> <span class="tag">floatbeat playground — edit the source, it compiles to WASM in your browser, live</span>
+  <a href="https://github.com/dy/jz/tree/main/examples/playground">source ↗</a>
+</header>
+<main>
+  <div class="pane">
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <footer>
+      <button id="play">▶ play</button>
+      <button id="watBtn">WAT</button>
+      <span class="spacer"></span>
+      <span id="status"></span>
+    </footer>
+  </div>
+  <div class="pane" id="right">
+    <canvas id="scope"></canvas>
+    <pre id="wat"></pre>
+    <div id="hint">▶ play, then edit the formula</div>
+  </div>
+</main>
+
+<script type="module">
+// The whole point: the compiler runs HERE, in the page. `jz(src)` parses, infers
+// types, emits WASM and instantiates it — no server, no build step, no prebuilt
+// .wasm. Every keystroke recompiles. (dist/jz.js is the standalone compiler
+// bundle — run `npm run build` to produce it.)
+import jz, { compile } from "../../dist/jz.js"
+
+const SR = 44100, CHUNK = Math.round(SR * 0.5)          // ½-second gapless chunks
+const $ = (id) => document.getElementById(id)
+const editor = $("editor"), status = $("status"), scope = $("scope"), watEl = $("wat")
+
+const DEFAULT = `// jz source — valid JS, compiled to WASM live as you type.
+// fill(len, sr, off) writes \`len\` samples from absolute sample index \`off\`.
+let TAU = 6.283185307179586
+
+export let fill = (len, sr, off) => {
+  let b = new Float64Array(len)
+  let i = 0
+  while (i < len) {
+    let t = (off + i) / sr
+    let beat = t * 2.2
+    let bar = (beat * 0.25) | 0
+    let root = 55 * Math.pow(2, ((bar * 5) % 12) / 12)   // walking root
+    let s16 = (beat * 4) | 0
+    let q = s16 % 4
+    let semi = q === 0 ? 0 : q === 1 ? 4 : q === 2 ? 7 : 11
+    let hz = root * Math.pow(2, (semi + 12) / 12)         // arpeggio
+    let frac = beat * 4 - s16
+    let bell = Math.sin(TAU * hz * t) * Math.exp(-frac * 6) * 0.25
+    let bass = Math.sin(TAU * root * 0.5 * t) * Math.exp(-(beat - (beat | 0)) * 4) * 0.2
+    b[i] = bell + bass
+    i++
+  }
+  return b
+}`
+
+// ── compile: src → engine(len, off) → Float64Array. Keeps the last good engine
+//    on error so the sound never drops while you type a half-finished line. ────
+let engine = null, lastSrc = ""
+const buildEngine = (src) => {
+  const t0 = performance.now()
+  const bytes = compile(src)                              // → wasm size
+  const { exports, memory } = jz(src)                     // compile + instantiate
+  const ms = performance.now() - t0
+  if (typeof exports.fill !== "function") throw new Error("export `fill` not found")
+  engine = (len, off) => { const v = exports.fill(len, SR, off); const out = Float64Array.from(v); memory.reset(); return out }
+  return { ms, bytes: bytes.length }
+}
+const rebuild = (src) => {
+  try {
+    const { ms, bytes } = buildEngine(src)
+    lastSrc = src
+    status.innerHTML = `<span class="ok">✓ compiled ${bytes} B · ${ms.toFixed(1)} ms in-browser</span>`
+    if (watEl.style.display === "block") showWat(src)
+  } catch (e) {
+    status.innerHTML = `<span class="bad">✗ ${String(e.message || e).replace(/</g, "&lt;")}</span>`
+  }
+}
+
+// ── audio: stream gapless ½-s chunks just ahead of the playhead (jukebox model).
+//    A live recompile just swaps `engine` — the next chunk renders the new tune. ─
+let actx, playing = false, off = 0, streamStart = 0, nextTime = 0, queued = []
+const audio = () => { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); return actx }
+const schedule = () => {
+  while (nextTime < actx.currentTime + 0.3) {
+    const out = engine(CHUNK, off)
+    const buf = actx.createBuffer(1, CHUNK, SR); buf.getChannelData(0).set(out)
+    const s = actx.createBufferSource(); s.buffer = buf; s.connect(actx.destination); s.start(nextTime)
+    queued.push(s); if (queued.length > 6) queued.shift().stop?.()
+    nextTime += CHUNK / SR; off += CHUNK
+  }
+}
+const startStream = () => { audio(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; $("play").textContent = "⏸ pause"; $("play").classList.add("on"); $("hint").style.opacity = 0; schedule() }
+const stopStream = () => { playing = false; for (const s of queued) { try { s.stop() } catch {} } queued = []; $("play").textContent = "▶ play"; $("play").classList.remove("on") }
+
+// ── oscilloscope ─────────────────────────────────────────────────────────────
+const g = scope.getContext("2d"); let W = 0, H = 0
+const resize = () => { const d = Math.min(2, devicePixelRatio || 1); W = scope.width = scope.clientWidth * d | 0; H = scope.height = scope.clientHeight * d | 0 }
+addEventListener("resize", resize)
+const draw = (buf) => {
+  g.fillStyle = "#07070c"; g.fillRect(0, 0, W, H)
+  const mid = H / 2, amp = H * 0.42, n = buf.length, step = n / W
+  g.strokeStyle = "#ffffff14"; g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
+  g.strokeStyle = "#50ad7b"; g.lineWidth = Math.max(1, devicePixelRatio || 1); g.beginPath()
+  for (let x = 0; x < W; x++) {
+    let lo = 1, hi = -1, s0 = x * step | 0, s1 = Math.min(n, (x + 1) * step + 1 | 0)
+    for (let i = s0; i < s1; i++) { const v = buf[i]; if (v < lo) lo = v; if (v > hi) hi = v }
+    g.moveTo(x + .5, mid - hi * amp); g.lineTo(x + .5, mid - lo * amp + .5)
+  }
+  g.stroke()
+}
+
+// ── WAT panel — the produced WebAssembly text, recompiled on demand ────────────
+const showWat = (src) => { try { watEl.textContent = compile(src, { wat: true }) } catch (e) { watEl.textContent = "; " + (e.message || e) } }
+
+// ── wiring ─────────────────────────────────────────────────────────────────
+let previewOff = 0, debounce = 0
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  const head = playing ? Math.max(0, Math.round((actx.currentTime - streamStart) * SR)) : (previewOff += CHUNK)
+  if (playing) schedule()
+  draw(engine(CHUNK, head))
+}
+
+editor.value = DEFAULT
+editor.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => rebuild(editor.value), 300) })
+$("play").addEventListener("click", () => playing ? stopStream() : startStream())
+$("watBtn").addEventListener("click", () => {
+  const open = watEl.style.display !== "block"
+  watEl.style.display = open ? "block" : "none"
+  $("watBtn").classList.toggle("on", open)
+  if (open) showWat(lastSrc || editor.value)
+})
+
+resize()
+rebuild(DEFAULT)
+loop()
+</script>
+</body>
+</html>
