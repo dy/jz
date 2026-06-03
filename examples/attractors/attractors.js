@@ -59,15 +59,20 @@ export let frame = (a, b, c, d, iters) => {
   // hand this frame's measured box to the next frame's fit
   bounds[0] = nMinX; bounds[1] = nMaxX; bounds[2] = nMinY; bounds[3] = nMaxY
 
-  // log density → brightness, dark → teal → warm white
+  // log density → brightness, dark → teal → warm white. The tone-map runs over
+  // every pixel, so the channel ramps use shifts (>>8 ≈ ÷256), never per-pixel
+  // divides — a `/255` here stalls the pipeline and erases jz's iteration win at
+  // full-screen sizes. log() is skipped for the empty (dens==0) majority.
   i = 0
   while (i < n) {
     let v = dens[i]
-    let L = v > 0.0 ? Math.log(v + 1.0) * 44.0 : 0.0
-    if (L > 255.0) L = 255.0
-    let g = L | 0
-    let r = (g * g / 255) | 0
-    let bl = (g * 210 / 255) | 0
+    let g = 0
+    if (v > 0) {
+      let L = Math.log(v + 1.0) * 44.0
+      g = (L > 255.0 ? 255.0 : L) | 0
+    }
+    let r = (g * g) >> 8                  // ≈ g²/255 — warm core
+    let bl = (g * 210) >> 8               // ≈ g·0.82 — teal
     px[i] = (255 << 24) | (bl << 16) | (g << 8) | r
     i++
   }
