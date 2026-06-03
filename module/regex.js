@@ -10,6 +10,8 @@
 import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
+import { valTypeOf } from '../src/kind.js'
+import { VAL } from '../src/reps.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
@@ -975,12 +977,79 @@ export default (ctx) => {
   // replaced (a per-regex loop, mirroring split); otherwise only the first.
   ctx.core.emit['.string:replace'] = (str, search, repl) => {
     const id = resolveRegex(search)
+    const isFn = valTypeOf(repl) === VAL.CLOSURE && ctx.closure?.call
+    // ToString(fn(matchStr)) → i64 string. The closure value is hoisted into
+    // `fnL` once by the caller; each match passes its substring as the lone arg.
+    const callbackRepl = (fnL, matchStrIR) =>
+      ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'), [matchStrIR]))]
     if (id == null) {
+      if (isFn) {
+        // String search + callback: replace the FIRST occurrence (spec: a string
+        // search matches once). Mirror string.js `.replace`'s callback path.
+        inc('__str_indexof', '__str_slice', '__str_concat', '__str_byteLen', '__to_str')
+        const s = temp('rps'), q = temp('rpq'), fnL = temp('rpf'), idx = tempI32('rpi'), mlen = tempI32('rpm')
+        const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+        const match = typed(['call', '$__str_slice', sI64(), ['local.get', `$${idx}`],
+          ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]]], 'f64')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${s}`, asF64(emit(str))],
+          ['local.set', `$${q}`, asF64(emit(search))],
+          ['local.set', `$${fnL}`, asF64(emit(repl))],
+          ['local.set', `$${mlen}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
+          ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
+          ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+            ['then', ['local.get', `$${s}`]],
+            ['else', typed(['call', '$__str_concat',
+              asI64(typed(['call', '$__str_concat',
+                asI64(typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')),
+                callbackRepl(fnL, match)], 'f64')),
+              asI64(typed(['call', '$__str_slice', sI64(),
+                ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
+                ['call', '$__str_byteLen', sI64()]], 'f64'))], 'f64')]]], 'f64')
+      }
       // Fall back to string replace
       inc('__str_replace')
       return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat', '__str_byteLen')
+    // Regex + callback: walk matches in IR (a WAT helper can't call a closure).
+    // One unified loop covers /g (all matches) and non-/g (break after the first).
+    if (isFn) {
+      const global = flagsOf(search).includes('g')
+      inc('__str_to_buf', '__to_str', `__regex_${id}`)
+      const s = temp('rcs'), fnL = temp('rcf'), acc = temp('rca')
+      const off = tempI32('rco'), len = tempI32('rcl'), pos = tempI32('rcp')
+      const res = tempI32('rcr'), ms = tempI32('rcms'), me = tempI32('rcme'), pe = tempI32('rcpe')
+      const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+      const accI64 = () => ['i64.reinterpret_f64', ['local.get', `$${acc}`]]
+      const slice = (a, b) => typed(['call', '$__str_slice', sI64(), a, b], 'f64')
+      const matchStr = slice(['local.get', `$${ms}`], ['local.get', `$${me}`])
+      const step = [
+        ['local.set', `$${res}`, ['call', `$__regex_${id}`, ['local.get', `$${off}`], ['local.get', `$${len}`], ['local.get', `$${pos}`]]],
+        ['if', ['i32.lt_s', ['local.get', `$${res}`], ['i32.const', 0]],
+          ['then', ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]], ['br', '$next']]],
+        ['local.set', `$${ms}`, ['local.get', `$${pos}`]],
+        ['local.set', `$${me}`, ['local.get', `$${res}`]],
+        ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), asI64(slice(['local.get', `$${pe}`], ['local.get', `$${ms}`]))]],
+        ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), callbackRepl(fnL, matchStr)]],
+        ['local.set', `$${pe}`, ['local.get', `$${me}`]],
+        ...(global ? [] : [['br', '$done']]),
+        ['local.set', `$${pos}`, ['select', ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]], ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+        ['br', '$next'],
+      ]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(str))],
+        ['local.set', `$${fnL}`, asF64(emit(repl))],
+        ['local.set', `$${off}`, ['call', '$__str_to_buf', sI64()]],
+        ['local.set', `$${len}`, ['call', '$__str_byteLen', sI64()]],
+        ['local.set', `$${pe}`, ['i32.const', 0]],
+        ['local.set', `$${pos}`, ['i32.const', 0]],
+        ['local.set', `$${acc}`, slice(['i32.const', 0], ['i32.const', 0])],
+        ['block', '$done', ['loop', '$next',
+          ['br_if', '$done', ['i32.gt_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
+          ...step]],
+        ['call', '$__str_concat', accI64(), asI64(slice(['local.get', `$${pe}`], ['local.get', `$${len}`]))]], 'f64')
+    }
     // Global replace: walk every match, accumulating slice(prevEnd,matchStart)+repl.
     // Empty seed via slice(str,0,0); zero-length matches advance by 1 (per split).
     if (flagsOf(search).includes('g')) {
@@ -1029,6 +1098,57 @@ export default (ctx) => {
               ['i64.reinterpret_f64', ['local.get', `$${r}`]]]],
             ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
               ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]]], 'f64')
+  }
+
+  // str.matchAll(/re/g) → array of match arrays (each like exec's result: full
+  // match at [0], capture groups after, named groups under `.groups`). JS yields
+  // a lazy iterator, but an array satisfies both `[...m]` and `for (const x of m)`.
+  // Two-pass over the same anchored matcher: count, then fill a sized array.
+  ctx.core.emit['.string:matchAll'] = (str, search) => {
+    const id = resolveRegex(search)
+    if (id == null) err('matchAll requires a regex argument')
+    const nGroups = ctx.runtime.regex.groups.get(id) || 0
+    const groupNames = ctx.runtime.regex.groupNames.get(id) || []
+    inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
+    const s = temp('mas'), outArr = tempI32('mao')
+    const off = tempI32('maof'), len = tempI32('maln'), pos = tempI32('maps')
+    const res = tempI32('mars'), cnt = tempI32('macn'), wi = tempI32('mawi')
+    const ms = tempI32('mams'), me = tempI32('mame')
+    const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+    // Anchored-matcher scan: __regex_${id}(off,len,pos) returns match-end (>=0) or
+    // -1; `body` runs per match with ms=pos, me=res; pos advances (+1 on a
+    // zero-length match to make progress). `posInit` resets the cursor per pass.
+    const scan = (body) => ['block', '$d', ['loop', '$n',
+      ['br_if', '$d', ['i32.gt_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
+      ['local.set', `$${res}`, ['call', `$__regex_${id}`, ['local.get', `$${off}`], ['local.get', `$${len}`], ['local.get', `$${pos}`]]],
+      ['if', ['i32.lt_s', ['local.get', `$${res}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]], ['br', '$n']]],
+      ['local.set', `$${ms}`, ['local.get', `$${pos}`]],
+      ['local.set', `$${me}`, ['local.get', `$${res}`]],
+      ...body,
+      ['local.set', `$${pos}`, ['select', ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]], ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+      ['br', '$n']]]
+    // Re-running the matcher in the fill pass repopulates the $__re_g* capture
+    // globals just before buildMatchArr reads them — correct per-match captures.
+    const matchArr = buildMatchArr(s, ms, me, nGroups, groupNames)
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${off}`, ['call', '$__str_to_buf', sI64()]],
+      ['local.set', `$${len}`, ['call', '$__str_byteLen', sI64()]],
+      ['local.set', `$${cnt}`, ['i32.const', 0]],
+      ['local.set', `$${pos}`, ['i32.const', 0]],
+      scan([['local.set', `$${cnt}`, ['i32.add', ['local.get', `$${cnt}`], ['i32.const', 1]]]]),
+      ['local.set', `$${outArr}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${cnt}`], ['i32.const', 3]]]]],
+      ['i32.store', ['local.get', `$${outArr}`], ['local.get', `$${cnt}`]],
+      ['i32.store', ['i32.add', ['local.get', `$${outArr}`], ['i32.const', 4]], ['local.get', `$${cnt}`]],
+      ['local.set', `$${outArr}`, ['i32.add', ['local.get', `$${outArr}`], ['i32.const', 8]]],
+      ['local.set', `$${wi}`, ['i32.const', 0]],
+      ['local.set', `$${pos}`, ['i32.const', 0]],
+      scan([
+        ['f64.store', ['i32.add', ['local.get', `$${outArr}`], ['i32.shl', ['local.get', `$${wi}`], ['i32.const', 3]]], matchArr],
+        ['local.set', `$${wi}`, ['i32.add', ['local.get', `$${wi}`], ['i32.const', 1]]],
+      ]),
+      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${outArr}`])], 'f64')
   }
 
   // str.split(/re/) → array of substrings

@@ -678,3 +678,26 @@ test('regex: split on \\s+ splits on VT and FF', () => {
   is(r.exports.f(mem.String('a\x0Bb')), 2)  // VT splits
   is(r.exports.f(mem.String('a\x0Cb')), 2)  // FF splits
 })
+
+test('regex: replace with a function replacer (single + /g)', () => {
+  const run = src => jz(src).exports.f
+  is(run('export let f = (s) => s.replace(/l/, (m) => m.toUpperCase())')('hello'),
+    'hello'.replace(/l/, m => m.toUpperCase()))        // 'heLlo' — first match
+  is(run('export let f = (s) => s.replace(/l/g, (m) => m.toUpperCase())')('hello'),
+    'hello'.replace(/l/g, m => m.toUpperCase()))        // 'heLLo' — all matches
+  is(run('export let f = (s) => s.replace(/[aeiou]/g, (v) => "[" + v + "]")')('hello'),
+    'hello'.replace(/[aeiou]/g, v => '[' + v + ']'))    // 'h[e]ll[o]'
+  is(run('export let f = (s) => s.replace(/z/g, (m) => m)')('hello'),
+    'hello'.replace(/z/g, m => m))                       // no match → unchanged
+})
+
+test('regex: matchAll collects all matches', () => {
+  const run = src => jz(src).exports.f
+  is(run('export let f = (s) => [...s.matchAll(/\\d+/g)].length')('a1b22c333'), 3)
+  is(run('export let f = (s) => { let o = ""; for (const m of s.matchAll(/\\d+/g)) o = o + m[0] + ","; return o }')('a1b22c333'),
+    '1,22,333,')
+  // capture groups: each match array carries [full, g1, g2, …]
+  is(run('export let f = (s) => { let a = [...s.matchAll(/(\\w)(\\d)/g)]; return a[0][1] + a[0][2] + a[1][1] + a[1][2] }')('a1b2'),
+    'a1b2')
+  is(run('export let f = (s) => [...s.matchAll(/z/g)].length')('hello'), 0)
+})
