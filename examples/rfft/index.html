@@ -235,9 +235,9 @@ async function start(kind) {
   const engine = await loadEngine(kind, urls);
   const inp = engine.init(N);          // Float64Array: JS buffer or wasm view
   const spec = engine.spectrum();      // magnitude (after rfft)
-  const sr = audio.sampleRate, ch = audio.ch, len = ch.length;
+  const sr = audio.sampleRate;
   let cursor = Math.floor(sr * (audio.ctx.currentTime - startT)); // sample index of last column
-  const samp = (i) => ch[((i % len) + len) % len];                // looped read of the rendered buffer
+  const samp = (i) => { const c = audio.ch, L = c.length; return c[((i % L) + L) % L]; };  // live read — follows a shuffle's buffer swap
   const dbSpan = DB_CEIL - DB_FLOOR;
 
   (function frame() {
@@ -282,6 +282,7 @@ async function start(kind) {
 // The waveform's colour is mixed from NBARS A-weighted frequency bands (no bars are drawn).
 const NBARS = 110;
 const barLo = new Int32Array(NBARS), barHi = new Int32Array(NBARS), barAw = new Float64Array(NBARS);
+const barPos = new Float64Array(NBARS);        // each bar's centre as a fixed log-Hz fraction (0=20Hz…1=20kHz)
 const fitBars = () => {                        // band i = frequency range [barLo..barHi] of FFT bins, A-weighted
   const step = 1 / (NBARS - 1);
   for (let i = 0; i < NBARS; i++) {
@@ -289,6 +290,9 @@ const fitBars = () => {                        // band i = frequency range [barL
     const a = binAt(p - 0.5 * step), b = binAt(p + 0.5 * step);   // band edges, half a bar each way
     barLo[i] = Math.min(a, b); barHi[i] = Math.max(a, b);
     barAw[i] = aWeight(scale.inv(p));
+    // centroid weight is the bar's true log-Hz position, NOT its index — so the tint is
+    // scale-independent (mel packs bass into more indices, which would skew it dark).
+    barPos[i] = Math.log(scale.inv(p) / F_LO) / LN_R;
   }
 };
 fitBars();
@@ -316,14 +320,13 @@ const WAMP = 0.42;
 // indexes the same dark→teal→amber→white LUT, stretched so timbre shifts read as strong colour.
 function waveColor(spec) {
   let num = 0, den = 0;
-  const step = 1 / (NBARS - 1);
   for (let i = 0; i < NBARS; i++) {
     let mag = 0;
     for (let j = barLo[i]; j <= barHi[i]; j++) if (spec[j] > mag) mag = spec[j];
     const db = 20 * Math.log10(mag + 1e-7) + barAw[i];
     const v = Math.max(0, Math.min(1, (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
     const wt = v * v;                                          // loud bands dominate the centroid
-    num += i * step * wt; den += wt;
+    num += barPos[i] * wt; den += wt;                          // weight by log-Hz position, not bar index
   }
   const cen = den > 1e-6 ? num / den : 0;                      // spectral centroid, 0 (bass) … 1 (treble)
   const c = Math.max(0, Math.min(1, (cen - 0.1) / 0.55));      // stretch the mid-heavy range over the full LUT
@@ -371,17 +374,23 @@ async function rebuildBuffer(kind = ui.kind, fadeSec = 0) {
     gain.gain.setValueAtTime(1, now);
     prev?.stop(); prevGain?.disconnect();
   }
-  src.start(now);
+  // Begin the new source at the CURRENT loop phase so the timeline is continuous:
+  // the spectrogram tracks (currentTime − startT), so keeping startT fixed (set only
+  // on first play) and entering the buffer at that same phase means the picture never
+  // jumps — the new chord just scrolls in where the old one was. The spectrogram reads
+  // audio.ch live, so the swap needs no engine reload or loop restart (the source of
+  // the old glitch).
+  const dur = len / sr;
+  if (!prev) startT = now;                                 // first play anchors the timeline
+  const phase = prev ? (((now - startT) % dur) + dur) % dur : 0;
+  src.start(now, phase);
   audio.src = src; audio.gain = gain; audio.ch = ch;
-  startT = now;
 }
 function shuffle() {
   if (!running) return;
   seed = (seed + 1 + (Math.random() * 23 | 0)) % 24;   // a fresh key + starting chord — same voice, new harmony
-  rebuildBuffer(ui.kind, 1.4).then(() => {              // ease into the new chord over 1.4 s
-    if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
-    start(ui.kind);
-  });
+  if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
+  rebuildBuffer(ui.kind, 1.4);                          // ease into the new chord over 1.4 s — the running loop follows audio.ch
 }
 const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
 shuffleEl.addEventListener("click", shuffle);
