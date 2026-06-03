@@ -129,6 +129,7 @@ dist
 /.work/*.mjs
 /.work/*.js
 /.work/*.wasm
+/.work/*.clean
 /.claude
 /CLAUDE.md
 .DS_Store
@@ -139,3 +140,4 @@ __pycache__
 /bench/*.bak
 
 examples/**/build/
+/.playwright-mcp
