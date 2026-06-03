@@ -819,7 +819,14 @@ test('string: .codePointAt ASCII matches JS', () => {
   is(run(`export let f = () => "hello".codePointAt(0)`).f(), 'hello'.codePointAt(0))
 })
 
-// Bug 5: replace(target, fn) — must be a compile error, not silent data loss
-test('string: .replace(search, fn) is a compile error', () => {
-  throws(() => compile(`export let f = () => "hello".replace("l", (m) => m)`))
+// replace(search, fn): a function replacer is called with the matched substring,
+// and its return (ToString'd) replaces the match. String search → first match.
+test('string: .replace(search, fn) invokes the callback', () => {
+  const run = src => jz(src).exports.f
+  is(run(`export let f = (s) => s.replace("l", (m) => m.toUpperCase())`)('hello'),
+    'hello'.replace('l', m => m.toUpperCase()))   // 'heLlo' — first match only
+  is(run(`export let f = (s) => s.replace("z", (m) => m)`)('hello'),
+    'hello'.replace('z', m => m))                  // no match → unchanged
+  is(run(`export let f = () => "ab".replace("a", (m) => m + m)`)(),
+    'ab'.replace('a', m => m + m))                 // 'aab'
 })

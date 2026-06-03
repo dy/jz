@@ -1391,13 +1391,38 @@ export default (ctx) => {
     return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')
   })
 
-  // replace(search, replacement): when the replacement arg is provably a function
-  // (closure), emit a compile error rather than silently miscompiling (the
-  // __str_replace WAT path treats the closure pointer as a string, producing data
-  // loss). String-replacement form is the common and correct path.
+  // replace(search, replacement). When `replacement` is a function, replace the
+  // FIRST occurrence of the (string) search with ToString(fn(match)) — per spec a
+  // string search matches once and the callback receives the matched substring.
+  // (A regex search routes to `.string:replace` in the regex module, which also
+  // handles the /g loop.) Without a closure runtime we can't invoke the callback,
+  // so fall back to a clear error rather than silent data loss.
   bind('.replace', (str, search, repl) => {
-    if (valTypeOf(repl) === VAL.CLOSURE)
-      err('.replace(search, fn): callback form is not supported in jz; use a string replacement')
+    if (valTypeOf(repl) === VAL.CLOSURE) {
+      if (!ctx.closure?.call) err('.replace(search, fn): no closure runtime available for the callback form')
+      inc('__str_indexof', '__str_slice', '__str_concat', '__str_byteLen', '__to_str')
+      const s = temp('rps'), q = temp('rpq'), fnL = temp('rpf')
+      const idx = tempI32('rpi'), mlen = tempI32('rpm')
+      const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+      const match = typed(['call', '$__str_slice', sI64(), ['local.get', `$${idx}`],
+        ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]]], 'f64')
+      const repIR = ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'), [match]))]
+      const head = typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')
+      const tail = typed(['call', '$__str_slice', sI64(),
+        ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
+        ['call', '$__str_byteLen', sI64()]], 'f64')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(str))],
+        ['local.set', `$${q}`, asF64(emit(search))],
+        ['local.set', `$${fnL}`, asF64(emit(repl))],
+        ['local.set', `$${mlen}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
+        ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
+        ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+          ['then', ['local.get', `$${s}`]],
+          ['else', typed(['call', '$__str_concat',
+            asI64(typed(['call', '$__str_concat', asI64(head), repIR], 'f64')),
+            asI64(tail)], 'f64')]]], 'f64')
+    }
     inc('__str_replace')
     return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
   })
