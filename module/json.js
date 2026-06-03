@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
 import { emit, bool, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
@@ -172,7 +172,7 @@ export default (ctx) => {
     if (v == null) return nullExpr()
     if (typeof v === 'number') return asF64(emit(v))
     if (typeof v === 'string') return asF64(emit(['str', v]))
-    if (typeof v === 'boolean') return asF64(emit(v ? 1 : 0))
+    if (typeof v === 'boolean') return typed((v ? TRUE_IR : FALSE_IR).slice(), 'f64')
     if (Array.isArray(v)) {
       const a = allocPtr({ type: PTR.ARRAY, len: v.length, cap: Math.max(v.length, 4), tag: 'jarr' })
       const body = [a.init]
@@ -378,6 +378,16 @@ export default (ctx) => {
         (call $__jput_num (local.get $f)) (return)))
     ;; NaN-boxed pointer
     (local.set $type (call $__ptr_type (local.get $val)))
+    ;; Boolean atoms: FALSE_NAN / TRUE_NAN → "false" / "true"
+    (if (i64.eq (local.get $val) (i64.const ${FALSE_NAN}))
+      (then
+        (call $__jput (i32.const 102)) (call $__jput (i32.const 97))
+        (call $__jput (i32.const 108)) (call $__jput (i32.const 115))
+        (call $__jput (i32.const 101)) (return)))
+    (if (i64.eq (local.get $val) (i64.const ${TRUE_NAN}))
+      (then
+        (call $__jput (i32.const 116)) (call $__jput (i32.const 114))
+        (call $__jput (i32.const 117)) (call $__jput (i32.const 101)) (return)))
     ;; Plain NaN (type=0) → null
     (if (i32.eqz (local.get $type))
       (then
@@ -1048,8 +1058,8 @@ export default (ctx) => {
     (if (i32.or (i32.and (i32.ge_s (local.get $ch) (i32.const 48)) (i32.le_s (local.get $ch) (i32.const 57)))
                 (i32.eq (local.get $ch) (i32.const 45)))
       (then (return (call $__jp_num))))
-    ${litCase(116, 'true', '(f64.const 1)', 4)}
-    ${litCase(102, 'false', '(f64.const 0)', 5)}
+    ${litCase(116, 'true', `(f64.const nan:${TRUE_NAN})`, 4)}
+    ${litCase(102, 'false', `(f64.const nan:${FALSE_NAN})`, 5)}
     ${litCase(110, 'null', NULL_WAT, 4)}
     ;; No production matched — malformed JSON value.
     (global.set $__jp_err (i32.const 1))
@@ -1095,7 +1105,7 @@ export default (ctx) => {
       if (v == null) return `${expectText('null')}
     (local.set $${out} ${NULL_WAT})`
       if (typeof v === 'boolean') return `${expectText(v ? 'true' : 'false')}
-    (local.set $${out} (f64.const ${v ? 1 : 0}))`
+    (local.set $${out} (f64.const nan:${v ? TRUE_NAN : FALSE_NAN}))`
       if (typeof v === 'number') return `(local.set $${out} (call $__jp_num))`
       if (typeof v === 'string') return `${expect(34)}
     (local.set $${out} (call $__jp_str))`

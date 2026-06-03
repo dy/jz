@@ -16,7 +16,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32
 import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { inc, PTR, LAYOUT } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, err } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -46,6 +46,8 @@ export default (ctx) => {
     __str_slice: ['__str_byteLen', '__alloc'],
     __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice'],
     __str_indexof: ['__str_byteLen', '__to_str'],
+    __str_lastindexof: ['__str_byteLen', '__to_str'],
+    __wrap1: ['__alloc', '__mkptr'],
     __str_substring: ['__str_slice'],
     __str_startswith: ['__str_byteLen'],
     __str_endswith: ['__str_byteLen'],
@@ -574,6 +576,59 @@ export default (ctx) => {
       (br $outer)))
     (i32.const -1))`)
 
+  // Mirror of __str_indexof but searches from the end. Returns the last byte-offset
+  // of `ndl` in `hay` at or before `from` (-1 if not found). Per JS spec step 4,
+  // ToString(searchValue) is applied first. SSO/heap dispatch hoisted exactly as
+  // in __str_indexof so the inner loop is cheap byte-fetches.
+  wat('__str_lastindexof', `(func $__str_lastindexof (param $hay i64) (param $ndl i64) (param $from i32) (result i32)
+    (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
+    (local $hoff i32) (local $noff i32)
+    (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
+    ;; ToString the search value (21.1.3.10 step 4)
+    (local.set $ndl (call $__to_str (local.get $ndl)))
+    (local.set $hlen (call $__str_byteLen (local.get $hay)))
+    (local.set $nlen (call $__str_byteLen (local.get $ndl)))
+    ;; Empty needle always matches at the clamp(from,0,hlen) position
+    (if (i32.eqz (local.get $nlen))
+      (then (return (select
+        (select (local.get $from) (local.get $hlen) (i32.lt_s (local.get $from) (local.get $hlen)))
+        (i32.const 0)
+        (i32.ge_s (local.get $from) (i32.const 0))))))
+    (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
+    (local.set $hoff (i32.wrap_i64 (i64.and (local.get $hay) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $noff (i32.wrap_i64 (i64.and (local.get $ndl) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $hsso (i32.and
+      (i32.wrap_i64 (i64.shr_u (local.get $hay) (i64.const ${LAYOUT.AUX_SHIFT})))
+      (i32.const ${LAYOUT.SSO_BIT})))
+    (local.set $nsso (i32.and
+      (i32.wrap_i64 (i64.shr_u (local.get $ndl) (i64.const ${LAYOUT.AUX_SHIFT})))
+      (i32.const ${LAYOUT.SSO_BIT})))
+    ;; clamp start position: from defaults to hlen-nlen, capped at that ceiling
+    (local.set $i (i32.sub (local.get $hlen) (local.get $nlen)))
+    (if (i32.and (i32.ge_s (local.get $from) (i32.const 0)) (i32.lt_s (local.get $from) (local.get $i)))
+      (then (local.set $i (local.get $from))))
+    (block $done (loop $outer
+      (br_if $done (i32.lt_s (local.get $i) (i32.const 0)))
+      (local.set $match (i32.const 1))
+      (local.set $j (i32.const 0))
+      (block $nomatch (loop $inner
+        (br_if $nomatch (i32.ge_s (local.get $j) (local.get $nlen)))
+        (local.set $k (i32.add (local.get $i) (local.get $j)))
+        (local.set $hb (if (result i32) (local.get $hsso)
+          (then (i32.and (i32.shr_u (local.get $hoff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+          (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
+        (local.set $nb (if (result i32) (local.get $nsso)
+          (then (i32.and (i32.shr_u (local.get $noff) (i32.shl (local.get $j) (i32.const 3))) (i32.const 0xFF)))
+          (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
+        (if (i32.ne (local.get $hb) (local.get $nb))
+          (then (local.set $match (i32.const 0)) (br $nomatch)))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $inner)))
+      (if (local.get $match) (then (return (local.get $i))))
+      (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+      (br $outer)))
+    (i32.const -1))`)
+
   // SSO/heap dispatch hoisted; inner loop is two inlined byte-fetches and a compare.
   wat('__str_startswith', `(func $__str_startswith (param $str i64) (param $pfx i64) (result i32)
     (local $plen i32) (local $i i32)
@@ -963,31 +1018,46 @@ export default (ctx) => {
       (br $next)))
     (f64.reinterpret_i64 (local.get $result)))`)
 
-  // Empty separator: per JS spec, split into individual byte-chars
-  // ("abc".split("") -> ["a","b","c"], "".split("") -> []). Without this
-  // guard the main loop advances by plen=0 and spins forever.
-  wat('__str_split', `(func $__str_split (param $str i64) (param $sep i64) (result f64)
+  // $limit ≥ 0: honour JS's optional limit arg. 0x7fffffff = "no limit"
+  // (sentinel passed by the no-limit call site). limit=0 → []. limit=N → at
+  // most N elements; the (N+1)th and later pieces are DISCARDED (not appended
+  // as a remainder). Empty separator: split into individual byte-chars, up to
+  // $limit chars ("abc".split("") → ["a","b","c"], "".split("") → []).
+  wat('__str_split', `(func $__str_split (param $str i64) (param $sep i64) (param $limit i32) (result f64)
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
-    (local $arr i32) (local $piece_start i32) (local $piece_idx i32)
+    (local $arr i32) (local $piece_start i32) (local $piece_idx i32) (local $hitlim i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (local.set $plen (call $__str_byteLen (local.get $sep)))
+    ;; limit=0 → empty array
+    (if (i32.eqz (local.get $limit)) (then
+      (local.set $arr (call $__alloc (i32.const 8)))
+      (i32.store (local.get $arr) (i32.const 0))
+      (i32.store (i32.add (local.get $arr) (i32.const 4)) (i32.const 0))
+      (return (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $arr) (i32.const 8))))))
     (if (i32.eqz (local.get $plen)) (then
-      (local.set $arr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $slen) (i32.const 3)))))
-      (i32.store (local.get $arr) (local.get $slen))
-      (i32.store (i32.add (local.get $arr) (i32.const 4)) (local.get $slen))
+      ;; Empty-separator: split into individual byte-chars, up to $limit
+      (local.set $count (select (local.get $limit) (local.get $slen) (i32.lt_u (local.get $limit) (local.get $slen))))
+      (local.set $arr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $count) (i32.const 3)))))
+      (i32.store (local.get $arr) (local.get $count))
+      (i32.store (i32.add (local.get $arr) (i32.const 4)) (local.get $count))
       (local.set $arr (i32.add (local.get $arr) (i32.const 8)))
       (block $de (loop $le
-        (br_if $de (i32.ge_s (local.get $i) (local.get $slen)))
+        (br_if $de (i32.ge_s (local.get $i) (local.get $count)))
         (f64.store (i32.add (local.get $arr) (i32.shl (local.get $i) (i32.const 3)))
           (call $__str_slice (local.get $str) (local.get $i) (i32.add (local.get $i) (i32.const 1))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $le)))
       (return (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))))
+    ;; Count pass: tally pieces = separators+1, capped at $limit.
+    ;; We stop incrementing count once count reaches $limit (last sep found
+    ;; at that point produces piece #limit — a separator *after* piece limit-1,
+    ;; meaning we've already found all limit pieces and don't count more).
     (local.set $count (i32.const 1))
     (local.set $i (i32.const 0))
     (block $d1 (loop $l1
       (br_if $d1 (i32.gt_s (local.get $i) (i32.sub (local.get $slen) (local.get $plen))))
+      (br_if $d1 (i32.ge_u (local.get $count) (local.get $limit)))
       (local.set $match (i32.const 1))
       (local.set $j (i32.const 0))
       (block $n1 (loop $c1
@@ -1010,6 +1080,11 @@ export default (ctx) => {
     (local.set $piece_start (i32.const 0))
     (local.set $piece_idx (i32.const 0))
     (local.set $i (i32.const 0))
+    ;; Fill pass: write pieces separated by $sep, up to $count total pieces.
+    ;; When a separator is found and piece_idx+1 reaches count, write that
+    ;; piece (before the sep) and exit WITHOUT appending the tail — this
+    ;; correctly discards the remainder when $limit truncates the result.
+    (local.set $hitlim (i32.const 0))
     (block $d2 (loop $l2
       (br_if $d2 (i32.gt_s (local.get $i) (i32.sub (local.get $slen) (local.get $plen))))
       (local.set $match (i32.const 1))
@@ -1027,14 +1102,27 @@ export default (ctx) => {
         (local.set $piece_idx (i32.add (local.get $piece_idx) (i32.const 1)))
         (local.set $i (i32.add (local.get $i) (local.get $plen)))
         (local.set $piece_start (local.get $i))
+        ;; If we've emitted all $count pieces, mark limit-hit and stop (discard tail)
+        (if (i32.ge_s (local.get $piece_idx) (local.get $count))
+          (then (local.set $hitlim (i32.const 1)) (br $d2)))
         (br $l2)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
-    (f64.store (i32.add (local.get $arr) (i32.shl (local.get $piece_idx) (i32.const 3)))
-      (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $slen)))
+    ;; Write tail only when the scan ended naturally (not truncated by limit)
+    (if (i32.eqz (local.get $hitlim)) (then
+      (f64.store (i32.add (local.get $arr) (i32.shl (local.get $piece_idx) (i32.const 3)))
+        (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $slen)))))
     (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))`)
 
-  wat('__str_join', `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
+  // Array (type=1) → join(",") like JS Array.toString().
+  // When the typedarray module is loaded, also handles PTR.TYPED (type=3) arrays:
+  // promoteIntArrayLiterals rewrites [int,...] → new Int32Array([...]) internally,
+  // so a.map(fn).join() may receive a PTR.TYPED result. Use __typed_idx to load
+  // each element correctly (it returns f64 for any element type / stride).
+  wat('__str_join', () => {
+    if (!ctx.module.modules.typedarray) {
+      // ARRAY-only fast path — no __typed_idx overhead.
+      return `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $result f64)
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (local.set $len (call $__len (local.get $arr)))
@@ -1049,7 +1137,42 @@ export default (ctx) => {
         (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
-    (local.get $result))`)
+    (local.get $result))`
+    }
+    // ARRAY + TYPED path: runtime dispatch on ptr type.
+    // PTR.TYPED (type=3): elements have typed-array stride; __typed_idx reads correctly.
+    // PTR.ARRAY (type=1): elements are 8-byte NaN-boxed f64 slots; i64.load is correct.
+    return `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
+    (local $off i32) (local $len i32) (local $i i32) (local $result f64) (local $isTyped i32)
+    (local.set $isTyped
+      (i32.eq
+        (i32.and (i32.wrap_i64 (i64.shr_u (local.get $arr) (i64.const ${LAYOUT.TAG_SHIFT})))
+                 (i32.const ${LAYOUT.TAG_MASK}))
+        (i32.const ${PTR.TYPED})))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
+    (if (i32.eqz (local.get $len))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    (local.set $result
+      (f64.reinterpret_i64
+        (call $__to_str
+          (if (result i64) (local.get $isTyped)
+            (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (i32.const 0))))
+            (else (i64.load (local.get $off)))))))
+    (local.set $i (i32.const 1))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (local.get $sep)))
+      (local.set $result
+        (call $__str_concat
+          (i64.reinterpret_f64 (local.get $result))
+          (if (result i64) (local.get $isTyped)
+            (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (local.get $i))))
+            (else (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $result))`
+  })
 
   // Source string copied via __str_copy (handles SSO/heap with memory.copy where possible).
   // Pad fill loops a single tile of pad bytes — hoist pad dispatch out of the byte loop.
@@ -1168,6 +1291,17 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)]], 'f64')
   })
 
+  // String.prototype.lastIndexOf: search from the end, returning the last
+  // byte-offset of `search` in `str` at or before `fromIndex` (or -1).
+  // Per spec the `from` default is +∞ (search from the very end), which we
+  // map to 0x7fffffff — __str_lastindexof clamps it to hlen-nlen anyway.
+  bind('.string:lastIndexOf', (str, search, from) => {
+    inc('__str_lastindexof')
+    const hay = asI64(emit(str)), ndl = searchArg(search)
+    const fromIR = from == null ? ['i32.const', 0x7fffffff] : asI32(emit(from))
+    return typed(['f64.convert_i32_s', ['call', '$__str_lastindexof', hay, ndl, fromIR]], 'f64')
+  })
+
   // String.prototype.{includes,startsWith,endsWith} run IsRegExp(searchString)
   // and throw a TypeError when it is a RegExp. Detect a regex-typed search arg
   // at compile time and lower to a $__jz_err throw.
@@ -1239,8 +1373,34 @@ export default (ctx) => {
   bind('.trimStart', method('__str_trimStart',  'I'))
   bind('.trimEnd', method('__str_trimEnd',    'I'))
   bind('.repeat', method('__str_repeat',     'Ii'))
-  bind('.split', method('__str_split',      'II'))
-  bind('.replace', method('__str_replace',    'III'))
+  // split(sep, limit): both args are optional.
+  // - No args (undefined sep) → [str]: JS spec step 3 treats undefined separator
+  //   as returning a single-element array of the whole string (not splitting at all).
+  // - 1 arg → no limit (sentinel 0x7fffffff = MAX_I32).
+  // - 2 args → honour limit: 0 → [], N → at most N pieces.
+  bind('.split', (str, sep, limit) => {
+    if (sep === undefined) {
+      // split() → [str]: wrap the whole string in a 1-element array
+      inc('__wrap1')
+      return typed(['call', '$__wrap1', asI64(emit(str))], 'f64')
+    }
+    inc('__str_split')
+    const limitIR = limit === undefined
+      ? ['i32.const', 0x7fffffff]
+      : ['i32.trunc_sat_f64_u', asF64(emit(limit))]
+    return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')
+  })
+
+  // replace(search, replacement): when the replacement arg is provably a function
+  // (closure), emit a compile error rather than silently miscompiling (the
+  // __str_replace WAT path treats the closure pointer as a string, producing data
+  // loss). String-replacement form is the common and correct path.
+  bind('.replace', (str, search, repl) => {
+    if (valTypeOf(repl) === VAL.CLOSURE)
+      err('.replace(search, fn): callback form is not supported in jz; use a string replacement')
+    inc('__str_replace')
+    return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
+  })
   bind('.replaceAll', method('__str_replaceall', 'III'))
 
   const caseMethod = (lo, hi, delta) => (str) => {
@@ -1355,6 +1515,16 @@ export default (ctx) => {
   // (`0 <= 32` is true, `NaN <= 32` is false). The narrower may re-narrow the
   // result to i32 where it can prove the index in-bounds.
   bind('.charCodeAt', (str, idx) =>
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64'))
+
+  // String.prototype.codePointAt(i) — byte-indexed.
+  // jz strings are UTF-8 byte-arrays; `i` is a byte offset, not a UTF-16 code-unit
+  // index. For ASCII inputs (U+0000..U+007F) the result is the exact Unicode code
+  // point. For multi-byte sequences the result is the value of the leading byte only
+  // (not a full code-point decode). Out-of-range → undefined (NaN-boxed). This is a
+  // documented byte-semantics limitation; it keeps the implementation allocation-free
+  // and consistent with jz's byte-indexed string model throughout.
+  bind('.codePointAt', (str, idx) =>
     typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64'))
 
   // String.fromCharCode(code) → 1-char SSO string

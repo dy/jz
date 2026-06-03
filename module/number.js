@@ -379,7 +379,12 @@ export default (ctx) => {
     ;; Default mode: auto-select precision (up to 9 digits, must fit i32 when scaled)
     (if (i32.eqz (local.get $mode))
       (then (local.set $prec (i32.const 9))))
-    ;; Round and scale to integer: scaled = nearest(val * 10^prec)
+    ;; Round and scale to integer: scaled = nearest(val * 10^prec).
+    ;; NOTE: toFixed/toPrecision round ties-to-even here (f64.nearest), which differs from
+    ;; JS's round-half-away-from-zero on exact halves like (2.5).toFixed(0) → '2' vs '3'.
+    ;; A naive floor(x+0.5) "fixes" those but breaks values like 1.45 (whose ×10 rounds up
+    ;; to 14.5 in f64, giving '1.5' vs JS '1.4'); bit-exact toFixed needs the exact-decimal
+    ;; algorithm. Documented as a known difference rather than trading one error for another.
     (local.set $scale (call $__pow10 (local.get $prec)))
     (local.set $scaled (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
     ;; If scaled doesn't fit i32, reduce precision until it does (min prec=0)
@@ -395,19 +400,36 @@ export default (ctx) => {
       (then
         (local.set $int (i32.trunc_f64_u (f64.div (local.get $scaled) (local.get $scale))))
         (local.set $frac (i32.trunc_f64_u (f64.sub (local.get $scaled)
-          (f64.mul (f64.convert_i32_u (local.get $int)) (local.get $scale))))))
+          (f64.mul (f64.convert_i32_u (local.get $int)) (local.get $scale)))))
+        ;; Default mode, fit loop reduced prec to 0: the rounded integer is ready, but the
+        ;; original val may still have a fractional part that was discarded.  Recover it:
+        ;; frac_f = val - trunc(val); since frac_f ∈ [0,1), frac_f*10^9 < 10^9 < 2^31 — safe.
+        (if (i32.and (i32.eqz (local.get $mode)) (i32.eqz (local.get $prec)))
+          (then
+            (local.set $abs (f64.sub (local.get $val) (f64.trunc (local.get $val))))
+            (if (f64.gt (local.get $abs) (f64.const 0))
+              (then
+                (local.set $prec (i32.const 9))
+                (local.set $scale (call $__pow10 (i32.const 9)))
+                ;; round: trunc_u(x+0.5) == floor(x+0.5) for the positive frac scale
+                (local.set $frac (i32.trunc_f64_u (f64.add
+                  (f64.mul (local.get $abs) (f64.const 1000000000))
+                  (f64.const 0.5)))))))))
       (else
         (local.set $int (i32.const 0))
         (local.set $frac (i32.const 0))
         (local.set $prec (i32.const 0))
         (local.set $abs (f64.trunc (local.get $val)))
-        ;; Write large integer digits reversed
+        ;; Write large integer digits reversed.
+        ;; Clamp digit to [0,9]: f64 precision loss for large values can make the naive
+        ;; subtraction (abs - trunc(abs/10)*10) go slightly negative → i32.trunc_f64_u trap.
         (local.set $ilen (local.get $pos))
         (block $ld (loop $ll
           (br_if $ld (f64.lt (local.get $abs) (f64.const 1)))
           (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (i32.add (i32.const 48) (i32.trunc_f64_u (f64.sub (local.get $abs)
-              (f64.mul (f64.trunc (f64.div (local.get $abs) (f64.const 10))) (f64.const 10))))))
+            (i32.add (i32.const 48) (i32.trunc_f64_u (f64.max (f64.const 0) (f64.min (f64.const 9)
+              (f64.nearest (f64.sub (local.get $abs)
+                (f64.mul (f64.trunc (f64.div (local.get $abs) (f64.const 10))) (f64.const 10)))))))))
           (local.set $abs (f64.trunc (f64.div (local.get $abs) (f64.const 10))))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (br $ll)))
@@ -422,6 +444,43 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (local.set $j (i32.sub (local.get $j) (i32.const 1)))
           (br $rl)))
+        ;; Default mode: emit fractional part if val has one (large-int path skipped it before).
+        ;; frac_f = val - trunc(val); since frac_f ∈ [0,1), frac_f*10^9 < 10^9 < 2^31 — safe.
+        (if (i32.eqz (local.get $mode))
+          (then
+            (local.set $abs (f64.sub (local.get $val) (f64.trunc (local.get $val))))
+            (if (f64.gt (local.get $abs) (f64.const 0))
+              (then
+                ;; round: trunc_u(x+0.5) == floor(x+0.5) for the positive frac scale
+                (local.set $frac (i32.trunc_f64_u (f64.add
+                  (f64.mul (local.get $abs) (f64.const 1000000000))
+                  (f64.const 0.5))))
+                (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+                (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+                ;; 9 fractional digits from $frac, high-to-low
+                (local.set $i (i32.const 8))
+                (block $fd2 (loop $fl2
+                  (br_if $fd2 (i32.lt_s (local.get $i) (i32.const 0)))
+                  (local.set $j (i32.div_u (local.get $frac) (i32.trunc_f64_u (call $__pow10 (local.get $i)))))
+                  (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+                    (i32.add (i32.const 48) (i32.rem_u (local.get $j) (i32.const 10))))
+                  (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+                  (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                  (br $fl2)))
+                ;; Strip trailing zeros
+                (block $sz2 (loop $sl2
+                  (br_if $sz2 (i32.le_s (local.get $pos) (i32.const 0)))
+                  (br_if $sz2 (i32.ne
+                    (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $pos) (i32.const 1))))
+                    (i32.const 48)))
+                  (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+                  (br $sl2)))
+                ;; Strip trailing dot
+                (if (i32.and (i32.gt_s (local.get $pos) (i32.const 0))
+                      (i32.eq
+                        (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $pos) (i32.const 1))))
+                        (i32.const 46)))
+                  (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))))
         (return (call $__mkstr (local.get $buf) (local.get $pos)))))
     ;; Write integer part
     (local.set $ilen (call $__itoa (local.get $int) (i32.add (local.get $buf) (local.get $pos))))
@@ -493,7 +552,7 @@ export default (ctx) => {
           (local.set $val (f64.mul (local.get $val) (f64.const 10)))
           (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))
           (br $l2)))))
-    ;; Scale to integer mantissa: nearest(val * 10^prec)
+    ;; Scale to integer mantissa: nearest(val * 10^prec). Ties-to-even (see __ftoa note).
     (local.set $scale (call $__pow10 (local.get $prec)))
     (local.set $mantissa (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
     ;; Rounding overflow (e.g. 9.95 → 1000 when prec=1, scale=10)

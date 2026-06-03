@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
 
@@ -250,7 +250,8 @@ const parseGroupName = () => {
 const CHAR_CLASS_WAT = {
   d: '(i32.and (i32.ge_u (local.get $char) (i32.const 48)) (i32.le_u (local.get $char) (i32.const 57)))',
   w: '(i32.or (i32.or (i32.and (i32.ge_u (local.get $char) (i32.const 97)) (i32.le_u (local.get $char) (i32.const 122))) (i32.and (i32.ge_u (local.get $char) (i32.const 65)) (i32.le_u (local.get $char) (i32.const 90)))) (i32.or (i32.and (i32.ge_u (local.get $char) (i32.const 48)) (i32.le_u (local.get $char) (i32.const 57))) (i32.eq (local.get $char) (i32.const 95))))',
-  s: '(i32.or (i32.or (i32.eq (local.get $char) (i32.const 32)) (i32.eq (local.get $char) (i32.const 9))) (i32.or (i32.eq (local.get $char) (i32.const 10)) (i32.eq (local.get $char) (i32.const 13))))'
+  // SP(32) TAB(9) LF(10) CR(13) VT(11) FF(12); NBSP/Unicode-Zs are multibyte under UTF-8 — out of scope
+  s: '(i32.or (i32.or (i32.or (i32.eq (local.get $char) (i32.const 32)) (i32.eq (local.get $char) (i32.const 9))) (i32.or (i32.eq (local.get $char) (i32.const 10)) (i32.eq (local.get $char) (i32.const 13)))) (i32.or (i32.eq (local.get $char) (i32.const 11)) (i32.eq (local.get $char) (i32.const 12))))'
 }
 
 // 8-bit char load at $str + $pos
@@ -773,7 +774,30 @@ export default (ctx) => {
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
-    inc(funcName, searchName, '__str_to_buf')
+    // search_from: like search but starts scanning at $fromPos (used by global exec)
+    const searchFromName = `__regex_search_from_${id}`
+    ctx.core.stdlib[searchFromName] = `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
+      (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
+      (local.set $off (call $__str_to_buf (local.get $str)))
+      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $pos (local.get $fromPos))
+      (block $done (loop $next
+        (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
+        (local.set $result (call $${funcName} (local.get $off) (local.get $len) (local.get $pos)))
+        (if (i32.ge_s (local.get $result) (i32.const 0))
+          (then (return (local.get $pos) (local.get $result))))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (br $next)))
+      (i32.const -1) (i32.const -1))`
+
+    // lastIndex mutable global for /g or /y regexes — tracks position across exec() calls
+    if ((flags || '').includes('g') || (flags || '').includes('y')) {
+      const liGlobal = `__re_lastIndex_${id}`
+      if (!ctx.scope.globals.has(liGlobal))
+        ctx.scope.globals.set(liGlobal, `(global $${liGlobal} (mut i32) (i32.const 0))`)
+    }
+
+    inc(funcName, searchName, searchFromName, '__str_to_buf')
     ctx.runtime.regex.compiled.set(key, id)
     return id
   }
@@ -810,19 +834,46 @@ export default (ctx) => {
         ['else', ['f64.const', 0]]]], 'f64')
   }
 
-  // regex.exec(str) → [match_text, cap1, ...] array or 0 (null)
+  // regex.exec(str) → [match_text, cap1, ...] array or null.
+  // Mirrors JS: returns null (NULL_NAN) on no-match so `!== null` and while-loop idioms work.
+  // For /g (and /y) regexes: stateful — reads lastIndex, advances on match, resets on miss.
   ctx.core.emit['.regex:exec'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
+    const flags = flagsOf(obj)
+    const isGlobal = flags.includes('g') || flags.includes('y')
     const s = temp('re'), ms = tempI32('rems'), me = tempI32('reme')
+    const nullIR = ['f64.const', `nan:${NULL_NAN}`]
+    if (isGlobal) {
+      // Stateful path: read lastIndex, search from there, update/reset lastIndex.
+      const liGlobal = `$__re_lastIndex_${id}`
+      inc(`__regex_search_from_${id}`)
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(str))],
+        ['local.set', `$${ms}`, ['local.set', `$${me}`,
+          ['call', `$__regex_search_from_${id}`,
+            ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+            ['global.get', liGlobal]]]],
+        ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
+          // no match — reset lastIndex, return null
+          ['then', ['global.set', liGlobal, ['i32.const', 0]], nullIR],
+          // match — advance lastIndex past match end (bump by 1 for zero-length)
+          ['else',
+            ['global.set', liGlobal,
+              ['select',
+                ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]],
+                ['local.get', `$${me}`],
+                ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+            buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
+    }
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
-        ['then', ['f64.const', 0]],
+        ['then', nullIR],
         ['else', buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
   }
 
@@ -861,8 +912,16 @@ export default (ctx) => {
     ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
   ]) ctx.core.emit[`.regex:${prop}`] = getter((obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64'))
 
-  // lastIndex — jz regexes are stateless; a freshly-evaluated regex reads 0.
-  ctx.core.emit['.regex:lastIndex'] = getter(() => typed(['f64.const', 0], 'f64'))
+  // lastIndex — for /g and /y regexes, reads the mutable global; others always 0.
+  ctx.core.emit['.regex:lastIndex'] = getter((obj) => {
+    const id = resolveRegex(obj)
+    if (id != null) {
+      const flags = flagsOf(obj)
+      if (flags.includes('g') || flags.includes('y'))
+        return typed(['f64.convert_i32_u', ['global.get', `$__re_lastIndex_${id}`]], 'f64')
+    }
+    return typed(['f64.const', 0], 'f64')
+  })
 
   // str.search(/re/) → first match position or -1
   ctx.core.emit['.string:search'] = (str, search) => {
@@ -973,12 +1032,15 @@ export default (ctx) => {
   }
 
   // str.split(/re/) → array of substrings
-  ctx.core.emit['.string:split'] = (str, sep) => {
+  ctx.core.emit['.string:split'] = (str, sep, limit) => {
     const id = resolveRegex(sep)
     if (id == null) {
-      // Fall back to string split
+      // Fall back to string split, forwarding the optional limit (0x7fffffff = no limit).
+      // __str_split is 3-param (str, sep, limit); a 2-arg call here trips a wasm arity
+      // error in any program with a known-string `.split` (e.g. the watr self-host).
       inc('__str_split')
-      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep))], 'f64')
+      const limitIR = limit == null ? ['i32.const', 0x7fffffff] : ['i32.trunc_sat_f64_u', asF64(emit(limit))]
+      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')
     }
 
     // Generate a split-by-regex WAT function for this regex

@@ -45,7 +45,8 @@ test('JSON.parse: negative float', () => {
 })
 
 test('JSON.parse: true', () => {
-  is(run(`export let f = () => JSON.parse("true")`).f(), 1)
+  // Must return boolean true, not numeric 1 — matches JS behaviour.
+  is(run(`export let f = () => JSON.parse("true")`).f(), true)
 })
 
 test('JSON.parse: null', () => {
@@ -359,4 +360,42 @@ test('JSON.parse: loose equality coerces numeric strings against numbers', () =>
   is(result[0], 1)
   is(result[1], 1)
   is(result[2], 0)
+})
+
+// === Boolean identity (regression: parser emitted numeric 1/0 instead of atoms) ===
+
+test('JSON.parse: false is real boolean', () => {
+  // typeof must be 'boolean', not 'number'. Before fix: returned 0.
+  is(run(`export let f = () => JSON.parse("false")`).f(), false)
+})
+
+test('JSON.parse: typeof true is "boolean"', () => {
+  is(run(`export let f = () => typeof JSON.parse("true")`).f(), 'boolean')
+})
+
+test('JSON.parse: typeof false is "boolean"', () => {
+  is(run(`export let f = () => typeof JSON.parse("false")`).f(), 'boolean')
+})
+
+test('JSON.parse: [true,false] roundtrip via stringify', () => {
+  // Before fix stringify produced '[null,null]' for boolean atoms it didn't recognise.
+  is(run(`export let f = () => JSON.stringify(JSON.parse("[true,false]"))`).f(), '[true,false]')
+})
+
+test('JSON.parse: boolean in object roundtrips', () => {
+  is(run(`export let f = () => JSON.stringify(JSON.parse('{"ok":true,"skip":false}'))`).f(), '{"ok":true,"skip":false}')
+})
+
+test('JSON.parse: boolean value is falsy/truthy', () => {
+  // Boolean atoms are correctly falsy (false) and truthy (true) in conditionals.
+  is(run(`export let f = () => JSON.parse("true") ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => JSON.parse("false") ? 1 : 0`).f(), 0)
+})
+
+test('JSON.stringify: true still serialises as "true"', () => {
+  is(run(`export let f = () => JSON.stringify(true)`).f(), 'true')
+})
+
+test('JSON.stringify: false still serialises as "false"', () => {
+  is(run(`export let f = () => JSON.stringify(false)`).f(), 'false')
 })

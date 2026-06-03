@@ -773,3 +773,53 @@ test('string +: untyped params are numeric, not concat (documented divergence)',
   is(run(`export let f = (a, b) => a + b`).f(2, 3), 5)                     // numeric still works
   is(run(`export let f = (a) => 'n' + a`).f(7), 'n7')                      // literal operand → concat
 })
+
+// === Bug-fix regression tests ===
+
+// Bug 1: split() with no argument → [str] (JS oracle)
+test('string: .split() no arg returns single-element array of whole string', () => {
+  is(run(`export let f = () => "abc".split().length`).f(), 'abc'.split().length)
+  is(run(`export let f = () => "abc".split()[0]`).f(), 'abc'.split()[0])
+  is(run(`export let f = () => "".split().length`).f(), ''.split().length)
+})
+
+// Bug 2: split(sep, limit) — limit must truncate the result (JS oracle)
+test('string: .split(sep, limit) honours limit', () => {
+  is(run(`export let f = () => "a,b,c".split(",", 0).length`).f(), 'a,b,c'.split(',', 0).length)
+  is(run(`export let f = () => "a,b,c".split(",", 1).length`).f(), 'a,b,c'.split(',', 1).length)
+  is(run(`export let f = () => "a,b,c".split(",", 1)[0]`).f(), 'a,b,c'.split(',', 1)[0])
+  is(run(`export let f = () => "a,b,c".split(",", 2).length`).f(), 'a,b,c'.split(',', 2).length)
+  is(run(`export let f = () => "a,b,c".split(",", 2)[1]`).f(), 'a,b,c'.split(',', 2)[1])
+  is(run(`export let f = () => "a,b,c".split(",", 5).length`).f(), 'a,b,c'.split(',', 5).length)
+})
+
+test('string: .split("", limit) honours limit on empty sep', () => {
+  is(run(`export let f = () => "abc".split("", 2).length`).f(), 'abc'.split('', 2).length)
+  is(run(`export let f = () => "abc".split("", 2)[1]`).f(), 'abc'.split('', 2)[1])
+})
+
+// Bug 3: lastIndexOf — not previously implemented
+test('string: .lastIndexOf basic', () => {
+  is(run(`export let f = () => "hello".lastIndexOf("l")`).f(), 'hello'.lastIndexOf('l'))
+  is(run(`export let f = () => "hello".lastIndexOf("x")`).f(), 'hello'.lastIndexOf('x'))
+  is(run(`export let f = () => "hello".lastIndexOf("h")`).f(), 'hello'.lastIndexOf('h'))
+})
+
+test('string: .lastIndexOf with fromIndex', () => {
+  is(run(`export let f = () => "hello".lastIndexOf("l", 2)`).f(), 'hello'.lastIndexOf('l', 2))
+  is(run(`export let f = () => "abcabc".lastIndexOf("bc", 3)`).f(), 'abcabc'.lastIndexOf('bc', 3))
+  is(run(`export let f = () => "abcabc".lastIndexOf("bc")`).f(), 'abcabc'.lastIndexOf('bc'))
+})
+
+// Bug 4: codePointAt — byte-value semantics for ASCII (matches JS for U+0000..U+007F)
+test('string: .codePointAt ASCII matches JS', () => {
+  is(run(`export let f = () => "ABC".codePointAt(0)`).f(), 'ABC'.codePointAt(0))
+  is(run(`export let f = () => "ABC".codePointAt(1)`).f(), 'ABC'.codePointAt(1))
+  is(run(`export let f = () => "ABC".codePointAt(2)`).f(), 'ABC'.codePointAt(2))
+  is(run(`export let f = () => "hello".codePointAt(0)`).f(), 'hello'.codePointAt(0))
+})
+
+// Bug 5: replace(target, fn) — must be a compile error, not silent data loss
+test('string: .replace(search, fn) is a compile error', () => {
+  throws(() => compile(`export let f = () => "hello".replace("l", (m) => m)`))
+})
