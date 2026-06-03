@@ -1,8 +1,8 @@
 <img src="jz.svg" alt="jz logo" width="120"/>
 
-## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
+![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
-**JZ** (_javascript zero_) is **minimal functional JS** that compiles to WASM.
+**jz** (_javascript zero_) is **minimal functional JS** that compiles to WASM.
 
 
 ```js
@@ -15,9 +15,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-_"JavaScript isn't a real language"_ – unfit for hot computation (DSP, audio, parsers etc). JIT deopts, GC glitches,  locked SIMD, legacy ([wtfjs](https://github.com/denysdovhan/wtfjs)) and spec feature-creep. So compute-heavy code gets rewritten in Rust, Zig, Go or C and shipped as WASM.
-
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM** with inferred types. No legacy, no spec creep; no runtime, no GC, near-native speed. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
+jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM** with inferred types. No legacy, no spec creep; no runtime, no GC, near-native speed with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM.
 
 
 | Good for                    | Not for                    |
@@ -55,8 +53,8 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 
 | Option | Use |
 |---|---|
-| `modules: { specifier: source }` | Bundle static ES imports into one WASM module. CLI import resolution does this from files automatically. |
-| `imports: { mod: host }` | Wire host namespaces/functions used by `import { fn } from "mod"`. |
+| `modules: { specifier: source }` | Static ES imports to bundle. CLI import resolution does this from files automatically. |
+| `imports: { mod: host }` | Host imports `import { fn } from "mod"`. |
 | `memory` | Pass `memory: N` for owned memory with `N` initial pages, or `memory: jz.memory()` / `WebAssembly.Memory` to share across modules. |
 | `host: 'js' \| 'wasi'` | Runtime-service lowering. Default `js`; `wasi` for standalone runtimes. |
 | `optimize` | `false`/`0` off, `1` size-only, `true`/`2` default (all stable passes), `3` trades size for speed. String aliases: `'size'`, `'balanced'` (= default), `'speed'`. Object form overrides individual passes. |
@@ -85,25 +83,25 @@ jz --help                  # help
 
 ## Language
 
-JZ is a **strict modern functional JS subset**. Built-in jzify transform extends support to legacy patterns.
+jz is a **strict modern functional JS subset**. Built-in jzify transform extends support to legacy patterns.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │ JZ strict                                                          │ │
+│ │ jz strict                                                          │ │
 │ │   let/const  =>  ...xs  destructuring  import/export               │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
 │ │   try/catch/finally  throw                                         │ │
 │ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
-│ │   ArrayBuffer  DataView  TypedArray  Map  Set  WeakMap  WeakSet    │ │
+│ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
 │ │   parseInt  parseFloat  encodeURIComponent  Error  BigInt          │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
-│ JZ default (jzify)                                                     │
+│ jz default (jzify)                                                     │
 │   var  function  arguments  switch  new Foo()                          │
-|   class  new  this  extends  super  static  #private                   │
-│   ==  !=  instanceof  undefined                                        |
+│   class  new  this  extends  super  static  #private                   │
+│   ==  !=  instanceof  undefined  WeakMap  WeakSet                      │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
@@ -116,14 +114,11 @@ Not supported
 <details>
 <summary><strong>Differences with JS</strong></summary>
 
-- **Numbers are f64, but proven-integer values use 32-bit math.** `a + b` is numeric (`f64.add`) — concatenate by giving one side a string (`"" + x`). Where the compiler can *prove* a value only ever holds an integer (a loop counter, anything `| 0`), it keeps it in an `i32` for speed, which **wraps at ±2³¹** like C's `int`; a `0.0` initializer doesn't change the proof, so keep the math genuinely fractional when you need exact integers past 2³¹. Also: `==` does *not* coerce (`1 == "1"` is `false`); `0377` is decimal `377` (use `0o377`); `1n`/`BigInt` are i64 internally and reach JS as tiny floats, not BigInts.
-- **Strings are UTF-8 bytes, not UTF-16 code units.** `.length`, `s[i]`, `charCodeAt`, `slice`, `indexOf`, and regex all index *bytes*: `"中".length` is `3`, `"😀".length` is `4`. ASCII matches JS exactly; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim`/`localeCompare` handle ASCII only.
-- **Objects have a fixed shape.** The set of keys and their order are fixed by the object literal as written in source — that's the *shape* the compiler lays out. You can read and write a *new* key (`o.k = v`), but `Object.keys`/`for…in`/spread/`Object.assign` only enumerate the literal's keys; `delete o.x`, getters/setters, and `arr.length = n` are rejected at compile. Classes are plain objects with per-instance methods (no prototype chain), so `x instanceof SomeClass` is really just an "is it an object" test. Typed-array reads past the end return `0` (not `undefined`); writes past the end corrupt linear memory.
-- **Number → string keeps ~9 significant digits.** A compact integer-based formatter (no Grisu/Ryū) auto-selects up to 9 digits: `String(1/3)` → `"0.333333333"`, and `String(0.1 + 0.2)` → `"0.3"` (the float artifact is hidden). `toFixed`/`toPrecision` round with the hardware `f64.nearest` instruction (ties-to-even) rather than emulating ECMAScript's round-half-away-from-zero, so `(2.5).toFixed(0)` → `"2"` where V8 gives `"3"`.
-- **No GC, thin values.** Memory isn't reclaimed — call `memory.reset()` between batches. `WeakMap`/`WeakSet` are plain `Map`/`Set`, and both keep insertion order like JS. Errors are untagged: `throw` carries a bare value and many built-in faults (e.g. `null.x`) don't throw at all, so `e instanceof TypeError` can't discriminate. A `boolean` reaches the host as a real boolean through `typeof`/`String`/`JSON.stringify`/comparisons, but as an operand of `&&`/`||` or stored in a container it crosses as `1`/`0`.
-- **A few built-ins differ.** Regex matches UTF-8 bytes (per the string model above); `Math.random()` is deterministic unless compiled with `randomSeed`; `Date` getters report UTC (no local timezone).
-
-jz trades completeness for low-level numeric performance by design; for full TC39 conformance, see [alternatives](#alternatives).
+- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `==`/`!=` don't coerce (`1 == "1"` is `false`); `BigInt` is i64, returned as a number.
+- **Strings are UTF-8 bytes**, not UTF-16 — `.length`, indexing, `charCodeAt`, `slice`, `indexOf`, regex all count bytes (`"中".length` is `3`). ASCII matches JS; non-ASCII diverges; case/`trim` are ASCII-only.
+- **Objects are fixed-shape** — `Object.keys`/`for…in`/spread see only the literal's keys (you can still read/write new keys, they just don't enumerate); `delete`, getters/setters and `arr.length = n` are compile errors. Classes are plain objects, no prototype chain, so `instanceof` is just an "is it an object" test. Out-of-bounds typed-array reads give `0`, writes corrupt memory.
+- **No GC** — memory isn't reclaimed; call `memory.reset()` between batches. `WeakMap`/`WeakSet` lower to `Map`/`Set` (`strict` rejects them).
+- **Smaller corners:** `String(n)` keeps ~9 significant digits and `toFixed` rounds ties-to-even (`(2.5).toFixed(0)` → `"2"`); errors are untagged and some faults (`null.x`) don't throw, so `e instanceof TypeError` can't discriminate; a `boolean` in a container or behind `&&`/`||` crosses as `1`/`0`; `Math.random` is deterministic (set `randomSeed`); `Date` is UTC.
 
 </details>
 
@@ -198,48 +193,11 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 </details>
 
 <details>
-<summary><strong>How do I run produced .wasm?</strong></summary>
+<summary><strong>Crossing the JS ↔ wasm boundary (numbers, strings, arrays, objects)</strong></summary>
 
-Compiled `.wasm` is standalone with no runtime dependency. How you run it depends on **where** (JavaScript host vs standalone engine) and **what you pass** (plain numbers vs heap values like strings/arrays/objects).
+**Numbers cross natively** as `f64`/`i32`. **Heap values** — strings, arrays, objects, typed arrays — cross as NaN-boxed `f64` pointers into linear memory, allocated through the module's `_alloc`/`_clear` exports. That pointer-plus-allocator convention *is* the whole ABI (a few hundred bytes, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js)). The one shortcut: arrays of ≤ 8 elements come back as plain JS arrays via WASM multi-value.
 
-**1. From JavaScript, numbers only — raw `WebAssembly`.** No jz dependency at all; numbers cross natively as `f64`/`i32`:
-
-```js
-const { instance } = await WebAssembly.instantiate(wasmBytes)
-instance.exports.dist(3, 4)   // 5
-```
-
-Compile with `{ alloc: false }` to drop the `_alloc`/`_clear` exports when a module only ever takes and returns numbers or multi-value arrays.
-
-**2. From JavaScript, with strings/arrays/objects — `jz/interop`.** Heap values cross as NaN-boxed pointers into linear memory, so they need a codec. `jz/interop` is a ~15 KB bridge (~6 KB gzipped; no compiler or parser) that provides one:
-
-```js
-import { instantiate } from 'jz/interop'
-const { exports, memory } = instantiate(wasmBytes)   // bundler import or fetch()
-exports.greet(memory.String('hello'))
-```
-
-- `instantiate(wasmBytes)` builds the same `WebAssembly.Module` + `Instance` you'd build by hand, then wraps them: it wires the bump allocator (and the WASI / `wasm:js-string` imports if the module uses them), marshals string/array/object **arguments** into heap pointers, decodes pointer **return values** back to JS, and turns a wasm `throw` into a real JS `Error`.
-- `memory` enhances the instance's `WebAssembly.Memory` with `.String` / `.Array` / `.Object` / `.read` / `.write` so you can build and read heap values explicitly.
-- You need either of these **only** for heap values — pure-numeric calls work straight off raw `WebAssembly` (method 1).
-
-**3. Standalone engine — `host: 'wasi'`.** For runtimes with no JavaScript host (wasmtime, wasmer etc):
-
-```sh
-jz program.js --host wasi -o program.wasm
-wasmtime program.wasm        # runs the module's top-level code (its start section)
-```
-
-The module reaches the outside world through WASI (stdout, stdin, argv, clock), not a JS bridge. Top-level code runs on load; exported functions take and return numbers (invoke them with your engine's `--invoke`). There's no host-side marshaler in this mode — to pass a string/array/object you'd call the exported `_alloc` and write the bytes yourself (see ABI below). If you need rich values across the boundary, run it from JavaScript (method 2) instead.
-
-**Marshaling by hand (any host).** Skip `jz/interop` entirely: the wasm signature *is* the ABI — `_alloc`/`_clear` exports plus NaN-boxed `f64` pointers, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js).
-
-</details>
-
-<details>
-<summary><strong>How do I pass strings, arrays, and objects?</strong></summary>
-
-Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
+The `memory` codec — returned by `jz()` and by `jz/interop`'s `instantiate()` — handles both directions: it marshals arguments in, decodes pointer returns out, and turns a wasm `throw` into a real `Error`:
 
 ```js
 const { exports, memory } = jz`
@@ -258,9 +216,15 @@ exports.rgb(100)                              // [100, 50, 20] — auto-decoded 
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
-`memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — its keys must match a compiled schema's key set; order is free (fields are placed by name).
+`memory.String` / `.Array` / `.Float64Array`/etc / `.Object` allocate on the heap and return a pointer; `memory.read(ptr)` decodes one back. `memory.Object()` is fixed-layout — its keys must match a compiled schema's key set (order is free, fields place by name).
 
-The whole contract is a NaN-boxed `f64` pointer plus `_alloc`/`_clear` — a few hundred bytes of convention you can implement against by hand. Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) instead emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge (`jz/interop`) under ~15 KB.
+**Where it runs** depends on the host:
+
+- **Numbers only, raw `WebAssembly`** — no jz dependency at all: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop `_alloc`/`_clear` for pure-numeric modules.
+- **Heap values, shipping just the `.wasm`** — `import { instantiate } from 'jz/interop'`. The ~15 KB bridge (~6 KB gzipped; no compiler or parser) builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec above (plus WASI / `wasm:js-string` imports if the module uses them).
+- **Standalone engine, `host: 'wasi'`** — `jz program.js --host wasi`, then `wasmtime program.wasm`. The module reaches the world through WASI (stdout, argv, clock), not a JS bridge; top-level code runs on load, exports take/return numbers. No host-side marshaler here — pass heap values by calling `_alloc` against the ABI, or run it from JavaScript instead.
+
+Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge under ~15 KB.
 
 </details>
 
@@ -268,7 +232,7 @@ The whole contract is a NaN-boxed `f64` pointer plus `_alloc`/`_clear` — a few
 <summary><strong>Should I compile for `js` or `wasi`?</strong></summary>
 
 - **`js`** (default) — it runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
-- **`wasi`** — it runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand (see *How do I pass strings, arrays, and objects?* — or marshal against the ABI).
+- **`wasi`** — it runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand (see *Crossing the JS ↔ wasm boundary* — or marshal against the ABI).
 
 Either way the `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`). The difference is only in how a few runtime services are serviced:
 
@@ -412,7 +376,7 @@ Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), 
 
 ## Performance
 
-Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).
+jz vs alternatives — geomean speed across the bench corpus. [Full benchmark →](bench/README.md).
 
 <img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
@@ -477,138 +441,3 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 
 <p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>
-
-<!--
-
-The four visitor classes
-
- ### Skeptics
-
- "Oh great, another JS-to-WASM compiler"
-
- They've seen AssemblyScript, Porffor, Javy. They're looking for reasons to dismiss or take seriously.
-
- ┌──────────────────────────────────────┬─────────────────────────────────────────────────────────┐
- │ They ask                             │ They look for                                           │
- ├──────────────────────────────────────┼─────────────────────────────────────────────────────────┤
- │ Why not just AssemblyScript/Porffor? │ Honest comparison with trade-offs, not sales copy       │
- ├──────────────────────────────────────┼─────────────────────────────────────────────────────────┤
- │ What JS does it actually support?    │ Concrete subset, not "JS you already know"              │
- ├──────────────────────────────────────┼─────────────────────────────────────────────────────────┤
- │ Are the benchmarks real?             │ Reproducible numbers, CI gating, no cherry-picking      │
- ├──────────────────────────────────────┼─────────────────────────────────────────────────────────┤
- │ Where does it break?                 │ Divergence list — if it's hidden, they assume the worst │
- ├──────────────────────────────────────┼─────────────────────────────────────────────────────────┤
- │ Is this a toy or production?         │ Test262 badge, self-host, bench CI                      │
- └──────────────────────────────────────┴─────────────────────────────────────────────────────────┘
-
- They scroll straight to Alternatives and the divergence FAQ. If either smells like marketing, they
- leave.
-
- ### Curious explorers
-
- "Interesting — show me something"
-
- Came from a link, not evaluating anything. Want a 30-second "aha" then a path to go deeper.
-
- ┌───────────────────────────────┬───────────────────────────────────────────────────────┐
- │ They ask                      │ They look for                                         │
- ├───────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What is this in one sentence? │ Tagline that names the thing, not the aspirations     │
- ├───────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Show me it working            │ Opening code example — compile, call, done            │
- ├───────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What's it good for?           │ Good-for / not-for table — tells them whether to care │
- ├───────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Something visual              │ Examples grid — mandelbrot, spectrogram               │
- └───────────────────────────────┴───────────────────────────────────────────────────────┘
-
- They'll read the first 20 lines and either leave or open a fold. The Language diagram is their entry
- point.
-
- ### Pragmatists
-
- "Can I use this for my problem?"
-
- Have a real use case — DSP, parser, numeric kernel. Need concrete answers.
-
- ┌────────────────────────────────┬───────────────────────────────────────────────────────┐
- │ They ask                       │ They look for                                         │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Does it handle my case?        │ Good-for table + supported language list              │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How do I pass data in/out?     │ Passing data fold — numbers, arrays, strings, objects │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How do I deploy the output?    │ Deploy FAQ — .wasm in production, interop bundle      │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What's the DX? Error messages? │ Error example in Language section                     │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What doesn't work?             │ Divergence FAQ — upfront, not buried                  │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Can I test normally?           │ "Valid jz is valid JS" — use existing test runner     │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How do I debug?                │ --wat flag, mentioned in FAQ entries                  │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Can I split into files?        │ Import/export FAQ                                     │
- ├────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What's the memory story?       │ Bump allocator FAQ — when to reset, how to share      │
- └────────────────────────────────┴───────────────────────────────────────────────────────┘
-
- They skip straight to Usage folds and FAQ. They need answers, not framing.
-
- ### Embedders
-
- "Can I ship this in my product?"
-
- Building a product that compiles or runs jz output. Care about weight, deps, stability.
-
- ┌───────────────────────────────────────────┬───────────────────────────────────────────────────────┐
- │ They ask                                  │ They look for                                         │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How big is the runtime?                   │ Interop bundle size — jz/interop without compiler     │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What's the compile speed?                 │ ~2–60 ms range — can I compile on the fly or must I   │
- │                                           │ AOT?                                                  │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Can I ship just the .wasm?                │ Deploy FAQ — jz/interop is the thin bridge            │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What are the runtime dependencies?        │ Dependency list — currently none beyond WASM          │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Can I run it in a worker / service        │ "Compile in the browser or a Worker?" FAQ             │
- │ worker?                                   │                                                       │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How stable is the output format?          │ "Is jz production-ready?" FAQ — pre-1.0, pin a version │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ What's the license?                       │ MIT — bottom of page                                  │
- ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Memory ABI for non-JS hosts?              │ Deploy FAQ — the _alloc/_clear exports, header layout │
- └───────────────────────────────────────────┴───────────────────────────────────────────────────────┘
-
- They read Deploy and Options carefully. They're the ones who'd read layout.js.
-
- Is that all?
-
- I think there's one more worth naming, though they're a minority:
-
- ### Language / compiler people
-
- "How does it work internally?"
-
- They want to understand the approach, not use it. They read the source, not just the README.
-
- ┌──────────────────────────────────┬───────────────────────────────┐
- │ They ask                         │ They look for                 │
- ├──────────────────────────────────┼───────────────────────────────┤
- │ What's the compilation model?    │ No answer in README currently │
- ├──────────────────────────────────┼───────────────────────────────┤
- │ What optimizations are applied?  │ Optimization FAQ — adequate   │
- ├──────────────────────────────────┼───────────────────────────────┤
- │ What's the type inference story? │ Optimization hints FAQ        │
- ├──────────────────────────────────┼───────────────────────────────┤
- │ Can it self-host?                │ Self-host FAQ                 │
- └──────────────────────────────────┴───────────────────────────────┘
-
- These people will read src/ regardless. The README just needs to not lie about what's inside. A
- "Build with" section acknowledging the deps (subscript, watr) is enough for them.
-
- -->
