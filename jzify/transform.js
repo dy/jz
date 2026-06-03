@@ -280,6 +280,19 @@ export function createTransform(opts) {
         ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transform(body)]]]]
     },
 
+    // The classic for-head `[';', init, cond, step]` is a fixed 3-slot structure,
+    // NOT a statement sequence. Transform each slot individually and keep null slots
+    // in place. Without this handler, `for` falls to the generic recurse, the head
+    // hits the `;` handler (transformScope), and an empty `init` (null) is dropped as
+    // an empty statement — shifting cond→init/step→cond and miscompiling the loop
+    // (`for (; i < n; i++)` ran zero/garbage iterations). for-of/for-in heads aren't
+    // `;`-lists, so they pass through transform unchanged.
+    'for'(head, body) {
+      if (Array.isArray(head) && head[0] === ';')
+        return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
+      return ['for', transform(head), transform(body)]
+    },
+
     // A bare statement sequence is a block scope too. `parse` only wraps
     // function/arrow bodies in `{}`; loop/conditional bodies arrive as a raw
     // `;`. Route them through transformScope so `function` declarations nested
