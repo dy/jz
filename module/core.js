@@ -93,11 +93,13 @@ export default (ctx) => {
       (else
         (i32.and
           (i32.and
-            (i64.ne (local.get $v) (i64.const ${NAN_BITS}))
-            (i64.ne (local.get $v) (i64.const ${NULL_NAN})))
-          (i32.and
-            (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
-            (i64.ne (local.get $v) (i64.const 0x7FFA400000000000)))))))`
+            (i32.and
+              (i64.ne (local.get $v) (i64.const ${NAN_BITS}))
+              (i64.ne (local.get $v) (i64.const ${NULL_NAN})))
+            (i32.and
+              (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
+              (i64.ne (local.get $v) (i64.const 0x7FFA400000000000))))
+          (i64.ne (local.get $v) (i64.const ${FALSE_NAN}))))))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v i64) (result i32)
     (local $f f64)
