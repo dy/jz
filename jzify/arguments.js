@@ -10,6 +10,9 @@ function usesArguments(node) {
   if (node === 'arguments') return true
   if (!Array.isArray(node)) return false
   if (node[0] === 'function') return false
+  // Literal node `[, value]` (op === null) — node[1] is a string/number VALUE, not an
+  // identifier. A string literal `'arguments'` must not read as the arguments object.
+  if (node[0] == null) return false
   if (node[0] === '.' || node[0] === '?.') return usesArguments(node[1])
   if (node[0] === ':') return usesArguments(node[2])
   for (let i = 1; i < node.length; i++) if (usesArguments(node[i])) return true
@@ -29,6 +32,9 @@ function renameArguments(node, to) {
   if (node === 'arguments') return to
   if (!Array.isArray(node)) return node
   if (node[0] === 'function') return node
+  // Literal node `[, value]` — node[1] is a value, not an identifier; leave untouched
+  // so a string literal `'arguments'` survives the rename.
+  if (node[0] == null) return node
   if (node[0] === '.' || node[0] === '?.')
     return [node[0], renameArguments(node[1], to), node[2]]
   if (node[0] === ':')
