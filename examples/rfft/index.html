@@ -82,7 +82,7 @@ const TAU = 6.283185307179586;
 
 // ── floatbeat synthesis (JS ⇄ jz — same sources as the code panel) ───────────
 const codeEl = document.getElementById("code");
-let songName = "", lastSynthMs = 0;
+let songName = "";
 const buildSong = (i) => {
   const s = songs[i];
   songName = s.name;
@@ -106,17 +106,16 @@ const makeBeatFill = async (kind) => {
     exports.fill(out, len, sr, off, sd);
     const samples = memory.read(out);
     for (let i = 0; i < len; i++) ch[i] = samples[i];
+    memory.reset();   // rewind the bump allocator — the stream calls this every chunk
   };
 };
-// One tune, seeded — the chord seed is a runtime argument, so the compiled fill is
-// reused across shuffles; only the seed changes.
-const beatFill = async (kind, ch, len, sr, off, sd) => {
-  if (beatCache.kind !== kind)
-    beatCache = { kind, fill: await makeBeatFill(kind) };
-  beatCache.fill(ch, len, sr, off, sd);
+// One tune, seeded. The seed is a LIVE parameter: the audio stream calls the cached
+// fill for each small chunk, so changing the chord just changes `seedB` — no buffer is
+// ever re-synthesized (that 32 s re-synth was a ~330 ms block, i.e. the shuffle glitch).
+const warmBeat = async (kind) => {
+  if (beatCache.kind !== kind) beatCache = { kind, fill: await makeBeatFill(kind) };
 };
 
-let seed = 0;             // 🎲 picks a new one in 0..23 — a fresh key + starting chord
 buildSong(0);
 
 // Hann window — tapers each FFT frame to suppress spectral leakage.
@@ -217,8 +216,16 @@ fit();
 drawAxis();
 window.addEventListener("resize", () => { fit(); });
 
-// ── engine + render loop ─────────────────────────────────────────────────────
-let audio, startT = 0, running = false;
+// ── streaming engine + render loop ───────────────────────────────────────────
+let audio = null, node = null, running = false, paused = false;
+let off = 0;                          // running sample index of the live stream (continuous time)
+let seedA = 0, seedB = 0;             // current chord and, during a shuffle, the incoming one
+let xfStart = 0, xfLen = 1;           // crossfade window [xfStart, xfStart+xfLen) in samples
+let tmpA = null, tmpB = null;         // per-chunk synthesis scratch
+const SPEC_RING = 1 << 16, RMASK = SPEC_RING - 1;   // ring of recent stream samples the spectrogram FFTs (> N + chunk)
+const ring = new Float64Array(SPEC_RING);
+let emitted = 0;                      // total samples pushed to the ring / output
+
 // FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
   kind: "jz",
@@ -226,28 +233,57 @@ const ui = hud({
   src: "https://github.com/dy/jz/tree/main/examples/rfft",
   code: "./rfft.js",
   nav: "rfft",
-  onSwitch: (kind) => { rebuildBuffer(kind).then(() => start(kind)); },
+  onSwitch: (kind) => start(kind),    // reload FFT + beat engines; the live stream stays seamless (jz==JS samples)
 });
+
+// The audio stream: synthesize the tune in BUF-sample chunks with the LIVE seed,
+// crossfading seedA→seedB across [xfStart, xfStart+xfLen). A shuffle only moves those
+// markers, never re-synthesizes a buffer, so it never blocks (≈2 ms/chunk vs ~330 ms).
+function startStream() {
+  const { ctx } = audio, sr = ctx.sampleRate, BUF = 8192;
+  tmpA = new Float64Array(BUF); tmpB = new Float64Array(BUF);
+  node = ctx.createScriptProcessor(BUF, 0, 1);
+  node.onaudioprocess = (e) => {
+    const out = e.outputBuffer.getChannelData(0), L = out.length, fill = beatCache.fill;
+    if (!fill) { out.fill(0); return; }              // engine still compiling — brief silence
+    fill(tmpA, L, sr, off, seedA);
+    if (seedA !== seedB && off < xfStart + xfLen) {  // crossfade region — blend the two chords
+      fill(tmpB, L, sr, off, seedB);
+      for (let i = 0; i < L; i++) {
+        let x = (off + i - xfStart) / xfLen; x = x < 0 ? 0 : x > 1 ? 1 : x;
+        x = x * x * (3 - 2 * x);                      // smoothstep
+        out[i] = tmpA[i] * (1 - x) + tmpB[i] * x;
+      }
+    } else {
+      if (seedA !== seedB) seedA = seedB;             // fade finished — settle on the new chord
+      out.set(tmpA);
+    }
+    for (let i = 0; i < L; i++) ring[(emitted + i) & RMASK] = out[i];   // feed the spectrogram
+    emitted += L; off += L;
+  };
+  node.connect(ctx.destination);
+}
 
 let gen = 0;
 async function start(kind) {
   const my = ++gen;
-  const engine = await loadEngine(kind, urls);
+  await warmBeat(kind);                // beat synth used by the audio callback
+  const engine = await loadEngine(kind, urls);   // rfft engine — the measured workload
+  if (my !== gen) return;
   const inp = engine.init(N);          // Float64Array: JS buffer or wasm view
   const spec = engine.spectrum();      // magnitude (after rfft)
-  const sr = audio.sampleRate;
-  let cursor = Math.floor(sr * (audio.ctx.currentTime - startT)); // sample index of last column
-  const samp = (i) => { const c = audio.ch, L = c.length; return c[((i % L) + L) % L]; };  // live read — follows a shuffle's buffer swap
+  const rsamp = (i) => ring[i & RMASK];          // read the live stream by absolute sample index
+  let cursor = emitted;                          // last drawn spectrogram column, in emitted-sample coords
   const dbSpan = DB_CEIL - DB_FLOOR;
 
   (function frame() {
     if (my !== gen) return;
     requestAnimationFrame(frame);
 
-    const target = Math.floor(sr * (audio.ctx.currentTime - startT));
     const w = sg.width, h = sg.height;
-    const cols = Math.max(0, Math.min(w, Math.floor((target - cursor) / HOP)));
-    if (cols === 0) { ui.frame(null); return; }   // paused or no new audio yet
+    let cols = Math.floor((emitted - cursor) / HOP);
+    if (cols <= 0) { ui.frame(null); return; }            // paused or no new audio yet
+    if (cols > w) { cursor = emitted - w * HOP; cols = w; }   // fell behind (tab hidden) — jump to live
 
     sgctx.drawImage(sg, -cols, 0);                 // scroll spectrogram left
     wctx.globalCompositeOperation = "copy";        // scroll waveform overlay in lockstep
@@ -258,7 +294,7 @@ async function start(kind) {
     for (let c = 0; c < cols; c++) {
       cursor += HOP;
       const base = cursor - N;
-      for (let i = 0; i < N; i++) inp[i] = samp(base + i) * hann[i];   // windowed frame
+      for (let i = 0; i < N; i++) inp[i] = ring[(base + i) & RMASK] * hann[i];   // windowed frame from the live stream
       const t0 = performance.now();
       engine.rfft();                                                    // ← the measured workload: jz vs JS on the FFT
       work += performance.now() - t0;
@@ -273,7 +309,7 @@ async function start(kind) {
       }
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
-      waveCol(samp, cursor, x, wave.height, spec);  // one waveform column, time-aligned to this frame
+      waveCol(rsamp, cursor, x, wave.height, spec);  // one waveform column, time-aligned to this frame
     }
     ui.frame(work);
   })();
@@ -341,56 +377,15 @@ function waveCol(samp, cursor, x, h, spec) {
   wctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
 }
 
-// ── shuffle: reseed to a fresh chord/key, rebuild buffer, keep playing ─────────
-// Each tune plays through its own gain node; `fadeSec > 0` swells the new voice in
-// while the old one bows out, so a shuffle eases into the new chord instead of
-// cutting to it. The JS⇄jz toggle passes 0 — same seed, sample-identical buffer,
-// so an instant swap is inaudible.
-async function rebuildBuffer(kind = ui.kind, fadeSec = 0) {
-  const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 32);   // one full 8-bar cycle (8 × 4 s) before it loops
-  const buf = ctx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
-  const t0 = performance.now();
-  await beatFill(kind, ch, len, sr, 0, seed);
-  lastSynthMs = performance.now() - t0;
-  const fade = Math.round(sr * 0.006);                     // 6 ms raised-cosine taper hides the loop seam
-  for (let i = 0; i < fade; i++) {
-    const g = 0.5 - 0.5 * Math.cos(Math.PI * i / fade);    // 0 → 1
-    ch[i] *= g; ch[len - 1 - i] *= g;
-  }
-  const now = ctx.currentTime;
-  const gain = ctx.createGain();
-  const src = ctx.createBufferSource();
-  src.buffer = buf; src.loop = true; src.connect(gain); gain.connect(ctx.destination);
-  const prev = audio.src, prevGain = audio.gain;
-  if (fadeSec > 0 && prev && prevGain) {
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(1, now + fadeSec);                  // new voice swells in
-    prevGain.gain.cancelScheduledValues(now);
-    prevGain.gain.setValueAtTime(prevGain.gain.value, now);
-    prevGain.gain.linearRampToValueAtTime(0, now + fadeSec);             // old voice bows out
-    prev.stop(now + fadeSec + 0.05);
-    prev.onended = () => prevGain.disconnect();                           // tidy the retired node
-  } else {
-    gain.gain.setValueAtTime(1, now);
-    prev?.stop(); prevGain?.disconnect();
-  }
-  // Begin the new source at the CURRENT loop phase so the timeline is continuous:
-  // the spectrogram tracks (currentTime − startT), so keeping startT fixed (set only
-  // on first play) and entering the buffer at that same phase means the picture never
-  // jumps — the new chord just scrolls in where the old one was. The spectrogram reads
-  // audio.ch live, so the swap needs no engine reload or loop restart (the source of
-  // the old glitch).
-  const dur = len / sr;
-  if (!prev) startT = now;                                 // first play anchors the timeline
-  const phase = prev ? (((now - startT) % dur) + dur) % dur : 0;
-  src.start(now, phase);
-  audio.src = src; audio.gain = gain; audio.ch = ch;
-}
+// ── shuffle: set the incoming chord + crossfade window. No synth, no block. ────
+// The audio callback reads seedA/seedB/xfStart live, so this is just three writes —
+// the new chord eases in over the next 1.4 s, in sequence with the running stream.
 function shuffle() {
   if (!running) return;
-  seed = (seed + 1 + (Math.random() * 23 | 0)) % 24;   // a fresh key + starting chord — same voice, new harmony
   if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
-  rebuildBuffer(ui.kind, 1.4);                          // ease into the new chord over 1.4 s — the running loop follows audio.ch
+  seedA = seedB;                                       // commit any in-flight target as the base
+  seedB = (seedB + 1 + (Math.random() * 23 | 0)) % 24; // a fresh key + starting chord, same voice
+  xfStart = off; xfLen = Math.round(audio.sampleRate * 1.4);
 }
 const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
 shuffleEl.addEventListener("click", shuffle);
@@ -406,27 +401,30 @@ codeToggleEl.addEventListener("click", (e) => {
 // spectrogram or pressing space toggles pause; suspending the context freezes its
 // clock, so the scroll halts and resumes seamlessly. Only the 🎲 button shuffles.
 const playEl = document.getElementById("play");
-let paused = false;
 const overlay = (show) => { playEl.style.display = show ? "flex" : "none"; };
 
 function togglePlay() {
   if (!running) return;
   paused = !paused;
-  if (paused) { audio.ctx.suspend(); overlay(true); }
-  else { audio.ctx.resume(); overlay(false); }   // the render loop kept running; clock just unfreezes
+  if (paused) { audio.ctx.suspend(); overlay(true); }   // freezes the callback + clock; resume() unfreezes both
+  else { audio.ctx.resume(); overlay(false); }
 }
 
-playEl.addEventListener("click", (e) => {
-  e.stopPropagation();
-  if (running) { togglePlay(); return; }     // overlay is only visible while paused → resume
+// First gesture: create the context, warm the beat engine, start the live stream.
+async function begin() {
   running = true;
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audio = { ctx, sampleRate: ctx.sampleRate };
   SR = ctx.sampleRate; buildRows(); drawAxis(); fitBars();   // real device rate → exact Hz everywhere
-  rebuildBuffer(ui.kind).then(() => {
-    overlay(false);
-    start(ui.kind);
-  });
+  await warmBeat(ui.kind);                                   // fill ready before the first callback fires
+  startStream();
+  overlay(false);
+  start(ui.kind);
+}
+
+playEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  running ? togglePlay() : begin();
 });
 document.getElementById("sgwrap").addEventListener("click", (e) => {
   if (!running || playEl.contains(e.target)) return;   // overlay handles its own clicks
