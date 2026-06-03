@@ -96,7 +96,8 @@ JZ is a **strict modern functional JS subset**. Built-in jzify transform extends
 │ │   try/catch/finally  throw                                         │ │
 │ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
-│ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
+│ │   ArrayBuffer  DataView  TypedArray  Map  Set  WeakMap  WeakSet    │ │
+│ │   parseInt  parseFloat  encodeURIComponent  Error  BigInt          │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ JZ default (jzify)                                                     │
@@ -111,21 +112,16 @@ Not supported
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
 ```
-<!-- FIXME: WeakMap, WeakSet must be part of jzify set - what else is missing? -->
 
 <details>
 <summary><strong>Differences with JS</strong></summary>
 
 - **Numbers are f64, but proven-integer values use 32-bit math.** `a + b` is numeric (`f64.add`) — concatenate by giving one side a string (`"" + x`). Where the compiler can *prove* a value only ever holds an integer (a loop counter, anything `| 0`), it keeps it in an `i32` for speed, which **wraps at ±2³¹** like C's `int`; a `0.0` initializer doesn't change the proof, so keep the math genuinely fractional when you need exact integers past 2³¹. Also: `==` does *not* coerce (`1 == "1"` is `false`); `0377` is decimal `377` (use `0o377`); `1n`/`BigInt` are i64 internally and reach JS as tiny floats, not BigInts.
 - **Strings are UTF-8 bytes, not UTF-16 code units.** `.length`, `s[i]`, `charCodeAt`, `slice`, `indexOf`, and regex all index *bytes*: `"中".length` is `3`, `"😀".length` is `4`. ASCII matches JS exactly; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim`/`localeCompare` handle ASCII only.
-- **Objects have a fixed shape.** Keys and order are frozen at the literal. You can read and write a *new* key (`o.k = v`), but `Object.keys`/`for…in`/spread/`Object.assign` only see the literal's keys; `delete o.x`, getters/setters, and `arr.length = n` are rejected at compile. Classes are plain objects with per-instance methods (no prototype chain), so `x instanceof SomeClass` is really just an "is it an object" test. Typed-array reads past the end return `0` (not `undefined`); writes past the end corrupt linear memory.
-<!-- FIXME: what does it mean - at the literal? -->
-- **Number → string keeps ~9 significant digits.** `String(1/3)` → `"0.333333333"`, and `String(0.1 + 0.2)` → `"0.3"` (the float artifact is hidden). `toFixed`/`toPrecision` round half-to-even, so `(2.5).toFixed(0)` → `"2"` where V8 gives `"3"`.
-<!-- FIXME: why? no clear justification -->
+- **Objects have a fixed shape.** The set of keys and their order are fixed by the object literal as written in source — that's the *shape* the compiler lays out. You can read and write a *new* key (`o.k = v`), but `Object.keys`/`for…in`/spread/`Object.assign` only enumerate the literal's keys; `delete o.x`, getters/setters, and `arr.length = n` are rejected at compile. Classes are plain objects with per-instance methods (no prototype chain), so `x instanceof SomeClass` is really just an "is it an object" test. Typed-array reads past the end return `0` (not `undefined`); writes past the end corrupt linear memory.
+- **Number → string keeps ~9 significant digits.** A compact integer-based formatter (no Grisu/Ryū) auto-selects up to 9 digits: `String(1/3)` → `"0.333333333"`, and `String(0.1 + 0.2)` → `"0.3"` (the float artifact is hidden). `toFixed`/`toPrecision` round with the hardware `f64.nearest` instruction (ties-to-even) rather than emulating ECMAScript's round-half-away-from-zero, so `(2.5).toFixed(0)` → `"2"` where V8 gives `"3"`.
 - **No GC, thin values.** Memory isn't reclaimed — call `memory.reset()` between batches. `WeakMap`/`WeakSet` are plain `Map`/`Set`, and both keep insertion order like JS. Errors are untagged: `throw` carries a bare value and many built-in faults (e.g. `null.x`) don't throw at all, so `e instanceof TypeError` can't discriminate. A `boolean` reaches the host as a real boolean through `typeof`/`String`/`JSON.stringify`/comparisons, but as an operand of `&&`/`||` or stored in a container it crosses as `1`/`0`.
-- **A few built-ins are limited by design.** Regex matches UTF-8 bytes (per the string model above); `Math.random()` is deterministic unless compiled with `randomSeed`; `Date` getters report UTC (no local timezone). `matchAll` isn't implemented (compile error), and `str.replace(x, fn)` with a function replacer is a compile error rather than a silent miscompile.
-<!-- FIXME: can we implement matchall and str.replace? -->
-<!-- FIXME: estimate how reasonable is that to keep these deviations -->
+- **A few built-ins differ.** Regex matches UTF-8 bytes (per the string model above); `Math.random()` is deterministic unless compiled with `randomSeed`; `Date` getters report UTC (no local timezone).
 
 jz trades completeness for low-level numeric performance by design; for full TC39 conformance, see [alternatives](#alternatives).
 
@@ -263,7 +259,8 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 ```
 
 `memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — its keys must match a compiled schema's key set; order is free (fields are placed by name).
-<!-- FIXME: we should compare interop contracts with wasms produced by other compilers: rust, go, C, zig, what else? -->
+
+The whole contract is a NaN-boxed `f64` pointer plus `_alloc`/`_clear` — a few hundred bytes of convention you can implement against by hand. Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) instead emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge (`jz/interop`) under ~15 KB.
 
 </details>
 
@@ -334,7 +331,7 @@ export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
 export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
 ```
 
-Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower). See [Writing fast jz](#performance) to keep values on the fast path.
+Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower).
 
 </details>
 
@@ -386,9 +383,29 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 </details>
 
 <details>
+<summary><strong>How big is the output?</strong></summary>
+
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~6 kB. Shrink it further:
+
+- **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
+- **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
+- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
+
+Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
+
+</details>
+
+<details>
 <summary><strong>Is jz production-ready?</strong></summary>
 
 It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
+
+</details>
+
+<details>
+<summary><strong>Can I compile in the browser or a Worker?</strong></summary>
+
+Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds, fast enough to do on the fly. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
 
 </details>
 
@@ -400,45 +417,17 @@ Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/READ
 <img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <details>
-<summary><strong>Writing fast jz</strong></summary>
+<summary><strong>Optimizations</strong></summary>
 
-Ordinary JS is already fast — jz picks the right machine type for your numbers automatically; you just write plain JS. A few habits help in tight loops:
+Ordinary JS is already fast — jz infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
 
-- **Use typed arrays for heavy number crunching.** A `Float64Array`/`Int32Array` compiles to direct memory access; a plain `[]` array works too, just with a little more overhead.
-- **Independent iterations vectorize.** When each output depends only on the matching input — `a[i] = a[i] * 2 + b[i]` — jz computes several at once (SIMD). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
-- **Scratch allocations are freed automatically** when a function returns — as long as it doesn't hand back an array, object, or string. No manual cleanup.
-- **Strings from JS aren't copied** when you only read them (`.length`, `.charCodeAt`).
+- **Type narrowing** — parameters/results pinned to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path. A `Float64Array`/`Int32Array` is direct memory access; a plain `[]` works too, with a little more overhead.
+- **Escape analysis & arena rewind** — fixed-shape arrays/objects/typed-arrays become WASM locals; scratch a function doesn't return is freed on exit (no manual cleanup).
+- **Loops** — invariant hoisting, CSE, typed-array address reuse, induction-variable strength reduction, small fixed-count unrolling (mat4, biquad).
+- **SIMD-128** — independent iterations (`a[i] = a[i]*2 + b[i]`) run several lanes at once: lane-pure maps, reductions (sum/product/min·max), conditional maps (`bitselect`), byte scans (`memchr` via `i8x16`). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
+- **Smaller encoding** — tree-shaking, copy-propagation + dead-store elimination, local/string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling; JS strings you only read aren't copied.
 
-Curious what it produced? `jz file.js --wat` prints the readable WASM.
-
-</details>
-
-<details>
-<summary><strong>What optimizations applied</strong></summary>
-
-jz emits WAT and optimizes it across an AST pass and a WAT-IR pass — all on at the default `optimize: 2`. The headline transforms:
-
-- **Type narrowing** — a whole-program pass pins parameters and results to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path.
-- **Escape analysis** — fixed-size arrays, objects and typed arrays with static access become WASM locals instead of heap allocations.
-- **Arena rewind** — a function proven not to leak a heap value restores the bump pointer on return.
-- **Loops & expressions** — invariant hoisting, common-subexpression elimination, typed-array address reuse, and small fixed-count unrolling (mat4, biquad).
-- **SIMD** — lane-pure array loops lift to SIMD-128.
-- **Smaller encoding** — tree-shaking, dead-store elimination, local and string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling.
-
-Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, and JS strings stay zero-copy. Levels: `0`–`3`, or `'size'`/`'balanced'`/`'speed'`, or a per-pass object — `'balanced'` (= `2`) is the default; `'speed'` trades a little size for speed (inlines constants, larger buffers); `'size'` drops unrolling and SIMD.
-
-</details>
-
-<details>
-<summary><strong>Output size</strong></summary>
-
-No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and **~25× smaller than Porffor** (which bundles a JS engine); most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~6 kB. Shrink it further:
-
-- **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
-- **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
-- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
-
-Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
+Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` or `'size'`/`'balanced'`/`'speed'` (or a per-pass object): `'balanced'` (= `2`) is the default; `'speed'` trades size for inlined constants and larger buffers; `'size'` drops unrolling and SIMD.
 
 </details>
 
@@ -472,13 +461,13 @@ Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries gener
 
 ## Alternatives
 
-<img src="alternatives.svg?v=2" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
+<img src="alternatives.svg?v=3" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
 
-* [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-like dialect → WASM. Small, fast output, but requires type annotations — not JavaScript.
-* [Porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM (and C) targeting the full spec, implemented progressively against test262.
-* [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust; a standalone binary on WasmGC and exception handling — no interpreter, but leans on the engine's GC.
-* [Javy](https://github.com/bytecodealliance/javy) — interprets your source via an embedded QuickJS. Runs almost any JS, but ships a full interpreter — large binary, interpreter speed.
-* [ComponentizeJS / jco](https://github.com/bytecodealliance/ComponentizeJS) — emits a WASM Component via an embedded SpiderMonkey (StarlingMonkey). Standards-compliant and near-complete, but bundles a whole JS engine.
+* [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
+* [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
+* [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust on WasmGC; no interpreter, but leans on the engine's GC.
+* [Javy](https://github.com/bytecodealliance/javy) — embeds QuickJS; runs almost any JS, but ships a full interpreter (large, interpreter-speed).
+* [ComponentizeJS / jco](https://github.com/bytecodealliance/ComponentizeJS) — WASM Component via embedded SpiderMonkey; standards-complete, but bundles a JS engine.
 
 
 ## Built with
@@ -488,7 +477,6 @@ Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries gener
 
 
 <p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>
-
 
 <!--
 
@@ -586,10 +574,10 @@ The four visitor classes
  ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
  │ What are the runtime dependencies?        │ Dependency list — currently none beyond WASM          │
  ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ Can I run it in a worker / service        │ No answer currently — gap                             │
+ │ Can I run it in a worker / service        │ "Compile in the browser or a Worker?" FAQ             │
  │ worker?                                   │                                                       │
  ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
- │ How stable is the output format?          │ No answer currently — gap                             │
+ │ How stable is the output format?          │ "Is jz production-ready?" FAQ — pre-1.0, pin a version │
  ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
  │ What's the license?                       │ MIT — bottom of page                                  │
  ├───────────────────────────────────────────┼───────────────────────────────────────────────────────┤
