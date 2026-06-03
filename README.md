@@ -111,19 +111,20 @@ Not supported
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
 ```
+<!-- FIXME: WeakMap, WeakSet must be part of jzify set - what else is missing? -->
 
 <details>
 <summary><strong>Differences with JS</strong></summary>
 
-<br>
-
 - **Numbers are f64, but proven-integer values use 32-bit math.** `a + b` is numeric (`f64.add`) — concatenate by giving one side a string (`"" + x`). Where the compiler can *prove* a value only ever holds an integer (a loop counter, anything `| 0`), it keeps it in an `i32` for speed, which **wraps at ±2³¹** like C's `int`; a `0.0` initializer doesn't change the proof, so keep the math genuinely fractional when you need exact integers past 2³¹. Also: `==` does *not* coerce (`1 == "1"` is `false`); `0377` is decimal `377` (use `0o377`); `1n`/`BigInt` are i64 internally and reach JS as tiny floats, not BigInts.
 - **Strings are UTF-8 bytes, not UTF-16 code units.** `.length`, `s[i]`, `charCodeAt`, `slice`, `indexOf`, and regex all index *bytes*: `"中".length` is `3`, `"😀".length` is `4`. ASCII matches JS exactly; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim`/`localeCompare` handle ASCII only.
 - **Objects have a fixed shape.** Keys and order are frozen at the literal. You can read and write a *new* key (`o.k = v`), but `Object.keys`/`for…in`/spread/`Object.assign` only see the literal's keys; `delete o.x`, getters/setters, and `arr.length = n` are rejected at compile. Classes are plain objects with per-instance methods (no prototype chain), so `x instanceof SomeClass` is really just an "is it an object" test. Typed-array reads past the end return `0` (not `undefined`); writes past the end corrupt linear memory.
+<!-- FIXME: what does it mean - at the literal? -->
 - **Number → string keeps ~9 significant digits.** `String(1/3)` → `"0.333333333"`, and `String(0.1 + 0.2)` → `"0.3"` (the float artifact is hidden). `toFixed`/`toPrecision` round half-to-even, so `(2.5).toFixed(0)` → `"2"` where V8 gives `"3"`.
+<!-- FIXME: why? no clear justification -->
 - **No GC, thin values.** Memory isn't reclaimed — call `memory.reset()` between batches. `WeakMap`/`WeakSet` are plain `Map`/`Set`, and both keep insertion order like JS. Errors are untagged: `throw` carries a bare value and many built-in faults (e.g. `null.x`) don't throw at all, so `e instanceof TypeError` can't discriminate. A `boolean` reaches the host as a real boolean through `typeof`/`String`/`JSON.stringify`/comparisons, but as an operand of `&&`/`||` or stored in a container it crosses as `1`/`0`.
 - **A few built-ins are limited by design.** Regex matches UTF-8 bytes (per the string model above); `Math.random()` is deterministic unless compiled with `randomSeed`; `Date` getters report UTC (no local timezone). `matchAll` isn't implemented (compile error), and `str.replace(x, fn)` with a function replacer is a compile error rather than a silent miscompile.
-<!-- FIXME: these methods should work, that is unreasonable difference -->
+<!-- FIXME: can we implement matchall and str.replace? -->
 <!-- FIXME: estimate how reasonable is that to keep these deviations -->
 
 jz trades completeness for low-level numeric performance by design; for full TC39 conformance, see [alternatives](#alternatives).
@@ -136,8 +137,6 @@ jz trades completeness for low-level numeric performance by design; for full TC3
 <details>
 <summary><strong>Can I use existing npm packages or JS libraries?</strong></summary>
 
-<br>
-
 Only the ones that fit the jz subset. There's no runtime, so packages touching the DOM, `async`/`Promise`, the network, or Node APIs won't compile — but pure numeric/algorithmic source does.
 
 - **Relative imports** (`./dep.js`) bundle at compile time.
@@ -149,8 +148,6 @@ jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecos
 
 <details>
 <summary><strong>Can I use import/export?</strong></summary>
-
-<br>
 
 Yes. Standard `import`/`export` syntax is bundled at compile time into a single WASM — no runtime module resolution.
 
@@ -167,8 +164,6 @@ Transitive imports work (main → math → utils → …); circular imports erro
 
 <details>
 <summary><strong>Can I call into the host (functions, objects)?</strong></summary>
-
-<br>
 
 Yes. `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
 
@@ -191,8 +186,6 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
 <details>
 <summary><strong>Can I interpolate values (template literals)?</strong></summary>
 
-<br>
-
 `jz` is a tagged template — interpolated values are baked into the source at compile time. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
 
 ```js
@@ -211,8 +204,7 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 <details>
 <summary><strong>How do I run produced .wasm?</strong></summary>
 
-<br>
-It's a standalone `.wasm` with no runtime dependency — compile once at build time and reuse the module (don't recompile jz source per request). How you run it depends on **where** (JavaScript host vs standalone engine) and **what you pass** (plain numbers vs heap values like strings/arrays/objects).
+Compiled `.wasm` is standalone with no runtime dependency. How you run it depends on **where** (JavaScript host vs standalone engine) and **what you pass** (plain numbers vs heap values like strings/arrays/objects).
 
 **1. From JavaScript, numbers only — raw `WebAssembly`.** No jz dependency at all; numbers cross natively as `f64`/`i32`:
 
@@ -251,8 +243,6 @@ The module reaches the outside world through WASI (stdout, stdin, argv, clock), 
 <details>
 <summary><strong>How do I pass strings, arrays, and objects?</strong></summary>
 
-<br>
-
 Numbers pass as f64. Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value). Everything else is a heap pointer — use `memory.*` to create and read values:
 
 ```js
@@ -273,15 +263,12 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 ```
 
 `memory.String`, `.Array`, `.Float64Array`/etc, and `.Object` all allocate on the WASM heap and return a pointer. `memory.read(ptr)` decodes a pointer back to a JS value. `memory.Object()` creates a fixed-layout object — its keys must match a compiled schema's key set; order is free (fields are placed by name).
+<!-- FIXME: we should compare interop contracts with wasms produced by other compilers: rust, go, C, zig, what else? -->
 
 </details>
 
 <details>
 <summary><strong>Should I compile for `js` or `wasi`?</strong></summary>
-
-<br>
-
-Pick by **where the `.wasm` runs**:
 
 - **`js`** (default) — it runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
 - **`wasi`** — it runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand (see *How do I pass strings, arrays, and objects?* — or marshal against the ABI).
@@ -300,8 +287,6 @@ Either way the `.wasm` carries at most one import namespace (none, `env`, or `wa
 <details>
 <summary><strong>How does memory work?</strong></summary>
 
-<br>
-
 jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 — the first 1 KB holds static data (string/array literals laid out from offset 0, plus the bump pointer itself at byte 1020 when memory is shared across threads). It grows the WASM memory automatically when full, and if the literals overflow that 1 KB the heap simply starts past them.
 Memory is never reclaimed implicitly — a long-running program that allocates per call grows without bound. Reset between independent batches:
 
@@ -318,8 +303,6 @@ After `memory.reset()` all previously returned pointers are invalid — read wha
 
 <details>
 <summary><strong>Can modules share memory?</strong></summary>
-
-<br>
 
 `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate, so objects created in one module are readable by another:
 
@@ -344,8 +327,6 @@ Each compiled module exposes two call surfaces:
 <details>
 <summary><strong>Why no type annotations?</strong></summary>
 
-<br>
-
 Because `let x: i32` isn't valid JS — annotations would break the promise that valid jz runs and tests as plain JS. So jz reads the types from signals you already write:
 
 ```js
@@ -360,8 +341,6 @@ Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is us
 <details>
 <summary><strong>Can jz compile itself?</strong></summary>
 
-<br>
-
 Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is jz compiled by jz.
 
 `npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
@@ -370,8 +349,6 @@ Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whol
 
 <details>
 <summary><strong>How does jz work?</strong></summary>
-
-<br>
 
 A source string flows through six stages into wasm bytes — no IR leaves the process, the whole thing is one pass per `compile()`:
 
@@ -389,15 +366,11 @@ A source string flows through six stages into wasm bytes — no IR leaves the pr
 
 Each stage lives in its own place: parsing in [`subscript`](https://github.com/dy/subscript)'s jessie grammar, [`jzify/`](jzify/) for the legacy-JS lowering, [`src/prepare/`](src/prepare/) for module bundling, [`src/compile/`](src/compile/) for inference + codegen (with built-ins in [`module/`](module/) and heap layout in [`src/abi/`](src/abi/)), [`src/optimize/`](src/optimize/) + [`src/wat/`](src/wat/) for the WAT passes, and [`watr`](https://github.com/dy/watr) for the final encode. Shared compile state is one `ctx` object ([`src/ctx.js`](src/ctx.js)).
 
-Contributions welcome — pick the stage your change touches, add a case to the matching `test/*.js`, and run `npm test` (or `npm run test:all` for the full matrix + self-host + bench gate). A good first issue: a built-in method that doesn't lower yet — add an emitter in `module/`, mirror V8's result in a test.
-
 </details>
 
 
 <details>
 <summary><strong>Can I compile jz to C?</strong></summary>
-
-<br>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
@@ -414,8 +387,6 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 <details>
 <summary><strong>Is jz production-ready?</strong></summary>
-
-<br>
 
 It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
 
@@ -446,19 +417,15 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 </tr>
 </table>
 
-<sub>Every example is the **same source run two ways** — toggle JS ⇄ jz in the HUD. jz is ~1.5× faster than V8 across the gallery (geomean), up to **2.4×** on the audio/throughput kernels; only the SDF raymarcher ties V8 — a latency-bound marching chain with no cross-iteration parallelism — and is kept as a compiler-optimization target. Numbers: <code>node examples/bench.mjs</code>.</sub>
-
 
 ## Performance
 
-<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).
 
-<sup>Speed vs jz — geomean across the bench corpus. [Full benchmark →](bench/README.md).</sup>
+<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <details>
 <summary><strong>Writing fast jz</strong></summary>
-
-<br>
 
 Ordinary JS is already fast — jz picks the right machine type for your numbers automatically; you just write plain JS. A few habits help in tight loops:
 
@@ -473,8 +440,6 @@ Curious what it produced? `jz file.js --wat` prints the readable WASM.
 
 <details>
 <summary><strong>What optimizations applied</strong></summary>
-
-<br>
 
 jz emits WAT and optimizes it across an AST pass and a WAT-IR pass — all on at the default `optimize: 2`. The headline transforms:
 
@@ -491,8 +456,6 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 <details>
 <summary><strong>Output size</strong></summary>
-
-<br>
 
 No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and **~25× smaller than Porffor** (which bundles a JS engine); most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~6 kB. Shrink it further:
 
@@ -517,7 +480,7 @@ Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries gener
 * [**ComponentizeJS / jco**](https://github.com/bytecodealliance/ComponentizeJS) — emits a WASM Component via an embedded SpiderMonkey (StarlingMonkey). Standards-compliant and near-complete, but bundles a whole JS engine.
 
 
-## Build with
+## Built with
 
 * [subscript](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs. Jessie subset keeps the grammar small and deterministic.
 * [watr](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into valid `.wasm`.
