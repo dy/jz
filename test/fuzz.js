@@ -641,6 +641,52 @@ export const fuzzTypedInt = (opts) => {
   return findings
 }
 
+// Integer min/max reductions over Int32Array — the peak-find idiom in all branch ×
+// comparison orderings. Each reduces to i32x4.max_s/min_s (matchIntMinMaxReduce);
+// min/max reassociate value-exactly (selection picks an operand, no arithmetic), so
+// JS and jz agree step-for-step and `|0` is identity on the already-i32 accumulator.
+const MINMAX_FORMS = [
+  '(a[i] > m ? a[i] : m)', '(a[i] >= m ? a[i] : m)', '(m > a[i] ? m : a[i])', '(m >= a[i] ? m : a[i])',  // max
+  '(a[i] < m ? a[i] : m)', '(a[i] <= m ? a[i] : m)', '(m < a[i] ? m : a[i])', '(m <= a[i] ? m : a[i])',  // min
+]
+const typedIntMinMaxSource = (seed) => {
+  const g = mkRng(seed)
+  const N = 64 + g.int(200)
+  const form = g.pick(MINMAX_FORMS)
+  const isMin = form.includes('<')
+  const K = 1 + g.int(97), C = g.int(4000) - 2000
+  // Seed styles: the op's neutral (INT_MIN/MAX), a mid value, or the `m=a[0]` idiom
+  // (start at i=1 — exercises the overshoot-safe SIMD bound for a non-zero start).
+  let init, start
+  const style = g.int(3)
+  if (style === 0) { init = isMin ? '2147483647' : '-2147483648'; start = 0 }
+  else if (style === 1) { init = String(g.int(2000) - 1000); start = 0 }
+  else { init = 'a[0]'; start = 1 }
+  return `export let f = () => { const a = new Int32Array(${N}); for (let i = 0; i < ${N}; i++) a[i] = ((i * ${K} + ${C}) % 4001 - 2000) | 0; let m = ${init}; for (let i = ${start}; i < ${N}; i++) m = ${form} | 0; return m | 0 }`
+}
+const checkTypedIntMinMax = (seed, opts) => {
+  const src = typedIntMinMaxSource(seed)
+  let jsRet
+  try { jsRet = compileJS(src)() } catch { return { kind: 'invalid' } }
+  if (typeof jsRet !== 'number') return null
+  for (const opt of opts.optLevels) {
+    let got
+    try { got = jz(src, { optimize: opt }).exports.f() } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    if (!same(got, jsRet)) return { kind: 'mismatch-ret', opt, got, want: jsRet, src }
+  }
+  return null
+}
+export const fuzzTypedIntMinMax = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkTypedIntMinMax(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.
@@ -685,6 +731,12 @@ if (!isMain) {
     ok(findings.length === 0, findings.length
       ? `typed-int divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Int32Array == JS')
+  })
+  test('fuzz: Int32Array min/max reduction matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzTypedIntMinMax({ ...GATE, count: 120 })
+    ok(findings.length === 0, findings.length
+      ? `typed-int-minmax divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz Int32Array min/max == JS')
   })
 }
 

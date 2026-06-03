@@ -757,6 +757,65 @@ test('vectorize: multi-stmt reduction body must NOT lift', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
+// ---- integer min/max reductions → i32x4.max_s / min_s ----------------------
+// WASM has no scalar i32.min/max, so the peak-find idiom arrives as a select/if
+// (after the ToInt32-through-`?:` fold) — matchIntMinMaxReduce lifts it. Selection
+// is value-exact (no arithmetic), so vectorized == scalar bit-for-bit. All four
+// comparison directions × two branch orderings reduce to the same max/min.
+// (Generative coverage: `node test/fuzz.js --typed-int-minmax`.)
+
+const minmaxReduce = (form, seed, start = 0) => `
+  export const main = () => {
+    const N = 1024
+    const a = new Int32Array(N)
+    for (let i = 0; i < N; i++) a[i] = ((i * 73 + 13) % 4001 - 2000) | 0
+    let m = ${seed}
+    for (let i = ${start}; i < N; i++) m = ${form} | 0
+    return m | 0
+  }
+`
+
+test('vectorize: i32 max reduction lifts to i32x4.max_s (all orderings, exact)', () => {
+  for (const form of ['(a[i] > m ? a[i] : m)', '(m > a[i] ? m : a[i])', '(a[i] >= m ? a[i] : m)']) {
+    const src = minmaxReduce(form, '-2147483648')
+    is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+    ok(/i32x4\.max_s/.test(wat(src, SIMD_OPT)), `expected i32x4.max_s for ${form}`)
+  }
+})
+
+test('vectorize: i32 min reduction lifts to i32x4.min_s (all orderings, exact)', () => {
+  for (const form of ['(a[i] < m ? a[i] : m)', '(m < a[i] ? m : a[i])', '(a[i] <= m ? a[i] : m)']) {
+    const src = minmaxReduce(form, '2147483647')
+    is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+    ok(/i32x4\.min_s/.test(wat(src, SIMD_OPT)), `expected i32x4.min_s for ${form}`)
+  }
+})
+
+test('vectorize: min/max reduction with m=a[0] start-at-1 idiom + non-LANES-multiple N', () => {
+  // Seeds the accumulator from the first element and starts at i=1 — the overshoot-safe
+  // SIMD bound must not run a lane past the end; the scalar tail cleans up N % 4 != 0.
+  const src = `
+    export const main = () => {
+      const N = 1021
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = ((i * 31 + 5) % 2003 - 1000) | 0
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = (a[i] > m ? a[i] : m) | 0
+      return m | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/i32x4\.max_s/.test(wat(src, SIMD_OPT)), 'expected i32x4.max_s')
+})
+
+test('vectorize: Math.max(m, a[i]) int reduction stays scalar (computes in f64)', () => {
+  // Documents the boundary: Math.min/max lower through f64 (NaN-canonicalized), so the
+  // int form is f64.max-then-truncate, not the i32 select idiom — correct, just not lifted.
+  const src = minmaxReduce('Math.max(m, a[i])', '-2147483648')
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(!/i32x4\.max_s/.test(wat(src, SIMD_OPT)), 'Math.max int reduction not lifted to i32x4 (f64 path)')
+})
+
 // ---- conditional (ternary) maps → v128.bitselect ---------------------------
 // jz lowers `cond ? X : Y` to `(if (result f64) COND (then X)(else Y))`; the
 // vectorizer lifts it to `v128.bitselect(X, Y, mask)`, mask = COND as a lane
