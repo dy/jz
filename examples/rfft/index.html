@@ -339,7 +339,11 @@ function waveCol(samp, cursor, x, h, spec) {
 }
 
 // ── shuffle: reseed to a fresh chord/key, rebuild buffer, keep playing ─────────
-async function rebuildBuffer(kind = ui.kind) {
+// Each tune plays through its own gain node; `fadeSec > 0` swells the new voice in
+// while the old one bows out, so a shuffle eases into the new chord instead of
+// cutting to it. The JS⇄jz toggle passes 0 — same seed, sample-identical buffer,
+// so an instant swap is inaudible.
+async function rebuildBuffer(kind = ui.kind, fadeSec = 0) {
   const { ctx } = audio, sr = ctx.sampleRate, len = Math.round(sr * 32);   // one full 8-bar cycle (8 × 4 s) before it loops
   const buf = ctx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
   const t0 = performance.now();
@@ -350,16 +354,31 @@ async function rebuildBuffer(kind = ui.kind) {
     const g = 0.5 - 0.5 * Math.cos(Math.PI * i / fade);    // 0 → 1
     ch[i] *= g; ch[len - 1 - i] *= g;
   }
-  audio.src?.stop();
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
   const src = ctx.createBufferSource();
-  src.buffer = buf; src.loop = true; src.connect(ctx.destination); src.start();
-  audio.src = src; audio.ch = ch;
-  startT = ctx.currentTime;
+  src.buffer = buf; src.loop = true; src.connect(gain); gain.connect(ctx.destination);
+  const prev = audio.src, prevGain = audio.gain;
+  if (fadeSec > 0 && prev && prevGain) {
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(1, now + fadeSec);                  // new voice swells in
+    prevGain.gain.cancelScheduledValues(now);
+    prevGain.gain.setValueAtTime(prevGain.gain.value, now);
+    prevGain.gain.linearRampToValueAtTime(0, now + fadeSec);             // old voice bows out
+    prev.stop(now + fadeSec + 0.05);
+    prev.onended = () => prevGain.disconnect();                           // tidy the retired node
+  } else {
+    gain.gain.setValueAtTime(1, now);
+    prev?.stop(); prevGain?.disconnect();
+  }
+  src.start(now);
+  audio.src = src; audio.gain = gain; audio.ch = ch;
+  startT = now;
 }
 function shuffle() {
   if (!running) return;
   seed = (seed + 1 + (Math.random() * 23 | 0)) % 24;   // a fresh key + starting chord — same voice, new harmony
-  rebuildBuffer(ui.kind).then(() => {
+  rebuildBuffer(ui.kind, 1.4).then(() => {              // ease into the new chord over 1.4 s
     if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
     start(ui.kind);
   });
