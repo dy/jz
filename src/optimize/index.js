@@ -272,10 +272,9 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
     }
 
     if (op === 'if') {
-      // Skip optional `(result T)` siblings to find cond / then / else.
       let i = 1
       while (i < node.length && Array.isArray(node[i]) && node[i][0] === 'result') i++
-      if (i < node.length) walk(node[i], node, i)  // cond
+      if (i < node.length) walk(node[i], node, i)
       i++
       let thenArm = null, elseArm = null
       for (; i < node.length; i++) {
@@ -298,11 +297,9 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
         for (let j = 1; j < elseArm.length; j++) walk(elseArm[j], elseArm, j)
         afterElse = new Map(open)
       }
-      // Merge: alive after if iff alive on BOTH paths with same region ref.
       open.clear()
-      for (const [k, vT] of afterThen) {
-        if (afterElse.get(k) === vT) open.set(k, vT)
-      }
+      let __mc = 0
+      for (const [k, vT] of afterThen) { if (++__mc > 100000) throw Error('MERGE-FOROF-OVERFLOW ' + __mc) } // DIAGNOSTIC: just iterate afterThen
       return
     }
 
