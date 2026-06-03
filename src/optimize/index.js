@@ -2023,6 +2023,29 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] optimize produced invalid IR in ${fn[1]}: ${bad}`) }
 }
 
+// The i32 form of an integer-valued f64 expression, or null. Used to push ToInt32
+// through a conditional and to collapse the f64 round-trip on integer `+`/`-`.
+// Lossless by construction: `convert_i32(X) → X`; integer `f64.const → i32.const`
+// (ToInt32); `f64.add/sub` of i32-valued operands → `i32.add/sub` (mod-2³² is a ring
+// homomorphism, and each i32±i32 < 2³² < 2⁵³ so the f64 op is exact). EXCLUDES `mul`
+// (products can exceed 2⁵³, so the f64 op loses precision and i32.mul wouldn't match)
+// and anything non-integer or unprovable. Address `local.tee`s inside operands are
+// preserved (kept as-is in the returned i32 tree).
+function toI32(n) {
+  if (!Array.isArray(n)) return null
+  const op = n[0]
+  if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && n.length === 2) return n[1]
+  // i32-range consts only: keeps every leaf within i32 so f64 add/sub of leaves stays exact
+  // (< 2^53) and ToInt32-homomorphic. A larger const would round in f64.add or saturate in
+  // trunc_sat differently from JS `|0`, breaking the fold.
+  if (op === 'f64.const' && typeof n[1] === 'number' && (n[1] | 0) === n[1]) return ['i32.const', n[1]]
+  if ((op === 'f64.add' || op === 'f64.sub') && n.length === 3) {
+    const a = toI32(n[1]), b = toI32(n[2])
+    if (a && b) return [op === 'f64.add' ? 'i32.add' : 'i32.sub', a, b]
+  }
+  return null
+}
+
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:
 //   inlinePtrType  — call $__ptr_type / __ptr_aux / __is_nullish / __is_null / __is_truthy
 //                    (skipped inside $__ptr_*/__is_* helper bodies themselves)
@@ -2140,24 +2163,30 @@ function walkRewrite(node, doInline, counts) {
       return a[1]
   }
 
-  // (i32 ± i32) | 0 that round-tripped through f64. jz computes integer +/- in f64
-  // then ToInt32-clamps (the universal value model: typed-array reads are f64), emitting
-  //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s [local.tee T] (f64.add/sub (convert A) (convert B)))) FALLBACK COND)
-  // For i32 A,B this equals i32.add/sub(A,B) EXACTLY — the f64 add/sub of two i32s is
-  // lossless (|x| < 2^32 < 2^53) and the wrap is two's-complement, identical to the
-  // select's ToInt32; FALLBACK/COND compute the same value, so the whole select collapses
-  // (T becomes dead). Drops the round-trip generally and lets the vectorizer see i32.add
-  // reductions over int arrays. `convert_i32_*` proves each operand is a real i32.
+  // Push ToInt32 through integer expressions and conditionals. The universal value model
+  // computes integer `+`/`-` and `?:` in f64, then ToInt32-clamps — emitting
+  //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s [local.tee T] X)) FALLBACK COND)
+  // whose three arms all compute ToInt32(X). When X is an integer-valued f64 expression,
+  // ToInt32(X) == its i32 form (exact); and ToInt32 distributes through a conditional:
+  //   ToInt32(if C A B) == if(result i32) C ToInt32(A) ToInt32(B).
+  // Folding here drops the f64 round-trip AND turns int `s += a[i]` reductions and
+  // `a[i] = cond ? … : …` conditional maps into pure i32 the vectorizer lifts (i32x4.add /
+  // i32x4 bitselect). FALLBACK/COND (which recompute the same ToInt32 from T) are dropped.
   if (op === 'select' && node.length >= 4) {
     const v = node[1]
     if (Array.isArray(v) && v[0] === 'i32.wrap_i64' && Array.isArray(v[1]) && v[1][0] === 'i64.trunc_sat_f64_s' && v[1].length === 2) {
       let inner = v[1][1]
       if (Array.isArray(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]
-      if (Array.isArray(inner) && (inner[0] === 'f64.add' || inner[0] === 'f64.sub') && inner.length === 3) {
-        const conv = x => Array.isArray(x) && (x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u') && x.length === 2
-        if (conv(inner[1]) && conv(inner[2]))
-          return [inner[0] === 'f64.add' ? 'i32.add' : 'i32.sub', inner[1][1], inner[2][1]]
+      // ToInt32(if (result f64) C A B) → if (result i32) C toI32(A) toI32(B), when both arms are integer-valued.
+      if (Array.isArray(inner) && inner[0] === 'if' && Array.isArray(inner[1]) && inner[1][0] === 'result' && inner[1][1] === 'f64'
+          && Array.isArray(inner[3]) && inner[3][0] === 'then' && inner[3].length === 2
+          && Array.isArray(inner[4]) && inner[4][0] === 'else' && inner[4].length === 2) {
+        const t = toI32(inner[3][1]), e = toI32(inner[4][1])
+        if (t && e) return ['if', ['result', 'i32'], inner[2], ['then', t], ['else', e]]
       }
+      // ToInt32(integer-valued f64 expr) → its i32 form (covers (i32±i32)|0 sums and nests).
+      const i = toI32(inner)
+      if (i) return i
     }
   }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left

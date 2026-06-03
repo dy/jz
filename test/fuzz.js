@@ -594,14 +594,20 @@ export const fuzzTypedMap = (opts) => {
 // and the small init keeps every value well inside the exact range.
 const I_LEAF = ['a[i]', '1', '2', '3', '7', '255']
 const iLeaf = (g) => g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF)
+// Comparison over LEAVES only (bounded operands): a comparison must never consume a
+// non-`|0`'d arithmetic intermediate, which can overflow i32 (e.g. `(a<<a)`), where JS
+// keeps the exact Number and jz wraps — a contract divergence, not a miscompile.
+const genIntCmp = (g) => `(${iLeaf(g)} ${g.pick(['<', '>', '<=', '>=', '===', '!=='])} ${iLeaf(g)})`
 const genIntExpr = (g, d) => {
   if (d <= 0 || g.chance(0.4)) return iLeaf(g)
-  // Comparisons over LEAVES only (bounded operands): a comparison must never consume
-  // a non-`|0`'d arithmetic intermediate, which can overflow i32 (e.g. `(a<<a)`), where
-  // JS keeps the exact Number and jz wraps — a contract divergence, not a miscompile.
-  // The 0/1 result then feeds the homomorphic arithmetic below. Exercises the
+  // The 0/1 result feeds the homomorphic arithmetic below. Exercises the
   // f64.cmp(convert,convert) → i32.cmp fold soundly.
-  if (g.chance(0.2)) return `(${iLeaf(g)} ${g.pick(['<', '>', '<=', '>=', '===', '!=='])} ${iLeaf(g)})`
+  if (g.chance(0.2)) return genIntCmp(g)
+  // Conditional over a LEAF comparison (exact 0/1 condition in both JS and jz). ToInt32
+  // distributes through `?:` (selection just picks one already-homomorphic branch), so it
+  // stays contract-sound. Exercises the ToInt32(if (result f64) C A B) → if (result i32)
+  // push that turns int conditional maps into i32x4 v128.bitselect.
+  if (g.chance(0.25)) return `(${genIntCmp(g)} ? ${genIntExpr(g, d - 1)} : ${genIntExpr(g, d - 1)})`
   return `(${genIntExpr(g, d - 1)} ${g.pick(['+', '-', '&', '|', '^', '<<'])} ${genIntExpr(g, d - 1)})`
 }
 const typedIntSource = (seed) => {
