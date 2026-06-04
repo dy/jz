@@ -21,9 +21,11 @@ const CHORDS = [
   [11, 3, 6, 10, 13, 17],  // viiø Bm11♭5 (half-diminished)
 ]
 
-// Pitch-class set of each chord (root + voicing tones, mod 12) → shared-note count, so the
-// walk can favour smooth voice-leading (more common tones held between adjacent chords).
-const PCS = CHORDS.map(c => { const s = new Set([c[0] % 12]); for (let k = 1; k < c.length; k++) s.add((c[0] + c[k]) % 12); return s })
+// The pad plays a ROOTLESS CLOSE voicing — the 5 upper tones folded into one octave (pitch
+// class) over the low root — so two chords' shared pitch-classes are literally HELD notes (same
+// frequency), not just shared classes in different octaves. shared() counts those held notes;
+// the walk favours transitions that hold more of them (smoother voice-leading).
+const PCS = CHORDS.map(c => { const s = new Set(); for (let k = 1; k < c.length; k++) s.add((c[0] + c[k]) % 12); return s })
 const shared = (a, b) => { let n = 0; for (const p of PCS[a]) if (PCS[b].has(p)) n++; return n }
 
 // ── transition graph — where each chord likes to go (jazz functional harmony) ──
@@ -46,7 +48,8 @@ const NB = 27          // bars in the walk before it loops (× barLen 4 s = 108 
 //   recency   — a 2-bar cooldown then a square ramp: max(0.03, max(0, age−2)²). A just-used
 //               chord is ~0.03 (effectively blocked) through age 2 and only recovers from
 //               age 3 on, so a chord can't return after a single intervening chord.
-//   voiceLead — (shared notes − 3): favours transitions that hold more common tones (1…3).
+//   voiceLead — (held notes − 1): every transition now holds ≥2 (rootless close voicing), so
+//               this stays positive and just biases toward the smoothest moves.
 // The 0.03 floor keeps the walk unstuck if every legal move is on cooldown. Capped with a
 // ii–V turnaround so the loop point resolves back to bar 0's tonic.
 const walkIdx = (seed) => {
@@ -60,7 +63,7 @@ const walkIdx = (seed) => {
     let total = 0
     const w = opts.map(([o, bw]) => {
       const age = bar - lastSeen[o], cool = Math.max(0, age - 2)
-      const ww = bw * Math.max(0.03, cool * cool) * (shared(cur, o) - 3)
+      const ww = bw * Math.max(0.03, cool * cool) * (shared(cur, o) - 1)
       total += ww; return ww
     })
     let r = rnd() * total, cho = opts[0][0]
@@ -82,9 +85,11 @@ export const songs = [
   { name: 'after hours', body:
 `(t, sd) => {
   // A warm detuned pad walking a ${NB}-bar jazz chord graph (baked above), each chord
-  // crossfading into the next so nothing clicks. Voicings are rootless and extended
-  // (3·5·7·9 + a 13/11/♯11); a soft sub traces the root. The seed transposes the key and
-  // rotates the entry point, so a different seed drops you elsewhere in the same walk.
+  // crossfading into the next so nothing clicks. The pad is a ROOTLESS CLOSE voicing — the 5
+  // upper tones folded into one octave — so neighbouring chords share HELD notes (2–4 of them):
+  // smooth voice-leading, never a jump to all-new pitches. A soft sub traces the root below it.
+  // The seed transposes the key and rotates the entry point, so a different seed drops you
+  // elsewhere in the same walk.
   const seq = ${seqLit}
   const NB = ${NB}
   const barLen = 4
@@ -96,9 +101,9 @@ export const songs = [
   xf = xf * xf * (3 - 2 * xf)
   let padA = 0, padB = 0
   for (let k = 1; k <= 5; k++) {
-    const fa = 130.81 * 2 ** ((key + A[0] + A[k]) / 12)   // C3 reference
-    padA += Math.sin(t*${TAU}*fa) + Math.sin(t*${TAU}*fa*1.003)   // two slightly detuned sines = warmth
-    const fc = 130.81 * 2 ** ((key + B[0] + B[k]) / 12)
+    const fa = 261.63 * 2 ** (((key + A[0] + A[k]) % 12) / 12)   // fold to [C4,C5) — rootless close voicing
+    padA += Math.sin(t*${TAU}*fa) + Math.sin(t*${TAU}*fa*1.003)  // two slightly detuned sines = warmth
+    const fc = 261.63 * 2 ** (((key + B[0] + B[k]) % 12) / 12)
     padB += Math.sin(t*${TAU}*fc) + Math.sin(t*${TAU}*fc*1.003)
   }
   const pad = padA * (1 - xf) + padB * xf
