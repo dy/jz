@@ -7,7 +7,7 @@
 <link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon" />
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: sans-serif; }
-  body { border-top: 2px solid #bc18d4; }
+  body { border-top: 2px solid #ddd; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #100707; cursor: cell; user-select: none; }
 </style>
 </head>
@@ -19,8 +19,8 @@ import { loadEngine, hud } from "../lib/jzdemo.js";
 const urls = { js: "./game-of-life.js", wasm: "./game-of-life.wasm" };
 
 // Configuration
-const RGB_ALIVE = 0xD392E6;
-const RGB_DEAD  = 0xA61B85;
+const RGB_ALIVE = 0xffffff;
+const RGB_DEAD  = 0x000000;
 const BIT_ROT   = 10;
 
 // see assembly/index.ts on why this swap is useful
@@ -31,9 +31,10 @@ const canvas = document.getElementsByTagName("canvas")[0];
 const ctx = canvas.getContext("2d");
 const bcr = canvas.getBoundingClientRect();
 
-// Universe size (2px per cell)
-const width  = bcr.width  >>> 1;
-const height = bcr.height >>> 1;
+// Universe size — one cell per CSS pixel (crisp, fills the screen; was 2px/cell)
+const dpr = Math.min(1, window.devicePixelRatio || 1);
+const width  = bcr.width  * dpr | 0;
+const height = bcr.height * dpr | 0;
 const size   = width * height;
 
 canvas.width  = width;
@@ -77,7 +78,7 @@ for (const ty of ["mousemove", "touchmove", "mousedown"]) {
     const loc = e.touches ? (e.touches.length > 1 ? null : e.touches[0]) : e;
     if (!loc) return;
     const rect = canvas.getBoundingClientRect();
-    engine.fill((loc.clientX - rect.left) >>> 1, (loc.clientY - rect.top) >>> 1, 0.5);
+    engine.fill((loc.clientX - rect.left) * width / rect.width | 0, (loc.clientY - rect.top) * height / rect.height | 0, 0.5);
   });
 }
 </script>

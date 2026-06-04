@@ -175,37 +175,33 @@ export let frame = (t) => {
         if (fog < 0.0) fog = 0.0
         bright = bright * fog
 
-        // Colour: teal-ish (r=0.4, g=0.85, b=1.0) surface shading
-        let rf = bright * 0.4
-        let gf = bright * 0.85
-        let bf = bright * 1.0
-
-        r = (rf * 255.0) | 0
-        g = (gf * 255.0) | 0
-        bl = (bf * 255.0) | 0
-        if (r > 255) r = 255
-        if (g > 255) g = 255
-        if (bl > 255) bl = 255
+        // Grayscale: map bright scalar directly to gray level
+        let v = (bright * 255.0) | 0
+        if (v > 255) v = 255
+        r = v; g = v; bl = v
       } else {
-        // Sky gradient — top cool blue, bottom warm orange, no divide
+        // Sky gradient — grayscale: luminance of warm horizon to cool zenith
         let skyT = vy * 0.5 + 0.5     // [0..1], no divide (vy already in [-1,+1])
         let skyT2 = skyT * skyT
         // Sky: lerp from warm horizon (255,180,100) to cool zenith (30,60,120)
-        r = (255 - skyT2 * 230.0) | 0
-        g = (180 - skyT2 * 130.0) | 0
-        bl = (100 + skyT2 * 30.0) | 0
-        if (r < 0) r = 0
-        if (g < 0) g = 0
-        if (bl < 0) bl = 0
+        let sr = (255 - skyT2 * 230.0) | 0
+        let sg2 = (180 - skyT2 * 130.0) | 0
+        let sb = (100 + skyT2 * 30.0) | 0
+        if (sr < 0) sr = 0
+        if (sg2 < 0) sg2 = 0
+        if (sb < 0) sb = 0
         // Sun glow: if ray near light dir, boost
         let sunDot = rdX * lx + rdY * ly + rdZ * lz
         if (sunDot > 0.992) {
-          let sg = ((sunDot - 0.992) * 125.0 * 255.0) | 0
-          if (sg > 255) sg = 255
-          r = r + sg; if (r > 255) r = 255
-          g = g + sg; if (g > 255) g = 255
-          bl = bl + (sg >> 1); if (bl > 255) bl = 255
+          let sunG = ((sunDot - 0.992) * 125.0 * 255.0) | 0
+          if (sunG > 255) sunG = 255
+          sr = sr + sunG; if (sr > 255) sr = 255
+          sg2 = sg2 + sunG; if (sg2 > 255) sg2 = 255
+          sb = sb + (sunG >> 1); if (sb > 255) sb = 255
         }
+        // Luminance mix of sky color
+        let v = (sr * 0.30 + sg2 * 0.59 + sb * 0.11) | 0
+        r = v; g = v; bl = v
       }
 
       px[j] = (255 << 24) | (bl << 16) | (g << 8) | r

@@ -7,9 +7,9 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c; font-family: sans-serif; }
-  body { border-top: 2px solid #50ad7b; }
+  body { border-top: 2px solid #ddd; }
   a { color: #eee; text-decoration: none; }
-  a:hover { color: #50ad7b; text-decoration: underline; }
+  a:hover { color: #ddd; text-decoration: underline; }
   #stage { position: absolute; top: 14px; left: 20px; right: 20px; bottom: 20px;
     display: flex; flex-direction: column; gap: 6px; }
   #sgwrap { position: relative; flex: 3 1 0; }
@@ -17,41 +17,26 @@
     background: #000; image-rendering: pixelated; }
   /* vertical Hz axis over the spectrogram — non-scrolling, so it stays put as the trace scrolls */
   #axis { position: absolute; inset: 0; z-index: 12; pointer-events: none; border-radius: 6px; overflow: hidden; }
-  #axis .tick { position: absolute; left: 0; right: 0; border-top: 1px solid rgba(180,230,255,.12); }
+  #axis .tick { position: absolute; left: 0; right: 0; border-top: 1px solid rgba(255, 255, 255,.12); }
   #axis .tick b { position: absolute; left: 5px; top: -7px; font: 600 10px/1 ui-monospace, Menlo, monospace;
-    color: #bfe8ff; opacity: .85; text-shadow: 0 0 3px #000, 0 1px 2px #000; }
+    color: #ddd; opacity: .85; text-shadow: 0 0 3px #000, 0 1px 2px #000; }
   /* scale selector: pitch-faithful log (equal octaves) vs perceptual mel — switch live */
   #scale { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 14;
     display: flex; border: 1px solid #ffffff22; border-radius: 7px; overflow: hidden;
     background: #000a; user-select: none; }
-  #scale button { border: 0; background: transparent; color: #9fb3c8; cursor: pointer;
+  #scale button { border: 0; background: transparent; color: #aaa; cursor: pointer;
     font: 600 10px/1 ui-monospace, Menlo, monospace; padding: 5px 11px; }
   #scale button + button { border-left: 1px solid #ffffff14; }
-  #scale button.on { background: #50ad7b; color: #07140c; }
+  #scale button.on { background: #ddd; color: #0a0a0a; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
   #wavewrap { position: relative; flex: 1.4 1 0; }
   #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px; background: #0a0a12; }
-  /* the tune's floatbeat source — hidden until the code icon on the shuffle button reveals it */
-  #code { display: none; position: absolute; right: 14px; bottom: 52px; max-width: 46%; z-index: 20;
-    margin: 0; padding: 12px 14px; background: rgba(7,7,12,.82); border: 1px solid #ffffff14;
-    border-radius: 8px; color: #b9c2cf; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-    white-space: pre; overflow: auto; max-height: 60%; backdrop-filter: blur(3px); }
-  #code.show { display: block; }
-  #code .ttl { color: #50ad7b; font-weight: 700; }
-  /* dice = shuffle chord · code icon = reveal the tune's source (its click won't shuffle) */
-  #shuffle { position: absolute; right: 14px; bottom: 12px; z-index: 30; cursor: pointer;
-    padding: 7px 12px; border-radius: 999px; border: 1px solid #ffffff22; background: #0008;
-    color: #eee; font-size: 15px; user-select: none; display: inline-flex; align-items: center; gap: 9px; }
-  #shuffle:hover { border-color: #50ad7b; }
-  #shuffle .code { display: inline-flex; opacity: .5; transition: opacity .15s, color .15s; }
-  #shuffle .code:hover { opacity: 1; color: #50ad7b; }
-  #shuffle.open .code { opacity: 1; color: #50ad7b; }
   #play { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     background: rgba(7,7,12,.6); cursor: pointer; }
   #play div { width: 0; height: 0; border-style: solid; border-width: 22px 0 22px 36px;
     border-color: transparent transparent transparent rgba(238,238,238,.92);
-    filter: drop-shadow(0 0 12px rgba(80,173,123,.35)); }
-  #play:hover div { border-left-color: #50ad7b; }
+    filter: drop-shadow(0 0 12px rgba(200, 200, 200,.35)); }
+  #play:hover div { border-left-color: #ddd; }
 </style>
 </head>
 <body>
@@ -64,15 +49,13 @@
   </div>
   <div id="wavewrap">
     <canvas id="wave"></canvas>
-    <div id="shuffle" title="shuffle chord">🎲<span class="code" id="codetoggle" title="show the tune's source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span></div>
   </div>
 </div>
-<pre id="code"></pre>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
-import { songs, songDisplaySrc, songBeatSrc, songSlug } from "./songs.js";
+import { songs, songBeatSrc, songSlug } from "./songs.js";
 
 const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
                                      // transform with finer bass detail, so jz vs JS is clearly measurable
@@ -80,16 +63,7 @@ const HOP = 512;                     // samples between successive spectrogram c
 const urls = { js: "./rfft.js", wasm: "./rfft.wasm" };
 const TAU = 6.283185307179586;
 
-// ── floatbeat synthesis (JS ⇄ jz — same sources as the code panel) ───────────
-const codeEl = document.getElementById("code");
-let songName = "";
-const buildSong = (i) => {
-  const s = songs[i];
-  songName = s.name;
-  codeEl.innerHTML = `<span class="ttl">// floatbeat · ${s.name}</span>\n` +
-    songDisplaySrc(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-};
-
+// ── floatbeat synthesis (JS ⇄ jz — single seeded tune) ───────────────────────
 let beatCache = { kind: "", fill: null };
 const beatUrl = () => new URL(`./beats/${songSlug(songs[0])}.wasm`, document.baseURI).href;
 const makeBeatFill = async (kind) => {
@@ -109,20 +83,18 @@ const makeBeatFill = async (kind) => {
     memory.reset();   // rewind the bump allocator — the stream calls this every chunk
   };
 };
-// One tune, seeded. A shuffle synthesizes the new chord's loop buffer via this cached
-// fill — sliced across frames (synthBuffer) so it never blocks — then crossfades it in.
+// One seeded tune. Its loop buffer is synthesized via this cached fill — sliced
+// across frames (synthBuffer) so the first build never blocks the main thread.
 const warmBeat = async (kind) => {
   if (beatCache.kind !== kind) beatCache = { kind, fill: await makeBeatFill(kind) };
 };
-
-buildSong(0);
 
 // Hann window — tapers each FFT frame to suppress spectral leakage.
 const hann = new Float64Array(N);
 for (let i = 0; i < N; i++) hann[i] = 0.5 - 0.5 * Math.cos(TAU * i / (N - 1));
 
-// 256-entry palette LUT (ABGR for direct Uint32 pixel writes): dark→teal→amber→white.
-const stops = [[6,8,24],[20,70,90],[40,180,150],[250,200,80],[255,250,210]];
+// 256-entry palette LUT (ABGR for direct Uint32 pixel writes): grayscale dark→white ramp.
+const stops = [[10,10,10],[60,60,60],[130,130,130],[200,200,200],[245,245,245]];
 const pal = new Uint32Array(256);
 for (let k = 0; k < 256; k++) {
   const p = k / 255 * (stops.length - 1), i = Math.min(stops.length - 2, p | 0), f = p - i;
@@ -203,8 +175,9 @@ const buildRows = () => {
 };
 const fit = () => {
   const wrap = document.getElementById("sgwrap");
-  sg.width = wrap.clientWidth; sg.height = wrap.clientHeight;
-  wave.width = wave.clientWidth; wave.height = wave.clientHeight;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);   // retina-crisp spectrogram + waveform
+  sg.width = Math.round(wrap.clientWidth * dpr); sg.height = Math.round(wrap.clientHeight * dpr);
+  wave.width = Math.round(wave.clientWidth * dpr); wave.height = Math.round(wave.clientHeight * dpr);
   sgctx.fillStyle = "#000"; sgctx.fillRect(0, 0, sg.width, sg.height);
   wctx.fillStyle = "#0a0a12"; wctx.fillRect(0, 0, wave.width, wave.height);
   buildRows();
@@ -216,13 +189,12 @@ drawAxis();
 window.addEventListener("resize", () => { fit(); });
 
 // ── audio + render loop ──────────────────────────────────────────────────────
-// One continuous loop buffer per chord, crossfaded by gain — looping a single buffer
-// is engine-side and sample-accurate, so it is inherently gapless (no chunk-seam
-// clicks). The buffer is synthesized ASYNCHRONOUSLY in slices so a shuffle never
-// blocks the main thread (that 330 ms synchronous re-synth was the freeze/glitch).
+// One continuous loop buffer, looped engine-side and sample-accurate, so it is
+// inherently gapless (no chunk-seam clicks). It is synthesized ASYNCHRONOUSLY in
+// slices so the first build never blocks the main thread.
 let audio = null, running = false, paused = false;
-let seed = 0;                         // current chord seed — 🎲 picks a fresh one in 0..23
-let startT = 0;                       // ctx time the timeline is anchored to (continuous across shuffles)
+let seed = 0;                         // fixed chord seed — the single tune
+let startT = 0;                       // ctx time the timeline is anchored to
 let cur = null;                       // { src, gain, ch } currently playing
 const LOOP_SEC = 32;                  // one full 8-bar cycle (8 × 4 s)
 
@@ -392,30 +364,10 @@ function waveCol(samp, cursor, x, h, spec) {
   wctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
 }
 
-// ── shuffle: synth the new chord's buffer off the main thread, then crossfade ──
-let shuffling = false;
-async function shuffle() {
-  if (!running || shuffling) return;                   // ignore re-clicks while a synth is in flight
-  if (paused) { paused = false; audio.ctx.resume(); overlay(false); }
-  shuffling = true;
-  seed = (seed + 1 + (Math.random() * 23 | 0)) % 24;   // a fresh key + starting chord, same voice
-  const ch = await synthBuffer(seed);                  // ~10 ms/slice, yields — never blocks
-  playBuffer(ch, 1.4);                                 // ease into the new chord over 1.4 s
-  shuffling = false;
-}
-const shuffleEl = document.getElementById("shuffle"), codeToggleEl = document.getElementById("codetoggle");
-shuffleEl.addEventListener("click", shuffle);
-// the code icon reveals the current tune's floatbeat source; its click must not shuffle.
-codeToggleEl.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const open = codeEl.classList.toggle("show");
-  shuffleEl.classList.toggle("open", open);
-});
-
 // ── play / pause ──────────────────────────────────────────────────────────────
 // First gesture creates the AudioContext (autoplay policy). After that, clicking the
 // spectrogram or pressing space toggles pause; suspending the context freezes its
-// clock, so the scroll halts and resumes seamlessly. Only the 🎲 button shuffles.
+// clock, so the scroll halts and resumes seamlessly.
 const playEl = document.getElementById("play");
 const overlay = (show) => { playEl.style.display = show ? "flex" : "none"; };
 

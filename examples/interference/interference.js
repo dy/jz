@@ -34,8 +34,8 @@ export let update = (tick) => {
                 Math.sin(distance(x, y, cx1, cy1) * res) +
                 Math.sin(distance(x, y, cx2, cy2) * res)
             ) * 120.0;
-            let vi = v | 0;
-            mem[offset] = (~vi << 24) | (vi << 8);
+            let vi = (v * 255 / 120) | 0;
+            mem[offset] = (0xff000000) | (vi << 16) | (vi << 8) | vi;
             x++;
         }
         y++;

@@ -11,9 +11,9 @@
     <text x="610" y="63" font-size="10" fill="#aeb4ba">bundled engine</text>
 
     <!-- jz — above -->
-    <line x1="177" y1="36" x2="177" y2="50" stroke="#f0a787" stroke-width="1"/>
-    <circle cx="177" cy="52" r="6" fill="#e8590c"/>
-    <text x="177" y="26" text-anchor="middle" font-size="13" font-weight="700" fill="#e8590c">jz</text>
+    <line x1="177" y1="36" x2="177" y2="50" stroke="#999999" stroke-width="1"/>
+    <circle cx="177" cy="52" r="6" fill="#000000"/>
+    <text x="177" y="26" text-anchor="middle" font-size="13" font-weight="700" fill="#000000">jz</text>
 
     <!-- AssemblyScript — below -->
     <line x1="244.5" y1="54" x2="244.5" y2="68" stroke="#ced4da" stroke-width="1"/>
