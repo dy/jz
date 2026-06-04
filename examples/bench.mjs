@@ -55,7 +55,8 @@ const EXAMPLES = [
   { name: 'lenia', frame: 'frame ×1', opt: true,
     make: (e) => { e.resize(160, 120); e.seed(); return () => e.frame(0.1) } },
 
-  { name: 'raymarcher', frame: 'frame(t)', opt: true,
+  // jz compiles the 4-wide SIMD kernel; V8 runs the scalar baseline. Same image, ~3×.
+  { name: 'raymarcher', frame: 'frame(t) (SIMD-4)', jzSrc: 'raymarcher.simd.js',
     make: (e) => { e.resize(320, 200); let t = 0; return () => e.frame(t += 0.02) } },
 
   { name: 'rfft', frame: 'rfft N=2048',
