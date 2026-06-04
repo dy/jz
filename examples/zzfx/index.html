@@ -124,7 +124,7 @@ const draw = (buf) => {
   g.strokeStyle = '#ffffff12'; g.lineWidth = 1
   g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
   // min/max envelope per column — a faithful waveform regardless of zoom
-  g.strokeStyle = '#ddd'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
+  g.strokeStyle = '#fff'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
   g.beginPath()
   const n = buf.length, step = n / W
   for (let x = 0; x < W; x++) {
