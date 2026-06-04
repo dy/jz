@@ -104,7 +104,7 @@ for (let k = 0; k < 256; k++) {
 }
 
 // full audible range — drives the spectrogram rows and the waveform's spectral tint.
-const F_LO = 50, F_HI = 5000;
+const F_LO = 20, F_HI = 2000;
 
 // ── frequency scale + A-weighting ──────────────────────────────────────────────
 // Two ways to lay out 20 Hz..20 kHz, switchable live:
@@ -143,20 +143,8 @@ let waveColImg, waveColPix;                // reusable 1-px waveform column (Gau
 // vertical frequency axis (20 Hz..20 kHz), matching the spectrum below. Labels sit at their
 // scale fraction, so they track any panel size or scale change without touching the canvas.
 let SR = 44100;
-
-// Perceptual loudness for the waveform ribbon: reuse the FFT spectrum, weight each bin by
-// A-weighting (IEC 61672) so a bass-heavy-but-quiet pad reads as quiet as you hear it. The
-// long FFT window also makes this inherently smooth — no beat-rate ripple. (Used in waveCol.)
-const WAVE_FLOOR = -69, WAVE_CEIL = -56;     // A-weighted power (dB) → 0..1 ribbon loudness
-let smoothLoud = 0;                          // EMA of ribbon loudness — smooths the detuned-pair beat ripple
-let awBinLut = null, awBinLo = 1, awBinHi = 1;
-const buildAwLut = () => {
-  awBinLo = Math.max(1, Math.round(F_LO * N / SR));
-  awBinHi = Math.min(N / 2 - 1, Math.round(F_HI * N / SR));
-  awBinLut = new Float64Array(awBinHi + 1);
-  for (let b = awBinLo; b <= awBinHi; b++) awBinLut[b] = Math.pow(10, aWeight(b * SR / N) / 20);
-};
-const AXIS_HZ = [50, 100, 200, 500, 1000, 2000, 5000];   // matches the spectrum ruler (50 Hz … 5 kHz)
+let smoothMean = 0, smoothStd = 0.1;   // EMA of the waveform's sample mean/stdev — smooths the beat ripple
+const AXIS_HZ = [20, 50, 100, 200, 500, 1000, 2000];   // matches the spectrum ruler (20 Hz … 2 kHz)
 const fmtHz = (f) => (f >= 1000 ? f / 1000 + "k" : f) + " Hz";
 // thin colliding labels: keep both endpoints, drop any mid-label closer than `gap`
 // (axis fraction) to the previous kept one — so one ruler stays clean on mel *and* log,
@@ -314,19 +302,13 @@ async function start(kind) {
         const v = (db - DB_FLOOR) / dbSpan;
         colPix[y] = pal[(v > 0 ? (v < 1 ? v : 1) : 0) * 255 | 0];
       }
-      // A-weighted perceptual loudness of this column's spectrum → drives the waveform ribbon
-      let ap = 0;
-      for (let b = awBinLo; b <= awBinHi; b++) { const m = spec[b] * awBinLut[b]; ap += m * m; }
-      const awDb = 10 * Math.log10(ap / (awBinHi - awBinLo + 1) + 1e-14);
-      const awLoud = Math.max(0, Math.min(1, (awDb - WAVE_FLOOR) / (WAVE_CEIL - WAVE_FLOOR)));
-      smoothLoud += (awLoud - smoothLoud) * 0.02;   // ~0.6 s — averages out the beat ripple, keeps breath/chord swells
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
       // mark a chord change on the plot — aligned to where its harmonics fill the FFT window
       const ct = (((cursor - N / 2) / sr) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;
       const ci = chordSequence[((ct / barLen) | 0) % barsInWalk];
       if (ci !== lastColChord) { lastColChord = ci; chordMarks.push(x, ci); }
-      waveCol(x, wave.height, smoothLoud);  // one waveform column, time-aligned to this frame
+      waveCol(samp, cursor, x, wave.height);  // one waveform column, time-aligned to this frame
     }
     // chord barlines + small labels, drawn over the fresh columns so they scroll left with
     // the plot next frame. Font matches the Hz axis (10 px CSS); a faint barline divides chords.
@@ -362,19 +344,25 @@ scaleEl.addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (b) setScale(b.dataset.s);
 });
 
-// Scrolling waveform as a perceptual-LOUDNESS ribbon: one column per spectrogram column,
-// a vertical Gaussian centred on the midline whose half-width AND brightness are the
-// A-weighted loudness of that frame (`loud`, from the spectrum). Because the loudness is
-// A-weighted it reads as quiet as you HEAR (bass de-emphasised), and because it comes from
-// the long FFT window it's smooth — no beat-rate ripple, no min/max sticks.
-const WAMP = 0.46;
-function waveCol(x, h, loud) {
-  const mid = h * 0.5;
-  const sigY = Math.max(0.8, loud * h * WAMP);   // ribbon half-width = perceived loudness
-  const bri = 0.32 + 0.68 * loud;                 // and dim with it
+// Scrolling waveform as a Gaussian of the sample-value distribution: per hop we take the
+// mean μ and stdev σ of the HOP samples and paint a vertical Gaussian centred at μ with
+// half-width σ. Only the WIDTH carries amplitude (σ); brightness is normalized to 1 (a
+// constant white core), so the ribbon reflects the actual modest dynamics, not an inflated
+// loudness curve. σ is EMA-smoothed to average out the detuned-pair beat ripple.
+const WAMP = 0.5;
+function waveCol(samp, cursor, x, h) {
+  let sum = 0, sum2 = 0;
+  for (let i = cursor - HOP; i < cursor; i++) { const s = samp(i); sum += s; sum2 += s * s; }
+  const mean = sum / HOP;
+  const std = Math.sqrt(Math.max(sum2 / HOP - mean * mean, 1e-9));
+  smoothMean += (mean - smoothMean) * 0.012;      // ~1 s EMA on both — width/centre track breath/chords,
+  smoothStd += (std - smoothStd) * 0.012;         // not the per-frame beat ripple (which would striate the band)
+  const amp = h * WAMP, mid = h * 0.5;
+  const muY = mid - smoothMean * amp;             // centre on the detected mean
+  const sigY = Math.max(0.8, smoothStd * amp);    // half-width = detected stdev
   for (let y = 0; y < h; y++) {
-    const d = (y - mid) / sigY;
-    const g = Math.abs(d) > 4 ? 0 : Math.exp(-0.5 * d * d) * bri;   // Gaussian, clipped past 4σ
+    const d = (y - muY) / sigY;
+    const g = Math.abs(d) > 4 ? 0 : Math.exp(-0.5 * d * d);   // brightness normalized to 1 (constant white core)
     const L = (g * 255) | 0;
     waveColPix[y] = (255 << 24) | (L << 16) | (L << 8) | L;
   }
@@ -400,7 +388,7 @@ async function begin() {
   running = true;
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audio = { ctx, sampleRate: ctx.sampleRate };
-  SR = ctx.sampleRate; buildRows(); drawAxis(); buildAwLut();   // real device rate → exact Hz everywhere
+  SR = ctx.sampleRate; buildRows(); drawAxis();   // real device rate → exact Hz everywhere
   await warmBeat(ui.kind);
   playBuffer(await synthBuffer(seed), 0);                    // first buffer (sliced, non-blocking), anchors startT
   overlay(false);
