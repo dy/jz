@@ -7,11 +7,14 @@
 // of (2,1) up to dense lattices. Per pixel: two cos (the y-terms hoist per row) and a
 // divide-free ridge for the line — jz's throughput sweet spot. Same source = the V8
 // baseline (imported) and the compiled wasm.
-let W = 0, H = 0, px, invW = 0, invH = 0
+let W = 0, H = 0, px, SC = 0, cx = 0, cy = 0   // uniform plate scale + viewport centre
 let nArr, mArr, NMODES = 0      // (n,m) mode pairs, ascending eigenfrequency √(n²+m²)
 
 export let resize = (w, h) => {
-  W = w; H = h; invW = 1.0 / w; invH = 1.0 / h
+  // Map pixels to plate space with ONE uniform scale (no stretch): the unit plate [0,1]²
+  // fills the shorter screen side and the longer side extends the periodic figure — so the
+  // canvas can be full-screen at any aspect and the nodal lines stay perfectly square.
+  W = w; H = h; SC = 1.0 / (w < h ? w : h); cx = w * 0.5; cy = h * 0.5
   px = new Uint32Array(w * h)
   // Enumerate distinct pairs 1 ≤ n < m ≤ 12 and insertion-sort by n²+m² (∝ eigenfreq),
   // so frequency sweeps simple→complex figures. Integer modes ride Int32Arrays (a scalar
@@ -50,12 +53,12 @@ export let frame = (freq) => {
 
   let j = 0, py = 0
   while (py < H) {
-    let y = py * invH
+    let y = (py - cy) * SC + 0.5
     let cyn = Math.cos(nP * y)     // y-only terms — hoist once per row
     let cym = Math.cos(mP * y)
     let qx = 0
     while (qx < W) {
-      let x = qx * invW
+      let x = (qx - cx) * SC + 0.5
       let f = Math.cos(nP * x) * cym - Math.cos(mP * x) * cyn
       // Divide-free ridge: a sharp white core on the nodal line (f≈0) plus a wider,
       // softer glow → the Camerata thick-white-on-black look. No per-pixel divides.
