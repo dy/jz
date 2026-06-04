@@ -45,9 +45,15 @@ const setEngine = async (kind) => {
 }
 addEventListener("resize", () => engine && sizeTo(engine))
 
+// A Chladni plate only resonates at DISCRETE eigenmodes, so the engine snaps the swept
+// frequency to the nearest (n,m) pair — a band of frequencies legitimately shares one figure.
+// 1 ≤ n < m ≤ 12 → C(12,2) = 66 modes. Showing the mode's representative frequency makes the
+// Hz step in lock-step with the image (instead of a number that drifts over a static figure).
+const NMODES = 66
+let paused = false, lastHz = ""
 const loop = () => {
   requestAnimationFrame(loop)
-  if (!engine) return
+  if (!engine || paused) return                 // frozen — last figure stays put to save / inspect
   t += 1 / 60
   // sweep the frequency like Camerata's "time of day" — a slow ease through the modes,
   // low (simple figures) ⇄ high (dense lattices). (Audio-driven later.)
@@ -56,9 +62,17 @@ const loop = () => {
   engine.frame(freq)
   const ms = performance.now() - t0
   out32.set(px); g.putImageData(img, 0, 0)
-  hzEl.textContent = (freq | 0) + " Hz"
+  const idx = Math.round((freq - 40) / 1960 * (NMODES - 1))
+  lastHz = (40 + idx / (NMODES - 1) * 1960 | 0) + " Hz"
+  hzEl.textContent = lastHz
   ui.frame(ms)
 }
+
+// Click freezes / unfreezes the sweep; right-click freezes too, so the context menu's
+// "Save image as…" captures a still figure rather than a smeared one.
+const freeze = (on) => { paused = on; hzEl.style.opacity = on ? 1 : .8; hzEl.textContent = (on ? "❚❚ " : "") + lastHz }
+cv.addEventListener("click", () => freeze(!paused))
+cv.addEventListener("contextmenu", () => freeze(true))
 
 const ui = hud({
   kind: "jz",
