@@ -656,6 +656,19 @@ test('null keyword returns null', () => {
   is(r.exports.f(), null)
 })
 
+test('null-flow: a variable holding null/undefined coerces in arithmetic (ToNumber)', () => {
+  // A binding assigned a nullish literal coerces per JS ToNumber when used arithmetically:
+  // null → +0, undefined → NaN. (Previously the raw sentinel propagated, so `a + 1` was `null`.)
+  is(jz('export let f = () => { let a = null; return a + 1 }').exports.f(), 1)
+  is(jz('export let f = () => { let a = null; return a * 5 }').exports.f(), 0)
+  is(Number.isNaN(jz('export let f = () => { let a = undefined; return a + 1 }').exports.f()), true)
+  // Conditional reassignment: the coerce is a runtime check, so it's correct for either value.
+  const { f } = jz('export let f = (c) => { let a = null; if (c) { a = 5 } return a + 1 }').exports
+  is(f(0), 1); is(f(1), 6)
+  // Returning the binding directly (no arithmetic) still yields null — coercion is arithmetic-only.
+  is(jz('export let f = () => { let a = null; return a }').exports.f(), null)
+})
+
 test('null and undefined are both nullish inside jz', () => {
   const r = jz('export let f = (x) => x == null')
   is(r.exports.f(null), true)
@@ -881,6 +894,15 @@ test('do-while: executes body at least once', () => {
   is(run('export let f = () => { let x = 0; do { x++ } while (0); return x }', { jzify: true }).f(), 1)
 })
 
+test('do-while: works in strict mode (prepare lowers it; jzify is skipped)', () => {
+  // Regression: strict skips jzify, so prepare must lower do-while itself — otherwise it
+  // reached emit as a raw 'do' op and crashed with "Unknown op: do". The README lists
+  // do-while in the strict subset, so strict must compile and run it correctly.
+  const { f } = run('export let f = (n) => { let i = 0; do { i++ } while (i < n); return i }', { strict: true })
+  is(f(5), 5)
+  is(f(0), 1)  // body runs once even when the condition starts false
+})
+
 test('do-while: break', () => {
   is(run('export let f = () => { let s = 0; do { s++; if (s == 3) break } while (1); return s }', { jzify: true }).f(), 3)
 })
@@ -930,6 +952,16 @@ test('break: exits labeled if statement', () => {
 
 test('break: exits labeled outer loop from nested loop', () => {
   is(run('export let f = () => { let s = 0; outer: for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) { s++; if (i == 1 && j == 1) break outer } } return s }', { jzify: true }).f(), 6)
+})
+
+test('continue: labeled continue targets the outer loop (runs its step)', () => {
+  // `continue outer` from the inner loop skips the rest of the inner body AND the rest of the
+  // outer body, jumping to the outer loop's step+test. Matches plain-JS evaluation (= 30).
+  is(run('export let f = () => { let s = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j == 1) continue outer; s += 10 } } return s }').f(), 30)
+})
+
+test('continue: labeled continue on while', () => {
+  is(run('export let f = () => { let s = 0, i = 0; outer: while (i < 3) { i++; let j = 0; while (j < 3) { j++; if (j == 2) continue outer; s++ } } return s }').f(), 3)
 })
 
 test('continue: skips iteration', () => {
