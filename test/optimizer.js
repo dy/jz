@@ -90,6 +90,27 @@ test('LICM: does not fire when loop contains calls', () => {
   ok(!/\$__li\d+/.test(wat), 'must not hoist when loop contains a call')
 })
 
+test('LICM: self-referential tee induction in loop condition is not hoisted (rfft stage-loop regression)', () => {
+  // `while ((nn = nn >>> 1))` — the loop's induction update is a self-referential
+  // tee in the condition (nn = f(nn)). hoistInvariantLoop treated the operand's
+  // `nn` read as the in-subtree teed value (it is actually the loop-carried previous
+  // value, read before the tee writes) and hoisted the whole update to the pre-header,
+  // freezing nn nonzero → a non-terminating loop and out-of-bounds stores. This is the
+  // rfft split-radix stage loop (examples/rfft/rfft.js transform()). The `count > 1000`
+  // guard bounds a regression to a wrong value instead of a hang.
+  const src = `
+    export const main = (n) => {
+      let nn = n >>> 0, count = 0, acc = 0
+      while ((nn = nn >>> 1)) { count++; acc += nn; if (count > 1000) break }
+      return (count * 1000000 + acc) | 0
+    }
+  `
+  const { main } = run(src)
+  is(main(2048), 11 * 1000000 + 2047)  // 2^11: nn walks 1024…1 (11 iters), Σ = 2047
+  is(main(64), 6 * 1000000 + 63)       // 2^6: nn walks 32…1 (6 iters), Σ = 63
+  is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
+})
+
 test('arrayElemValType: typed-array .map elides __to_num in callback', () => {
   // Float64Array elements have known type NUMBER → __to_num coercion can be
   // elided in the inlined .map callback param.

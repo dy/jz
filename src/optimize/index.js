@@ -654,7 +654,15 @@ export function hoistInvariantLoop(fn) {
       // any callee may mutate it (no interprocedural effect analysis). (Locals are
       // frame-private, so calls can't touch them; only direct local.set matters.)
       if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasAnyCall
-      if (op === 'local.tee') return typeof node[1] === 'string' && pureGiven(node[2], bound)
+      if (op === 'local.tee') {
+        if (typeof node[1] !== 'string') return false
+        // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X` inside
+        // it reads the loop-carried (previous-iteration) value, not the teed one. Drop
+        // $X from `bound` for the operand: `local.tee $X (… $X …)` is a loop recurrence
+        // (X = f(X) — e.g. the `while ((nn = nn >>> 1))` induction), NOT invariant.
+        const inner = bound.has(node[1]) ? new Set([...bound].filter(b => b !== node[1])) : bound
+        return pureGiven(node[2], inner)
+      }
       if (op === 'f64.load' && node.length === 2) {
         const a = node[1]
         return Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
