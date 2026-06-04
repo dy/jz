@@ -27,10 +27,6 @@
     font: 600 10px/1 ui-monospace, Menlo, monospace; padding: 5px 11px; }
   #scale button + button { border-left: 1px solid #ffffff14; }
   #scale button.on { background: #ddd; color: #0a0a0a; }
-  /* current chord — sits at the spectrogram's "now" edge (right), under the trace */
-  #chord { position: absolute; right: 14px; bottom: 8px; z-index: 13; pointer-events: none;
-    font: 700 24px/1 ui-monospace, Menlo, monospace; color: #fff; letter-spacing: .02em;
-    text-shadow: 0 0 7px #000, 0 1px 3px #000; opacity: .94; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
   #wavewrap { position: relative; flex: 1.4 1 0; }
   #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000000; }
@@ -48,7 +44,6 @@
     <canvas id="sg"></canvas>
     <div id="axis"></div>
     <div id="scale"><button data-s="log" class="on">log</button><button data-s="mel">mel</button></div>
-    <div id="chord"></div>
     <div id="play" aria-label="Play"><div></div></div>
   </div>
   <div id="wavewrap">
@@ -140,8 +135,8 @@ const DB_FLOOR = -84, DB_CEIL = -34;                 // A-weighted level → bri
 const sg = document.getElementById("sg"), sgctx = sg.getContext("2d");
 const wave = document.getElementById("wave"), wctx = wave.getContext("2d");
 const axisEl = document.getElementById("axis");
-const chordEl = document.getElementById("chord");
-let curChordIdx = -1;
+let lastColChord = -1;            // chord index of the previous spectrogram column (boundary detection)
+let sgScale = 2;                  // spectrogram canvas px per CSS px (so chord labels match the Hz axis font)
 let rowLo, rowHi, rowAw, colImg, colPix;   // per-row band bin range + A-weight + reusable column
 let waveColImg, waveColPix;                // reusable 1-px waveform column (Gaussian density)
 
@@ -184,6 +179,7 @@ const buildRows = () => {
 const fit = () => {
   const wrap = document.getElementById("sgwrap");
   const dpr = Math.min(2, window.devicePixelRatio || 1);   // retina-crisp spectrogram + waveform
+  sgScale = dpr;
   sg.width = Math.round(wrap.clientWidth * dpr); sg.height = Math.round(wrap.clientHeight * dpr);
   wave.width = Math.round(wave.clientWidth * dpr); wave.height = Math.round(wave.clientHeight * dpr);
   sgctx.fillStyle = "#000"; sgctx.fillRect(0, 0, sg.width, sg.height);
@@ -276,16 +272,12 @@ async function start(kind) {
     requestAnimationFrame(frame);
     if (!audio.ch) { ui.frame(null); return; }     // buffer not ready yet
 
-    // current chord at the playhead → label (the buffer loops, so wrap into the walk)
-    const lt = ((audio.ctx.currentTime - startT) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;
-    const ci = chordSequence[((lt / barLen) | 0) % barsInWalk];
-    if (ci !== curChordIdx) { curChordIdx = ci; chordEl.textContent = chordNames[ci]; }
-
     const target = Math.floor((audio.ctx.currentTime - startT) * sr);   // playhead — what's actually heard now
     const w = sg.width, h = sg.height;
     let cols = Math.floor((target - cursor) / HOP);
     if (cols <= 0) { ui.frame(null); return; }            // paused or no new audio yet
     if (cols > w) { cursor = target - w * HOP; cols = w; }   // fell behind (tab hidden) — jump to live
+    const chordMarks = [];                                  // (x, chordIdx) pairs that changed this frame
 
     sgctx.drawImage(sg, -cols, 0);                 // scroll spectrogram left
     wctx.globalCompositeOperation = "copy";        // scroll waveform overlay in lockstep
@@ -311,7 +303,27 @@ async function start(kind) {
       }
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
+      // mark a chord change on the plot — aligned to where its harmonics fill the FFT window
+      const ct = (((cursor - N / 2) / sr) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;
+      const ci = chordSequence[((ct / barLen) | 0) % barsInWalk];
+      if (ci !== lastColChord) { lastColChord = ci; chordMarks.push(x, ci); }
       waveCol(samp, cursor, x, wave.height);  // one waveform column, time-aligned to this frame
+    }
+    // chord barlines + small labels, drawn over the fresh columns so they scroll left with
+    // the plot next frame. Font matches the Hz axis (10 px CSS); a faint barline divides chords.
+    if (chordMarks.length) {
+      sgctx.font = `${(10 * sgScale) | 0}px ui-monospace, Menlo, monospace`;
+      sgctx.textAlign = "right";   // label hugs the LEFT of its barline → it stays in already-
+      for (let k = 0; k < chordMarks.length; k += 2) {   // scrolled territory and isn't overwritten by new columns
+        const mx = chordMarks[k], nm = chordNames[chordMarks[k + 1]];
+        sgctx.fillStyle = "rgba(255,255,255,0.16)";
+        sgctx.fillRect(mx, 0, Math.max(1, sgScale | 0), h);
+        sgctx.shadowColor = "#000"; sgctx.shadowBlur = 3 * sgScale;
+        sgctx.fillStyle = "#fff";
+        sgctx.fillText(nm, mx - 4 * sgScale, h - 5 * sgScale);
+        sgctx.shadowBlur = 0;
+      }
+      sgctx.textAlign = "left";
     }
     ui.frame(work);
   })();
