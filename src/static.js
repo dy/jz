@@ -186,6 +186,14 @@ export function exprSchemaId(expr, localSchemaMap) {
 
 export function inlineArraySid(name) {
   if (typeof name !== 'string') return null
+  // structInline is keyed on the per-function `localReps` rep, so it is only
+  // consistent for a *function-local* array — a write site and a read site in the
+  // same frame agree. A module-global array is read across functions whose frames
+  // carry no rep for it, so the carrier would diverge: `G.push({a,b})` in one
+  // function flattens the struct into K cells, while `G.length` / `G[i].a` in
+  // another sees a plain array (K=1) and reads garbage. Never inline a global's
+  // element struct — the plain Array<ptr> representation is consistent everywhere.
+  if (ctx.scope.globals?.has(name)) return null
   const sid = ctx.func.localReps?.get(name)?.arrayElemSchema
   return sid != null && ctx.schema.inlineArray?.has(sid) ? sid : null
 }
