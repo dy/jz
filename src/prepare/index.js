@@ -1958,6 +1958,19 @@ const handlers = {
   // For loop
   'for'(head, body) {
     pushScope()
+    // A comma/sequence Expression in a for-IN head RHS — `for (x in a, b)` — is valid (the RHS is
+    // an Expression): evaluate left-to-right for side effects, value as the last element. (for-OF's
+    // RHS is an AssignmentExpression — no comma — so it is left alone.) jzify lands it as a bare `,`
+    // node in the source slot. Don't wrap it in `()`: Object.keys((a, obj)) hides `obj` behind the
+    // sequence and loses its static schema (a non-escaping literal scalarizes → 0 keys). Instead take
+    // the LAST element as the (direct) iteration source and run the earlier elements once first.
+    let forInSeqPre = null
+    if (Array.isArray(head) && head[0] === 'in' && Array.isArray(head[2]) && head[2][0] === ',') {
+      const parts = head[2].slice(1)
+      head = [head[0], head[1], parts[parts.length - 1]]
+      if (parts.length > 2) forInSeqPre = [',', ...parts.slice(0, -1)]
+      else if (parts.length === 2) forInSeqPre = parts[0]
+    }
     let r
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
@@ -2029,7 +2042,13 @@ const handlers = {
       // added keys appear in both), and break/continue work as in any for-loop. Object.keys'
       // enumeration stdlib is pulled only when for-in is actually used.
       const [, decl, src] = head
-      const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
+      const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+      // `for ((x) in …)` — the LHS may be a cover-parenthesized identifier; unwrap to the target.
+      let lhs = decl; while (Array.isArray(lhs) && lhs[0] === '()') lhs = lhs[1]
+      const target = isDecl ? decl[1] : lhs
+      // A member/computed LHS (`for (x.y in …)`, `for (obj[k] in …)`) assigns each key into the
+      // existing place; let/const and a bare name take a fresh per-iteration `let` binding.
+      const isMemberTarget = Array.isArray(target) && (target[0] === '.' || target[0] === '[]')
       // for-in over null/undefined is a no-op — ES ForIn/OfHeadEvaluation returns a break
       // completion before enumerating — but Object.keys(null|undefined) throws. So a nullish
       // source must enumerate the empty set. A static null (`[null,null]`) / undefined (`[]`)
@@ -2050,8 +2069,14 @@ const handlers = {
         ['=', ks, keysExpr],
         ['=', ix, [, 0]],
         ['=', lenV, ['|', ['.', ks, 'length'], [, 0]]]]
-      r = prep(['for', [';', decls, ['<', ix, lenV], ['++', ix]],
-        [';', ['let', ['=', varName, ['[]', ks, ix]]], body]])
+      const bindEach = isMemberTarget
+        ? ['=', target, ['[]', ks, ix]]              // x.y = key / obj[k] = key
+        : ['let', ['=', target, ['[]', ks, ix]]]     // let k = key  (fresh per-iteration binding)
+      const forNode = ['for', [';', decls, ['<', ix, lenV], ['++', ix]],
+        [';', bindEach, body]]
+      // Run the dropped sequence prefix (earlier comma elements) once for side effects, before
+      // the loop. Built raw and prepped as a unit so prep inserts the value-drop on the prefix.
+      r = prep(forInSeqPre ? [';', forInSeqPre, forNode] : forNode)
     } else {
       // Some parser/jzify shapes for `for (;;)` and `for (; cond; )` arrive
       // as a null or bare-condition head instead of the canonical

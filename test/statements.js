@@ -786,6 +786,24 @@ test('for...in: null/undefined source is a no-op (no throw)', () => {
   is(run('export let f = () => { let o = {a: 1, b: 2}; let n = 0; for (let k in o) n++; return n }').f(), 2)
 })
 
+test('for...in: comma/sequence Expression in the head RHS', () => {
+  // The for-in head RHS is an Expression, so a comma sequence is legal: evaluate left-to-right
+  // for side effects, iterate the LAST value. (test262 for-in/head-{decl,expr}-expr.)
+  is(run('export let f = () => { let n = 0; for (let x in null, {key: 0}) n++; return n }').f(), 1)
+  is(run('export let f = () => { let n = 0; for (let k in {a: 1}, {b: 2, c: 3}) n++; return n }').f(), 2)
+  // the source is the LAST element, even with a non-nullish leading element
+  is(run('export let f = () => { let n = 0; for (let k in 42, {p: 1, q: 2, r: 3}) n++; return n }').f(), 3)
+})
+
+test('for...in: member / computed / cover-paren LHS', () => {
+  // The head LHS may be a member (`x.y`), computed member (`o[k]`), or cover-parenthesized
+  // identifier (`(x)`) — each gets the enumerated key assigned to that target per step rather than
+  // bound fresh. (test262 head-lhs-{member,cover}.) Uses full host wiring so the assign lands.
+  is(jz('export let f = () => { let x = {}; let last = ""; for (x.y in {a: 1, b: 2, c: 3}) last = x.y; return last }').exports.f(), 'c')
+  is(jz('export let f = () => { let o = {}; let k = 0; let n = 0; for (o[k] in {a: 1, b: 2}) n++; return n }').exports.f(), 2)
+  is(jz('export let f = () => { let x = 0; let last = ""; for ((x) in {a: 1, b: 2}) last = x; return last }').exports.f(), 'b')
+})
+
 test('for...in: continue in runtime HASH iteration advances', () => {
   const code = `export let f = () => {
     let o = {}
