@@ -22,37 +22,49 @@ const CHORDS = [
 ]
 
 // ── transition graph — where each chord likes to go (jazz functional harmony) ──
-// Repeated entries weight the common cadences (ii→V, V→I) higher. Indices match CHORDS.
+// [nextChord, baseWeight]. Base weights bias the common cadences (ii→V, V→I). Indices
+// match CHORDS.
 const TRANS = [
-  [3, 5, 1, 2, 4],     // I    → IV vi ii iii V   (tonic wanders)
-  [4, 4, 6],           // ii   → V  V  viiø        (predominant → dominant)
-  [5, 3, 1],           // iii  → vi IV ii
-  [4, 4, 1, 0],        // IV   → V  V  ii I        (subdominant → dominant / plagal)
-  [0, 0, 5],           // V    → I  I  vi          (resolve, or deceptive to vi)
-  [1, 3, 4, 2],        // vi   → ii IV V  iii       (vi→ii starts a ii–V–I)
-  [0, 2],              // viiø → I  iii
+  [[3, 2], [5, 2], [1, 1], [2, 1], [4, 1]],   // I    → IV vi (·2) ii iii V
+  [[4, 3], [6, 1]],                           // ii   → V (·3) viiø   (predominant → dominant)
+  [[5, 2], [3, 1], [1, 1]],                   // iii  → vi (·2) IV ii
+  [[4, 3], [1, 1], [0, 1]],                   // IV   → V (·3) ii I
+  [[0, 2], [5, 2]],                           // V    → I / vi  (resolve or deceptive, equally)
+  [[1, 2], [3, 1], [4, 1], [2, 1]],           // vi   → ii (·2) IV V iii  (vi→ii starts a ii–V–I)
+  [[0, 1], [2, 1]],                           // viiø → I iii
 ]
 
 const NB = 24          // bars in the walk before it loops (× barLen = the loop length)
 
-// Deterministic walk: start on I, follow the graph by a seeded LCG, and cap with a
-// ii–V turnaround so the loop point resolves cleanly back to bar 0's tonic.
-const walkChords = (seed) => {
+// Deterministic walk over the graph, but each step is weighted by RECENCY as well as the
+// base bias: a candidate's weight is baseWeight × (bars since it was last heard)², so a
+// just-used chord (especially the tonic) is strongly suppressed until the others have had a
+// turn — serialism-flavoured "always reach for something new", inside the legal jazz moves.
+// Capped with a ii–V turnaround so the loop point resolves back to bar 0's tonic.
+const walkIdx = (seed) => {
   let s = (seed >>> 0) || 1
   const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
   const idx = [0]
+  const lastSeen = [0, -99, -99, -99, -99, -99, -99]   // bar each chord last sounded
   let cur = 0
   while (idx.length < NB - 2) {
-    const opts = TRANS[cur]
-    cur = opts[(rnd() * opts.length) | 0]
-    idx.push(cur)
+    const bar = idx.length, opts = TRANS[cur]
+    let total = 0
+    const w = opts.map(([o, bw]) => { const age = bar - lastSeen[o]; const ww = bw * age * age; total += ww; return ww })
+    let r = rnd() * total, cho = opts[0][0]
+    for (let i = 0; i < opts.length; i++) { r -= w[i]; if (r <= 0) { cho = opts[i][0]; break } }
+    cur = cho; lastSeen[cur] = bar; idx.push(cur)
   }
   idx.push(1, 4)       // … ii V | (loops to I)
-  return idx.map(i => CHORDS[i])
+  return idx
 }
 
-const SEQ = walkChords(7)
+const SEQ_IDX = walkIdx(7)
+const SEQ = SEQ_IDX.map(i => CHORDS[i])
 const seqLit = '[' + SEQ.map(c => `[${c.join(', ')}]`).join(', ') + ']'
+
+// Readable chord names for the live label (in C; the demo plays seed 0 → key C).
+const CHORD_NAMES = ['Cmaj13', 'Dm11', 'Em11', 'Fmaj9♯11', 'G13', 'Am11', 'Bm11♭5']
 
 export const songs = [
   { name: 'after hours', body:
@@ -87,6 +99,11 @@ export const songs = [
 
 /** Bars in the chord walk — the loop spans `barsInWalk * barLen` seconds. */
 export const barsInWalk = NB
+/** Seconds per chord/bar (matches the floatbeat body). */
+export const barLen = 4
+/** The walked chord-index sequence + readable names, for the live current-chord label. */
+export const chordSequence = SEQ_IDX
+export const chordNames = CHORD_NAMES
 
 /** Source shown in the demo code panel (readable TAU name). */
 export const songDisplaySrc = (song) =>

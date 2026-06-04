@@ -27,6 +27,10 @@
     font: 600 10px/1 ui-monospace, Menlo, monospace; padding: 5px 11px; }
   #scale button + button { border-left: 1px solid #ffffff14; }
   #scale button.on { background: #ddd; color: #0a0a0a; }
+  /* current chord — sits at the spectrogram's "now" edge (right), under the trace */
+  #chord { position: absolute; right: 14px; bottom: 8px; z-index: 13; pointer-events: none;
+    font: 700 24px/1 ui-monospace, Menlo, monospace; color: #fff; letter-spacing: .02em;
+    text-shadow: 0 0 7px #000, 0 1px 3px #000; opacity: .94; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
   #wavewrap { position: relative; flex: 1.4 1 0; }
   #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000000; }
@@ -44,6 +48,7 @@
     <canvas id="sg"></canvas>
     <div id="axis"></div>
     <div id="scale"><button data-s="log" class="on">log</button><button data-s="mel">mel</button></div>
+    <div id="chord"></div>
     <div id="play" aria-label="Play"><div></div></div>
   </div>
   <div id="wavewrap">
@@ -54,7 +59,7 @@
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
-import { songs, songBeatSrc, songSlug, barsInWalk } from "./songs.js";
+import { songs, songBeatSrc, songSlug, barsInWalk, barLen, chordSequence, chordNames } from "./songs.js";
 
 const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
                                      // transform with finer bass detail, so jz vs JS is clearly measurable
@@ -136,6 +141,7 @@ const sg = document.getElementById("sg"), sgctx = sg.getContext("2d");
 const wave = document.getElementById("wave"), wctx = wave.getContext("2d");
 const axisEl = document.getElementById("axis");
 let rowLo, rowHi, rowAw, colImg, colPix;   // per-row band bin range + A-weight + reusable column
+let waveColImg, waveColPix;                // reusable 1-px waveform column (Gaussian density)
 
 // vertical frequency axis (20 Hz..20 kHz), matching the spectrum below. Labels sit at their
 // scale fraction, so they track any panel size or scale change without touching the canvas.
@@ -183,6 +189,8 @@ const fit = () => {
   buildRows();
   colImg = sgctx.createImageData(1, sg.height);
   colPix = new Uint32Array(colImg.data.buffer);
+  waveColImg = wctx.createImageData(1, wave.height);
+  waveColPix = new Uint32Array(waveColImg.data.buffer);
 };
 fit();
 drawAxis();
@@ -296,36 +304,18 @@ async function start(kind) {
       }
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
-      waveCol(samp, cursor, x, wave.height, spec);  // one waveform column, time-aligned to this frame
+      waveCol(samp, cursor, x, wave.height);  // one waveform column, time-aligned to this frame
     }
     ui.frame(work);
   })();
 }
-
-// The waveform's colour is mixed from NBARS A-weighted frequency bands (no bars are drawn).
-const NBARS = 110;
-const barLo = new Int32Array(NBARS), barHi = new Int32Array(NBARS), barAw = new Float64Array(NBARS);
-const barPos = new Float64Array(NBARS);        // each bar's centre as a fixed log-Hz fraction (0=20Hz…1=20kHz)
-const fitBars = () => {                        // band i = frequency range [barLo..barHi] of FFT bins, A-weighted
-  const step = 1 / (NBARS - 1);
-  for (let i = 0; i < NBARS; i++) {
-    const p = i * step;
-    const a = binAt(p - 0.5 * step), b = binAt(p + 0.5 * step);   // band edges, half a bar each way
-    barLo[i] = Math.min(a, b); barHi[i] = Math.max(a, b);
-    barAw[i] = aWeight(scale.inv(p));
-    // centroid weight is the bar's true log-Hz position, NOT its index — so the tint is
-    // scale-independent (mel packs bass into more indices, which would skew it dark).
-    barPos[i] = Math.log(scale.inv(p) / F_LO) / LN_R;
-  }
-};
-fitBars();
 
 // scale selector — swap the frequency layout live and rebuild every mapping that depends on it.
 const scaleEl = document.getElementById("scale");
 const setScale = (name) => {
   if (!SCALES[name] || scale === SCALES[name]) return;
   scale = SCALES[name];
-  buildRows(); fitBars(); drawAxis();
+  buildRows(); drawAxis();
   sgctx.fillStyle = "#000"; sgctx.fillRect(0, 0, sg.width, sg.height);   // drop the mixed-scale history
   [...scaleEl.children].forEach(b => b.classList.toggle("on", b.dataset.s === name));
 };
@@ -334,34 +324,29 @@ scaleEl.addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (b) setScale(b.dataset.s);
 });
 
-// Scrolling waveform: one column per spectrogram column, time-aligned to it. Each
-// column is the min/max envelope of that hop's HOP samples, so the time-domain
-// signal scrolls left in lockstep with the spectral picture above it. Tint is lch():
-// log-Hz → hue (20 Hz red … 20 kHz UV), A-weighted level → lightness only.
+// Scrolling waveform as a Gaussian DENSITY: one column per spectrogram column. For each
+// hop we take the distribution of the HOP sample values (mean μ, std σ) and paint the
+// column as a vertical Gaussian centred at μ with width σ — brightest where the signal
+// spends its time, fading out. The pad is a sum of ~10 detuned sines, so its value
+// distribution really is ~Gaussian; the result is a soft, smooth amplitude ribbon that
+// swells with the breath — no hard min/max edges. (Scrolls left in lockstep with the FFT.)
 const WAMP = 0.42;
-// Waveform tint shares the spectrogram's exact palette: the spectral centroid (bass↔treble)
-// indexes the same dark→teal→amber→white LUT, stretched so timbre shifts read as strong colour.
-function waveColor(spec) {
-  let num = 0, den = 0;
-  for (let i = 0; i < NBARS; i++) {
-    let mag = 0;
-    for (let j = barLo[i]; j <= barHi[i]; j++) if (spec[j] > mag) mag = spec[j];
-    const db = 20 * Math.log10(mag + 1e-7) + barAw[i];
-    const v = Math.max(0, Math.min(1, (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
-    const wt = v * v;                                          // loud bands dominate the centroid
-    num += barPos[i] * wt; den += wt;                          // weight by log-Hz position, not bar index
+function waveCol(samp, cursor, x, h) {
+  let sum = 0, sum2 = 0;
+  for (let i = cursor - HOP; i < cursor; i++) { const s = samp(i); sum += s; sum2 += s * s; }
+  const mean = sum / HOP;
+  const std = Math.sqrt(Math.max(sum2 / HOP - mean * mean, 1e-9));
+  const amp = h * WAMP, mid = h * 0.5;
+  const muY = mid - mean * amp;                  // pixel centre of the distribution
+  const sigY = Math.max(0.6, std * amp);          // pixel width (floor so silence is a thin line)
+  const loud = Math.min(1, std * 3.4);            // dim the quiet swells, bright the loud ones
+  for (let y = 0; y < h; y++) {
+    const d = (y - muY) / sigY;
+    const g = Math.abs(d) > 4 ? 0 : Math.exp(-0.5 * d * d) * loud;   // Gaussian intensity, clipped past 4σ
+    const L = (g * 255) | 0;
+    waveColPix[y] = (255 << 24) | (L << 16) | (L << 8) | L;
   }
-  const cen = den > 1e-6 ? num / den : 0;                      // spectral centroid, 0 (bass) … 1 (treble)
-  const c = Math.max(0, Math.min(1, (cen - 0.1) / 0.55));      // stretch the mid-heavy range over the full LUT
-  const L = 150 + (105 * c | 0);                               // timbre → lightness: bass dim-gray, treble bright white (always high-contrast on black)
-  return `rgb(${L},${L},${L})`;
-}
-function waveCol(samp, cursor, x, h, spec) {
-  let lo = 1, hi = -1;
-  for (let i = cursor - HOP; i < cursor; i++) { const s = samp(i); if (s < lo) lo = s; if (s > hi) hi = s; }
-  const mid = h * 0.5, amp = h * WAMP, y0 = mid - hi * amp, y1 = mid - lo * amp;
-  wctx.fillStyle = waveColor(spec);
-  wctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+  wctx.putImageData(waveColImg, x, 0);
 }
 
 // ── play / pause ──────────────────────────────────────────────────────────────
@@ -383,7 +368,7 @@ async function begin() {
   running = true;
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audio = { ctx, sampleRate: ctx.sampleRate };
-  SR = ctx.sampleRate; buildRows(); drawAxis(); fitBars();   // real device rate → exact Hz everywhere
+  SR = ctx.sampleRate; buildRows(); drawAxis();   // real device rate → exact Hz everywhere
   await warmBeat(ui.kind);
   playBuffer(await synthBuffer(seed), 0);                    // first buffer (sliced, non-blocking), anchors startT
   overlay(false);
