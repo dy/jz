@@ -8,8 +8,8 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  body { border-top: 2px solid #ddd; display: grid; place-items: center; }
-  #c { display: block; image-rendering: pixelated; box-shadow: 0 0 60px #0006; }
+  body { border-top: 2px solid #ddd; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
   /* the driving frequency — the soul of the Camerata generator (after Demian Conrad) */
   #hz { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
     font: 600 13px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em; color: #aaa;
@@ -24,17 +24,16 @@
 import { loadEngine, hud } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d"), hzEl = document.getElementById("hz")
-let S = 0, img, out32, px
+let img, out32, px
 
-// Square plate, centred — the nodal figure is defined on [0,1]² so we render it square.
+// Full-screen at device-pixel res; the kernel maps to the plate with one uniform scale,
+// so the nodal figure stays square at any aspect (the long side just shows more of it).
 const sizeTo = (engine) => {
   const dpr = Math.min(2, window.devicePixelRatio || 1)
-  const cssSide = Math.max(160, Math.min(innerWidth, innerHeight) - 40)
-  S = Math.round(cssSide * dpr) >> 1 << 1   // full square at device-pixel res
-  cv.width = cv.height = S
-  cv.style.width = cv.style.height = cssSide + "px"
-  img = g.createImageData(S, S); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(S, S)
+  const W = Math.round(innerWidth * dpr) >> 1 << 1, H = Math.round(innerHeight * dpr) >> 1 << 1
+  cv.width = W; cv.height = H
+  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(W, H)
 }
 
 let engine = null, gen = 0, t = 0
