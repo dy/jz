@@ -10,59 +10,76 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #scope { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #hint { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; z-index: 30;
-    font-size: 13px; color: #aaa; opacity: .75; pointer-events: none; transition: opacity .4s; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 20px; z-index: 30; display: flex;
+    align-items: center; justify-content: center; gap: 16px; pointer-events: none; }
+  #tune { font-size: 14px; color: #ddd; letter-spacing: .01em; }
+  #tune b { font-weight: 700; }
+  #tune span { color: #888; }
+  #rnd { pointer-events: auto; font: 13px 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #aaa; background: #0a0a12cc; border: 1px solid #ffffff22; padding: 6px 14px;
+    cursor: pointer; backdrop-filter: blur(6px); transition: border-color .2s, color .2s; }
+  #rnd:hover { border-color: #fff; color: #fff; }
+  #hint { position: fixed; left: 0; right: 0; bottom: 54px; text-align: center; z-index: 30;
+    font-size: 12px; color: #888; opacity: .8; pointer-events: none; transition: opacity .4s; }
 </style>
 </head>
 <body>
 <canvas id="scope"></canvas>
 <div id="hint">click to play / pause</div>
+<div id="bar"><span id="tune"></span><button id="rnd">🎲 random</button></div>
 
 <script type="module">
+import { compile } from "../../dist/jz.js"
 import { instantiate } from "../../interop.js"
 import { hud } from "../lib/jzdemo.js"
+import { FLOATBEATS, moduleSrc } from "./floatbeats.js"
 
-const SR = 44100, CHUNK = Math.round(SR * 0.5)   // stream + draw the tune in ½-second chunks
+let tuneIdx = 0
+const tune = () => FLOATBEATS[tuneIdx]
+const CHUNK_SEC = 0.5
 
-// ── engines: same jukebox.js as V8 baseline + compiled wasm ──────────────────
-// engine(len, seed, off) → { out, ms }: synthesize `len` samples starting at absolute
-// sample index `off`, so chunk k+1 butts seamlessly onto chunk k (continuous time).
-const makeEngine = async (kind) => {
+// ── engines: the SAME floatbeat source two ways — JS (new Function) and jz (compiled to
+// wasm live, in your browser). engine(len, off) → Float64Array of `len` samples from sample
+// index `off`; the floatbeat is pure in t, so any chunk butts seamlessly onto the last. ──
+const clamp = (s) => s < -1 ? -1 : s > 1 ? 1 : s
+const makeEngine = (kind, tn) => {
   if (kind === "js") {
-    const mod = await import("./jukebox.js")
-    return (len, seed, off) => { const t0 = performance.now(); const out = mod.fill(len, SR, seed, off); return { out, ms: performance.now() - t0 } }
+    const beat = new Function("t", "return (" + tn.body + ")(t)")
+    return (len, off) => { const out = new Float64Array(len); for (let i = 0; i < len; i++) out[i] = clamp(beat(off + i)); return out }
   }
-  const { exports, memory } = instantiate(new Uint8Array(await (await fetch("./jukebox.wasm")).arrayBuffer()))
-  return (len, seed, off) => {
-    const t0 = performance.now(); const view = exports.fill(len, SR, seed, off); const ms = performance.now() - t0
-    const out = Float64Array.from(view); memory.reset(); return { out, ms }
+  const { exports, memory } = instantiate(compile(moduleSrc(tn.body)))   // jz compiles the floatbeat in-browser
+  return (len, off) => {
+    const out = memory.Float64Array(new Float64Array(len))
+    exports.fill(out, len, off)
+    const s = memory.read(out); const copy = Float64Array.from(s); memory.reset(); return copy
   }
 }
 
-// ── audio: stream the tune as gapless ½-s chunks scheduled just ahead of the
-// playhead — `off` advances every chunk so the melody runs forever, no loop.
-// Click toggles play/stop; play restarts the arpeggio from the top. ───────────
+// ── audio: gapless ½-s chunks scheduled just ahead of the playhead, at the tune's NATIVE
+// sample rate (WebAudio resamples to the device). `off` advances forever — the tune never
+// chunk-seams. Click toggles play/stop; the 🎲 button swaps in another floatbeat. ──
 let actx, playing = false, off = 0, nextTime = 0, streamStart = 0, queued = []
 const audio = () => { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); return actx }
 const stopQueued = () => { for (const s of queued) { try { s.stop() } catch {} } queued = [] }
 const schedule = () => {
-  while (nextTime < actx.currentTime + 0.3) {                  // keep ~0.3 s queued ahead of the playhead
-    const { out } = engine(CHUNK, seed, off)
-    const buf = actx.createBuffer(1, CHUNK, SR); buf.getChannelData(0).set(out)
+  const sr = tune().sr, CHUNK = Math.round(sr * CHUNK_SEC)
+  while (nextTime < actx.currentTime + 0.3) {
+    const out = engine(CHUNK, off)
+    const buf = actx.createBuffer(1, CHUNK, sr); buf.getChannelData(0).set(out)
     const s = actx.createBufferSource(); s.buffer = buf; s.connect(actx.destination); s.start(nextTime)
     queued.push(s); if (queued.length > 6) queued.shift()
-    nextTime += CHUNK / SR; off += CHUNK
+    nextTime += CHUNK / sr; off += CHUNK
   }
 }
 const startStream = () => { audio(); stopQueued(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; schedule() }
 const stop = () => { stopQueued(); playing = false }
 
-// ── scope ─────────────────────────────────────────────────────────────────────
+// ── scope ──
 const cv = document.getElementById("scope"), g = cv.getContext("2d")
 let W = 0, H = 0
 const resize = () => { const d = Math.min(2, devicePixelRatio || 1); W = cv.width = innerWidth * d | 0; H = cv.height = innerHeight * d | 0 }
 addEventListener("resize", resize); resize()
-const draw = (buf) => {
+const drawWave = (buf) => {
   g.fillStyle = "#07070c"; g.fillRect(0, 0, W, H)
   const mid = H / 2, amp = H * 0.4, n = buf.length, step = n / W
   g.strokeStyle = "#ffffff12"; g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
@@ -74,39 +91,50 @@ const draw = (buf) => {
   }
   g.stroke()
 }
+const drawStill = () => {                        // not playing → a still baseline (no rolling preview)
+  g.fillStyle = "#07070c"; g.fillRect(0, 0, W, H)
+  const mid = H / 2
+  g.strokeStyle = "#ffffff30"; g.lineWidth = Math.max(1, devicePixelRatio || 1)
+  g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
+}
 
-// ── state + loop ───────────────────────────────────────────────────────────
-// Swapping js⇄jz is seamless: both engines emit identical samples at the same
-// `off`, so the running stream just picks up the new engine on its next chunk.
-let engine = null, gen = 0, seed = 1, previewOff = 0
-const setEngine = async (kind) => { const my = ++gen; const e = await makeEngine(kind); if (my === gen) engine = e }
-addEventListener("pointerdown", () => {
-  document.getElementById("hint").style.opacity = 0
-  if (!engine) return
-  playing ? stop() : startStream()
+// ── tune label + engine build ──
+const tuneEl = document.getElementById("tune"), hintEl = document.getElementById("hint")
+const showTune = () => { const t = tune(); tuneEl.innerHTML = `<b>${t.name}</b> <span>· ${t.by} · ${t.sr / 1000} kHz</span>` }
+let engine = null
+const buildEngine = () => { engine = makeEngine(ui.kind, tune()); showTune() }
+
+addEventListener("pointerdown", () => { hintEl.style.opacity = 0; if (engine) playing ? stop() : startStream() })
+
+const rnd = document.getElementById("rnd")
+rnd.addEventListener("pointerdown", (e) => e.stopPropagation())   // don't let it reach the play/pause toggle
+rnd.addEventListener("click", (e) => {
+  e.stopPropagation()
+  if (FLOATBEATS.length > 1) { let j; do { j = Math.floor(Math.random() * FLOATBEATS.length) } while (j === tuneIdx); tuneIdx = j }
+  buildEngine()
+  if (playing) startStream(); else hintEl.style.opacity = .8
 })
 
 const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
-  if (playing) schedule()                                // keep audio queued ahead
-  // Scope + meter: synth one ½-s window per frame — at the playhead while playing
-  // (scrolls in lockstep with the sound), rolling forward before playback starts.
-  const head = playing ? Math.max(0, Math.round((actx.currentTime - streamStart) * SR)) : (previewOff += CHUNK)
-  const { out, ms } = engine(CHUNK, seed, head)
-  draw(out)
-  ui.frame(ms)
+  if (playing) {
+    schedule()
+    const sr = tune().sr, CHUNK = Math.round(sr * CHUNK_SEC)
+    const head = Math.max(0, Math.round((actx.currentTime - streamStart) * sr))
+    const t0 = performance.now(); const out = engine(CHUNK, head); const ms = performance.now() - t0
+    drawWave(out); ui.frame(ms)
+  } else { drawStill(); ui.frame() }
 }
 
 const ui = hud({
   kind: "jz",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/jukebox",
-  code: "./jukebox.js",
   nav: "jukebox",
-  onSwitch: setEngine,
+  onSwitch: () => { buildEngine(); if (playing) startStream() },   // recompile the current tune for the new engine
 })
-await setEngine(ui.kind)
+buildEngine()
 loop()
 </script>
 </body>
