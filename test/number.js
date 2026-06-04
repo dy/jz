@@ -220,10 +220,22 @@ test('Template: float interpolation', () => {
 
 // Documented divergence: subscript parses the leading-zero form as decimal, so a
 // legacy octal literal is its decimal digits (not octal, and not the SyntaxError a
-// JS module/strict mode raises). Use 0o377 for octal. See README "Where does jz differ".
+// JS module/strict mode raises). Use 0o377 for octal.
 test('Number: legacy octal literal is decimal (documented divergence)', () => {
   is(run(`export let f = () => 0377`).f(), 377)   // not 255
   is(run(`export let f = () => 0o377`).f(), 255)  // explicit octal is correct
+})
+
+test('Number: a bound `>>> 0` uint32 reads and computes as its unsigned value', () => {
+  // `let u = expr >>> 0` holds the full uint32 (can exceed signed i32). The binding is typed f64,
+  // so reads, arithmetic, and the return all match JS — not the old signed-i32 wrap. (0 - 1 = -1.)
+  is(run('export let f = () => { let u = (0 - 1) >>> 0; return u }').f(), 4294967295)
+  is(run('export let f = () => { let u = (0 - 1) >>> 0; return u + 1 }').f(), 4294967296)
+  is(run('export let f = () => { let u = (0 - 1) >>> 0; return u * 2 }').f(), 8589934590)
+  is(run('export let f = () => { let u = (0 - 1) >>> 0; return u / 4294967296 }').f(), (4294967295) / 4294967296)
+  // A ToUint32 hash accumulator (literal init, every use `>>> 0`-sunk) keeps the fast i32 path.
+  is(run('export let f = () => { let h = 0; for (let i = 0; i < 5; i++) { h = (h * 31 + 7) >>> 0 } return h }').f(),
+     (() => { let h = 0; for (let i = 0; i < 5; i++) { h = (h * 31 + 7) >>> 0 } return h })())
 })
 
 // === Regression: String() large-value fraction-drop + trap ===
