@@ -23,6 +23,7 @@
  */
 import { typed, asF64, asI32 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
+import { err } from '../src/ctx.js'
 
 export default (ctx) => {
   const e = ctx.core.emit
@@ -31,8 +32,14 @@ export default (ctx) => {
   const F = (node) => typed(node, 'f64')            // an f64 result (f32 lane → number)
   const op = (a) => emit(a)                          // operand IR (v128 local.get, or a nested v128 expr) — NOT coerced to f64
   const f32 = (a) => ['f32.demote_f64', asF64(emit(a))]   // scalar → f32 for splat/lanes
-  // lane index is a 0..3 literal AST node (`[, n]`) or a raw number
-  const laneIdx = (k) => { const v = typeof k === 'number' ? k : (Array.isArray(k) && k.length === 2 && k[0] == null && typeof k[1] === 'number') ? k[1] : 0; return (v | 0) & 3 }
+  // lane index must be a 0..3 literal — wasm extract_lane takes an immediate, so a
+  // runtime index can't lower (and would silently read lane 0). Fail loudly instead.
+  const laneIdx = (k) => {
+    const v = typeof k === 'number' ? k : (Array.isArray(k) && k.length === 2 && k[0] == null && typeof k[1] === 'number') ? k[1] : null
+    if (v == null || (v | 0) !== v || v < 0 || v > 3)
+      err(`SIMD lane index must be a 0..3 literal (got ${JSON.stringify(k)}) — wasm extract_lane needs a constant lane.`)
+    return v
+  }
 
   // ── build / broadcast ──────────────────────────────────────────────────────
   e['f32x4.splat'] = (a) => V(['f32x4.splat', f32(a)])
@@ -54,6 +61,9 @@ export default (ctx) => {
   // ── i32x4 arithmetic (iteration counters, masks as ±1) ───────────────────────
   for (const o of ['add', 'sub', 'mul'])
     e[`i32x4.${o}`] = (a, b) => V([`i32x4.${o}`, op(a), op(b)])
+  // i32x4 comparisons → lane mask (signed). eq/ne have no suffix; the rest are _s.
+  for (const o of ['eq', 'ne', 'lt', 'le', 'gt', 'ge'])
+    e[`i32x4.${o}`] = (a, b) => V([`i32x4.${o}${o === 'eq' || o === 'ne' ? '' : '_s'}`, op(a), op(b)])
 
   // ── v128 bitwise + select + reductions ───────────────────────────────────────
   for (const o of ['and', 'or', 'xor'])
