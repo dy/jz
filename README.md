@@ -107,7 +107,7 @@ jz is a **strict modern functional JS subset**. Built-in jzify transform extends
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
   async/await  Promise  function*  yield
-  delete  eval  Function  with
+  delete  getters/setters  eval  Function  with
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
 ```
@@ -115,12 +115,15 @@ Not supported
 <details>
 <summary><strong>Differences with JS</strong></summary>
 
-- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `==`/`!=` don't coerce (`1 == "1"` is `false`); `BigInt` is i64, returned to JS as a Number (lossy above 2⁵³, like `Number(bigint)`). `x >>> 0` is unsigned only when returned/used directly — bound to a variable and reused it keeps the signed i32 (`let u = x >>> 0` reads back negative for `x < 0`).
-- **Strings are UTF-8 bytes**, not UTF-16 — `.length`, indexing, `charCodeAt`, `slice`, `indexOf`, regex all count bytes (`"中".length` is `3`). ASCII matches JS; non-ASCII diverges; case/`trim` are ASCII-only.
-- **Objects are fixed-shape** — `Object.keys`/`for…in`/spread see only the literal's keys (you can still read/write new keys, they just don't enumerate); `delete`, getters/setters and typed-array `.length =` assignment are compile errors. Classes are plain objects, no prototype chain, so `instanceof` is just an "is it an object" test. Out-of-bounds typed-array reads give `0`, writes corrupt memory.
+- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `BigInt` (`123n`) is i64 internally and returns to JS as a real, lossless `BigInt`.
+- **`==` / `!=` don't coerce** — they behave exactly like `===` / `!==` (so `1 == "1"` is `false`); they're just the familiar spelling. The one genuinely useful loose form is kept: `x == null` matches both `null` and `undefined`. `strict` rejects `==`/`!=` — write `===`/`!==`.
+- **Strings are UTF-8 bytes**, not UTF-16 — `.length`, indexing, `charCodeAt`, `slice`, `indexOf`, regex all count bytes (`"中".length` is `3`). ASCII matches JS; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim` are **ASCII-only** — full Unicode case folding needs multi-KB tables jz omits by default, so non-ASCII letters and whitespace pass through unchanged.
+- **Objects are fixed-shape** — the literal's keys are its layout; you can read and write other keys, but `Object.keys`/`for…in`/spread enumerate only the literal's keys. Classes are plain objects (no prototype chain), so `instanceof` is just an "is it an object" test. To enumerate dynamic data, use a `Map`.
+- **Typed arrays are fixed-size views** — `arr.length = n` is a compile error, out-of-bounds reads give `0`, and writes past the end corrupt linear memory.
 - **No GC** — memory isn't reclaimed; call `memory.reset()` between batches. `WeakMap`/`WeakSet` lower to `Map`/`Set` (`strict` rejects them).
-- **Smaller corners:** `String(n)` keeps ~9 significant digits and `toFixed` rounds ties-to-even (`(2.5).toFixed(0)` → `"2"`); errors are untagged and some faults (`null.x`) don't throw, so `e instanceof TypeError` can't discriminate; a `boolean` in a container or behind `&&`/`||` crosses as `1`/`0`; `Math.random` is deterministic (set `randomSeed`); `Date` is UTC.
-
+- **Number → string isn't exact** — `String(n)`/`toString` keep ~9 significant digits and may not round-trip (`String(0.1 + 0.2)` → `"0.3"`); `toFixed` rounds ties-to-even, and f64 rounding can shift non-half inputs too (`(0.15).toFixed(1)` → `"0.2"`). Exact shortest-form output needs a Grisu/Ryū formatter jz doesn't ship.
+- **Errors are untagged**, and some faults (`null.x`) don't throw, so `e instanceof TypeError` can't discriminate. A `boolean` stored in a container or behind `&&`/`||` crosses as `1`/`0` (it stays a real boolean through `typeof`/`String`/`JSON`/comparisons).
+- **`Math.random` is seeded from host entropy** by default (non-reproducible) — pass `randomSeed: <number>` for a fixed, reproducible sequence. **`Date` getters return UTC** (`.getHours` ≡ `.getUTCHours`): there is no timezone database.
 </details>
 
 
