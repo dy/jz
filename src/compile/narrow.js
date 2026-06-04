@@ -85,11 +85,12 @@ function applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped = false }
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
     for (const [k, r] of reps) {
-      if (r.wasm !== 'i32' || k === restIdx) continue
-      if (k >= func.sig.params.length) continue
+      if (k === restIdx || k >= func.sig.params.length) continue
       const p = func.sig.params[k]
-      if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
+      // SIMD: a param passed a v128 (lane vector) at every call site is a v128 param.
+      if (r.wasm === 'v128') { p.type = 'v128'; continue }
+      if (r.wasm !== 'i32' || p.type === 'i32') continue
       if (skipTyped && r.val === VAL.TYPED) continue
       p.type = 'i32'
     }
@@ -263,7 +264,7 @@ function narrowI32Results(funcs) {
   while (changed) {
     changed = false
     for (const func of funcs) {
-      if (func.sig.results[0] === 'i32') continue
+      if (func.sig.results[0] === 'i32' || func.sig.results[0] === 'v128') continue
       const body = func.body
       if (isBlockBody(body) && hasBareReturn(body)) continue
       const exprs = returnExprs(body)
@@ -272,12 +273,16 @@ function narrowI32Results(funcs) {
       ctx.func.current = func.sig
       const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
       for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
-      const allI32 = exprs.every(e => exprType(e, locals) === 'i32')
+      const allV128 = exprs.every(e => exprType(e, locals) === 'v128')
+      const allI32 = !allV128 && exprs.every(e => exprType(e, locals) === 'i32')
       const anyUnsigned = exprs.some(isUnsignedTail)
       const allUnsigned = exprs.every(isUnsignedTail)
       ctx.func.current = savedCurrent
-      // Narrow only when sign is consistent (all-signed or all-unsigned tails).
-      if (allI32 && (!anyUnsigned || allUnsigned)) {
+      // SIMD: every tail returns a lane vector → v128 result.
+      if (allV128) {
+        func.sig.results = ['v128']
+        changed = true
+      } else if (allI32 && (!anyUnsigned || allUnsigned)) {   // sign-consistent i32 tails
         func.sig.results = ['i32']
         if (allUnsigned) func.sig.unsignedResult = true
         changed = true
@@ -941,13 +946,15 @@ export function applyJsstringBoundaryCarrierStandalone(programFacts) {
 }
 
 /**
- * Body-local boolean-result inference. `narrowValResults` is the general (any
- * VAL.*) pass, but it lives inside whole-program narrowing, which is skipped for
- * trivial leaf modules (no call sites). A boolean result is the one kind whose
- * internal carrier (the 0/1 number) differs from its host-boundary carrier (the
- * TRUE_NAN/FALSE_NAN atom), so an exported `(a) => a > 2` still needs its boundary
- * box even on the skip path. This pass only ever *sets* valResult = VAL.BOOL, so
- * it is safe to run unconditionally — pointer/array/number results are untouched.
+ * Body-local boolean/bigint-result inference. `narrowValResults` is the general
+ * (any VAL.*) pass, but it lives inside whole-program narrowing, which is skipped
+ * for trivial leaf modules (no call sites). Boolean and bigint are the two kinds
+ * whose internal carrier differs from the host-boundary carrier — bool rides a 0/1
+ * number internally but crosses as the TRUE_NAN/FALSE_NAN atom; bigint rides an
+ * i64-reinterpreted f64 internally but must cross as a real Number — so an exported
+ * `(a) => a > 2` or `() => 100n` still needs its boundary thunk even on the skip path.
+ * This pass only ever *sets* valResult to VAL.BOOL / VAL.BIGINT, so it is safe to run
+ * unconditionally — pointer/array/number results are untouched.
  */
 export function narrowBoolResults() {
   for (const func of ctx.func.list) {
@@ -962,6 +969,7 @@ export function narrowBoolResults() {
       ? (localValTypes?.get(e) || ctx.scope.globalValTypes?.get(e) || null)
       : valTypeOf(e)
     if (exprs.every(e => vt(e) === VAL.BOOL)) func.valResult = VAL.BOOL
+    else if (exprs.every(e => vt(e) === VAL.BIGINT)) func.valResult = VAL.BIGINT
   }
 }
 

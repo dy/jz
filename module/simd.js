@@ -64,6 +64,12 @@ export default (ctx) => {
   // i32x4 comparisons → lane mask (signed). eq/ne have no suffix; the rest are _s.
   for (const o of ['eq', 'ne', 'lt', 'le', 'gt', 'ge'])
     e[`i32x4.${o}`] = (a, b) => V([`i32x4.${o}${o === 'eq' || o === 'ne' ? '' : '_s'}`, op(a), op(b)])
+  // shifts by a scalar count (for float-bit twiddling: exponent extract, etc.)
+  e['i32x4.shl'] = (a, n) => V(['i32x4.shl', op(a), asI32(emit(n))])
+  e['i32x4.shr'] = (a, n) => V(['i32x4.shr_s', op(a), asI32(emit(n))])
+  e['i32x4.shrU'] = (a, n) => V(['i32x4.shr_u', op(a), asI32(emit(n))])
+  // lane-wise int → float conversion (i32x4.convert) — the value, not a bit reinterpret
+  e['f32x4.convertI32'] = (a) => V(['f32x4.convert_i32x4_s', op(a)])
 
   // ── v128 bitwise + select + reductions ───────────────────────────────────────
   for (const o of ['and', 'or', 'xor'])

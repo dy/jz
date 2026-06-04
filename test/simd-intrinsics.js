@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
 
 // Source-level f32x4 / i32x4 intrinsics (module/simd.js) lowering to wasm SIMD (v128).
@@ -66,6 +66,52 @@ test('simd: i32x4 counters + v128.and/anyTrue (masked-lockstep loop)', () => {
     return i32x4.lane(iter, 0) * 1000 + i32x4.lane(iter, 1) * 100 + i32x4.lane(iter, 2) * 10 + i32x4.lane(iter, 3)
   }`)
   is(count(3, 5, 1, 8, 100), 3 * 1000 + 5 * 100 + 1 * 10 + 8)   // each lane stops at ceil(thr)
+})
+
+test('simd: v128 flows through helper params + returns + nested calls', () => {
+  const { f } = run(`let dbl = (x) => f32x4.add(x, x)
+    let quad = (x) => dbl(dbl(x))
+    export let f = (a, b, c, d) => f32x4.lane(quad(f32x4.lanes(a, b, c, d)), 2)`)
+  is(f(1, 1, 3, 1), 12)   // 3 * 4
+})
+
+test('simd: i32x4 shifts + f32↔i32 reinterpret/convert (float-bit twiddling)', () => {
+  const { exp, mant, conv } = run(`
+    export let exp = (x) => i32x4.lane(i32x4.shrU(f32x4.splat(x), 23), 0)
+    export let mant = (x) => f32x4.lane(v128.or(v128.and(f32x4.splat(x), i32x4.splat(8388607)), i32x4.splat(1065353216)), 0)
+    export let conv = (n) => f32x4.lane(f32x4.convertI32(i32x4.splat(n)), 0)`)
+  is(exp(2), 128)        // exponent field of 2.0f
+  is(mant(3), 1.5)       // mantissa of 3.0 with exponent forced to 127 → 1.5
+  is(conv(5), 5)         // i32 lane 5 → f32 value 5
+})
+
+test('simd: a SIMD natural log (Cephes logf via v128 helper) matches Math.log', () => {
+  const { logL } = run(`let slog = (x) => {
+    let e = i32x4.sub(v128.and(i32x4.shrU(x, 23), i32x4.splat(255)), i32x4.splat(126))
+    let m = v128.or(v128.and(x, i32x4.splat(8388607)), i32x4.splat(1056964608))
+    let less = f32x4.lt(m, f32x4.splat(0.70710678))
+    m = v128.bitselect(f32x4.sub(f32x4.add(m, m), f32x4.splat(1.0)), f32x4.sub(m, f32x4.splat(1.0)), less)
+    e = i32x4.sub(e, v128.and(less, i32x4.splat(1)))
+    let ef = f32x4.convertI32(e)
+    let z = f32x4.mul(m, m)
+    let y = f32x4.splat(0.070376836292)
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(-0.1151461031))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(0.116769987))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(-0.12420140846))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(0.14249322787))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(-0.16668057665))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(0.20000714765))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(-0.24999993993))
+    y = f32x4.add(f32x4.mul(y, m), f32x4.splat(0.33333331174))
+    y = f32x4.mul(f32x4.mul(y, m), z)
+    y = f32x4.add(y, f32x4.mul(ef, f32x4.splat(-0.000212194440)))
+    y = f32x4.sub(y, f32x4.mul(f32x4.splat(0.5), z))
+    return f32x4.add(f32x4.add(m, y), f32x4.mul(ef, f32x4.splat(0.693359375)))
+  }
+  export let logL = (x) => f32x4.lane(slog(f32x4.splat(x)), 0)`)
+  let maxErr = 0
+  for (let i = 1; i < 500; i++) { const x = i * 2.5; maxErr = Math.max(maxErr, Math.abs(logL(x) - Math.log(x))) }
+  ok(maxErr < 1e-5)   // f32 logf accuracy
 })
 
 test('simd: dynamic lane index is a compile error (extract_lane needs a constant)', () => {
