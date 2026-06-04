@@ -774,6 +774,18 @@ test('for...in: enumerates dynamically-added keys, consistent with Object.keys',
   is(run("export let f = () => { let a = [10, 20, 30]; let n = 0; for (let i in a) n++; return n }").f(), 3)
 })
 
+test('for...in: null/undefined source is a no-op (no throw)', () => {
+  // ES ForIn/OfHeadEvaluation returns a break completion for null/undefined → zero iterations,
+  // never a throw — even though the Object.keys(null|undefined) the desugar uses would throw.
+  is(run('export let f = () => { let n = 0; for (let k in undefined) n++; return n }').f(), 0)
+  is(run('export let f = () => { let n = 0; for (let k in null) n++; return n }').f(), 0)
+  is(run('export let f = () => { let n = 0; for (var x in null) n++; return n }').f(), 0)
+  // a dynamically-null variable (not a static literal) is guarded at runtime too
+  is(run('export let f = () => { let o = null; let n = 0; for (let k in o) n++; return n }').f(), 0)
+  // non-nullish sources still enumerate normally (no regression)
+  is(run('export let f = () => { let o = {a: 1, b: 2}; let n = 0; for (let k in o) n++; return n }').f(), 2)
+})
+
 test('for...in: continue in runtime HASH iteration advances', () => {
   const code = `export let f = () => {
     let o = {}
