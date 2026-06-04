@@ -134,6 +134,9 @@ const isBoundaryWrapped = (func) => {
   // A boolean result rides the 0/1 number carrier internally; the export thunk
   // boxes it to the TRUE_NAN/FALSE_NAN atom so the host sees a real boolean.
   if (func.valResult === VAL.BOOL) return true
+  // A bigint result rides the i64-reinterpreted-f64 carrier internally; the export thunk converts
+  // it to a real Number so a JS host doesn't see raw i64 bits (`() => 100n` was returning 4.94e-322).
+  if (func.valResult === VAL.BIGINT) return true
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
 }
 
@@ -236,6 +239,8 @@ function captureFuncInspect(func, facts, programFacts) {
 // their synthetic labels can't collide with the parent frame's.
 function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.stack = []
+  ctx.func.maybeNullish = new Set()   // bindings assigned a nullish literal → coerce in arithmetic (null-flow)
+  ctx.func.pendingLabel = null        // label awaiting its loop, for `continue <label>`
   ctx.func.uniq = uniq
   ctx.func.current = sig
   ctx.func.body = body
@@ -676,6 +681,7 @@ function synthesizeBoundaryWrappers() {
     // engine, a per-position i64 carrier would re-enter here (param/result type i64 +
     // `i64.reinterpret_f64`) plus a `jz:i64exp` section for interop.js.
     const resultBool = func.valResult === VAL.BOOL && sig.ptrKind == null
+    const resultBigint = func.valResult === VAL.BIGINT && sig.ptrKind == null
     // Inline `(export ...)` attribute only when the func decl carried the
     // inline-export keyword (`export function foo`). For re-exports
     // (`function foo; export { foo as bar }`) the `name` is the *internal*
@@ -689,7 +695,7 @@ function synthesizeBoundaryWrappers() {
     sig.params.forEach((p) => {
       wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : 'f64'])
     })
-    wrapNode.push(['result', 'f64'])
+    wrapNode.push(['result', resultBigint ? 'i64' : 'f64'])
     const args = sig.params.map((p) => {
       const get = ['local.get', `$${p.name}`]
       // jsstring: externref flows through unchanged — inner func also takes externref.
@@ -715,6 +721,11 @@ function synthesizeBoundaryWrappers() {
         ? typed(callIR, 'i32')
         : typed(['f64.ne', callIR, ['f64.const', 0]], 'i32')
       body = boolBoxIR(carrier)
+    } else if (resultBigint) {
+      // BigInt rides the i64-reinterpret-f64 carrier internally; expose the raw i64 at the JS
+      // boundary so the host receives a real, lossless BigInt (wasm i64 <-> JS BigInt). Internal
+      // callers use `$name` (the f64 carrier) untouched; only the `$exp` export result is i64.
+      body = ['i64.reinterpret_f64', callIR]
     } else if (sig.results[0] === 'i32') {
       body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]
     } else {
