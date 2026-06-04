@@ -17,13 +17,11 @@ import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bri
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
-  // Math.random seeding (opt-in via the `randomSeed` compile option). Default:
-  // deterministic xorshift32 from a fixed constant — reproducible, which the
-  // determinism suite relies on. `randomSeed: <n>` picks a fixed seed; `true`
-  // seeds once from host entropy on first use (crypto under host:'js',
-  // `random_get` under WASI) — the one path on which jz emits a randomness
-  // syscall, and only when explicitly asked.
-  const rngEntropy = ctx.transform.randomSeed === true
+  // Math.random seeding. DEFAULT: entropy-seeded once from the host on first use (crypto under
+  // host:'js', `random_get` under WASI), so randomness "just works" and isn't silently reproducible.
+  // `randomSeed: <n>` picks a fixed seed for a reproducible sequence; `true` forces entropy explicitly.
+  // Either way jz emits the randomness syscall only when `Math.random` is actually used.
+  const rngEntropy = ctx.transform.randomSeed === undefined || ctx.transform.randomSeed === true
   const rngSeedConst = typeof ctx.transform.randomSeed === 'number'
     ? ((ctx.transform.randomSeed >>> 0) || 1)   // xorshift dies on 0 → floor at 1
     : 12345

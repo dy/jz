@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { evaluate, run } from './util.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
 
@@ -423,6 +423,24 @@ test('Math.random', async () => {
 
   const r3 = await evaluate('Math.random() * 100')
   ok(r3 >= 0 && r3 < 100, `random()*100 returned ${r3}`)
+})
+
+test('Math.random: entropy by default, reproducible only with randomSeed', () => {
+  // Default is entropy-seeded — two fresh modules diverge (determinism is no longer the default).
+  const a = jz('export let f = () => Math.random()').exports.f()
+  const b = jz('export let f = () => Math.random()').exports.f()
+  ok(a >= 0 && a < 1 && b >= 0 && b < 1, 'in [0,1)')
+  ok(a !== b, 'entropy default → fresh instances differ')
+  // A numeric randomSeed restores a fixed, reproducible sequence.
+  const seeded = (n) => jz('export let f = () => Math.random()', { randomSeed: n }).exports.f()
+  is(seeded(42), seeded(42))
+})
+
+test('Math.random: the entropy syscall is treeshaken when unused', () => {
+  // Pay-for-use: a program that never calls Math.random pulls no rng seed import/path.
+  is(/rngSeed|random_get/.test(compile('export let f = (x) => x + 1', { wat: true })), false)
+  ok(/rngSeed|random_get|rng_seed/.test(compile('export let f = () => Math.random()', { wat: true })),
+     'rng seed path present when Math.random is used')
 })
 
 // ============================================
