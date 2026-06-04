@@ -1,6 +1,6 @@
 // Array methods: map, filter, reduce, forEach, find, indexOf, includes, slice
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
 
@@ -635,4 +635,17 @@ test('Regression: stored map result .join() on local-var integer array', () => {
     return b.join('-')
   }`)
   is(f(), [4, 5, 6].map(x => x * 3).join('-'))  // '12-15-18'
+})
+
+test('Array.from: a non-callable mapfn throws (TypeError), not an internal crash', () => {
+  // Array.from(items, mapfn) spec step 2: if mapfn is defined and not callable, throw a
+  // TypeError before iterating. A statically non-callable literal (boolean/number/null/object)
+  // must surface this as a runtime throw — earlier a `true` mapfn slipped the callable guard
+  // and crashed the compiler in the closure machinery instead.
+  throws(() => run('export let f = () => Array.from([1, 2], true)').f())
+  throws(() => run('export let f = () => Array.from([1, 2], false)').f())
+  throws(() => run('export let f = () => Array.from([1, 2], 5)').f())
+  // a real mapfn and an absent mapfn keep working
+  is(run('export let f = () => { let a = Array.from([1, 2, 3], x => x * 10); return a[2] }').f(), 30)
+  is(run('export let f = () => Array.from([1, 2, 3]).length').f(), 3)
 })

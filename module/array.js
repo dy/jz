@@ -423,7 +423,7 @@ export default (ctx) => {
     const op = n[0]
     if (op == null) return true                // [null,x] literal — null/number/bigint
     if (op === '=>') return false              // arrow function — callable
-    if (op === '{}' || op === 'str' || op === 'strcat' || op === '//') return true
+    if (op === '{}' || op === 'str' || op === 'strcat' || op === '//' || op === 'bool') return true  // object/string/regexp/boolean literal
     if (op === '[]' && n.length < 3) return true            // array literal
     if (op === '()' && n[1] === 'Symbol') return true       // Symbol(...) result
     return false                               // calls / member access — unknown
