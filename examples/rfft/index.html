@@ -140,6 +140,8 @@ const DB_FLOOR = -84, DB_CEIL = -34;                 // A-weighted level → bri
 const sg = document.getElementById("sg"), sgctx = sg.getContext("2d");
 const wave = document.getElementById("wave"), wctx = wave.getContext("2d");
 const axisEl = document.getElementById("axis");
+const chordEl = document.getElementById("chord");
+let curChordIdx = -1;
 let rowLo, rowHi, rowAw, colImg, colPix;   // per-row band bin range + A-weight + reusable column
 let waveColImg, waveColPix;                // reusable 1-px waveform column (Gaussian density)
 
@@ -273,6 +275,11 @@ async function start(kind) {
     if (my !== gen) return;
     requestAnimationFrame(frame);
     if (!audio.ch) { ui.frame(null); return; }     // buffer not ready yet
+
+    // current chord at the playhead → label (the buffer loops, so wrap into the walk)
+    const lt = ((audio.ctx.currentTime - startT) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;
+    const ci = chordSequence[((lt / barLen) | 0) % barsInWalk];
+    if (ci !== curChordIdx) { curChordIdx = ci; chordEl.textContent = chordNames[ci]; }
 
     const target = Math.floor((audio.ctx.currentTime - startT) * sr);   // playhead — what's actually heard now
     const w = sg.width, h = sg.height;
