@@ -68,6 +68,14 @@ test('simd: i32x4 counters + v128.and/anyTrue (masked-lockstep loop)', () => {
   is(count(3, 5, 1, 8, 100), 3 * 1000 + 5 * 100 + 1 * 10 + 8)   // each lane stops at ceil(thr)
 })
 
+test('simd: dynamic lane index is a compile error (extract_lane needs a constant)', () => {
+  let threw = false
+  try {
+    run(`export let f = (a, b, c, d) => { let v = f32x4.lanes(a, b, c, d); let s = 0.0; let k = 0; while (k < 4) { s = s + f32x4.lane(v, k); k++ } return s }`)
+  } catch (e) { threw = /lane index must be a 0\.\.3 literal/.test(e.message) }
+  is(threw, true)
+})
+
 test('simd: masked-lockstep mandelbrot matches scalar (f32 lanes)', () => {
   const { frame } = run(`export let frame = (w, h, limit) => {
     let scale = 0.0035, sum = 0.0, y = 0
