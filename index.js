@@ -201,10 +201,10 @@ jz.memory = enhanceMemory
  *   has no host event loop. Default: timers defer to the JS host.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
- * @param {number|boolean} [opts.randomSeed] - Seed for `Math.random`. Default: a
- *   fixed constant (deterministic/reproducible). A number sets a fixed seed; `true`
- *   seeds once from host entropy on first use (crypto under `host:'js'`, `random_get`
- *   under WASI) for non-reproducible randomness.
+ * @param {number|boolean} [opts.randomSeed] - Seed for `Math.random`. Default: seeded
+ *   once from host entropy on first use (crypto under `host:'js'`, `random_get` under
+ *   WASI) — non-reproducible. Pass a number for a fixed, reproducible seed; `true` forces
+ *   entropy explicitly. The randomness syscall is emitted only when `Math.random` is used.
  * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`
  *   (or `{ wat, inspect }` with `opts.wat`) instead of the bare output.
  *   `inspect` carries per-function inferred shapes (params, locals, JSON shapes,
