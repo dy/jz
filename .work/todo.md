@@ -1,65 +1,53 @@
-# ⟢⟢ NEXT — audit 2026-05-29 (new frontier): fix correctness leaks, then reach
+* [ ] finish selfcompile
+  * [ ] template tag separate from main jz: for real selfcompile
+* [x] bw all examples, readme
+* [ ] floatbeatr with soundvis patterns (all floatbeats collection)
+* [ ] REPL
+* [ ] All optimizations from TODO - clean up, close
+* [ ] Dogfood: color-space, fourier-transform, web-audio-api
+* [ ] Examples gallery
+* [ ] Enhance examples, with settings-panel, palettes, meaningful UI/automation, input-drops
+  * [ ] Jukebox (bytebox?): random floatbeat from bytebeats collection -> merge with floatbeat
+  * [ ] Chladni: manual f control with automation button; multiple slides
+  * [ ] Plasma: contrast, plasma params
+  * [ ] +Water simulation
+  * [ ] That text layout algorithm
 
-Compiler core is sound (lattice closed, fuzzer green, test262 1437/0/3, bench
-competitive). Binding constraint now = correctness leaks + perception/proof, not
-internals. Safety net: `npm test` 1914/0, matrix 5/5, `CI=1 node test/bench.js`
-exit 0. Verify every change against suite + fuzzer + matrix.
+# ⟢⟢ NEXT — audit 2026-05-29 frontier: CORRECTNESS LEAKS CLOSED → reach
 
-## Correctness (do FIRST — trust)
-- **PARSE-2** (critical, S): unary-base-of-`**` — `-x**2`, `~x**2`, `!x**2`, `+x**2`,
-  `typeof x**2`, `void x**2` all COMPILE in jz but are SyntaxError in JS (ES2016
-  §13.6). Fix: one guard in the `'**'` handler (prepare/index.js:1718) rejecting a
-  left operand whose root op is unary (`-`/`!`/`~`/`+`/`typeof`/`void`) w/o parens.
-  6 test262 cases are MASKED by the blanket negative-parse skip at test262.js:616 —
-  AUDIT that skip set (likely hides more accepts-invalid-JS classes).
-- **INTEROP-C1** (high, S): `serialize(undefined)` (index.js:481) returns `null` →
-  `memory.Object(undefined)` → `Object.keys(undefined)` crash. Fix: `if (v === undefined)
-  return 'undefined'` as the first branch.
-- **FE-3** (medium, S): the `try` handler calls `prep(handler)` TWICE when there's no
-  `finally` (prepare/index.js:1291-1307); prep() has side effects (uniq++, scope
-  pushes, includes). Rewrite to prep once.
-- **FE-6** (medium, S): prepareModule (prepare/index.js:2224) restores 4 state vars
-  after `prep(ast)` — ALL skipped if an imported dep throws → compiler corrupted for
-  the rest of the pipeline. Fix: wrap in try/finally.
-
-## Generative coverage (correctness; prereq for dogfooding)
-- **FUZZ-1** (high, M): fuzzer is scalar-numeric only (fuzz.js:14); the primary jz
-  workloads (biquad/mat4/rfft = TypedArrays) have ZERO generative coverage; all 6
-  caught miscompiles were scalar. Phase 1: Float64Array kernel, compare JS-vs-jz
-  memory post-call (no NaN-box oracle needed). Then strings, then optional-chain.
+Every compiler item from this audit shipped — correctness (PARSE-2, INTEROP-C1, FE-3,
+FE-6), perf (expm1, PS-2), FUZZ-1, the SIMD/fold optimizer batch, and the dead-code
+hygiene tail. See Archive › "Audit-2026-05-29 frontier — CLOSED (2026-06-04)". The
+binding constraint is now perception/proof + reach, NOT compiler internals. Safety net:
+`npm test`, opt{0..3} + wasi matrix, selfhost 11/11, `CI=1 node test/bench.js`. Verify
+every change against suite + fuzzer + matrix.
 
 ## Perf / size
-- **expm1 cancellation** (S–M): confirmed 11% error; log1p already uses the Kahan
-  trick → capability exists. Implement native expm1; sinh/expm1 consumers inherit.
-- **PS-2** (S): math.exp (math.js:427) uses two O(k≤1023) loops for 2^k; math.log
-  right below uses the O(1) f64.reinterpret_i64 bit-trick. Split k + apply twice.
 - DON'T chase (verifier refuted/calibrated): PS-3 (wasm-opt slack gate matches
   measured), OPT-B/OPT-C (watr-off only fires when optimize==null; vectorize is
   L2-default + opt-out-able).
 
 ## Compiler optimizations — backlog (detail + analysis: `.work/optimization-ideas.md`)
 Ranked by ROI. [S/M/L] effort · speed|size. Verify each: `npm test` + matrix + fuzzer + `CI=1 node test/bench.js`.
-> **FUZZ-1 (DONE):** `node test/fuzz.js --typed-map` — pure-map internal-array kernels (const bound ⇒ actually vectorize) incl. `?:` conditionals, diffed element-wise vs JS across opt{0,1,2,3}. Verified 5000×4 green + gate (seeds 1..120) in `npm test`. This is the generative coverage the items below ride on. (The prior `--typed` combined map+reduce never vectorized — loop-carried `acc` + f64 bound.)
-> **Correctness win — FUZZ-1 caught it immediately (seed 1039):** fixed a pre-existing opt2 miscompile. `(select x x cond)→x` in `src/wat/optimize.js` (vacuum) dropped an *impure* condition — when `cond` held the element's address `local.tee`, conditional typed-array stores went stale (element kept its init). Now gated on `isPure(cond)`. Regression test added (`test/simd.js`).
-1. [x] **SIMD product reductions** (`*=` over i32/i64/f32/f64) [S·speed] — DONE: `REDUCE_OPS` extended (`src/optimize/vectorize.js:317`) + 2 tests; verified suite + opt3 + bench gate + 2k-fuzz green.
-1b. [ ] **SIMD int min/max reductions** [M·speed] — NOT the trivial case the analysis assumed: WASM has no scalar `i32.min`, so int min/max arrive as a `select` AND the horizontal fold can't reuse a binary op → needs a new recognizer branch. (Float min/max already vectorize via `REDUCE_CANON`.)
-2. [ ] **Pointer-spec threshold tune**: `specializeMkptr` MIN_USES 5→3, `specializePtrBase` 20→10 [S·size] — `src/optimize/index.js:1677,1805`.
-3. [ ] **Single-use runtime-helper inlining** [M·size] — biggest size lever (recovers ~25–30% wasm-opt slack); extend WAT inliner `src/wat/optimize.js`.
-4. [ ] **Induction-variable strength reduction** (`ptr += stride` vs `base+(i<<k)`) [M·speed] — extend `hoistAddrBase` `src/optimize/index.js:358`.
-5. [ ] **Tail-call optimization** (`return_call` for `return f(…)`) [M·speed+recursion] — `src/compile/emit.js`.
-6. [x] **Conditional-lane vectorization** (ReLU/clamp/threshold) [M·speed] — DONE: `if`-expr recognizer → `v128.bitselect` + `LANE_COMPARE` table (`src/optimize/vectorize.js`); mask hoisted to a temp FIRST so the condition's address tee runs before the branches read it; fails-closed. Tests + 5k typed-map fuzz green. Min/max-shaped conds (relu/clamp) still fold to the existing min/max canon path.
+Shipped (Archive 2026-06-04): #1 SIMD product reductions, #6 conditional-lane vectorization,
+#5 tail-call (already in `tcoTailRewrite`), i32 sum reductions, integer comparison fold,
+pooled-const `global.get` splat. Remaining:
+1b. [ ] **SIMD int min/max reductions** [M·speed] — WASM has no scalar `i32.min`, so int min/max arrive as a `select` AND the horizontal fold can't reuse a binary op → needs a new recognizer branch + select-based fold. (Float min/max already vectorize via `REDUCE_CANON`.)
+1c. [ ] **int conditional + min/max vectorization** [M, deep] — push `ToInt32` into integer if-branches so `(cond?A:B)|0` over Int32Array lifts; execution-ready 3-fold plan in `optimization-ideas.md` › Remaining. Pairs with 1b.
+1d. [ ] **extending-add i8/i16→i32** [M] — fold makes the byte/short load i32, but the lane type (i8 load vs i32 accumulator) still needs `extadd_pairwise` widening.
+2. [ ] **Pointer-spec threshold tune**: `specializeMkptr` 5→3, `specializePtrBase` 20→10 [S·size] — `src/optimize/index.js`. LOW value: measured already-tuned, lowering risks de-opt.
+3. [ ] **Single-use runtime-helper inlining** [M·size] — biggest size lever (~10% slack, revised down from 25–30%); extend WAT inliner `src/wat/optimize.js`.
+4. [ ] **Induction-variable strength reduction** [M·speed] — DEPRIORITIZED: V8 already strength-reduces the loaded module; marginal vs the risk of touching core address arithmetic.
 7. [ ] **charCodeAt SIMD scan** (`i8x16.eq`+`any_true`) [L·speed] — strategic for parser workloads; new recognizer.
 8. [ ] **AoS→SoA** [L] — DEFER; `simd-aos-stride` advice ("split to SoA") suffices.
-Cheap generalizations: **lift pooled-const `global.get` as a splat in `liftExprV`** (a `hoistConstantPool` global is loop-invariant; today it keeps a conditional/any map scalar when a const like `0.0` is pooled — perf-only, fails-closed) [S·speed]; cross-`if` CSE (`csePureExpr` clears table per-arm, optimize/index.js:979); inline heuristic AST-nodes→emitted-WAT-size; scalarization cap 32→64 (plan/common.js:114); LICM global-read hoist across arena-safe callees (optimize/index.js:657 + safeCallees).
+Cheap generalizations: cross-`if` CSE (`csePureExpr` clears table per-arm, optimize/index.js:979); inline heuristic AST-nodes→emitted-WAT-size; scalarization cap 32→64 (plan/common.js:114); LICM global-read hoist across arena-safe callees (optimize/index.js:657 + safeCallees).
 Size reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic target ≈1.5–2× with `alloc:false`+`optimize:'size'`, NOT byte-parity.
 
-## Dead-code + interop hygiene (one PR, all S)
-Dead import plan/inline.js:31 (invalidateLocalsCache); dead export
-JZIFY_TRANSFORM_OPS op-policy.js:36; shadowed objectLiteralEntries jzify/classes.js:146
-(import dead); vestigial opts.extMap write interop.js:939; PTR imported-unused + magic
-0x4000/0x7 → LAYOUT.SSO_BIT in interop.js; per-call new TextEncoder/Decoder in heap-
-string hot path (interop.js:305,422) → singleton (section-parser does at :80); cli.js
-deprecated profileNames; document opts nativeTimers/noTailCall/modules.
+## Dead-code + interop hygiene (remaining tail — confirmed-done items archived 2026-06-04)
+Done: invalidateLocalsCache dead import, JZIFY_TRANSFORM_OPS dead export, `0x4000/0x7` →
+`LAYOUT.SSO_BIT`, per-call TextEncoder/Decoder → singleton (`interop.js:32`). Remaining:
+shadowed objectLiteralEntries jzify/classes.js (import dead); vestigial opts.extMap write
+interop.js; cli.js deprecated profileNames; document opts nativeTimers/noTailCall/modules.
 
 ## Reach (perception/proof — highest external leverage)
 - **AudioWorklet + live in-browser REPL** (M): single highest-leverage move. Demos
@@ -74,18 +62,12 @@ deprecated profileNames; document opts nativeTimers/noTailCall/modules.
 - **Subtractive subset spec**: PARSE-2 is exactly what a written acceptance criterion
   would have caught.
 
-## Sequenced PRs (audit §6)
-1. Three correctness bugs + FE-6, one PR (S): PARSE-2 guard + audit negative-parse
-   skip; INTEROP-C1 serialize(undefined); FE-3 try double-prep; FE-6 try/finally.
-2. Dead-code + interop hygiene sweep (S).
-3. math.exp O(1) scalbn + native expm1 (S), bench after.
-4. FUZZ-1 phase 1 — Float64Array generator (M).
+## Sequenced PRs (audit §6) — compiler PRs 1-4 shipped (Archive 2026-06-04); reach PRs remain
 5. Dogfood biquad + uncomment README credit (M).
 6. AudioWorklet glue + live REPL page (M) — highest external leverage.
 7. unplugin-jz (M).
 
-> The compiler core is done being the problem — fix the 4 correctness leaks, then
-> make the world see what's built.
+> The compiler core is done being the problem — make the world see what's built.
 
 ---
 
@@ -132,6 +114,7 @@ JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 * [x] zzfx
 * [ ] vec4 package that unlocks SIMD
 * [ ] stdlib.io
+* [ ] glsl-transpiler
 
 #### Flagship + the one compounding "make-world-know" move
 * [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
@@ -209,6 +192,7 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 * [ ] Waveform renderer
 * [ ] Database + recipe book
 * [ ] Samples collection
+* [ ] Chladni renderer
 
 ### Language coverage / correctness
 
@@ -240,7 +224,6 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 * [ ] Extract minimal jz parser from subscript features — jz-jessie fork excluding class/async/regex + refactor parse.js function-property assignments (~30 lines)
 * [ ] jzify uses jessie, pure jz uses internal parser
 * [ ] True metacircular bootstrap
-* [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
 
 ### REPL
 
@@ -248,6 +231,7 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 * [ ] Auto-import implicit globals
 * [ ] Show produced WAT
 * [ ] Document interop
+* [ ] resolve npm packages (url)
 
 ### EdgeJS PR shape
 
@@ -381,6 +365,56 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 ---
 
 ## Archive
+
+### Audit-2026-05-29 frontier — correctness leaks + perf + optimizer batch — CLOSED (2026-06-04)
+
+Every compiler item from the "fix correctness leaks, then reach" audit shipped; what
+remains under that header is ecosystem/reach (AudioWorklet REPL, dogfood biquad,
+unplugin-jz), tracked in the execution plan, not as compiler work. Verified: full
+opt{0..3} + wasi matrix, selfhost 11/11, `CI=1 test/bench.js` 70/70, fuzzer green.
+
+* [x] **PARSE-2** — unparenthesized unary base of `**` (`-x**2`, `delete x**2`, …) is now
+  a SyntaxError per ES2016 §13.6 (guard in the `'**'` handler). Negative-parse skip set
+  audited (`scripts/neg-parse-audit.mjs`, 0 accepts-invalid-JS); `test/parser-bugs.js`.
+  PARSE-2B added `delete` to the guard.
+* [x] **INTEROP-C1** — `serialize(undefined)` returns `'undefined'` (was `null` →
+  `Object.keys(undefined)` crash). `index.js:529`.
+* [x] **FE-3** — `try` handler preps the handler once (was twice when no `finally`; prep
+  has side effects). `prepare/index.js:1356`.
+* [x] **FE-6** — `prepareModule` wraps prep in try/finally so the 4 caller-state vars
+  always restore, even when an imported dep throws mid-prep. `prepare/index.js:2464`.
+* [x] **FUZZ-1** — Float64Array / Int32Array generative fuzzer (`test/fuzz.js --typed-map`,
+  `--typed-int`): const-bound internal typed-array kernels (so they actually vectorize)
+  with `?:`, diffed element-wise vs JS across opt{0..3}. Earned its keep — caught three
+  pre-existing silent opt2/opt3 miscompiles, all operand-drop-without-purity bugs:
+  `(select x x cond)` (vacuum) and the algebraic `PEEPHOLE` folds (`x&0`, `x^x`, `x*0`,
+  idempotent `x&x`, self-compares) dropped an operand holding a typed-array element's
+  address `local.tee`, leaving the store stale. All now `isPure`-gated (`src/wat/optimize.js`);
+  affects any computed element write, not just reductions.
+* [x] **expm1 cancellation** — dedicated Maclaurin series for `|x|<0.5` (was `exp(x)-1`,
+  up to ~11% error near 0); preserves sign of ±0. `module/math.js:494`.
+* [x] **PS-2 — math.exp O(1) 2^k** — `exp`→`exp2`; `exp2` builds `2^k` from the IEEE
+  exponent bits split into two halves (`k2` + `k−k2`), no O(k≤1023) loop; poly over
+  [-0.5,0.5], ~6e-9 rel. `module/math.js:471-487`.
+* [x] **Optimizer SIMD/fold batch** (`.work/optimization-ideas.md` passes 1-5): product
+  reductions (`*=` i32/i64/f32/f64, `REDUCE_OPS`); conditional-lane vectorization
+  (`cond?x:y` → `v128.bitselect` + `LANE_COMPARE`, mask hoisted first so COND's address
+  tee runs before the branches); i32 sum reductions (`fusedRewrite` folds the f64→ToInt32
+  round-trip to `i32.add/sub` — exact, then it vectorizes); integer comparison fold
+  (`f64.cmp(convert,convert)` → `i32.cmp`, `aa5a195`); pooled-const `global.get` splat.
+  Tail-call optimization confirmed **already shipped** (`tcoTailRewrite`, `src/ir.js`,
+  wired in compile + emit) — the backlog's "not implemented" was stale.
+* [x] **Dead-code + interop hygiene (partial)** — `invalidateLocalsCache` dead import
+  dropped; `JZIFY_TRANSFORM_OPS` dead export removed; magic `0x4000/0x7` → `LAYOUT.SSO_BIT`;
+  per-call `TextEncoder`/`Decoder` → singleton in the heap-string hot path (`interop.js:32`).
+  (objectLiteralEntries shadow / opts.extMap vestigial write / cli.js profileNames / opts
+  docs still open — kept in the live tail.)
+
+Remaining compiler work is optimizer-only (`.work/optimization-ideas.md` › Remaining):
+int min/max + int-conditional vectorization, extending-add, single-use helper inlining
+(size), charCodeAt SIMD scan, AoS→SoA (deferred). Representation carriers, language
+coverage (Date/test262), the metacircular parser extraction, and source maps stay under
+the execution plan.
 
 ### Auto i32-index narrowing — the hoist idiom becomes a compiler pass (2026-05-22)
 

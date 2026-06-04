@@ -377,17 +377,8 @@ Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), 
 
 </details>
 
-
-## Performance
-
-jz vs alternatives — geomean speed across the bench corpus. [Full benchmark →](bench/README.md).
-
-<img src="bench/bench.svg?v=2" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
-
-<sub>Local snapshot (M4 Max, darwin/arm64). CI gates jz vs V8/AssemblyScript/Porffor on every push; the Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
-
 <details>
-<summary><strong>Optimizations</strong></summary>
+<summary><strong>Which optimizations are applied?</strong></summary>
 
 Ordinary JS is already fast — jz infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
 
@@ -400,6 +391,15 @@ Ordinary JS is already fast — jz infers the right machine type for your number
 Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` or `'size'`/`'balanced'`/`'speed'` (or a per-pass object): `'balanced'` (= `2`) is the default; `'speed'` trades size for inlined constants and larger buffers; `'size'` drops unrolling and SIMD.
 
 </details>
+
+
+## Performance
+
+Geomean speed across the [bench corpus](bench/README.md).
+
+<img src="bench/bench.svg?v=2" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+
+<sub>Local snapshot (M4 Max, darwin/arm64). the Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
 
 
 ## Examples
