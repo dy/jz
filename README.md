@@ -382,7 +382,7 @@ Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), 
 
 jz vs alternatives — geomean speed across the bench corpus. [Full benchmark →](bench/README.md).
 
-<img src="bench/bench.svg?v=1" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
+<img src="bench/bench.svg?v=2" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
 <sub>Local snapshot (M4 Max, darwin/arm64). CI gates jz vs V8/AssemblyScript/Porffor on every push; the Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
 
