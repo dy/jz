@@ -10,20 +10,40 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-  /* the driving frequency — the soul of the Camerata generator (after Demian Conrad) */
-  #hz { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
-    font: 600 13px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .12em; color: #aaa;
-    opacity: .8; pointer-events: none; text-shadow: 0 0 8px #000; }
+  /* the driving frequency — a screen-wide skeuomorphic scrubber (the Camerata "time of day"),
+     auto-sweeping by default, grab it to steer. Black-and-white: a recessed groove, a milled
+     thumb, a lit fill. */
+  #freq { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; box-sizing: border-box;
+    display: flex; align-items: center; gap: 20px; padding: 20px 28px 22px; pointer-events: none;
+    background: linear-gradient(to top, rgba(0,0,0,.66), rgba(0,0,0,0)); }
+  #track { position: relative; flex: 1 1 auto; height: 26px; pointer-events: auto; cursor: pointer; touch-action: none; }
+  #groove { position: absolute; top: 50%; left: 0; right: 0; height: 8px; transform: translateY(-50%); border-radius: 4px;
+    background: linear-gradient(#0b0b0b, #1b1b1d); box-shadow: inset 0 2px 3px rgba(0,0,0,.9), inset 0 -1px 0 rgba(255,255,255,.06); }
+  #ticks { position: absolute; top: 50%; left: 0; right: 0; height: 8px; transform: translateY(-50%); pointer-events: none;
+    background: repeating-linear-gradient(to right, rgba(255,255,255,.15) 0 1px, transparent 1px calc(100% / 12)); }
+  #fill { position: absolute; top: 50%; left: 0; width: 0; height: 8px; transform: translateY(-50%); border-radius: 4px;
+    background: linear-gradient(#f0f0f0, #b6b6b6); box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 0 7px rgba(255,255,255,.22); }
+  #thumb { position: absolute; top: 50%; left: 0; width: 24px; height: 24px; transform: translate(-50%, -50%); border-radius: 50%;
+    background: radial-gradient(circle at 50% 34%, #fff, #dadada 58%, #a6a6a6);
+    box-shadow: 0 2px 5px rgba(0,0,0,.65), inset 0 1px 1px rgba(255,255,255,.95), inset 0 -2px 3px rgba(0,0,0,.18);
+    border: 1px solid rgba(0,0,0,.3); pointer-events: none; }
+  #val { flex: 0 0 auto; min-width: 92px; text-align: right; pointer-events: none;
+    font: 600 14px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .06em; color: #ddd; text-shadow: 0 1px 3px #000; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hz"></div>
+<div id="freq">
+  <div id="track"><div id="groove"></div><div id="ticks"></div><div id="fill"></div><div id="thumb"></div></div>
+  <div id="val">— Hz</div>
+</div>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
 
-const cv = document.getElementById("c"), g = cv.getContext("2d"), hzEl = document.getElementById("hz")
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+const track = document.getElementById("track"), fillEl = document.getElementById("fill")
+const thumbEl = document.getElementById("thumb"), valEl = document.getElementById("val")
 let img, out32, px
 
 // Full-screen at device-pixel res; the kernel maps to the plate with one uniform scale,
@@ -45,34 +65,45 @@ const setEngine = async (kind) => {
 }
 addEventListener("resize", () => engine && sizeTo(engine))
 
-// A Chladni plate only resonates at DISCRETE eigenmodes, so the engine snaps the swept
-// frequency to the nearest (n,m) pair — a band of frequencies legitimately shares one figure.
-// 1 ≤ n < m ≤ 12 → C(12,2) = 66 modes. Showing the mode's representative frequency makes the
-// Hz step in lock-step with the image (instead of a number that drifts over a static figure).
-const NMODES = 66
-let paused = false, lastHz = ""
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine || paused) return                 // frozen — last figure stays put to save / inspect
-  t += 1 / 60
-  // sweep the frequency like Camerata's "time of day" — a slow ease through the modes,
-  // low (simple figures) ⇄ high (dense lattices). (Audio-driven later.)
-  const freq = 40 + (0.5 - 0.5 * Math.cos(t * 0.09)) * 1960
-  const t0 = performance.now()
-  engine.frame(freq)
-  const ms = performance.now() - t0
-  out32.set(px); g.putImageData(img, 0, 0)
-  const idx = Math.round((freq - 40) / 1960 * (NMODES - 1))
-  lastHz = (40 + idx / (NMODES - 1) * 1960 | 0) + " Hz"
-  hzEl.textContent = lastHz
-  ui.frame(ms)
+// A Chladni plate only resonates at DISCRETE eigenmodes, so the engine snaps the frequency to
+// the nearest (n,m) pair — a band of frequencies legitimately shares one figure. 1 ≤ n < m ≤ 12
+// → C(12,2) = 66 modes. The scrubber position p∈[0,1] maps to 40…2000 Hz; the value label shows
+// the mode's representative frequency so the number steps in lock-step with the figure.
+const F_LO = 40, F_HI = 2000, NMODES = 66
+let auto = true, pos = 0, dirty = true
+const posToFreq = (p) => F_LO + p * (F_HI - F_LO)
+const setPos = (p) => {
+  pos = p < 0 ? 0 : p > 1 ? 1 : p
+  fillEl.style.width = (pos * 100) + "%"
+  thumbEl.style.left = (pos * 100) + "%"
+  const idx = Math.round(pos * (NMODES - 1))
+  valEl.textContent = (F_LO + idx / (NMODES - 1) * (F_HI - F_LO) | 0) + " Hz"
+  dirty = true
 }
 
-// Click freezes / unfreezes the sweep; right-click freezes too, so the context menu's
-// "Save image as…" captures a still figure rather than a smeared one.
-const freeze = (on) => { paused = on; hzEl.style.opacity = on ? 1 : .8; hzEl.textContent = (on ? "❚❚ " : "") + lastHz }
-cv.addEventListener("click", () => freeze(!paused))
-cv.addEventListener("contextmenu", () => freeze(true))
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  if (auto) { t += 1 / 60; setPos(0.5 - 0.5 * Math.cos(t * 0.09)) }   // the sweep just drives the slider
+  if (auto || dirty) {
+    const t0 = performance.now()
+    engine.frame(posToFreq(pos))
+    const ms = performance.now() - t0
+    out32.set(px); g.putImageData(img, 0, 0); dirty = false
+    ui.frame(ms)
+  } else ui.frame()                              // idle (held still) — keep the meter alive, skip re-render
+}
+
+// Grab the scrubber → manual control (stops the auto-sweep). A plain click on the track jumps there.
+const posFromEvent = (e) => { const r = track.getBoundingClientRect(); return (e.clientX - r.left) / r.width }
+let dragging = false
+track.addEventListener("pointerdown", (e) => { auto = false; dragging = true; try { track.setPointerCapture(e.pointerId) } catch {} setPos(posFromEvent(e)) })
+track.addEventListener("pointermove", (e) => { if (dragging) setPos(posFromEvent(e)) })
+track.addEventListener("pointerup", () => { dragging = false })
+// Click the figure → resume the sweep, continuing smoothly from where the slider sits.
+cv.addEventListener("click", () => { t = Math.acos(1 - 2 * pos) / 0.09; auto = true })
+// Right-click → stop the sweep, so the context menu's "Save image as…" grabs a still figure.
+cv.addEventListener("contextmenu", () => { auto = false })
 
 const ui = hud({
   kind: "jz",
