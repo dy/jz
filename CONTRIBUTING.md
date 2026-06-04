@@ -5,7 +5,7 @@
 ```sh
 git clone https://github.com/dy/jz.git && cd jz
 npm install
-npm test              # 1466+ tests
+npm test              # 2000+ tests
 node bench/bench.mjs  # run benchmarks
 ```
 
