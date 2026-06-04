@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, onKernel } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 
@@ -204,7 +204,7 @@ test('prohibited: __heap conflicts with runtime', () =>
 // ============================================================================
 
 test('template: distinct functions with same name', () => {
-  if (onWasi()) return  // wasi: host import / js template interp
+  if (onWasi() || onKernel()) return  // wasi/kernel: js template-tag interp injects host fns — not reachable via (code, strict)
   const a = Object.defineProperty(x => x + 1, 'name', { value: 'same' })
   const b = Object.defineProperty(x => x * 100, 'name', { value: 'same' })
   const { exports: { f } } = jz`export let f = (x) => ${a}(x) + ${b}(x)`
@@ -266,6 +266,7 @@ test('strict: unknown-receiver method call errors', () =>
 
 test('strict: accepts pure scalar function', () => {
   if (onWasi()) return  // wasi: size pin / extra wasi imports differ
+  if (onKernel()) return  // kernel: bytes path is unoptimized (no watOptimize); 41-byte pin assumes level-2
   const wasm = compile('export let add = (a, b) => a + b', { strict: true, optimize: { watr: true } })
   ok(wasm.byteLength === 41, `pure scalar should compile to 41 bytes in strict mode, got ${wasm.byteLength}`)
 })
@@ -293,6 +294,7 @@ test('error: unknown import gives useful message', () => {
 })
 
 test('error: unknown export gives useful message', () => {
+  if (onKernel()) return  // kernel: host {modules} resolution + its error message are host-side, not in compileSelf
   let error
   try { compile('import { nonexistent } from "./math.js"; export let f = () => nonexistent', { modules: { './math.js': 'export let add = (a, b) => a + b' } }) } catch (e) { error = e }
   ok(error, 'should throw')
@@ -300,6 +302,7 @@ test('error: unknown export gives useful message', () => {
 })
 
 test('error: compile error includes source line', () => {
+  if (onKernel()) return  // kernel: source-line error annotation is host-side (ctx.error.src in compile()), not in the wasm
   let error
   try { compile('export let f = () => { var x = 1 }', { strict: true }) } catch (e) { error = e }
   ok(error, 'should throw')
@@ -337,6 +340,7 @@ test('error: unknown op produces readable message', () => {
 })
 
 test('error: invalid host option', () => {
+  if (onKernel()) return  // kernel: host {host:…} option + its validation are host-side, never reach the wasm
   let error
   try { compile('export let f = () => 1', { host: 'edge' }) } catch (e) { error = e }
   ok(error && error.message.includes('Invalid host'), `expected Invalid host, got "${error?.message}"`)
@@ -377,6 +381,7 @@ test('error: spread on non-variadic function', () => {
 // ============================================================================
 
 test('error: location includes line number', () => {
+  if (onKernel()) return  // kernel: source-line error annotation is host-side (ctx.error.src in compile()), not in the wasm
   let error
   try {
     compile(`
@@ -516,6 +521,7 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 // ============================================================================
 
 test('unknown global references surface as a clean jz error, not watr "Unknown ..."', () => {
+  if (onKernel()) return  // kernel: the watr-error→friendly-message rewrite is host-side (compile() catch), not in compileSelf
   let err
   try { compile(`export let f = () => SomethingUndefined()`) }
   catch (e) { err = e }
