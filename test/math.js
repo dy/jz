@@ -2,6 +2,7 @@ import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { evaluate, run } from './util.js'
 import jz, { compile } from '../index.js'
+import { onKernel } from './_matrix.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
 
@@ -426,6 +427,7 @@ test('Math.random', async () => {
 })
 
 test('Math.random: entropy by default, reproducible only with randomSeed', () => {
+  if (onKernel()) return  // kernel: host entropy import + {randomSeed} option are host-side, not in (code, strict)
   // Default is entropy-seeded — two fresh modules diverge (determinism is no longer the default).
   const a = jz('export let f = () => Math.random()').exports.f()
   const b = jz('export let f = () => Math.random()').exports.f()
