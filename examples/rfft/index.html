@@ -10,13 +10,12 @@
   body { border-top: 2px solid #ddd; }
   a { color: #eee; text-decoration: none; }
   a:hover { color: #ddd; text-decoration: underline; }
-  #stage { position: absolute; top: 14px; left: 20px; right: 20px; bottom: 20px;
-    display: flex; flex-direction: column; gap: 6px; }
+  #stage { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 2px; }
   #sgwrap { position: relative; flex: 3 1 0; }
-  #sg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px;
+  #sg { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
     background: #000; image-rendering: pixelated; }
   /* vertical Hz axis over the spectrogram — non-scrolling, so it stays put as the trace scrolls */
-  #axis { position: absolute; inset: 0; z-index: 12; pointer-events: none; border-radius: 6px; overflow: hidden; }
+  #axis { position: absolute; inset: 0; z-index: 12; pointer-events: none; overflow: hidden; }
   #axis .tick { position: absolute; left: 0; right: 0; border-top: 1px solid rgba(255, 255, 255,.12); }
   #axis .tick b { position: absolute; left: 5px; top: -7px; font: 600 10px/1 ui-monospace, Menlo, monospace;
     color: #ddd; opacity: .85; text-shadow: 0 0 3px #000, 0 1px 2px #000; }
@@ -30,7 +29,7 @@
   #scale button.on { background: #ddd; color: #0a0a0a; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
   #wavewrap { position: relative; flex: 1.4 1 0; }
-  #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px; background: #0a0a12; }
+  #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000000; }
   #play { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     background: rgba(7,7,12,.6); cursor: pointer; }
   #play div { width: 0; height: 0; border-style: solid; border-width: 22px 0 22px 36px;
@@ -93,14 +92,15 @@ const warmBeat = async (kind) => {
 const hann = new Float64Array(N);
 for (let i = 0; i < N; i++) hann[i] = 0.5 - 0.5 * Math.cos(TAU * i / (N - 1));
 
-// 256-entry palette LUT (ABGR for direct Uint32 pixel writes): grayscale dark→white ramp.
-const stops = [[10,10,10],[60,60,60],[130,130,130],[200,200,200],[245,245,245]];
+// 256-entry grayscale LUT (ABGR for direct Uint32 writes). Not a flat linear ramp:
+// a smoothstep contrast curve keeps the background clean-black and the mid lifted toward
+// white, then a final gamma brightens the highlights so strong partials read as bright
+// white on black — perceptual lightness, punchier than value-linear gray.
+const tone = (t) => Math.pow(t * t * (3 - 2 * t), 0.72);
 const pal = new Uint32Array(256);
 for (let k = 0; k < 256; k++) {
-  const p = k / 255 * (stops.length - 1), i = Math.min(stops.length - 2, p | 0), f = p - i;
-  const a = stops[i], b = stops[i + 1];
-  const r = a[0]+(b[0]-a[0])*f|0, g = a[1]+(b[1]-a[1])*f|0, bl = a[2]+(b[2]-a[2])*f|0;
-  pal[k] = (255 << 24) | (bl << 16) | (g << 8) | r;
+  const v = Math.max(0, Math.min(255, tone(k / 255) * 255 | 0));
+  pal[k] = (255 << 24) | (v << 16) | (v << 8) | v;
 }
 
 // full audible range — drives the spectrogram rows and the waveform's spectral tint.
@@ -179,7 +179,7 @@ const fit = () => {
   sg.width = Math.round(wrap.clientWidth * dpr); sg.height = Math.round(wrap.clientHeight * dpr);
   wave.width = Math.round(wave.clientWidth * dpr); wave.height = Math.round(wave.clientHeight * dpr);
   sgctx.fillStyle = "#000"; sgctx.fillRect(0, 0, sg.width, sg.height);
-  wctx.fillStyle = "#0a0a12"; wctx.fillRect(0, 0, wave.width, wave.height);
+  wctx.fillStyle = "#000000"; wctx.fillRect(0, 0, wave.width, wave.height);
   buildRows();
   colImg = sgctx.createImageData(1, sg.height);
   colPix = new Uint32Array(colImg.data.buffer);
@@ -353,8 +353,8 @@ function waveColor(spec) {
   }
   const cen = den > 1e-6 ? num / den : 0;                      // spectral centroid, 0 (bass) … 1 (treble)
   const c = Math.max(0, Math.min(1, (cen - 0.1) / 0.55));      // stretch the mid-heavy range over the full LUT
-  const p = pal[(c * 255) | 0];                                // the very palette the spectrogram draws with
-  return `rgb(${p & 255},${(p >> 8) & 255},${(p >> 16) & 255})`;
+  const L = 150 + (105 * c | 0);                               // timbre → lightness: bass dim-gray, treble bright white (always high-contrast on black)
+  return `rgb(${L},${L},${L})`;
 }
 function waveCol(samp, cursor, x, h, spec) {
   let lo = 1, hi = -1;

@@ -97,8 +97,13 @@ export let frame = (t) => {
       if (norm < 0) norm = 0
       if (norm > 255) norm = 255
 
-      // Grayscale: map scalar field directly to gray level (R==G==B==norm)
-      px[j] = (0xff000000) | (norm << 16) | (norm << 8) | norm
+      // Contrast expansion around the midpoint: the fBm field sits near mid-gray, so
+      // stretch it (deepen darks, brighten lights) for punch instead of a flat ramp.
+      let c = (norm - 128) * 1.9 + 128
+      if (c < 0) c = 0
+      if (c > 255) c = 255
+      let g = c | 0
+      px[j] = (0xff000000) | (g << 16) | (g << 8) | g
       j++; qx++
     }
     py++
