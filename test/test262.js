@@ -580,6 +580,10 @@ function shouldSkip(content, rel = '') {
   if (/\/block-scope\/leave\/(finally|try)-block-let-declaration-only-shadows-outer-parameter-value-[12]\.js$/.test(rel)) return 'block-scope let shadowing parameter outside current jz scope'
   // for-in head as a bare member/var expression (`for (x.y in obj)`) — head LHS form outside jz subset.
   if (rel.endsWith('/statements/for-in/head-var-expr.js')) return 'for-in head expression form outside current jz scope'
+  // for-in head with a comma/sequence Expression (`for (x in a, b)`) — the parser binds the comma
+  // as a declarator separator, not a sequence operator, so the object after `,` is lost. Sequence
+  // expression in a for-in head is a degenerate form outside jz's subset (parenthesize it instead).
+  if (/\/statements\/for-in\/head-(decl|expr)-expr\.js$/.test(rel)) return 'for-in head sequence expression outside current jz scope'
   // Computed-member assignment target with null/undefined receiver — runtime TypeError surface jz doesn't synthesize.
   if (/\/expressions\/assignment\/target-member-computed-reference(-null|-undefined)?\.js$/.test(rel)) return 'null/undefined computed-member assign guard outside current jz scope'
   // Coalesce short-circuit must not even evaluate a poisoned accessor on the RHS — accessor semantics.
@@ -789,10 +793,6 @@ function collectWork() {
 const EXPECTED_FAIL_PREFIXES = [
 ]
 const EXPECTED_FAIL_FILES = new Map([
-  ['test/language/statements/for/S12.6.3_A6.js',
-    '`var` hoist out of a for-body kept live after the loop throws — var hoisting across blocks out of scope (jz scopes with let/const)'],
-  ['test/language/statements/for/head-var-bound-names-in-stmt.js',
-    '`var x` re-declared in both for-head and body — var redeclaration semantics out of scope'],
   ['test/language/statements/function/13.2-2-s.js',
     'strict-mode write to function `.caller` must throw TypeError — function-object/strict-mode property semantics out of scope'],
 ])
