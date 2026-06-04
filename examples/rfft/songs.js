@@ -21,6 +21,11 @@ const CHORDS = [
   [11, 3, 6, 10, 13, 17],  // viiø Bm11♭5 (half-diminished)
 ]
 
+// Pitch-class set of each chord (root + voicing tones, mod 12) → shared-note count, so the
+// walk can favour smooth voice-leading (more common tones held between adjacent chords).
+const PCS = CHORDS.map(c => { const s = new Set([c[0] % 12]); for (let k = 1; k < c.length; k++) s.add((c[0] + c[k]) % 12); return s })
+const shared = (a, b) => { let n = 0; for (const p of PCS[a]) if (PCS[b].has(p)) n++; return n }
+
 // ── transition graph — where each chord likes to go (jazz functional harmony) ──
 // [nextChord, baseWeight]. Base weights bias the common cadences (ii→V, V→I). Indices
 // match CHORDS.
@@ -36,11 +41,14 @@ const TRANS = [
 
 const NB = 27          // bars in the walk before it loops (× barLen 4 s = 108 s loop)
 
-// Deterministic walk over the graph, but each step is weighted by RECENCY as well as the
-// base bias: a candidate's weight is baseWeight × (bars since it was last heard)², so a
-// just-used chord (especially the tonic) is strongly suppressed until the others have had a
-// turn — serialism-flavoured "always reach for something new", inside the legal jazz moves.
-// Capped with a ii–V turnaround so the loop point resolves back to bar 0's tonic.
+// Deterministic walk over the graph. Each candidate's weight combines three factors:
+//   base      — the functional bias (ii→V, V→I, …) from TRANS.
+//   recency   — a 2-bar cooldown then a square ramp: max(0.03, max(0, age−2)²). A just-used
+//               chord is ~0.03 (effectively blocked) through age 2 and only recovers from
+//               age 3 on, so a chord can't return after a single intervening chord.
+//   voiceLead — (shared notes − 3): favours transitions that hold more common tones (1…3).
+// The 0.03 floor keeps the walk unstuck if every legal move is on cooldown. Capped with a
+// ii–V turnaround so the loop point resolves back to bar 0's tonic.
 const walkIdx = (seed) => {
   let s = (seed >>> 0) || 1
   const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
@@ -50,7 +58,11 @@ const walkIdx = (seed) => {
   while (idx.length < NB - 2) {
     const bar = idx.length, opts = TRANS[cur]
     let total = 0
-    const w = opts.map(([o, bw]) => { const age = bar - lastSeen[o]; const ww = bw * age * age; total += ww; return ww })
+    const w = opts.map(([o, bw]) => {
+      const age = bar - lastSeen[o], cool = Math.max(0, age - 2)
+      const ww = bw * Math.max(0.03, cool * cool) * (shared(cur, o) - 3)
+      total += ww; return ww
+    })
     let r = rnd() * total, cho = opts[0][0]
     for (let i = 0; i < opts.length; i++) { r -= w[i]; if (r <= 0) { cho = opts[i][0]; break } }
     cur = cho; lastSeen[cur] = bar; idx.push(cur)
