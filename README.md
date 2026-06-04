@@ -303,12 +303,40 @@ Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is us
 
 </details>
 
+
 <details>
-<summary><strong>Can jz compile itself?</strong></summary>
+<summary><strong>How big is the output?</strong></summary>
 
-Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is jz compiled by jz.
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
 
-`npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
+- **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
+- **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
+- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
+
+Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
+
+</details>
+
+
+<details>
+<summary><strong>Which optimizations are applied?</strong></summary>
+
+Ordinary JS is already fast — jz infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
+
+- **Type narrowing** — parameters/results pinned to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path. A `Float64Array`/`Int32Array` is direct memory access; a plain `[]` works too, with a little more overhead.
+- **Escape analysis & arena rewind** — fixed-shape arrays/objects/typed-arrays become WASM locals; scratch a function doesn't return is freed on exit (no manual cleanup).
+- **Loops** — invariant hoisting, CSE, typed-array address reuse, induction-variable strength reduction, small fixed-count unrolling (mat4, biquad).
+- **SIMD-128** — independent iterations (`a[i] = a[i]*2 + b[i]`) run several lanes at once: lane-pure maps, reductions (sum/product/min·max), conditional maps (`bitselect`), byte scans (`memchr` via `i8x16`). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
+- **Smaller encoding** — tree-shaking, copy-propagation + dead-store elimination, local/string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling; JS strings you only read aren't copied.
+
+Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` or `'size'`/`'balanced'`/`'speed'` (or a per-pass object): `'balanced'` (= `2`) is the default; `'speed'` trades size for inlined constants and larger buffers; `'size'` drops unrolling and SIMD.
+
+</details>
+
+<details>
+<summary><strong>Is jz production-ready?</strong></summary>
+
+It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
 
 </details>
 
@@ -333,6 +361,23 @@ Each stage lives in its own place: parsing in [`subscript`](https://github.com/d
 
 </details>
 
+<details>
+<summary><strong>Can I compile in the browser or a Worker?</strong></summary>
+
+Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds, fast enough to do on the fly. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
+
+</details>
+
+
+<details>
+<summary><strong>Can jz compile itself?</strong></summary>
+
+Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is jz compiled by jz.
+
+`npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
+
+</details>
+
 
 <details>
 <summary><strong>Can I compile jz to C?</strong></summary>
@@ -350,47 +395,7 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 </details>
 
-<details>
-<summary><strong>How big is the output?</strong></summary>
 
-No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
-
-- **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
-- **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
-- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
-
-Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
-
-</details>
-
-<details>
-<summary><strong>Is jz production-ready?</strong></summary>
-
-It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
-
-</details>
-
-<details>
-<summary><strong>Can I compile in the browser or a Worker?</strong></summary>
-
-Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds, fast enough to do on the fly. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
-
-</details>
-
-<details>
-<summary><strong>Which optimizations are applied?</strong></summary>
-
-Ordinary JS is already fast — jz infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
-
-- **Type narrowing** — parameters/results pinned to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path. A `Float64Array`/`Int32Array` is direct memory access; a plain `[]` works too, with a little more overhead.
-- **Escape analysis & arena rewind** — fixed-shape arrays/objects/typed-arrays become WASM locals; scratch a function doesn't return is freed on exit (no manual cleanup).
-- **Loops** — invariant hoisting, CSE, typed-array address reuse, induction-variable strength reduction, small fixed-count unrolling (mat4, biquad).
-- **SIMD-128** — independent iterations (`a[i] = a[i]*2 + b[i]`) run several lanes at once: lane-pure maps, reductions (sum/product/min·max), conditional maps (`bitselect`), byte scans (`memchr` via `i8x16`). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
-- **Smaller encoding** — tree-shaking, copy-propagation + dead-store elimination, local/string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling; JS strings you only read aren't copied.
-
-Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` or `'size'`/`'balanced'`/`'speed'` (or a per-pass object): `'balanced'` (= `2`) is the default; `'speed'` trades size for inlined constants and larger buffers; `'size'` drops unrolling and SIMD.
-
-</details>
 
 
 ## Performance
