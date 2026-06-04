@@ -12,6 +12,10 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
+<!-- **[docs](./docs.md)**  ·   -->
+<!-- FIXME: playground, floatbeat -->
+**[examples](https://dy.github.io/jz/examples/)**
+
 <!-- FIXME: REPL, used by (color-space, web-audio-api) -->
 
 ## Why?
@@ -112,22 +116,24 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
-<details>
-<summary><strong>Differences with JS</strong></summary>
-
-- **Numbers are f64**; values proven integer (loop counters, anything `| 0`) use `i32` and **wrap at ±2³¹** like C's `int`. `BigInt` (`123n`) is i64 internally and returns to JS as a real, lossless `BigInt`.
-- **`==` / `!=` don't coerce** — they behave exactly like `===` / `!==` (so `1 == "1"` is `false`); they're just the familiar spelling. The one genuinely useful loose form is kept: `x == null` matches both `null` and `undefined`. `strict` rejects `==`/`!=` — write `===`/`!==`.
-- **Strings are UTF-8 bytes**, not UTF-16 — `.length`, indexing, `charCodeAt`, `slice`, `indexOf`, regex all count bytes (`"中".length` is `3`). ASCII matches JS; non-ASCII diverges. `toUpperCase`/`toLowerCase`/`trim` are **ASCII-only** — full Unicode case folding needs multi-KB tables jz omits by default, so non-ASCII letters and whitespace pass through unchanged.
-- **Objects are fixed-shape** — the literal's keys are its layout. `Object.keys`/`for…in` enumerate the literal's keys plus any added by computed assignment (`o[k] = v`); a key added by literal name (`o.z = v`) may not enumerate, so prefer a `Map` for fully dynamic data. Classes are plain objects (no prototype chain), so `instanceof` is just an "is it an object" test.
-- **Typed arrays are fixed-size views** — `arr.length = n` is a compile error, out-of-bounds reads give `0`, and writes past the end corrupt linear memory.
-- **No GC** — memory isn't reclaimed; call `memory.reset()` between batches. `WeakMap`/`WeakSet` lower to `Map`/`Set` (`strict` rejects them).
-- **Number → string isn't exact** — `String(n)`/`toString` keep ~9 significant digits and may not round-trip (`String(0.1 + 0.2)` → `"0.3"`); `toFixed` rounds ties-to-even, and f64 rounding can shift non-half inputs too (`(0.15).toFixed(1)` → `"0.2"`). Exact shortest-form output needs a Grisu/Ryū formatter jz doesn't ship.
-- **Errors are untagged**, and some faults (`null.x`) don't throw, so `e instanceof TypeError` can't discriminate. A `boolean` stored in a container or behind `&&`/`||` crosses as `1`/`0` (it stays a real boolean through `typeof`/`String`/`JSON`/comparisons).
-- **`Math.random` is seeded from host entropy** by default (non-reproducible) — pass `randomSeed: <number>` for a fixed, reproducible sequence. **`Date` getters return UTC** (`.getHours` ≡ `.getUTCHours`): there is no timezone database.
-</details>
-
 
 ## FAQ
+
+<details>
+<summary><strong>What are the differences with JS</strong></summary>
+
+Almost all JS runs unchanged — operators (`==`/`!=` coercion included) and control flow included. The handful below are where jz's **native, runtime-free** representation shows through; each says *why*:
+
+- **Numbers are f64**; integer-proven values (`| 0`, loop counters) are `i32` and **wrap at ±2³¹** like C, and `123n` is a lossless i64 `BigInt`. *WASM's native number types — no boxing or bignum promotion.*
+- **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. *Linear memory is bytes — UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.*
+- **Objects are fixed-shape** — keys added after the literal stay readable but don't enumerate (`Object.keys`/`for…in`); use a `Map` for dynamic keys. *The literal compiles to flat struct field offsets, not a hash map.*
+- **Typed arrays are fixed-size** — `arr.length = n` won't compile, and out-of-bounds reads give `0`. *A view over linear memory — growing it would need a heap manager.*
+- **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` are plain `Map`/`Set`. *A garbage collector would dwarf the module.*
+- **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. *Exact shortest-form needs a multi-KB Ryū/Grisu formatter.*
+- **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. *A plain value keeps `throw` and member reads free of object machinery and per-access checks.*
+- **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`), and **`Math.random`** takes a `randomSeed` for a reproducible stream. *The IANA timezone database is hundreds of KB.*
+</details>
+
 
 <details>
 <summary><strong>Can I use existing npm packages or JS libraries?</strong></summary>
@@ -290,21 +296,6 @@ Each compiled module exposes two call surfaces:
 </details>
 
 <details>
-<summary><strong>Why no type annotations?</strong></summary>
-
-Because `let x: i32` isn't valid JS — annotations would break the promise that valid jz runs and tests as plain JS. So jz reads the types from signals you already write:
-
-```js
-export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
-export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
-```
-
-Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower).
-
-</details>
-
-
-<details>
 <summary><strong>How big is the output?</strong></summary>
 
 No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
@@ -334,13 +325,6 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 </details>
 
 <details>
-<summary><strong>Is jz production-ready?</strong></summary>
-
-It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
-
-</details>
-
-<details>
 <summary><strong>How does jz work?</strong></summary>
 
 A source string flows through six stages into wasm bytes — no IR leaves the process, the whole thing is one pass per `compile()`:
@@ -360,6 +344,30 @@ A source string flows through six stages into wasm bytes — no IR leaves the pr
 Each stage lives in its own place: parsing in [`subscript`](https://github.com/dy/subscript)'s jessie grammar, [`jzify/`](jzify/) for the legacy-JS lowering, [`src/prepare/`](src/prepare/) for module bundling, [`src/compile/`](src/compile/) for inference + codegen (with built-ins in [`module/`](module/) and heap layout in [`src/abi/`](src/abi/)), [`src/optimize/`](src/optimize/) + [`src/wat/`](src/wat/) for the WAT passes, and [`watr`](https://github.com/dy/watr) for the final encode. Shared compile state is one `ctx` object ([`src/ctx.js`](src/ctx.js)).
 
 </details>
+
+
+<details>
+<summary><strong>Why no type annotations?</strong></summary>
+
+Because `let x: i32` isn't valid JS — annotations would break the promise that valid jz runs and tests as plain JS. So jz reads the types from signals you already write:
+
+```js
+export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
+export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
+```
+
+Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower).
+
+</details>
+
+
+<details>
+<summary><strong>Is jz production-ready?</strong></summary>
+
+It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
+
+</details>
+
 
 <details>
 <summary><strong>Can I compile in the browser or a Worker?</strong></summary>
@@ -398,13 +406,15 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 
 
+
+
 ## Performance
 
 Geomean speed across the [bench corpus →](bench/README.md).
 
 <img src="bench/bench.svg?v=2" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
-<sub>Local snapshot (M4 Max, darwin/arm64). the Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
+<sub>Local snapshot (M4 Max, darwin/arm64). Bun/Zig/Rust/Go/NumPy rows are hand-run reference points.</sub>
 
 
 ## Examples
@@ -441,6 +451,7 @@ Geomean speed across the [bench corpus →](bench/README.md).
 From small, fast JS subset to full JS spec, bundled engine:
 
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
+* [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — auditable, reproducible WASM assembled through a typed *builder API* (you construct the module graph by hand, not compile JS source); SIMD/threads/atomics, security-first. Closer to a hand-tuned wasm toolkit than a JS compiler.
 * [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust on WasmGC; no interpreter, but leans on the engine's GC.
 * [Javy](https://github.com/bytecodealliance/javy) — embeds QuickJS; runs almost any JS, but ships a full interpreter (large, interpreter-speed).

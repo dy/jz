@@ -1,15 +1,18 @@
 * [ ] finish selfcompile
   * [ ] template tag separate from main jz: for real selfcompile
+  * [x] make predestined fate and other floatbeats work
+  * [ ] fix failing tests
+  * [ ] 3x cross-ai optimizer passes
+  * [ ] release 0.6.0
 * [x] bw all examples, readme
-* [ ] floatbeatr with soundvis patterns (all floatbeats collection)
+* [ ] floatbeatr playground
 * [ ] REPL
-* [ ] All optimizations from TODO - clean up, close
+  * [ ] porffor, awasm, jco etc choice
+  * [ ] download wasm
 * [ ] Dogfood: color-space, fourier-transform, web-audio-api
 * [x] Examples gallery
 * [ ] Enhance examples, with settings-panel, palettes, meaningful UI/automation, input-drops
   * [ ] Jukebox (bytebox?): random floatbeat from bytebeats collection -> merge with floatbeat
-  * [ ] Chladni: manual f control with automation button; multiple slides
-  * [ ] Plasma: contrast, plasma params
   * [ ] Water simulation
   * [ ] That text layout algorithm
   * [ ] Pinterest soundvis examples
