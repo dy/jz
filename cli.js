@@ -87,18 +87,20 @@ async function main() {
 
 async function handleEvaluate(args) {
   const input = args.join(' ')
-  let code
-
-  if (args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz')))
-    code = readFileSync(args[0], 'utf8')
-  else
-    code = `export let _ = () => ${input}`
+  const isFile = args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz'))
+  // A bare expression ("1 + 2") is wrapped in an arrow so its value can be printed. A file, or
+  // `-e` text that is already module-level (top-level export/import), compiles as-is — wrapping it
+  // would splice `export let _ = () => export …` and crash with a garbled SyntaxError.
+  const isModule = isFile || /^\s*(export|import)\b/m.test(input)
+  const code = isFile ? readFileSync(args[0], 'utf8')
+    : isModule ? input
+    : `export let _ = () => ${input}`
 
   const { exports } = jz(code)
 
-  // If there's an exported _ (expression eval), call it
-  if (exports._) console.log(exports._())
-  else console.log(exports)
+  if (exports._ !== undefined) console.log(exports._())                    // expression eval → print value
+  else if (typeof exports.main === 'function') console.log(exports.main()) // module with a main() entry
+  else console.log(`compiled; exports: ${Object.keys(exports).join(', ') || '(none)'}`)
 }
 
 async function handleJzify(args) {
