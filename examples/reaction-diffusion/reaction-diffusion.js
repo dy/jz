@@ -25,12 +25,12 @@ export let resize = (w, h) => {
   uA = new Float64Array(n); vA = new Float64Array(n)
   uB = new Float64Array(n); vB = new Float64Array(n)
   px = new Uint32Array(n)
-  flip = 0
-  seed()
+  clear()
   return px
 }
 
-export let seed = () => {
+// Reset both ping-pong halves to the rest state (U=1, V=0). The host plants seeds.
+export let clear = () => {
   let n = W * H, i = 0
   while (i < n) {
     uA[i] = 1.0; vA[i] = 0.0
@@ -38,31 +38,27 @@ export let seed = () => {
     i++
   }
   flip = 0
-  // plant two square patches of V=1, U=0.5 near centre
-  let cx = W >> 1, cy = H >> 1
-  let r = (W < H ? W : H) >> 4
-  let py = -r
-  while (py <= r) {
-    let row = ((cy + py + H) % H) * W
-    let px0 = -r
-    while (px0 <= r) {
-      let col = (cx + px0 + W) % W
-      uA[row + col] = 0.5; vA[row + col] = 1.0
-      px0++
+}
+
+// Plant a reacting patch (V=1, U=0.5) in the pixel rectangle [x0,x1]×[y0,y1], into BOTH
+// halves so it shows whichever is the current read buffer — works as an initial seed and as
+// a live drop into an already-evolving field (drag a selection rectangle).
+export let seedRect = (x0, y0, x1, y1) => {
+  let ax = x0 < x1 ? x0 : x1, bx = x0 < x1 ? x1 : x0
+  let ay = y0 < y1 ? y0 : y1, by = y0 < y1 ? y1 : y0
+  if (ax < 0) ax = 0
+  if (ay < 0) ay = 0
+  if (bx > W - 1) bx = W - 1
+  if (by > H - 1) by = H - 1
+  let y = ay
+  while (y <= by) {
+    let row = y * W, x = ax
+    while (x <= bx) {
+      uA[row + x] = 0.5; vA[row + x] = 1.0
+      uB[row + x] = 0.5; vB[row + x] = 1.0
+      x++
     }
-    py++
-  }
-  let ox = W >> 2, oy = H >> 2
-  py = -r
-  while (py <= r) {
-    let row = ((cy + oy + py + H) % H) * W
-    let px0 = -r
-    while (px0 <= r) {
-      let col = (cx + ox + px0 + W) % W
-      uA[row + col] = 0.5; vA[row + col] = 1.0
-      px0++
-    }
-    py++
+    y++
   }
 }
 
@@ -125,12 +121,15 @@ export let frame = () => {
     s++
   }
 
-  // render the current read buffer's V → grayscale (black=low, white=high)
+  // render the current read buffer's V → grayscale. The V field peaks near ~0.4, so a raw
+  // v*255 reads as a dim mid-gray — lift it (gain ≈ 2.6) so the coral is crisp white on black.
   let i = 0
   while (i < n) {
     let v = flip === 0 ? vA[i] : vB[i]
-    v = v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v
-    let g = (v * 255.0) | 0
+    let b = v * 2.6
+    if (b < 0.0) b = 0.0
+    if (b > 1.0) b = 1.0
+    let g = (b * 255.0) | 0
     px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     i++
   }

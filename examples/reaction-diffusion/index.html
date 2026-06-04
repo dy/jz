@@ -10,10 +10,16 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #sel { position: fixed; z-index: 20; border: 1px solid #fff; background: #ffffff14;
+    pointer-events: none; display: none; }
+  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
+    font-size: 13px; color: #aaa; opacity: .7; pointer-events: none; transition: opacity .5s; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="sel"></div>
+<div id="hint">drag a rectangle to seed · click to scatter fresh</div>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
@@ -33,17 +39,56 @@ const sizeTo = (engine) => {
 
 let engine = null, gen = 0
 
+// Seeds are stored NORMALISED ([0,1] rects) so they survive a resize / engine swap; the host
+// converts to pixels and drives the engine, so js and jz get identical seeds → identical fields.
+let seeds = []
+const applySeeds = () => {
+  if (!engine) return
+  engine.clear()
+  for (const [x0, y0, x1, y1] of seeds) engine.seedRect(x0 * W | 0, y0 * H | 0, x1 * W | 0, y1 * H | 0)
+}
+const randRect = () => {
+  const cx = 0.12 + Math.random() * 0.76, cy = 0.12 + Math.random() * 0.76
+  const sx = 0.03 + Math.random() * 0.09, sy = 0.03 + Math.random() * 0.09
+  return [cx - sx, cy - sy, cx + sx, cy + sy]
+}
+const scatter = () => { seeds = [randRect(), randRect()]; if (Math.random() < 0.6) seeds.push(randRect()); applySeeds() }
+
 const setEngine = async (kind) => {
   const my = ++gen
   const e = await loadEngine(kind, { js: "./reaction-diffusion.js", wasm: "./reaction-diffusion.wasm" })
   if (my !== gen) return
-  engine = e; sizeTo(engine)
+  engine = e; sizeTo(engine); applySeeds()        // re-seed the same field on the new engine
 }
 
-addEventListener("resize", () => engine && sizeTo(engine))
+addEventListener("resize", () => { if (engine) { sizeTo(engine); applySeeds() } })
 
-// click / touch to re-seed
-addEventListener("pointerdown", () => { if (engine && engine.seed) engine.seed() })
+// Drag a selection rectangle → drop a reacting patch there (live, additive). A plain click
+// scatters a fresh set of random squares.
+const sel = document.getElementById("sel"), hint = document.getElementById("hint")
+let down = null
+const nx = (x) => x / cv.clientWidth, ny = (y) => y / cv.clientHeight
+cv.addEventListener("pointerdown", (e) => {
+  down = { x: e.clientX, y: e.clientY }
+  sel.style.display = "block"; sel.style.left = e.clientX + "px"; sel.style.top = e.clientY + "px"; sel.style.width = "0px"; sel.style.height = "0px"
+  hint.style.opacity = 0
+})
+addEventListener("pointermove", (e) => {
+  if (!down) return
+  const l = Math.min(down.x, e.clientX), t = Math.min(down.y, e.clientY)
+  sel.style.left = l + "px"; sel.style.top = t + "px"
+  sel.style.width = Math.abs(e.clientX - down.x) + "px"; sel.style.height = Math.abs(e.clientY - down.y) + "px"
+})
+addEventListener("pointerup", (e) => {
+  if (!down) return
+  sel.style.display = "none"
+  const moved = Math.abs(e.clientX - down.x) > 6 || Math.abs(e.clientY - down.y) > 6
+  if (moved) {                                    // a drag → seed that rectangle into the live field
+    const r = [nx(Math.min(down.x, e.clientX)), ny(Math.min(down.y, e.clientY)), nx(Math.max(down.x, e.clientX)), ny(Math.max(down.y, e.clientY))]
+    seeds.push(r); engine && engine.seedRect(r[0] * W | 0, r[1] * H | 0, r[2] * W | 0, r[3] * H | 0)
+  } else scatter()                                // a click → fresh random squares
+  down = null
+})
 
 const loop = () => {
   requestAnimationFrame(loop)
@@ -64,6 +109,7 @@ const ui = hud({
   onSwitch: setEngine,
 })
 await setEngine(ui.kind)
+scatter()                     // start on random squares, not the fixed pair
 loop()
 </script>
 </body>
