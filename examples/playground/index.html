@@ -8,7 +8,7 @@
 <style>
   :root { --bg:#07070c; --fg:#eee; --accent:#ddd; --err:#fff; --dim:#999; }
   html,body { height:100%; margin:0; background:var(--bg); color:var(--fg);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { display:flex; flex-direction:column; border-top:2px solid var(--accent); overflow:hidden; }
   header { display:flex; align-items:baseline; gap:.6em; padding:8px 12px; font-size:13px; }
   header b { color:var(--accent); font-weight:600; }
@@ -18,18 +18,18 @@
   main { flex:1; display:flex; min-height:0; }
   .pane { flex:1; min-width:0; display:flex; flex-direction:column; }
   #editor { flex:1; resize:none; border:0; outline:0; padding:12px; tab-size:2;
-    background:#0b0b12; color:#eee; font:inherit; font-size:13px; line-height:1.5;
+    background:#0b0b12; color:#eee; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     caret-color:var(--accent); white-space:pre; }
   #right { border-left:1px solid #1a1a24; position:relative; }
   #scope { position:absolute; inset:0; width:100%; height:100%; display:block; }
   #wat { position:absolute; inset:0; margin:0; padding:12px; overflow:auto; display:none;
-    background:#0b0b12ee; color:#ccc; font-size:12px; line-height:1.45; white-space:pre; }
+    background:#0b0b12ee; color:#ccc; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre; }
   footer { display:flex; align-items:center; gap:14px; padding:7px 12px; font-size:12px;
     background:#0b0b12; border-top:1px solid #1a1a24; min-height:18px; }
   footer .ok { color:var(--accent); }
   footer .bad { color:var(--err); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   button { font:inherit; font-size:12px; background:#13131c; color:var(--fg);
-    border:1px solid #2a2a2a; border-radius:5px; padding:3px 10px; cursor:pointer; }
+    border:1px solid #2a2a2a; padding:3px 10px; cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button.on { color:var(--accent); border-color:var(--accent); }
   footer .spacer { margin-left:auto; }
@@ -39,11 +39,10 @@
   #editor, #wat { scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.22) transparent; }
   #editor::-webkit-scrollbar, #wat::-webkit-scrollbar { width:9px; height:9px; }
   #editor::-webkit-scrollbar-track, #wat::-webkit-scrollbar-track { background:transparent; }
-  #editor::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16);
-    border-radius:5px; border:2px solid transparent; background-clip:padding-box; }
+  #editor::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border:2px solid transparent; background-clip:padding-box; }
   #editor::-webkit-scrollbar-thumb:hover, #wat::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.3); background-clip:padding-box; }
   #watClose { position:absolute; top:7px; right:9px; z-index:2; width:24px; height:24px; border:0;
-    background:transparent; color:#aaa; font:18px/24px ui-monospace,Menlo,monospace; cursor:pointer; border-radius:6px; padding:0; }
+    background:transparent; color:#aaa; font:18px/24px 'Helvetica Neue', Helvetica, Arial, sans-serif; cursor:pointer; padding:0; }
   #watClose:hover { color:#fff; background:rgba(255,255,255,.12); }
 </style>
 </head>

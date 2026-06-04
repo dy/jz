@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jz examples — valid js, compiled to wasm</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<style>
+  :root { --bg:#0a0a0a; --fg:#f4f4f4; --dim:#8a8a8a; --line:#262626; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+  body { border-top:2px solid #fff; }
+  a { color:inherit; }
+
+  header { max-width:1280px; margin:0 auto; padding:52px 28px 28px; }
+  header h1 { margin:0; font-size:44px; font-weight:700; letter-spacing:-.025em; line-height:1; }
+  header h1 .z { font-style:italic; }
+  header p { margin:18px 0 0; max-width:64ch; font-size:15px; line-height:1.55; color:var(--dim); }
+  header p b { color:var(--fg); font-weight:600; }
+  header .links { margin-top:16px; font-size:13px; letter-spacing:.01em; }
+  header .links a { color:var(--dim); text-decoration:none; border-bottom:1px solid var(--line); padding-bottom:1px; }
+  header .links a:hover { color:var(--fg); border-color:var(--fg); }
+  header .links span { color:var(--line); margin:0 10px; }
+
+  .grid { max-width:1280px; margin:0 auto; padding:8px 28px 64px;
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:18px; }
+  .card { display:block; text-decoration:none; color:inherit; background:#000;
+    border:1px solid var(--line); transition:border-color .2s; }
+  .card:hover { border-color:#6a6a6a; }
+  .card .shot { position:relative; overflow:hidden; aspect-ratio:760/468; background:#000; }
+  .card img { display:block; width:100%; height:100%; object-fit:cover;
+    filter:grayscale(1) contrast(1.04); transition:filter .3s, transform .6s ease; }
+  .card:hover img { filter:grayscale(1) brightness(1.22) contrast(1.08); transform:scale(1.03); }
+  .card .meta { padding:12px 14px 15px; border-top:1px solid var(--line); }
+  .card .meta b { display:block; font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .card .meta span { display:block; margin-top:3px; font-size:12.5px; line-height:1.45; color:var(--dim); }
+  .card.tool .shot { display:flex; align-items:center; justify-content:center; }
+  .card.tool .glyph { font-size:64px; font-weight:700; letter-spacing:-.04em; color:#ededed; }
+  .card.tool .glyph i { font-style:italic; color:#777; }
+
+  footer { max-width:1280px; margin:0 auto; padding:0 28px 56px; color:var(--dim); font-size:12.5px; line-height:1.6; }
+  footer a { color:var(--dim); }
+  footer a:hover { color:var(--fg); }
+</style>
+</head>
+<body>
+<header>
+  <h1>jz <span class="z">examples</span></h1>
+  <p><b>Valid js is valid jz.</b> Each demo runs the very same source two ways — imported as
+  JavaScript, and compiled ahead-of-time to WebAssembly. Flip the <b>js&nbsp;⇄&nbsp;jz</b> switch
+  in any demo's corner to watch the frame-time gap, live. Black is space, white is signal.</p>
+  <div class="links">
+    <a href="https://github.com/dy/jz">repository</a><span>·</span>
+    <a href="https://github.com/dy/jz#readme">readme</a><span>·</span>
+    <a href="./playground/">playground</a>
+  </div>
+</header>
+
+<div class="grid" id="grid"></div>
+
+<footer>
+  Thumbnails are live frames. Open a demo, then press <b style="color:var(--fg)">js</b> /
+  <b style="color:var(--fg)">jz</b> to switch engines — identical output, two backends.
+</footer>
+
+<script type="module">
+// name → one-line description (mirrors the README grid). Order = README reading order.
+const EXAMPLES = [
+  ['game-of-life',       "Conway's Life, straight into shared pixel memory"],
+  ['lenia',              'continuous cellular automaton — smooth-kernel "digital life"'],
+  ['reaction-diffusion', 'Gray–Scott — organic coral & labyrinths'],
+  ['interference',       'two-source wave field, recomputed every frame'],
+  ['plasma',             'FBM domain-warp — the classic flowing plasma'],
+  ['chladni',            'Camerata plate — frequency sweeps the nodal figure'],
+  ['mandelbrot',         'escape-time fractal with smooth coloring'],
+  ['attractors',         'de Jong map — millions of iters into luminous curves'],
+  ['raymarcher',         'an SDF sphere field — Shadertoy on the CPU'],
+  ['rfft',               'live log/mel spectrogram from a jz real FFT'],
+  ['zzfx',               'the unmodified ZzFX sfx synth, compiled as-is'],
+  ['jukebox',            'looping procedural-jazz floatbeat — tap to play'],
+]
+const grid = document.getElementById('grid')
+grid.innerHTML = EXAMPLES.map(([name, desc]) => `
+  <a class="card" href="./${name}/">
+    <div class="shot"><img src="./thumbs/${name}.webp" width="760" height="468" loading="lazy" alt="${name}"></div>
+    <div class="meta"><b>${name}</b><span>${desc}</span></div>
+  </a>`).join('') + `
+  <a class="card tool" href="./playground/">
+    <div class="shot"><span class="glyph">j<i>z</i></span></div>
+    <div class="meta"><b>playground</b><span>edit jz source — it compiles to WASM live, in your browser</span></div>
+  </a>`
+</script>
+</body>
+</html>
