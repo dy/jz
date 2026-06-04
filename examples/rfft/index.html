@@ -232,6 +232,16 @@ async function synthBuffer(sd) {
   return ch;
 }
 
+// A short head synthesized in ONE shot (~10 ms) so playback can start instantly instead of
+// waiting for the whole loop. The full loop is built in the background and crossfaded in — and
+// because both are the same beat(t) for t < secs, that crossfade is between identical signals.
+function synthHead(sd, secs) {
+  const sr = audio.sampleRate, len = Math.round(sr * secs);
+  const ch = new Float64Array(len);
+  beatCache.fill(ch, len, sr, 0, sd);
+  return ch;
+}
+
 // Play `ch` looping, entering at the current loop phase so the timeline (and the
 // spectrogram) stays continuous. fadeSec>0 crossfades in from the current voice.
 function playBuffer(ch, fadeSec) {
@@ -305,7 +315,7 @@ async function start(kind) {
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
       // mark a chord change on the plot — aligned to where its harmonics fill the FFT window
-      const ct = (((cursor - N / 2) / sr) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;
+      const ct = (((Math.max(0, cursor - N / 2)) / sr) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;   // clamp at t<0 so the start shows chord I, not the loop's seam chord (no double label)
       const ci = chordSequence[((ct / barLen) | 0) % barsInWalk];
       if (ci !== lastColChord) { lastColChord = ci; chordMarks.push(x, ci); }
       waveCol(samp, cursor, x, wave.height);  // one waveform column, time-aligned to this frame
@@ -392,9 +402,10 @@ async function begin() {
   audio = { ctx, sampleRate: ctx.sampleRate };
   SR = ctx.sampleRate; buildRows(); drawAxis();   // real device rate → exact Hz everywhere
   await warmBeat(ui.kind);
-  playBuffer(await synthBuffer(seed), 0);                    // first buffer (sliced, non-blocking), anchors startT
+  playBuffer(synthHead(seed, 8), 0);                         // instant: play an 8 s head, no wait
   overlay(false);
   start(ui.kind);
+  synthBuffer(seed).then(ch => { if (running && audio) playBuffer(ch, 0.4) });   // crossfade to the full evolving loop as it finishes
 }
 
 playEl.addEventListener("click", (e) => {

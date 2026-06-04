@@ -28,30 +28,31 @@ const CHORDS = [
 const PCS = CHORDS.map(c => { const s = new Set(); for (let k = 1; k < c.length; k++) s.add((c[0] + c[k]) % 12); return s })
 const shared = (a, b) => { let n = 0; for (const p of PCS[a]) if (PCS[b].has(p)) n++; return n }
 
-// ── transition graph — where each chord likes to go (jazz functional harmony) ──
-// [nextChord, baseWeight]. Base weights bias the common cadences (ii→V, V→I). Indices
-// match CHORDS.
+// ── transition graph — biased to the descending-fifths circle (the jazz "circle of fifths"
+// turnaround). [nextChord, baseWeight]. Each chord's circle successor (I→IV→viiø→iii→vi→ii→V→I)
+// carries weight ·3, so the walk takes long fifth-falling paths; a lighter alt keeps it varied.
+// viiø is reachable only via IV (and IV→V dominates), so the unstable half-dim stays a rare colour.
 const TRANS = [
-  [[3, 2], [5, 2], [1, 1], [2, 1], [4, 1]],   // I    → IV vi (·2) ii iii V
-  [[4, 3], [6, 1]],                           // ii   → V (·3) viiø   (predominant → dominant)
-  [[5, 2], [3, 1], [1, 1]],                   // iii  → vi (·2) IV ii
-  [[4, 3], [1, 1], [0, 1]],                   // IV   → V (·3) ii I
-  [[0, 2], [5, 2]],                           // V    → I / vi  (resolve or deceptive, equally)
-  [[1, 2], [3, 1], [4, 1], [2, 1]],           // vi   → ii (·2) IV V iii  (vi→ii starts a ii–V–I)
-  [[0, 1], [2, 1]],                           // viiø → I iii
+  [[3, 3], [5, 1], [4, 1]],   // I    → IV (circle) vi V
+  [[4, 3], [0, 1]],           // ii   → V (circle) I
+  [[5, 3], [1, 1]],           // iii  → vi (circle) ii
+  [[4, 3], [6, 1], [0, 1]],   // IV   → V viiø(rare) I   — V dominates, half-dim is a rare colour
+  [[0, 3], [5, 1]],           // V    → I (circle) vi (deceptive)
+  [[1, 3], [3, 1]],           // vi   → ii (circle) IV
+  [[2, 3], [0, 1]],           // viiø → iii (circle) I
 ]
 
-const NB = 27          // bars in the walk before it loops (× barLen 4 s = 108 s loop)
+const NB = 29          // bars in the walk before it loops (× barLen 4 s = 116 s loop)
 
-// Deterministic walk over the graph. Each candidate's weight combines three factors:
-//   base      — the functional bias (ii→V, V→I, …) from TRANS.
-//   recency   — a 2-bar cooldown then a square ramp: max(0.03, max(0, age−2)²). A just-used
-//               chord is ~0.03 (effectively blocked) through age 2 and only recovers from
-//               age 3 on, so a chord can't return after a single intervening chord.
-//   voiceLead — (held notes − 1): every transition now holds ≥2 (rootless close voicing), so
-//               this stays positive and just biases toward the smoothest moves.
-// The 0.03 floor keeps the walk unstuck if every legal move is on cooldown. Capped with a
-// ii–V turnaround so the loop point resolves back to bar 0's tonic.
+// Deterministic walk over the graph. Each candidate's weight = base × recency × voiceLead:
+//   base      — the circle-of-fifths bias from TRANS.
+//   recency   — a 5-bar cooldown: a just-used chord is blocked (a tiny weight that, among the
+//               blocked, prefers the OLDEST — never the most recent) and only frees up after 5
+//               bars, so the walk takes long fifth-falling paths and never doubles back quickly.
+//   voiceLead — (held notes − 1): every diatonic pair holds ≥2 in the rootless voicing, so this
+//               stays positive and just nudges toward the smoothest move.
+// Capped with a ii–V turnaround so the loop point resolves (…ii V | I).
+const COOL = 5
 const walkIdx = (seed) => {
   let s = (seed >>> 0) || 1
   const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
@@ -62,8 +63,9 @@ const walkIdx = (seed) => {
     const bar = idx.length, opts = TRANS[cur]
     let total = 0
     const w = opts.map(([o, bw]) => {
-      const age = bar - lastSeen[o], cool = Math.max(0, age - 2)
-      const ww = bw * Math.max(0.03, cool * cool) * (shared(cur, o) - 1)
+      const age = bar - lastSeen[o]
+      const rec = age <= COOL ? age * 0.02 : 1     // blocked for COOL bars (oldest preferred), then free
+      const ww = bw * rec * (shared(cur, o) - 1)
       total += ww; return ww
     })
     let r = rnd() * total, cho = opts[0][0]
@@ -74,7 +76,7 @@ const walkIdx = (seed) => {
   return idx
 }
 
-const SEQ_IDX = walkIdx(7)
+const SEQ_IDX = walkIdx(2)
 const SEQ = SEQ_IDX.map(i => CHORDS[i])
 const seqLit = '[' + SEQ.map(c => `[${c.join(', ')}]`).join(', ') + ']'
 
