@@ -1,7 +1,7 @@
 // Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_matrix.js'
+import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 // Helper: time N iterations, return ms
@@ -806,6 +806,7 @@ test('codegen: pure scalar function — minimal binary', () => {
 })
 
 test('compile profile reports phase timings', () => {
+  if (onKernel()) return  // kernel: host {profile} option doesn't reach the single-source self-host
   const profile = {}
   const wasm = compile('export let add = (a, b) => a + b', { profile })
   ok(wasm.byteLength > 0, 'compile still returns wasm bytes')
@@ -815,6 +816,7 @@ test('compile profile reports phase timings', () => {
 })
 
 test('compile profile.names emits wasm function name section', () => {
+  if (onKernel()) return  // kernel: host {profile:{names}} option doesn't reach the single-source self-host
   const src = 'let helper = (x) => x <= 0 ? 1 : helper(x - 1) + 1; export let add = (a, b) => helper(a) + b'
   const plain = compile(src)
   is(WebAssembly.Module.customSections(new WebAssembly.Module(plain), 'name').length, 0)
@@ -865,6 +867,7 @@ test('codegen: shapeStrs invalidates when SRC is reassigned', () => {
 })
 
 test('perf: JSON.parse + walk — WASM faster than JS', () => {
+  if (onKernel()) return  // kernel: self-host wasm is unoptimized (no watOptimize); the perf bar assumes level-2 output
   const SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}'
   const src = `
     let SRC = '${SRC}'
@@ -914,7 +917,8 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
   pinFaster(wasmTime, jsTime, 1.2)
 })
 test('perf: watr WAT compiler — WASM competitive with JS', async () => {
-  if (onWasi()) return  // wasi: host global WebAssembly
+  if (onWasi() || onKernel()) return  // wasi: host global WebAssembly; kernel: unoptimized self-host wasm misses the perf bar
+
   // Bench-shape: jzify-bundled watr.compile vs. native ESM watr.compile, on the
   // same WAT corpus the bench harness uses. On the live bench, jz watr is
   // tied with V8 (1.46ms vs 1.46ms median, within noise). In this stricter
@@ -1124,6 +1128,7 @@ test('codegen: .length hoisted out of for-loop', () => {
 // levels should not shake them.
 const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
   if (onWasi()) return  // wasi: size pin
+  if (onKernel()) return  // kernel: bytes path is unoptimized (no watOptimize); size pins assume level-2 output
   const wasm = compile(src, { optimize: 2 })
   const actual = wasm.byteLength
   const tol = Math.max(20, Math.round(expected * 0.05 / 10) * 10)

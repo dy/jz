@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, f64ToI64 } from '../interop.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, onKernel } from './_matrix.js'
 
 async function run(code) {
   const r = await WebAssembly.instantiate(compile(code))
@@ -210,6 +210,7 @@ test('mem.Array: null elements preserved', async () => {
 // === Shared memory: no data collision ===
 
 test('shared memory: no static string collision', async () => {
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
   const memory = new WebAssembly.Memory({ initial: 1 })
   const a = jz('export let f = () => "hello"', { memory })
   const aPtr = a.instance.exports.f()
@@ -362,6 +363,7 @@ test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
 })
 
 test('jz({ memory: pages }): creates owned memory with initial page count', () => {
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
   const inst = jz('export let f = () => [1, 2]', { memory: 2 })
   ok(inst.memory instanceof WebAssembly.Memory, 'has memory')
   is(inst.memory.buffer.byteLength, 2 * 65536)
@@ -370,6 +372,7 @@ test('jz({ memory: pages }): creates owned memory with initial page count', () =
 })
 
 test('compile({ memory: pages }): emits owned memory with initial page count', () => {
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
   const wasm = compile('export let f = () => [1, 2]', { memory: 3 })
   const mod = new WebAssembly.Module(wasm)
   ok(!WebAssembly.Module.imports(mod).some(i => i.module === 'env' && i.name === 'memory'), 'does not import memory')
@@ -384,6 +387,7 @@ test('shared memory: inst.memory is the same object passed in', () => {
 })
 
 test('shared memory: schemas accumulate across compilations', () => {
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
   is(memory.schemas.length, 1, 'one schema after first compile')
@@ -399,7 +403,7 @@ test('shared memory: schemas accumulate across compilations', () => {
 })
 
 test('shared memory: cross-instance object passing', () => {
-  if (onWasi()) return  // wasi: shared-memory host orchestration
+  if (onWasi() || onKernel()) return  // wasi/kernel: shared-memory host orchestration not on the single-source self-host
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
   const b = jz('export let read = (o) => o.x + o.y', { memory })
@@ -441,6 +445,7 @@ test('memory.reset(): own memory grows without reset', () => {
 })
 
 test('memory.reset(): shared memory rewinds heap pointer to 1024', () => {
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
   const memory = jz.memory()
   const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
   exports.f(100)
