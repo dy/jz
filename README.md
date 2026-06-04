@@ -404,10 +404,6 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 ## Examples
 
-**▶ [Floatbeat playground](https://dy.github.io/jz/examples/playground/)** — type a formula, hear it. The editor recompiles jz → WASM **in your browser** on every keystroke (no server, no build step) — the one demo where you watch the compiler itself run. [![playground](examples/thumbs/playground.webp)](https://dy.github.io/jz/examples/playground/)
-
-The rest ship as pre-built `.wasm` (same source runs as plain JS — flip the toggle to compare):
-
 <table>
 <tr>
 <td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
