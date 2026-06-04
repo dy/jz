@@ -2020,48 +2020,23 @@ const handlers = {
       const inner = [';', ['let', ['=', varName, ['[]', arrVar, idx]]], body]
       r = prep(['for', [';', decls, cond, step], inner])
     } else if (Array.isArray(head) && head[0] === 'in') {
-      // for (let k in obj) → unroll at compile time when schema known, else HASH runtime iteration
+      // `for…in` relies on runtime key enumeration — outside the pure canonical subset. strict
+      // rejects it (consistent with `obj[k]` / unknown-receiver methods); use `Object.keys(obj)`.
+      if (ctx.transform.strict) err('strict mode: `for…in` is not in the canonical subset — it relies on runtime key enumeration. Iterate `Object.keys(obj)` explicitly instead.')
+      // for (let k in src) → enumerate src's own keys via Object.keys (schema ∪ any keys added
+      // later for objects; "0".."n-1" for arrays/strings; [] for Set/Map) and iterate the resulting
+      // array by index. One uniform path keeps for-in consistent with Object.keys (so dynamically
+      // added keys appear in both), and break/continue work as in any for-loop. Object.keys'
+      // enumeration stdlib is pulled only when for-in is actually used.
       const [, decl, src] = head
       const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
-      const srcName = typeof src === 'string' ? (ctx.scope.chain[src] || src) : null
-      const sid = typeof srcName === 'string' ? ctx.schema.vars.get(srcName) : null
-      if (sid != null) {
-        // Known schema → compile-time unrolling with string keys
-        const keys = ctx.schema.list[sid]
-        if (!keys || !keys.length) { popScope(); return null }
-        includeForKnownKeyIteration()
-        if (!hasLoopJump(body)) {
-          // No break/continue → flat unroll, no loop frame needed.
-          const stmts = []
-          for (let i = 0; i < keys.length; i++) {
-            stmts.push(i === 0
-              ? ['let', ['=', varName, [, keys[i]]]]
-              : ['=', varName, [, keys[i]]])
-            stmts.push(cloneNode(body))
-          }
-          r = prep([';', ...stmts])
-        } else {
-          // break/continue present → an unrolled loop still needs its frames.
-          // Wrap each iteration in a labeled block (continue target) and the
-          // whole run in an outer labeled block (break target): `break` exits
-          // the construct, `continue` falls through to the next iteration.
-          const brkL = `${T}fibrk${ctx.func.uniq++}`
-          const decl = prep(['let', ['=', varName, [, keys[0]]]])
-          const parts = [decl]
-          for (let i = 0; i < keys.length; i++) {
-            const contL = `${T}ficont${ctx.func.uniq++}`
-            const iter = prep(i === 0
-              ? cloneNode(body)
-              : [';', ['=', varName, [, keys[i]]], cloneNode(body)])
-            parts.push(['label', contL, retargetLoopJumps(iter, brkL, contL)])
-          }
-          r = ['label', brkL, [';', ...parts]]
-        }
-      } else {
-        // Dynamic object → HASH runtime iteration
-        includeForRuntimeKeyIteration()
-        r = ['for-in', varName, prep(src), prep(body)]
-      }
+      const ks = `${T}fik${ctx.func.uniq++}`, ix = `${T}fii${ctx.func.uniq++}`, lenV = `${T}fil${ctx.func.uniq++}`
+      const decls = ['let',
+        ['=', ks, ['()', ['.', 'Object', 'keys'], src]],
+        ['=', ix, [, 0]],
+        ['=', lenV, ['|', ['.', ks, 'length'], [, 0]]]]
+      r = prep(['for', [';', decls, ['<', ix, lenV], ['++', ix]],
+        [';', ['let', ['=', varName, ['[]', ks, ix]]], body]])
     } else {
       // Some parser/jzify shapes for `for (;;)` and `for (; cond; )` arrive
       // as a null or bare-condition head instead of the canonical

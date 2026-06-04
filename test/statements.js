@@ -765,6 +765,15 @@ test('for...in: count keys', () => {
   is(run('export let f = () => { let o = {x: 1, y: 2, z: 3}; let c = 0; for (let k in o) c++; return c }').f(), 3)
 })
 
+test('for...in: enumerates dynamically-added keys, consistent with Object.keys', () => {
+  // for-in iterates `Object.keys(src)`, so a key added via computed assignment (`o[k]=v`) shows up
+  // in the loop, and both enumerations agree. (Regression: for-in used to unroll from the static
+  // schema only and miss it.)
+  is(run("export let f = () => { let o = {x: 1}; let k = 'z'; o[k] = 2; let c = 0; for (let p in o) c++; return c }").f(), 2)
+  is(run("export let f = () => { let o = {a: 1}; let k = 'b'; o[k] = 2; return Object.keys(o).length }").f(), 2)
+  is(run("export let f = () => { let a = [10, 20, 30]; let n = 0; for (let i in a) n++; return n }").f(), 3)
+})
+
 test('for...in: continue in runtime HASH iteration advances', () => {
   const code = `export let f = () => {
     let o = {}
