@@ -12,7 +12,7 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
-<!-- FIXME: REPL, examples (gallery page), used by (color-space, web-audio-api) -->
+<!-- FIXME: REPL, used by (color-space, web-audio-api) -->
 
 ## Why?
 
@@ -403,6 +403,8 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 
 ## Examples
+
+One source, two backends — open any demo and flip the **js ⇄ jz** switch to compare. [**Browse the gallery →**](https://dy.github.io/jz/examples/)
 
 <table>
 <tr>

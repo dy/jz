@@ -50,9 +50,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     <style>
       @font-face { font-family: linefont; font-display: block; src: url("${FONT_URL}") format('woff2'); }
       .jz-hud { position: fixed; top: 12px; right: 12px; z-index: 100;
-        font: 600 13px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif;
         color: #111; background: rgba(255,255,255,.92);
-        border: 1px solid #0002; border-radius: 10px; padding: 10px 12px;
+        border: 1px solid #0002; padding: 10px 12px;
         box-shadow: 0 4px 16px #0002; user-select: none; width: 168px; }
       .jz-hud .fps { font-size: 22px; letter-spacing: -.5px; }
       .jz-hud .fps small { font-size: 11px; opacity: .5; font-weight: 500; }
@@ -64,7 +64,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-hud .ms b { font-weight: 700; }
       .jz-hud .ms small { opacity: .5; font-weight: 500; }
       .jz-hud .seg { display: flex; margin-top: 8px;
-        border: 1px solid #0002; border-radius: 7px; overflow: hidden; }
+        border: 1px solid #0002; overflow: hidden; }
       .jz-hud .seg button { flex: 1; border: 0; background: transparent;
         font: inherit; padding: 5px 12px; cursor: pointer; color: #888; }
       .jz-hud .seg button.on { background: #111; color: #fff; }
@@ -74,7 +74,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #111; }
       .jz-code { position: fixed; left: 12px; top: 12px; bottom: 12px; z-index: 99; display: none;
         max-width: min(560px, 46vw); background: rgba(7,7,12,.93); border: 1px solid #ffffff1f;
-        border-radius: 10px; box-shadow: 0 8px 28px #0007; }
+        box-shadow: 0 8px 28px #0007; }
       .jz-code.show { display: block; }
       .jz-code-pre { margin: 0; padding: 12px 14px; height: 100%; box-sizing: border-box; overflow: auto;
         color: #ddd; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
@@ -82,12 +82,12 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
       .jz-code-pre::-webkit-scrollbar { width: 9px; height: 9px; }
       .jz-code-pre::-webkit-scrollbar-track { background: transparent; }
-      .jz-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 5px;
+      .jz-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16);
         border: 2px solid transparent; background-clip: padding-box; }
       .jz-code-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.3); background-clip: padding-box; }
       .jz-code-x { position: absolute; top: 6px; right: 7px; z-index: 1; width: 22px; height: 22px;
         border: 0; background: transparent; color: #aaa; font: 18px/22px ui-monospace, Menlo, monospace;
-        cursor: pointer; border-radius: 6px; padding: 0; }
+        cursor: pointer; padding: 0; }
       .jz-code-x:hover { color: #fff; background: rgba(255,255,255,.12); }
       .jz-hud .nav { display: flex; align-items: center; justify-content: space-between; margin: -1px 0 7px; padding-right: 42px; }
       .jz-hud .nav b { font-weight: 700; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -103,7 +103,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       <div class="spark" id="jz-spark"></div>
       <div class="ms" id="jz-ms" hidden><b><span id="jz-ms-v">·</span></b> <small>ms / frame compute</small></div>` : ''}
       <div class="seg">
-        <button data-k="js">JS</button>
+        <button data-k="js">js</button>
         <button data-k="jz">jz</button>
       </div>
     </div>

@@ -6,7 +6,7 @@
 <title>Live spectrogram (RFFT) - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 <style>
-  html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c; font-family: sans-serif; }
+  html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   a { color: #eee; text-decoration: none; }
   a:hover { color: #ddd; text-decoration: underline; }
@@ -17,14 +17,14 @@
   /* vertical Hz axis over the spectrogram — non-scrolling, so it stays put as the trace scrolls */
   #axis { position: absolute; inset: 0; z-index: 12; pointer-events: none; overflow: hidden; }
   #axis .tick { position: absolute; left: 0; right: 0; border-top: 1px solid rgba(255, 255, 255,.12); }
-  #axis .tick b { position: absolute; left: 5px; top: -7px; font: 600 10px/1 ui-monospace, Menlo, monospace;
+  #axis .tick b { position: absolute; left: 5px; top: -7px; font: 600 10px/1 'Helvetica Neue', Helvetica, Arial, sans-serif;
     color: #ddd; opacity: .85; text-shadow: 0 0 3px #000, 0 1px 2px #000; }
   /* scale selector: pitch-faithful log (equal octaves) vs perceptual mel — switch live */
   #scale { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 14;
-    display: flex; border: 1px solid #ffffff22; border-radius: 7px; overflow: hidden;
+    display: flex; border: 1px solid #ffffff22; overflow: hidden;
     background: #000a; user-select: none; }
   #scale button { border: 0; background: transparent; color: #aaa; cursor: pointer;
-    font: 600 10px/1 ui-monospace, Menlo, monospace; padding: 5px 11px; }
+    font: 600 10px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 5px 11px; }
   #scale button + button { border-left: 1px solid #ffffff14; }
   #scale button.on { background: #ddd; color: #0a0a0a; }
   /* waveform: its own panel under the spectrogram, scrolling in lockstep with it */
@@ -57,7 +57,7 @@ import { instantiate } from "../../interop.js";
 import { songs, songBeatSrc, songSlug, barsInWalk, barLen, chordSequence, chordNames } from "./songs.js";
 
 const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
-                                     // transform with finer bass detail, so jz vs JS is clearly measurable
+                                     // transform with finer bass detail, so jz vs js is clearly measurable
 const HOP = 512;                     // samples between successive spectrogram columns
 const urls = { js: "./rfft.js", wasm: "./rfft.wasm" };
 const TAU = 6.283185307179586;
@@ -291,7 +291,7 @@ async function start(kind) {
       const base = cursor - N;
       for (let i = 0; i < N; i++) inp[i] = samp(base + i) * hann[i];   // windowed frame from the playing buffer
       const t0 = performance.now();
-      engine.rfft();                                                    // ← the measured workload: jz vs JS on the FFT
+      engine.rfft();                                                    // ← the measured workload: jz vs js on the FFT
       work += performance.now() - t0;
       // each row = peak magnitude across its band, A-weighted, mapped through a fixed dB
       // window so loudness is absolute: quiet stays dim, partials pop bright.
@@ -313,7 +313,7 @@ async function start(kind) {
     // chord barlines + small labels, drawn over the fresh columns so they scroll left with
     // the plot next frame. Font matches the Hz axis (10 px CSS); a faint barline divides chords.
     if (chordMarks.length) {
-      sgctx.font = `${(10 * sgScale) | 0}px ui-monospace, Menlo, monospace`;
+      sgctx.font = `${(10 * sgScale) | 0}px 'Helvetica Neue', Helvetica, Arial, sans-serif`;
       sgctx.textAlign = "right";   // label hugs the LEFT of its barline → it stays in already-
       for (let k = 0; k < chordMarks.length; k += 2) {   // scrolled territory and isn't overwritten by new columns
         const mx = chordMarks[k], nm = chordNames[chordMarks[k + 1]];
