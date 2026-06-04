@@ -355,8 +355,9 @@ function waveCol(samp, cursor, x, h) {
   for (let i = cursor - HOP; i < cursor; i++) { const s = samp(i); sum += s; sum2 += s * s; }
   const mean = sum / HOP;
   const std = Math.sqrt(Math.max(sum2 / HOP - mean * mean, 1e-9));
-  smoothMean += (mean - smoothMean) * 0.012;      // ~1 s EMA on both — width/centre track breath/chords,
-  smoothStd += (std - smoothStd) * 0.012;         // not the per-frame beat ripple (which would striate the band)
+  smoothMean += (mean - smoothMean) * 0.012;      // centre: ~1 s EMA — stable midline, no per-cycle wobble
+  smoothStd += (std - smoothStd) * 0.10;          // width: ~120 ms — averages out the sub-bass-cycle jitter but
+                                                  // keeps the within-chord amplitude envelope (beat tremolo, onset)
   const amp = h * WAMP, mid = h * 0.5;
   const muY = mid - smoothMean * amp;             // centre on the detected mean
   const sigY = Math.max(0.8, smoothStd * amp);    // half-width = detected stdev
