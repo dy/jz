@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, onKernel } from './_matrix.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -464,6 +464,7 @@ test('Regression: array literal spread copies external typed array values', () =
 })
 
 test('Regression: imported function returning array with props keeps numeric indexing', () => {
+  if (onKernel()) return  // kernel: host {modules} import resolution doesn't reach the single-source self-host
   const { exports } = jz(`
     import { make } from './m.js'
     export let test = () => {

@@ -4,7 +4,7 @@
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, onKernel } from './_matrix.js'
 
 // Feature gating asks: did jz pull this stdlib in? watr's `inlineOnce` +
 // `treeshake` then folds + erases helpers whose only caller has been inlined,
@@ -214,6 +214,7 @@ test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
 })
 
 test('alloc:false omits allocator helper exports', () => {
+  if (onKernel()) return  // kernel: host {alloc:false} option doesn't reach the single-source self-host
   const src = `export let f = () => {
     let a = [1, 2, 3]
     return a.length
