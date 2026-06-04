@@ -7,8 +7,8 @@
 <link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon"/>
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: sans-serif; }
-  body { border-top: 2px solid #50ad7b; }
-  canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #aff; }
+  body { border-top: 2px solid #ddd; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #000; }
 </style>
 </head>
 <body>
@@ -20,7 +20,7 @@ import { loadEngine, hud } from "../lib/jzdemo.js";
 const urls = { js: "./interference.js", wasm: "./interference.wasm" };
 const canvas = document.getElementById("canvas");
 const context = canvas.getContext("2d");
-var step = 0.001;
+var step = 0.012;
 
 const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/interference", code: "./interference.js", nav: "interference", onSwitch: start });
 
@@ -31,8 +31,9 @@ async function start(kind) {
 
   let width, height, image, mem;
   const onresize = () => {
-    width = canvas.offsetWidth >>> 2;
-    height = canvas.offsetHeight >>> 2;
+    const dpr = Math.min(1, window.devicePixelRatio || 1);   // wave field per pixel — full screen at CSS-pixel res
+    width = Math.round(canvas.offsetWidth * dpr);
+    height = Math.round(canvas.offsetHeight * dpr);
     canvas.width = width;
     canvas.height = height;
     image = context.createImageData(width, height);
@@ -54,21 +55,6 @@ async function start(kind) {
   })();
 }
 start(h.kind);
-
-document.getElementById("warning").addEventListener("click", () => {
-  document.getElementById("warning").remove();
-  step = 0.012;
-});
 </script>
-
-<style>
-  #warning { z-index: 10; position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; justify-content: center; text-align: center; color: #fff; padding: 6vw; box-sizing: border-box; font-size: min(2.4vw, 180%); cursor: pointer; }
-</style>
-<div id="warning">
-  <p style="color: #f00">EPILEPSY WARNING</p>
-  <p style="text-align: justify">A very small percentage of individuals may experience epileptic seizures when exposed to certain light patterns or flashing lights. Exposure to certain patterns or backgrounds on a computer screen may induce an epileptic seizure in these individuals. Certain conditions may induce previously undetected epileptic symptoms even in persons who have no history of prior seizures or epilepsy.</p>
-  <p style="text-align: justify">If you experience any of the following symptoms while viewing - dizziness, altered vision, eye or muscle twitches, loss of awareness, disorientation, any involuntary movement, or convulsions - IMMEDIATELY discontinue use and consult your physician.</p>
-  <p>(click to continue)</p>
-</div>
 </body>
 </html>

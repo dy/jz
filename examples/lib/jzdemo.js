@@ -58,7 +58,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-hud .fps small { font-size: 11px; opacity: .5; font-weight: 500; }
       .jz-hud .spark { display: block; height: 34px; margin: 4px 0 2px;
         font-family: linefont; font-variation-settings: 'wght' 260, 'wdth' 100;
-        font-size: 34px; line-height: 34px; color: #50ad7b; overflow: hidden;
+        font-size: 34px; line-height: 34px; color: #111; overflow: hidden;
         white-space: nowrap; word-break: break-all; }
       .jz-hud .ms { margin-top: 2px; font-size: 12px; }
       .jz-hud .ms b { font-weight: 700; }
@@ -71,18 +71,29 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-hud .gh { position: absolute; top: 9px; right: 11px; color: #111; opacity: .35; display: inline-flex; }
       .jz-hud .gh:hover { opacity: 1; }
       .jz-hud .cv { position: absolute; top: 9px; right: 33px; color: #111; opacity: .35; display: inline-flex; cursor: pointer; }
-      .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #50ad7b; }
+      .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #111; }
       .jz-code { position: fixed; left: 12px; top: 12px; bottom: 12px; z-index: 99; display: none;
-        max-width: min(560px, 46vw); overflow: auto; margin: 0; padding: 12px 14px;
-        background: rgba(7,7,12,.93); color: #cfe8db; border: 1px solid #ffffff1f; border-radius: 10px;
-        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
-        box-shadow: 0 8px 28px #0007; -webkit-overflow-scrolling: touch; }
+        max-width: min(560px, 46vw); background: rgba(7,7,12,.93); border: 1px solid #ffffff1f;
+        border-radius: 10px; box-shadow: 0 8px 28px #0007; }
       .jz-code.show { display: block; }
+      .jz-code-pre { margin: 0; padding: 12px 14px; height: 100%; box-sizing: border-box; overflow: auto;
+        color: #ddd; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+      .jz-code-pre::-webkit-scrollbar { width: 9px; height: 9px; }
+      .jz-code-pre::-webkit-scrollbar-track { background: transparent; }
+      .jz-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 5px;
+        border: 2px solid transparent; background-clip: padding-box; }
+      .jz-code-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.3); background-clip: padding-box; }
+      .jz-code-x { position: absolute; top: 6px; right: 7px; z-index: 1; width: 22px; height: 22px;
+        border: 0; background: transparent; color: #aaa; font: 18px/22px ui-monospace, Menlo, monospace;
+        cursor: pointer; border-radius: 6px; padding: 0; }
+      .jz-code-x:hover { color: #fff; background: rgba(255,255,255,.12); }
       .jz-hud .nav { display: flex; align-items: center; justify-content: space-between; margin: -1px 0 7px; padding-right: 42px; }
       .jz-hud .nav b { font-weight: 700; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .jz-hud .nav button { border: 0; background: transparent; font: inherit; font-size: 18px; line-height: 1;
         color: #888; cursor: pointer; padding: 0 2px; }
-      .jz-hud .nav button:hover { color: #50ad7b; }
+      .jz-hud .nav button:hover { color: #111; }
     </style>
     <div class="jz-hud">
       ${nav ? `<div class="nav"><button id="jz-prev" title="previous example">‹</button><b>${nav}</b><button id="jz-next" title="next example">›</button></div>` : ''}
@@ -96,8 +107,13 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         <button data-k="jz">jz</button>
       </div>
     </div>
-    ${code ? `<pre class="jz-code" id="jz-code"></pre>` : ''}`
+    ${code ? `<div class="jz-code" id="jz-code"><button class="jz-code-x" id="jz-code-x" title="close source" aria-label="close source">×</button><pre class="jz-code-pre" id="jz-code-pre"></pre></div>` : ''}`
   document.body.appendChild(el)
+
+  // The HUD is an overlay — swallow pointer/click so they don't fall through to a
+  // window-level canvas handler (e.g. clicking the FPS area must not re-seed/shuffle).
+  for (const ev of ['pointerdown', 'mousedown', 'click', 'touchstart'])
+    el.addEventListener(ev, (e) => e.stopPropagation())
 
   const fpsEl = el.querySelector('#jz-fps')
   const sparkEl = el.querySelector('#jz-spark')
@@ -120,17 +136,20 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
 
   // Source overlay: lazy-load `code` (a URL to fetch, or literal text) on first open.
   const cvBtn = el.querySelector('#jz-cv'), codeBox = el.querySelector('#jz-code')
+  const codePre = el.querySelector('#jz-code-pre'), codeX = el.querySelector('#jz-code-x')
   if (cvBtn) {
     let loaded = false
+    const close = () => { codeBox.classList.remove('show'); cvBtn.classList.remove('on') }
     cvBtn.onclick = async () => {
       const showing = codeBox.classList.toggle('show')
       cvBtn.classList.toggle('on', showing)
       if (showing && !loaded) {
         loaded = true
-        codeBox.textContent = code.includes('\n') ? code
+        codePre.textContent = code.includes('\n') ? code
           : await fetch(new URL(code, document.baseURI).href).then(r => r.text()).catch(() => '// source unavailable')
       }
     }
+    codeX.onclick = close
   }
 
   // EMA-smoothed over a ~0.4s window. The sparkline plots FPS on an absolute scale

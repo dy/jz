@@ -8,11 +8,11 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  body { border-top: 2px solid #50ad7b; display: grid; place-items: center; }
+  body { border-top: 2px solid #ddd; display: grid; place-items: center; }
   #c { display: block; image-rendering: pixelated; box-shadow: 0 0 60px #0006; }
   /* the driving frequency — the soul of the Camerata generator (after Demian Conrad) */
   #hz { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
-    font: 600 13px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em; color: #cfe8db;
+    font: 600 13px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em; color: #aaa;
     opacity: .8; pointer-events: none; text-shadow: 0 0 8px #000; }
 </style>
 </head>
@@ -30,7 +30,7 @@ let S = 0, img, out32, px
 const sizeTo = (engine) => {
   const dpr = Math.min(2, window.devicePixelRatio || 1)
   const cssSide = Math.max(160, Math.min(innerWidth, innerHeight) - 40)
-  S = Math.min(760, Math.round(cssSide * dpr) >> 1 << 1)
+  S = Math.round(cssSide * dpr) >> 1 << 1   // full square at device-pixel res
   cv.width = cv.height = S
   cv.style.width = cv.style.height = cssSide + "px"
   img = g.createImageData(S, S); out32 = new Uint32Array(img.data.buffer)

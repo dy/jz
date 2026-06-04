@@ -8,7 +8,7 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  body { border-top: 2px solid #50ad7b; }
+  body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 </style>
 </head>
@@ -19,9 +19,13 @@
 import { loadEngine, hud } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
-// Internal resolution: 160×120 gives the kernel radius room for life while staying
-// playable (the ring convolution is the heavy part — ~230 kernel entries per cell at R=9)
-const IW = 160, IH = 120
+// Internal resolution: scaled to the screen aspect (no stretch), capped on the long
+// side so the ring convolution (~230 entries/cell at R=9) stays real-time. Bigger and
+// correctly-proportioned vs the old fixed 160×120.
+const CAP = 340
+const _ar = innerWidth / innerHeight
+const IW = ((_ar >= 1 ? CAP : Math.round(CAP * _ar)) & ~1) || 2
+const IH = ((_ar >= 1 ? Math.round(CAP / _ar) : CAP) & ~1) || 2
 cv.width = IW; cv.height = IH
 
 const img = g.createImageData(IW, IH)

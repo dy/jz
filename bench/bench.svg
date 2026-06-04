@@ -2,14 +2,14 @@
   <rect width="720" height="550" rx="12" fill="#ffffff"/>
 
   <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-    <rect x="0" y="20" width="720" height="50" fill="#e8590c" opacity="0.06"/>
+    <rect x="0" y="20" width="720" height="50" fill="#000000" opacity="0.06"/>
     <rect x="174" y="43.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="38" x2="174" y2="52" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="38" x2="650" y2="52" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="41" text-anchor="end" font-size="14" font-weight="700" fill="#e8590c">jz</text>
+    <text x="156" y="41" text-anchor="end" font-size="14" font-weight="700" fill="#000000">jz</text>
     <text x="156" y="56" text-anchor="end" font-size="10" fill="#aeb4ba">→ wasm</text>
-    <text x="662" y="49" font-size="13" font-weight="700" fill="#e8590c">1.00×</text>
-    <circle cx="182.0" cy="45" r="8" fill="#e8590c">
+    <text x="662" y="49" font-size="13" font-weight="700" fill="#000000">1.00×</text>
+    <circle cx="182.0" cy="45" r="8" fill="#000000">
       <animate attributeName="cx" dur="1.6s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.00s"/>
     </circle>

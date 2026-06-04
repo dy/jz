@@ -8,15 +8,15 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  body { border-top: 2px solid #50ad7b; }
+  body { border-top: 2px solid #ddd; }
   #scope { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   #hint { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; z-index: 30;
-    font-size: 13px; color: #cfe8db; opacity: .75; pointer-events: none; transition: opacity .4s; }
+    font-size: 13px; color: #aaa; opacity: .75; pointer-events: none; transition: opacity .4s; }
 </style>
 </head>
 <body>
 <canvas id="scope"></canvas>
-<div id="hint">click to play · tap again to shuffle the tune</div>
+<div id="hint">click to play / pause</div>
 
 <script type="module">
 import { instantiate } from "../../interop.js"
@@ -41,7 +41,7 @@ const makeEngine = async (kind) => {
 
 // ── audio: stream the tune as gapless ½-s chunks scheduled just ahead of the
 // playhead — `off` advances every chunk so the melody runs forever, no loop.
-// A shuffle reseeds and restarts the stream from the top. ─────────────────────
+// Click toggles play/stop; play restarts the arpeggio from the top. ───────────
 let actx, playing = false, off = 0, nextTime = 0, streamStart = 0, queued = []
 const audio = () => { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); return actx }
 const stopQueued = () => { for (const s of queued) { try { s.stop() } catch {} } queued = [] }
@@ -55,6 +55,7 @@ const schedule = () => {
   }
 }
 const startStream = () => { audio(); stopQueued(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; schedule() }
+const stop = () => { stopQueued(); playing = false }
 
 // ── scope ─────────────────────────────────────────────────────────────────────
 const cv = document.getElementById("scope"), g = cv.getContext("2d")
@@ -65,7 +66,7 @@ const draw = (buf) => {
   g.fillStyle = "#07070c"; g.fillRect(0, 0, W, H)
   const mid = H / 2, amp = H * 0.4, n = buf.length, step = n / W
   g.strokeStyle = "#ffffff12"; g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
-  g.strokeStyle = "#50ad7b"; g.lineWidth = Math.max(1, devicePixelRatio || 1); g.beginPath()
+  g.strokeStyle = "#ddd"; g.lineWidth = Math.max(1, devicePixelRatio || 1); g.beginPath()
   for (let x = 0; x < W; x++) {
     let lo = 1, hi = -1, s0 = x * step | 0, s1 = Math.min(n, (x + 1) * step + 1 | 0)
     for (let i = s0; i < s1; i++) { const v = buf[i]; if (v < lo) lo = v; if (v > hi) hi = v }
@@ -79,11 +80,10 @@ const draw = (buf) => {
 // `off`, so the running stream just picks up the new engine on its next chunk.
 let engine = null, gen = 0, seed = 1, previewOff = 0
 const setEngine = async (kind) => { const my = ++gen; const e = await makeEngine(kind); if (my === gen) engine = e }
-const shuffle = () => { seed = (seed * 1103515245 + 12345) >>> 8 & 1023; if (playing) startStream() }
 addEventListener("pointerdown", () => {
   document.getElementById("hint").style.opacity = 0
   if (!engine) return
-  playing ? shuffle() : startStream()
+  playing ? stop() : startStream()
 })
 
 const loop = () => {

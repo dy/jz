@@ -23,7 +23,8 @@ const cnv = document.getElementsByTagName("canvas")[0];
 const ctx = cnv.getContext("2d");
 const bcr = cnv.getBoundingClientRect();
 
-// Viewport size (CSS pixels — every frame recomputes the whole set, so keep it sane)
+// Viewport size — full screen at CSS-pixel res (every frame recomputes the whole set,
+// so we don't multiply by DPR: retina would 4× the per-frame cost).
 const width  = bcr.width  | 0;
 const height = bcr.height | 0;
 
@@ -65,11 +66,11 @@ const colors = (() => {
   cnv.height = 1;
   const ctx = cnv.getContext("2d");
   const grd = ctx.createLinearGradient(0, 0, 2048, 0);
-  grd.addColorStop(0.0000, "#000764");
-  grd.addColorStop(0.1600, "#2068CB");
-  grd.addColorStop(0.4200, "#EDFFFF");
-  grd.addColorStop(0.6425, "#FFAA00");
-  grd.addColorStop(0.8575, "#000200");
+  grd.addColorStop(0.0000, "#000000");
+  grd.addColorStop(0.1600, "#555555");
+  grd.addColorStop(0.4200, "#ffffff");
+  grd.addColorStop(0.6425, "#cccccc");
+  grd.addColorStop(0.8575, "#000000");
   ctx.fillStyle = grd;
   ctx.fillRect(0, 0, 2048, 1);
   cnv.className = "gradient";

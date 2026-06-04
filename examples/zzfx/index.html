@@ -8,19 +8,19 @@
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #eee; background: #07070c;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  body { border-top: 2px solid #50ad7b; }
+  body { border-top: 2px solid #ddd; }
   #scope { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   /* preset bar: a centered, wrapping row of pills along the bottom */
   #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
     padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); }
   #bar button { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: #cfe8db; background: #ffffff10; border: 1px solid #ffffff22; border-radius: 999px;
+    color: #aaa; background: #ffffff10; border: 1px solid #ffffff22; border-radius: 999px;
     padding: 9px 15px; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
     transition: background .12s, border-color .12s, color .12s, transform .06s; }
-  #bar button:hover { border-color: #50ad7b; color: #fff; }
+  #bar button:hover { border-color: #ddd; color: #fff; }
   #bar button:active { transform: translateY(1px); }
-  #bar button.on { background: #50ad7b; border-color: #50ad7b; color: #07120d; }
+  #bar button.on { background: #ddd; border-color: #ddd; color: #0a0a0a; }
   #bar button.dice { color: #eee; }
   #bar button kbd { font: inherit; opacity: .4; margin-left: 6px; }
 </style>
@@ -124,7 +124,7 @@ const draw = (buf) => {
   g.strokeStyle = '#ffffff12'; g.lineWidth = 1
   g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
   // min/max envelope per column — a faithful waveform regardless of zoom
-  g.strokeStyle = '#50ad7b'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
+  g.strokeStyle = '#ddd'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
   g.beginPath()
   const n = buf.length, step = n / W
   for (let x = 0; x < W; x++) {

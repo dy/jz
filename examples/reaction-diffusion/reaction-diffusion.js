@@ -125,18 +125,13 @@ export let frame = () => {
     s++
   }
 
-  // render the current read buffer's V → palette (blue→cyan→white)
-  // shift-based colour mapping, no per-pixel divides
+  // render the current read buffer's V → grayscale (black=low, white=high)
   let i = 0
   while (i < n) {
     let v = flip === 0 ? vA[i] : vB[i]
     v = v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v
-    let t = (v * 255.0) | 0
-    let t2 = t + t             // 0..510
-    let r = t2 > 255 ? t2 - 255 : 0
-    let g = t2 < 255 ? t2 : 255
-    let b = 128 + ((t * 127) >> 8)
-    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+    let g = (v * 255.0) | 0
+    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     i++
   }
 }

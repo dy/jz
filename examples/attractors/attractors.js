@@ -71,9 +71,7 @@ export let frame = (a, b, c, d, iters) => {
       let L = Math.log(v + 1.0) * 44.0
       g = (L > 255.0 ? 255.0 : L) | 0
     }
-    let r = (g * g) >> 8                  // ≈ g²/255 — warm core
-    let bl = (g * 210) >> 8               // ≈ g·0.82 — teal
-    px[i] = (255 << 24) | (bl << 16) | (g << 8) | r
+    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     i++
   }
 }

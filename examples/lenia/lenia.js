@@ -138,22 +138,14 @@ export let frame = (dt) => {
     py++
   }
 
-  // Render: teal/green→white palette using shifts (no divides)
-  // v in [0,1]: map to teal→green→white
-  // r = v² · 255 approximated as (vi*vi)>>8; g = v·255; b = (1-(v-1)²)·200 approx
+  // Render: grayscale — cell value v in [0,1] maps linearly to intensity [0,255]
   py = 0
   while (py < hh) {
     let qx = 0
     while (qx < ww) {
       let v = dst[py * ww + qx]
-      // v in [0,1] → scale to [0,255]
       let vi = (v * 255.0) | 0
-      let r = (vi * vi) >> 8                    // ≈ vi²/255 (highlights only in bright cells)
-      let g = vi                                // linear green channel
-      let bv = 255 - vi
-      let b = 200 - ((bv * bv) >> 8)           // more blue at low v, drops to ~45 at high v
-      if (b < 0) { b = 0 }
-      px[py * ww + qx] = (255 << 24) | (b << 16) | (g << 8) | r
+      px[py * ww + qx] = (255 << 24) | (vi << 16) | (vi << 8) | vi
       qx++
     }
     py++

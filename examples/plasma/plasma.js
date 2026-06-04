@@ -97,28 +97,8 @@ export let frame = (t) => {
       if (norm < 0) norm = 0
       if (norm > 255) norm = 255
 
-      // Two-segment integer lerp through the palette stops (no divides; >>7 = ÷128):
-      //   norm 0..127   → lo → mid      norm 128..255 → mid → hi
-      let r_, g_, b_
-      if (norm < 128) {
-        let h_ = norm          // 0..127
-        r_ = pal[0] + (((pal[3] - pal[0]) * h_) >> 7)
-        g_ = pal[1] + (((pal[4] - pal[1]) * h_) >> 7)
-        b_ = pal[2] + (((pal[5] - pal[2]) * h_) >> 7)
-      } else {
-        let h_ = norm - 128    // 0..127
-        r_ = pal[3] + (((pal[6] - pal[3]) * h_) >> 7)
-        g_ = pal[4] + (((pal[7] - pal[4]) * h_) >> 7)
-        b_ = pal[5] + (((pal[8] - pal[5]) * h_) >> 7)
-      }
-      if (r_ > 255) r_ = 255
-      if (g_ > 255) g_ = 255
-      if (b_ > 255) b_ = 255
-      if (r_ < 0) r_ = 0
-      if (g_ < 0) g_ = 0
-      if (b_ < 0) b_ = 0
-
-      px[j] = (255 << 24) | (b_ << 16) | (g_ << 8) | r_
+      // Grayscale: map scalar field directly to gray level (R==G==B==norm)
+      px[j] = (0xff000000) | (norm << 16) | (norm << 8) | norm
       j++; qx++
     }
     py++
