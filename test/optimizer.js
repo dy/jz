@@ -1621,7 +1621,7 @@ test('dropDeadZeroInit: -0.0 initializer is preserved (not coerced to +0)', () =
 
 test('dropDeadZeroInit: i64 0n zero-init survives into later arithmetic', () => {
   // BigInt locals init to `i64.const 0`; the i32/f64 zero-init dropper must not
-  // touch the i64 slot. Returned via Number() (raw BigInt return is out of surface).
+  // touch the i64 slot. (A raw `bigint` return now crosses as a Number too — see test/data.js.)
   is(run('export let main = () => { let x = 0n; return Number(x + 5n) }').main(), 5)
 })
 

@@ -40,6 +40,24 @@ function adaptI64(mod, raw) {
 // ARRAYS
 // ============================================
 
+// --- BigInt return boundary ---
+
+test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () => {
+  // Internally bigint rides an i64 reinterpreted into the f64 carrier; the export thunk exposes
+  // the raw i64, so the host receives a genuine JS BigInt (was a lossy Number; raw bits before that).
+  is(run('export let f = () => 100n').f(), 100n)
+  is(run('export let f = () => 10n - 3n').f(), 7n)
+  is(run('export let f = () => 0n - 5n').f(), -5n)             // signed
+  is(run('export let f = () => { return 7n * 6n }').f(), 42n)
+  is(run('export let f = () => 9007199254740993n').f(), 9007199254740993n)  // lossless past 2^53
+})
+
+test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces it)', () => {
+  // g returns bigint; f does bigint math on g()'s result, then returns. Internal calls use the
+  // f64 carrier, so g()'s value reaches f exactly; only f's `$exp` export result is i64.
+  is(run('export let g = () => 5n; export let f = () => g() * 2n + 1n').f(), 11n)
+})
+
 // --- Literals & indexing ---
 
 test('array: empty', () => {
