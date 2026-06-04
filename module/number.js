@@ -409,6 +409,10 @@ export default (ctx) => {
             (local.set $abs (f64.sub (local.get $val) (f64.trunc (local.get $val))))
             (if (f64.gt (local.get $abs) (f64.const 0))
               (then
+                ;; $int was taken from f64.nearest(val), which rounds .5+ UP (999999999.9 → 1e9),
+                ;; but $abs/$frac below derive from f64.trunc(val). Re-derive $int from the same
+                ;; trunc so integer and fraction agree — else String(999999999.9) → "1000000000.9".
+                (local.set $int (i32.trunc_f64_u (f64.trunc (local.get $val))))
                 (local.set $prec (i32.const 9))
                 (local.set $scale (call $__pow10 (i32.const 9)))
                 ;; round: trunc_u(x+0.5) == floor(x+0.5) for the positive frac scale
@@ -688,7 +692,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str i64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $result f64) (local $digit i32) (local $seen i32) (local $f f64)
+    (local $digit i32) (local $seen i32) (local $f f64)
+    (local $acc i64) (local $rad i64) (local $ovf i32) (local $exp i32) (local $sticky i32) (local $k i32) (local $e i32)
     (local.set $f (f64.reinterpret_i64 (local.get $str)))
     ;; If input is a number, just truncate
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.trunc (local.get $f)))))
@@ -711,16 +716,21 @@ export default (ctx) => {
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    ;; 0x prefix → radix 16
-    (if (i32.and (i32.eqz (local.get $radix))
+    ;; 0x prefix → radix 16 (stripped when radix is unspecified OR explicitly 16, per JS)
+    (if (i32.and (i32.or (i32.eqz (local.get $radix)) (i32.eq (local.get $radix) (i32.const 16)))
       (i32.and (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
         (i32.and (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 48))
           (i32.or (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
             (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 88))))))
       (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
     (if (i32.eqz (local.get $radix)) (then (local.set $radix (i32.const 10))))
-    ;; Parse digits
-    (local.set $result (f64.const 0))
+    ;; Power-of-two radix → exact bit width per digit (lets the >2^64 path round once).
+    (if (i32.eqz (i32.and (local.get $radix) (i32.sub (local.get $radix) (i32.const 1))))
+      (then (local.set $k (i32.ctz (local.get $radix)))))
+    (local.set $rad (i64.extend_i32_u (local.get $radix)))
+    ;; Parse digits — accumulate EXACTLY in u64 (round-once via convert at the end, matching JS for
+    ;; any value < 2^64). On u64 overflow, freeze the high bits and track the dropped magnitude
+    ;; (exp) + a sticky bit so the final round-to-f64 still matches round-once for power-of-two radix.
     (block $done (loop $lp
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $c (call $__char_at (local.get $str) (local.get $i)))
@@ -734,12 +744,41 @@ export default (ctx) => {
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
       (br_if $done (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix))))
       (local.set $seen (i32.const 1))
-      (local.set $result (f64.add (f64.mul (local.get $result) (f64.convert_i32_s (local.get $radix))) (f64.convert_i32_s (local.get $digit))))
+      (if (i32.eqz (local.get $ovf))
+        (then
+          ;; acc*radix + digit, exact while it stays within unsigned 64-bit
+          (if (i64.le_u (local.get $acc) (i64.div_u (i64.sub (i64.const -1) (i64.extend_i32_u (local.get $digit))) (local.get $rad)))
+            (then (local.set $acc (i64.add (i64.mul (local.get $acc) (local.get $rad)) (i64.extend_i32_u (local.get $digit)))))
+            (else
+              (local.set $ovf (i32.const 1))
+              ;; non-power-of-two radix: continue round-each in f64 from the exact seed (keeps magnitude)
+              (if (i32.eqz (local.get $k)) (then (local.set $f (f64.convert_i64_u (local.get $acc)))))))))
+      (if (local.get $ovf)
+        (then
+          (if (local.get $k)
+            (then  ;; power-of-two: this digit and all later ones sit below the frozen high bits
+              (local.set $exp (i32.add (local.get $exp) (local.get $k)))
+              (if (local.get $digit) (then (local.set $sticky (i32.const 1)))))
+            (else  ;; other radix: round-each f64 — ≤1 ULP past 2^53, but only for >2^64 values
+              (local.set $f (f64.add (f64.mul (local.get $f) (f64.convert_i32_u (local.get $radix))) (f64.convert_i32_u (local.get $digit))))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lp)))
     ;; No digits consumed → NaN
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+    ;; Produce the f64. No overflow → exact round-once convert. Overflow+power-of-two → round the
+    ;; frozen high bits (sticky-injected to break ties correctly) and scale by 2^exp. Overflow on
+    ;; another radix → $f already holds the round-each result.
+    (if (i32.eqz (local.get $ovf))
+      (then (local.set $f (f64.convert_i64_u (local.get $acc))))
+      (else (if (local.get $k)
+        (then
+          (if (local.get $sticky) (then (local.set $acc (i64.or (local.get $acc) (i64.const 1)))))
+          (local.set $f (f64.convert_i64_u (local.get $acc)))
+          (local.set $e (i32.add (local.get $exp) (i32.const 1023)))
+          (if (i32.ge_s (local.get $e) (i32.const 2047))
+            (then (local.set $f (f64.const inf)))
+            (else (local.set $f (f64.mul (local.get $f) (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u (local.get $e)) (i64.const 52)))))))))))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $f))) (else (local.get $f))))`
 
   // __strws(c: i32) → i32 — ECMA StrWhiteSpace predicate. Covers TAB..CR, SP,
   // NBSP, BOM, LS/PS, and every Unicode Space_Separator. U+180E is *not*

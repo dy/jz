@@ -282,6 +282,20 @@ test('parseInt: large hex integer > 53 bits', () => {
   is(val, expected, `got ${val}, expected ${expected}`)
 })
 
+test('parseInt: round-once past 2^53 matches JS (exact i64 accumulation)', () => {
+  // The integer is accumulated exactly (u64) and rounded once to f64 at the end, so values
+  // beyond f64's exact integer range still match JS — which rounds the exact mathInt, not each
+  // intermediate. (Under host:js parseInt is a host import; under wasi it runs the WAT above.)
+  const dec = (s) => is(run(`export let f = () => parseInt(${JSON.stringify(s)})`).f(), parseInt(s), s)
+  dec('9007199254740993')        // 2^53 + 1
+  dec('9223372036854775807')     // 2^63 - 1
+  dec('18446744073709551615')    // 2^64 - 1
+  dec('0xffffffffffffffff')      // 2^64 - 1 in hex
+  // >2^64 power-of-two radix exercises the sticky-bit rounding path
+  is(run('export let f = () => parseInt("0x100000000000008000000000", 16)').f(),
+     parseInt('0x100000000000008000000000', 16))
+})
+
 // === .concat ===
 
 test('string: .concat single', () => {
