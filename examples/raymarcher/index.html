@@ -36,7 +36,7 @@ let engine = null, gen = 0, t = 0
 
 const setEngine = async (kind) => {
   const my = ++gen
-  const e = await loadEngine(kind, { js: "./raymarcher.js", wasm: "./raymarcher.wasm" })
+  const e = await loadEngine(kind, { js: "./raymarcher.js", wasm: "./raymarcher.simd.wasm" })
   if (my !== gen) return
   engine = e; sizeTo(engine)
 }
