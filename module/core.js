@@ -274,6 +274,10 @@ export default (ctx) => {
   ctx.core.stdlib['__coll_order'] = `(func $__coll_order (param $off i32) (param $cap i32) (param $stride i32) (result i32)
     (local $i i32) (local $n i32) (local $slot i32) (local $buf i32)
     (local $j i32) (local $k i32) (local $cur i32) (local $sq i32)
+    ;; A null/empty backing pointer (off below the heap base) has no live slots —
+    ;; ordering it yields the empty list. Guard before the $off-8 length read so a
+    ;; degenerate receiver returns an empty buffer instead of faulting on load(-8).
+    (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START})) (then (return (call $__alloc (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 2))))
     ;; gather live slot offsets (occupied ⇔ hash word ≠ 0)
     (block $gd (loop $gl
