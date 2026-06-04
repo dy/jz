@@ -360,6 +360,24 @@ test('import: multiple host functions', () => {
   is(exports.f(3), 34)  // 4 + 30
 })
 
+test('import: host numeric constant folds to a literal', () => {
+  // A numeric host value (e.g. Math.PI from `{ imports: { math: Math } }`) has no callable ABI —
+  // it folds to an f64 literal at the reference site instead of emitting a broken func import.
+  const { exports } = jz(
+    'import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
+    { imports: { math: Math } }
+  )
+  almost(exports.f(), 1)  // sin(π/2) === 1
+})
+
+test('import: host constant is shadowed by a local of the same name', () => {
+  const { exports } = jz(
+    'import { PI } from "math"; export let f = () => { let PI = 10; return PI }',
+    { imports: { math: Math } }
+  )
+  is(exports.f(), 10)
+})
+
 // ============================================
 // Host import overrides of built-in globals
 // ============================================

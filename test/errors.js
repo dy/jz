@@ -41,6 +41,14 @@ test('strict rejects: function', () => throws('function f() {}', 'function', 'fu
 // but that fold is a deviation, not a true subset member — strict rejects them outright.
 test('strict rejects: WeakMap', () => throws('export let f = () => new WeakMap()', 'WeakMap', 'WeakMap should error in strict', { strict: true }))
 test('strict rejects: WeakSet', () => throws('export let f = () => new WeakSet()', 'WeakSet', 'WeakSet should error in strict', { strict: true }))
+// jz's ==/!= never coerce (identical to ===/!==), so default mode accepts them; strict enforces
+// the canonical subset, where ===/!== are the single spelling. (Accepted in default — see below.)
+test('strict rejects: ==', () => throws('export let f = (a, b) => a == b', '==', '== should error in strict', { strict: true }))
+test('strict rejects: !=', () => throws('export let f = (a, b) => a != b', '!=', '!= should error in strict', { strict: true }))
+test('default accepts ==/!= (non-coercing)', () => {
+  ok(compile('export let f = (a, b) => a == b'), '== compiles in default mode')
+  ok(compile('export let f = (a, b) => a != b'), '!= compiles in default mode')
+})
 
 // ============================================================================
 // Const enforcement

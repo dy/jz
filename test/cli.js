@@ -62,8 +62,9 @@ test('cli: -e file', () => {
   const file = join(tmp, 'eval.js')
   writeFileSync(file, 'export let main = () => 99')
   const out = cli('-e', file)
-  // Should output exports object or the value
-  ok(out.includes('main'), 'exports main')
+  // A file (or module-level source) with a main() entry is called; its value is printed —
+  // rather than dumping the raw exports object as `{ main: [Function] }`.
+  ok(out.includes('99'), 'calls main entry and prints its value')
 })
 
 test('cli: compile .js → .wasm', () => {
