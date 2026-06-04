@@ -238,6 +238,19 @@ test('Number: a bound `>>> 0` uint32 reads and computes as its unsigned value', 
      (() => { let h = 0; for (let i = 0; i < 5; i++) { h = (h * 31 + 7) >>> 0 } return h })())
 })
 
+test('Number: a bound `>>> k` (k≥1) keeps the fast signed-i32 path and stays correct', () => {
+  // `expr >>> k` for a constant k with (k & 31) ≥ 1 lands in [0, 2³¹−1] — it fits a *signed*
+  // i32, so the binding stays i32 (the FFT index path: `nn >>> 1`), unlike the `>>> 0` above
+  // which must widen to f64. The unsigned-shift semantics still hold: a value negative as a
+  // signed i32 before the shift (−1 ≡ 0xFFFFFFFF) reads as uint32 >>> k, never the signed >>.
+  is(run('export let f = () => { let u = (0 - 1) >>> 1; return u }').f(), 2147483647)   // 0xFFFFFFFF >>> 1
+  is(run('export let f = () => { let u = (0 - 2) >>> 1; return u }').f(), 2147483647)   // 0xFFFFFFFE >>> 1
+  is(run('export let f = () => { let u = (0 - 1) >>> 4; return u }').f(), 268435455)    // 0xFFFFFFFF >>> 4
+  is(run('export let f = () => { let u = (0 - 1) >>> 31; return u }').f(), 1)
+  // `>>> 32` ≡ `>>> 0` (shift count is mod 32) → full uint32, so it must still widen to f64.
+  is(run('export let f = () => { let u = (0 - 1) >>> 32; return u }').f(), 4294967295)
+})
+
 // === Regression: String() large-value fraction-drop + trap ===
 // Pre-fix, the __ftoa fit loop reduced precision until the scaled integer fit i32, which
 // (a) dropped the fractional part once floor(val) exceeded ~2^31, and (b) trapped on the
