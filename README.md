@@ -61,7 +61,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `optimize` | `false`/`0` off, `1` size-only, `true`/`2` default (all stable passes), `3` trades size for speed. String aliases: `'size'`, `'balanced'` (= default), `'speed'`. Object form overrides individual passes. |
 | `strict: true` | Enforce the pure canonical subset: skip jzify lowering (so `var`/`function`/`class`/`==`/… are rejected, not accepted) **and** reject dynamic fallbacks (`obj[k]`, `for-in`, unknown receiver methods). Off by default — broader JS is lowered automatically. |
 | `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) for standalone modules that never marshal heap values. |
-| `randomSeed` | `Math.random` seed for reproducible output — default deterministic; a number fixes it, `true` draws from host entropy. |
+| `randomSeed` | `Math.random` seeding — default draws from host entropy (non-reproducible); a number fixes it for a reproducible sequence, `true` forces entropy explicitly. |
 | `wat: true` | `compile()` returns WAT text instead of WASM binary. |
 | `profile` | Mutable sink for compile-stage timings; set `profile.names = true` for a WASM `name` section. |
 </details>
@@ -431,7 +431,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 
 ## Alternatives
 
-<img src="alternatives.svg?v=3" alt="JS → WASM landscape — from tiny, fast AOT subsets (jz, AssemblyScript) to full-spec bundled engines (Javy, ComponentizeJS)" width="720">
+From small, fast JS subset to full JS spec, bundled engine:
 
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
 * [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
