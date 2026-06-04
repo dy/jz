@@ -224,11 +224,17 @@ export function analyzeBody(body) {
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
-    // wasm type (locals slice). A `>>>` result is an unsigned uint32 that doesn't fit a *signed*
-    // i32, so a binding initialized from one must be f64 — else reads and arithmetic see the value
-    // as negative for inputs ≥ 2³¹. (ToUint32 accumulators init from a literal, not a `>>>`, and
-    // narrowUint32 re-narrows those to i32 — so this only widens general `let u = x >>> k` bindings.)
-    const wt = (Array.isArray(rhs) && rhs[0] === '>>>') ? 'f64' : exprType(rhs, locals)
+    // wasm type (locals slice). A `>>> 0` result is an unsigned uint32 that doesn't fit a
+    // *signed* i32, so a binding initialized from one must be f64 — else reads and arithmetic
+    // see the value as negative for inputs ≥ 2³¹. But `x >>> k` with a constant shift k where
+    // (k & 31) ≥ 1 lands in [0, 2³¹−1] (max 0xFFFFFFFF >>> 1 = 0x7FFFFFFF), which DOES fit a
+    // signed i32 — keep it on the fast integer path (FFT index math: `nn >>> 1`, `n2 >>> 2`).
+    // Only `>>> 0` (and variable shifts, which could be 0) need widening. (ToUint32 accumulators
+    // init from a literal and narrowUint32 re-narrows them — so this only governs `let u = x >>> k`.)
+    const shr = Array.isArray(rhs) && rhs[0] === '>>>'
+    const shrFitsI32 = shr && Array.isArray(rhs[2]) && rhs[2][0] == null
+      && typeof rhs[2][1] === 'number' && (rhs[2][1] & 31) >= 1
+    const wt = (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
     if (!locals.has(name)) locals.set(name, wt)
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
 
