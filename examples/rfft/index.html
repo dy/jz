@@ -388,6 +388,7 @@ function togglePlay() {
 async function begin() {
   running = true;
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.resume();                                   // Safari/iOS start the context suspended — resume inside the gesture, else silence
   audio = { ctx, sampleRate: ctx.sampleRate };
   SR = ctx.sampleRate; buildRows(); drawAxis();   // real device rate → exact Hz everywhere
   await warmBeat(ui.kind);
