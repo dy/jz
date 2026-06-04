@@ -123,18 +123,23 @@ const draw = (buf) => {
   const mid = H / 2, amp = H * 0.42
   g.strokeStyle = '#ffffff12'; g.lineWidth = 1
   g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
-  // min/max envelope per column — a faithful waveform regardless of zoom
-  g.strokeStyle = '#fff'; g.lineWidth = Math.max(1, (window.devicePixelRatio || 1))
-  g.beginPath()
+  // min/max envelope as ONE connected, filled shape — smooth, not per-column sticks
+  // (zzfx sounds are short, so per-column ticks read as pixelated; connecting + filling
+  // the top/bottom envelope gives a continuous waveform silhouette).
   const n = buf.length, step = n / W
+  const hiA = new Float32Array(W), loA = new Float32Array(W)
   for (let x = 0; x < W; x++) {
     let lo = 1, hi = -1
-    const s = Math.floor(x * step), e = Math.min(n, Math.floor((x + 1) * step) + 1)
+    const s = Math.floor(x * step), e = Math.max(s + 1, Math.min(n, Math.floor((x + 1) * step) + 1))
     for (let i = s; i < e; i++) { const v = buf[i]; if (v < lo) lo = v; if (v > hi) hi = v }
     if (lo > hi) { lo = hi = 0 }
-    g.moveTo(x + .5, mid - hi * amp); g.lineTo(x + .5, mid - lo * amp + .5)
+    hiA[x] = hi; loA[x] = lo
   }
-  g.stroke()
+  g.fillStyle = '#fff'; g.beginPath()
+  g.moveTo(0, mid - hiA[0] * amp)
+  for (let x = 1; x < W; x++) g.lineTo(x + .5, mid - hiA[x] * amp)   // top envelope L→R
+  for (let x = W - 1; x >= 0; x--) g.lineTo(x + .5, mid - loA[x] * amp) // bottom envelope R→L
+  g.closePath(); g.fill()
   // playhead during playback
   if (actx && playStart >= 0) {
     const prog = (actx.currentTime - playStart) / playDur
