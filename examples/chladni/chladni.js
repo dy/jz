@@ -39,11 +39,11 @@ export let resize = (w, h) => {
   return px
 }
 
-// `freq` (Hz-ish, ~40..2000) selects the mode: higher frequency → higher eigenmode →
+// `freq` (Hz-ish, ~40..20000) selects the mode: higher frequency → higher eigenmode →
 // richer nodal figure. (Adjustable/audio-driven later; here the demo sweeps it.)
 export let frame = (freq) => {
   let PI = Math.PI
-  let t01 = (freq - 40.0) / 1960.0
+  let t01 = (freq - 40.0) / 19960.0
   if (t01 < 0.0) t01 = 0.0
   if (t01 > 1.0) t01 = 1.0
   let idx = (t01 * (NMODES - 1) + 0.5) | 0

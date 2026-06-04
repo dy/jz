@@ -69,7 +69,7 @@ addEventListener("resize", () => engine && sizeTo(engine))
 // the nearest (n,m) pair — a band of frequencies legitimately shares one figure. 1 ≤ n < m ≤ 12
 // → C(12,2) = 66 modes. The scrubber position p∈[0,1] maps to 40…2000 Hz; the value label shows
 // the mode's representative frequency so the number steps in lock-step with the figure.
-const F_LO = 40, F_HI = 2000, NMODES = 66
+const F_LO = 40, F_HI = 20000, NMODES = 66
 let auto = true, pos = 0, dirty = true
 const posToFreq = (p) => F_LO + p * (F_HI - F_LO)
 const setPos = (p) => {
