@@ -167,41 +167,42 @@ export let frame = (t) => {
         let diff = nx * lx + ny * ly + nz * lz
         if (diff < 0.0) diff = 0.0
 
-        // Ambient + diffuse
-        let bright = 0.12 + diff * 0.88
-
-        // Fog by step count — heavier = more steps = more distant
+        // Fog by step count — distant surfaces fade toward the black sky
         let fog = 1.0 - steps * 0.01563   // 1/64 ≈ 0.015625
         if (fog < 0.0) fog = 0.0
-        bright = bright * fog
 
-        // Grayscale: map bright scalar directly to gray level
-        let v = (bright * 255.0) | 0
+        // Which surface did we hit? plane vs sphere = argmin of the scene SDF here.
+        let dPlane = sdPlane(hy)
+        let dSph = sdRepSpheres(hx, hy, hz)
+        let val = 0.0
+        if (dPlane < dSph) {
+          // PLANE → white floor, fading to black toward the horizon
+          val = fog
+        } else {
+          // BALL → reflective gray: base gray + a mirror reflection of the white
+          // floor (reflected ray pointing down) vs the black sky (up), plus a tight
+          // specular glint toward the light.
+          let rdotn = rdX * nx + rdY * ny + rdZ * nz
+          let reflX = rdX - 2.0 * rdotn * nx
+          let reflY = rdY - 2.0 * rdotn * ny
+          let reflZ = rdZ - 2.0 * rdotn * nz
+          let env = -reflY
+          if (env < 0.0) env = 0.0
+          let spec = reflX * lx + reflY * ly + reflZ * lz
+          if (spec < 0.0) spec = 0.0
+          spec = spec * spec
+          spec = spec * spec
+          val = 0.15 + diff * 0.18 + env * 0.6 + spec * 0.7
+          if (val > 1.0) val = 1.0
+          val = val * fog
+        }
+        let v = (val * 255.0) | 0
         if (v > 255) v = 255
+        if (v < 0) v = 0
         r = v; g = v; bl = v
       } else {
-        // Sky gradient — grayscale: luminance of warm horizon to cool zenith
-        let skyT = vy * 0.5 + 0.5     // [0..1], no divide (vy already in [-1,+1])
-        let skyT2 = skyT * skyT
-        // Sky: lerp from warm horizon (255,180,100) to cool zenith (30,60,120)
-        let sr = (255 - skyT2 * 230.0) | 0
-        let sg2 = (180 - skyT2 * 130.0) | 0
-        let sb = (100 + skyT2 * 30.0) | 0
-        if (sr < 0) sr = 0
-        if (sg2 < 0) sg2 = 0
-        if (sb < 0) sb = 0
-        // Sun glow: if ray near light dir, boost
-        let sunDot = rdX * lx + rdY * ly + rdZ * lz
-        if (sunDot > 0.992) {
-          let sunG = ((sunDot - 0.992) * 125.0 * 255.0) | 0
-          if (sunG > 255) sunG = 255
-          sr = sr + sunG; if (sr > 255) sr = 255
-          sg2 = sg2 + sunG; if (sg2 > 255) sg2 = 255
-          sb = sb + (sunG >> 1); if (sb > 255) sb = 255
-        }
-        // Luminance mix of sky color
-        let v = (sr * 0.30 + sg2 * 0.59 + sb * 0.11) | 0
-        r = v; g = v; bl = v
+        // Atmosphere → black
+        r = 0; g = 0; bl = 0
       }
 
       px[j] = (255 << 24) | (bl << 16) | (g << 8) | r
