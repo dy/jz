@@ -2030,9 +2030,24 @@ const handlers = {
       // enumeration stdlib is pulled only when for-in is actually used.
       const [, decl, src] = head
       const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
+      // for-in over null/undefined is a no-op — ES ForIn/OfHeadEvaluation returns a break
+      // completion before enumerating — but Object.keys(null|undefined) throws. So a nullish
+      // source must enumerate the empty set. A static null (`[null,null]`) / undefined (`[]`)
+      // skips Object.keys entirely; a bare identifier is guarded by a runtime `== null` test
+      // (evaluated twice — side-effect-free — keeping Object.keys' *direct* receiver so its
+      // static key schema still resolves); object/array literals and other expressions, which
+      // are never nullish or carry no static schema to lose, stay direct.
+      // A nullish literal node is `[<nullish-op>, value]` with both slots nullish: `null` is
+      // `[null, null]`, `undefined` is `[null]` (empty value slot). A numeric/string literal
+      // `[null, v]` has a non-nullish value slot, so `src[1] == null` discriminates them.
+      const nullish = Array.isArray(src) && src[0] == null && src[1] == null
+      const keysExpr = nullish ? ['[]', null]
+        : typeof src === 'string'
+          ? ['?', ['==', src, [null, null]], ['[]', null], ['()', ['.', 'Object', 'keys'], src]]
+          : ['()', ['.', 'Object', 'keys'], src]
       const ks = `${T}fik${ctx.func.uniq++}`, ix = `${T}fii${ctx.func.uniq++}`, lenV = `${T}fil${ctx.func.uniq++}`
       const decls = ['let',
-        ['=', ks, ['()', ['.', 'Object', 'keys'], src]],
+        ['=', ks, keysExpr],
         ['=', ix, [, 0]],
         ['=', lenV, ['|', ['.', ks, 'length'], [, 0]]]]
       r = prep(['for', [';', decls, ['<', ix, lenV], ['++', ix]],
