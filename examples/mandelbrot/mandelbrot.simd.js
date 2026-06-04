@@ -104,8 +104,11 @@ export let computeLine = (y, width, height, limit) => {
       } else { j = minIterations; }
     }
 
-    // colour each lane — extract_lane needs a literal lane, so unroll 0..3 (the log
-    // smoothing is scalar, once per pixel, not per iteration)
+    // colour each lane — extract_lane needs a literal lane, so unroll 0..3. The log
+    // smoothing stays scalar (f64): the f64 reference squares |z| past the f32 range
+    // during the post-escape smoothing, so an f32 SIMD log here would speckle. A
+    // faithful 4-wide colouring needs the large-bailout smooth formula (no post-smooth)
+    // — left as the follow-up that makes this win at every limit, not just iteration-bound.
     mem[stride + x]     = color(i32x4.lane(iter, 0), f32x4.lane(ix, 0), f32x4.lane(iy, 0), invLimit);
     mem[stride + x + 1] = color(i32x4.lane(iter, 1), f32x4.lane(ix, 1), f32x4.lane(iy, 1), invLimit);
     mem[stride + x + 2] = color(i32x4.lane(iter, 2), f32x4.lane(ix, 2), f32x4.lane(iy, 2), invLimit);

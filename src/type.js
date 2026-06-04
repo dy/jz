@@ -510,6 +510,7 @@ export function exprType(expr, locals) {
     if (typeof args[0] === 'string') {
       const f = ctx.func.map?.get(args[0])
       if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'i32' && f.sig.ptrKind == null) return 'i32'
+      if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'v128') return 'v128'   // SIMD helper
     }
   }
   return 'f64'
