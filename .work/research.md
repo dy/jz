@@ -493,3 +493,84 @@ developer adjusts nothing):
   - WASM/watr branch hints, native tail calls, SIMD where provable
   - whole-program devirtualization, SRoA, const-fold, i32/f64 narrowing
   - README *performance hints* — documentation only, advisory, never required
+
+---
+
+## README audience model — the four visitor classes
+
+*(Archived from the README's trailing HTML comment — design scaffolding for who the doc serves and what each reader scans for.)*
+
+### Skeptics — "Oh great, another JS-to-WASM compiler"
+
+Seen AssemblyScript, Porffor, Javy. Looking for reasons to dismiss or take seriously.
+
+| They ask | They look for |
+|---|---|
+| Why not just AssemblyScript/Porffor? | Honest comparison with trade-offs, not sales copy |
+| What JS does it actually support? | Concrete subset, not "JS you already know" |
+| Are the benchmarks real? | Reproducible numbers, CI gating, no cherry-picking |
+| Where does it break? | Divergence list — if it's hidden, they assume the worst |
+| Is this a toy or production? | Test262 badge, self-host, bench CI |
+
+Scroll straight to Alternatives and the divergence FAQ. If either smells like marketing, they leave.
+
+### Curious explorers — "Interesting — show me something"
+
+Came from a link, not evaluating anything. Want a 30-second "aha" then a path to go deeper.
+
+| They ask | They look for |
+|---|---|
+| What is this in one sentence? | Tagline that names the thing, not the aspirations |
+| Show me it working | Opening code example — compile, call, done |
+| What's it good for? | Good-for / not-for table — tells them whether to care |
+| Something visual | Examples grid — mandelbrot, spectrogram |
+
+Read the first 20 lines and either leave or open a fold. The Language diagram is their entry point.
+
+### Pragmatists — "Can I use this for my problem?"
+
+Have a real use case — DSP, parser, numeric kernel. Need concrete answers.
+
+| They ask | They look for |
+|---|---|
+| Does it handle my case? | Good-for table + supported language list |
+| How do I pass data in/out? | Passing-data fold — numbers, arrays, strings, objects |
+| How do I deploy the output? | Deploy FAQ — .wasm in production, interop bundle |
+| What's the DX? Error messages? | Error example in Language section |
+| What doesn't work? | Divergence FAQ — upfront, not buried |
+| Can I test normally? | "Valid jz is valid JS" — use existing test runner |
+| How do I debug? | --wat flag, mentioned in FAQ entries |
+| Can I split into files? | Import/export FAQ |
+| What's the memory story? | Bump allocator FAQ — when to reset, how to share |
+
+Skip straight to Usage folds and FAQ. They need answers, not framing.
+
+### Embedders — "Can I ship this in my product?"
+
+Building a product that compiles or runs jz output. Care about weight, deps, stability.
+
+| They ask | They look for |
+|---|---|
+| How big is the runtime? | Interop bundle size — jz/interop without compiler |
+| What's the compile speed? | ~2–60 ms range — compile on the fly or AOT? |
+| Can I ship just the .wasm? | Deploy FAQ — jz/interop is the thin bridge |
+| What are the runtime dependencies? | Dependency list — currently none beyond WASM |
+| Can I run it in a worker / service worker? | "Compile in the browser or a Worker?" FAQ |
+| How stable is the output format? | "Is jz production-ready?" FAQ — pre-1.0, pin a version |
+| What's the license? | MIT — bottom of page |
+| Memory ABI for non-JS hosts? | Deploy FAQ — the _alloc/_clear exports, header layout |
+
+Read Deploy and Options carefully. They're the ones who'd read layout.js.
+
+### Language / compiler people — "How does it work internally?"
+
+Want to understand the approach, not use it. Read the source, not just the README.
+
+| They ask | They look for |
+|---|---|
+| What's the compilation model? | "How does jz work?" pipeline fold |
+| What optimizations are applied? | Optimization FAQ |
+| What's the type inference story? | "Why no type annotations?" FAQ |
+| Can it self-host? | Self-host FAQ |
+
+These people read src/ regardless. The README just needs to not lie about what's inside.
