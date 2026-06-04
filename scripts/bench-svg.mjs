@@ -40,7 +40,7 @@ export const SNAPSHOT = [
 ]
 
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
-const HERO = '#e8590c'   // jz
+const HERO = '#000000'   // jz — black accent (B&W identity)
 const GRAY = '#adb5bd'   // every other ball — minimal, one accent
 
 /** Build the animated SVG string from rows `[{ label, sub?, ratio }]`. */
@@ -71,7 +71,6 @@ export function benchSvg(rows) {
 
     return `
   <g font-family="${FONT}">
-    ${isJz ? `<rect x="0" y="${cy - rowH / 2}" width="${W}" height="${rowH}" fill="${HERO}" opacity="0.06"/>` : ''}
     <rect x="${trackX}" y="${cy - 1.5}" width="${trackRight - trackX}" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="${trackX}" y1="${tickT}" x2="${trackX}" y2="${tickB}" stroke="#ced4da" stroke-width="2"/>
     <line x1="${trackRight}" y1="${tickT}" x2="${trackRight}" y2="${tickB}" stroke="#ced4da" stroke-width="2"/>
