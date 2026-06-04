@@ -7,16 +7,18 @@
 
 export const TAU = 6.283185307179586
 
-// ── chord vocabulary — diatonic 7 of C major, rootless 9th voicings ────────────
-// [root, 4 voicing tones as semitones above the root] (3·5·7·9 colour).
+// ── chord vocabulary — diatonic 7 of C major, extended jazz voicings ───────────
+// [root, 5 voicing tones as semitones above the root]: 3·5·7·9 plus one upper-structure
+// extension — 13 on the major/dominant chords, 11 on the minors, ♯11 (Lydian) on IV — each
+// picked to sit above the chord without the natural-11-vs-3rd clash.
 const CHORDS = [
-  [0, 4, 7, 11, 14],   // I    Cmaj9
-  [2, 3, 7, 10, 14],   // ii   Dm9
-  [4, 3, 7, 10, 14],   // iii  Em9
-  [5, 4, 7, 11, 14],   // IV   Fmaj9
-  [7, 4, 7, 10, 14],   // V    G9   (dominant)
-  [9, 3, 7, 10, 14],   // vi   Am9
-  [11, 3, 6, 10, 13],  // viiø Bm7♭5 (half-diminished)
+  [0, 4, 7, 11, 14, 21],   // I    Cmaj13
+  [2, 3, 7, 10, 14, 17],   // ii   Dm11
+  [4, 3, 7, 10, 14, 17],   // iii  Em11
+  [5, 4, 7, 11, 14, 18],   // IV   Fmaj9♯11 (Lydian)
+  [7, 4, 7, 10, 14, 21],   // V    G13   (dominant)
+  [9, 3, 7, 10, 14, 17],   // vi   Am11
+  [11, 3, 6, 10, 13, 17],  // viiø Bm11♭5 (half-diminished)
 ]
 
 // ── transition graph — where each chord likes to go (jazz functional harmony) ──
@@ -56,8 +58,8 @@ export const songs = [
   { name: 'after hours', body:
 `(t, sd) => {
   // A warm detuned pad walking a ${NB}-bar jazz chord graph (baked above), each chord
-  // crossfading into the next so nothing clicks. Every voicing is rootless (3·5·7·9) for
-  // that open, smoky colour; a soft sub traces the root. The seed transposes the key and
+  // crossfading into the next so nothing clicks. Voicings are rootless and extended
+  // (3·5·7·9 + a 13/11/♯11); a soft sub traces the root. The seed transposes the key and
   // rotates the entry point, so a different seed drops you elsewhere in the same walk.
   const seq = ${seqLit}
   const NB = ${NB}
@@ -69,7 +71,7 @@ export const songs = [
   let xf = ph < 0.72 ? 0 : (ph - 0.72) / 0.28
   xf = xf * xf * (3 - 2 * xf)
   let padA = 0, padB = 0
-  for (let k = 1; k <= 4; k++) {
+  for (let k = 1; k <= 5; k++) {
     const fa = 130.81 * 2 ** ((key + A[0] + A[k]) / 12)   // C3 reference
     padA += Math.sin(t*${TAU}*fa) + Math.sin(t*${TAU}*fa*1.003)   // two slightly detuned sines = warmth
     const fc = 130.81 * 2 ** ((key + B[0] + B[k]) / 12)
@@ -79,7 +81,7 @@ export const songs = [
   const ba = 65.41 * 2 ** ((key + A[0]) / 12), bc = 65.41 * 2 ** ((key + B[0]) / 12)   // C2 sub
   const bass = Math.sin(t*${TAU}*ba) * (1 - xf) + Math.sin(t*${TAU}*bc) * xf
   const breath = 0.72 + 0.28 * Math.sin(t*${TAU}*0.05)   // slow swell, ~20 s
-  return Math.tanh((pad * 0.05 + bass * 0.42) * breath)
+  return Math.tanh((pad * 0.042 + bass * 0.42) * breath)
 }` },
 ]
 
