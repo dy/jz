@@ -400,7 +400,7 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 ## Performance
 
-Geomean speed across the [bench corpus](bench/README.md).
+Geomean speed across the [bench corpus →](bench/README.md).
 
 <img src="bench/bench.svg?v=2" alt="jz vs alternatives — geomean speed across the bench corpus" width="720">
 
@@ -408,8 +408,6 @@ Geomean speed across the [bench corpus](bench/README.md).
 
 
 ## Examples
-
-One source, two backends — open any demo and flip the **js ⇄ jz** switch to compare. [**Browse the gallery →**](https://dy.github.io/jz/examples/)
 
 <table>
 <tr>
@@ -433,6 +431,8 @@ One source, two backends — open any demo and flip the **js ⇄ jz** switch to 
 <td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — looping procedural-jazz arpeggio floatbeat; tap to play/pause.</td>
 </tr>
 </table>
+
+[**Browse the gallery →**](https://dy.github.io/jz/examples/)
 
 
 

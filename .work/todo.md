@@ -5,13 +5,14 @@
 * [ ] REPL
 * [ ] All optimizations from TODO - clean up, close
 * [ ] Dogfood: color-space, fourier-transform, web-audio-api
-* [ ] Examples gallery
+* [x] Examples gallery
 * [ ] Enhance examples, with settings-panel, palettes, meaningful UI/automation, input-drops
   * [ ] Jukebox (bytebox?): random floatbeat from bytebeats collection -> merge with floatbeat
   * [ ] Chladni: manual f control with automation button; multiple slides
   * [ ] Plasma: contrast, plasma params
-  * [ ] +Water simulation
+  * [ ] Water simulation
   * [ ] That text layout algorithm
+  * [ ] Pinterest soundvis examples
 
 # ⟢⟢ NEXT — audit 2026-05-29 frontier: CORRECTNESS LEAKS CLOSED → reach
 
@@ -27,20 +28,20 @@ every change against suite + fuzzer + matrix.
   measured), OPT-B/OPT-C (watr-off only fires when optimize==null; vectorize is
   L2-default + opt-out-able).
 
-## Compiler optimizations — backlog (detail + analysis: `.work/optimization-ideas.md`)
-Ranked by ROI. [S/M/L] effort · speed|size. Verify each: `npm test` + matrix + fuzzer + `CI=1 node test/bench.js`.
-Shipped (Archive 2026-06-04): #1 SIMD product reductions, #6 conditional-lane vectorization,
-#5 tail-call (already in `tcoTailRewrite`), i32 sum reductions, integer comparison fold,
-pooled-const `global.get` splat. Remaining:
-1b. [ ] **SIMD int min/max reductions** [M·speed] — WASM has no scalar `i32.min`, so int min/max arrive as a `select` AND the horizontal fold can't reuse a binary op → needs a new recognizer branch + select-based fold. (Float min/max already vectorize via `REDUCE_CANON`.)
-1c. [ ] **int conditional + min/max vectorization** [M, deep] — push `ToInt32` into integer if-branches so `(cond?A:B)|0` over Int32Array lifts; execution-ready 3-fold plan in `optimization-ideas.md` › Remaining. Pairs with 1b.
-1d. [ ] **extending-add i8/i16→i32** [M] — fold makes the byte/short load i32, but the lane type (i8 load vs i32 accumulator) still needs `extadd_pairwise` widening.
-2. [ ] **Pointer-spec threshold tune**: `specializeMkptr` 5→3, `specializePtrBase` 20→10 [S·size] — `src/optimize/index.js`. LOW value: measured already-tuned, lowering risks de-opt.
-3. [ ] **Single-use runtime-helper inlining** [M·size] — biggest size lever (~10% slack, revised down from 25–30%); extend WAT inliner `src/wat/optimize.js`.
-4. [ ] **Induction-variable strength reduction** [M·speed] — DEPRIORITIZED: V8 already strength-reduces the loaded module; marginal vs the risk of touching core address arithmetic.
-7. [ ] **charCodeAt SIMD scan** (`i8x16.eq`+`any_true`) [L·speed] — strategic for parser workloads; new recognizer.
-8. [ ] **AoS→SoA** [L] — DEFER; `simd-aos-stride` advice ("split to SoA") suffices.
-Cheap generalizations: cross-`if` CSE (`csePureExpr` clears table per-arm, optimize/index.js:979); inline heuristic AST-nodes→emitted-WAT-size; scalarization cap 32→64 (plan/common.js:114); LICM global-read hoist across arena-safe callees (optimize/index.js:657 + safeCallees).
+## Compiler optimizations — backlog
+All ranked-ROI items shipped (Archive 2026-06-02/03/04: #1/#1b/#1c/#2/#4/#6/#7, i32 sum +
+integer-comparison folds, tail-call, single-use helper inlining, cross-`if` CSE, LICM
+global-read hoist, pooled-const splat). What remains is **deferred-on-no-workload**, not open
+work — YAGNI: build when a real bench surfaces the shape; speculative SIMD adds correctness
+risk for zero measured benefit:
+- [ ] **extending-add i8/i16→i32** [M] — byte/short sum reductions (`s += u8[i]`) need
+  `i16x8.extadd_pairwise_*` widening into an i32 accumulator. No kernel uses a byte-sum
+  reduction today (verified: no Int8/Int16/Uint8 reduction in `bench/`/`test/`). Re-open when a
+  histogram/checksum/image-brightness workload appears (color-space dogfood is the likely trigger).
+- [ ] **AoS→SoA layout transform** [L] — multi-week, cross-cutting; the `simd-aos-stride`
+  advisory ("split to SoA") is the right answer until a struct-array numeric kernel demands it.
+- [ ] **scalarization cap 32→64** (`plan/common.js:114`) — perf-only, no workload; raising it
+  risks the 128-local LEB128 cliff. Left at 32.
 Size reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic target ≈1.5–2× with `alloc:false`+`optimize:'size'`, NOT byte-parity.
 
 ## Dead-code + interop hygiene (remaining tail — confirmed-done items archived 2026-06-04)
@@ -396,7 +397,7 @@ opt{0..3} + wasi matrix, selfhost 11/11, `CI=1 test/bench.js` 70/70, fuzzer gree
 * [x] **PS-2 — math.exp O(1) 2^k** — `exp`→`exp2`; `exp2` builds `2^k` from the IEEE
   exponent bits split into two halves (`k2` + `k−k2`), no O(k≤1023) loop; poly over
   [-0.5,0.5], ~6e-9 rel. `module/math.js:471-487`.
-* [x] **Optimizer SIMD/fold batch** (`.work/optimization-ideas.md` passes 1-5): product
+* [x] **Optimizer SIMD/fold batch** (optimizer passes, 2026-06-02): product
   reductions (`*=` i32/i64/f32/f64, `REDUCE_OPS`); conditional-lane vectorization
   (`cond?x:y` → `v128.bitselect` + `LANE_COMPARE`, mask hoisted first so COND's address
   tee runs before the branches); i32 sum reductions (`fusedRewrite` folds the f64→ToInt32
@@ -410,11 +411,43 @@ opt{0..3} + wasi matrix, selfhost 11/11, `CI=1 test/bench.js` 70/70, fuzzer gree
   (objectLiteralEntries shadow / opts.extMap vestigial write / cli.js profileNames / opts
   docs still open — kept in the live tail.)
 
-Remaining compiler work is optimizer-only (`.work/optimization-ideas.md` › Remaining):
-int min/max + int-conditional vectorization, extending-add, single-use helper inlining
-(size), charCodeAt SIMD scan, AoS→SoA (deferred). Representation carriers, language
-coverage (Date/test262), the metacircular parser extraction, and source maps stay under
-the execution plan.
+The ranked-ROI optimizer backlog is now fully shipped too (see "Compiler-optimization
+backlog — CLOSED" below); only deferred-on-no-workload items remain (extending-add,
+AoS→SoA, scalarization-cap). Representation carriers, language coverage (Date/test262),
+the metacircular parser extraction, and source maps stay under the execution plan.
+
+### Compiler-optimization backlog — CLOSED (2026-06-02/03/04)
+
+The ranked-ROI optimizer backlog is fully shipped; what's left is deferred-on-no-workload
+(extending-add, AoS→SoA, scalarization-cap), not open work.
+Re-verified 2026-06-04 across the full gate: opt{0,1,2,3} + wasi (2033 pass / 1 skip / 0 fail
+each), selfhost 11/11, perf-ratchet +0, `CI=1 bench` 70/70, fuzz typed-int 5000×4 + typed-map
+5000×4 + scalar 5000×4 (77 655 inputs) — zero divergence.
+
+* [x] **#1b int min/max reductions** (`6308f26`) — `m = a[i]>m?a[i]:m` over Int32Array → a
+  select-shaped reduction body; `matchIntMinMaxReduce` recognizer + select-based horizontal
+  fold (`i32x4.max_s/min_s`; no scalar `i32.min`; identity INT_MIN/MAX); overshoot-safe SIMD
+  bound for the `m=a[0]; i=1` seed. `src/optimize/vectorize.js`.
+* [x] **#1c int conditional vectorization** (`c5b30a5`) — `fusedRewrite` pushes ToInt32 through
+  the universal-f64 `?:`: `ToInt32(if(result f64) C A B) → if(result i32) C toI32(A) toI32(B)`
+  when both arms are integer-valued, + `ToInt32(int-valued f64) → i32` form + `i32.or X 0 → X`.
+  `(cond?A:B)|0` over Int32Array then lifts via the i32 `LANE_COMPARE` + `v128.bitselect`.
+  `src/optimize/index.js`, `src/optimize/vectorize.js`.
+* [x] **#2 specializeMkptr threshold** (`496a236`) — tuned 5→**4** (the *measured* break-even),
+  honoring the de-opt-risk concern rather than the speculative 5→3.
+* [x] **#4 induction-variable strength reduction** (`dbf1d9d`) — affine scalar loops; + `fe3aa12`
+  (LICM must not hoist a self-referential induction tee out of its loop).
+* [x] **#7 SIMD byte-scan / memchr** (`052a455`) — `i8x16.eq` + `i8x16.bitmask`, 16 bytes/step;
+  vectorizes Uint8Array delimiter scans (the parser/tokenizer charCodeAt-scan shape).
+* [x] **#3 single-use helper inlining** — `inlineOnce` (single-call funcs → lone caller) +
+  `propagate` (single-use locals / tiny consts) + `89fb454` copy-propagation + adjacent
+  dead-store elimination (size). `src/wat/optimize.js`.
+* [x] **Cheap generalizations** — cross-`if` CSE (`csePureExprLoop`); LICM global-read hoist
+  (`hoistInvariantLoop` `pureGiven` admits invariant `global.get` + `SAFE_OFFSET_CALLS`;
+  `promoteGlobals`). `src/optimize/index.js`.
+
+(The earlier wave — product reductions, conditional-lane vectorization, i32 sum reductions,
+integer comparison fold, pooled-const splat, tail-call — is in the frontier entry above.)
 
 ### Auto i32-index narrowing — the hoist idiom becomes a compiler pass (2026-05-22)
 
