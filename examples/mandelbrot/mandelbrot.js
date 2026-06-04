@@ -1,10 +1,16 @@
+// Mandelbrot — escape-time with continuous (smooth) colouring. A large bail-out radius
+// (|z|² > 256) replaces the old fixed post-escape smoothing loop: the fractional
+// iteration count log2(½·log|z|²) is already smooth at this radius, and |z|² stays well
+// inside f32 range — which lets the SIMD sibling (mandelbrot.simd.js) colour 4 lanes at
+// once without overflow. Same source runs as the V8 baseline and compiles to wasm.
 const NUM_COLORS = 2048;
+const BAILOUT = 256.0;
 
-let mem; 
+let mem;
 export let resize = (width, height) => {
-    mem = new Uint16Array(width * height);
-    return mem;
-}
+  mem = new Uint16Array(width * height);
+  return mem;
+};
 export let dataOffset = () => mem;
 
 export let computeLine = (y, width, height, limit) => {
@@ -16,30 +22,21 @@ export let computeLine = (y, width, height, limit) => {
   let stride     = y * width;
   let invLimit   = 1.0 / limit;
 
-  let minIterations = 8 < limit ? 8 : limit;
-
   for (let x = 0; x < width; ++x) {
     let real = x * scale - realOffset;
 
     let ix = 0.0, iy = 0.0, ixSq = 0.0, iySq = 0.0;
     let iteration = 0;
-    while ((ixSq = ix * ix) + (iySq = iy * iy) <= 4.0) {
+    while ((ixSq = ix * ix) + (iySq = iy * iy) <= BAILOUT) {
       iy = 2.0 * ix * iy + imaginary;
       ix = ixSq - iySq + real;
       if (iteration >= limit) break;
       ++iteration;
     }
 
-    while (iteration < minIterations) {
-      let ixNew = ix * ix - iy * iy + real;
-      iy = 2.0 * ix * iy + imaginary;
-      ix = ixNew;
-      ++iteration;
-    }
-
     let col = NUM_COLORS - 1;
     let sqd = ix * ix + iy * iy;
-    if (sqd > 1.0) {
+    if (sqd > BAILOUT) {                              // escaped → smooth colour
       let frac = Math.log2(0.5 * Math.log(sqd));
       let val = (iteration + 1 - frac) * invLimit;
       if (val < 0.0) val = 0.0;
@@ -48,4 +45,4 @@ export let computeLine = (y, width, height, limit) => {
     }
     mem[stride + x] = col;
   }
-}
+};

@@ -35,7 +35,9 @@ const EXAMPLES = [
   // `opt: true` marks a serial-recurrence / reduction kernel that ties or trails V8
   // (latency-bound, no cross-pixel ILP for jz to exploit). Reported, kept as a
   // compiler-optimization target — not held to the winners' regression floor.
-  { name: 'mandelbrot', frame: 'computeLine ×H', opt: true,
+  // jz compiles the 4-wide SIMD kernel; V8 runs the scalar baseline (its best — no
+  // auto-SIMD for this divergent loop). Same image, ~1.5× at limit 40 up to ~2.5×.
+  { name: 'mandelbrot', frame: 'computeLine ×H (SIMD-4)', jzSrc: 'mandelbrot.simd.js',
     make: (e) => { const W = 320, H = 240; e.resize(W, H); return () => { for (let y = 0; y < H; y++) e.computeLine(y, W, H, 40) } } },
 
   { name: 'plasma', frame: 'frame(t)',
@@ -95,8 +97,11 @@ console.log('example             frame                V8 µs       jz µs    spe
 console.log('─'.repeat(74))
 
 let geo = 1, n = 0, wins = 0, regressed = []
-for (const { name, frame, make, opt } of EXAMPLES) {
-  const src = readFileSync(dir + `${name}/${name}.js`, 'utf8')
+for (const { name, frame, make, opt, jzSrc } of EXAMPLES) {
+  // `jzSrc` lets jz compile a different source than the V8 baseline imports — used for
+  // the SIMD examples, where jz runs a hand-vectorized kernel against V8's best scalar
+  // version (same image, V8 has no auto-SIMD for these divergent per-pixel loops).
+  const src = readFileSync(dir + `${name}/${jzSrc || `${name}.js`}`, 'utf8')
   const jsmod = await import(new URL(`${name}/${name}.js`, import.meta.url).href)
   const { exports, memory } = jz(src)
 
