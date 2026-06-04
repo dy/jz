@@ -54,7 +54,7 @@
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
-import { songs, songBeatSrc, songSlug } from "./songs.js";
+import { songs, songBeatSrc, songSlug, barsInWalk } from "./songs.js";
 
 const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
                                      // transform with finer bass detail, so jz vs JS is clearly measurable
@@ -196,7 +196,7 @@ let audio = null, running = false, paused = false;
 let seed = 0;                         // fixed chord seed — the single tune
 let startT = 0;                       // ctx time the timeline is anchored to
 let cur = null;                       // { src, gain, ch } currently playing
-const LOOP_SEC = 32;                  // one full 8-bar cycle (8 × 4 s)
+const LOOP_SEC = barsInWalk * 4;      // one full pass of the chord-graph walk (bars × 4 s)
 
 // FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
