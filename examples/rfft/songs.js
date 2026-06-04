@@ -34,7 +34,7 @@ const TRANS = [
   [[0, 1], [2, 1]],                           // viiø → I iii
 ]
 
-const NB = 24          // bars in the walk before it loops (× barLen = the loop length)
+const NB = 27          // bars in the walk before it loops (× barLen 4 s = 108 s loop)
 
 // Deterministic walk over the graph, but each step is weighted by RECENCY as well as the
 // base bias: a candidate's weight is baseWeight × (bars since it was last heard)², so a
