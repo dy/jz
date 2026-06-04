@@ -453,7 +453,6 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/statements/for-in/12.6.4-1.js')) return 'for-in enumeration uniqueness outside current jz scope'
   if (/\/statements\/for-in\/head-(let|const)-bound-names-fordecl-tdz\.js$/.test(rel)) return 'for-in TDZ outside current jz scope'
   if (rel.endsWith('/statements/for-in/head-let-fresh-binding-per-iteration.js')) return 'let-per-iteration binding outside current jz scope'
-  if (/\/statements\/for-in\/head-(lhs-cover|lhs-member)\.js$/.test(rel)) return 'for-in head LHS form outside current jz scope'
   if (/\/statements\/for-in\/head-var-bound-names-(in-stmt|let)\.js$/.test(rel)) return 'for-in head var binding outside current jz scope'
   if (/\/statements\/for-in\/scope-(body-lex-boundary|head-lex-open)\.js$/.test(rel)) return 'for-in lexical scoping outside current jz scope'
   // for-in to populate iteration order over arrays/objects — engine-specific iteration order.
@@ -578,12 +577,6 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/expressions/object/computed-property-name-topropertykey-before-value-evaluation.js')) return 'custom toString protocol on property key outside current jz scope'
   // `let` in try/finally block shadowing an outer parameter — block-scope shadowing semantics.
   if (/\/block-scope\/leave\/(finally|try)-block-let-declaration-only-shadows-outer-parameter-value-[12]\.js$/.test(rel)) return 'block-scope let shadowing parameter outside current jz scope'
-  // for-in head as a bare member/var expression (`for (x.y in obj)`) — head LHS form outside jz subset.
-  if (rel.endsWith('/statements/for-in/head-var-expr.js')) return 'for-in head expression form outside current jz scope'
-  // for-in head with a comma/sequence Expression (`for (x in a, b)`) — the parser binds the comma
-  // as a declarator separator, not a sequence operator, so the object after `,` is lost. Sequence
-  // expression in a for-in head is a degenerate form outside jz's subset (parenthesize it instead).
-  if (/\/statements\/for-in\/head-(decl|expr)-expr\.js$/.test(rel)) return 'for-in head sequence expression outside current jz scope'
   // Computed-member assignment target with null/undefined receiver — runtime TypeError surface jz doesn't synthesize.
   if (/\/expressions\/assignment\/target-member-computed-reference(-null|-undefined)?\.js$/.test(rel)) return 'null/undefined computed-member assign guard outside current jz scope'
   // Coalesce short-circuit must not even evaluate a poisoned accessor on the RHS — accessor semantics.
