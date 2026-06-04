@@ -36,9 +36,21 @@ const hsl = (h, s, l) => {
   const f = n => { const k = (n + h * 12) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))) }
   return [f(0), f(8), f(4)]
 }
+// Each colormap is a perceptual path from black → … → white (4 stops, 12 ints): luminance
+// rises monotonically so the plasma reads as a value field, with a meaningful hue journey
+// between. Half the time a hand-tuned classic, half a procedural two-hue sweep.
+const CMAPS = [
+  [0,0,0,   60,16,110,  245,135,75,  255,255,235],   // magma
+  [0,0,4,   50,12,95,   235,120,30,  255,255,170],   // inferno
+  [0,0,12,  30,110,170, 120,210,210, 255,255,255],   // ice
+  [0,0,0,   150,25,10,  250,180,40,  255,255,255],   // fire
+  [4,2,24,  95,40,135,  225,120,95,  255,255,255],   // dusk
+  [0,8,8,   20,120,90,  150,205,80,  255,255,235],   // moss
+]
 const randomPalette = () => {
-  const h0 = Math.random() * 360, off = (20 + Math.random() * 130) * (Math.random() < 0.5 ? -1 : 1)
-  return [...hsl(h0, 0.72, 0.24), ...hsl(h0 + off, 0.62, 0.74), ...hsl(h0 + 2 * off, 0.80, 0.52)]
+  if (Math.random() < 0.5) return CMAPS[Math.floor(Math.random() * CMAPS.length)].slice()
+  const h = Math.random() * 360, off = (40 + Math.random() * 120) * (Math.random() < 0.5 ? -1 : 1)
+  return [0, 0, 0, ...hsl(h, 0.9, 0.34), ...hsl(h + off, 0.85, 0.66), 255, 255, 255]
 }
 let palette = null
 const applyPalette = (p) => { palette = p; if (engine?.setPalette) engine.setPalette(...p) }
