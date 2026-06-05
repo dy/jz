@@ -1055,6 +1055,7 @@ export function loopTop() {
 export const flat = ir => {
   if (ir == null) return []
   if (!Array.isArray(ir)) return [ir]  // bare 'drop', 'nop', etc.
+  if (ir.length === 0) return []
   if (typeof ir[0] === 'string' || ir[0] == null) return [ir]  // single instruction: ['op', ...args] or [null, val]
   return ir  // multi-instruction: [instr1, instr2, ...]
 }

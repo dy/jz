@@ -8,6 +8,7 @@
 
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
+import { intLiteralValue } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
   calleeValType, methodValType, typedCtorElemValType,
@@ -19,6 +20,10 @@ function literalTruthiness(expr) {
   if (typeof expr === 'number') return expr !== 0 && expr === expr
   if (typeof expr === 'boolean') return expr
   if (typeof expr === 'bigint') return expr !== 0n
+  if (typeof expr === 'string') {
+    const value = intLiteralValue(expr)
+    if (value != null) return value !== 0
+  }
   if (Array.isArray(expr)) {
     const [op, ...args] = expr
     if (op == null) {

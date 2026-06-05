@@ -651,6 +651,11 @@ test('nested constant comparison ternary arithmetic NaN condition is falsy', () 
   is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
 })
 
+test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v1 = 0; let v3 = v1 ? p1 : (0 / 0); return v3 ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
+})
+
 test('reassigned modulo NaN remains falsy in later ternary condition', () => {
   const code = 'export let f = (p0, p1) => { p0 = p0 % 1; p0 = p0 ? p1 : 0; return p0 }'
   is(run(code, { optimize: 0 }).f(-Infinity, 0.5), 0)
