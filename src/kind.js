@@ -28,6 +28,11 @@ function literalTruthiness(expr) {
     if (op === 'bool') return literalTruthiness(args[0])
     if (op === 'nan') return false
     if (op === 'str' && typeof args[0] === 'string') return args[0].length !== 0
+    if (op === '()' && expr.length === 2) return literalTruthiness(args[0])
+    if (BOOL_OPS.has(op)) {
+      const result = literalBool(expr)
+      if (result != null) return result
+    }
     if (op === '?:' || op === '?') {
       const truthy = literalTruthiness(args[0])
       if (truthy != null) return literalTruthiness(truthy ? args[1] : args[2])
@@ -36,6 +41,44 @@ function literalTruthiness(expr) {
       const truthy = literalTruthiness(args[0][1])
       if (truthy != null) return literalTruthiness(truthy ? args[0][2] : args[0][3])
     }
+  }
+  return null
+}
+
+function literalValue(expr) {
+  if (expr == null || typeof expr === 'number' || typeof expr === 'boolean' || typeof expr === 'bigint') return expr
+  if (!Array.isArray(expr)) return undefined
+  const [op, ...args] = expr
+  if (op == null) return args.length ? args[0] : undefined
+  if (op === 'nan') return NaN
+  if (op === 'str') return args[0]
+  if (op === 'bool') {
+    const truthy = literalTruthiness(args[0])
+    return truthy == null ? undefined : truthy
+  }
+  if (op === '()' && expr.length === 2) return literalValue(args[0])
+  return undefined
+}
+
+function literalBool(expr) {
+  if (!Array.isArray(expr)) return null
+  const [op, left, right] = expr
+  if (op === '!') {
+    const truthy = literalTruthiness(left)
+    return truthy == null ? null : !truthy
+  }
+  if (!['<', '<=', '>', '>=', '==', '!=', '===', '!=='].includes(op)) return null
+  const a = literalValue(left), b = literalValue(right)
+  if (a === undefined || b === undefined) return null
+  switch (op) {
+    case '<': return a < b
+    case '<=': return a <= b
+    case '>': return a > b
+    case '>=': return a >= b
+    case '==': return a == b
+    case '!=': return a != b
+    case '===': return a === b
+    case '!==': return a !== b
   }
   return null
 }
