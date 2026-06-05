@@ -582,6 +582,10 @@ export function stripStaticDataPrefix(sec) {
           Array.isArray(child[3]) && child[3][0] === 'i32.const' &&
           typeof child[3][1] === 'number' && (child[3][1] & LAYOUT.SSO_BIT)
         if (!isSsoString) child[4][1] -= prefix
+      } else if (typeof child[0] === 'string' && child[0].endsWith('.store') &&
+        Array.isArray(child[1]) && child[1][0] === 'i32.const' &&
+        typeof child[1][1] === 'number' && child[1][1] >= prefix) {
+        child[1][1] -= prefix
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
         const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
