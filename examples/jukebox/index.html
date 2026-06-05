@@ -29,25 +29,35 @@
 <div id="bar"><span id="tune"></span><button id="rnd">🎲 random</button></div>
 
 <script type="module">
-import { compile } from "../../dist/jz.js"
 import { instantiate } from "../../interop.js"
 import { hud } from "../lib/jzdemo.js"
-import { FLOATBEATS, moduleSrc } from "./floatbeats.js"
+import { FLOATBEATS } from "./floatbeats.js"
 
 let tuneIdx = 0
 const tune = () => FLOATBEATS[tuneIdx]
 const CHUNK_SEC = 0.5
 
-// ── engines: the SAME floatbeat source two ways — JS (new Function) and jz (compiled to
-// wasm live, in your browser). engine(len, off) → Float64Array of `len` samples from sample
+// ── engines: the SAME floatbeat source two ways — JS (new Function) and jz (pre-compiled
+// wasm, loaded on demand). engine(len, off) → Float64Array of `len` samples from sample
 // index `off`; the floatbeat is pure in t, so any chunk butts seamlessly onto the last. ──
 const clamp = (s) => s < -1 ? -1 : s > 1 ? 1 : s
-const makeEngine = (kind, tn) => {
+
+// Pre-built wasm for each floatbeat (built by build.mjs)
+const wasmCache = new Map()
+const loadWasm = async (idx) => {
+  if (!wasmCache.has(idx)) {
+    const bytes = new Uint8Array(await (await fetch(`./build/beat-${idx}.wasm`)).arrayBuffer())
+    wasmCache.set(idx, instantiate(bytes))
+  }
+  return wasmCache.get(idx)
+}
+
+const makeEngine = async (kind, tn, idx) => {
   if (kind === "js") {
     const beat = new Function("t", "return (" + tn.body + ")(t)")
     return (len, off) => { const out = new Float64Array(len); for (let i = 0; i < len; i++) out[i] = clamp(beat(off + i)); return out }
   }
-  const { exports, memory } = instantiate(compile(moduleSrc(tn.body)))   // jz compiles the floatbeat in-browser
+  const { exports, memory } = await loadWasm(idx)
   return (len, off) => {
     const out = memory.Float64Array(new Float64Array(len))
     exports.fill(out, len, off)
@@ -101,23 +111,23 @@ const drawStill = () => {                        // not playing → a still base
 // ── tune label + engine build ──
 const tuneEl = document.getElementById("tune"), hintEl = document.getElementById("hint")
 const showTune = () => { const t = tune(); tuneEl.innerHTML = `<b>${t.name}</b> <span>· ${t.by} · ${t.sr / 1000} kHz</span>` }
-let engine = null
-const buildEngine = () => { engine = makeEngine(ui.kind, tune()); showTune() }
+let engine = null, engineReady = false
+const buildEngine = async () => { engineReady = false; engine = await makeEngine(ui.kind, tune(), tuneIdx); engineReady = true; showTune() }
 
-addEventListener("pointerdown", () => { hintEl.style.opacity = 0; if (engine) playing ? stop() : startStream() })
+addEventListener("pointerdown", () => { hintEl.style.opacity = 0; if (engineReady) playing ? stop() : startStream() })
 
 const rnd = document.getElementById("rnd")
 rnd.addEventListener("pointerdown", (e) => e.stopPropagation())   // don't let it reach the play/pause toggle
 rnd.addEventListener("click", (e) => {
   e.stopPropagation()
   if (FLOATBEATS.length > 1) { let j; do { j = Math.floor(Math.random() * FLOATBEATS.length) } while (j === tuneIdx); tuneIdx = j }
-  buildEngine()
-  if (playing) startStream(); else hintEl.style.opacity = .8
+  const wasPlaying = playing; if (playing) stop()
+  buildEngine().then(() => { if (wasPlaying) startStream(); else hintEl.style.opacity = .8 })
 })
 
 const loop = () => {
   requestAnimationFrame(loop)
-  if (!engine) return
+  if (!engineReady) return
   if (playing) {
     schedule()
     const sr = tune().sr, CHUNK = Math.round(sr * CHUNK_SEC)
@@ -132,7 +142,7 @@ const ui = hud({
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/jukebox",
   nav: "jukebox",
-  onSwitch: () => { buildEngine(); if (playing) startStream() },   // recompile the current tune for the new engine
+  onSwitch: () => { buildEngine().then(() => { if (playing) startStream() }) },   // recompile the current tune for the new engine
 })
 buildEngine()
 loop()

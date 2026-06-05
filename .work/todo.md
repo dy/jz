@@ -12,10 +12,12 @@
 * [ ] Dogfood: color-space, fourier-transform, web-audio-api
 * [x] Examples gallery
 * [ ] Enhance examples, with settings-panel, palettes, meaningful UI/automation, input-drops
-  * [ ] Jukebox (bytebox?): random floatbeat from bytebeats collection -> merge with floatbeat
+  * [ ] Jukebox (bytebox?): more floatbeats; rotate, not random floatbeats; make them faster than v8 - now slower;
   * [ ] Water simulation
   * [ ] That text layout algorithm
-  * [ ] Pinterest soundvis examples
+  * [ ] Sime pinterest soundvis example
+  * [ ] Rfft: more chords for randomizing, now only 6 chords - but we need all circle of walking
+  * [ ]
 
 # ⟢⟢ NEXT — audit 2026-05-29 frontier: CORRECTNESS LEAKS CLOSED → reach
 
