@@ -587,7 +587,7 @@ test('slot-types: heterogeneous slot kinds in same schema all monomorphic', () =
   const { getN, getS, getB } = runHost(src)
   is(getN(), 7)
   is(getS(), 'hi')
-  is(getB(), 1)  // booleans surface as 1/0
+  is(getB(), true)
 })
 
 test('slot-types: unobserved slot (param-typed value) does not crash', () => {
