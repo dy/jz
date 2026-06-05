@@ -3390,5 +3390,7 @@ export function emit(node, expect) {
 
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
-  return handler(...args)
+  const ir = handler(...args)
+  if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
+  return ir
 }

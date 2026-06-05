@@ -15,6 +15,23 @@ import {
 
 export { typedCtorElemValType } from './kind-traits.js'
 
+function literalTruthiness(expr) {
+  if (typeof expr === 'number') return expr !== 0 && expr === expr
+  if (typeof expr === 'boolean') return expr
+  if (typeof expr === 'bigint') return expr !== 0n
+  if (Array.isArray(expr)) {
+    const [op, ...args] = expr
+    if (op == null) {
+      if (args.length === 0 || args[0] == null) return false
+      return literalTruthiness(args[0])
+    }
+    if (op === 'bool') return literalTruthiness(args[0])
+    if (op === 'nan') return false
+    if (op === 'str' && typeof args[0] === 'string') return args[0].length !== 0
+  }
+  return null
+}
+
 export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
@@ -66,6 +83,8 @@ export function valTypeOf(expr) {
     return null
   }
   if (op === '?:') {
+    const truthy = literalTruthiness(args[0])
+    if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
     const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
     return ta && ta === tb ? ta : null
   }
@@ -344,4 +363,3 @@ export function shapeOfObjectLiteralAst(expr) {
   }
   return names.length ? { val: VAL.OBJECT, props, names } : null
 }
-

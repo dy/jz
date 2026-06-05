@@ -659,6 +659,14 @@ const NUM_F64_TRUTHY_OPS = new Set([
   'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
 ])
 
+const numericTruthy = e => {
+  const t = temp('tb')
+  const g = () => typed(['local.get', `$${t}`], 'f64')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, e],
+    ['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]]], 'i32')
+}
+
 // i32 ops whose result is already a 0/1 boolean (comparisons + eqz) — safe to use
 // directly as a truthiness without a redundant `!= 0`.
 const I32_BOOL_OPS = new Set(['i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u',
@@ -727,14 +735,12 @@ export function truthyIR(e) {
     }
     // Direct number-producing f64 expression (arithmetic, or the `%` / __rem helper):
     // same NaN-safe test, single-evaluated through a temp (the value may be a call).
-    if (NUM_F64_TRUTHY_OPS.has(e[0]) || (e[0] === 'call' && e[1] === '$__rem')) {
-      const t = temp('tb')
-      const g = () => typed(['local.get', `$${t}`], 'f64')
-      return typed(['block', ['result', 'i32'],
-        ['local.set', `$${t}`, e],
-        ['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]]], 'i32')
-    }
+    if (NUM_F64_TRUTHY_OPS.has(e[0]) || (e[0] === 'call' && e[1] === '$__rem')) return numericTruthy(e)
   }
+  // Composite IR tagged by emit as a definite NUMBER. Use value-based NaN
+  // truthiness; opaque f64 carriers (strings/objects/bigints/nullish/booleans)
+  // remain on __is_truthy so NaN-boxed payloads stay truthy/falsy by tag.
+  if (e.valKind === VAL.NUMBER) return numericTruthy(e)
   inc('__is_truthy')
   return typed(['call', '$__is_truthy', asI64(e)], 'i32')
 }
