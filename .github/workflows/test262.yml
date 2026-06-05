@@ -15,7 +15,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v2
+          key: test262-shallow-v3
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
@@ -27,7 +27,7 @@ jobs:
           # pass-count ratchet. Out-of-scope gaps bucket as xfail (see EXPECTED_FAIL
           # in test/test262.js), not fail. 2026-05-29: +9 — subscript 10.4.17 fixed
           # the `1.e3` digit-dot-exponent lexer (8 numeric + 1 computed-key literal).
-          JZ_TEST262_BASELINE: 1437
+          JZ_TEST262_BASELINE: 1453
         run: npm run test:262
 
   test262-builtins:
@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v2
+          key: test262-shallow-v3
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
@@ -65,5 +65,5 @@ jobs:
           # so no jz regression; upstream simply changed/removed one test). Bumped the
           # cache key to `-v2` so both jobs re-clone current test262, where this run
           # measures 722 pass / 0 in-scope fail.
-          JZ_TEST262_BASELINE: 722
+          JZ_TEST262_BASELINE: 723
         run: npm run test:262:builtins

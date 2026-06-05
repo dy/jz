@@ -347,7 +347,7 @@ export default (ctx) => {
     if (allowExpPos && constNum(a) === 2 && n === null) return exp2Call(b)
     return powCall(a, b)
   }
-  ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, false), powCall.deps)
+  ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
   ctx.core.emit['**'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
   reg('math.cbrt', ['math.cbrt'], a => fn('math.cbrt', a))
   reg('math.hypot', ['math.hypot'], (a, b, ...rest) => {

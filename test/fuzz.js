@@ -425,6 +425,9 @@ export const fuzz = (opts) => {
   const findings = []
   let invalid = 0   // generator produced malformed JS — should stay 0 (scope bug if not)
   for (let i = 0; i < opts.count; i++) {
+    if (opts.count >= 500 && i > 0 && i % 500 === 0) {
+      console.log(`  .. processed ${i} / ${opts.count} programs ..`)
+    }
     const seed = opts.seedStart + i
     const prog = genProgram(seed, opts.cfg)
     const r = check(prog, opts)

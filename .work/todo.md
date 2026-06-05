@@ -16,8 +16,10 @@
   * [ ] Water simulation
   * [ ] That text layout algorithm
   * [ ] Sime pinterest soundvis example
-  * [ ] Rfft: more chords for randomizing, now only 6 chords - but we need all circle of walking
-  * [ ]
+  * [x] Rfft: more chords for randomizing, now only 6 chords - but we need all circle of walking
+  * [ ] facebook music reels with pitch moving transitions
+  * [ ] math formulas soundvis
+  * [ ] floatbeat music reproductions
 
 # ⟢⟢ NEXT — audit 2026-05-29 frontier: CORRECTNESS LEAKS CLOSED → reach
 
@@ -121,6 +123,7 @@ JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 * [ ] vec4 package that unlocks SIMD
 * [ ] stdlib.io
 * [ ] glsl-transpiler
+* [ ]
 
 #### Flagship + the one compounding "make-world-know" move
 * [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
