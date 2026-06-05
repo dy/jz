@@ -3125,11 +3125,13 @@ export const emitter = {
 
     // Prepend destructuring to body (if any destructured params)
     if (bodyPrefix.length) {
+      const origBody = body
       if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';')
         body = ['{}', [';', ...bodyPrefix, ...body[1].slice(1)]]
       else if (Array.isArray(body) && body[0] === '{}')
         body = ['{}', [';', ...bodyPrefix, body[1]]]
       else body = ['{}', [';', ...bodyPrefix, ['return', body]]]
+      if (origBody && origBody._nonEscaping) body._nonEscaping = origBody._nonEscaping
     }
 
     // Find free variables in body that aren't params → captures

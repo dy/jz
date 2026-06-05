@@ -9,16 +9,16 @@ export const TAU = 6.283185307179586
 
 // ── chord vocabulary — diatonic 7 of C major, extended jazz voicings ───────────
 // [root, 5 voicing tones as semitones above the root]: 3·5·7·9 plus one upper-structure
-// extension — 13 on the major/dominant chords, 11 on the minors, ♯11 (Lydian) on IV — each
-// picked to sit above the chord without the natural-11-vs-3rd clash.
+// extension — 9 on the major/dominant chords, 11 on the minors — each picked to
+// sit above the chord without the natural-11-vs-3rd clash. No 13 extensions.
 const CHORDS = [
-  [0, 4, 7, 11, 14, 21],   // I    Cmaj13
+  [0, 4, 7, 11, 14, 16],   // I    Cmaj9
   [2, 3, 7, 10, 14, 17],   // ii   Dm11
   [4, 3, 7, 10, 14, 17],   // iii  Em11
-  [5, 4, 7, 11, 14, 18],   // IV   Fmaj9♯11 (Lydian)
-  [7, 4, 7, 10, 14, 21],   // V    G13   (dominant)
+  [5, 4, 7, 11, 14, 16],   // IV   Fmaj9
+  [7, 4, 7, 10, 14, 16],   // V    G9 (dominant)
   [9, 3, 7, 10, 14, 17],   // vi   Am11
-  [11, 3, 6, 10, 13, 17],  // viiø Bm11♭5 (half-diminished)
+  [11, 3, 6, 10, 15, 17],  // viiø Bm11♭5 (half-diminished)
 ]
 
 // The pad plays a ROOTLESS CLOSE voicing — the 5 upper tones folded into one octave (pitch
@@ -30,19 +30,18 @@ const shared = (a, b) => { let n = 0; for (const p of PCS[a]) if (PCS[b].has(p))
 
 // ── transition graph — biased to the descending-fifths circle (the jazz "circle of fifths"
 // turnaround). [nextChord, baseWeight]. Each chord's circle successor (I→IV→viiø→iii→vi→ii→V→I)
-// carries weight ·3, so the walk takes long fifth-falling paths; a lighter alt keeps it varied.
-// viiø is reachable only via IV (and IV→V dominates), so the unstable half-dim stays a rare colour.
+// carries weight ·10, so the walk takes long fifth-falling paths; a lighter alt keeps it varied.
 const TRANS = [
-  [[3, 3], [5, 1], [4, 1]],   // I    → IV (circle) vi V
-  [[4, 3], [0, 1]],           // ii   → V (circle) I
-  [[5, 3], [1, 1]],           // iii  → vi (circle) ii
-  [[4, 3], [6, 1], [0, 1]],   // IV   → V viiø(rare) I   — V dominates, half-dim is a rare colour
-  [[0, 3], [5, 1]],           // V    → I (circle) vi (deceptive)
-  [[1, 3], [3, 1]],           // vi   → ii (circle) IV
-  [[2, 3], [0, 1]],           // viiø → iii (circle) I
+  [[3, 10], [5, 1], [4, 1]],   // I    → IV (circle) vi V
+  [[4, 10], [0, 1]],           // ii   → V (circle) I
+  [[5, 10], [1, 1]],           // iii  → vi (circle) ii
+  [[6, 10], [4, 1], [0, 1]],   // IV   → viiø (circle) V I
+  [[0, 10], [5, 1]],           // V    → I (circle) vi (deceptive)
+  [[1, 10], [3, 1]],           // vi   → ii (circle) IV
+  [[2, 10], [0, 1]],           // viiø → iii (circle) I
 ]
 
-const NB = 29          // bars in the walk before it loops (× barLen 4 s = 116 s loop)
+const NB = 28          // bars in the walk before it loops (× barLen 4 s = 112 s loop)
 
 // Deterministic walk over the graph. Each candidate's weight = base × recency × voiceLead:
 //   base      — the circle-of-fifths bias from TRANS.
@@ -81,7 +80,7 @@ const SEQ = SEQ_IDX.map(i => CHORDS[i])
 const seqLit = '[' + SEQ.map(c => `[${c.join(', ')}]`).join(', ') + ']'
 
 // Readable chord names for the live label (in C; the demo plays seed 0 → key C).
-const CHORD_NAMES = ['Cmaj13', 'Dm11', 'Em11', 'Fmaj9♯11', 'G13', 'Am11', 'Bm11♭5']
+const CHORD_NAMES = ['Cmaj9', 'Dm11', 'Em11', 'Fmaj9', 'G9', 'Am11', 'Bm11♭5']
 
 export const songs = [
   { name: 'after hours', body:

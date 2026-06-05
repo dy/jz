@@ -474,10 +474,19 @@ export const memory = (src) => {
   mem.reset = wasmExports?._clear || jsReset
 
   // TypedArray constructors: memory.Float64Array(data), etc.
+  // Bulk-copy path: when input is a TypedArray whose element type matches
+  // the target (same stride), use .set() for a fast memcpy instead of
+  // per-element DataView writes. Falls back to DataView for mismatched types.
+  const TA = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array]
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
     mem[name] = (data) => {
-      const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes), m = dv()
-      for (let i = 0; i < n; i++) m[setter](off + i * stride, data[i], true)
+      const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
+      if (stride >= 2 && TA[elemId] && data instanceof TA[elemId]) {
+        new TA[elemId](mem.buffer, off, n).set(data)
+      } else {
+        const m = dv()
+        for (let i = 0; i < n; i++) m[setter](off + i * stride, data[i], true)
+      }
       return ptr(3, elemId, off)
     }
   }

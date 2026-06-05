@@ -27,7 +27,7 @@
 
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from '../ctx.js'
-import { T, isBlockBody } from '../ast.js'
+import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR } from '../ast.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
@@ -233,6 +233,62 @@ function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
+function scanAndTagNonEscapingClosures(body) {
+  if (!body) return
+  const onlyCalledNotReferenced = (node, name) => {
+    if (typeof node === 'string') return node !== name
+    if (!Array.isArray(node)) return true
+    const op = node[0]
+    if (op === 'str') return true
+    if (op === '=>') {
+      return !refsName(node[1], name, REFS_IN_EXPR) && !refsName(node[2], name, REFS_IN_EXPR)
+    }
+    if (op === '=' && node[1] === name) {
+      return onlyCalledNotReferenced(node[2], name)
+    }
+    if (op === '()' && node[1] === name) {
+      for (let i = 2; i < node.length; i++) {
+        if (!onlyCalledNotReferenced(node[i], name)) return false
+      }
+      return true
+    }
+    if (op === '.' || op === '?.') return onlyCalledNotReferenced(node[1], name)
+    if (op === ':') return onlyCalledNotReferenced(node[2], name)
+    for (let i = 1; i < node.length; i++) {
+      if (!onlyCalledNotReferenced(node[i], name)) return false
+    }
+    return true
+  }
+
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'let' || op === 'const') {
+      for (const decl of node.slice(1)) {
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
+          const name = decl[1]
+          const init = decl[2]
+          if (Array.isArray(init) && init[0] === '=>') {
+            const arrow_body = init[2]
+            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name)) {
+              arrow_body._nonEscaping = name
+            }
+          }
+        }
+      }
+    } else if (op === '=' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>') {
+      const name = node[1]
+      const init = node[2]
+      const arrow_body = init[2]
+      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name)) {
+        arrow_body._nonEscaping = name
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+}
+
 // Reset per-function emit-frame state — the single source of frame entry.
 // `emitFunc`, `analyzeFuncForEmit`, and `emitClosureBody` all route through
 // here. Top-level funcs start `uniq` at 0; closures pass a higher base so
@@ -247,6 +303,9 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
+  if (ctx.transform.optimize) {
+    scanAndTagNonEscapingClosures(body)
+  }
 }
 
 // Allocate + null-init a heap cell for every boxed local that isn't seeded
