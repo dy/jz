@@ -1077,11 +1077,11 @@ export function emitBlockBody(node) {
   return out
 }
 
-// A VAL.BOOL value rides the cheap 0/1 numeric carrier, and `ToNumber(bool)` is
-// exactly that carrier — so for relational / loose-equality coercion a boolean
-// behaves identically to a number. Normalize it before the type-directed compare
-// dispatch (the BOOL fact still drives typeof / String / boundary boxing; only
-// these arithmetic-shaped operators read it as numeric).
+// A VAL.BOOL value can ride either the cheap 0/1 numeric carrier or, after it has
+// escaped into an object slot, a boxed boolean atom. `ToNumber(bool)` normalizes
+// both to 0/1, so for relational / loose-equality coercion a boolean behaves
+// identically to a number. Normalize it before the type-directed compare dispatch
+// (the BOOL fact still drives typeof / String / boundary boxing).
 const numericVal = vt => vt === VAL.BOOL ? VAL.NUMBER : vt
 
 // Primitive value-type classes for strict-equality type-mismatch folding. Two
@@ -1133,11 +1133,15 @@ function emitLooseEq(a, b, negate) {
   // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
   // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
   // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
-  const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
-  const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
-  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(va, b, vb, negate)
-  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(vb, a, va, negate)
-  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, asF64(va), asF64(vb)], 'i32')
+  const rawA = resolveValType(a, valTypeOf, lookupValType)
+  const rawB = resolveValType(b, valTypeOf, lookupValType)
+  const vta = numericVal(rawA)
+  const vtb = numericVal(rawB)
+  const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
+  const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
+  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
+  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
   // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
   // STRING needs __eq (heap strings can be equal by content but different pointers).
@@ -1176,9 +1180,9 @@ function emitStrictEq(a, b, negate) {
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
   // Known, differing primitive classes can never be strictly equal.
-  const rawA = resolveValType(a, valTypeOf, lookupValType)
-  const rawB = resolveValType(b, valTypeOf, lookupValType)
-  if (rawA && rawB && rawA !== rawB && (STRICT_PRIM.has(rawA) || STRICT_PRIM.has(rawB)))
+  const strictA = resolveValType(a, valTypeOf, lookupValType)
+  const strictB = resolveValType(b, valTypeOf, lookupValType)
+  if (strictA && strictB && strictA !== strictB && (STRICT_PRIM.has(strictA) || STRICT_PRIM.has(strictB)))
     return emitNum(negate ? 1 : 0)
   // Same type (or dynamic-unknown): identical bits to loose `==`/`!=`.
   return emitter[negate ? '!=' : '=='](a, b)

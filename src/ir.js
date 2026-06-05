@@ -571,6 +571,7 @@ export function toNumF64(node, v) {
   // this, so the numeric kernels jz optimizes for (which never assign null) stay untouched.
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
+  if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
   if (vt === VAL.DATE) {
     const ptr = v.ptrKind === VAL.DATE
