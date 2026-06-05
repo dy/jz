@@ -641,6 +641,16 @@ test('numeric composite arithmetic NaN condition is falsy', () => {
   is(run('export let f = (x) => Math.round(0 % Math.trunc(x)) ? 1 : 0', { optimize: 0 }).f(0.1), 0)
 })
 
+test('nested literal ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v = (0 ? 0 : 0) ? p1 : (0 / 0); return v ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
+})
+
+test('reassigned modulo NaN remains falsy in later ternary condition', () => {
+  const code = 'export let f = (p0, p1) => { p0 = p0 % 1; p0 = p0 ? p1 : 0; return p0 }'
+  is(run(code, { optimize: 0 }).f(-Infinity, 0.5), 0)
+})
+
 test('void preserves side effects', () => {
   is(run('export let f = () => { let x = 0; void (x = 5); return x }').f(), 5)
 })

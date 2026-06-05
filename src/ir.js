@@ -802,6 +802,7 @@ export function readVar(name) {
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const node = typed(['global.get', `$${name}`], gt)
     const grep = repOfGlobal(name)
+    if (gt === 'f64' && (lookupValType(name) === VAL.NUMBER || grep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
     // ptrKind tags a raw i32 pointer offset — meaningful only for an i32-STORED
     // global (a typed-array/buffer carrier unboxed by unboxConstTypedGlobals). An
     // f64 global holds a NaN-boxed value: object/array reads unbox at the access
@@ -828,6 +829,7 @@ export function readVar(name) {
                        : typed(['f64.const', rep.intConst], 'f64')
   }
   const node = typed(['local.get', `$${name}`], t)
+  if (t === 'f64' && (lookupValType(name) === VAL.NUMBER || rep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
   // Proven uint32 accumulator local (narrowUint32): a later asF64 must widen with
   // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
   // marks it as the always-ToUint32-sunk kind so the arithmetic widening guards

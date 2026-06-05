@@ -28,6 +28,14 @@ function literalTruthiness(expr) {
     if (op === 'bool') return literalTruthiness(args[0])
     if (op === 'nan') return false
     if (op === 'str' && typeof args[0] === 'string') return args[0].length !== 0
+    if (op === '?:' || op === '?') {
+      const truthy = literalTruthiness(args[0])
+      if (truthy != null) return literalTruthiness(truthy ? args[1] : args[2])
+    }
+    if (op === '()' && Array.isArray(args[0]) && args[0][0] === '?') {
+      const truthy = literalTruthiness(args[0][1])
+      if (truthy != null) return literalTruthiness(truthy ? args[0][2] : args[0][3])
+    }
   }
   return null
 }
@@ -174,6 +182,8 @@ export function valTypeOf(expr) {
     }
     // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
     if (Array.isArray(callee) && callee[0] === '?') {
+      const truthy = literalTruthiness(callee[1])
+      if (truthy != null) return valTypeOf(truthy ? callee[2] : callee[3])
       const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
       return ta && ta === tb ? ta : null
     }

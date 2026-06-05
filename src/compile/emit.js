@@ -1047,32 +1047,59 @@ export function emitBlockBody(node) {
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
   const accumulated = []
-  for (let i = 0; i < stmts.length; i++) {
-    const s = stmts[i]
-    if (s == null || typeof s === 'number') continue
-    out.push(...emitVoid(s))
-    // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
-    // Skip names that are reassigned later — refinement would be unsound past the assignment.
-    if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
-      const refs = extractRefinements(s[1], new Map(), false)
-      for (const [name, fact] of refs) {
-        let reassigned = false
-        for (let j = i + 1; j < stmts.length; j++)
-          if (isReassigned(stmts[j], name)) { reassigned = true; break }
-        if (reassigned) continue
-        const cur = ctx.func.refinements.get(name)
-        accumulated.push([name, cur])
-        // Merge so sibling early-returns layering on the same name compose
-        // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
-        // leaves both `notString: true` and would-be array exclusion stacked).
-        ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
+  const prevValOverlay = ctx.func.localValTypesOverlay
+  ctx.func.localValTypesOverlay = new Map(prevValOverlay || [])
+  const setFlowVal = (name, vt) => {
+    if (!isBoundName(name)) return
+    if (vt) ctx.func.localValTypesOverlay.set(name, vt)
+    else ctx.func.localValTypesOverlay.delete(name)
+  }
+  const updateFlowVal = (stmt) => {
+    if (!Array.isArray(stmt)) return
+    const op = stmt[0]
+    if (op === '=' && typeof stmt[1] === 'string') {
+      setFlowVal(stmt[1], valTypeOf(stmt[2]))
+      return
+    }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < stmt.length; i++) {
+        const d = stmt[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string')
+          setFlowVal(d[1], valTypeOf(d[2]))
       }
     }
   }
-  // Restore prior refinements on block exit.
-  for (let i = accumulated.length - 1; i >= 0; i--) {
-    const [name, prev] = accumulated[i]
-    if (prev === undefined) ctx.func.refinements.delete(name); else ctx.func.refinements.set(name, prev)
+  try {
+    for (let i = 0; i < stmts.length; i++) {
+      const s = stmts[i]
+      if (s == null || typeof s === 'number') continue
+      out.push(...emitVoid(s))
+      updateFlowVal(s)
+      // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
+      // Skip names that are reassigned later — refinement would be unsound past the assignment.
+      if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
+        const refs = extractRefinements(s[1], new Map(), false)
+        for (const [name, fact] of refs) {
+          let reassigned = false
+          for (let j = i + 1; j < stmts.length; j++)
+            if (isReassigned(stmts[j], name)) { reassigned = true; break }
+          if (reassigned) continue
+          const cur = ctx.func.refinements.get(name)
+          accumulated.push([name, cur])
+          // Merge so sibling early-returns layering on the same name compose
+          // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
+          // leaves both `notString: true` and would-be array exclusion stacked).
+          ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
+        }
+      }
+    }
+  } finally {
+    ctx.func.localValTypesOverlay = prevValOverlay
+    // Restore prior refinements on block exit.
+    for (let i = accumulated.length - 1; i >= 0; i--) {
+      const [name, prev] = accumulated[i]
+      if (prev === undefined) ctx.func.refinements.delete(name); else ctx.func.refinements.set(name, prev)
+    }
   }
   return out
 }
