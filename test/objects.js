@@ -91,6 +91,43 @@ test('Regression: compile survives focused object mutation cases', () => {
   ok(wasm instanceof Uint8Array, 'object mutation regression compiles')
 })
 
+test('Regression: object-slot booleans preserve strict identity', () => {
+  const { directTrue, aliasFalse } = run(`
+    export let directTrue = () => {
+      var object = {undefined: true}
+      return object.undefined === true
+    }
+    export let aliasFalse = () => {
+      let object = {x: false}
+      let alias = object
+      return alias.x === false
+    }
+  `)
+  is(directTrue(), true)
+  is(aliasFalse(), true)
+})
+
+test('Regression: object-slot booleans coerce with Number and String', () => {
+  const { numbers, strings } = run(`
+    export let numbers = () => {
+      let falseObject = {x: false}
+      let trueObject = {x: true}
+      let falseAlias = falseObject
+      let trueAlias = trueObject
+      return Number(falseAlias.x) * 10 + Number(trueAlias.x)
+    }
+    export let strings = () => {
+      let falseObject = {x: false}
+      let trueObject = {x: true}
+      let falseAlias = falseObject
+      let trueAlias = trueObject
+      return String(falseAlias.x) + ":" + String(trueAlias.x)
+    }
+  `)
+  is(numbers(), 1)
+  is(strings(), 'false:true')
+})
+
 // Pre-existing bug surfaced while writing slot-type tests:
 // `let o = w == 0 ? mkA() : mkB()` where both arms returned narrowed-i32 OBJECT
 // pointers used to emit `(f64.convert_i32_s (if (result i32) ...))` — numeric

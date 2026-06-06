@@ -28,6 +28,7 @@
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from '../ctx.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR } from '../ast.js'
+import { intLiteralValue } from '../static.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
@@ -352,6 +353,9 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
     }
   }
+  if (block) {
+    seedLocalIntConsts(body)
+  }
   // Drop any earlier-cached analyzeBody.locals slice for this body —
   // narrowSignatures called it before our pre-seed, when params still had no
   // inferred VAL.TYPED, so the cached widths reflect the pre-narrow state.
@@ -359,6 +363,9 @@ function analyzeFuncForEmit(func, programFacts) {
   invalidateLocalsCache(body)
   const bodyFacts = block ? analyzeBody(body) : null
   ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
+  if (bodyFacts?.valTypes) {
+    for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
+  }
   // Proven uint32 accumulator locals — readVar tags reads `.unsigned` so the
   // f64 round-trip widens with convert_i32_u (not _s).
   if (bodyFacts?.unsignedLocals) for (const n of bodyFacts.unsignedLocals) updateRep(n, { unsigned: true })
@@ -435,6 +442,24 @@ function analyzeFuncForEmit(func, programFacts) {
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
+}
+
+function seedLocalIntConsts(body) {
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const decl of args) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const value = intLiteralValue(decl[2])
+        if (value != null && !isReassigned(body, decl[1])) updateRep(decl[1], { intConst: value })
+      }
+      return
+    }
+    for (const arg of args) walk(arg)
+  }
+  walk(body)
 }
 
 // ── Loop-invariant exported-param coercion hoist ────────────────────────────

@@ -419,14 +419,17 @@ export default (ctx) => {
   // For |x| ≲ 1e15 the second pass is a no-op (q2 = 0) and the result is bit-identical to a
   // single reduction. The odd poly r·P(r²) handles r<0 on its own (sin is odd); the sign is the
   // parity of the total quotient, taken in f64 as q − 2·round(q/2). ×(1/π) avoids a divide.
-  // The isFinite guard is unnecessary: ±Inf and NaN flow through the reduction (Inf−Inf·π = NaN)
-  // and the poly to NaN on their own — exactly Math.sin's answer — so the common (finite) path
-  // pays nothing for it. The second reduction pass only corrects an r that the first pass left
-  // outside [−π/2, π/2]; for in-range r (every bounded arg, plus ±Inf/NaN) q2 is 0 and the pass
-  // is a no-op, so gating it on |r| > π/2 is bit-identical for ALL inputs while sparing the
-  // common case ~6 ops. Both are generic wins for every sin/cos/tan/exp-via-trig call site.
+  // ±Infinity and NaN must return NaN. Guard before reduction instead of relying on
+  // Inf−Inf·π to mint one: that arithmetic NaN has platform-dependent bits and can
+  // escape as a non-canonical NaN-box on x86/Linux.
+  // The second reduction pass only corrects an r that the first pass left outside
+  // [−π/2, π/2]; for in-range r, q2 is 0 and the pass is a no-op, so gating it on
+  // |r| > π/2 is bit-identical for all finite inputs while sparing the common case
+  // ~6 ops. Both are generic wins for every sin/cos/tan/exp-via-trig call site.
   wat('math.sin_core', `(func $math.sin_core (param $x f64) (result f64)
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
     ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
     (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
@@ -447,6 +450,8 @@ export default (ctx) => {
 
   wat('math.cos_core', `(func $math.cos_core (param $x f64) (result f64)
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
     (if (f64.gt (f64.abs (local.get $r)) (f64.const ${Math.PI / 2}))
@@ -463,6 +468,8 @@ export default (ctx) => {
     (call $math.cos_core (local.get $x)))`)
 
   wat('math.tan', `(func $math.tan (param $x f64) (result f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
 
   // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
