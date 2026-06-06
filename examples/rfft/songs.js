@@ -2,15 +2,107 @@
 // (jz-compatible subset) with TAU inlined, so the very same source compiles to
 // wasm (jz) and runs under V8 (new Function). The chord progression is not a fixed
 // loop: it's a random WALK over a jazz chord-transition graph (functional harmony —
-// ii→V→I, V→vi deceptive, vi→ii, etc.), baked once at build time into a long,
-// non-repeating sequence so the same chord resolves different ways each time it recurs.
+// ii→V→I, V→vi deceptive, vi→ii, etc.) generated dynamically.
 
 export const TAU = 6.283185307179586
 
-// ── chord vocabulary — diatonic 7 of C major, extended jazz voicings ───────────
-// [root, 5 voicing tones as semitones above the root]: 3·5·7·9 plus one upper-structure
-// extension — 9 on the major/dominant chords, 11 on the minors — each picked to
-// sit above the chord without the natural-11-vs-3rd clash. No 13 extensions.
+export const PCS_MASK = [2196, 689, 2756, 657, 2596, 2197, 564]
+
+export const popcount = (x) => {
+  let count = 0, temp = x
+  while (temp > 0) { temp &= temp - 1; count++ }
+  return count
+}
+
+export const shared = (a, b) => popcount(PCS_MASK[a] & PCS_MASK[b])
+
+export const getChordIdx = (bar, sd) => {
+  let s = (sd >>> 0) || 1
+  const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
+  
+  let lastSeen0 = -99, lastSeen1 = -99, lastSeen2 = -99, lastSeen3 = -99
+  let lastSeen4 = -99, lastSeen5 = -99, lastSeen6 = -99
+  
+  let cur = 0
+  lastSeen0 = 0
+  
+  let idx = 0
+  while (idx < bar) {
+    let opt0_next = 0, opt0_w = 0
+    let opt1_next = -1, opt1_w = 0
+    let opt2_next = -1, opt2_w = 0
+    
+    if (cur === 0) {
+      opt0_next = 3; opt0_w = 3.0
+      opt1_next = 5; opt1_w = 1.0
+      opt2_next = 4; opt2_w = 1.0
+    } else if (cur === 1) {
+      opt0_next = 4; opt0_w = 3.0
+      opt1_next = 0; opt1_w = 1.0
+    } else if (cur === 2) {
+      opt0_next = 5; opt0_w = 3.0
+      opt1_next = 1; opt1_w = 1.0
+    } else if (cur === 3) {
+      opt0_next = 6; opt0_w = 3.0
+      opt1_next = 4; opt1_w = 1.0
+      opt2_next = 0; opt2_w = 1.0
+    } else if (cur === 4) {
+      opt0_next = 0; opt0_w = 3.0
+      opt1_next = 5; opt1_w = 1.0
+    } else if (cur === 5) {
+      opt0_next = 1; opt0_w = 3.0
+      opt1_next = 3; opt1_w = 1.0
+    } else if (cur === 6) {
+      opt0_next = 2; opt0_w = 3.0
+      opt1_next = 0; opt1_w = 1.0
+    }
+    
+    let nextBar = idx + 1
+    
+    const age0 = opt0_next === 0 ? lastSeen0 : opt0_next === 1 ? lastSeen1 : opt0_next === 2 ? lastSeen2 : opt0_next === 3 ? lastSeen3 : opt0_next === 4 ? lastSeen4 : opt0_next === 5 ? lastSeen5 : lastSeen6
+    const ageMultiplier0 = nextBar - age0 <= 3 ? (nextBar - age0) * 0.05 : 1.0
+    let ww0 = opt0_w * ageMultiplier0 * (shared(cur, opt0_next) - 1)
+    
+    let ww1 = 0.0
+    if (opt1_next !== -1) {
+      const age1 = opt1_next === 0 ? lastSeen0 : opt1_next === 1 ? lastSeen1 : opt1_next === 2 ? lastSeen2 : opt1_next === 3 ? lastSeen3 : opt1_next === 4 ? lastSeen4 : opt1_next === 5 ? lastSeen5 : lastSeen6
+      const ageMultiplier1 = nextBar - age1 <= 3 ? (nextBar - age1) * 0.05 : 1.0
+      ww1 = opt1_w * ageMultiplier1 * (shared(cur, opt1_next) - 1)
+    }
+    
+    let ww2 = 0.0
+    if (opt2_next !== -1) {
+      const age2 = opt2_next === 0 ? lastSeen0 : opt2_next === 1 ? lastSeen1 : opt2_next === 2 ? lastSeen2 : opt2_next === 3 ? lastSeen3 : opt2_next === 4 ? lastSeen4 : opt2_next === 5 ? lastSeen5 : lastSeen6
+      const ageMultiplier2 = nextBar - age2 <= 3 ? (nextBar - age2) * 0.05 : 1.0
+      ww2 = opt2_w * ageMultiplier2 * (shared(cur, opt2_next) - 1)
+    }
+    
+    let total = ww0 + ww1 + ww2
+    let r = rnd() * total
+    let nextChord = opt0_next
+    
+    if (r <= ww0) {
+      nextChord = opt0_next
+    } else if (r <= ww0 + ww1) {
+      nextChord = opt1_next
+    } else {
+      nextChord = opt2_next
+    }
+    
+    cur = nextChord
+    if (cur === 0) lastSeen0 = nextBar
+    else if (cur === 1) lastSeen1 = nextBar
+    else if (cur === 2) lastSeen2 = nextBar
+    else if (cur === 3) lastSeen3 = nextBar
+    else if (cur === 4) lastSeen4 = nextBar
+    else if (cur === 5) lastSeen5 = nextBar
+    else lastSeen6 = nextBar
+    
+    idx++
+  }
+  return cur
+}
+
 const CHORDS = [
   [0, 4, 7, 11, 14, 16],   // I    Cmaj9
   [2, 3, 7, 10, 14, 17],   // ii   Dm11
@@ -21,122 +113,167 @@ const CHORDS = [
   [11, 3, 6, 10, 15, 17],  // viiø Bm11♭5 (half-diminished)
 ]
 
-// The pad plays a ROOTLESS CLOSE voicing — the 5 upper tones folded into one octave (pitch
-// class) over the low root — so two chords' shared pitch-classes are literally HELD notes (same
-// frequency), not just shared classes in different octaves. shared() counts those held notes;
-// the walk favours transitions that hold more of them (smoother voice-leading).
-const PCS = CHORDS.map(c => { const s = new Set(); for (let k = 1; k < c.length; k++) s.add((c[0] + c[k]) % 12); return s })
-const shared = (a, b) => { let n = 0; for (const p of PCS[a]) if (PCS[b].has(p)) n++; return n }
-
-// ── transition graph — biased to the descending-fifths circle (the jazz "circle of fifths"
-// turnaround). [nextChord, baseWeight]. Each chord's circle successor (I→IV→viiø→iii→vi→ii→V→I)
-// carries weight ·10, so the walk takes long fifth-falling paths; a lighter alt keeps it varied.
-const TRANS = [
-  [[3, 10], [5, 1], [4, 1]],   // I    → IV (circle) vi V
-  [[4, 10], [0, 1]],           // ii   → V (circle) I
-  [[5, 10], [1, 1]],           // iii  → vi (circle) ii
-  [[6, 10], [4, 1], [0, 1]],   // IV   → viiø (circle) V I
-  [[0, 10], [5, 1]],           // V    → I (circle) vi (deceptive)
-  [[1, 10], [3, 1]],           // vi   → ii (circle) IV
-  [[2, 10], [0, 1]],           // viiø → iii (circle) I
-]
-
-const NB = 28          // bars in the walk before it loops (× barLen 4 s = 112 s loop)
-
-// Deterministic walk over the graph. Each candidate's weight = base × recency × voiceLead:
-//   base      — the circle-of-fifths bias from TRANS.
-//   recency   — a 5-bar cooldown: a just-used chord is blocked (a tiny weight that, among the
-//               blocked, prefers the OLDEST — never the most recent) and only frees up after 5
-//               bars, so the walk takes long fifth-falling paths and never doubles back quickly.
-//   voiceLead — (held notes − 1): every diatonic pair holds ≥2 in the rootless voicing, so this
-//               stays positive and just nudges toward the smoothest move.
-// Capped with a ii–V turnaround so the loop point resolves (…ii V | I).
-const COOL = 5
-const walkIdx = (seed) => {
-  let s = (seed >>> 0) || 1
-  const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
-  const idx = [0]
-  const lastSeen = [0, -99, -99, -99, -99, -99, -99]   // bar each chord last sounded
-  let cur = 0
-  while (idx.length < NB - 2) {
-    const bar = idx.length, opts = TRANS[cur]
-    let total = 0
-    const w = opts.map(([o, bw]) => {
-      const age = bar - lastSeen[o]
-      const rec = age <= COOL ? age * 0.02 : 1     // blocked for COOL bars (oldest preferred), then free
-      const ww = bw * rec * (shared(cur, o) - 1)
-      total += ww; return ww
-    })
-    let r = rnd() * total, cho = opts[0][0]
-    for (let i = 0; i < opts.length; i++) { r -= w[i]; if (r <= 0) { cho = opts[i][0]; break } }
-    cur = cho; lastSeen[cur] = bar; idx.push(cur)
-  }
-  idx.push(1, 4)       // … ii V | (loops to I)
-  return idx
-}
-
-const SEQ_IDX = walkIdx(2)
-const SEQ = SEQ_IDX.map(i => CHORDS[i])
-const seqLit = '[' + SEQ.map(c => `[${c.join(', ')}]`).join(', ') + ']'
-
-// Readable chord names for the live label (in C; the demo plays seed 0 → key C).
-const CHORD_NAMES = ['Cmaj9', 'Dm11', 'Em11', 'Fmaj9', 'G9', 'Am11', 'Bm11♭5']
-
 export const songs = [
   { name: 'after hours', body:
 `(t, sd) => {
-  // A warm detuned pad walking a ${NB}-bar jazz chord graph (baked above), each chord
-  // crossfading into the next so nothing clicks. The pad is a ROOTLESS CLOSE voicing — the 5
-  // upper tones folded into one octave — so neighbouring chords share HELD notes (2–4 of them):
-  // smooth voice-leading, never a jump to all-new pitches. A soft sub traces the root below it.
-  // The seed transposes the key and rotates the entry point, so a different seed drops you
-  // elsewhere in the same walk.
-  const seq = ${seqLit}
-  const NB = ${NB}
-  const barLen = 4
-  const fb = t / barLen, bar = fb | 0, ph = fb - bar
-  const key = (sd | 0) % 12, rot = ((sd | 0) * 5) % NB
-  const A = seq[(bar + rot) % NB], B = seq[(bar + 1 + rot) % NB]
-  // crossfade the last 28% of each bar into the next chord (smoothstep — no click)
-  let xf = ph < 0.72 ? 0 : (ph - 0.72) / 0.28
-  xf = xf * xf * (3 - 2 * xf)
-  let padA = 0, padB = 0
-  for (let k = 1; k <= 5; k++) {
-    const fa = 261.63 * 2 ** (((key + A[0] + A[k]) % 12) / 12)   // fold to [C4,C5) — rootless close voicing
-    padA += Math.sin(t*${TAU}*fa) + Math.sin(t*${TAU}*fa*1.003)  // two slightly detuned sines = warmth
-    const fc = 261.63 * 2 ** (((key + B[0] + B[k]) % 12) / 12)
-    padB += Math.sin(t*${TAU}*fc) + Math.sin(t*${TAU}*fc*1.003)
+  // Use a global cache to avoid recalculating the walk on every single sample in JS!
+  let cache = globalThis.__rfft_cache || (globalThis.__rfft_cache = { lastBar: -1, curSd: -1, cA_idx: 0, cb_idx: 0 });
+  const barLen = 4;
+  const fb = t / barLen, bar = fb | 0, ph = fb - bar;
+  const key = (sd | 0) % 12;
+
+  const PCS_MASK = [2196, 689, 2756, 657, 2596, 2197, 564];
+
+  const popcount = (x) => {
+    let count = 0, temp = x;
+    while (temp > 0) { temp &= temp - 1; count++; }
+    return count;
+  };
+  const shared = (a, b) => popcount(PCS_MASK[a] & PCS_MASK[b]);
+
+  const getChordIdx = (bar, sd) => {
+    let s = (sd >>> 0) || 1;
+    let lastSeen0 = -99, lastSeen1 = -99, lastSeen2 = -99, lastSeen3 = -99;
+    let lastSeen4 = -99, lastSeen5 = -99, lastSeen6 = -99;
+    let cur = 0;
+    lastSeen0 = 0;
+    let idx = 0;
+    while (idx < bar) {
+      let opt0_next = 0, opt0_w = 0;
+      let opt1_next = -1, opt1_w = 0;
+      let opt2_next = -1, opt2_w = 0;
+      if (cur === 0) {
+        opt0_next = 3; opt0_w = 3.0;
+        opt1_next = 5; opt1_w = 1.0;
+        opt2_next = 4; opt2_w = 1.0;
+      } else if (cur === 1) {
+        opt0_next = 4; opt0_w = 3.0;
+        opt1_next = 0; opt1_w = 1.0;
+      } else if (cur === 2) {
+        opt0_next = 5; opt0_w = 3.0;
+        opt1_next = 1; opt1_w = 1.0;
+      } else if (cur === 3) {
+        opt0_next = 6; opt0_w = 3.0;
+        opt1_next = 4; opt1_w = 1.0;
+        opt2_next = 0; opt2_w = 1.0;
+      } else if (cur === 4) {
+        opt0_next = 0; opt0_w = 3.0;
+        opt1_next = 5; opt1_w = 1.0;
+      } else if (cur === 5) {
+        opt0_next = 1; opt0_w = 3.0;
+        opt1_next = 3; opt1_w = 1.0;
+      } else if (cur === 6) {
+        opt0_next = 2; opt0_w = 3.0;
+        opt1_next = 0; opt1_w = 1.0;
+      }
+      let nextBar = idx + 1;
+      const age0 = opt0_next === 0 ? lastSeen0 : opt0_next === 1 ? lastSeen1 : opt0_next === 2 ? lastSeen2 : opt0_next === 3 ? lastSeen3 : opt0_next === 4 ? lastSeen4 : opt0_next === 5 ? lastSeen5 : lastSeen6;
+      const ageMultiplier0 = nextBar - age0 <= 3 ? (nextBar - age0) * 0.05 : 1.0;
+      let ww0 = opt0_w * ageMultiplier0 * (shared(cur, opt0_next) - 1);
+      let ww1 = 0.0;
+      if (opt1_next !== -1) {
+        const age1 = opt1_next === 0 ? lastSeen0 : opt1_next === 1 ? lastSeen1 : opt1_next === 2 ? lastSeen2 : opt1_next === 3 ? lastSeen3 : opt1_next === 4 ? lastSeen4 : opt1_next === 5 ? lastSeen5 : lastSeen6;
+        const ageMultiplier1 = nextBar - age1 <= 3 ? (nextBar - age1) * 0.05 : 1.0;
+        ww1 = opt1_w * ageMultiplier1 * (shared(cur, opt1_next) - 1);
+      }
+      let ww2 = 0.0;
+      if (opt2_next !== -1) {
+        const age2 = opt2_next === 0 ? lastSeen0 : opt2_next === 1 ? lastSeen1 : opt2_next === 2 ? lastSeen2 : opt2_next === 3 ? lastSeen3 : opt2_next === 4 ? lastSeen4 : opt2_next === 5 ? lastSeen5 : lastSeen6;
+        const ageMultiplier2 = nextBar - age2 <= 3 ? (nextBar - age2) * 0.05 : 1.0;
+        ww2 = opt2_w * ageMultiplier2 * (shared(cur, opt2_next) - 1);
+      }
+      let total = ww0 + ww1 + ww2;
+      s = (s * 1664525 + 1013904223) | 0;
+      let r = (s >>> 0) / 4294967296 * total;
+      let nextChord = opt0_next;
+      if (r <= ww0) {
+        nextChord = opt0_next;
+      } else if (r <= ww0 + ww1) {
+        nextChord = opt1_next;
+      } else {
+        nextChord = opt2_next;
+      }
+      cur = nextChord;
+      if (cur === 0) lastSeen0 = nextBar;
+      else if (cur === 1) lastSeen1 = nextBar;
+      else if (cur === 2) lastSeen2 = nextBar;
+      else if (cur === 3) lastSeen3 = nextBar;
+      else if (cur === 4) lastSeen4 = nextBar;
+      else if (cur === 5) lastSeen5 = nextBar;
+      else lastSeen6 = nextBar;
+      idx++;
+    }
+    return cur;
+  };
+
+  if (cache.lastBar !== bar || cache.curSd !== sd) {
+    cache.lastBar = bar;
+    cache.curSd = sd;
+    cache.cA_idx = getChordIdx(bar, sd);
+    cache.cB_idx = getChordIdx(bar + 1, sd);
   }
-  const pad = padA * (1 - xf) + padB * xf
-  const ba = 65.41 * 2 ** ((key + A[0]) / 12), bc = 65.41 * 2 ** ((key + B[0]) / 12)   // C2 sub
-  const bass = Math.sin(t*${TAU}*ba) * (1 - xf) + Math.sin(t*${TAU}*bc) * xf
-  const breath = 0.72 + 0.28 * Math.sin(t*${TAU}*0.05)   // slow swell, ~20 s
-  return Math.tanh((pad * 0.042 + bass * 0.42) * breath)
+
+  const CHORDS = [
+    [0, 4, 7, 11, 14, 16],
+    [2, 3, 7, 10, 14, 17],
+    [4, 3, 7, 10, 14, 17],
+    [5, 4, 7, 11, 14, 16],
+    [7, 4, 7, 10, 14, 16],
+    [9, 3, 7, 10, 14, 17],
+    [11, 3, 6, 10, 15, 17]
+  ];
+
+  const cA = CHORDS[cache.cA_idx];
+  const cB = CHORDS[cache.cB_idx];
+
+  // crossfade the last 28% of each bar into the next chord (smoothstep — no click)
+  let xf = ph < 0.72 ? 0 : (ph - 0.72) / 0.28;
+  xf = xf * xf * (3 - 2 * xf);
+  
+  let padA = 0, padB = 0;
+  for (let k = 1; k <= 5; k++) {
+    const fa = 261.63 * 2 ** (((key + cA[0] + cA[k]) % 12) / 12);
+    padA += Math.sin(t * 6.283185307179586 * fa) + Math.sin(t * 6.283185307179586 * fa * 1.003);
+    const fc = 261.63 * 2 ** (((key + cB[0] + cB[k]) % 12) / 12);
+    padB += Math.sin(t * 6.283185307179586 * fc) + Math.sin(t * 6.283185307179586 * fc * 1.003);
+  }
+  const pad = padA * (1 - xf) + padB * xf;
+  const ba = 65.41 * 2 ** ((key + cA[0]) / 12), bc = 65.41 * 2 ** ((key + cB[0]) / 12);
+  const bass = Math.sin(t * 6.283185307179586 * ba) * (1 - xf) + Math.sin(t * 6.283185307179586 * bc) * xf;
+  const breath = 0.72 + 0.28 * Math.sin(t * 6.283185307179586 * 0.05);
+  return Math.tanh((pad * 0.042 + bass * 0.42) * breath);
 }` },
 ]
 
-/** Bars in the chord walk — the loop spans `barsInWalk * barLen` seconds. */
-export const barsInWalk = NB
-/** Seconds per chord/bar (matches the floatbeat body). */
+export const barsInWalk = 28
 export const barLen = 4
-/** The walked chord-index sequence + readable names, for the live current-chord label. */
-export const chordSequence = SEQ_IDX
-export const chordNames = CHORD_NAMES
+export const chordSequence = Array.from({ length: 28 }, (_, i) => getChordIdx(i, 2))
+export const chordNames = ['Cmaj9', 'Dm11', 'Em11', 'Fmaj9', 'G9', 'Am11', 'Bm11♭5']
 
-/** Source shown in the demo code panel (readable TAU name). */
 export const songDisplaySrc = (song) =>
-  song.body.replaceAll(String(TAU), 'TAU')
+  song.body.replaceAll('6.283185307179586', 'TAU')
 
-/** jz/JS callable body — already has TAU numeric. */
 export const songBeatSrc = (song) => song.body
 
-/** Compile a floatbeat module: beat(t, sd) + fill(out, len, sr, off, sd). */
 export const floatbeatModuleSrc = (song) => {
-  const body = songBeatSrc(song)
-  return `export let beat = ${body}
+  let body = songBeatSrc(song)
+  body = body.replace(
+    'let cache = globalThis.__rfft_cache || (globalThis.__rfft_cache = { lastBar: -1, curSd: -1, cA_idx: 0, cb_idx: 0 });',
+    ''
+  )
+  body = body.replaceAll('cache.lastBar', 'lastBar')
+  body = body.replaceAll('cache.curSd', 'curSd')
+  body = body.replaceAll('cache.cA_idx', 'cA_idx')
+  body = body.replaceAll('cache.cB_idx', 'cB_idx')
+
+  return `let lastBar = -1;
+let curSd = -1;
+let cA_idx = 0;
+let cB_idx = 0;
+
+export let beat = ${body}
 export let fill = (out, len, sr, off, sd) => { let i = 0; while (i < len) { out[i] = beat(off + i / sr, sd); i++ } }`
 }
 
-/** Filesystem slug for prebuilt beat wasm (`beats/after-hours.wasm`). */
 export const songSlug = (song) =>
   song.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')

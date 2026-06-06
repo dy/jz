@@ -54,7 +54,7 @@
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 import { instantiate } from "../../interop.js";
-import { songs, songBeatSrc, songSlug, barsInWalk, barLen, chordSequence, chordNames } from "./songs.js";
+import { songs, songBeatSrc, songSlug, barsInWalk, barLen, getChordIdx, chordNames } from "./songs.js";
 
 const N = 16384;                     // FFT size → N/2 = 8192 bins; bin width SR/N ≈ 2.7 Hz — a heavier
                                      // transform with finer bass detail, so jz vs js is clearly measurable
@@ -196,14 +196,14 @@ drawAxis();
 window.addEventListener("resize", () => { fit(); });
 
 // ── audio + render loop ──────────────────────────────────────────────────────
-// One continuous loop buffer, looped engine-side and sample-accurate, so it is
-// inherently gapless (no chunk-seam clicks). It is synthesized ASYNCHRONOUSLY in
-// slices so the first build never blocks the main thread.
 let audio = null, running = false, paused = false;
-let seed = 0;                         // fixed chord seed — the single tune
-let startT = 0;                       // ctx time the timeline is anchored to
-let cur = null;                       // { src, gain, ch } currently playing
-const LOOP_SEC = barsInWalk * 4;      // one full pass of the chord-graph walk (bars × 4 s)
+let seed = Math.floor(Math.random() * 1000000) || 1;  // random seed each run
+let startT = 0;                       // streaming timeline start time
+let nextTime = 0;                     // scheduled time of next chunk
+let writeOff = 0;                     // written sample offset in audio.ch
+let queued = [];                      // queued BufferSourceNodes
+const CHUNK_SEC = 0.5;                // chunk size in seconds
+let gainNode = null;
 
 // FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
@@ -215,55 +215,32 @@ const ui = hud({
   onSwitch: (kind) => start(kind),    // reload the FFT engine; the playing buffer is untouched (jz==JS samples)
 });
 
-// Synthesize a full loop buffer for seed `sd`, ~1 s at a time, yielding to the event
-// loop between slices so the page never freezes. The beat is pure in t, so slices
-// joined at sample s..s+L are seamless.
-async function synthBuffer(sd) {
-  const sr = audio.sampleRate, len = Math.round(sr * LOOP_SEC);
-  const ch = new Float64Array(len), STEP = Math.round(sr), tmp = new Float64Array(STEP);
-  for (let s = 0; s < len; s += STEP) {
-    const L = Math.min(STEP, len - s);
-    beatCache.fill(tmp, L, sr, s / sr, sd);             // fill's `off` is a TIME offset in seconds (beat(off + i/sr))
-    ch.set(L < STEP ? tmp.subarray(0, L) : tmp, s);
-    await new Promise(r => requestAnimationFrame(r));   // yield — keep the UI responsive (no 330 ms block)
-  }
-  const fade = Math.round(sr * 0.006);                  // 6 ms raised-cosine taper hides the loop seam
-  for (let i = 0; i < fade; i++) { const g = 0.5 - 0.5 * Math.cos(Math.PI * i / fade); ch[i] *= g; ch[len - 1 - i] *= g; }
-  return ch;
-}
+const schedule = () => {
+  if (!running || paused || !audio) return;
+  const { ctx, sampleRate: sr } = audio;
+  const len = Math.round(sr * CHUNK_SEC);
+  const tmp = new Float64Array(len);
+  const ringLen = audio.ch.length;
 
-// A short head synthesized in ONE shot (~10 ms) so playback can start instantly instead of
-// waiting for the whole loop. The full loop is built in the background and crossfaded in — and
-// because both are the same beat(t) for t < secs, that crossfade is between identical signals.
-function synthHead(sd, secs) {
-  const sr = audio.sampleRate, len = Math.round(sr * secs);
-  const ch = new Float64Array(len);
-  beatCache.fill(ch, len, sr, 0, sd);
-  return ch;
-}
-
-// Play `ch` looping, entering at the current loop phase so the timeline (and the
-// spectrogram) stays continuous. fadeSec>0 crossfades in from the current voice.
-function playBuffer(ch, fadeSec) {
-  const { ctx } = audio, sr = ctx.sampleRate, dur = ch.length / sr, now = ctx.currentTime;
-  const buf = ctx.createBuffer(1, ch.length, sr); buf.getChannelData(0).set(ch);
-  const gain = ctx.createGain(), src = ctx.createBufferSource();
-  src.buffer = buf; src.loop = true; src.connect(gain); gain.connect(ctx.destination);
-  if (!cur) startT = now;                               // first play anchors the timeline
-  const phase = cur ? (((now - startT) % dur) + dur) % dur : 0;
-  if (cur && fadeSec > 0) {
-    gain.gain.setValueAtTime(0, now); gain.gain.linearRampToValueAtTime(1, now + fadeSec);   // new swells in
-    const { src: oldSrc, gain: oldGain } = cur;
-    oldGain.gain.cancelScheduledValues(now); oldGain.gain.setValueAtTime(oldGain.gain.value, now);
-    oldGain.gain.linearRampToValueAtTime(0, now + fadeSec);                                  // old bows out
-    oldSrc.stop(now + fadeSec + 0.05); oldSrc.onended = () => oldGain.disconnect();
-  } else {
-    gain.gain.setValueAtTime(1, now);
-    if (cur) { cur.src.stop(); cur.gain.disconnect(); }
+  while (nextTime < ctx.currentTime + 0.3) {
+    beatCache.fill(tmp, len, sr, writeOff / sr, seed);
+    for (let i = 0; i < len; i++) {
+       audio.ch[(writeOff + i) % ringLen] = tmp[i];
+    }
+    const buf = ctx.createBuffer(1, len, sr);
+    buf.getChannelData(0).set(tmp);
+    const s = ctx.createBufferSource();
+    s.buffer = buf;
+    s.connect(gainNode);
+    s.start(nextTime);
+    queued.push(s);
+    if (queued.length > 8) {
+       queued.shift();
+    }
+    nextTime += CHUNK_SEC;
+    writeOff += len;
   }
-  src.start(now, phase);
-  cur = { src, gain, ch }; audio.ch = ch;               // spectrogram reads audio.ch
-}
+};
 
 let gen = 0;
 async function start(kind) {
@@ -282,6 +259,8 @@ async function start(kind) {
     if (my !== gen) return;
     requestAnimationFrame(frame);
     if (!audio.ch) { ui.frame(null); return; }     // buffer not ready yet
+
+    schedule(); // Top up the scheduled queue!
 
     const target = Math.floor((audio.ctx.currentTime - startT) * sr);   // playhead — what's actually heard now
     const w = sg.width, h = sg.height;
@@ -315,8 +294,8 @@ async function start(kind) {
       const x = w - cols + c;
       sgctx.putImageData(colImg, x, 0);
       // mark a chord change on the plot — aligned to where its harmonics fill the FFT window
-      const ct = (((Math.max(0, cursor - N / 2)) / sr) % LOOP_SEC + LOOP_SEC) % LOOP_SEC;   // clamp at t<0 so the start shows chord I, not the loop's seam chord (no double label)
-      const ci = chordSequence[((ct / barLen) | 0) % barsInWalk];
+      const ct = (Math.max(0, cursor - N / 2)) / sr;
+      const ci = getChordIdx((ct / barLen) | 0, seed);
       if (ci !== lastColChord) { lastColChord = ci; chordMarks.push(x, ci); }
       waveCol(samp, cursor, x, wave.height);  // one waveform column, time-aligned to this frame
     }
@@ -394,7 +373,7 @@ function togglePlay() {
   else { audio.ctx.resume(); overlay(false); }
 }
 
-// First gesture: create the context, warm the beat engine, synth + play the first buffer.
+// First gesture: create the context, warm the beat engine, play dynamic chunks.
 async function begin() {
   running = true;
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -402,10 +381,23 @@ async function begin() {
   audio = { ctx, sampleRate: ctx.sampleRate };
   SR = ctx.sampleRate; buildRows(); drawAxis();   // real device rate → exact Hz everywhere
   await warmBeat(ui.kind);
-  playBuffer(synthHead(seed, 8), 0);                         // instant: play an 8 s head, no wait
+
+  // Set up circular sound buffer of 8 seconds
+  const ringLen = Math.round(8 * SR);
+  audio.ch = new Float64Array(ringLen);
+  
+  gainNode = ctx.createGain();
+  gainNode.gain.setValueAtTime(1, ctx.currentTime);
+  gainNode.connect(ctx.destination);
+  
+  nextTime = ctx.currentTime + 0.05;
+  startT = nextTime;
+  writeOff = 0;
+  queued = [];
+  
+  schedule();
   overlay(false);
   start(ui.kind);
-  synthBuffer(seed).then(ch => { if (running && audio) playBuffer(ch, 0.4) });   // crossfade to the full evolving loop as it finishes
 }
 
 playEl.addEventListener("click", (e) => {
