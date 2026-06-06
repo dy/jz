@@ -7,11 +7,19 @@ on:
   push:
     paths-ignore:
       - '**/*.md'
-      - '.vscode/**'
+      - '**/*.svg'
+      - '**/*.html'
+      - '.work/**'
+      - 'LICENSE'
+      - 'CONTRIBUTING.md'
   pull_request:
     paths-ignore:
       - '**/*.md'
-      - '.vscode/**'
+      - '**/*.svg'
+      - '**/*.html'
+      - '.work/**'
+      - 'LICENSE'
+      - 'CONTRIBUTING.md'
 jobs:
   selfhost:
     runs-on: ubuntu-latest
