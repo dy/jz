@@ -41,10 +41,16 @@ function literalTruthiness(expr) {
     if (op === '?:' || op === '?') {
       const truthy = literalTruthiness(args[0])
       if (truthy != null) return literalTruthiness(truthy ? args[1] : args[2])
+      const thenTruthy = literalTruthiness(args[1])
+      const elseTruthy = literalTruthiness(args[2])
+      if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
     }
     if (op === '()' && Array.isArray(args[0]) && args[0][0] === '?') {
       const truthy = literalTruthiness(args[0][1])
       if (truthy != null) return literalTruthiness(truthy ? args[0][2] : args[0][3])
+      const thenTruthy = literalTruthiness(args[0][2])
+      const elseTruthy = literalTruthiness(args[0][3])
+      if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
     }
   }
   return null

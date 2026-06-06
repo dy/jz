@@ -72,6 +72,16 @@ let _expect = null
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+const canonNum = (node) => {
+  const t = temp('cn')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, node],
+    ['select',
+      ['f64.const', 'nan'],
+      ['local.get', `$${t}`],
+      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+}
+
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
 const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
@@ -2823,17 +2833,25 @@ export const emitter = {
     const refPayload = (vtb && vtb === vtc && REF_EQ_KINDS.has(vtb))
       || vb.closureFuncIdx != null || vc.closureFuncIdx != null
       || isNaNBoxLit(fb) || isNaNBoxLit(fc)
+    const numericB = isI32Num(vb) || vb.valKind === VAL.NUMBER || vtb === VAL.NUMBER
+    const numericC = isI32Num(vc) || vc.valKind === VAL.NUMBER || vtc === VAL.NUMBER
+    const branchB = numericB && !numericC ? canonNum(fb) : fb
+    const branchC = numericC && !numericB ? canonNum(fc) : fc
+    const markNumeric = (n) => {
+      if (numericB && numericC) n.valKind = VAL.NUMBER
+      return n
+    }
     if (refPayload) {
-      const ib = ['i64.reinterpret_f64', fb]
-      const ic = ['i64.reinterpret_f64', fc]
-      const bits = isPureIR(fb) && isPureIR(fc)
+      const ib = ['i64.reinterpret_f64', branchB]
+      const ic = ['i64.reinterpret_f64', branchC]
+      const bits = isPureIR(branchB) && isPureIR(branchC)
         ? ['select', ib, ic, cond]
         : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
       return typed(['f64.reinterpret_i64', bits], 'f64')
     }
-    if (!refPayload && isPureIR(fb) && isPureIR(fc))
-      return typed(['select', fb, fc, cond], 'f64')
-    return typed(['if', ['result', 'f64'], cond, ['then', fb], ['else', fc]], 'f64')
+    if (!refPayload && isPureIR(branchB) && isPureIR(branchC))
+      return markNumeric(typed(['select', branchB, branchC, cond], 'f64'))
+    return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },
 
   '&&': (a, b) => {
