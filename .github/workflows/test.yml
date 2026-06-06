@@ -1,5 +1,13 @@
 name: test
-on: [push, pull_request]
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
 jobs:
   test:
     runs-on: ubuntu-latest

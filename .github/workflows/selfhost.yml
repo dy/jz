@@ -3,7 +3,15 @@ name: selfhost
 # compiler, then instantiates that wasm and round-trips real programs through
 # `self.default(source)`. The wasm runs the whole pipeline in-wasm — parse
 # (jessie) → jzify → prepare → compile → watr-encode — so it is jz, compiled by jz.
-on: [push, pull_request]
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
 jobs:
   selfhost:
     runs-on: ubuntu-latest
