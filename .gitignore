@@ -141,3 +141,4 @@ __pycache__
 
 examples/**/build/
 /.playwright-mcp
+/.vscode

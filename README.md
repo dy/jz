@@ -82,8 +82,49 @@ jz program.js -O3          # optimization: -O0 off, -O1 size, -O2 balanced, -O3 
 jz program.js --host wasi  # standalone WASI output
 jz --strict program.js     # pure canonical subset (also implied by .jz extension)
 jz -e "1 + 2"              # eval → 3
-jz --help                  # help
 ```
+
+<details>
+<summary><code>jz --help</code></summary>
+
+```
+jz v0.5.1 - min JS → WASM compiler
+
+Usage:
+  jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
+  jz --strict <file.js>     Strict mode — pure canonical subset, no lowering
+  jz --jzify <file.js>      Transform JS → jz source (auto-derives output file)
+  jz -e <expression>        Evaluate expression
+  jz --help                 Show this help
+
+Examples:
+  jz program.js                    # → program.wasm
+  jz program.js --wat              # → program.wat
+  jz program.js -o out.wasm        # custom output name
+  jz program.js -o -               # write to stdout
+  jz program.js -O3                # aggressive optimization
+  jz program.js -Os                # optimize for size
+  jz program.js --host wasi        # emit WASI Preview 1 imports
+  jz --strict program.js           # strict mode
+  jz --jzify lib.js                # → lib.jz
+  jz -e "1 + 2"
+
+Options:
+  --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
+  -O<n>, --optimize <n>     Optimization level: 0 off, 1 size-only, 2 default,
+                            3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
+  --host <js|wasi>          Runtime-service lowering (default js)
+  --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
+  --names                   Emit wasm name section for profilers/debuggers
+  --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
+  --jzify                   Transform JS to jz source (no compilation)
+  --eval, -e                Evaluate expression or file
+  --wat                     Output WAT text instead of binary
+  --resolve                 Resolve bare specifiers via Node.js module resolution
+  --imports <file>          JSON file with host import specs (e.g. {"env":{"fn":{"params":2}}})
+  --version, -v             Show version number
+```
+</details>
 
 
 ## Language
@@ -122,16 +163,15 @@ Not supported
 <details>
 <summary><strong>What are the differences with JS</strong></summary>
 
-Almost all JS runs unchanged — operators (`==`/`!=` coercion included) and control flow included. The handful below are where jz's **native, runtime-free** representation shows through; each says *why*:
-
-- **Numbers are f64**; integer-proven values (`| 0`, loop counters) are `i32` and **wrap at ±2³¹** like C, and `123n` is a lossless i64 `BigInt`. *WASM's native number types — no boxing or bignum promotion.*
-- **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. *Linear memory is bytes — UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.*
-- **Objects are fixed-shape** — keys added after the literal stay readable but don't enumerate (`Object.keys`/`for…in`); use a `Map` for dynamic keys. *The literal compiles to flat struct field offsets, not a hash map.*
-- **Typed arrays are fixed-size** — `arr.length = n` won't compile, and out-of-bounds reads give `0`. *A view over linear memory — growing it would need a heap manager.*
-- **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` are plain `Map`/`Set`. *A garbage collector would dwarf the module.*
-- **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. *Exact shortest-form needs a multi-KB Ryū/Grisu formatter.*
-- **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. *A plain value keeps `throw` and member reads free of object machinery and per-access checks.*
-- **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`), and **`Math.random`** takes a `randomSeed` for a reproducible stream. *The IANA timezone database is hundreds of KB.*
+- **Numbers are f64**; integer-proven values (`| 0`, loop counters) are `i32` and **wrap at ±2³¹**.
+- **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
+- **Objects are fixed-shape structs** — keys added after the literal stay readable but don't enumerate (`Object.keys`/`for…in`); use a `Map` for dynamic keys.
+- **Typed arrays are fixed-size** — `arr.length = n` won't compile, and out-of-bounds reads give `0`.
+- **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` are plain `Map`/`Set`.
+- **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. Exact shortest-form needs a multi-KB Ryū/Grisu formatter.
+- **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
+- **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`) – the IANA timezone database is hundreds of KB.
+- **`Math.random` is deterministic**, takes a `randomSeed` option for a reproducible stream.
 </details>
 
 
@@ -150,7 +190,7 @@ jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecos
 <details>
 <summary><strong>Can I use import/export?</strong></summary>
 
-Yes. Standard `import`/`export` syntax is bundled at compile time into a single WASM — no runtime module resolution.
+Standard `import`/`export` syntax is bundled at compile time into a single WASM — no runtime module resolution.
 
 ```js
 const { exports } = jz(
@@ -166,7 +206,7 @@ Transitive imports work (main → math → utils → …); circular imports erro
 <details>
 <summary><strong>Can I call into the host (functions, objects)?</strong></summary>
 
-Yes. `import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
+`import … from 'host'` with the `{ imports }` option **wires a runtime binding** — a JS function, constant, or whole namespace. Numbers pass directly; strings, arrays, and objects cross via `memory.*`.
 
 ```js
 // Custom function
@@ -203,7 +243,7 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 </details>
 
 <details>
-<summary><strong>Crossing the JS ↔ wasm boundary (numbers, strings, arrays, objects)</strong></summary>
+<summary><strong>Passing numbers, strings, arrays, objects via JS ↔ wasm boundary</strong></summary>
 
 **Numbers cross natively** as `f64`/`i32`. **Heap values** — strings, arrays, objects, typed arrays — cross as NaN-boxed `f64` pointers into linear memory, allocated through the module's `_alloc`/`_clear` exports. That pointer-plus-allocator convention *is* the whole ABI (a few hundred bytes, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js)). The one shortcut: arrays of ≤ 8 elements come back as plain JS arrays via WASM multi-value.
 
@@ -239,10 +279,12 @@ Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) emit per-build 
 </details>
 
 <details>
-<summary><strong>Should I compile for `js` or `wasi`?</strong></summary>
+<summary><strong>Can I use the `.wasm` outside of js host?</strong></summary>
 
-- **`js`** (default) — it runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
-- **`wasi`** — it runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand (see *Crossing the JS ↔ wasm boundary* — or marshal against the ABI).
+There's two possible `host` targets:
+
+- **`js`** (default) — runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
+- **`wasi`** — runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand.
 
 Either way the `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`). The difference is only in how a few runtime services are serviced:
 
