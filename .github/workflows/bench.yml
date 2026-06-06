@@ -3,7 +3,15 @@ name: bench
 # Runs on every push and PR: jz must stay at least as fast/small as V8,
 # AssemblyScript and Porffor on the bench corpus, and `wasm-opt -Oz` must not
 # find meaningful slack in jz's own output.
-on: [push, pull_request]
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '.vscode/**'
 jobs:
   bench:
     runs-on: ubuntu-latest
