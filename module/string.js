@@ -12,7 +12,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
 import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -797,6 +797,10 @@ export default (ctx) => {
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 5))))))
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 6))))))
+    (if (i64.eq (local.get $val) (i64.const ${FALSE_NAN}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 4))))))
+    (if (i64.eq (local.get $val) (i64.const ${TRUE_NAN}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 3))))))
     (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → "NaN" string
     (if (i32.eqz (local.get $type))

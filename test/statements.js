@@ -629,6 +629,51 @@ test('if(NaN) constant-folded correctly', () => {
   is(run('export let f = () => { if (NaN) return 1; return 2 }').f(), 2)
 })
 
+test('if arithmetic NaN stored in local is falsy', () => {
+  is(run('export let f = () => { let x = 0 / 0; if (x) return 1; return 0 }', { optimize: 0 }).f(), 0)
+})
+
+test('ternary arithmetic NaN condition is falsy', () => {
+  is(run('export let f = (x) => { let z = x % 1; return z ? 1 : 0 }', { optimize: 0 }).f(-Infinity), 0)
+})
+
+test('numeric composite arithmetic NaN condition is falsy', () => {
+  is(run('export let f = (x) => Math.round(0 % Math.trunc(x)) ? 1 : 0', { optimize: 0 }).f(0.1), 0)
+})
+
+test('nested literal ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v = (0 ? 0 : 0) ? p1 : (0 / 0); return v ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
+})
+
+test('nested constant comparison ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v = (0 > 0) ? p1 : (0 / 0); return v ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
+})
+
+test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v1 = 0; let v3 = v1 ? p1 : (0 / 0); return v3 ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
+})
+
+test('nested same-truthiness ternary arithmetic NaN condition is falsy', () => {
+  for (const code of [
+    'export let f = (p0, p1) => { let v0 = p0; let v1 = v0; let v3 = (v1 ? 0 : 0) ? p1 : (v1 / v0); return v3 ? 1 : 0 }',
+    'export let f = (p0, p1) => { let v0 = p0; let v1 = v0; let v3 = (v1 ? 0 : 1) ? p1 : (v1 / v0); return v3 ? 1 : 0 }',
+  ]) {
+    is(run(code, { optimize: 0 }).f(-Infinity, -24.13718504831195), 0)
+    const wat = compile(code, { wat: true, optimize: 0 })
+    const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
+    const genericTruthyOnV3 = body.includes('(call $__is_truthy\n          (i64.reinterpret_f64 (local.get $v3))')
+    ok(!genericTruthyOnV3 || body.includes('(f64.const nan)'))
+  }
+})
+
+test('reassigned modulo NaN remains falsy in later ternary condition', () => {
+  const code = 'export let f = (p0, p1) => { p0 = p0 % 1; p0 = p0 ? p1 : 0; return p0 }'
+  is(run(code, { optimize: 0 }).f(-Infinity, 0.5), 0)
+})
+
 test('void preserves side effects', () => {
   is(run('export let f = () => { let x = 0; void (x = 5); return x }').f(), 5)
 })
