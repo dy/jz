@@ -571,6 +571,7 @@ export function toNumF64(node, v) {
   // this, so the numeric kernels jz optimizes for (which never assign null) stay untouched.
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
+  if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
   if (vt === VAL.DATE) {
     const ptr = v.ptrKind === VAL.DATE
@@ -658,6 +659,14 @@ const NUM_F64_TRUTHY_OPS = new Set([
   'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
 ])
 
+const numericTruthy = e => {
+  const t = temp('tb')
+  const g = () => typed(['local.get', `$${t}`], 'f64')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, e],
+    ['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]]], 'i32')
+}
+
 // i32 ops whose result is already a 0/1 boolean (comparisons + eqz) — safe to use
 // directly as a truthiness without a redundant `!= 0`.
 const I32_BOOL_OPS = new Set(['i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u',
@@ -726,14 +735,12 @@ export function truthyIR(e) {
     }
     // Direct number-producing f64 expression (arithmetic, or the `%` / __rem helper):
     // same NaN-safe test, single-evaluated through a temp (the value may be a call).
-    if (NUM_F64_TRUTHY_OPS.has(e[0]) || (e[0] === 'call' && e[1] === '$__rem')) {
-      const t = temp('tb')
-      const g = () => typed(['local.get', `$${t}`], 'f64')
-      return typed(['block', ['result', 'i32'],
-        ['local.set', `$${t}`, e],
-        ['i32.and', ['f64.ne', g(), ['f64.const', 0]], ['f64.eq', g(), g()]]], 'i32')
-    }
+    if (NUM_F64_TRUTHY_OPS.has(e[0]) || (e[0] === 'call' && e[1] === '$__rem')) return numericTruthy(e)
   }
+  // Composite IR tagged by emit as a definite NUMBER. Use value-based NaN
+  // truthiness; opaque f64 carriers (strings/objects/bigints/nullish/booleans)
+  // remain on __is_truthy so NaN-boxed payloads stay truthy/falsy by tag.
+  if (e.valKind === VAL.NUMBER) return numericTruthy(e)
   inc('__is_truthy')
   return typed(['call', '$__is_truthy', asI64(e)], 'i32')
 }
@@ -795,6 +802,7 @@ export function readVar(name) {
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const node = typed(['global.get', `$${name}`], gt)
     const grep = repOfGlobal(name)
+    if (gt === 'f64' && (lookupValType(name) === VAL.NUMBER || grep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
     // ptrKind tags a raw i32 pointer offset — meaningful only for an i32-STORED
     // global (a typed-array/buffer carrier unboxed by unboxConstTypedGlobals). An
     // f64 global holds a NaN-boxed value: object/array reads unbox at the access
@@ -821,6 +829,7 @@ export function readVar(name) {
                        : typed(['f64.const', rep.intConst], 'f64')
   }
   const node = typed(['local.get', `$${name}`], t)
+  if (t === 'f64' && (lookupValType(name) === VAL.NUMBER || rep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
   // Proven uint32 accumulator local (narrowUint32): a later asF64 must widen with
   // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
   // marks it as the always-ToUint32-sunk kind so the arithmetic widening guards
@@ -1046,6 +1055,7 @@ export function loopTop() {
 export const flat = ir => {
   if (ir == null) return []
   if (!Array.isArray(ir)) return [ir]  // bare 'drop', 'nop', etc.
+  if (ir.length === 0) return []
   if (typeof ir[0] === 'string' || ir[0] == null) return [ir]  // single instruction: ['op', ...args] or [null, val]
   return ir  // multi-instruction: [instr1, instr2, ...]
 }

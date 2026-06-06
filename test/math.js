@@ -132,7 +132,8 @@ test('Math.sin', async () => {
   almost(await evaluate('Math.sin(Math.PI)'), Math.sin(Math.PI), 1e-6)
   almost(await evaluate('Math.sin(Math.PI * 2)'), Math.sin(Math.PI * 2), 1e-6)
   almost(await evaluate('Math.sin(1)'), Math.sin(1), 1e-6)
-  isNaN(await evaluate('Math.sin(1 * 1e308 * 10)'))
+  ok(Number.isNaN(await evaluate('Math.sin(1 * 1e308 * 10)')))
+  ok(Number.isNaN(await evaluate('Math.sin(-Infinity)')))
 })
 
 test('Math.cos', async () => {
@@ -140,12 +141,16 @@ test('Math.cos', async () => {
   almost(await evaluate('Math.cos(Math.PI / 2)'), Math.cos(Math.PI / 2), 1e-6)
   almost(await evaluate('Math.cos(Math.PI)'), Math.cos(Math.PI), 1e-6)
   almost(await evaluate('Math.cos(1)'), Math.cos(1), 1e-6)
+  ok(Number.isNaN(await evaluate('Math.cos(Infinity)')))
+  ok(Number.isNaN(await evaluate('Math.cos(-Infinity)')))
 })
 
 test('Math.tan', async () => {
   almost(await evaluate('Math.tan(0)'), Math.tan(0), 1e-6)
   almost(await evaluate('Math.tan(Math.PI / 4)'), Math.tan(Math.PI / 4), 1e-6)
   almost(await evaluate('Math.tan(1)'), Math.tan(1), 1e-6)
+  ok(Number.isNaN(await evaluate('Math.tan(Infinity)')))
+  ok(Number.isNaN(await evaluate('Math.tan(-Infinity)')))
 })
 
 // ============================================

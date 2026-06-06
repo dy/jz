@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
@@ -37,6 +37,8 @@ const objectToStringTagForVal = (obj) => {
   const val = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
   return val ? OBJECT_TO_STRING_TAGS[val] : null
 }
+
+const storedValue = (node) => valTypeOf(node) === VAL.BOOL ? boolBoxIR(emit(node)) : asF64(emit(node))
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
@@ -107,9 +109,9 @@ export default (ctx) => {
     // store would scatter values into the wrong (or another field's) slots.
     const slotOf = schemaId === litId ? (i => i) : (i => schema.indexOf(names[i]))
     if (values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
-      const emitted = values.map(emit)
+      const emitted = values.map(storedValue)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
-      const slots = emitted.map(v => extractF64Bits(asF64(v)))
+      const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
         // Reorder into schema-slot order before laying out the static segment.
         const ordered = emitted.map(() => null), orderedBits = emitted.map(() => null)
@@ -131,7 +133,7 @@ export default (ctx) => {
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
     for (let i = 0; i < values.length; i++)
-      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), asF64(emit(values[i]))))
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), storedValue(values[i])))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
       inc('__dyn_set')
@@ -773,7 +775,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       }
     } else if (Array.isArray(p) && p[0] === ':') {
       const ti = schema.indexOf(p[1])
-      if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, asF64(emit(p[2]))))
+      if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, storedValue(p[2])))
     }
   }
 
