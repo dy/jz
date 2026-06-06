@@ -199,6 +199,15 @@ test('spread: object spread from unknown-schema parameter', () => {
   is(f({x: 1}), 10)
 })
 
+test('spread: object spread stores explicit boolean properties', () => {
+  const { f } = run(`export let f = () => {
+    let row = {x: 1}
+    let out = {...row, ok: false}
+    return out.ok ? 1 : 2
+  }`, { jzify: true })
+  is(f(), 2)
+})
+
 // ============================================
 // EDGE CASES
 // ============================================

@@ -15,7 +15,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v3
+          key: test262-shallow-v4
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v3
+          key: test262-shallow-v4
       - name: Clone test262 (shallow)
         if: steps.cache-test262.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262

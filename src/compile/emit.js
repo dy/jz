@@ -72,6 +72,16 @@ let _expect = null
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+const canonNum = (node) => {
+  const t = temp('cn')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, node],
+    ['select',
+      ['f64.const', 'nan'],
+      ['local.get', `$${t}`],
+      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+}
+
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
 const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
@@ -1047,41 +1057,68 @@ export function emitBlockBody(node) {
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
   const accumulated = []
-  for (let i = 0; i < stmts.length; i++) {
-    const s = stmts[i]
-    if (s == null || typeof s === 'number') continue
-    out.push(...emitVoid(s))
-    // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
-    // Skip names that are reassigned later — refinement would be unsound past the assignment.
-    if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
-      const refs = extractRefinements(s[1], new Map(), false)
-      for (const [name, fact] of refs) {
-        let reassigned = false
-        for (let j = i + 1; j < stmts.length; j++)
-          if (isReassigned(stmts[j], name)) { reassigned = true; break }
-        if (reassigned) continue
-        const cur = ctx.func.refinements.get(name)
-        accumulated.push([name, cur])
-        // Merge so sibling early-returns layering on the same name compose
-        // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
-        // leaves both `notString: true` and would-be array exclusion stacked).
-        ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
+  const prevValOverlay = ctx.func.localValTypesOverlay
+  ctx.func.localValTypesOverlay = new Map(prevValOverlay || [])
+  const setFlowVal = (name, vt) => {
+    if (!isBoundName(name)) return
+    if (vt) ctx.func.localValTypesOverlay.set(name, vt)
+    else ctx.func.localValTypesOverlay.delete(name)
+  }
+  const updateFlowVal = (stmt) => {
+    if (!Array.isArray(stmt)) return
+    const op = stmt[0]
+    if (op === '=' && typeof stmt[1] === 'string') {
+      setFlowVal(stmt[1], valTypeOf(stmt[2]))
+      return
+    }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < stmt.length; i++) {
+        const d = stmt[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string')
+          setFlowVal(d[1], valTypeOf(d[2]))
       }
     }
   }
-  // Restore prior refinements on block exit.
-  for (let i = accumulated.length - 1; i >= 0; i--) {
-    const [name, prev] = accumulated[i]
-    if (prev === undefined) ctx.func.refinements.delete(name); else ctx.func.refinements.set(name, prev)
+  try {
+    for (let i = 0; i < stmts.length; i++) {
+      const s = stmts[i]
+      if (s == null || typeof s === 'number') continue
+      out.push(...emitVoid(s))
+      updateFlowVal(s)
+      // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
+      // Skip names that are reassigned later — refinement would be unsound past the assignment.
+      if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
+        const refs = extractRefinements(s[1], new Map(), false)
+        for (const [name, fact] of refs) {
+          let reassigned = false
+          for (let j = i + 1; j < stmts.length; j++)
+            if (isReassigned(stmts[j], name)) { reassigned = true; break }
+          if (reassigned) continue
+          const cur = ctx.func.refinements.get(name)
+          accumulated.push([name, cur])
+          // Merge so sibling early-returns layering on the same name compose
+          // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
+          // leaves both `notString: true` and would-be array exclusion stacked).
+          ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
+        }
+      }
+    }
+  } finally {
+    ctx.func.localValTypesOverlay = prevValOverlay
+    // Restore prior refinements on block exit.
+    for (let i = accumulated.length - 1; i >= 0; i--) {
+      const [name, prev] = accumulated[i]
+      if (prev === undefined) ctx.func.refinements.delete(name); else ctx.func.refinements.set(name, prev)
+    }
   }
   return out
 }
 
-// A VAL.BOOL value rides the cheap 0/1 numeric carrier, and `ToNumber(bool)` is
-// exactly that carrier — so for relational / loose-equality coercion a boolean
-// behaves identically to a number. Normalize it before the type-directed compare
-// dispatch (the BOOL fact still drives typeof / String / boundary boxing; only
-// these arithmetic-shaped operators read it as numeric).
+// A VAL.BOOL value can ride either the cheap 0/1 numeric carrier or, after it has
+// escaped into an object slot, a boxed boolean atom. `ToNumber(bool)` normalizes
+// both to 0/1, so for relational / loose-equality coercion a boolean behaves
+// identically to a number. Normalize it before the type-directed compare dispatch
+// (the BOOL fact still drives typeof / String / boundary boxing).
 const numericVal = vt => vt === VAL.BOOL ? VAL.NUMBER : vt
 
 // Primitive value-type classes for strict-equality type-mismatch folding. Two
@@ -1133,11 +1170,15 @@ function emitLooseEq(a, b, negate) {
   // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
   // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
   // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
-  const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
-  const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
-  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(va, b, vb, negate)
-  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(vb, a, va, negate)
-  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, asF64(va), asF64(vb)], 'i32')
+  const rawA = resolveValType(a, valTypeOf, lookupValType)
+  const rawB = resolveValType(b, valTypeOf, lookupValType)
+  const vta = numericVal(rawA)
+  const vtb = numericVal(rawB)
+  const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
+  const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
+  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
+  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
   // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
   // STRING needs __eq (heap strings can be equal by content but different pointers).
@@ -1176,9 +1217,9 @@ function emitStrictEq(a, b, negate) {
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
   // Known, differing primitive classes can never be strictly equal.
-  const rawA = resolveValType(a, valTypeOf, lookupValType)
-  const rawB = resolveValType(b, valTypeOf, lookupValType)
-  if (rawA && rawB && rawA !== rawB && (STRICT_PRIM.has(rawA) || STRICT_PRIM.has(rawB)))
+  const strictA = resolveValType(a, valTypeOf, lookupValType)
+  const strictB = resolveValType(b, valTypeOf, lookupValType)
+  if (strictA && strictB && strictA !== strictB && (STRICT_PRIM.has(strictA) || STRICT_PRIM.has(strictB)))
     return emitNum(negate ? 1 : 0)
   // Same type (or dynamic-unknown): identical bits to loose `==`/`!=`.
   return emitter[negate ? '!=' : '=='](a, b)
@@ -2792,17 +2833,25 @@ export const emitter = {
     const refPayload = (vtb && vtb === vtc && REF_EQ_KINDS.has(vtb))
       || vb.closureFuncIdx != null || vc.closureFuncIdx != null
       || isNaNBoxLit(fb) || isNaNBoxLit(fc)
+    const numericB = isI32Num(vb) || vb.valKind === VAL.NUMBER || vtb === VAL.NUMBER
+    const numericC = isI32Num(vc) || vc.valKind === VAL.NUMBER || vtc === VAL.NUMBER
+    const branchB = numericB && !numericC ? canonNum(fb) : fb
+    const branchC = numericC && !numericB ? canonNum(fc) : fc
+    const markNumeric = (n) => {
+      if (numericB && numericC) n.valKind = VAL.NUMBER
+      return n
+    }
     if (refPayload) {
-      const ib = ['i64.reinterpret_f64', fb]
-      const ic = ['i64.reinterpret_f64', fc]
-      const bits = isPureIR(fb) && isPureIR(fc)
+      const ib = ['i64.reinterpret_f64', branchB]
+      const ic = ['i64.reinterpret_f64', branchC]
+      const bits = isPureIR(branchB) && isPureIR(branchC)
         ? ['select', ib, ic, cond]
         : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
       return typed(['f64.reinterpret_i64', bits], 'f64')
     }
-    if (!refPayload && isPureIR(fb) && isPureIR(fc))
-      return typed(['select', fb, fc, cond], 'f64')
-    return typed(['if', ['result', 'f64'], cond, ['then', fb], ['else', fc]], 'f64')
+    if (!refPayload && isPureIR(branchB) && isPureIR(branchC))
+      return markNumeric(typed(['select', branchB, branchC, cond], 'f64'))
+    return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },
 
   '&&': (a, b) => {
@@ -3386,5 +3435,7 @@ export function emit(node, expect) {
 
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
-  return handler(...args)
+  const ir = handler(...args)
+  if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
+  return ir
 }

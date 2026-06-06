@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
 import { ssoBitI64Hex } from '../layout.js'
 import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
@@ -839,6 +839,8 @@ export default (ctx) => {
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
+    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.const 0))))
+    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.const 1))))
     (local.set $t (call $__ptr_type (local.get $v)))
     ;; ToNumber(Symbol) is a TypeError. A Symbol is an ATOM (type 0) with a user
     ;; atom-id (>= 16); null/undefined returned above, and a bare NaN carries
