@@ -468,11 +468,11 @@ const jzCompileInner = (code, opts = {}) => {
   }
 
   const cfg = ctx.transform.optimize
-  // watr's `loopify` collapses the `(block $brk (loop … (br_if $brk !cond) … (br $loop)))`
-  // idiom into `(loop … (if cond …))` — sound, but destroys the exact shape jz's
-  // post-watr vectorizer scans for. Disable loopify when vectorize is going to run;
-  // otherwise hand watr its full default pass set (inlineOnce + coalesce on, inline off).
-  const watrOpts = cfg.vectorizeLaneLocal ? { loopify: false } : true
+  let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
+  if (cfg.vectorizeLaneLocal) {
+    if (watrOpts === true) watrOpts = { loopify: false }
+    else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
+  }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Final peephole pass: watOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
