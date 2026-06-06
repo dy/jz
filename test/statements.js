@@ -656,6 +656,14 @@ test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
   is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
 })
 
+test('nested same-truthiness ternary arithmetic NaN condition is falsy', () => {
+  const code = 'export let f = (p0, p1) => { let v0 = p0; let v1 = v0; let v3 = (v1 ? 0 : 0) ? p1 : (v1 / v0); return v3 ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(-Infinity, -24.13718504831195), 0)
+  const wat = compile(code, { wat: true, optimize: 0 })
+  const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
+  ok(!/\(call \$__is_truthy\s+\(i64\.reinterpret_f64 \(local\.get \$v3\)\s+\)/.test(body))
+})
+
 test('reassigned modulo NaN remains falsy in later ternary condition', () => {
   const code = 'export let f = (p0, p1) => { p0 = p0 % 1; p0 = p0 ? p1 : 0; return p0 }'
   is(run(code, { optimize: 0 }).f(-Infinity, 0.5), 0)
