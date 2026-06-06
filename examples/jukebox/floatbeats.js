@@ -394,6 +394,61 @@ let T = t / 44100;
   return kick + hat + bass + pad;
 }`,
   },
+  {
+    name: 'Neo-Noir Jazz Lounge', by: 'Copilot', sr: 44100,
+    body:
+`(t) => {
+  let t_sec = t / 44100;
+  let bpm = 72;
+  let beat = t_sec * bpm / 60;
+  let bar = (beat / 4) | 0;
+  let step = (beat % 4);
+  
+  let bassFreqs = [55, 65.4, 73.4, 82.4, 49.0, 58.3, 61.7, 65.4];
+  let bIdx = ((bar * 4 + ((step | 0))) & 7);
+  let bass = Math.sin(2 * Math.PI * bassFreqs[bIdx] * t_sec) * 0.25 * (1 - (step % 1) * 0.8);
+  
+  let chord1 = [220, 261.6, 329.6, 392, 493.9];
+  let chord2 = [146.8, 185, 220, 261.6, 329.6];
+  let isEven = (bar % 2) === 0;
+  let keys = 0;
+  let chordSwell = (Math.sin(beat * Math.PI / 2) + 1.2) * 0.12;
+  let i = 0;
+  while (i < 5) {
+    let f = isEven ? chord1[i] : chord2[i];
+    keys += Math.sin(2 * Math.PI * f * t_sec + Math.sin(2 * Math.PI * 4.5 * t_sec) * 0.1) * chordSwell;
+    i++;
+  }
+  
+  let noise = Math.sin(t_sec * 12345.67 * Math.sin(t_sec * 987));
+  let brush = noise * Math.pow(1 - (beat % 0.25), 12) * 0.03;
+  let snare = noise * Math.pow(1 - ((beat + 1) % 2), 16) * 0.04;
+  
+  return bass + keys + brush + snare;
+}`,
+  },
+  {
+    name: 'Midnight Petrichor', by: 'Copilot', sr: 44100,
+    body:
+`(t) => {
+  let t_sec = t / 44100;
+  let f1 = Math.sin(2 * Math.PI * 82.4 * t_sec) * 0.2;
+  let f2 = Math.sin(2 * Math.PI * 164.8 * t_sec) * 0.1;
+  let sweep = (Math.sin(t_sec * 0.1) + 1) / 2;
+  let pad = (Math.sin(2 * Math.PI * 196 * t_sec) + Math.sin(2 * Math.PI * 293.7 * t_sec) + Math.sin(2 * Math.PI * 349.2 * t_sec * sweep)) * 0.1;
+  
+  let dropTime = t_sec * 3.5;
+  let dropIdx = ((dropTime | 0)) % 8;
+  let notes = [587.3, 659.3, 784, 880, 987.8, 1174.7, 1318.5, 1568];
+  let freq = notes[dropIdx];
+  let decay = Math.pow(1 - (dropTime % 1), 6);
+  let drip = Math.sin(2 * Math.PI * freq * t_sec + Math.cos(2 * Math.PI * 8 * t_sec) * 0.2) * decay * 0.25;
+  
+  let rainNoise = Math.sin(t_sec * 14782.9 * Math.cos(t_sec)) * 0.035;
+  
+  return f1 + f2 + pad + drip + rainNoise;
+}`,
+  },
 ]
 
 // Wrap a (t)=>sample floatbeat into a jz/js module: beat(t) + a clamped fill(out,len,off).

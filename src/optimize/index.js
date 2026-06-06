@@ -152,6 +152,7 @@ export function resolveOptimize(opt) {
       // Preserve sentinel value `nestedSmallConstForUnroll: 'auto'`
       // (resolved by a heuristic at emit time).
       if (n === 'nestedSmallConstForUnroll' && v === 'auto') out[n] = 'auto'
+      else if (n === 'watr' && typeof v === 'object') out[n] = v
       else out[n] = !!v
     }
     // Preserve non-pass tuning keys (e.g. plan.js thresholds)
@@ -1185,6 +1186,7 @@ export function csePureExprLoop(fn) {
     const op = node[0]
 
     if (op === 'loop') {
+      table.clear()
       for (let i = 1; i < node.length; i++) walk(node[i], node, i)
       table.clear()
       return
@@ -2012,7 +2014,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   if (!cfg || cfg.csePureExpr !== false) {
-    if (cfg && cfg.watr === true && phase === 'post') csePureExprLoop(fn)
+    if (cfg && (cfg.watr === true || typeof cfg.watr === 'object') && phase === 'post') csePureExprLoop(fn)
     else csePureExpr(fn)
   }
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
@@ -2024,7 +2026,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // watr (or no watr) leaves the lane locals intact for vectorize to pattern-match,
   // and lets a non-trivial chunk of SIMD survive the propagate+fold pipeline.
   if (cfg && cfg.vectorizeLaneLocal === true) {
-    const fullWatr = cfg.watr === true
+    const fullWatr = cfg.watr === true || typeof cfg.watr === 'object'
     const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
     if (runVectorizer) vectorizeLaneLocal(fn)
   }
