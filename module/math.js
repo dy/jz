@@ -443,7 +443,12 @@ export default (ctx) => {
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
-    (if (result f64) (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
+    ;; Negate for odd quasiperiods
+    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
+    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
+    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
+      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
+        (else (local.get $r))))))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
@@ -462,7 +467,12 @@ export default (ctx) => {
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
     (local.set $r ${horner(COS_C, '$r2')})
-    (if (result f64) (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (f64.neg (local.get $r))) (else (local.get $r))))`)
+    ;; Negate for odd quasiperiods
+    (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
+    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
+    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
+      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
+        (else (local.get $r))))))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
@@ -814,8 +824,13 @@ export default (ctx) => {
 
   wat('math.asin', `(func $math.asin (param $x f64) (result f64)
     ;; Domain is [-1, 1]; outside it (including ±Infinity), Math.asin returns NaN.
+    ;; Tolerate sin_core polynomial overshoot: clamp |x| ≤ 1 before the sqrt to avoid NaN
+    ;; from 1 - x² going negative when sin returns ±(1+ε).
     (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 1.0))
-      (then (f64.const nan))
+      (then
+        (if (result f64) (f64.le (f64.abs (local.get $x)) (f64.const 1.0000001))
+          (then (call $math.atan (f64.div (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))))
+          (else (f64.const nan))))
       (else (call $math.atan (f64.div (local.get $x)
         (f64.sqrt (f64.sub (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))))`)
 
