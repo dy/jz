@@ -453,4 +453,4 @@ let T = t / 44100;
 
 // Wrap a (t)=>sample floatbeat into a jz/js module: beat(t) + a clamped fill(out,len,off).
 export const moduleSrc = (body) => `export let beat = ${body}
-export let fill = (out, len, off) => { let i = 0; while (i < len) { let s = beat(off + i); out[i] = s < -1 ? -1 : (s > 1 ? 1 : s); i++ } }`
+export let fill = (out, len, off) => { let i = 0; while (i < len) { let s = beat(off * 1 + i); out[i] = s < -1 ? -1 : (s > 1 ? 1 : s); i++ } }`

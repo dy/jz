@@ -46,7 +46,7 @@ const clamp = (s) => s < -1 ? -1 : s > 1 ? 1 : s
 const wasmCache = new Map()
 const loadWasm = async (idx) => {
   if (!wasmCache.has(idx)) {
-    const bytes = new Uint8Array(await (await fetch(new URL(`./beat-${idx}.wasm`, import.meta.url))).arrayBuffer())
+    const bytes = new Uint8Array(await (await fetch(new URL(`./build/beat-${idx}.wasm`, import.meta.url))).arrayBuffer())
     wasmCache.set(idx, instantiate(bytes))
   }
   return wasmCache.get(idx)
