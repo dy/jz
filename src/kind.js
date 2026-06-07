@@ -150,6 +150,18 @@ export function valTypeOf(expr) {
     const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
     return ta && ta === tb ? ta : null
   }
+  // Value-preserving logical: `&&`/`||` return one of their operands.
+  // When both sides share a type, return it. When one side is boolean
+  // (a condition/guard) and the other has a known non-boolean type,
+  // return the non-boolean type — common in `condition && numericValue`
+  // guard patterns where the falsey boolean is coerced to 0 in numeric context.
+  if (op === '&&' || op === '||') {
+    const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
+    if (ta && ta === tb) return ta
+    if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
+    if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
+    return null
+  }
   // `[]` op covers both array literals (1 arg) and index access (2 args).
   // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
   // Index access:  `arr[i]` → ['[]', arr, i].
