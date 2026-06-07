@@ -445,10 +445,7 @@ export default (ctx) => {
     (local.set $r (f64.mul (local.get $r) ${horner(SIN_C, '$r2')}))
     ;; Negate for odd quasiperiods
     (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
-      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
-        (else (local.get $r))))))`)
+    (local.get $r)))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
@@ -469,10 +466,7 @@ export default (ctx) => {
     (local.set $r ${horner(COS_C, '$r2')})
     ;; Negate for odd quasiperiods
     (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
-    ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
-      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
-        (else (local.get $r))))))`)
+    (local.get $r)))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
