@@ -279,6 +279,19 @@ test('csePureExprLoop: global.set invalidates cached global.get pure expr', () =
   is((s.match(/"global\.get"/g) || []).length, 2, 'mul after global.set must not reuse stale $__pe snap')
 })
 
+test('csePureExprLoop: loop entry clears cached pure expression (petrichor regression)', () => {
+  const fn = ['func', '$f',
+    ['result', 'f64'],
+    ['f64.mul', ['local.get', '$x'], ['f64.const', 2]],
+    ['loop', [],
+      ['call', '$math.sin', ['f64.mul', ['local.get', '$x'], ['f64.const', 2]]],
+    ],
+  ]
+  csePureExprLoop(fn)
+  const s = JSON.stringify(fn)
+  is((s.match(/\$__pe/g) || []).length, 0, 'loop entry must clear table so pure expr from outside is not reused inside')
+})
+
 test('peephole: i32/f64 signed roundtrips fold post-emit', () => {
   const fn = ['func', '$p',
     ['param', '$x', 'i32'],
