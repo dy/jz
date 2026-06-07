@@ -2,6 +2,7 @@ import test from 'tst';
 import { is, ok } from 'tst/assert.js';
 import jz from '../index.js';
 import fs from 'fs';
+import { FLOATBEATS } from '../examples/jukebox/floatbeats.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
@@ -66,6 +67,20 @@ test('example: mandelbrot output natively matches WASM', () => {
 });
 
 let golSrc = fs.readFileSync(new URL('../examples/game-of-life/game-of-life.js', import.meta.url), 'utf8');
+
+test('example: jukebox wasm assets are deployable', async () => {
+    for (let i = 0; i < FLOATBEATS.length; i++) {
+        const url = new URL(`../examples/jukebox/beat-${i}.wasm`, import.meta.url);
+        ok(fs.existsSync(url), `missing ${url.pathname}`);
+
+        const bytes = fs.readFileSync(url);
+        is(bytes[0], 0x00);
+        is(bytes[1], 0x61);
+        is(bytes[2], 0x73);
+        is(bytes[3], 0x6d);
+        await WebAssembly.compile(bytes);
+    }
+});
 
 test('example: game-of-life output natively matches WASM', () => {
     let nativeExports = (() => {
