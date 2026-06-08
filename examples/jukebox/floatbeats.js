@@ -271,36 +271,37 @@ let T = t / 44100;
 }`,
   },
   {
-    name: 'Crystal Cavern', by: 'paboribo', sr: 44100,
+    name: 'Bitrot', by: 'paboribo', sr: 44100,
     body:
 `(t) => {
   let T = t / 44100;
-  let chords = [[220, 261.6, 329.6], [174.6, 220, 261.6], [261.6, 329.6, 392], [196, 246.9, 293.7]];
-  let barLen = 3.0;
-  let bar = Math.floor(T / barLen) % 4;
-  let barT = (T % barLen) / barLen;
-  let chord = chords[bar];
-  let pad = 0;
-  let attack = barT < 0.1 ? barT / 0.1 : (barT > 0.85 ? (1 - barT) / 0.15 : 1);
-  let i = 0;
-  while (i < 3) {
-    let f = chord[i];
-    let vibrato = Math.sin(2 * Math.PI * 5 * T) * 0.3;
-    pad += Math.sin(2 * Math.PI * f * T + vibrato) * 0.12 * attack;
-    i++;
-  }
-  let arpSpeed = 8;
-  let arpIdx = Math.floor(T * arpSpeed) % 6;
-  let arpNotes = [chord[0] * 2, chord[1] * 2, chord[2] * 2, chord[1] * 2, chord[0] * 4, chord[2] * 4];
-  let arpFreq = arpNotes[arpIdx];
-  let arpDecay = Math.pow(1 - (T * arpSpeed % 1), 3);
-  let crystal = Math.sin(2 * Math.PI * arpFreq * T) * arpDecay * 0.15;
-  crystal += Math.sin(2 * Math.PI * arpFreq * 2.01 * T) * arpDecay * 0.05;
-  let bassFreq = chord[0] / 2;
-  let bass = Math.sin(2 * Math.PI * bassFreq * T) * 0.15 * attack;
-  let echoT = T - 0.375;
-  let echo = echoT > 0 ? Math.sin(2 * Math.PI * arpFreq * echoT) * Math.pow(1 - ((echoT * arpSpeed) % 1), 3) * 0.07 : 0;
-  return pad + crystal + bass + echo;
+  let bpm = 140;
+  let bt = T * bpm / 60;
+  let step = bt * 4;
+  let pat = Math.floor(step) % 16;
+  let ph = step % 1;
+  let noise = Math.sin(t * 12.9898 + t * 78.233) * 43758.5453;
+  noise = (noise - Math.floor(noise)) * 2 - 1;
+  let kEnv = ph < 0.25 ? Math.pow(1 - ph * 4, 3) : 0;
+  let kFreq = 150 * (1 - ph * 2);
+  let kick = (pat === 0 || pat === 8) ? Math.sin(2 * Math.PI * kFreq * ph) * kEnv * 0.4 : 0;
+  let sEnv = ph < 0.2 ? Math.pow(1 - ph * 5, 4) : 0;
+  let snare = (pat === 4 || pat === 12) ? (noise * 0.25 + Math.sin(2 * Math.PI * 180 * ph) * 0.1) * sEnv : 0;
+  let hOEnv = ph < 0.5 ? Math.pow(1 - ph * 2, 4) : 0;
+  let hatOpen = (pat % 2 === 1) ? noise * 0.06 * hOEnv : 0;
+  let hCEnv = ph < 0.1 ? Math.pow(1 - ph * 10, 6) : 0;
+  let hatClosed = (pat % 4 === 2) ? noise * hCEnv * 0.1 : 0;
+  let bassNotes = [55, 55, 65.4, 49, 55, 73.4, 65.4, 55, 55, 55, 82.4, 65.4, 55, 49, 55, 55];
+  let bassF = bassNotes[pat];
+  let raw = Math.sin(2 * Math.PI * bassF * T);
+  let crushed = ((raw * 8) | 0) / 8;
+  let bEnv = ph < 0.6 ? Math.pow(1 - ph / 0.6, 2) : 0;
+  let bass = crushed * bEnv * 0.3;
+  let melodyNotes = [0, 0, 440, 0, 523.3, 0, 0, 392, 0, 0, 349.2, 0, 440, 0, 523.3, 0];
+  let mF = melodyNotes[pat];
+  let mEnv = ph < 0.5 ? Math.pow(1 - ph * 2, 3) : 0;
+  let mel = mF > 0 ? Math.sin(2 * Math.PI * mF * T + Math.sin(2 * Math.PI * mF * 2 * T) * 2) * mEnv * 0.1 : 0;
+  return kick + snare + hatOpen + hatClosed + bass + mel;
 }`,
   },
   {
@@ -410,42 +411,38 @@ let T = t / 44100;
 }`,
   },
   {
-    name: 'Neon Drive', by: 'paboribo', sr: 44100,
+    name: 'Celesta Dreams', by: 'paboribo', sr: 44100,
     body:
 `(t) => {
   let T = t / 44100;
-  let bpm = 120;
-  let bt = T * bpm / 60;
-  let bar = Math.floor(bt / 4) % 8;
-  let bInBar = bt % 4;
-  let bassNotes = [82.4, 98, 110, 130.8, 146.8, 82.4, 98, 110];
-  let bassFreq = bassNotes[bar];
-  let pulseW = (T * bassFreq % 1) < 0.5 ? 1 : -1;
-  let bassEnv = Math.pow(1 - bInBar % 1, 2);
-  let bass = pulseW * bassEnv * 0.2;
-  let leadNotes = [329.6, 392, 440, 493.9, 523.3, 440, 392, 329.6];
-  let leadFreq = leadNotes[bar];
-  let leadT = T * leadFreq;
-  let saw = 0;
-  let h = 1;
-  while (h <= 5) {
-    saw += Math.sin(2 * Math.PI * leadT * h) / h * (h % 2 === 0 ? -1 : 1);
-    h++;
+  let tempo = 1.8;
+  let beat = T * tempo;
+  let note = Math.floor(beat) % 32;
+  let phase = beat % 1;
+  let scale = [261.6, 293.7, 329.6, 349.2, 392, 440, 493.9, 523.3];
+  let melody = [0, 2, 4, 7, 4, 2, 0, 4, 5, 7, 5, 2, 0, 4, 2, 7, 0, 2, 4, 5, 7, 5, 4, 2, 0, 7, 5, 4, 2, 0, 2, 4];
+  let freq = scale[melody[note] % 8];
+  let pluck = Math.sin(2 * Math.PI * freq * T) * Math.exp(-phase * 6) * 0.25;
+  pluck += Math.sin(2 * Math.PI * freq * 2 * T) * Math.exp(-phase * 8) * 0.08;
+  pluck += Math.sin(2 * Math.PI * freq * 4 * T) * Math.exp(-phase * 12) * 0.03;
+  let bassNote = [0, 0, 0, 0, 3, 3, 3, 3, 5, 5, 5, 5, 4, 4, 4, 4, 0, 0, 0, 0, 3, 3, 3, 3, 7, 7, 7, 7, 4, 4, 2, 2];
+  let bassF = scale[bassNote[note] % 8] / 4;
+  let bass = Math.sin(2 * Math.PI * bassF * T) * 0.08 * (1 - phase * 0.3);
+  let padChord = [[0, 2, 4], [3, 5, 7], [5, 0, 4], [4, 7, 2]];
+  let chordIdx = Math.floor(note / 8) % 4;
+  let chord = padChord[chordIdx];
+  let pad = 0;
+  let i = 0;
+  while (i < 3) {
+    let f = scale[chord[i] % 8] / 2;
+    pad += Math.sin(2 * Math.PI * f * T) * 0.04;
+    i++;
   }
-  let leadEnv = (bInBar % 0.5 < 0.1) ? (bInBar % 0.5) / 0.1 : Math.pow(1 - (bInBar % 0.5) / 0.5, 0.5);
-  let lead = saw * leadEnv * 0.1;
-  let arpSeq = [1, 1.25, 1.5, 2, 1.5, 1.25, 1, 0.75, 1, 1.5, 2, 2.5, 2, 1.5, 1, 0.5];
-  let arpIdx = Math.floor(bt * 4) % 16;
-  let arpFreq = leadFreq * arpSeq[arpIdx];
-  let arpDecay = Math.pow(1 - (bt * 4 % 1), 4);
-  let arp = Math.sin(2 * Math.PI * arpFreq * T) * arpDecay * 0.12;
-  arp += Math.sin(2 * Math.PI * arpFreq * 1.005 * T) * arpDecay * 0.06;
-  let kickPhase = bt % 1;
-  let kick = kickPhase < 0.15 ? Math.sin(2 * Math.PI * 55 * Math.pow(1 - kickPhase * 6.67, 3) * T * 50) * Math.pow(1 - kickPhase / 0.15, 2) * 0.3 : 0;
-  let hatPhase = (bt * 2) % 1;
-  let hat = Math.sin(T * 31415 * Math.sin(T * 2718)) * Math.pow(1 - hatPhase, 10) * 0.04;
-  let pad = (Math.sin(2 * Math.PI * 329.6 * T) + Math.sin(2 * Math.PI * 392 * T) + Math.sin(2 * Math.PI * 493.9 * T)) * 0.04;
-  return bass + lead + arp + kick + hat + pad;
+  let delay1T = T - 1 / tempo;
+  let delay1 = delay1T > 0 ? Math.sin(2 * Math.PI * freq * delay1T) * Math.exp(-phase * 6) * 0.08 : 0;
+  let delay2T = T - 2 / tempo;
+  let delay2 = delay2T > 0 ? Math.sin(2 * Math.PI * freq * delay2T) * Math.exp(-phase * 6) * 0.04 : 0;
+  return pluck + bass + pad + delay1 + delay2;
 }`,
   },
 ]
