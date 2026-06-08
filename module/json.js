@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
+import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
 import { emit, bool, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
@@ -1361,6 +1361,14 @@ ${localDecls}
       } catch { /* fall through to generic runtime parser */ }
     }
     inc('__jp')
-    return typed(['call', '$__jp', asI64(emit(x))], 'f64')
+    const value = temp('jp_arg')
+    const input = valTypeOf(x) === VAL.BOOL
+      ? asI64(bool(x))
+      : valTypeOf(x) === VAL.STRING
+        ? ['i64.reinterpret_f64', ['local.get', `$${value}`]]
+        : toStrI64(null, typed(['local.get', `$${value}`], 'f64'))
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${value}`, asF64(emit(x))],
+      ['call', '$__jp', input]], 'f64')
   }
 }

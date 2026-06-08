@@ -23,7 +23,7 @@
  * @module console
  */
 
-import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
+import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
 import { emit, deps, reg, hostImport } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { exprType } from '../src/type.js'
@@ -111,6 +111,10 @@ const setupWasi = (ctx) => {
       (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 5)))) (return)))
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))
       (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 6)))) (return)))
+    (if (i64.eq (local.get $val) (i64.const ${TRUE_NAN}))
+      (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 3)))) (return)))
+    (if (i64.eq (local.get $val) (i64.const ${FALSE_NAN}))
+      (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 4)))) (return)))
     (local.set $type (call $__ptr_type (local.get $val)))
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 0)))) (return)))
@@ -123,19 +127,26 @@ const setupWasi = (ctx) => {
   reg('readStdin', {
     deps: ['__read_stdin'],
     wat: `(func $__read_stdin (result f64)
-    (local $iov i32) (local $nio i32) (local $buf i32) (local $total i32) (local $n i32)
+    (local $iov i32) (local $nio i32) (local $buf i32) (local $cap i32)
+    (local $total i32) (local $n i32) (local $new i32)
     (local.set $iov (call $__alloc (i32.const 8)))
     (local.set $nio (call $__alloc (i32.const 4)))
-    (local.set $buf (call $__alloc (i32.const 65536)))
+    (local.set $cap (i32.const 65536))
+    (local.set $buf (call $__alloc (local.get $cap)))
     (local.set $total (i32.const 0))
     (block $eof (loop $read
+      (if (i32.ge_u (local.get $total) (local.get $cap))
+        (then
+          (local.set $new (call $__alloc (i32.shl (local.get $cap) (i32.const 1))))
+          (memory.copy (local.get $new) (local.get $buf) (local.get $total))
+          (local.set $buf (local.get $new))
+          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))
       (i32.store (local.get $iov) (i32.add (local.get $buf) (local.get $total)))
-      (i32.store offset=4 (local.get $iov) (i32.sub (i32.const 65536) (local.get $total)))
+      (i32.store offset=4 (local.get $iov) (i32.sub (local.get $cap) (local.get $total)))
       (drop (call $__fd_read (i32.const 0) (local.get $iov) (i32.const 1) (local.get $nio)))
       (local.set $n (i32.load (local.get $nio)))
       (br_if $eof (i32.eqz (local.get $n)))
       (local.set $total (i32.add (local.get $total) (local.get $n)))
-      (br_if $eof (i32.ge_s (local.get $total) (i32.const 65536)))
       (br $read)))
     (call $__mkstr (local.get $buf) (local.get $total)))`,
     emit: () => {

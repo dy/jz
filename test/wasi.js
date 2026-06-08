@@ -71,6 +71,27 @@ test('WASI polyfill: fd_read returns stdin bytes via opts.read', () => {
   is(captured.join('').trim(), fixture)
 })
 
+test('WASI polyfill: readStdin returns input beyond the initial buffer size', () => {
+  const fixture = 'x'.repeat(70000)
+  const encoder = new TextEncoder()
+  const bytes = encoder.encode(fixture)
+  let offset = 0
+  const imports = wasi({
+    read: (fd, buf) => {
+      if (offset >= bytes.length) return 0
+      const n = Math.min(buf.length, bytes.length - offset)
+      buf.set(bytes.subarray(offset, offset + n))
+      offset += n
+      return n
+    },
+  })
+  const wasm = compile(`export let f = () => readStdin().length`, { host: 'wasi' })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+
+  is(inst.exports.f(), fixture.length)
+})
+
 test('WASI polyfill: custom write receives output', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push([fd, text]) })
@@ -81,6 +102,17 @@ test('WASI polyfill: custom write receives output', () => {
   is(captured.map(x => x[1]).join(''), 'custom\nerr\n')
   is(captured.filter(x => x[1] === 'custom')[0][0], 1)
   is(captured.filter(x => x[1] === 'err')[0][0], 2)
+})
+
+test('WASI console.log: boolean read from a container prints as boolean', () => {
+  const captured = []
+  const imports = wasi({ write: (fd, text) => captured.push(text) })
+  const wasm = compile(`export let f = () => { let o = {}; o.b = false; console.log(o.b); return 1 }`, { host: 'wasi' })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+
+  is(inst.exports.f(), 1)
+  is(captured.join(''), 'false\n')
 })
 
 function runWithCapturedFallback(processValue, source) {
