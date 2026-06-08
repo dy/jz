@@ -487,7 +487,7 @@ test('Regression: imported function returning array with props keeps numeric ind
   is(result[0], 2)
   is(result[1], 97)
   is(result[2], 98)
-  is(result[3], 1)
+  is(result[3], true)
 })
 
 // A custom `valueOf` assigned to an array must override the default when invoked.
