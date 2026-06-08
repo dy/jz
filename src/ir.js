@@ -357,6 +357,28 @@ const PURE_F64_OPS = new Set([
   'f64.convert_i32_s', 'f64.convert_i32_u', 'f64.promote_f32',
 ])
 
+/** True iff `r` provably yields a plain f64 NUMBER (never a NaN-boxed pointer or
+ *  nullish sentinel). A `block`/`if` is numeric only when its value-producing tail
+ *  is — so `o.a?.b` (a block whose result is a property value or undef sentinel)
+ *  is correctly NOT numeric, while `cond ? n*2 : n*3` is. Conservative: any shape
+ *  not provably numeric (property gets, user calls, local.get, f64.const nan:…)
+ *  returns false, so the caller keeps the __to_num coercion. */
+const isNumericIR = (r) => {
+  if (!Array.isArray(r)) return false
+  const op = r[0]
+  if (PURE_F64_OPS.has(op)) return true
+  if (op === 'call' && typeof r[1] === 'string' && (r[1].startsWith('$math.') || r[1] === '$__time_ms')) return true
+  if (op === 'f64.const') return typeof r[1] === 'number'   // 'nan:…' carrier ⇒ pointer/sentinel
+  if (op === 'block') return isNumericIR(r[r.length - 1])   // block value = its tail expr
+  if (op === 'if') {                                        // both arms must be numeric
+    const thenArm = r.find(x => Array.isArray(x) && x[0] === 'then')
+    const elseArm = r.find(x => Array.isArray(x) && x[0] === 'else')
+    return !!thenArm && !!elseArm &&
+      isNumericIR(thenArm[thenArm.length - 1]) && isNumericIR(elseArm[elseArm.length - 1])
+  }
+  return false
+}
+
 /** Resolve compile-time value type from AST node (literal → name → lookup). */
 export const resolveValType = (node, valTypeOf, lookupValType) =>
   valTypeOf(node) ?? (typeof node === 'string' ? lookupValType(node) : null)
@@ -618,21 +640,18 @@ export function toNumF64(node, v) {
     if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
     if (v[0] === 'call' && v[1] === '$__time_ms') return v
   }
-  // f64 arithmetic ops, math intrinsics, and f64-typed blocks never produce
-  // NaN-boxed pointers — the result is always a plain f64 number.
-  // Skip __to_num for these, eliminating the call overhead that dominates
-  // tight numeric kernels (floatbeats, matrix loops, etc.).
-  // - Arithmetic ops take f64 inputs → produce f64 output (never NaN-boxed pointers)
-  // - $math.* intrinsics always return plain f64
-  // - block (result f64) always returns f64
-  // NOTE: user function calls (call $closure0, call $beat, etc.) can NOT be skipped
-  // because they may return NaN-boxed pointers (e.g. a function that returns a
-  // dynamic property value that's a string). Only $math.* is provably numeric.
-  // Runtime helpers ($__to_num, $__alloc, $__mkptr, etc.) are also excluded.
+  // f64 arithmetic ops and math intrinsics never produce NaN-boxed pointers — the
+  // result is always a plain f64 number. Skip __to_num for these, eliminating the
+  // call overhead that dominates tight numeric kernels (floatbeats, matrix loops).
+  // A `block`/`if` qualifies only when its value-producing tail is provably numeric
+  // (`isNumericIR`): `cond ? n*2 : n*3` skips, but `o.a?.b` (block yielding a
+  // property value / undef sentinel) does NOT — else `o.a?.b > 6` would compare the
+  // boxed string's NaN bits (NaN > 6 → false). User function calls are excluded too
+  // (may return dynamic-property strings); only $math.* is provably numeric.
   if (v.type === 'f64' && Array.isArray(v) && (
     PURE_F64_OPS.has(v[0]) ||
     (v[0] === 'call' && typeof v[1] === 'string' && v[1].startsWith('$math.')) ||
-    v[0] === 'block'
+    ((v[0] === 'block' || v[0] === 'if') && isNumericIR(v))
   )) return v
   if (!ctx.core.stdlib['__to_num']) {
     // No full ToNumber helper loaded — the program provably has no strings.
