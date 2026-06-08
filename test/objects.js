@@ -459,6 +459,19 @@ test('Regression: deeply nested anonymous literals', () => {
   is(run(`export let f = () => ({x: {y: {z: 42}}}).x.y.z`).f(), 42)
 })
 
+test('Regression: anonymous fixed-shape object literals do not allocate dynamic shadows', () => {
+  const wat = compile(`export let f = (items) => {
+    let output = []
+    for (let i = 0; i < items.length; i = i + 1) {
+      let item = items[i]
+      output.push({ id: item.id, quantity: item.quantity })
+    }
+    return output.length
+  }`, { jzify: true, wat: true })
+
+  ok(!/call \$__dyn_set/.test(wat), 'anonymous fixed-shape literals should not allocate sidecar hashes')
+})
+
 // When the program does any `obj[k]` with computed key elsewhere, anyDynKey
 // becomes true → every anonymous-escaping object literal shadow-writes its
 // schema keys to the per-object propsPtr (so future `o[k]` lookups can hit
