@@ -47,6 +47,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
+  boolBoxIR,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -58,6 +59,8 @@ const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
   return ctx.abi.resolve('string', rep)?.ops ?? ctx.abi.string.ops
 }
+
+const storedValue = (node) => valTypeOf(node) === VAL.BOOL ? boolBoxIR(emit(node)) : asF64(emit(node))
 
 // === Emitter state & operand classification ===
 
@@ -1631,7 +1634,7 @@ function emitPropertyAssign(obj, prop, val) {
   const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
   if (flatW) {
     const fi = flatW.names.indexOf(prop)
-    if (fi >= 0) return withTemp(asF64(emit(val)), t => [
+    if (fi >= 0) return withTemp(storedValue(val), t => [
       ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }
@@ -1646,7 +1649,7 @@ function emitPropertyAssign(obj, prop, val) {
     if (vaProbe?.ptrKind === VAL.OBJECT && vaProbe.ptrAux != null) {
       const sch = ctx.schema.list[vaProbe.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return withTemp(asF64(emit(val)), t => [
+      if (si >= 0) return withTemp(storedValue(val), t => [
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
         ['local.get', `$${t}`]])
     }
@@ -1655,7 +1658,7 @@ function emitPropertyAssign(obj, prop, val) {
   if (typeof obj === 'string' && ctx.schema.slotOf) {
     const idx = ctx.schema.slotOf(obj, prop)
     if (idx >= 0) {
-      const va = emit(obj), vv = asF64(emit(val)), t = temp()
+      const va = emit(obj), vv = storedValue(val), t = temp()
       const shadow = needsDynShadow(obj)
       if (shadow) inc('__dyn_set')
       const stmts = [
@@ -1678,7 +1681,7 @@ function emitPropertyAssign(obj, prop, val) {
     const sh = shapeOf(obj)
     if (sh?.val === VAL.OBJECT && sh.names) {
       const i = sh.names.indexOf(prop)
-      if (i >= 0) return withTemp(asF64(emit(val)), t => [
+      if (i >= 0) return withTemp(storedValue(val), t => [
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
         ['local.get', `$${t}`]])
     }
@@ -1692,11 +1695,11 @@ function emitPropertyAssign(obj, prop, val) {
     // corrupt OBJECT memory.
     if (usesDynProps(objType) || objType === VAL.OBJECT) {
       inc('__dyn_set')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
     if (ctx.func.names.has(obj) && !isBoundName(obj)) {
       inc('__dyn_set')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
     if (objType == null && ctx.transform.host !== 'wasi') {
       ctx.features.external = true
@@ -1709,7 +1712,7 @@ function emitPropertyAssign(obj, prop, val) {
     // `f(o.p = v)`. Returning the pointer there computes `object - 1` → garbage
     // (the self-host regex `c.labelId++` bug). Void position discards the tail.
     const keyBits = asI64(emit(['str', prop]))
-    return withTemp(asF64(emit(val)), t => {
+    return withTemp(storedValue(val), t => {
       const tget = ['local.get', `$${t}`]
       const setCall = typed(['f64.reinterpret_i64',
         ['call', '$__hash_set', asI64(emit(obj)), keyBits, ['i64.reinterpret_f64', tget]]], 'f64')
@@ -1722,7 +1725,7 @@ function emitPropertyAssign(obj, prop, val) {
   }
   if (ctx.transform.host !== 'wasi') ctx.features.external = true
   inc('__dyn_set')
-  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
+  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
 }
 
 // === Call IR helpers ===

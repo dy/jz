@@ -40,6 +40,14 @@ test('JSON.parse: number', () => {
   is(run(`export let f = () => JSON.parse("42")`).f(), 42)
 })
 
+test('JSON.parse: runtime number argument parses after ToString coercion', () => {
+  is(run(`export let f = value => JSON.parse(value)`).f(42), 42)
+})
+
+test('JSON.parse: runtime boolean argument parses after ToString coercion', () => {
+  is(run(`export let f = value => JSON.stringify(JSON.parse(value < 2))`).f(1), 'true')
+})
+
 test('JSON.parse: negative float', () => {
   is(run(`export let f = () => JSON.parse("-3.14")`).f(), -3.14)
 })
@@ -317,6 +325,32 @@ test('JSON.stringify: empty object', () => {
     return JSON.stringify(o)
   }`)
   is(f(), '{}')
+})
+
+test('JSON.stringify: assigned object boolean property serializes as boolean', () => {
+  const { f } = run(`export let f = () => {
+    let body = {}
+    body.enabled = true
+    body.selected = false
+    return JSON.stringify(body)
+  }`)
+
+  is(f(), '{"enabled":true,"selected":false}')
+})
+
+test('JSON.stringify: assigned empty-object properties preserve nested body string', () => {
+  const { f } = run(`export let f = () => {
+    let input = { browser_ip: "1.2.3.4", cart_hash: "abc", extra_data: "x", is_bopis: true, mode: "test" }
+    let body = {}
+    if (input?.browser_ip) body.browser_ip = input.browser_ip
+    if (input?.cart_hash) body.cart_hash = input.cart_hash
+    body.extra_data = input.extra_data
+    body.is_bopis = input.is_bopis ? true : false
+    if (input.mode) body.mode = input.mode
+    return JSON.stringify({ request: { body: JSON.stringify(body) } })
+  }`)
+
+  is(f(), '{"request":{"body":"{\\"browser_ip\\":\\"1.2.3.4\\",\\"cart_hash\\":\\"abc\\",\\"extra_data\\":\\"x\\",\\"is_bopis\\":true,\\"mode\\":\\"test\\"}"}}')
 })
 
 test('JSON runtime schemas: late closure parse does not overwrite compile-time stringify schemas', () => {
