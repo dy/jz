@@ -27,8 +27,10 @@ for (let i = 0; i < FLOATBEATS.length; i++) {
   }
   const jzMs = (performance.now() - t0) / iters
 
-  // Benchmark JS
-  const fn = new Function('t', 'return ' + fb.body)
+  // Benchmark JS — build the arrow AND call it (`(body)(t)`), matching the
+  // jukebox HTML engine. `'return ' + body` alone returns the arrow uncalled,
+  // so V8 would execute none of the DSP — measuring only closure allocation.
+  const fn = new Function('t', 'return (' + fb.body + ')(t)')
   const jsFill = (out, len, off) => {
     let j = 0
     while (j < len) {

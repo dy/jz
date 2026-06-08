@@ -348,7 +348,16 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
   'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz'])
 export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
 
-/** Resolve compile-time value type from AST node (literal → type, name → lookup). */
+/** Ops whose f64 result is always a plain number (never a NaN-boxed pointer).
+ *  Used by toNumF64 to skip the __to_num wrapper when the value is provably numeric.
+ *  NOTE: f64.const is NOT included — it may encode a NaN-boxed pointer. */
+const PURE_F64_OPS = new Set([
+  'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
+  'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
+  'f64.convert_i32_s', 'f64.convert_i32_u', 'f64.promote_f32',
+])
+
+/** Resolve compile-time value type from AST node (literal → name → lookup). */
 export const resolveValType = (node, valTypeOf, lookupValType) =>
   valTypeOf(node) ?? (typeof node === 'string' ? lookupValType(node) : null)
 
@@ -609,6 +618,22 @@ export function toNumF64(node, v) {
     if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
     if (v[0] === 'call' && v[1] === '$__time_ms') return v
   }
+  // f64 arithmetic ops, math intrinsics, and f64-typed blocks never produce
+  // NaN-boxed pointers — the result is always a plain f64 number.
+  // Skip __to_num for these, eliminating the call overhead that dominates
+  // tight numeric kernels (floatbeats, matrix loops, etc.).
+  // - Arithmetic ops take f64 inputs → produce f64 output (never NaN-boxed pointers)
+  // - $math.* intrinsics always return plain f64
+  // - block (result f64) always returns f64
+  // NOTE: user function calls (call $closure0, call $beat, etc.) can NOT be skipped
+  // because they may return NaN-boxed pointers (e.g. a function that returns a
+  // dynamic property value that's a string). Only $math.* is provably numeric.
+  // Runtime helpers ($__to_num, $__alloc, $__mkptr, etc.) are also excluded.
+  if (v.type === 'f64' && Array.isArray(v) && (
+    PURE_F64_OPS.has(v[0]) ||
+    (v[0] === 'call' && typeof v[1] === 'string' && v[1].startsWith('$math.')) ||
+    v[0] === 'block'
+  )) return v
   if (!ctx.core.stdlib['__to_num']) {
     // No full ToNumber helper loaded — the program provably has no strings.
     // A nullish *literal* still coerces (null→+0, undefined→NaN) — fold it

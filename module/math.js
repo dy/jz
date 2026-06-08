@@ -14,6 +14,7 @@
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bridge.js'
+import { inc } from '../src/ctx.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
@@ -281,7 +282,7 @@ export default (ctx) => {
   // both the exact bits and the result sign (negative iff x<0 ∧ n odd, which is exactly
   // its `neg_base`). A program whose only pow use is folded then never pulls the
   // math.pow/exp/log stdlib. `**`'s exponent is parsed as a bare number (incl. negatives).
-  const POW_FOLD_MAX = 8
+  const POW_FOLD_MAX = 16
   const get = name => ['local.get', `$${name}`]
   const constInt = b => {
     const v = typeof b === 'number' ? b
@@ -339,13 +340,22 @@ export default (ctx) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
+    // Both args are compile-time constants: evaluate now, emit f64.const.
+    // Catches pow(2, -2/12) where the arithmetic folds emit f64.const for both sides.
+    const ca = constNum(a), cb = constNum(b)
+    if (ca !== null && cb !== null) return typed(['f64.const', Math.pow(ca, cb)], 'f64')
+    // IR-level fold: peek at emitted IR for both args — e.g. -2/12 emits f64.const -0.1666.
+    // We emit, check, and if not foldable, the emitted IR is used by the fallthrough paths.
+    const irA = toNumF64(a, emit(a)), irB = toNumF64(b, emit(b))
+    if (isLit(irA) && isLit(irB)) return typed(['f64.const', Math.pow(litVal(irA), litVal(irB))], 'f64')
     // base 2 → dedicated 2^y (exp2 is exact for integer y, and skips exp's ×ln2/÷ln2).
     // Every other literal base keeps $math.pow: `exp(y·ln base)` would lose ulps and,
     // worse, miss Math.pow's integer-exponent semantics — e.g. `16 ** flen` with a
     // runtime-integer flen must reproduce the exact square-and-multiply value (2⁵² for
     // flen=13), which only $math.pow's integer fast path delivers.
-    if (allowExpPos && constNum(a) === 2 && n === null) return exp2Call(b)
-    return powCall(a, b)
+    if (allowExpPos && isLit(irA) && litVal(irA) === 2 && n === null)
+      return (inc('math.exp2'), typed(['call', '$math.exp2', irB], 'f64'))
+    return (inc('math.pow'), typed(['call', '$math.pow', irA, irB], 'f64'))
   }
   ctx.core.emit['math.pow'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
   ctx.core.emit['**'] = tag((a, b) => emitPow(a, b, true), powCall.deps)
@@ -446,9 +456,8 @@ export default (ctx) => {
     ;; Negate for odd quasiperiods
     (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
     ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
-      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
-        (else (local.get $r))))))`)
+    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
+    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
 
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     (call $math.sin_core (local.get $x)))`)
@@ -470,9 +479,8 @@ export default (ctx) => {
     ;; Negate for odd quasiperiods
     (if (f64.gt (f64.abs (local.get $q)) (f64.const 0.5)) (then (local.set $r (f64.neg (local.get $r)))))
     ;; Clamp to [-1, 1]: polynomial approximation can overshoot by ~1e-8 near peaks.
-    (if (result f64) (f64.gt (local.get $r) (f64.const 1.0)) (then (f64.const 1.0))
-      (else (if (result f64) (f64.lt (local.get $r) (f64.const -1.0)) (then (f64.const -1.0))
-        (else (local.get $r))))))`)
+    ;; Branchless (f64.min/f64.max) avoids branch misprediction near peaks.
+    (f64.min (f64.max (local.get $r) (f64.const -1.0)) (f64.const 1.0)))`)
 
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     (call $math.cos_core (local.get $x)))`)
