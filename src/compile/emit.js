@@ -2755,6 +2755,15 @@ export const emitter = {
     // `.unsigned` operand: `i32.rem_s` reads the uint32 as a negative signed value
     // ((2^32-1)%7 → rem_s(-1,7) = -1, not 3). Widen to f64 — see `+` above.
     if (isLit(vb) && isI32Num(va) && isI32Num(vb) && !va.unsigned && !vb.unsigned) return typed(['i32.rem_s', va, vb], 'i32')
+    // Fast path: positive literal divisor → inline a - trunc(a/b) * b.
+    // Exact when |a| < 2^53 × |b| (all practical audio/control-range values).
+    // The full __rem handles NaN/±Inf/0 edges exactly; this avoids the call overhead.
+    if (isLit(vb) && litVal(vb) > 0) {
+      const fa = toNumF64(a, va), fb = toNumF64(b, vb)
+      const rem = ta => typed(['f64.sub', ta, ['f64.mul', ['f64.trunc', ['f64.div', ta, fb]], fb]], 'f64')
+      if (isPureIR(fa)) return rem(fa)
+      return withTemp(fa, t => rem(['local.get', `$${t}`]), 'rem')
+    }
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
   // === Comparisons (always i32 result) ===

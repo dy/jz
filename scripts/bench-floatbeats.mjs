@@ -32,8 +32,10 @@ for (const fb of floatbeats) {
   }
   const jzMs = (performance.now() - t0) / iters
 
-  // Benchmark JS
-  const fn = new Function('t', 'return ' + fb.body)
+  // Benchmark JS — build the arrow AND call it (`(body)(t)`), matching the
+  // jukebox HTML engine. `'return ' + body` alone returns the arrow uncalled,
+  // so V8 would execute none of the DSP — measuring only closure allocation.
+  const fn = new Function('t', 'return (' + fb.body + ')(t)')
   t0 = performance.now()
   const arr = new Float64Array(N)
   for (let i = 0; i < iters; i++) {
