@@ -161,7 +161,7 @@ Not supported
 ## FAQ
 
 <details>
-<summary><strong>What are the differences with JS</strong></summary>
+<summary><strong>What are the differences with JS?</strong></summary>
 
 - **Numbers are f64**; integer-proven values (`| 0`, loop counters) are `i32` and **wrap at ±2³¹**.
 - **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
@@ -243,7 +243,7 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 </details>
 
 <details>
-<summary><strong>Passing numbers, strings, arrays, objects via JS ↔ wasm boundary</strong></summary>
+<summary><strong>How to pass numbers, strings, arrays, objects JS ↔ WASM?</strong></summary>
 
 **Numbers cross natively** as `f64`/`i32`. **Heap values** — strings, arrays, objects, typed arrays — cross as NaN-boxed `f64` pointers into linear memory, allocated through the module's `_alloc`/`_clear` exports. That pointer-plus-allocator convention *is* the whole ABI (a few hundred bytes, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js)). The one shortcut: arrays of ≤ 8 elements come back as plain JS arrays via WASM multi-value.
 
@@ -268,18 +268,23 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 
 `memory.String` / `.Array` / `.Float64Array`/etc / `.Object` allocate on the heap and return a pointer; `memory.read(ptr)` decodes one back. `memory.Object()` is fixed-layout — its keys must match a compiled schema's key set (order is free, fields place by name).
 
-**Where it runs** depends on the host:
+</details>
 
-- **Numbers only, raw `WebAssembly`** — no jz dependency at all: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop `_alloc`/`_clear` for pure-numeric modules.
-- **Heap values, shipping just the `.wasm`** — `import { instantiate } from 'jz/interop'`. The bridge (~37 KB of source, ~6 KB gzipped once minified; no compiler or parser) builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec above (plus WASI / `wasm:js-string` imports if the module uses them).
-- **Standalone engine, `host: 'wasi'`** — `jz program.js --host wasi`, then `wasmtime program.wasm`. The module reaches the world through WASI (stdout, argv, clock), not a JS bridge; top-level code runs on load, exports take/return numbers. No host-side marshaler here — pass heap values by calling `_alloc` against the ABI, or run it from JavaScript instead.
+<details>
+<summary><strong>Do I need jz at runtime?</strong></summary>
 
-Rust (`wasm-bindgen`), Go (TinyGo), C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime; jz keeps the ABI fixed and the optional bridge small (~6 KB gzipped, minified).
+The compiler runs at build time. At runtime you ship the `.wasm` and, at most, a small bridge — never the compiler, the parser, or a language runtime.
+
+- **Pure-number modules — nothing but the `.wasm`.** Instantiate with raw `WebAssembly`, zero jz dependency: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop the `_alloc`/`_clear` exports too.
+- **Heap values (strings, arrays, objects) — the `.wasm` plus `jz/interop`.** `import { instantiate } from 'jz/interop'` adds a ~6 KB-gzipped bridge (no compiler, no parser) that builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec from the previous question (plus WASI / `wasm:js-string` imports if the module uses them).
+- **No JavaScript host at all** — compile with `host: 'wasi'`; see the next question.
+
+For contrast, Rust (`wasm-bindgen`), Go (TinyGo), and C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime. jz keeps the ABI fixed and the optional bridge ~6 KB gzipped.
 
 </details>
 
 <details>
-<summary><strong>Can I use the `.wasm` outside of js host?</strong></summary>
+<summary><strong>Can I run the `.wasm` without a JavaScript host (WASI)?</strong></summary>
 
 There's two possible `host` targets:
 
