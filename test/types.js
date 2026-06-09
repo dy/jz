@@ -2,7 +2,7 @@
 // intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { belowOpt, onWasi } from './_matrix.js'
+import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
@@ -733,6 +733,7 @@ test('typed-narrow: owned typed-array byteOffset is constant zero', () => {
 
 test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
   if (belowOpt(2)) return  // size pin: needs post-watr fusedRewrite (optimize >= 2)
+  if (onKernel()) return   // kernel: jz.compile uses the optimize:false byte leg, so the byte count can't meet an opt-2 size pin (same as the other byte-leg size pins)
   // Threshold tracks recorded baseline with headroom.
   const src = `
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
