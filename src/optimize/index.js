@@ -141,10 +141,15 @@ const LEVEL_PRESETS = Object.freeze({
 export function resolveOptimize(opt) {
   if (opt === false || opt === 0) return { ...ALL_OFF }
   if (opt === true || opt == null) return { ...LEVEL_PRESETS[2] }
-  if (typeof opt === 'number' || typeof opt === 'string') return { ...(LEVEL_PRESETS[opt] || LEVEL_PRESETS[2]) }
+  // String() the level key: LEVEL_PRESETS has integer-literal keys (0..3), and the
+  // self-host kernel's computed member access `obj[numVar]` misreads a numeric VARIABLE
+  // index against an object (returns undefined — literal `obj[2]` is fine), so a bare
+  // `LEVEL_PRESETS[opt]`/`[baseLevel]` would drop the level-2 default to ALL_ON and
+  // (worse, via the partial result) leave `watr` unset — disabling watOptimize.
+  if (typeof opt === 'number' || typeof opt === 'string') return { ...(LEVEL_PRESETS[String(opt)] || LEVEL_PRESETS[2]) }
   if (typeof opt === 'object') {
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
-    const base = LEVEL_PRESETS[baseLevel] || ALL_ON
+    const base = LEVEL_PRESETS[String(baseLevel)] || ALL_ON
     const out = { ...base }
     for (const n of PASS_NAMES) {
       if (!(n in opt)) continue
