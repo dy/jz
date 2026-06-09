@@ -54,6 +54,11 @@ export function calleeValType(callee, _args, ctx) {
   if (callee.startsWith('math.')) return VAL.NUMBER
   const hostVT = ctx.module.hostImportValTypes?.get(callee)
   if (hostVT) return hostVT
+  // A direct-dispatched local closure proven to return a plain number: its f64 result
+  // is never a NaN-boxed pointer, so `toNumF64` can skip the `__to_num` wrapper at the
+  // call site. (Populated by closure.make as bodies are emitted, in decl order.)
+  const closBody = ctx.func.directClosures?.get(callee)
+  if (closBody && ctx.closure?.numericReturn?.has(closBody)) return VAL.NUMBER
   const f = ctx.func.map?.get(callee)
   if (f?.valResult) return f.valResult
   return null

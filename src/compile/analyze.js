@@ -169,6 +169,12 @@ export function analyzeBody(body) {
   const valTypes = new Map()
   const arrElemSchemas = new Map()
   const arrElemValTypes = new Map()
+  // Nested element kind: `name`'s elements are themselves arrays whose elements
+  // share this VAL.*. Lets `chord = padChord[i]; chord[j]` (floatbeat pad voicings,
+  // `padChord = [[0,2,4],…]`) bind `chord`'s arrayElemValType through one index step,
+  // so `chord[j]` is a Number and skips __to_num. Single-level only — enough for the
+  // 2-D table pattern without a general nested-type lattice.
+  const arrElemElemValTypes = new Map()
   const typedElems = new Map()
   const escapes = new Map() // name → bool: local holds allocation, true if it escapes
 
@@ -216,6 +222,20 @@ export function analyzeBody(body) {
       return ctx.scope.globalValTypes?.get(expr) || null
     }
     return valTypeOf(expr)
+  }
+
+  // Common element VAL of an array-literal node (`[a,b,c]`), or null if not a literal
+  // or its elements disagree. Used to read one level into an array-of-arrays literal.
+  const arrLitElemCommonVal = (litNode) => {
+    const raw = staticArrayElems(litNode)
+    if (!raw) return null
+    const items = raw.filter(e => e != null)
+    if (!items.length || items.length !== raw.length) return null
+    let common = exprElemSourceVal(items[0])
+    for (let k = 1; k < items.length && common != null; k++) {
+      if (exprElemSourceVal(items[k]) !== common) common = null
+    }
+    return common
   }
 
   // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
@@ -286,7 +306,22 @@ export function analyzeBody(body) {
             if (exprElemSourceVal(elems[k]) !== common) common = null
           }
           if (common != null) observeArrValType(name, common)
+          // Array-of-arrays literal: record the common element-of-element kind so a
+          // later `x = name[i]` binds `x`'s element type one level down.
+          if (common === VAL.ARRAY) {
+            let nested = arrLitElemCommonVal(elems[0])
+            for (let k = 1; k < elems.length && nested != null; k++) {
+              if (arrLitElemCommonVal(elems[k]) !== nested) nested = null
+            }
+            if (nested != null) arrElemElemValTypes.set(name, nested)
+          }
         }
+      }
+      // `x = arr[i]` where `arr` is a known array-of-arrays → `x`'s elements take
+      // `arr`'s nested element kind (the missing index-step in observeArrValType).
+      if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
+        const nested = arrElemElemValTypes.get(rhs[1])
+        if (nested) observeArrValType(name, nested)
       }
     }
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {

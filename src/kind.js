@@ -180,6 +180,13 @@ export function valTypeOf(expr) {
       const elemVt = ctx.func.localReps?.get(args[0])?.arrayElemValType
       if (elemVt) return elemVt
     }
+    // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
+    // chord/pattern tables; literal op is `[`, elements inline). Every element is a
+    // Number, so the load is a Number; this lets toNumF64 skip __to_num on the result
+    // and propagates numericness outward (e.g. a closure arg that then marks its param
+    // numeric, or the surrounding `-arr[i]` that feeds a numeric accumulator).
+    if (Array.isArray(args[0]) && args[0][0] === '[' && args[0].length > 1
+        && args[0].slice(1).every(e => valTypeOf(e) === VAL.NUMBER)) return VAL.NUMBER
   }
   // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
   // to a slot whose VAL kind is monomorphic across program-wide observations,
