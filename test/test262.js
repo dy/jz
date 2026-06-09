@@ -276,6 +276,11 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/statements/while/S12.6.2_A1.js', 'use-before-init: undefined (NaN) self-inequality'],
   ['test/language/statements/for/S12.6.3_A2.js', 'for-head throwing expression / var-before-init'],
   ['test/language/statements/variable/S14_A1.js', 'var hoisting from if/else branches / use-before-init'],
+  // A nested function called with MIXED arity: a param typed by a full call site (`f(1,2)`)
+  // reads 0 — not undefined — when a sibling call omits it (`f(1)`), so `b === undefined`
+  // mis-folds to false. Top-level functions box the param correctly; the nested case is a
+  // current inference gap (not a scope decision).
+  ['test/language/function-code/S10.2.1_A1.js', 'nested mixed-arity: missing typed param reads 0, not undefined'],
   // Scope-chain / execution-context semantics jz does not model.
   ['test/language/function-code/S10.4_A1.1_T1.js', 'fresh execution context per call'],
   ['test/language/identifier-resolution/S10.2.2_A1_T1.js', 'scope-chain identifier resolution'],
