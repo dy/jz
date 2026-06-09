@@ -14,9 +14,18 @@ import { readFileSync, existsSync } from 'fs'
 import { dirname, resolve, join } from 'path'
 import { execFileSync } from 'child_process'
 
-// Matches both `import` and `export ... from` statements (statement position).
-// Lazy `[^'"]*?` consumes whatever sits between the keyword and the first quote.
-const importRe = /^\s*(?:import|export)\s+[^'"]*?['"]([^'"]+)['"]/gm
+// Matches real module imports/exports at statement position — and ONLY those:
+//   import 'x'                         (bare side-effect import)
+//   import … from 'x'                  (default/named/namespace)
+//   export … from 'x' / export * from  (re-export)
+// The specifier MUST follow `from` (or be a bare `import`'s string). The old
+// `(?:import|export)\s+[^'"]*?['"]…` matched any post-keyword string because
+// `[^'"]` spans newlines, so `export const X = [⏎ 'lit'` was read as `export …
+// 'lit'` — bundling then rewrote the bare string literal `'lit'` to a module path.
+// (Self-host fallout: `PASS_NAMES = ['watr', …]` had `'watr'` rewritten to
+// `…/node_modules/watr/watr.js`, corrupting every `'watr'` constant — and so the
+// kernel's whole optimize config, since `cfg.watr` then read that path.)
+const importRe = /^\s*(?:import\b[^'"]*?\bfrom\s*|import\s+|export\b[^'"]*?\bfrom\s*)['"]([^'"]+)['"]/gm
 
 /**
  * @param {string} entryFile - absolute or cwd-relative path to the entry module.
