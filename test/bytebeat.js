@@ -30,31 +30,44 @@ function wasmBaseline(beat, tRange) {
 }
 
 function compare(a, b, tol) {
-  const mismatches = []
+  let bad = 0, worst = 0, worstT = -1
   const len = Math.min(a.length, b.length)
   for (let i = 0; i < len; i++) {
-    if (Math.abs(a[i] - b[i]) > tol) mismatches.push({ t: i, a: a[i], b: b[i] })
+    const d = Math.abs(a[i] - b[i])
+    if (d > tol) { bad++; if (d > worst) { worst = d; worstT = i } }
   }
-  return mismatches
+  return { bad, worst, worstT, len }
 }
 
-function testFormula(name, jzBody, tRange, tol) {
+/**
+ * @param tol         per-sample tolerance
+ * @param maxBadFrac  fraction of samples allowed to exceed `tol` (default 0 → strict,
+ *   exact for bytebeats). Beats that feed `Math.sin` of a LARGE or growing argument
+ *   through chaotic bitwise/modulo extraction (the floatbeat-PRNG idiom) diverge from
+ *   the JS baseline in a minority of samples — jz's sin is a fast approximation, not
+ *   bit-identical to V8's, and the `&`/`%` truncation amplifies sub-ulp differences
+ *   into the odd flipped sample. Those are random-by-design and musically irrelevant.
+ *   A small `maxBadFrac` tolerates them; a real miscompile diverges systematically
+ *   (a large fraction, or every sample) and still trips the assert.
+ */
+function testFormula(name, jzBody, tRange, tol, maxBadFrac = 0) {
   test(name, () => {
     const code = `export let beat = (t) => { ${jzBody} }`
     const { beat } = run(code)
     const js = jsBaseline(jzBody, tRange)
     const wasm = wasmBaseline(beat, tRange)
-    const mismatches = compare(js, wasm, tol)
-    if (mismatches.length > 0) {
-      const m = mismatches[0]
-      throw new Error(`mismatch at t=${m.t}: js=${m.a} wasm=${m.b} delta=${Math.abs(m.a - m.b)}`)
+    const { bad, worst, worstT, len } = compare(js, wasm, tol)
+    if (bad / len > maxBadFrac) {
+      throw new Error(`${bad}/${len} samples (${(100 * bad / len).toFixed(3)}%) exceed tol=${tol}` +
+        ` (allowed ${(100 * maxBadFrac).toFixed(2)}%); worst Δ=${worst.toExponential(2)} at t=${worstT}`)
     }
   })
 }
 
-/** Tolerance for floatbeat tests. Higher than 1e-6 because compound
- *  sin/cos calls accumulate sub-ulp differences between JS Math.sin and
- *  the WASM sin approximation. 5e-6 is still inaudible. */
+/** Per-sample tolerance for floatbeat tests. Higher than 1e-6 because compound
+ *  sin/cos calls accumulate sub-ulp differences between JS Math.sin and jz's WASM
+ *  sin approximation. 5e-6 is inaudible. Beats whose output is a *chaotic* function
+ *  of Math.sin of a large argument additionally need `maxBadFrac` (see testFormula). */
 const FTOL = 5e-6
 
 // ============================================================
@@ -168,3 +181,14 @@ testFormula('Classic Floatbeat',
 
 testFormula('Bytebeat Anthem Float',
   `return (((t >> 7 | t | t >> 6) * 10 + 4 * (t & (t >> 13) | (t >> 6))) & 255) / 127.5 - 1`, 65536, FTOL)
+
+// Floatbeat-PRNG idiom (cf. jukebox "Sunrise on Mars"): Math.sin of a large, growing
+// argument fed through chaotic `& 255` extraction. The melodic Math.sin(t/50) stays
+// bit-exact; the PRNG noise diverges from the JS baseline in ~0.2% of samples because
+// jz's fast sin differs from V8's for large args — random-by-design and inaudible.
+// maxBadFrac=0.02 tolerates it; a real miscompile diverges across the board, not in a
+// sparse 0.2%. This is the assert robustness the chaotic-sin floatbeats need.
+testFormula('Sin-PRNG percussion (large-arg sin)',
+  `let lead = Math.sin(t / 50) * 0.5;
+   let noise = (1e5 * Math.sin((t / 4 | 0) ** 2) & 255) / 255;
+   return lead + noise * 0.2`, 16384, FTOL, 0.02)
