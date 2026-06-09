@@ -225,6 +225,38 @@ test('JSON.parse: many keys (grow)', () => {
   }`).f(), 10)
 })
 
+test('JSON.parse: repeated escaped runtime object keys reuse schema entries by decoded text', () => {
+  const { f } = run(`export let f = source => {
+    let input = JSON.parse(source)
+    let first = input.items[0]
+    let last = input.items[299]
+    return Object.keys(first).length + input.items.length + (last.browser_ip === "1.2.3.299" ? 1000 : 0)
+  }`)
+  const items = Array.from(
+    { length: 300 },
+    (_, index) => `{"brow\\u0073er_ip":"1.2.3.${index}","long_key_valu\\u0065":"sample"}`
+  ).join(",")
+
+  is(f(`{"items":[${items}]}`), 1302)
+})
+
+test('JSON.parse: false fields remain falsy when filtering large parsed arrays', () => {
+  const { f } = run(`export let f = source => {
+    const input = JSON.parse(source)
+    return input.cart.lines.filter(line => line.selected).length
+  }`)
+  const source = JSON.stringify({
+    cart: {
+      lines: Array.from({ length: 65 }, (_, index) => ({
+        id: index,
+        selected: index === 64,
+      })),
+    },
+  })
+
+  is(f(source), 1)
+})
+
 test('JSON.parse: missing key returns nullish', () => {
   const v = run(`export let f = () => { let o = JSON.parse('{"x":1}'); return o.z }`).f()
   ok(v === null || v === undefined)
@@ -305,6 +337,25 @@ test('JSON.stringify: object in array', () => {
     return JSON.stringify(a)
   }`)
   is(f(), '[{"x":1},{"x":2}]')
+})
+
+test('JSON.stringify: parsed input does not make grown pushed object array look circular', () => {
+  const { f } = run(`export let f = source => {
+    const lines = JSON.parse(source)
+    const operations = []
+    for (let i = 0; i < lines.length; i = i + 1) {
+      operations.push({
+        merchandiseId: "gid://shopify/ProductVariant/" + i,
+        quantity: 1,
+      })
+    }
+    return JSON.stringify({ operations })
+  }`)
+  const source = JSON.stringify(Array.from({ length: 1000 }, () => ({ selected: true })))
+  const result = JSON.parse(f(source))
+
+  is(result.operations.length, 1000)
+  is(result.operations[999].quantity, 1)
 })
 
 test('JSON.stringify: HASH roundtrip', () => {
