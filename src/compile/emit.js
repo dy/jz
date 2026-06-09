@@ -40,7 +40,7 @@ import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
@@ -3393,16 +3393,25 @@ export function emit(node, expect) {
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
           inc(trampolineName, '__alloc', '__mkptr', ...(restIdx >= 0 ? ['__alloc_hdr'] : []))
         } else {
-          // Convert i32/i64 results back to f64 — uniform closure ABI returns f64.
+          // Rebox the inner result into the uniform closure ABI (always f64).
           const resType = func?.sig.results[0]
           const callExpr = `(call $${node} ${fwd})`
-          const wrapped = resType === 'i32'
-            ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
-            : resType === 'i64'
-              ? `(f64.reinterpret_i64 ${callExpr})`
-              : callExpr
+          // A pointer-returning func carries its result as the raw i32 offset
+          // (sig.ptrKind names the heap kind). Rebox it as a NaN-boxed pointer
+          // with its tag — same as the boundary wrapper (synthesizeBoundaryWrappers).
+          // Numeric `f64.convert_i32_s` here would turn the offset into a plain
+          // number, silently losing the pointer (a Map came back as e.g. 480360.0,
+          // so a caller's `for…of`/`.size` saw a number and read nothing).
+          const ptrResult = func?.sig.ptrKind != null
+          const wrapped = ptrResult
+            ? `(call $__mkptr (i32.const ${valKindToPtr(func.sig.ptrKind)}) (i32.const ${func.sig.ptrAux ?? 0}) ${callExpr})`
+            : resType === 'i32'
+              ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
+              : resType === 'i64'
+                ? `(f64.reinterpret_i64 ${callExpr})`
+                : callExpr
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${restLocals}${restPrelude}${wrapped})`
-          inc(trampolineName, ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
+          inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
