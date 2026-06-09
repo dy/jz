@@ -956,6 +956,7 @@ export function csePureExpr(fn) {
     if (m) { const k = +m[1]; if (k >= snapId) snapId = k + 1 }
   }
   const newLocals = []
+  let refcount = null   // lazily built on the first dedup — most fns never CSE
 
   const TARGET_OPS = new Set([
     'f64.mul', 'f64.add', 'f64.sub',
@@ -1031,6 +1032,12 @@ export function csePureExpr(fn) {
         const entry = table.get(key)
         if (entry) {
           if (!entry.snapName) {
+            // A shared (DAG) anchor breaks the in-place tee: the `%` fast-path emits
+            // `a - trunc(a/b)*b` reusing ONE `a` node object, so the anchor and the
+            // local.get replacement land on the SAME physical slot and the local.get
+            // clobbers the tee — orphaning $__pe (reads 0). Skip when the anchor's
+            // parent is shared; watr's DAG-aware CSE still dedupes. Mirrors csePureExprLoop.
+            if (((refcount ??= buildRefcount(fn)).get(entry.anchorParent) || 0) > 1) return
             const snapName = `$__pe${snapId++}`
             entry.snapName = snapName
             newLocals.push(['local', snapName, OP_TYPE[op] || 'f64'])
