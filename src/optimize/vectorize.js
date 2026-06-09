@@ -931,6 +931,25 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
         minmaxSelect: true, isMax: minmax.isMax,
       }
       exprNode = minmax.exprNode
+    } else if (rhs[0] === 'block') {
+      // Un-flattened NaN-canon float min/max — the same reduction as the two-statement
+      // canon (bodyLen===2 below), but with the cn-temp set + select still wrapped in a
+      // value-block: (local.set acc (block (result T) (local.set cn (OP acc expr))
+      // (select C (local.get cn) (T.ne cn cn)))). mergeBlocks normally hoists this to the
+      // flat form; recognize the block form directly so vectorization doesn't hinge on
+      // that hoist having run.
+      let bi = 1
+      if (typeof rhs[bi] === 'string' && rhs[bi].startsWith('$')) bi++
+      if (isArr(rhs[bi]) && rhs[bi][0] === 'result') bi++
+      const inner = rhs[bi]
+      const op = isArr(inner) && inner[0] === 'local.set' && isArr(inner[2]) ? inner[2][0] : null
+      reduceEntry = op ? REDUCE_CANON[op] : null
+      if (!reduceEntry) return null
+      const cb = matchCanonBlock(rhs, reduceEntry.laneType)
+      if (!cb || !isArr(cb.core) || cb.core.length !== 3 || !isLocalGet(cb.core[1], accName)) return null
+      opName = op
+      exprNode = cb.core[2]
+      canonC = cb.C
     } else {
       if (rhs.length !== 3) return null
       opName = rhs[0]
