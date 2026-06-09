@@ -949,9 +949,13 @@ function emitClosureBody(cb) {
   // coercion. All direct calls were emitted before this body (module end), so the
   // lattice is complete; a `false`/unobserved slot leaves the param boxed.
   const ptRow = ctx.closure.paramTypes?.get(cb.name)
+  // A param numeric at every call site is typed NUMBER so its body uses skip __to_num. If some
+  // call omits it (index ≥ minArgc) it can hold UNDEF_NAN, so also flag it nullable — that keeps
+  // the boxing win yet stops `x === undefined` mis-folding to false (it bit-compares instead).
+  const minArgc = ctx.closure.minArgc?.get(cb.name) ?? 0
   if (ptRow) for (let i = 0; i < cb.params.length; i++) {
     if (ptRow[i] === true && !ctx.func.localReps?.get(cb.params[i])?.val)
-      updateRep(cb.params[i], { val: VAL.NUMBER })
+      updateRep(cb.params[i], i < minArgc ? { val: VAL.NUMBER } : { val: VAL.NUMBER, nullable: true })
   }
 
   // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
