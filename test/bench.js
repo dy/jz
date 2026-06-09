@@ -21,6 +21,8 @@ import { readFileSync } from 'node:fs'
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { compile } from '../index.js'
+import { instantiate } from '../interop.js'
+import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -359,3 +361,42 @@ test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', 
   catch (e) { ok(false, `perf-fuzz regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
   ok(/^PASS:/m.test(out), `perf-fuzz did not report PASS:\n${out}`)
 })
+
+// ── Floatbeat perf gate ──────────────────────────────────────────────────────
+// The numeric kernel corpus never exercises closures + arrays + per-sample dispatch
+// the way the jukebox floatbeats do, so a codegen regression there is invisible to it
+// — e.g. the dcbb433 `__ptr_offset` cliff cost aos 4× and any object/array-read beat
+// shares that pattern. Pin it: each jz-compiled floatbeat must stay at least as fast as
+// V8's JS run of the same `(t)=>sample` source, measured at the player's chunk (sr/2),
+// so a future slowdown trips here even while the kernel corpus stays green.
+const fbMed = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
+const fbClamp = s => s < -1 ? -1 : s > 1 ? 1 : s
+const fbTime = fn => { const ts = []; for (let k = 0; k < 13; k++) { const t = performance.now(); fn(); if (k >= 4) ts.push(performance.now() - t) } return fbMed(ts) }
+const fbRatios = []
+console.log('\nbench: floatbeats (jz wasm fill vs V8 JS, at jukebox chunk = sr/2):')
+for (const tn of FLOATBEATS) {
+  const N = Math.round(tn.sr * 0.5)
+  let exports, memory
+  try { ({ exports, memory } = instantiate(compile(moduleSrc(tn.body), { optimize: 3 }))) } catch { continue }
+  const beat = new Function('t', 'return (' + tn.body + ')(t)')
+  const jsOut = new Float64Array(N)
+  const jz = fbTime(() => { const out = memory.Float64Array(new Float64Array(N)); exports.fill(out, N, 0); memory.reset() })
+  const js = fbTime(() => { for (let j = 0; j < N; j++) jsOut[j] = fbClamp(beat(j)) })
+  const ratio = jz / js
+  fbRatios.push({ name: tn.name, ratio })
+  console.log(`  ${tn.name.padEnd(24)} jz ${(jz * 1000).toFixed(0).padStart(6)}µs  v8 ${(js * 1000).toFixed(0).padStart(6)}µs  ${ratio.toFixed(2)}×`)
+}
+const fbGeo = fbRatios.length ? Math.exp(fbRatios.reduce((a, b) => a + Math.log(b.ratio), 0) / fbRatios.length) : null
+console.log(`  geomean jz/v8 ${fbGeo?.toFixed(3) ?? '—'}×\n`)
+// Aggregate guarantee: jz wins the floatbeat corpus on average (currently ~0.6×).
+test('bench: floatbeat geomean jz/v8 ≤ 1.0× (jz wins the jukebox corpus)', () => {
+  ok(fbGeo != null && fbGeo <= 1.0,
+    `floatbeat geomean jz/v8 = ${fbGeo?.toFixed(3)}× > 1.0× — slow beats: ${fbRatios.filter(r => r.ratio > 1).map(r => `${r.name} ${r.ratio.toFixed(2)}×`).join(', ') || 'none'}`)
+})
+// Per-beat backstop: catch a single beat regressing badly (an __ptr_offset-style cliff).
+// Generous (1.4×) so machine noise on a near-parity beat doesn't flake the gate.
+for (const { name, ratio } of fbRatios) {
+  test(`bench: floatbeat "${name}" jz ≤ 1.4× V8 (no gross regression)`, () => {
+    ok(ratio <= 1.4, `floatbeat ${name}: jz ${ratio.toFixed(2)}× V8 > 1.4× — gross codegen regression`)
+  })
+}
