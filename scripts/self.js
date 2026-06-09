@@ -13,7 +13,7 @@
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, reset } from '../src/ctx.js'
+import { ctx, reset, initWarnings } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import compileAst from '../src/compile/index.js'
 import { resetProgramFactsCache } from '../src/compile/program-facts.js'
@@ -76,6 +76,32 @@ export default function compileSelf(source, strict) {
  * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
  * @returns {string} WAT text
  */
+
+/**
+ * Compile-time advisories variant: runs the same pipeline with the advisory sink
+ * enabled and returns the collected warning entries as JSON. The advise passes
+ * (plan/advise.js, plan/scope.js, narrow.js) all fire inside compileAst, gated on
+ * `ctx.warnings`, so the kernel computes the exact same advisories native does — it
+ * just surfaces them through this entry instead of the host's `opts.warnings` sink.
+ * Lets the self-host leg satisfy the `warningsFor()` tests faithfully.
+ * @returns {string} JSON array of `{ code, message, ... }` entries
+ */
+export function compileWarnings(source, strict, optJSON) {
+  reset(emitter, GLOBALS, {
+    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
+  })
+  resetProgramFactsCache()
+  ctx.transform.jzify = jzify
+  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
+  ctx.transform.strict = !!strict
+  const sink = { entries: [] }
+  initWarnings(sink)
+  const parsed = parse(source)
+  const ast = strict ? parsed : jzify(parsed)
+  optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize)
+  initWarnings(null)
+  return JSON.stringify(sink.entries)
+}
 
 export function compileWat(source, strict, optJSON) {
   reset(emitter, GLOBALS, {

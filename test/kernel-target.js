@@ -52,7 +52,27 @@ const getSelfModule = () => {
   return selfModule
 }
 
+// Compile-level optimize config (matching the native default) as a kernel optJSON
+// string, or 0 when optimize is explicitly off. Shared by the --wat and warnings legs.
+const optJSONFor = (self, opts) => {
+  if (opts.optimize === false || opts.optimize === 0) return 0
+  const base = opts.optimize == null ? DEFAULT_OPT : opts.optimize
+  if (base === false || base === 0) return 0
+  const o = (base && typeof base === 'object') ? base : { level: base === true ? 2 : base }
+  return self.memory.String(JSON.stringify(o))
+}
+
 export const compileViaKernel = (code, opts = {}) => {
+  // Compile-time advisories: the kernel runs the same advise passes and returns the
+  // collected entries as JSON, which we splice into the caller's `warnings` sink.
+  // Done on its own fresh instance, then we fall through to produce the bytes/WAT
+  // (jz() compiles AND instantiates while reading advisories off the result).
+  if (opts.warnings) {
+    const w = instantiate(getSelfModule(), { memory: 8192 })
+    const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts))))
+    opts.warnings.entries ||= []
+    opts.warnings.entries.push(...entries)
+  }
   const self = instantiate(getSelfModule(), { memory: 8192 })
   // `--wat` IS supported on this leg via the wasm's `compileWat` export: same
   // source→compileAst(prepare(ast)) pipeline, but watr/print of the WAT IR instead of
