@@ -2104,13 +2104,24 @@ function emitMethodCall(callee, parsed, callArgs) {
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     const strEmitter = ctx.core.emit[strKey]
     const genEmitter = ctx.core.emit[genKey]
+    // A string/array method is only valid on a NaN-boxed pointer (string/array/…).
+    // A finite number receiver has none of these methods — `f64.eq(t,t)` is true only
+    // for a non-NaN value, so guard the dispatch with it: a number yields `undefined`
+    // (spec: `(5).indexOf` is undefined, so `5?.indexOf?.(x)` short-circuits) instead
+    // of feeding the number's bits to `__ptr_type` → the else/array branch → an OOB
+    // load at a bogus "pointer". Only the number/±Inf path changes (OOB → undefined);
+    // every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
-      ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['if', ['result', 'f64'],
-        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-        ['then', callMethod(t, strEmitter)],
-        ['else', callMethod(t, genEmitter)]])
+        ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+        ['then', undefExpr()],
+        ['else', block64(
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+            ['then', callMethod(t, strEmitter)],
+            ['else', callMethod(t, genEmitter)]])]])
   }
 
   // Schema property closure call: `x.prop(args)` where prop is a closure slot in
@@ -2315,6 +2326,11 @@ function tryDirectClosureCall(callee, parsed) {
     const numeric = valTypeOf(parsed.normal[i]) === VAL.NUMBER
     row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
   }
+  // Track the fewest args any call passed: a slot at index ≥ minArgc is omitted by some call
+  // site (padded with UNDEF_NAN), so it may be undefined and must stay boxed — see emitClosureBody.
+  const mn = (ctx.closure.minArgc ||= new Map())
+  const prev = mn.get(bodyName)
+  mn.set(bodyName, prev === undefined ? n : (n < prev ? n : prev))
   // Body signature is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64.
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
   const slots = parsed.normal.map(a => asF64(emit(a)))
