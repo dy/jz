@@ -2813,19 +2813,23 @@ export const emitter = {
     const vc = withRefinements(elseRefs, c, () => emit(c))
     // L: Use WASM select for pure ternaries — branchless, smaller bytecode
     if (vb.type === 'i32' && vc.type === 'i32') {
-      // Propagate matching ptrKind/ptrAux so a downstream asF64 takes the NaN-rebox
-      // path instead of `f64.convert_i32_s`. Mismatched kinds drop both — caller's
-      // asF64 will treat the i32 as numeric, which is correct for non-pointer i32s.
-      // ptrKind matches but ptrAux differs (e.g. polymorphic OBJECT with two
-      // distinct schemaIds, or TYPED with two element types) — fall through to
-      // the f64 path. There each arm reboxes independently, preserving its own
-      // aux in the NaN-box. The single-i32 path can only carry one aux on the
-      // result, so `boxPtrIR` would default to 0 and lose the runtime schema /
-      // elemType bits needed by downstream lookups (e.g. __dyn_get's OBJECT-
-      // schema fallback uses receiver aux to resolve `.prop`).
-      const auxMismatch = vb.ptrKind != null && vb.ptrKind === vc.ptrKind
-        && (vb.ptrAux ?? null) !== (vc.ptrAux ?? null)
-      if (!auxMismatch) {
+      // A single i32 select is only sound when BOTH arms' i32 carriers mean the same
+      // thing to the downstream asF64 — otherwise the result is interpreted one way and
+      // the other arm's value is corrupted. Two compatible shapes:
+      //   • both non-pointer i32 (numbers/bools) → asF64 numeric-converts, correct; or
+      //   • both the SAME pointer kind+aux → result carries that ptrKind so asF64 takes
+      //     the NaN-rebox path (and boxPtrIR's single aux slot is the shared one).
+      // Anything else — a pointer arm beside a number/bool arm, two different pointer
+      // kinds, or the same kind with diverging aux (polymorphic OBJECT schemaIds, TYPED
+      // element types) — must fall through to the f64 path, where each arm is asF64'd
+      // independently and reboxed with its own kind/aux in the NaN-box. The pre-4.x bug:
+      // a pointer arm vs a `true`/number arm took the i32 select, dropped the ptrKind,
+      // and `f64.convert_i32_s` numeric-converted the pointer bits — so `cond ? obj : 1`
+      // lost its object-ness (typeof → "number").
+      const bothPlain = vb.ptrKind == null && vc.ptrKind == null
+      const samePtr = vb.ptrKind != null && vb.ptrKind === vc.ptrKind
+        && (vb.ptrAux ?? null) === (vc.ptrAux ?? null)
+      if (bothPlain || samePtr) {
         const tagPtr = (n) => {
           if (vb.ptrKind != null && vb.ptrKind === vc.ptrKind) {
             n.ptrKind = vb.ptrKind

@@ -227,6 +227,17 @@ test('runtime: ternary reassignment does not keep stale array type', () => {
   is(jz('export let f = () => { let b = []; b = (0 ? [] : 1); return b.length }').exports.f(), undefined)
 })
 
+test('runtime: ternary mixing a pointer arm with a bool/number arm keeps the pointer boxed', () => {
+  // A pointer-repped arm (object/array) beside a non-pointer i32 arm (`true`/number) must
+  // box to f64 — not ride a single i32 select whose result is numeric-converted, which
+  // would strip the NaN-box and report typeof "number" for the object. Both selection
+  // directions: the object arm is the LIVE one here.
+  is(jz(`export let f = () => { const v = {x:1}; const o = (typeof v === 'object') ? v : true; return typeof o }`).exports.f(), 'object')
+  is(jz(`export let f = () => { const v = [1,2]; const o = (typeof v === 'object') ? v : 0; return typeof o }`).exports.f(), 'object')
+  // …and when the non-pointer arm is live, it still reads back as itself.
+  is(jz(`export let f = () => { const v = {x:1}; const o = (typeof v === 'string') ? v : 7; return o }`).exports.f(), 7)
+})
+
 test('runtime: loose null equality matches undefined', () => {
   is(jz('export let f = (x) => x == null').exports.f(undefined), true)
   is(jz('export let f = (x) => x == null').exports.f(null), true)
