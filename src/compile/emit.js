@@ -2327,7 +2327,7 @@ function tryDirectClosureCall(callee, parsed) {
     row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
   }
   // Track the fewest args any call passed: a slot at index ≥ minArgc is omitted by some call
-  // site (padded with UNDEF_NAN), so it may be undefined and must stay boxed — see emitClosureBody.
+  // site (padded with UNDEF_NAN), so it may be undefined — emitClosureBody flags it nullable.
   const mn = (ctx.closure.minArgc ||= new Map())
   const prev = mn.get(bodyName)
   mn.set(bodyName, prev === undefined ? n : (n < prev ? n : prev))

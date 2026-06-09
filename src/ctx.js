@@ -274,6 +274,9 @@ export function reset(proto, globals, bridge) {
     paramTypes: null,     // Map<closureBodyName, bool[]> — per-param "every direct call site
                           // passed a number" lattice; emitClosureBody marks such params
                           // VAL.NUMBER so their body uses skip __to_num (tryDirectClosureCall seeds).
+    minArgc: null,        // Map<closureBodyName, number> — fewest args any direct call passed.
+                          // A slot at index ≥ minArgc is omitted by some call (→ may be undefined),
+                          // so it must NOT be typed NUMBER, else `x === undefined` mis-folds to false.
   }
 
   ctx.runtime = {
