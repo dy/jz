@@ -16,6 +16,7 @@ import { ctx, reset } from '../src/ctx.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
+import { onKernel } from './_matrix.js'
 
 // === Helper: compile with WAT output for structural inspection ===
 const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
@@ -25,6 +26,7 @@ const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 // ============================================================================
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
+  if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-host leg
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
