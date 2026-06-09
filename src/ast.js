@@ -362,9 +362,12 @@ export function cloneNode(node) {
   return node.map(cloneNode)
 }
 
-/** Structural equality via JSON (AST nodes are JSON-serializable). */
+/** Structural equality via JSON. AST nodes are JSON-serializable except i64.const
+ *  BigInt payloads (NaN-box prefixes — dcbb433 routes pointer offsets through boxed
+ *  forms); the replacer stringifies those as `<n>n` (cf. formatErrorNode in ctx.js). */
+export const bigintSafeKey = (_k, v) => typeof v === 'bigint' ? `${v}n` : v
 export function nodeEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b)
+  return JSON.stringify(a, bigintSafeKey) === JSON.stringify(b, bigintSafeKey)
 }
 
 /** Property entries of an object-literal AST node (`['{}', …]`). */

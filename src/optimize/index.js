@@ -706,7 +706,9 @@ export function hoistInvariantLoop(fn) {
       if (!Array.isArray(node)) return
       if (node[0] === 'loop') return  // already processed bottom-up
       if (isHoistable(node) && (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1) {
-        const key = JSON.stringify(node)
+        // BigInt-safe: hoistable boxed-pointer subtrees carry i64.const NaN-box prefixes
+        // (BigInt values) that plain JSON.stringify can't serialize — see ast.bigintSafeKey.
+        const key = JSON.stringify(node, (_k, v) => typeof v === 'bigint' ? `${v}n` : v)
         let arr = sites.get(key); if (!arr) { arr = []; sites.set(key, arr) }
         arr.push({ parent, idx, node })
         return
