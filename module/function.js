@@ -15,8 +15,36 @@ import { emit } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 import { T } from '../src/ast.js'
-import { lookupValType, repOf } from '../src/reps.js'
+import { lookupValType, repOf, VAL } from '../src/reps.js'
+import { valTypeOf } from '../src/kind.js'
 import { PTR, LAYOUT, inc, err } from '../src/ctx.js'
+
+// A closure whose every return value is provably a plain number lets each caller
+// skip the `__to_num` result coercion — the dominant per-sample cost in closure-heavy
+// numeric kernels (floatbeats etc.). The check is structural at make time: arithmetic /
+// bitwise / `|0` / math.* returns resolve via `valTypeOf`, as do chained numeric-closure
+// calls (`g(x)=>…; f()=>g(…)` — `g`'s entry is already set when the outer `f` is made,
+// since decls emit in order). An unprovable shape (polymorphic `a[i]`, a value-returning
+// fall-through, a bare local that could collide with a parent binding) stays boxed.
+const closureReturnExprs = (body) => {
+  if (!Array.isArray(body) || body[0] !== '{}') return [body]   // expression-bodied arrow
+  const stmts = Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]
+  const last = stmts[stmts.length - 1]
+  if (!Array.isArray(last) || last[0] !== 'return') return null  // may fall off the end with undefined
+  const rets = []
+  let ok = true
+  const walk = n => {
+    if (!ok || !Array.isArray(n) || n[0] === '=>') return        // don't descend into nested closures
+    if (n[0] === 'return') { if (n.length < 2) ok = false; else rets.push(n[1]); return }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (const s of stmts) walk(s)
+  return ok ? rets : null
+}
+const returnsPlainNumber = (body) => {
+  const rets = closureReturnExprs(body)
+  return !!rets && rets.length > 0 && rets.every(e => valTypeOf(e) === VAL.NUMBER)
+}
 
 const intConstExpr = (node) => {
   if (typeof node === 'number' && Number.isInteger(node)) return node
@@ -147,6 +175,7 @@ export default (ctx) => {
       ...(captureTypedElems.size && { typedElems: captureTypedElems }),
       ...(captureDirectClosures.size && { directClosures: captureDirectClosures }) }
     ctx.closure.bodies.push(bodyFn)
+    if (returnsPlainNumber(body)) (ctx.closure.numericReturn ||= new Set()).add(fnName)
 
     const tableIdx = addToTable(fnName)
 

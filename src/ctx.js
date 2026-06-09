@@ -269,6 +269,11 @@ export function reset(proto, globals, bridge) {
     bodies: null,
     make: null,
     call: null,
+    numericReturn: null,  // Set<closureBodyName> proven to return a plain number — lets
+                          // callers skip the __to_num result coercion (function.js seeds it).
+    paramTypes: null,     // Map<closureBodyName, bool[]> — per-param "every direct call site
+                          // passed a number" lattice; emitClosureBody marks such params
+                          // VAL.NUMBER so their body uses skip __to_num (tryDirectClosureCall seeds).
   }
 
   ctx.runtime = {

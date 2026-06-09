@@ -2304,6 +2304,17 @@ function tryDirectClosureCall(callee, parsed) {
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const n = parsed.normal.length
   if (n > W) return null
+  // Per-param "every direct call site passed a number" lattice. Every call to a
+  // direct (non-escaping) closure flows through here, so once the body is emitted
+  // (module end, after all calls) a param only ever seen with numeric args is marked
+  // VAL.NUMBER — its body uses then skip __to_num, the same boxing win the numeric
+  // export-param path gives. An arg we can't prove numeric poisons the slot to false.
+  const pt = (ctx.closure.paramTypes ||= new Map())
+  let row = pt.get(bodyName); if (!row) pt.set(bodyName, row = [])
+  for (let i = 0; i < n; i++) {
+    const numeric = valTypeOf(parsed.normal[i]) === VAL.NUMBER
+    row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
+  }
   // Body signature is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64.
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
   const slots = parsed.normal.map(a => asF64(emit(a)))

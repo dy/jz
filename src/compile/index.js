@@ -353,6 +353,24 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
     }
   }
+  // Trust numeric export params. An exported f64 param used only in numeric
+  // positions is marked VAL.NUMBER so its uses skip the `__to_num` coercion
+  // entirely (not just hoist it). External callers reach jz through interop's
+  // `mem.wrapVal`, which passes a JS number straight to f64 — so the coercion
+  // only ever fired for a *string* arg to a numeric param (a type misuse). When
+  // that lone coercion is the only `__to_num` consumer, dropping it lets the whole
+  // ToNumber string-parse dep tree (`__to_str`→`__itoa`/`__toExp`/`__mkstr`/…)
+  // treeshake away — a ~4× module shrink that, decisively, lets V8 tier the hot
+  // fill loop up properly (the bloated module JITs the *identical* loop ~2× slower).
+  if (func.exported && block) {
+    for (const p of sig.params) {
+      if (p.type === 'f64' && p.ptrKind == null && !p.jsstring
+          && !func.defaults?.[p.name] && !ctx.func.boxed?.has(p.name)
+          && !ctx.func.localReps?.get(p.name)?.val
+          && paramAllUsesNumeric(body, p.name))
+        updateRep(p.name, { val: VAL.NUMBER })
+    }
+  }
   if (block) {
     seedLocalIntConsts(body)
   }
@@ -487,34 +505,65 @@ const NUM_BIN_OPS = new Set(['*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>
 
 /** True iff every use of param `name` in `body` is an unconditional-numeric
  *  operand, so coercing it to a number once at entry is observationally exact.
- *  Rejects conservatively: reassignment, closure capture, and any appearance
- *  outside a numeric operator (member/index/call-arg/return/compare/concat). */
+ *  Rejects conservatively: reassignment and any appearance outside a numeric
+ *  operator (member/index/call-arg/return/compare/concat). Two transparencies:
+ *   - copy aliases: `let x = name` makes `x` carry the same value, so `x`'s uses
+ *     must be numeric too (fixpoint-collected). Catches `let T = t` then `…T…`.
+ *   - captured closures: a non-shadowing inner arrow captures the binding by
+ *     reference, so its body's uses count — we recurse instead of rejecting.
+ *     Catches floatbeat helpers `let s=(f)=>…t…` that read the param numerically. */
 function paramAllUsesNumeric(body, name) {
   if (body == null) return false
+  // Fixpoint-collect copy aliases: `let/const x = <name-or-alias>`.
+  const names = new Set([name])
+  for (let grew = true; grew;) {
+    grew = false
+    const collect = (node) => {
+      if (!Array.isArray(node)) return
+      if ((node[0] === 'let' || node[0] === 'const') && node.length === 2
+          && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string'
+          && typeof node[1][2] === 'string' && names.has(node[1][2]) && !names.has(node[1][1])) {
+        names.add(node[1][1]); grew = true
+      }
+      for (let i = 1; i < node.length; i++) collect(node[i])
+    }
+    collect(body)
+  }
   let ok = true
   const walk = (node) => {
     if (!ok) return
-    if (typeof node === 'string') { if (node === name) ok = false; return }  // bare use → reject
+    if (typeof node === 'string') { if (names.has(node)) ok = false; return }  // bare use → reject
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') {                                  // closure: reject capture unless shadowed
+    // single `let/const x = init`: x is a binding (not a use). A pure copy of an
+    // alias is consumed (already in `names`); otherwise the init must be numeric.
+    if ((op === 'let' || op === 'const') && node.length === 2
+        && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
+      const init = node[1][2]
+      if (typeof init === 'string' && names.has(init)) return
+      walk(init)
+      return
+    }
+    if (op === '=>') {                                  // closure capture: recurse unless shadowed
       const ps = node[1]
       const shadowed = Array.isArray(ps)
-        ? ps.some(p => p === name || (Array.isArray(p) && p[1] === name))
-        : ps === name
-      if (!shadowed) ok = false
+        ? ps.some(p => names.has(p) || (Array.isArray(p) && names.has(p[1])))
+        : names.has(ps)
+      if (!shadowed) { walk(node[1]); walk(node[2]) }   // defaults + body; param names aren't in `names`
       return
     }
-    if (PARAM_REASSIGN_OPS.has(op) && node[1] === name) { ok = false; return }
+    if (PARAM_REASSIGN_OPS.has(op) && names.has(node[1])) { ok = false; return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
-      if (node[1] !== name) walk(node[1])
-      if (node[2] !== name) walk(node[2])
+      if (!names.has(node[1])) walk(node[1])
+      if (!names.has(node[2])) walk(node[2])
       return
     }
-    if (op === '-' && node.length === 2) { if (node[1] !== name) walk(node[1]); return }  // unary negate
-    if (op === '-' && node.length === 3) { if (node[1] !== name) walk(node[1]); if (node[2] !== name) walk(node[2]); return }
-    if (op === '+' && node.length === 2) { if (node[1] !== name) walk(node[1]); return }  // unary + = ToNumber
-    if (op === '~' && node.length === 2) { if (node[1] !== name) walk(node[1]); return }
+    if (op === '-' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }  // unary negate
+    if (op === '-' && node.length === 3) { if (!names.has(node[1])) walk(node[1]); if (!names.has(node[2])) walk(node[2]); return }
+    // `u-`/`u+` are the normalized unary minus/plus (prepare rewrites `-x`/`+x`); both ToNumber.
+    if ((op === 'u-' || op === 'u+') && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }
+    if (op === '+' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }  // unary + = ToNumber
+    if (op === '~' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }
     for (let i = 1; i < node.length; i++) walk(node[i])  // bare param reaching here → rejected above
   }
   walk(body)
@@ -895,6 +944,15 @@ function emitClosureBody(cb) {
 
   // Params are locals, assigned directly from inline slots
   for (const p of cb.params) ctx.func.locals.set(p, 'f64')
+  // Mark params that every direct call site passed a number (seeded by
+  // tryDirectClosureCall) VAL.NUMBER — their body uses then skip the __to_num
+  // coercion. All direct calls were emitted before this body (module end), so the
+  // lattice is complete; a `false`/unobserved slot leaves the param boxed.
+  const ptRow = ctx.closure.paramTypes?.get(cb.name)
+  if (ptRow) for (let i = 0; i < cb.params.length; i++) {
+    if (ptRow[i] === true && !ctx.func.localReps?.get(cb.params[i])?.val)
+      updateRep(cb.params[i], { val: VAL.NUMBER })
+  }
 
   // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
   for (let i = 0; i < cb.captures.length; i++) {

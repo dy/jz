@@ -2,7 +2,7 @@ import test from 'tst';
 import { is, ok } from 'tst/assert.js';
 import jz from '../index.js';
 import fs from 'fs';
-import { FLOATBEATS } from '../examples/jukebox/floatbeats.js';
+import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
@@ -79,6 +79,33 @@ test('example: jukebox wasm assets are deployable', async () => {
         is(bytes[2], 0x73);
         is(bytes[3], 0x6d);
         await WebAssembly.compile(bytes);
+    }
+});
+
+// V8-parity ratchet. Every jukebox voice compiles faster than V8's JS-JIT of the same
+// source (scripts/bench-all-jukebox.mjs) because jz proves the floatbeat math numeric
+// and skips the per-sample `__to_num` boxing — which also lets the ToNumber string-parse
+// stdlib treeshake, so V8 tiers the hot fill loop up properly. Wall-clock is machine-
+// dependent (see test/perf-ratchet.js), so we pin the deterministic cause instead: the
+// number of hot-path (`beat`/`fill`/closure) `__to_num` coercions. A lost numeric-typing
+// optimization re-introduces per-sample boxing and trips this; the string-parsing voices
+// (charCodeAt/Number) keep a small legitimate residue. Lower is always fine (`<=`).
+test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
+    const BASELINE = {
+        'Predestined Fate': 9, 'Please Exist': 0, 'Sunrise on Mars': 4,
+        'Random melody with array': 0, 'Virtual Insanity': 0, 'Bitrot': 0,
+        'Ambient Waves': 0, 'Sierpinski Chords': 0, 'Sine Rider': 0,
+        'Digital Rain': 6, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
+    };
+    for (const fb of FLOATBEATS) {
+        const wat = jz.compile(moduleSrc(fb.body), { optimize: 3, wat: true });
+        let fn = '', n = 0;
+        for (const line of wat.split('\n')) {
+            const m = line.match(/\(func (\$[\w.]+)/); if (m) fn = m[1];
+            if (/beat|fill|closure/.test(fn) && line.includes('call $__to_num')) n++;
+        }
+        ok(n <= BASELINE[fb.name],
+            `${fb.name}: ${n} hot-path __to_num (baseline ${BASELINE[fb.name]}) — numeric-typing regression?`);
     }
 });
 
