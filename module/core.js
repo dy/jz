@@ -540,7 +540,14 @@ export default (ctx) => {
   // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
   // (read on the AST `.prop` node), not via tagging this IR node.
   function emitSchemaSlotRead(baseExpr, idx) {
-    const base = baseExpr?.type === 'f64' ? baseExpr : typed(baseExpr, 'f64')
+    // An unboxed proven-non-ARRAY pointer (a structInline element cell, a narrowed local)
+    // reaches ptrOffsetIR raw so it returns the offset directly — no `__ptr_offset` call.
+    // Pre-boxing via asF64 strips ptrKind and forces every field read onto the call path
+    // (the dcbb433 perf cliff on object/struct kernels — `p.x,p.y,p.z` per loop iteration).
+    // A NaN-box or untyped value still routes through f64 for the reinterpret/forwarding path.
+    const base = (baseExpr?.ptrKind != null && baseExpr.ptrKind !== VAL.ARRAY)
+      ? baseExpr
+      : (baseExpr?.type === 'f64' ? baseExpr : asF64(baseExpr))
     return typed(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'f64')
   }
 
@@ -633,7 +640,7 @@ export default (ctx) => {
     // `({a:{b:1}}).a.b` where the receiver is anonymous. Spread sources
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
-    if (slot >= 0) return emitSchemaSlotRead(asF64(va), slot)
+    if (slot >= 0) return emitSchemaSlotRead(va, slot)
     // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
     // structInline element cell, a narrowed local): resolve the field's fixed
     // slot directly from `ptrAux` — more precise than the structural
@@ -641,7 +648,7 @@ export default (ctx) => {
     if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
       const sch = ctx.schema.list[va.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return emitSchemaSlotRead(asF64(va), si)
+      if (si >= 0) return emitSchemaSlotRead(va, si)
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
@@ -656,7 +663,7 @@ export default (ctx) => {
       }
     }
     const key = asI64(emit(['str', prop]))
-    if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)
+    if (schemaIdx >= 0) return emitSchemaSlotRead(va, schemaIdx)
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
@@ -750,7 +757,7 @@ export default (ctx) => {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', inner]]], 'f64')
       }
       const idx = ctx.schema.slotOf(obj, prop)
-      if (idx >= 0) return emitSchemaSlotRead(asF64(emit(obj)), idx)
+      if (idx >= 0) return emitSchemaSlotRead(emit(obj), idx)
     }
 
     if (prop === 'length') {
@@ -874,12 +881,24 @@ export default (ctx) => {
   // branch and fell to `__hash_get`, which mis-reads fixed-shape OBJECT memory
   // (a self-host miscompile — `o?.x` returned undefined under the kernel).
   ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
+    const rep = typeof obj === 'string' ? repOf(obj) : null
+    const vt = rep ? rep.val : valTypeOf(obj)
     if (prop === 'length') {
-      const rep = typeof obj === 'string' ? repOf(obj) : null
-      const vt = rep ? rep.val : valTypeOf(obj)
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
       return emitLengthAccess(['local.get', `$${t}`], vt, notString)
     }
+    // Type-specific + module-registered property getters (`.size`, `.byteLength`,
+    // `.regex:source`, …) — the SAME getter dispatch the plain `.` emitter runs
+    // (only entries tagged via `getter()` fire; untagged `.values`/`.pop` stay a
+    // field read). Read the already-hoisted, null-guarded temp `t` rather than
+    // re-emitting `obj`. Without this `s?.size` fell straight to emitPropAccess (a
+    // plain field read) and returned undefined — a Set/Map size getter never ran.
+    if (vt) {
+      const tg = ctx.core.emit[`.${vt}:${prop}`]
+      if (tg?.getter) return tg(t)
+    }
+    const g = ctx.core.emit[`.${prop}`]
+    if (g?.getter) return g(t)
     return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop, true)
   })
 
