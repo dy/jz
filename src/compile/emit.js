@@ -201,15 +201,23 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === -3) return wrap(isNullish(va))
   if (code === -4) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
   if (code === -5) {
-    // object: isPtr AND not(STRING|CLOSURE) AND not nullish — typeof never matches null/undef.
+    // object: a NaN-box whose ptr_type is a heap kind — NOT STRING (typeof "string"),
+    // NOT CLOSURE (typeof "function"), and NOT ATOM. The ATOM tag covers null AND undef
+    // AND the boolean atoms true/false: excluding it in one ptr_type check is both the
+    // null/undef guard and the (previously missing) boolean guard — without it
+    // `typeof aBool === "object"` wrongly returned true whenever the operand's static
+    // type was unknown (e.g. a value off JSON.parse), since a bool atom is a NaN-box
+    // that isn't STRING/CLOSURE/nullish. Numbers (incl. NaN) and bigint aren't NaN-box
+    // pointers, so isPtr already rejects them.
     inc('__ptr_type')
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const notStrFn = ['i32.and',
-      ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
-      ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
-    const notNullish = ['i32.eqz', isNullish(['local.get', `$${t}`])]
-    return wrap(['i32.and', ['i32.and', isPtr, notStrFn], notNullish])
+    const heapKind = ['i32.and',
+      ['i32.and',
+        ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
+        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]],
+      ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]]]
+    return wrap(['i32.and', isPtr, heapKind])
   }
   if (code === -6) return isPtrKind(PTR.CLOSURE)
   if (code === -7) {
