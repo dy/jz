@@ -64,19 +64,17 @@ export const compileViaKernel = (code, opts = {}) => {
     // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
     // (resolveOptimize(undefined), as TEST_ENV_DEFAULTS / JZ_TEST_OPTIMIZE applies it) —
     // not optimize:false, else every level-2 shape test compares native-level-2 codegen
-    // against kernel-level-0 and diverges. `watr` is forced OFF: compileWat prints
-    // compileAst(prepare(ast)) directly and does not run watOptimize (the watr-level CSE/
-    // DCE/inline pass still infinite-loops when self-compiled on some folded-OBJECT IR,
-    // e.g. `const o = JSON.parse('{"x":42}'); o.x`), and turning it off relocates the
-    // deferred passes (vectorize) into compileAst's pre-phase. Explicit optimize:false / 0
-    // stays off.
+    // against kernel-level-0 and diverges. The config (watr included) is forwarded
+    // verbatim: self.js's compileWat now runs the full index.js optimization tail
+    // (watOptimize + the optimizeFunc 'post' pass), so the self-host emits the same
+    // WAT IR native does. Explicit optimize:false / 0 stays off.
     let optJSON = 0
     if (opts.optimize !== false && opts.optimize !== 0) {
       const base = opts.optimize == null ? DEFAULT_OPT : opts.optimize
       if (base !== false && base !== 0) {
         const o = (base && typeof base === 'object')
-          ? { ...base, watr: false }
-          : { level: base === true ? 2 : base, watr: false }
+          ? base
+          : { level: base === true ? 2 : base }
         optJSON = self.memory.String(JSON.stringify(o))
       }
     }

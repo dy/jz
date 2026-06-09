@@ -20,8 +20,31 @@ import { resetProgramFactsCache } from '../src/compile/program-facts.js'
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from '../src/compile/emit.js'
-import { resolveOptimize } from '../src/optimize/index.js'
+import { resolveOptimize, optimizeFunc, collectVolatileGlobals } from '../src/optimize/index.js'
+import watOptimize from '../src/wat/optimize.js'
 import jzify from '../jzify/index.js'
+
+// Optimization tail, identical to index.js's host-facing compile(): watOptimize
+// (CSE/DCE/const-fold/vectorize-lane SIMD at the WAT level) then the optimizeFunc
+// 'post' pass that re-folds the rebox/unbox roundtrips watr's inliner reintroduces
+// at closure boundaries. Gated on cfg.watr, so an optimize:false config is a no-op
+// and the byte leg (compileSelf, resolveOptimize(false)) stays untouched. Running it
+// here is what keeps the self-host kernel's codegen on par with native — the SIMD/
+// narrowing/SROA shape tests validate exactly this output.
+function optimizeTail(module, cfg) {
+  let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
+  if (cfg.vectorizeLaneLocal) {
+    if (watrOpts === true) watrOpts = { loopify: false }
+    else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
+  }
+  if (!cfg.watr) return module
+  const optimized = watOptimize(module, watrOpts)
+  const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
+  const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
+  const volatileGlobals = collectVolatileGlobals(funcs)
+  for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post')
+  return optimized
+}
 
 /**
  * @param {string} source - JS source
@@ -38,7 +61,7 @@ export default function compileSelf(source, strict) {
   ctx.transform.strict = !!strict
   const parsed = parse(source)
   const ast = strict ? parsed : jzify(parsed)
-  return watrCompile(compileAst(prepare(ast)))
+  return watrCompile(optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize))
 }
 
 /**
@@ -64,5 +87,5 @@ export function compileWat(source, strict, optJSON) {
   ctx.transform.strict = !!strict
   const parsed = parse(source)
   const ast = strict ? parsed : jzify(parsed)
-  return watrPrint(compileAst(prepare(ast)))
+  return watrPrint(optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize))
 }
