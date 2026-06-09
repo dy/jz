@@ -173,26 +173,23 @@ test('example: game-of-life output natively matches WASM', () => {
     })();
 
     let w = 10, h = 10;
-    // mock math random
-    let randIdx = 0;
-    let rands = Array.from({length: 100}, (_, i) => (i*997%100)/100);
-    const mockRandom = () => {
-        let r = rands[randIdx++];
-        if (randIdx >= rands.length) randIdx = 0;
-        return r;
-    };
-    Math.random = mockRandom;
-
-    randIdx = 0;
-    let nativeArr = nativeExports.init(w, h, 0xD392E6, 0xA61B85, 10);
-    for (let i = 0; i < w * h; i++) { nativeArr[i] = nativeArr[i + w*h]; } // copy output back
-    nativeExports.step();
-
-    let { exports, memory } = jz(golSrc, { env: { 'Math.random': mockRandom, 'Math.max': Math.max }});
-    randIdx = 0;
+    // jz's Math.random is a built-in xorshift PRNG seeded from the host (entropy by
+    // default, `randomSeed` for repro) — NOT the env import — so the two sides can't be
+    // driven from a shared Math.random mock (the old mock silently never fired, and the
+    // test only passed by luck of suite ordering). Compare the STEP rule — the actual
+    // game-of-life logic (neighbour counts + alive/dead/rot transitions) — by seeding
+    // BOTH from WASM's init grid, then checking one generation matches.
+    let { exports, memory } = jz(golSrc, { env: { 'Math.max': Math.max } });
     let ptr = exports.init(w, h, 0xD392E6, 0xA61B85, 10);
     let wasmArr = memory.read(ptr);
-    for (let i = 0; i < w * h; i++) { wasmArr[i] = wasmArr[i + w*h]; }
+
+    let nativeArr = nativeExports.init(w, h, 0xD392E6, 0xA61B85, 10);
+    for (let i = 0; i < w * h * 2; i++) nativeArr[i] = wasmArr[i]; // both step from WASM's init grid
+    for (let i = 0; i < w * h; i++) {                             // copy output region → input region
+        nativeArr[i] = nativeArr[i + w * h];
+        wasmArr[i] = wasmArr[i + w * h];
+    }
+    nativeExports.step();
     exports.step();
 
     for (let i = 0; i < w * h * 2; i++) {
