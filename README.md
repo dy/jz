@@ -493,7 +493,7 @@ Geomean speed across the [bench corpus →](bench/README.md).
 From small, fast JS subset to full JS spec, bundled engine:
 
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
-* [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — auditable, reproducible WASM assembled through a typed *builder API* (you construct the module graph by hand, not compile JS source); SIMD/threads/atomics, security-first. Closer to a hand-tuned wasm toolkit than a JS compiler.
+* [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — reproducible WASM assembled through a typed *builder API*.
 * [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust on WasmGC; no interpreter, but leans on the engine's GC.
 * [Javy](https://github.com/bytecodealliance/javy) — embeds QuickJS; runs almost any JS, but ships a full interpreter (large, interpreter-speed).
