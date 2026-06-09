@@ -1101,6 +1101,12 @@ export default (ctx) => {
     const expect = (byte) => `(if (i32.ne ${PEEK} (i32.const ${byte})) (then ${fail}))
     ${ADV(1)}`
     const expectText = (text) => [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+    // Forward-declared with `let` (assigned below) so `parse` captures a boxed
+    // cell, not a not-yet-initialized `const` binding — the self-host kernel
+    // miscompiles the latter capture in this deeply-nested mutually-recursive
+    // context (parse ends up calling a garbage `parseObject`, emitting a corrupt
+    // node into the shaped parser).
+    let parseObject, parseArray
     const parse = (v, out) => {
       if (v == null) return `${expectText('null')}
     (local.set $${out} ${NULL_WAT})`
@@ -1112,7 +1118,7 @@ export default (ctx) => {
       if (Array.isArray(v)) return parseArray(v[0], out)
       return parseObject(v, out)
     }
-    const parseObject = (v, out) => {
+    parseObject = (v, out) => {
       const keys = Object.keys(v)
       const obj = local('obj', 'i32')
       const val = local('val', 'f64')
@@ -1140,7 +1146,7 @@ export default (ctx) => {
       return `${body}
     (local.set $${out} (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $${obj})))`
     }
-    const parseArray = (elem, out) => {
+    parseArray = (elem, out) => {
       const ptr = local('arr', 'i32')
       const len = local('alen', 'i32')
       const cap = local('acap', 'i32')
