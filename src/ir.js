@@ -250,15 +250,22 @@ export function mkPtrIR(type, aux, offset) {
   return typed(['call', '$__mkptr', tIR, aIR, oIR], 'f64')
 }
 
-/** Offset extraction for a NaN-boxed pointer, specialized on known value type.
- *  For non-ARRAY pointer kinds we skip `__ptr_offset` entirely — arrays are the
- *  only type that can forward on reallocation, everyone else returns the raw low 32 bits.
+/** Offset extraction for a NaN-boxed pointer.
+ *  Goes through `__ptr_offset`, which chases the relocation-forwarding chain
+ *  (cap == -1 sentinel at off-4 → relocated offset at off-8). The chase is a
+ *  single load+compare for any live (non-forwarded) header, so it is a no-op for
+ *  fixed-shape receivers (OBJECT/TYPED/…) whose cap word is never -1.
+ *
+ *  We do NOT skip it for "non-ARRAY" static types: that shortcut was unsound on
+ *  two counts. (1) ARRAY is not the only growable container — HASH/SET/MAP relocate
+ *  too. (2) jz value types are not always precise: a binding inferred OBJECT (a
+ *  polymorphic parameter, a widened union) can hold a relocated ARRAY at runtime.
+ *  Writing through its stale pre-relocation base then clobbers whatever now occupies
+ *  that freed region — a memory-safety hazard that must not depend on inference
+ *  precision. Memory safety is unconditional; the forwarding follow stays.
  *  If the node is already an unboxed pointer (ptrKind), return it directly. */
 export function ptrOffsetIR(valIR, valType) {
   if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
-  if (valType != null && valType !== VAL.ARRAY) {
-    return ['i32.wrap_i64', ['i64.reinterpret_f64', valIR]]
-  }
   inc('__ptr_offset')
   return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
 }
