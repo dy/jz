@@ -388,19 +388,24 @@ for (const tn of FLOATBEATS) {
 }
 const fbGeo = fbRatios.length ? Math.exp(fbRatios.reduce((a, b) => a + Math.log(b.ratio), 0) / fbRatios.length) : null
 console.log(`  geomean jz/v8 ${fbGeo?.toFixed(3) ?? '—'}×\n`)
-// Aggregate guarantee: jz wins the floatbeat corpus on average (currently ~0.6×).
-test('bench: floatbeat geomean jz/v8 ≤ 1.0× (jz wins the jukebox corpus)', () => {
-  ok(fbGeo != null && fbGeo <= 1.0,
-    `floatbeat geomean jz/v8 = ${fbGeo?.toFixed(3)}× > 1.0× — slow beats: ${fbRatios.filter(r => r.ratio > 1).map(r => `${r.name} ${r.ratio.toFixed(2)}×`).join(', ') || 'none'}`)
+// Aggregate guarantee: jz wins the floatbeat corpus decisively. narrowLoopBound
+// (f64 loop bound → i32, unlocks SIMD on the per-sample fill loop) moved the
+// corpus from ~0.6× to ~0.5× geomean / 0.21–0.78× per beat — the 0.85 ceiling
+// locks that in: losing the bound-narrowing (or the vectorizer behind it)
+// regresses the geomean past it even while the kernel corpus stays green.
+test('bench: floatbeat geomean jz/v8 ≤ 0.85× (jz wins the jukebox corpus, SIMD fill pinned)', () => {
+  ok(fbGeo != null && fbGeo <= 0.85,
+    `floatbeat geomean jz/v8 = ${fbGeo?.toFixed(3)}× > 0.85× — slow beats: ${fbRatios.filter(r => r.ratio > 1).map(r => `${r.name} ${r.ratio.toFixed(2)}×`).join(', ') || 'none'}`)
 })
 // Per-beat backstop: catch a single beat regressing grossly (an __ptr_offset-style 4× cliff)
 // that the corpus geomean would absorb. The jz/V8 per-beat ratio is host-bound on shared CI
 // runners — a transcendental/allocation-heavy beat (Celesta: 9 sin + 5 exp + 4 const arrays
 // per sample) runs ~1.4× there but <0.8× locally on the *identical* wasm — the same reason
 // native-C parity is informational on CI. So the backstop is a loose gross-regression net
-// (2×) on CI and tight (1.4×) off-CI where the hardware is stable; the geomean ≤ 1.0× above
-// is the real per-corpus guarantee (jz wins the jukebox corpus regardless of runner).
-const fbBackstop = process.env.CI ? 2.0 : 1.4
+// (2×) on CI and tight (1.2×) off-CI where the hardware is stable — post-narrowLoopBound
+// every beat runs ≤ 0.78× locally, so 1.2 still flags a 1.5× single-beat cliff; the
+// geomean ≤ 0.85× above is the real per-corpus guarantee (jz wins regardless of runner).
+const fbBackstop = process.env.CI ? 2.0 : 1.2
 for (const { name, ratio } of fbRatios) {
   test(`bench: floatbeat "${name}" jz ≤ ${fbBackstop}× V8 (no gross regression)`, () => {
     ok(ratio <= fbBackstop, `floatbeat ${name}: jz ${ratio.toFixed(2)}× V8 > ${fbBackstop}× — gross codegen regression`)
