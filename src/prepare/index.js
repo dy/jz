@@ -22,7 +22,7 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, ASSIGN_OPS, JZ_NULL, JZ_UNDEF } from '../ast.js'
+import { handlerArgs, refsName, ASSIGN_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
 import { ctx, err, derive, emitArity } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
@@ -586,8 +586,8 @@ const renameFunc = (func, nextName) => {
   ctx.func.names.add(nextName)
 }
 
-/** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
-const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6, 'bigint': -7 }
+// `typeof`-string → code table lives in ast.js (TYPEOF) — shared with
+// emitTypeofCmp and flow-types so the codes have one home.
 // Spec §13.5.3: `typeof undeclared_x` returns 'undefined' without throwing.
 // True iff `name` is a bare identifier with no resolution path. Mirrors the
 // resolution chain inside `prep()` so we don't speculate emit-time failures.
@@ -640,14 +640,14 @@ function resolveTypeof(node) {
   if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null && typeof b[1] === 'string') {
     const known = staticTypeofString(a[1])
     if (known != null) return [, eqLike ? known === b[1] : known !== b[1]]
-    const code = TYPEOF_MAP[b[1]]
+    const code = TYPEOF[b[1]]
     if (code != null) return [op, ['typeof', a[1]], [, code]]
   }
   // 'string' == typeof x
   if (Array.isArray(b) && b[0] === 'typeof' && Array.isArray(a) && a[0] == null && typeof a[1] === 'string') {
     const known = staticTypeofString(b[1])
     if (known != null) return [, eqLike ? known === a[1] : known !== a[1]]
-    const code = TYPEOF_MAP[a[1]]
+    const code = TYPEOF[a[1]]
     if (code != null) return [op, ['typeof', b[1]], [, code]]
   }
   return node

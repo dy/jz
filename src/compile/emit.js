@@ -23,7 +23,7 @@
 
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
-  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF,
+  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
@@ -191,15 +191,15 @@ export function emitTypeofCmp(a, b, cmpOp) {
     return null
   }
 
-  if (code === -1) {
+  if (code === TYPEOF.number) {
     // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
     if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
     return typed([eq ? 'f64.eq' : 'f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
   }
-  if (code === -2) return isPtrKind(PTR.STRING)
-  if (code === -3) return wrap(isNullish(va))
-  if (code === -4) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
-  if (code === -5) {
+  if (code === TYPEOF.string) return isPtrKind(PTR.STRING)
+  if (code === TYPEOF.undefined) return wrap(isNullish(va))
+  if (code === TYPEOF.boolean) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
+  if (code === TYPEOF.object) {
     // object: a NaN-box whose ptr_type is a heap kind — NOT STRING (typeof "string"),
     // NOT CLOSURE (typeof "function"), and NOT ATOM. The ATOM tag covers null AND undef
     // AND the boolean atoms true/false: excluding it in one ptr_type check is both the
@@ -218,8 +218,8 @@ export function emitTypeofCmp(a, b, cmpOp) {
       ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]]]
     return wrap(['i32.and', isPtr, heapKind])
   }
-  if (code === -6) return isPtrKind(PTR.CLOSURE)
-  if (code === -7) {
+  if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
+  if (code === TYPEOF.bigint) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
     // bigint heuristic: finite, nonzero, sub-normal abs (boxed BigInt carrier).
     const n = ['local.tee', `$${t}`, va]
