@@ -12,15 +12,20 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
-<!-- **[docs](./docs.md)**  ·   -->
-<!-- FIXME: playground, floatbeat -->
 **[examples](https://dy.github.io/jz/examples/)**
 
-<!-- FIXME: REPL, used by (color-space, web-audio-api) -->
 
 ## Why?
 
-jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM.
+jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM ([known divergences](#faq)).
+
+* **Plain JS in, no annotations** — types inferred from the code you already write ([how](#faq))
+* **Compiles in-browser in milliseconds** — pure synchronous compiler; live, on-keystroke ([FAQ](#faq))
+* **Single-digit-kB output** — no runtime, no GC; size gated in CI ([bench](bench/README.md))
+* **Auto-SIMD** — plain loops vectorize to v128 ([optimizations](#faq))
+* **Same source, two engines** — run as JS or as WASM, honest A/B with one toggle
+* **Goes native** — wasm2c pipeline beats V8 on the example corpus ([details](scripts/native/README.md))
+* **Self-hosting** — `dist/jz.wasm` is jz compiled by jz, gated in CI
 
 
 | Good for                    | Not for                    |
@@ -129,7 +134,7 @@ Options:
 
 ## Language
 
-jz is a **strict modern functional JS subset**. Built-in jzify transform extends support to legacy patterns.
+jz is a **strict modern JS subset**. Built-in jzify transform extends support to legacy patterns.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -165,13 +170,13 @@ Not supported
 
 - **Numbers are f64**; integer-proven values (loop counters, array idx, `| 0`) are `i32` and **wrap at ±2³¹**.
 - **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
-- **Objects are fixed-shape structs** — keys added after the literal stay readable but don't enumerate (`Object.keys`/`for…in`); use a `Map` for dynamic keys.
+- **Objects are fixed-shape structs** — literal keys sit in fixed slots; computed writes (`o[k] = v`) fall back to a per-object hash and enumerate normally, but a dot-key added after the literal (`o.b = 2`) stays readable without enumerating (`Object.keys`/`for…in`). Prefer `Map` for heavy dynamic keys.
 - **Typed arrays are fixed-size** — `arr.length = n` won't compile, and out-of-bounds reads give `0`.
 - **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` wired to `Map`/`Set`.
 - **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. Exact shortest-form needs a multi-KB Ryū/Grisu formatter.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
 - **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`) – the IANA timezone database is hundreds of KB.
-- **`Math.random` is deterministic**, takes a `randomSeed` option for a reproducible stream.
+- **`Math.random` is seedable** — default draws host entropy; pass `randomSeed: n` for a reproducible stream.
 </details>
 
 
@@ -372,6 +377,17 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 </details>
 
 <details>
+<summary><strong>How do I inspect or debug the output?</strong></summary>
+
+- **Semantics** — valid jz is valid JS: run the same source under Node and diff results (mind the [documented divergences](#faq)); `console.log` works inside compiled modules too.
+- **Codegen** — `jz program.js --wat` (API: `compile(src, { wat: true })`) shows the emitted WAT: grep `v128` to confirm a loop vectorized, `__dyn_get`/`__ext_call` to spot dynamic fallbacks inference couldn't narrow.
+- **Dynamic fallbacks** — compile with `strict: true` to turn every fallback (`obj[k]`, `for-in`, unknown receiver method) into a compile error pointing at the site.
+- **Profiling** — `--names` (API: `profile.names = true`) emits a wasm `name` section so DevTools profilers and disassemblers show real function names; the `profile` option collects per-stage compile timings.
+- **Slow kernel checklist** — a stray float literal pins a counter to f64; a plain `[]` where a typed array would do; a loop-carried dependency (`a[i-1]`, running sum) blocks SIMD. The signals in *Why no type annotations?* below are the levers.
+
+</details>
+
+<details>
 <summary><strong>How does jz work?</strong></summary>
 
 A source string flows through six stages into wasm bytes — no IR leaves the process, the whole thing is one pass per `compile()`:
@@ -448,6 +464,8 @@ cc -O3 program.c -o program
 
 The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lowers to standalone native code that beats V8 on the watr example corpus (19/21 wins, 2 ties, M4 Max). Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
 
+[Static Hermes](https://github.com/facebook/hermes) reaches native the same way from the other end — full JS through C/LLVM, with sound type annotations for speed; jz keeps the source plain JS and gets its types by inference.
+
 </details>
 
 
@@ -500,6 +518,7 @@ From small, fast JS subset to full JS spec, bundled engine:
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
 * [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — reproducible WASM assembled through a typed *builder API*.
 * [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
+* [Static Hermes](https://github.com/facebook/hermes) — Meta's AOT JS → native via C/LLVM (no WASM target); full speed needs sound type annotations, untyped JS stays dynamic.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust on WasmGC; no interpreter, but leans on the engine's GC.
 * [Javy](https://github.com/bytecodealliance/javy) — embeds QuickJS; runs almost any JS, but ships a full interpreter (large, interpreter-speed).
 * [ComponentizeJS / jco](https://github.com/bytecodealliance/ComponentizeJS) — WASM Component via embedded SpiderMonkey; standards-complete, but bundles a JS engine.

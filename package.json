@@ -72,7 +72,16 @@
     "compiler",
     "functional",
     "minimal",
-    "wasm"
+    "wasm",
+    "aot",
+    "simd",
+    "wasi",
+    "wat",
+    "dsp",
+    "audio",
+    "creative-coding",
+    "assemblyscript",
+    "porffor"
   ],
   "devDependencies": {
     "esbuild": "^0.28.0",
