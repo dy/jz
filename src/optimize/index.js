@@ -63,6 +63,27 @@ const UNDEF_BITS = atomNanHex(2)
  *                caps. Smallest wasm.
  *   'balanced' — the default (= level 2).
  *   'speed'    — full nested unroll + lane vectorization (= level 3).
+ *
+ * # Two-layer contract (this file vs src/wat/optimize.js)
+ * Both layers walk the same S-expression IR; the boundary is KNOWLEDGE, not
+ * representation:
+ *   - THIS layer owns every pass that needs jz semantics — NaN-box layout
+ *     (fusedRewrite's rebox folds, hoistPtrType), emit-side proofs stamped on
+ *     func nodes (cseScalarLoad's cseLoadBases whitelist), loop shapes as emit
+ *     produces them (narrowLoopBound, hoistInvariantLoop, vectorizeLaneLocal),
+ *     and ctx-derived module facts (hoistGlobalPtrOffset's typed-global set).
+ *   - wat/optimize.js owns generic structural rewrites — const folding,
+ *     copy-prop, branch/DCE/vacuum, dedupe, treeshake, and inlineOnce. One
+ *     deliberate exception: guardRefine lives there despite NaN-box knowledge,
+ *     because the dead tag-dispatch shapes it folds only EXIST after that
+ *     layer's inlining, and its output feeds that layer's fold/branch cleanup
+ *     within the same fixpoint rounds.
+ * Sequencing (driven by index.js): optimizeFunc 'pre' → watOptimize →
+ * optimizeFunc 'post'. The 'post' re-run exists because watr-layer inlining
+ * re-introduces rebox/unbox pairs at spliced boundaries that only
+ * fusedRewrite knows how to fold; csePureExprLoop similarly only pays off
+ * over the inlined shape. Passes must stay idempotent — both phases may
+ * see the same function.
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)

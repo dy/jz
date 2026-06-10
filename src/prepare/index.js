@@ -19,6 +19,15 @@
  * Each handler may touch multiple concerns, but helpers keep each concern self-contained.
  * Unhandled ops fall through to recursive prep() of their children.
  *
+ * # Forward seeding (the two compile/ imports — deliberate, not a layering leak)
+ * Prepare is the only pass that sees module-scope declarations in source order,
+ * so it seeds two compile-stage fact stores AS it walks (re-deriving them later
+ * would need a second whole-AST pass over information prepare already holds):
+ *   - `recordGlobalRep` (compile/infer.js)        — module-global value reps
+ *   - `observeNodeFacts` (compile/program-facts.js) — per-node program facts
+ * The contract is write-only: prepare never READS compile-stage state, so the
+ * stage remains re-runnable and compile owns every read path.
+ *
  * @module prepare
  */
 
