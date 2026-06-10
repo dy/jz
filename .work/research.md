@@ -18,6 +18,10 @@ Excludes JS misfeatures (coercions, hoisting, `this`, classes). Valid jz = valid
 Errors fail early with actionable messages.
 Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
+## [x] Uniqueness
+
+> The uniqueness is already real and measured: type inference from plain JS (no annotations — AS can't say this), auto-SIMD, single-digit-kB output, a pure synchronous compiler that runs in the browser in milliseconds (Porffor fundamentally can't compile-on-the-fly like this), self-hosting, and the native pipeline that beats V8. Nobody else has that combination.
+
 ## [x] Mission
 
   **Purpose**: Give JS developers direct access to native-speed computation without leaving their language.
