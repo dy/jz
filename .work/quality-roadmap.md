@@ -118,12 +118,12 @@ considered and rejected: the perf items touch optimize/plan/abi, not the monolit
 
 - [ ] **4.1 Unified per-function analysis cache** [M] — analyzeBody runs 5-10× per body
   across narrow/plan/emit with fragile manual invalidation. Build facts once post-plan,
-  pass explicitly. Depends on 3.3.
-- [ ] **4.2 Incremental program-facts** [M] — plan re-runs collectProgramFacts up to 12×
-  (full whole-program walk after every mutating pass). Re-sweep only mutated bodies.
-  First: add per-pass timings under profile (the 12 sub-passes are invisible — one
-  `plan` bucket) so this is measured, not guessed.
-- [x] **4.3 Structural globals** (landed 3ea8056) — declGlobal records replace the
+  pass explicitly. Depends on 3.3. (Profile data: analyzeFuncs ~11ms on watr-scale —
+  modest; do with 3.3, not before.)
+- [x] **4.2 RESOLVED differently** (5a786e4) — per-pass profiling added (plan:*, optMod:*,
+  compile buckets); data showed refreshFacts totals 7ms (premise wrong, incremental
+  facts closed as not-worth-building). The REAL hotspot was hoistInvariantLoop's
+  quadratic tee-privacy check — memoized: watr compile 560→393ms (−30%).
   WAT-text strings; ~45 writers one-lined, 3 regex parse-backs + backfill loop
   deleted, emission builds IR directly, renames are Map re-keys. Net −8 lines,
   byte-identical output (size geomeans exact-match).
@@ -145,3 +145,36 @@ unplugin-jz → subtractive subset spec. §1.1 unblocks the jukebox demo claim.
 
 npm test + opt{0,1,3} + wasi matrix, selfhost, fuzz ≥2000, CI=1 test/bench.js,
 bench-size geomean, ratchet (re-baseline only on intentional improvement).
+
+## Session 2026-06-10 (continued, autonomous) — landed increments
+
+- [x] **3.7 hygiene tail** (6a14b74) — profileNames alias dropped; other items verified stale.
+- [x] **4.4b/4.5 contracts** (4b5488d) — prepare forward-seeding + two-layer optimizer docs.
+- [x] **2.2d stable-pointee generalization + precise promoteGlobals** (9cfe51c) —
+  STABLE_PTR_VALS {TYPED,STRING,OBJECT,BUFFER,CLOSURE}; hoist runs pre+post;
+  ORDERING LOAD-BEARING: hoist before promoteGlobals (value-promotion destroys the
+  pattern — examples gate caught rfft 0.15× during dev). Examples geomean 1.74×,
+  game-of-life 2.18×.
+- [x] **4.2 resolved-differently** (5a786e4) — plan:*/optMod:*/compile phase profiling
+  permanent; incremental-facts premise disproven (refreshes 7ms); REAL hotspot was
+  LICM's quadratic countIn/gatherBound → memoized countsOf/writesIn:
+  watr compile 560→393ms (−30%).
+- [x] **1.2 slice 1** (dfa8161) — __jss_length/__jss_charCodeAt in LICM whitelist;
+  boundary string scan loops hoist length, body = one engine-inlined charCodeAt.
+  tokenizer pin 0.57× V8.
+- [x] **3.3 slice 1** (9ff7314) — widenLocalTypes extracted; analyzeBody try-block
+  reads walk → widenLocalTypes → narrowUint32. Remaining: the walk/processDecl
+  observation machinery (~350 lines) — package observation maps into a record.
+
+### Next-session continuation notes
+- **1.2 slice 2**: internal heap-string path — probe bench/tokenizer kernel WAT
+  (linear-memory SSO strings): what does s.charCodeAt(i)/s[i] emit per char when
+  the string is NOT externref? Candidates: inline non-SSO fast path (i32.load8_u),
+  SSO bit-test inline. watr case (1.17× trail) is the target.
+- **3.4 emitClosureBody** (623 lines): unify with emitFunc structured-IR path;
+  trampoline string-synthesis → named builder.
+- **3.6 emit.js split** [S]: emit-decl/emit-assign/emit-spread modules along the
+  `// === ===` banners.
+- **interference at 1.00×** — the examples FLOOR 0.9→1.0 blocker.
+- **Self-host options** (user ask): extend scripts/self.js + dist/jz.wasm to
+  accept compile options (optimize levels, strict, host) — currently minimal setup.
