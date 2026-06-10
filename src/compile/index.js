@@ -1447,7 +1447,12 @@ export default function compile(ast, profiler) {
     f._exportExtParams.forEach((b, i) => {
       if (!b) return
       p.push(i)
-      if (typeof b === 'object' && b.def != null) d[i] = b.def
+      // String-key the index: object property keys are conceptually strings (JSON renders
+      // `{"0":…}` either way), and the self-host kernel's objects don't enumerate a numeric
+      // key — `d[0]=…` stores but Object.keys(d) misses it, so the `d` map would read empty
+      // and the default never reach the jz:extparam section. Same coercion as the optimize
+      // LEVEL_PRESETS lookup. (Native is unaffected: numeric keys auto-stringify.)
+      if (typeof b === 'object' && b.def != null) d[String(i)] = b.def
     })
     if (!p.length) continue
     const entry = { name: '', p }
