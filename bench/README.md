@@ -92,6 +92,7 @@ correctly-rounded; cascade is the same algorithm.
 | `bun` | raw JavaScript on Bun/JavaScriptCore |
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
 | `hermes` | raw JavaScript on Hermes |
+| `shermes` | Static Hermes — JS AOT-compiled to a native binary (`shermes -O`), when installed |
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
@@ -121,9 +122,10 @@ BUN_BIN=/path/to/bun \
 DENO_BIN=/path/to/deno \
 SPIDERMONKEY_BIN=/path/to/js \
 HERMES_BIN=/path/to/hermes \
+SHERMES_BIN=/path/to/shermes \
 GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,graaljs,porf
+node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,shermes,graaljs,porf
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)
