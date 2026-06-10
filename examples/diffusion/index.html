@@ -56,7 +56,7 @@ const scatter = () => { seeds = [randRect(), randRect()]; if (Math.random() < 0.
 
 const setEngine = async (kind) => {
   const my = ++gen
-  const e = await loadEngine(kind, { js: "./reaction-diffusion.js", wasm: "./reaction-diffusion.wasm" })
+  const e = await loadEngine(kind, { js: "./diffusion.js", wasm: "./diffusion.wasm" })
   if (my !== gen) return
   engine = e; sizeTo(engine); applySeeds()        // re-seed the same field on the new engine
 }
@@ -103,9 +103,9 @@ const loop = () => {
 const ui = hud({
   kind: "jz",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/reaction-diffusion",
-  code: "./reaction-diffusion.js",
-  nav: "reaction-diffusion",
+  src: "https://github.com/dy/jz/tree/main/examples/diffusion",
+  code: "./diffusion.js",
+  nav: "diffusion",
   onSwitch: setEngine,
 })
 await setEngine(ui.kind)
