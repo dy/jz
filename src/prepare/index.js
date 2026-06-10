@@ -297,7 +297,12 @@ function staticStringExpr(node) {
   if (op === '+') {
     const a = staticStringExpr(args[0])
     const b = staticStringExpr(args[1])
-    return a != null && b != null ? a + b : null
+    // Accumulate from a fresh empty string (`'' + a + b`) rather than concatenating two
+    // source-derived substrings directly. Under self-host the latter can yield a string
+    // backed by transient parse-time storage that's invalid by the time emit['//'] reads
+    // it for regex compilation (OOB); forcing a fresh allocation, as the template-literal
+    // path already does, keeps it stable. Identical value in both legs.
+    return a != null && b != null ? '' + a + b : null
   }
   if (op === '`') {
     let out = ''
