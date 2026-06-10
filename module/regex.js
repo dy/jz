@@ -224,7 +224,22 @@ const parseGroup = () => {
   const inner = parseAlt()
   cur() === RPAREN || perr('Unclosed ('); skip()
   if (groupName) groupNames[groupId] = groupName
-  return groupId ? [type, inner, groupId] : [type, inner]
+  // Carry the capture name IN the group node (4th element) as well as the module-level
+  // groupNames array. The AST structure survives the parse→compile handoff intact (it
+  // drives codegen), whereas the self-host kernel drops mutations to the module-level
+  // groupNames array — so `.groups` was never built. compileRegexToStdlib reads names
+  // back via collectGroupNames(ast), which works in both legs.
+  return groupId ? (groupName ? [type, inner, groupId, groupName] : [type, inner, groupId]) : [type, inner]
+}
+
+// Walk a parsed regex AST and return a `groupId → name` array for named captures,
+// sourced from the group nodes' 4th element (set by parseGroup). Kernel-safe: relies
+// only on the surviving AST structure, not module-level parse state.
+const collectGroupNames = (node, out = []) => {
+  if (!Array.isArray(node)) return out
+  if (node[0] === '()' && typeof node[2] === 'number' && typeof node[3] === 'string') out[node[2]] = node[3]
+  for (let i = 1; i < node.length; i++) collectGroupNames(node[i], out)
+  return out
 }
 
 const isGroupNameStart = c =>
@@ -757,7 +772,7 @@ export default (ctx) => {
       }
     }
     ctx.runtime.regex.groups.set(id, ast.groups || 0)
-    ctx.runtime.regex.groupNames.set(id, ast.groupNames || [])
+    ctx.runtime.regex.groupNames.set(id, collectGroupNames(ast))
     ctx.core.stdlib[funcName] = compileRegex(ast, funcName)
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
