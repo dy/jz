@@ -3493,6 +3493,13 @@ export function emit(node, expect) {
     if (lifted) return lifted
   }
 
+  // `let`/`const` dispatch directly to the imported emitDecl rather than through the
+  // ctx.core.emit table reference: under self-host the table reference is a closure value,
+  // and a runtime spread of >8 args into a closure call silently drops arguments — so a
+  // `let` with >8 expression-init declarators (e.g. an SROA prologue loading 16 typed-array
+  // slots) lost everything past the 8th. A direct call to the module-local binding compiles
+  // as a real direct call, which marshals all args.
+  if (op === 'let' || op === 'const') return emitDecl(...args)
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
   const ir = handler(...args)
