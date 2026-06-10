@@ -78,12 +78,14 @@ considered and rejected: the perf items touch optimize/plan/abi, not the monolit
   0.9→1.0), mandelbrot-SIMD 0.83× on arm64+Node22 only (x64 CI ≥1.0; old-V8
   arm64 v128 lowering, not a jz codegen artifact). The structural "faster-than-JS
   always, anywhere" items remain 1.2 (string substrate) and 1.3 (closure captures).
-- [ ] **2.3 f64-ABI wrapper inlining for i32 exports** [S] — `$escape$exp` wrapper +
-  call (~15-20B/export) could be a direct converting export body.
-- [ ] **2.4 Fixed heap preamble audit** [S] — memory section + 57B string pool +
-  `$__heap` + `__mkptr` (~250B) for ANY heap use; string pool only when strings/typeof
-  actually referenced (verify — typed-only module in the probe had no data section,
-  agent claim was partially stale).
+- [x] **2.3 f64-ABI wrapper inlining** — RESOLVED, already handled: probed 2026-06-10,
+  `(a+b)|0` export emits one direct converting function (62 B, no wrapper); an
+  internally-called i32 export gets its body inlined into `$f$exp` by inlineOnce.
+  The standalone-wrapper claim was stale.
+- [x] **2.4 Heap preamble audit** — RESOLVED, already correct: pure-numeric modules
+  carry no memory/data section (`add` = 41 B exact minimum); typed-only modules
+  carry no string pool (the "57 B pool always" claim was stale); memory+heap
+  global appear only with actual heap use.
 - [ ] Note: `optimize:'size'` vs `optimize:2` is already a 2.1× size difference —
   document the preset choice in README size table (perception, zero code).
 
@@ -91,10 +93,10 @@ considered and rejected: the perf items touch optimize/plan/abi, not the monolit
 
 - [x] **3.1 valTypeOf → table dispatch** (landed bb6e4f9) — the 190-line if-chain is now
   a VT dispatch table; set families enroll at module init from kind-traits.
-- [ ] **3.2 emitMethodCall strategies 5-12 extraction** [M] — package the shared
-  transient state (vt, callMethod, combined) into a record, extend the
-  LEADING_STRATEGIES array pattern to all 12. Pre-req for any string fast-path work
-  touching method dispatch (1.2).
+- [x] **3.2 emitMethodCall strategies 5-12 extraction** (landed 56d3258) — eight named
+  functions over one dispatch-context record { obj, method, parsed, vt, callMethod },
+  TYPED_STRATEGIES table mirrors LEADING_STRATEGIES; emitMethodCall is now a ~30-line
+  orchestrator. Unblocks the 1.2 string-dispatch work.
 - [ ] **3.3 analyzeBody decomposition** [M] — 480 lines, 4 nested passes over shared
   maps in one try/finally. Stage it: processDecl / walk / widen-fixpoint /
   narrowUint32 as separate functions passing explicit fact records. Pre-req for the
@@ -121,18 +123,10 @@ considered and rejected: the perf items touch optimize/plan/abi, not the monolit
   (full whole-program walk after every mutating pass). Re-sweep only mutated bodies.
   First: add per-pass timings under profile (the 12 sub-passes are invisible — one
   `plan` bucket) so this is measured, not guessed.
-- [ ] **4.3 Structural globals** [S→M, surveyed 2026-06-10] — ctx.scope.globals stores
-  WAT text strings. Inventory: ~45 writer sites across 12 files (prepare ×6,
-  compile/index ×3, plan/scope ×4, assemble ×3, module/{timer,core,object,string,
-  math,regex,function,json,collection} ×~29), all the shape
-  `(global $N (mut T) (T.const I))` except: __heap/__heap_start (export clause),
-  plan/scope.js:332 (UNDEF_WAT init), prepare:2364/2415 (computed wat).
-  String-readers to convert: emit.js:820 (/\(mut\b/), compile/index.js:1178
-  (.includes('mut f64')), assemble.js:483-487 + 509 (type-backfill regex).
-  Emission point: compile/index.js:1384 parseWat(g) → build IR directly.
-  Plan: `declGlobal(name, type, init, {mut=true, export})` helper in ctx.js
-  setting a record + globalTypes in one move; printer emits IR; convert
-  mechanically; hoistConstantPool callback contract → (name, rec).
+- [x] **4.3 Structural globals** (landed 3ea8056) — declGlobal records replace the
+  WAT-text strings; ~45 writers one-lined, 3 regex parse-backs + backfill loop
+  deleted, emission builds IR directly, renames are Map re-keys. Net −8 lines,
+  byte-identical output (size geomeans exact-match).
 - [x] **4.4a Sentinels → ast.js** (landed 4b918f2) — JZ_NULL/JZ_UNDEF moved to ast.js;
   emit no longer imports from prepare.
 - [ ] **4.4b Prepare→compile seeding** [S] — prepare still imports compile/infer
