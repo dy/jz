@@ -191,7 +191,6 @@ jz.memory = enhanceMemory
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
  *   Set `profile.names = true` to also emit a standard wasm `name` custom section
  *   for profiler/debugger symbolication.
- * @param {boolean} [opts.profileNames] - Legacy alias for `profile.names`.
  * @param {Object<string,string>} [opts.modules] - Map of module specifier → source
  *   for compile-time `import`/`export` bundling: jz resolves the module graph
  *   in-process from this map instead of reading from disk.
@@ -511,7 +510,7 @@ const jzCompileInner = (code, opts = {}) => {
     }
     const wasm = time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
-    if (opts.profileNames || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
+    if (opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
     return opts.inspect ? { wasm: bytes, inspect: ctx.inspect } : bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
