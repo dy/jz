@@ -12,7 +12,21 @@
  * Infinity is 0x7FF0 — outside the NaN-box space — so it survives as a plain
  * literal and needs no override.
  */
-import { parse, token } from 'subscript/feature/jessie'
+import { parse as jessieParse, token } from 'subscript/feature/jessie'
+
+// Strip a leading `#!` shebang line before subscript sees it. subscript registers the
+// shebang via `parse.comment['#!']='\n'` (feature/shebang.js) on a literal-seeded object,
+// then enumerates it — a cross-module dynamic-extension of a fixed-schema object that the
+// self-host kernel doesn't surface (the added key is stored but unenumerated). An explicit
+// strip is the conventional parser responsibility anyway (Node, V8 do the same), is
+// host/kernel-identical, and is independent of object-model internals.
+const parse = (src) => {
+  if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
+    const nl = src.indexOf('\n')
+    src = nl < 0 ? '' : src.slice(nl)
+  }
+  return jessieParse(src)
+}
 
 token('NaN', 200, a => !a && ['nan'])
 
