@@ -421,6 +421,15 @@ export default (ctx) => {
   // 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
   // base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
   const EXP2_C = [1, 0.6931472000619209, 0.24022650999918949, 0.05550340682450019, 0.009618048870444599, 0.0013395279077191057, 0.00015463102004723134]
+  // Range-reduction constants embedded as exact round-trip decimal STRINGS, not
+  // `${Math.PI}`/`${1/Math.PI}` number interpolation. These multiply the (possibly
+  // astronomically large) argument, so any lost digit wrecks large-arg reduction. Under
+  // self-host the kernel formats `${number}` through __ftoa — a 9-significant-digit dtoa
+  // (module/number.js) — which would bake "3.14159265"/"0.318309886" into the WAT and
+  // throw the reduced quadrant off (Δ≈0.2 at x≈2267). A string interpolates verbatim, so
+  // watr parses the full-precision f64 in both legs. Values are native toString's shortest
+  // round-trip reprs of Math.PI, 1/Math.PI, Math.PI/2 — byte-identical to the old output.
+  const PI = '3.141592653589793', INV_PI = '0.3183098861837907', HALF_PI = '1.5707963267948966'
 
   // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
   // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back
@@ -443,12 +452,12 @@ export default (ctx) => {
     ;; |x| ≤ 2⁻²⁷: sin(x) = x to within a fraction of an ulp, and returning x preserves the
     ;; sign of ±0 (the range reduction below would turn -0 into +0: -0 − (-0·π) = +0).
     (if (f64.lt (f64.abs (local.get $x)) (f64.const ${2 ** -27})) (then (return (local.get $x))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${Math.PI / 2}))
+    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
+    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
+    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
       (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
+        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
+        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
         (local.set $q (f64.add (local.get $q) (local.get $q2)))))
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
@@ -466,12 +475,12 @@ export default (ctx) => {
     (local $q f64) (local $q2 f64) (local $r f64) (local $r2 f64)
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (f64.const nan))))
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
-    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${1 / Math.PI}))))
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${Math.PI}))))
-    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${Math.PI / 2}))
+    (local.set $q (f64.nearest (f64.mul (local.get $x) (f64.const ${INV_PI}))))
+    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $q) (f64.const ${PI}))))
+    (if (f64.gt (f64.abs (local.get $r)) (f64.const ${HALF_PI}))
       (then
-        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${1 / Math.PI}))))
-        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${Math.PI}))))
+        (local.set $q2 (f64.nearest (f64.mul (local.get $r) (f64.const ${INV_PI}))))
+        (local.set $r (f64.sub (local.get $r) (f64.mul (local.get $q2) (f64.const ${PI}))))
         (local.set $q (f64.add (local.get $q) (local.get $q2)))))
     (local.set $q (f64.sub (local.get $q) (f64.mul (f64.const 2) (f64.nearest (f64.mul (local.get $q) (f64.const 0.5))))))
     (local.set $r2 (f64.mul (local.get $r) (local.get $r)))
@@ -839,7 +848,7 @@ export default (ctx) => {
         (f64.sqrt (f64.sub (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))))`)
 
   wat('math.acos', `(func $math.acos (param $x f64) (result f64)
-    (f64.sub (f64.const ${Math.PI / 2}) (call $math.asin (local.get $x))))`)
+    (f64.sub (f64.const ${HALF_PI}) (call $math.asin (local.get $x))))`)
 
   wat('math.atan2', `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
     ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).
@@ -849,16 +858,16 @@ export default (ctx) => {
       ;; y is ±0 too: result is ±0 when x is +0, ±π when x is -0; sign taken from y.
       (if (result f64) (f64.eq (local.get $y) (f64.const 0.0))
         (then (f64.copysign
-          (select (f64.const ${Math.PI}) (f64.const 0.0)
+          (select (f64.const ${PI}) (f64.const 0.0)
                   (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0)))
           (local.get $y)))
         (else
-          (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${Math.PI / 2})) (else (f64.neg (f64.const ${Math.PI / 2})))))))
+          (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${HALF_PI})) (else (f64.neg (f64.const ${HALF_PI})))))))
       (else (if (result f64) (f64.ge (local.get $x) (f64.const 0.0))
         (then (call $math.atan (f64.div (local.get $y) (local.get $x))))
         (else (if (result f64) (f64.ge (local.get $y) (f64.const 0.0))
-          (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${Math.PI})))
-          (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${Math.PI})))))))))`)
+          (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))
+          (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))))))))`)
 
   wat('math.sinh', `(func $math.sinh (param $x f64) (result f64)
     (local $ex f64)
