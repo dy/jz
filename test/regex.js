@@ -95,7 +95,10 @@ test('regex: groups', () => {
 
 test('regex: named capture groups', () => {
   const ast = parseRegex('(?<word>\\w+)')
-  is(ast, ['()', ['+', ['\\w']], 1])
+  // The capture name rides the group node itself (4th element) — the AST structure
+  // survives the parse→compile handoff under self-host, whereas module-level parse
+  // state (the groupNames array) does not. ast.groupNames stays populated too.
+  is(ast, ['()', ['+', ['\\w']], 1, 'word'])
   is(ast.groups, 1)
   is(ast.groupNames[1], 'word')
 })
