@@ -243,13 +243,16 @@ test('escape analysis: returned object still heap allocates', () => {
 })
 
 test('escape analysis: call-passed object still heap allocates', () => {
+  // sourceInline off: the fixture pins escape analysis at a REAL call
+  // boundary — the leaf inliner would otherwise splice get's body, the call
+  // disappears, and scalarizing obj becomes correct (no escape).
   const wat = jz.compile(`
     const get = (obj) => obj.a
     export const main = (x) => {
       const obj = { a: x }
       return get(obj)
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: false, sourceInline: false } })
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'call-passed object must remain materialized')
 })
 

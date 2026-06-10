@@ -428,12 +428,15 @@ test('slice-view: escaping slice copies — returned binding', () => {
 })
 
 test('slice-view: escaping slice copies — passed as argument', () => {
+  // sourceInline off: pins escape-driven copying at a REAL call boundary —
+  // the leaf inliner would otherwise dissolve id() and the view (correctly)
+  // stops escaping.
   const wat = compile(`let id = (x) => x
   export let f = () => {
     let s = 'abcdefg'
     let t = s.slice(1, 4)
     return id(t) === 'bcd' ? 1 : 0
-  }`, { wat: true })
+  }`, { wat: true, optimize: { sourceInline: false } })
   ok(!wat.includes('__str_slice_view'), 'a slice passed to a call escapes — must copy')
   is(run(`let id = (x) => x
   export let f = () => {
