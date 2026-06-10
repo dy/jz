@@ -1,379 +1,204 @@
-* [ ] finish selfcompile
-  * [ ] template tag separate from main jz: for real selfcompile
-  * [x] make predestined fate and other floatbeats work
-  * [ ] fix failing tests
-  * [ ] 3x cross-ai optimizer passes
-  * [ ] release 0.6.0
-* [x] bw all examples, readme
-* [ ] floatbeatr playground
-* [ ] REPL
-  * [ ] porffor, awasm, jco etc choice
-  * [ ] download wasm
-* [ ] Dogfood: color-space, fourier-transform, web-audio-api
-* [x] Examples gallery
-* [ ] Enhance examples, with settings-panel, palettes, meaningful UI/automation, input-drops
-  * [ ] Jukebox (bytebox?): more floatbeats; rotate, not random floatbeats; make them faster than v8 - now slower;
-  * [ ] Water simulation
-  * [ ] That text layout algorithm
-  * [ ] Sime pinterest soundvis example
-  * [x] Rfft: more chords for randomizing, now only 6 chords - but we need all circle of walking
-  * [ ] facebook music reels with pitch moving transitions
-  * [ ] math formulas soundvis
-  * [ ] floatbeat music reproductions
+# jz — TODO
 
-# ⟢⟢ NEXT — audit 2026-05-29 frontier: CORRECTNESS LEAKS CLOSED → reach
+Compiler core is done being the problem (audit-2026-05-29 frontier closed 2026-06-04;
+lattice + streamlining milestone — see Archive). Binding constraint now is
+**perception/proof + reach**, not compiler internals. Safety net for any change:
+`npm test`, opt{0..3}+wasi matrix, selfhost 11/11, `CI=1 node test/bench.js`, fuzzer.
 
-Every compiler item from this audit shipped — correctness (PARSE-2, INTEROP-C1, FE-3,
-FE-6), perf (expm1, PS-2), FUZZ-1, the SIMD/fold optimizer batch, and the dead-code
-hygiene tail. See Archive › "Audit-2026-05-29 frontier — CLOSED (2026-06-04)". The
-binding constraint is now perception/proof + reach, NOT compiler internals. Safety net:
-`npm test`, opt{0..3} + wasi matrix, selfhost 11/11, `CI=1 node test/bench.js`. Verify
-every change against suite + fuzzer + matrix.
+Lens that unifies the reach work: **valid jz = valid JS** ⇒ the same source runs as JS
+and as jz-WASM, so every demo flips one switch to compare them honestly — show per-frame
+compute-ms, not a faked speedup (jz wins transcendental-heavy work; V8's JIT ties/wins
+pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 
-## Perf / size
-- DON'T chase (verifier refuted/calibrated): PS-3 (wasm-opt slack gate matches
-  measured), OPT-B/OPT-C (watr-off only fires when optimize==null; vectorize is
-  L2-default + opt-out-able).
+## Ship — flagship (the one compounding "make-world-know" move)
+- [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
+  Vibecoder + audio + live-coding proof in one. Needs: syntax highlight, waveform
+  renderer, recipe-book/DB, samples collection, Chladni renderer.
+- [ ] **Playground site** = gallery + floatbeat + WAT-showing REPL; every item a shareable
+  permalink. The demo *is* the marketing. Greenfield (no playground/ yet).
+- [ ] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
+  cross-AI optimizer passes; **release 0.6.0**.
 
-## Compiler optimizations — backlog
-All ranked-ROI items shipped (Archive 2026-06-02/03/04: #1/#1b/#1c/#2/#4/#6/#7, i32 sum +
-integer-comparison folds, tail-call, single-use helper inlining, cross-`if` CSE, LICM
-global-read hoist, pooled-const splat). What remains is **deferred-on-no-workload**, not open
-work — YAGNI: build when a real bench surfaces the shape; speculative SIMD adds correctness
-risk for zero measured benefit:
-- [ ] **extending-add i8/i16→i32** [M] — byte/short sum reductions (`s += u8[i]`) need
-  `i16x8.extadd_pairwise_*` widening into an i32 accumulator. No kernel uses a byte-sum
-  reduction today (verified: no Int8/Int16/Uint8 reduction in `bench/`/`test/`). Re-open when a
-  histogram/checksum/image-brightness workload appears (color-space dogfood is the likely trigger).
+## Reach — perception/proof (highest external leverage)
+- [ ] **AudioWorklet + live in-browser REPL** — single highest-leverage move. Demos ship
+  pre-built .wasm (looks like AssemblyScript's gallery); the differentiator (compiles
+  in-browser) is invisible. rfft demo already has a source panel; ~30 lines (textarea →
+  debounce → jz(src) → postMessage(bytes) → instantiate in worklet).
+- [ ] **unplugin-jz** — one plugin covers Vite/Rollup/webpack/esbuild/Rspack. `import { fib }
+  from './fib.js?jz'` → WASM at build time. ~100 lines. Leapfrogs AS's rollup-plugin + as-loader.
+- [ ] **Dogfood own libs** — color-space, digital-filter biquad, web-audio-api,
+  fourier-transform. Highest-trust bench. biquad: bench proves jz 1.23× faster than Node;
+  the "Used internally by" README credit is commented-out (false) → make it true.
+- [ ] **REPL** — engine choice (porffor/awasm/jco); download wasm; show produced WAT; auto
+  var→let / function→arrow on paste; auto-import implicit globals; resolve npm packages (url);
+  document interop.
+- [ ] **Extism plugin path** — author Extism plugins in plain JS; underserved niche.
+- [ ] **WASM-4 fantasy console** — supports AS/C/Rust/Zig/Go but no plain-JS path; cartridge
+  = wasm start/update over a framebuffer = jz's shape. Viral, direct AS territory.
+- [ ] **Subtractive subset spec** — a written acceptance criterion (PARSE-2 is exactly what
+  one would have caught).
+- [ ] (later) live-coding hosts (Hydra/Strudel/p5/canvas-sketch) — jz as the
+  compile-your-hot-loop escape hatch. Pitch: warm kernel speed + tiny portable wasm, NOT
+  cold-start (bench:startup: jz cold-start 200–1400× slower than `new Function`).
+
+## Examples — astonishing (have: life, interference, mandelbrot, rfft, zzfx)
+- [ ] **Strange attractors** (Clifford/de Jong/Lorenz) — 2-line f64 × millions of iters.
+- [ ] **Path tracer / SDF raymarcher** — "Shadertoy on the CPU, but fast."
+- [ ] **Reaction-diffusion (Gray-Scott) / Lenia** — per-pixel convolution/frame; Lenia looks alive.
+- [ ] **Boids + simplex flow-field** — the genart canonical; particle count *is* the benchmark.
+- [ ] **CHIP-8 emulator core** — integer dispatch = jz's floor; mirrors AS wasmBoy.
+- [ ] **QOI codec** (~300 lines) — competes with hand-WAT on *size*; ties to color-space.
+- [ ] **Port 2–3 AS showcase kernels into bench/** (path tracer, emulator, codec, hash) —
+  closes AS-parity the right way, for the plain-JS-vs-typed-TS head-to-head.
+- [ ] Enhance existing: settings-panel, palettes, meaningful UI/automation, inputs (file drops). Jukebox: more floatbeats, rotate (not random).
+- [ ] vec4 package (unlocks SIMD); stdlib.io integration; glsl-transpiler.
+- [ ] (later) dithering/convolution filters; water sim; text-layout algo; pinterest/fb-reels
+  soundvis; math-formula soundvis; floatbeat reproductions.
+
+## Useful tools — returnable, not just demos
+Wedge: compute behind an upload/paywall/install → run it local, free, private, instant.
+jz = compute core, JS = thin UI shell. (full reasoning § ecosystem-audit.md "2A")
+- [ ] **Audio workbench** (Tier 0 — own every piece) — decode → EQ/filter → effects →
+  resample/convert/LUFS → export, AudioWorklet on jz kernels. Reuses audio-decode /
+  digital-filter / audio-effect / pcm-convert / web-audio-api. **The useful flagship.**
+- [ ] **QR generator/decoder** — Reed-Solomon + masking = pure integer, jz's floor.
+- [ ] **Local image converter/optimizer** (PNG/JPEG/WebP/QOI + dithering) — Squoosh-class
+  privacy wedge; reuses color-space.
+- [ ] **Function plotter** ("compile your math") — `f(x,t)` → compiled → plotted.
+- [ ] **Color/palette tool** (OKLCH↔hex, extraction, contrast/CVD sim) — reuses color-space.
+- [ ] (niche) Voronoi stippler→SVG · bitmap→SVG tracer · pixel-art upscalers (EPX/xBRZ) ·
+  cymatics/harmonograph/guilloché · WFC tile generator. (verticals, build on pull) quant
+  (Black-Scholes/MC) · GIS (simplify/MVT) · fabrication (G-code/STL) · sci kernels
+  (RK4/FFT/least-squares) · bioinformatics (alignment).
+- [ ] **Demoscene / js13k / Genuary** — tiny wasm = sizecoding hook; same-source JS↔WASM =
+  prototype-then-compile. Pouët, Dwitter/tixy.land, Lovebyte, JS13k, Genuary starter.
+
+## Embedded — jz → native MCU (AOT, no interpreter — the honest differentiator)
+Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → flash`. Unlike Espruino
+/ Moddable XS / wasm3-arduino (interpreters on-device), jz is AOT-compiled to native.
+- [ ] **Target matrix + f64 reality** — best on FPU MCUs (M4F/M7: ESP32, RP2040, STM32,
+  Teensy 4, Daisy Seed); M7 has a double-precision FPU ⇒ f64 unpenalized; AVR no FPU ⇒
+  i32-only kernels or out of scope. Document it.
+- [ ] **Pure-compute proof** — `alloc:false`, no WASI, scalar kernel → C → flash → verify.
+- [ ] **Flagship: biquad on hardware** — digital-filter biquad → jz → C → Daisy/Teensy audio out.
+- [ ] **Heap + RAM budget** — pick a memory region; document RAM budget; w2c2 (~150 KB) runtime.
+
+## Language coverage / correctness
+- [ ] **Date** — deterministic spec slices first; local-tz/Intl later. (deferred: object
+  ToPrimitive coercion order; Date.parse until value-objects + UTC stringify exist. out of
+  scope: local-time getters/setters, getTimezoneOffset, locale methods, toJSON, subclassing.)
+- [ ] **Intl**; **test262** (know every fail by face — jzify or error cleanly, never fail
+  unknowingly); **all AssemblyScript tests**; warn/error on memory-limit.
+- [ ] Tighten test coverage — randomly mutate features, see if tests break.
+- [ ] **jzify** — converting script for any JZ; auto-import stdlib globals (Math.* → import
+  math); then make jz core require explicit stdlib imports (remove auto-import); Crockford align.
+- [ ] **Source maps** (blocked on watr upstream) — meanwhile add a WASM name section.
+- [ ] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
+  class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
+- [ ] README FAQ: document the `** 0.5 → f64.sqrt` divergence corners (`(-0)**0.5 = -0`,
+  `(-∞)**0.5 = NaN`; `** -0.5` left unfolded).
+
+## Compiler backlog — deferred-on-no-workload (YAGNI: build when a real bench surfaces the shape)
+All ranked-ROI optimizer items shipped (Archive). What remains is speculative — adds
+correctness risk for zero measured benefit:
+- [ ] **extending-add i8/i16→i32** [M] — byte/short sum reductions need `i16x8.extadd_pairwise_*`
+  into an i32 accumulator. No kernel uses one today; trigger = histogram / checksum /
+  image-brightness (color-space dogfood is the likely one).
 - [ ] **AoS→SoA layout transform** [L] — multi-week, cross-cutting; the `simd-aos-stride`
-  advisory ("split to SoA") is the right answer until a struct-array numeric kernel demands it.
-- [ ] **scalarization cap 32→64** (`plan/common.js:114`) — perf-only, no workload; raising it
+  advisory ("split to SoA") is the answer until a struct-array numeric kernel demands it.
+  Hand-written SoA already vectorizes.
+- [ ] **scalarization cap 32→64** (`plan/common.js:114`) — perf-only, no workload; raising
   risks the 128-local LEB128 cliff. Left at 32.
-Size reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic target ≈1.5–2× with `alloc:false`+`optimize:'size'`, NOT byte-parity.
+- [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
+  wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
+  builtin actually appearing in a kernel. Owner: module/math.js (+ siblings), test/math.js.
+- [ ] **Representation carriers** (design: research.md) — jsstring internal-locals flow;
+  boundary string cache (interop.js, by identity); schema-object field packing (i32/ptr, not
+  f64-tag); typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32
+  cell, not nanbox). Each blocked on a converging carrier fact + no current workload;
+  regression risk > theoretical win.
+- [ ] **Dead-code / interop hygiene tail** — objectLiteralEntries shadow (jzify/classes.js,
+  import dead); vestigial opts.extMap write (interop.js); cli.js deprecated profileNames;
+  document opts nativeTimers/noTailCall/modules.
+- [ ] **form-normalization folds** (lint) — `parseInt(intLit)` fold; `x=x` drop; `s+""` drop
+  (only when statically STRING); `no-useless-return`. DCE-adjacent; defer until one is hot.
+- DON'T chase (refuted/calibrated): PS-3 wasm-opt slack gate (matches measured); OPT-B/C
+  (watr-off only fires when optimize==null; vectorize is L2-default + opt-out-able). Size
+  reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic ≈1.5–2× with
+  `alloc:false`+`optimize:'size'`, NOT byte-parity.
 
-## Dead-code + interop hygiene (remaining tail — confirmed-done items archived 2026-06-04)
-Done: invalidateLocalsCache dead import, JZIFY_TRANSFORM_OPS dead export, `0x4000/0x7` →
-`LAYOUT.SSO_BIT`, per-call TextEncoder/Decoder → singleton (`interop.js:32`). Remaining:
-shadowed objectLiteralEntries jzify/classes.js (import dead); vestigial opts.extMap write
-interop.js; cli.js deprecated profileNames; document opts nativeTimers/noTailCall/modules.
-
-## Reach (perception/proof — highest external leverage)
-- **AudioWorklet + live in-browser REPL** (M): single highest-leverage move. Demos
-  ship pre-built .wasm (looks like AssemblyScript's gallery); the differentiator
-  (compiles in-browser) is invisible. rfft demo already has a source panel; ~30 lines
-  (textarea → debounce → jz(src) → postMessage(bytes) → instantiate in worklet).
-- **Dogfood digital-filter biquad** (M): bench proves jz 1.23× faster than Node on
-  that kernel; the "Used internally by" README credit is commented out (false) → make
-  it true. Gate on FUZZ-1 phase 1.
-- **unplugin-jz** (M): zero code; `.js?jz` → compile() → instantiate+re-export, ~100
-  lines, covers Vite/Rollup/webpack/esbuild.
-- **Subtractive subset spec**: PARSE-2 is exactly what a written acceptance criterion
-  would have caught.
-
-## Sequenced PRs (audit §6) — compiler PRs 1-4 shipped (Archive 2026-06-04); reach PRs remain
-5. Dogfood biquad + uncomment README credit (M).
-6. AudioWorklet glue + live REPL page (M) — highest external leverage.
-7. unplugin-jz (M).
-
-> The compiler core is done being the problem — make the world see what's built.
-
----
-
-# ✅ DONE — milestone (audit 2026-05-29, lattice + streamlining) — condensed
-(Full verbose log archived below / in `## Archive`.) Roots **B** (declared monotone
-lattice — all 3 clearStickyNull gone) and **E** (closed ValueRep typedef + REP_FIELDS
-+ dev validator) CLOSED. 8-step audit plan DONE: correctness gates (test262 fail===0
-+ xfail/xpass; determinism), divergence docs, ctx-invariant net + ownership table,
-DRY (hostImport, isBoundName, makeVal/TypedTracker F1), emitMethodCall→table +
-sidecarOverride, full opt0/1/3/wasi CI matrix, the lattice (narrowValResults hoist +
-soft-val + hardParamVal). OPT-2 `__phase` side-channel → explicit arg. Fixed 2
-miscompiles the gate caught (bare `return;`→undefined; `cond?undefined:x`→undefined),
-the bitwise loop-bound hoist (→ vectorized, 1.14×→1.00× vs V8), watr honest `trail`
-pin, the `1.e3` subscript lexer (upstream), wasi Date-clock flake. Remaining roots
-(A caching/two-walk, C collectDeclFacts, wasm resetParamWasmFacts) ASSESSED — fixes
-would add machinery / regress perf, not net-improve; left intentionally (see Archive).
-
----
-
-## jz — execution plan
-
-#### Community
-
-#### Monetization
-
-### Ecosystem & reach — sequenced (from `.work/ecosystem-audit.md`)
-
-Ordered by value × leverage × effort. The lens: **valid jz = valid JS** ⇒ the
-same source runs as JS and as jz-WASM, so every demo flips one switch to compare
-them honestly — show per-frame compute-ms, not a faked speedup (jz wins
-transcendental-heavy work; V8's JIT ties/wins pure-arithmetic loops). No other
-JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
-
-#### Examples — astonishing, build next (have 3: life / interference / mandelbrot)
-* [x] Add the **JS ⇆ jz-WASM toggle + live FPS/compute-ms HUD** to the 3 existing demos — done, shared loader/HUD in `examples/lib/jzdemo.js`, all verified in browser
-* [ ] **Strange attractors** (Clifford / de Jong / Lorenz) — 2-line f64 formula × millions of iters → luminous structure; jz's exact sweet spot
-* [ ] **Software path tracer / SDF raymarcher** — "Shadertoy on the CPU, but fast"; mirrors AS as-smallpt in plain JS
-* [ ] **Reaction-diffusion (Gray-Scott) / Lenia** — per-pixel convolution per frame; Lenia looks alive
-* [ ] **Boids + simplex flow-field** — the genart canonical (mattdesl/Hobbs); particle count *is* the benchmark
-* [ ] **CHIP-8 emulator core** — integer dispatch = jz's floor; mirrors AS wasmBoy
-* [ ] **QOI codec** (~300 readable lines) — competes with surma's 904 B hand-WAT on *size*; ties to color-space
-* [x] **FFT spectrogram** — `examples/rfft/`: floatbeat tune → jz-computed split-radix RFFT → live **log/mel spectrogram** (A-weighted per IEC 61672, equal-octave log by default, mel one click away) + momentary waveform overlay + wavefont peak-hold bars + click-to-shuffle + live code panel; JS⇄jz toggle with a **linefont FPS sparkline**. The compiler's auto i32-index narrowing makes the **idiomatic** source (no `|0`) beat V8 **1.69–1.74×** on the rfft() kernel, correctness ~1e-11, 9.9 KB wasm. Done & verified (browser + `examples/rfft/bench.mjs`). The kernel keeps its `cepstrum()` export (still benchmarked); the demo just renders the spectrum now. See Archive 2026-05-22 "RFFT i32-hoist" + "auto i32-index narrowing".
-* [ ] (later) dithering/convolution filters
-* [x] zzfx
-* [ ] vec4 package that unlocks SIMD
-* [ ] stdlib.io
-* [ ] glsl-transpiler
-* [ ]
-
-#### Flagship + the one compounding "make-world-know" move
-* [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
-* [ ] **Playground site** = gallery + floatbeat + WAT-showing REPL, every item a shareable permalink. The demo *is* the marketing. Greenfield (no `playground/`/`repl/` yet)
-
-#### Integrations (affect area: native-speed compute from plain JS, sandboxed/portable)
-* [ ] **`unplugin-jz`** — highest leverage; one plugin covers Vite/Rollup/webpack/esbuild/Rspack. `import { fib } from './fib.js?jz'` → WASM at build time. Leapfrogs AS's separate rollup-plugin + as-loader. (Folds the existing "unplugin" + "template tag as build tool" Ideas bullets)
-* [ ] **AudioWorklet path** — write `process()` in plain JS, jz compiles it in the worklet; painful today (Rust/AS+bindings)
-* [ ] **Dogfood own libs** — color-space / digital-filter / web-audio-api compute cores on jz (highest-trust benchmark; the "integrations as validation" item)
-* [ ] **Extism plugin path** — "author Extism plugins in plain JS"; underserved niche. (EdgeJS already landed — one point in this field)
-* [ ] **WASM-4 fantasy console** — supports AS/C/Rust/Zig/Go but **no plain-JS path**; cartridge = WASM `start`/`update` over a framebuffer = jz's shape. Fun, viral, direct AS territory
-* [ ] (later) live-coding hosts (Hydra/Strudel/p5/canvas-sketch) — jz as the compile-your-hot-loop escape hatch. Pitch is **warm kernel speed + tiny portable wasm**, *not* cold-start: `bench:startup` (2026-05-22) measured jz cold-start 200–1400× slower than `new Function`, so the README "compiles faster than eval" line is false and stays out
-
-#### Embedded — jz → native MCU, no interpreter
-Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → flash`.
-Unlike Espruino / Moddable XS / wasm3-arduino (all **interpreters** on-device),
-jz is **AOT-compiled to native** — zero interpreter, zero on-chip runtime. This is
-the honest differentiator and a genuine gap.
-* [ ] **Target matrix + f64 reality.** Best on FPU MCUs (Cortex-M4F/M7: ESP32, RP2040, STM32, Teensy 4, Daisy Seed). M7 (Teensy 4 / Daisy) has a **double-precision FPU** ⇒ jz's f64 model unpenalized. AVR Uno has no FPU ⇒ i32-only kernels or out of scope. Document it.
-* [ ] **Pure-compute proof.** `alloc:false`, no WASI imports, scalar kernel → C → flash → output verifies native run (reuse the existing wasm2c/w2c2 integration-test pipeline as the build harness)
-* [ ] **Flagship: biquad on hardware.** digital-filter biquad (own lib) → jz → C → Daisy Seed / Teensy audio out. DSP on MCU is jz's strongest embedded fit — audience already writes DSP in C++, would take plain JS
-* [ ] **Heap + RAM budget.** For heap-using modules pick a memory region; document RAM budget; w2c2 (C89, ~150 KB) runtime header is the small target
-
-#### Bench corpus (closes AS-parity the right way)
-* [ ] Port 2–3 AS showcase kernels into `bench/` for the head-to-head "plain JS vs typed-TS" story: path tracer, emulator core, a codec (msgpack/LZMA-style), a hash (sha256)
-
-#### Useful tools — returnable, not just demos (full reasoning § "2A" in ecosystem-audit.md)
-Wedge: compute behind an upload / paywall / native install → run it local, free, private, instant. jz = the compute core, JS = the thin UI shell.
-* [ ] **Audio workbench** (Tier 0 — own all the pieces) — decode → EQ/filter → effects → resample/convert/LUFS → export, AudioWorklet on jz kernels. Reuses audio-decode / digital-filter / audio-effect / pcm-convert / web-audio-api. **The useful flagship.**
-* [ ] **QR generator/decoder, tracker-free** — Reed-Solomon + masking = pure integer, jz's floor; universal, self-contained
-* [ ] **Local image converter/optimizer** (PNG/JPEG/WebP/QOI + dithering) — Squoosh-class privacy wedge; reuses color-space
-* [ ] **Function plotter / "compile your math"** — `f(x,t)` → compiled → plotted; showcases "faster than eval"
-* [ ] **Color/palette tool** (OKLCH↔hex, palette extraction, contrast/CVD sim) — reuses color-space
-* [ ] (niche, loyal crowds) Voronoi stippler→plotter SVG · bitmap→SVG tracer · pixel-art upscalers (EPX/xBRZ) · cymatics/harmonograph/guilloché · WFC tile generator
-* [ ] (verticals, build when a user pulls) quant (Black-Scholes/MC) · GIS (simplify/MVT) · fabrication (G-code/STL) · sci kernels (RK4/FFT/least-squares) · bioinformatics (alignment)
-* [ ] **Demoscene / js13k / Genuary culture play** — tiny WASM output = sizecoding hook; same-source JS↔WASM = prototype-then-compile. Targets: Pouët, Dwitter/tixy.land ("tixy but compiled"), Lovebyte, JS13k (jz = the compute kernel, not the DOM glue), Genuary starter. floatbeat doubles as the entry.
-* [ ] stdlib-io integration (faster whole lib)
-
-### Deferred — NOT minimal, schedule explicitly
-- Insertion-order Set/Map — open-addressing table iterates slot-order; ES
-  mandates insertion order. Needs a per-entry `seq` field or a sibling order
-  list. Currently enumerated as a documented divergence in
-  `test/test262-builtins.js` xfail list.
-- wasm-gc backend (`host: 'gc'`) — orthogonal future track. Replaces the
-  manual NaN-box + linear-memory allocator with engine GC + typed refs across
-  the whole compiler. Multi-month backend rewrite; benefits are memory-model
-  / externref-bridge / debugging, NOT a fix for boolean discrimination (the
-  landed boolean carrier, Archive › "Real-boolean carrier", resolves that in
-  wasm-v1; wasm-gc has no native typed-boolean either — `i31ref(0)` doesn't
-  discriminate from `0` the number, same atom-tag problem in different syntax).
-  Currently reserved as a compile-time error in `index.js:315`; documented in README.
-- Intl, Date locale surface, component model, threads, memory64, WebGPU —
-  Future.
-- Ship: pick ONE undeniable use case (floatbeat playground — DSP kernels are
-  jz's proven strength per the EdgeJS archive). Product call.
-
-### Ship something real
-
-* [ ] Pick ONE use case, make jz undeniable for it
-* [ ] Ship something someone uses
-* [ ] Integrations as validation: color-space converter (multi-profile), digital-filter biquad (memory profile), floatbeat playground
-* [x] Make compile faster than js eval — **resolved: don't chase it.** `bench:startup`
-  (2026-05-22) measured jz AOT cold-start 200–1400× slower than `new Function`+first call
-  (V8 lazy-compiles bodies; jz does real AOT work up front). jz's edge is warm kernel speed
-  + tiny portable wasm, not REPL latency. (Archive 2026-05-22.)
-* [ ] Benchmarks
-* [ ] Clear, fully transparent codebase; complete docs / readme / tests / repl
-  * [ ] README FAQ: document the `** 0.5 → f64.sqrt` numeric-divergence corners
-    (`(-0)**0.5 = -0`, `(-Infinity)**0.5 = NaN`; `** -0.5` left unfolded) alongside the
-    existing "errors are untagged" / Set-Map slot-order divergence notes (Archive 2026-05-22)
-
-### Floatbeat playground
-
-* [ ] Syntax highlighter
-* [ ] Waveform renderer
-* [ ] Database + recipe book
-* [ ] Samples collection
-* [ ] Chladni renderer
-
-### Language coverage / correctness
-
-* [ ] Date — deterministic spec slices first; local timezone / Intl surface later
-  * [ ] Deferred: object `ToPrimitive` coercion order (`coercion-order.js`)
-  * [ ] Defer `Date.parse` until Date value objects + UTC stringification exist
-  * [ ] Out of scope: local-time getters/setters, `getTimezoneOffset`, `toString` / `toDateString` / `toTimeString`, locale methods, `toJSON`, `Symbol.toPrimitive`, `toTemporalInstant`, subclassing, realms, descriptors, prototype shape, function `name`/`length` metadata
-* [ ] Intl
-* [ ] test262
-* [ ] All AssemblyScript tests
-* [ ] Warn/error on hitting memory limits
-* [ ] Know all fails of test262 in face and cleanly either jzify or error, don't fail unknowingly
-* [ ] Tighten tests (coverage) - randomly change features and see if tests break.
-
-### Imports & jzify
-
-* [ ] jzify script converting any JZ
-* [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
-* [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
-* [ ] align with Crockford practices
-
-### Diagnostics
-
-* [ ] Source maps (blocked on watr upstream) — meanwhile add WASM name section (function names) independently
-
-
-### Metacircularity (jz compiling jz)
-
-* [ ] Extract minimal jz parser from subscript features — jz-jessie fork excluding class/async/regex + refactor parse.js function-property assignments (~30 lines)
-* [ ] jzify uses jessie, pure jz uses internal parser
-* [ ] True metacircular bootstrap
-
-### REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop
-* [ ] resolve npm packages (url)
-
-### EdgeJS PR shape
-
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup
-
-### Future
-
-* [ ] Component interface (wit)
-* [ ] **threads/atomics** — parallelism substrate for the SoA kernels jz already
-  lane-vectorizes (TurboScript's unshipped "parallel WASM", scoped 2026-05-22). jz-shaped,
-  host owns orchestration: (1) lower `Atomics.add/sub/and/or/xor/exchange/compareExchange/
-  load/store/wait/notify` on shared typed arrays → wasm atomic ops (all valid JS, map 1:1);
-  (2) `memory: { shared: true }` → emit a shared `WebAssembly.Memory` + the `(memory … shared)`
-  form (`jz.memory()` already shares across modules); (3) worker/thread spawning stays
-  host-side — same boundary discipline as I/O; jz supplies the atomic primitives + shared
-  memory, not a thread runtime. Large (emit + assemble + interop/ABI) and no demonstrated
-  demand yet — verify a real workload first (the bar that killed monomorphization). The
-  vectorizer + shared-memory substrate already exist, so this is a coherent later increment.
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
+## Future
+- [ ] Component interface (wit).
+- [ ] **threads/atomics** — lower `Atomics.*` on shared typed arrays → wasm atomic ops;
+  `memory:{shared:true}` → shared Memory + `(memory … shared)`; worker spawn stays host-side
+  (same boundary discipline as I/O). Large; verify a real workload first. Vectorizer +
+  shared-memory substrate already exist.
+- [ ] memory64 (>4GB); relaxed SIMD; WebGPU compute shaders.
+- [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
+  typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination
+  (landed carrier resolves that in wasm-v1). Reserved error today (index.js:315).
+- [ ] **Insertion-order Set/Map** — open-addressing iterates slot-order; ES mandates insertion
+  order. Needs a per-entry `seq` or sibling order-list. Documented divergence in test262 xfail.
 
 ## Ideas
-
-* [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
-* [ ] jz as a compilation target — DSLs that want WASM output emit jz-compatible code (needs a simple IR / intermediate format) and get WASM for free
-* [ ] The template tag as a build tool — jz\`code\` in a Node script replaces a build step. No webpack, no esbuild, no plugin. Uniquely elegant and under-marketed.
-* [ ] AS integrations/plugins from https://www.assemblyscript.org/built-with-assemblyscript.html
-* [ ] potrace playground
-
-
-#### Perf
-
-* [ ] **Auto AoS→SoA carrier.** `xs[i] = rows[i].x + …` — load is a
-  pointer-chase, store lane-aligned; wasm-v1 has no gather. Honest fix is a
-  struct→SoA carrier (sibling to `src/abi/array.js`'s `structInline`),
-  blocked on the narrower emitting SoA-eligible carrier facts. Multi-week,
-  cross-cutting (touches every array consumer). Deferred until a real
-  workload demands it. Hand-written SoA already vectorizes — Archive ›
-  "opts.host user surface + custom sections reference + SoA boundary pin
-  (2026-05-20)".
-
-* [ ] **Stdlib-pull audit** *(sister to the `** 0.5 → f64.sqrt` fold, Archive 2026-05-22)*.
-  Walk `module/*.js` for builtins that emit a polyfill (exp/log/poly approximations, helper
-  calls) where wasm-v1 has a native instruction or a cheap inline fold — the sqrt fold showed
-  the headline `dist` example was paying ~1.0 kB for an exp/log call the hardware does in one
-  op. For each, fold to the native op when the argument shape allows; gate on the builtin
-  actually appearing in a kernel (don't pre-lower the unused). Size+speed on one axis, like the
-  sqrt win. Owner: `module/math.js` (+ siblings), `test/math.js`.
-
-#### Representation
-
-Per-site carrier inference. Design & rationale: `research.md` › "Representation -> per-site, inferred". The only user knob is the boundary protocol (`opts.host`, landed). Done carriers archived below; open ones:
-
-* [ ] **jsstring carrier — internal-STRING-locals flow.** Propagate
-  externref past the export boundary into internal STRING locals so parsers
-  carry `src` end-to-end without memory-backed copies. Blocked on the
-  narrower converging carrier facts across the call graph (fixpoint, not
-  just leaf exports). Archive › "jsstring boundary carrier (2026-05-20)"
-  covers the landed leaf-export work.
-* [ ] **Boundary string cache in interop.js.** Cache `mem.wrapVal(s)` by
-  string identity so repeat-same-string workloads amortize the UTF-8
-  transcode — orthogonal SSO improvement.
-* [ ] **Schema-object field packing** *(deferred — YAGNI, no consumer)*. Per-field
-  rep so `{count:0, name:''}` lays out `(i32, ptr)` not `(f64-tag, f64-tag)`; halves
-  struct size. Surveyed 2026-05-19: gap real, multi-day. Blocker: `src/abi/object.js`
-  carrier ops are `(base,i,val)` with no schemaId — `packed` needs the carrier API
-  widened + schemaId threaded through every dyn path (~6 modules). Build when a
-  struct-array-of-records workload demands it; benches use TypedArrays/SoA, not AoS records.
-* [ ] **Typed-array element rep** *(deferred — no workload)*. `xs=[1,2,3]` with int-only
-  writes → `Int32Array` backing not tagged-linear. Surveyed 2026-05-19: output shape
-  already proven via explicit `new Int32Array`, just not auto-selected. Blocker:
-  VAL.ARRAY→VAL.TYPED is a value-type change (consumers route through `__arr_*` vs
-  `__typed_*`) + needs a new narrower phase (int-only writes, no shape mutation, closed
-  read set). Benches opt into TypedArrays explicitly; watr/subscript don't show this shape.
-* [ ] **Closure-capture narrowing** *(deferred — regression risk > theoretical win)*.
-  Captured vars widen to nanbox at the cell even when used at one narrow type;
-  `let c=n|0; ()=>c++` round-trips i32↔f64 per access. Surveyed 2026-05-19: ~100 LOC
-  across 5 touch points (new `analyzeBoxedCellTypes` walking arrow bodies; dispatch
-  alloc/init in `emitPreboxedLocalInits`; load/store in `readVar`/`writeVar`; thread into
-  `emitClosureBody`). Bench closures capture objects/strings, not i32 — wins zero ops on
-  real hot paths; watr is closure-heavy and a regression vector. Re-evaluate on a
-  counter/accumulator-closure workload.
-
-
-### Lint-inspired passes — structural fix vs. advisory
-
-ESLint's reusable shape is `detect → message → (autofix | suggestion)`. jz already
-owns *detect* (analyzer / narrower) and *autofix* (the optimize passes); the missing
-half is a soft channel — today jz has only hard `err()` rejection (`src/prepare.js`,
-`jzify.js:691` `jzifyError`) and manual `--wat` self-inspection, no `ctx.warn`.
-
-**Dividing principle.** A JS↔jz divergence is fixed *structurally* when jz invented
-the gap — a representation choice, an inference decision, or a lowering simplification
-(close it; a warning there is the compiler confessing it punted). It stays a *warning
-/ opt-in trade* only when the gap is an omitted runtime mechanism that is the whole
-point of "no runtime, no GC". The boolean carrier (Archive › "Real-boolean carrier")
-is the exemplar: it *removed* the `typeof`/`String(true)` divergence instead of
-narrating it. `typeof`/`String`/`JSON.stringify`-on-boolean are therefore subsumed
-there — do not build a separate warning.
-
-#### Fix structurally (jz invented the gap — audit, then close)
-
-Done — see Archive › "Lint-inspired structural passes (2026-05-21)": i32 range-safety
-(verified held), switch fall-through (lowering rewritten to two-phase index-based),
-dupe keys (verified held), and the `Math.pow`/`~~x`/`!!x` IR folds. Remaining
-form-normalization remnants — all already *correct*, only IR-tightness is at stake:
-
-* [ ] **form-normalization remnants.** `parseInt(intLit)` → const fold; `no-self-assign`
-  (`x = x`) drop; `no-useless-concat` (`s + ""` — type-dependent, only when `s` is
-  statically STRING, else it's a meaningful ToString); `no-useless-return`. Low value /
-  DCE-adjacent; defer until one is on a hot path. Owner: `src/optimize.js`, `src/prepare.js`.
-
-#### Advisory / opt-in trade (soft warn channel — `ctx.warn`, `opts.warnings`, CLI)
-
-* [x] **Warn channel.** `ctx.warn` + `opts.warnings` sink + CLI print (mirrors `opts.profile`).
-* [x] **no-auto-reclaim leak heuristic.** `adviseHeapGrowth` in `plan()` — heap-return /
-  heap-loop / arena-rewind-skipped when bump allocator can't rewind (see `test/warnings.js`).
-* [x] **untagged errors (`e instanceof TypeError`).** `jzify` warns on `instanceof` against
-  Error constructor names — jz errors are untagged; inspect message/value instead.
-* [x] **Set/Map slot-order iteration.** `adviseSetMapIterationOrder` — for-in/for-of,
-  `.keys`/`.values`/`.entries`/spread/`JSON.stringify` on Set/Map bindings.
-* [x] **perf-feedback advisories.** `adviseJsstringCarrier` (externref carrier declined),
-  `adviseSimdLoops` (loop-carried scalar, AoS stride). Further vectorizer bails can
-  hook the same pass as reasons are surfaced.
-
-**Skip — already enforced by the subset.** `no-var` / `eqeqeq` / `no-undef` / `no-with` /
-`no-eval` are rejected at the subset boundary (`src/prepare.js:615`, `:1047`); borrow only
-ESLint's "use Y instead" *message* style (jzify already does this), don't re-implement the rules.
+- [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
+- [ ] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
+- [ ] template tag as a build tool — jz`code` in a Node script replaces a build step.
+- [ ] AS integrations/plugins (assemblyscript.org/built-with);
+- [ ] potrace playground.
+- [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
 
 ---
 
 ## Archive
+
+### CI perf-gate robustification + exp2 fast-path (2026-06-10)
+
+The "Celesta Dreams 1.43× / perf-fuzz failing" CI report was no regression — jz wins the
+floatbeat corpus (geomean 0.52×) and perf-fuzz (geomeans 0.75–0.90× vs floors). The lone
+failure was always Celesta tripping the floatbeat per-beat backstop (host-bound ratio: 0.78×
+locally, 1.43× on the shared runner, *identical* wasm); perf-fuzz passed every run.
+
+* [x] **exp2 single-build 2^k for the normal range** (`bff62ce`) — for k ∈ [−1022,1023] a
+  single IEEE-exponent build is bit-identical to the two-factor split (powers of two multiply
+  exactly) but ~5 ops cheaper; the split stays for denormal/overflow edges. Math.exp 1.41→1.31×
+  vs V8, accuracy unchanged (maxRel 2.4e-9). Examples using exp rebuilt. Follow-on to PS-2.
+* [x] **CI-aware floatbeat backstop** (`e31db26`) — geomean ≤1.0× stays the per-corpus guarantee
+  everywhere; the per-beat backstop is a gross-regression net, loose (2×) on CI (still catches an
+  __ptr_offset-style 4× cliff), tight (1.4×) off-CI. Mirrors native-C "informational on CI".
+* [x] **perf-fuzz int/mixed max as blow-up nets** (`024bbb8`) — 1.35/1.75 → 1.60/2.25; they sat a
+  hair over the legit CI tier-gap outliers (1.24/1.68) so were tripwires. Geomean caps (the real
+  guard) unchanged. The max nets a single-program miscompile the geomean can't (1 blown of 30).
+* [x] **Examples drift gate excludes jukebox beats** (`41785a5`) — floatbeat compiled bytes aren't
+  reproducible across Node/V8 versions (CI Node 22 vs local 25.x); covered by bytebeat correctness
+  + the floatbeat perf gate instead. Beat structural non-determinism root unpinpointed (flagged).
+* [x] **Earlier this cycle** — BigInt-safe nodeEqual + csePureExpr hoist key (`b64cb46`);
+  csePureExpr DAG refcount guard (`63a5669`); aos __ptr_offset cliff fix via unboxed ptrKind
+  (in `d382edd`); nested mixed-arity `=== undefined` fold (`1a239ce`); robustified bytebeat
+  asserts (maxBadFrac tolerance, `0c3fcfd`); floatbeat perf gate added (`b8bbfb4`).
+
+### Examples gallery + JS⇆jz toggle + warn channel (2026-05/06)
+
+* [x] **Examples gallery** + the **JS⇆jz-WASM toggle + FPS/compute-ms HUD** on the demos (shared
+  loader `examples/lib/jzdemo.js`); **zzfx**; rfft spectrogram (detailed entry below).
+* [x] **Warn channel** — `ctx.warn` + `opts.warnings` sink + CLI print; advisories:
+  `adviseHeapGrowth` (no-auto-reclaim leak), untagged-errors (`instanceof` on Error names),
+  Set/Map slot-order iteration, jsstring-carrier-declined, SIMD loop bails. `test/warnings.js`.
+  (Lint "skip — enforced by subset": no-var/eqeqeq/no-undef/no-with/no-eval rejected at the
+  subset boundary; borrow only ESLint's "use Y instead" message style.)
+
+### Milestone — declared-monotone lattice + streamlining (audit 2026-05-29)
+
+Roots **B** (monotone lattice — all 3 clearStickyNull gone) and **E** (closed ValueRep typedef
++ REP_FIELDS + dev validator) CLOSED. 8-step plan done: correctness gates (test262 fail===0 +
+xfail/xpass; determinism), divergence docs, ctx-invariant net + ownership table, DRY (hostImport,
+isBoundName, makeVal/TypedTracker F1), emitMethodCall→table + sidecarOverride, full opt0/1/3/wasi
+CI matrix, the lattice (narrowValResults hoist + soft-val + hardParamVal). OPT-2 `__phase`
+side-channel → explicit arg. Fixed 2 miscompiles the gate caught (bare `return;`→undefined;
+`cond?undefined:x`→undefined), the bitwise loop-bound hoist (→ vectorized, 1.14→1.00× vs V8),
+watr honest `trail` pin, the `1.e3` subscript lexer (upstream), wasi Date-clock flake. Remaining
+roots (A caching/two-walk, C collectDeclFacts, wasm resetParamWasmFacts) assessed — fixes would
+add machinery / regress perf, left intentionally.
 
 ### Audit-2026-05-29 frontier — correctness leaks + perf + optimizer batch — CLOSED (2026-06-04)
 
