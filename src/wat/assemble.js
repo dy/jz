@@ -466,33 +466,34 @@ export function syncImports(sec) {
 /**
  * Phase: whole-module + per-function optimization passes.
  */
-export function optimizeModule(sec) {
+export function optimizeModule(sec, profiler) {
+  const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
   const cfg = ctx.transform.optimize
-  if (!cfg || cfg.specializeMkptr !== false)
-    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-  if (!cfg || cfg.specializePtrBase !== false)
-    specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-  if (ctx.runtime.strPool && (!cfg || cfg.sortStrPoolByFreq !== false)) {
+  if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
+  if (!cfg || cfg.specializePtrBase !== false) t('specializePtrBase', () =>
+    specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
+  if (ctx.runtime.strPool && (!cfg || cfg.sortStrPoolByFreq !== false)) t('sortStrPool', () => {
     const poolRef = { pool: ctx.runtime.strPool }
     sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
     ctx.runtime.strPool = poolRef.pool
-  }
+  })
   // (globalTypes backfill gone: declGlobal sets the type at declaration.)
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
   const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
-  const volatileGlobals = collectVolatileGlobals(allFuncs)
-  const reachableWrites = collectReachableGlobalWrites(allFuncs)
+  const volatileGlobals = t('volatileGlobals', () => collectVolatileGlobals(allFuncs))
+  const reachableWrites = t('reachableWrites', () => collectReachableGlobalWrites(allFuncs))
   // Offset-hoist BEFORE promoteGlobals (inside optimizeFunc): value-promoting a
   // stable-pointee global to a $_pg local would destroy the global.get pattern
   // this pass matches, reverting rfft/diffusion to per-iteration resolves. After
   // the hoist, the surviving global.get count is 1 (the entry snap) — naturally
   // below promoteGlobals' threshold, so the two passes compose either way.
-  if (!cfg || cfg.hoistGlobalPtrOffset !== false) {
+  if (!cfg || cfg.hoistGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
     const stable = stablePtrGlobalNames()
     if (stable.size) for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, reachableWrites)
-  }
-  for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, 'pre', reachableWrites)
+  })
+  t('optimizeFuncs', () => { for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, 'pre', reachableWrites) })
   if (!cfg || cfg.arenaRewind !== false) {
     const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
     const fnByName = new Map()
