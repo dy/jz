@@ -522,6 +522,14 @@ export default (ctx) => {
 
   // Object.create(proto) → shallow copy of object (same schema, copied properties)
   ctx.core.emit['Object.create'] = (proto) => {
+    // Object.create(null) → a fresh, empty, extensible object (no prototype). Without
+    // this it falls to the `protoType == null` runtime path below, which returns the
+    // proto value (null) itself; property writes on null then land in the GLOBAL
+    // __dyn_props table keyed by name, so two such objects collide on same-named keys
+    // (`a=Object.create(null); b=Object.create(null); a.x=1; b.x=2` left a.x===2). Reuse
+    // the empty-`{}` path, whose per-object hash keeps dynamic keys independent. (Native
+    // never hit this — its compiler runs Object.create on the host JS engine.)
+    if (isNullishLiteral(proto)) return ctx.core.emit['{}']()
     const protoType = typeof proto === 'string' ? lookupValType(proto) : valTypeOf(proto)
     if (protoType === VAL.ARRAY) {
       // Clone array data + link named-prop sidecar so for-in/bracket-name lookups
