@@ -178,3 +178,15 @@ bench-size geomean, ratchet (re-baseline only on intentional improvement).
 - **interference at 1.00×** — the examples FLOOR 0.9→1.0 blocker.
 - **Self-host options** (user ask): extend scripts/self.js + dist/jz.wasm to
   accept compile options (optimize levels, strict, host) — currently minimal setup.
+
+### 1.2 slice 2 — diagnosis (probed 2026-06-10, ready to implement next session)
+Internal heap-string per-char read is already good: SSO flag hoisted to a local,
+non-SSO arm is a direct strided i32.load8_u; the per-char costs are (a) the OOB
+check `i >= cclen → NaN` and (b) the char VALUE riding f64 — charCodeAt's
+OOB→NaN semantics poison intCertain, so isAlpha/isDigit comparisons emit
+f64.ge/le against pooled f64 consts instead of i32 compares. THE fix is
+iteration-range splitting: when the loop bound can exceed cclen only at the
+tail, emit an in-bounds main loop (char = pure i32, i32 compares, SIMD-able)
+plus an OOB tail loop. Multi-day; benefits tokenizer-class scanners and the
+watr substrate (1.17× trail). Alternative cheaper slice: prove `len <= s.length`
+via dominating guards (flow-types refinement) to drop the OOB check + NaN arm.
