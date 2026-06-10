@@ -54,7 +54,9 @@ const EXAMPLES = [
   { name: 'attractors', frame: 'frame 1.2M iters',
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
-  { name: 'lenia', frame: 'frame ×1', opt: true,
+  // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global
+  // resolves hoisted (one site × 14M taps/frame); now ~1.8×. Gated.
+  { name: 'lenia', frame: 'frame ×1',
     make: (e) => { e.resize(160, 120); e.seed(); return () => e.frame(0.1) } },
 
   // jz compiles the 4-wide SIMD kernel; V8 runs the scalar baseline. Same image, ~3×.

@@ -1715,18 +1715,23 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
       && Array.isArray(n[2][1]) && n[2][1][0] === 'global.get' && typeof n[2][1][1] === 'string'
       ? n[2][1][1] : null
 
-  const counts = new Map(), ownWrites = new Set(), ownCallees = new Set()
+  // Per-global: static site count AND whether any site sits inside a loop. A
+  // single in-loop site is a per-ITERATION resolve (lenia's convolution reads
+  // each of kdx/kdy/kw at one site × ~14M taps/frame), so loop placement beats
+  // site count as the hoist criterion.
+  const counts = new Map(), inLoop = new Set(), ownWrites = new Set(), ownCallees = new Set()
   let hasIndirect = false
-  const scan = (n) => {
+  const scan = (n, loopDepth) => {
     if (!Array.isArray(n)) return
     const g = siteGlobal(n)
-    if (g != null) { counts.set(g, (counts.get(g) || 0) + 1); return }
+    if (g != null) { counts.set(g, (counts.get(g) || 0) + 1); if (loopDepth > 0) inLoop.add(g); return }
     if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
     else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
     else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
-    for (let i = 1; i < n.length; i++) scan(n[i])
+    const d = n[0] === 'loop' ? loopDepth + 1 : loopDepth
+    for (let i = 1; i < n.length; i++) scan(n[i], d)
   }
-  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i], 0)
   if (!counts.size) return
 
   const calleeWrites = (g) => {
@@ -1750,7 +1755,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
 
   const chosen = new Map()  // global → snap local
   for (const [g, c] of counts) {
-    if (c < 2 || !stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites(g)) continue
+    if ((c < 2 && !inLoop.has(g)) || !stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites(g)) continue
     chosen.set(g, freshId())
   }
   if (!chosen.size) return
