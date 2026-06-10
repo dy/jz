@@ -509,16 +509,25 @@ export default (ctx) => {
   // (so no reciprocal cancellation against exp's ÷ln2), a poly over the tighter [-0.5,0.5],
   // and the same O(1) IEEE-exponent build of 2^k. ~6e-9 rel. error — well inside tolerance.
   wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
-    (local $k i32) (local $f f64) (local $k2 i32)
+    (local $k i32) (local $f f64) (local $k2 i32) (local $p f64)
     (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
     (if (result f64) (f64.gt (local.get $y) (f64.const 1024.0)) (then (f64.const inf)) (else
       (if (result f64) (f64.lt (local.get $y) (f64.const -1075.0)) (then (f64.const 0.0)) (else
         (local.set $k (i32.trunc_f64_s (f64.nearest (local.get $y))))
         (local.set $f (f64.sub (local.get $y) (f64.convert_i32_s (local.get $k))))
-        (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
-        (f64.mul (f64.mul ${horner(EXP2_C, '$f')}
-          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
-          (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))`)
+        (local.set $p ${horner(EXP2_C, '$f')})
+        ;; 2^k via a single IEEE-exponent build for the normal range (the hot path); the
+        ;; two-factor split (2^k2 · 2^(k−k2)) is only needed at the denormal/overflow edges.
+        ;; For normal k both are bit-identical (powers of two multiply exactly) — free speedup.
+        (if (result f64)
+          (i32.and (i32.gt_s (local.get $k) (i32.const -1023)) (i32.lt_s (local.get $k) (i32.const 1024)))
+          (then (f64.mul (local.get $p)
+            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k) (i32.const 1023))) (i64.const 52)))))
+          (else
+            (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
+            (f64.mul (f64.mul (local.get $p)
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
 
   // Maclaurin coefficients 1/1!…1/8! for e^x−1 = x·(1 + x/2! + x²/3! + …), Horner-nested
   // (built with an explicit right-to-left fold so the parens stay balanced — and so the
