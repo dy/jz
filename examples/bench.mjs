@@ -47,9 +47,11 @@ const EXAMPLES = [
     make: (e) => { e.resize(760, 760); let f = 40; return () => e.frame(f = f < 2000 ? f + 7 : 40) } },
 
   { name: 'reaction-diffusion', frame: 'frame (8 substeps)',
-    make: (e) => { e.resize(448, 448); e.seed(); return () => e.frame() } },
+    make: (e) => { e.resize(448, 448); e.clear(); e.seedRect(200, 200, 248, 248); return () => e.frame() } },
 
-  { name: 'attractors', frame: 'frame 1.2M iters', opt: true,
+  // Serial recurrence (x,y chain), no cross-iteration ILP — yet jz wins ~1.3×
+  // since hoistGlobalPtrOffset (the trig + plot-buffer writes dominate). Gated.
+  { name: 'attractors', frame: 'frame 1.2M iters',
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
   { name: 'lenia', frame: 'frame ×1', opt: true,
@@ -65,8 +67,8 @@ const EXAMPLES = [
   { name: 'zzfx', frame: 'zzfxG Coin',
     make: (e, mem) => mem ? () => { e.zzfxG(...COIN); mem.reset() } : () => e.zzfxG(...COIN) },
 
-  { name: 'jukebox', frame: 'fill 2.6s',
-    make: (e, mem) => { const L = 44100 * 2.6 | 0; return mem ? () => { e.fill(L, 44100, 7, 0); mem.reset() } : () => e.fill(L, 44100, 7, 0) } },
+  // jukebox: per-beat modules (floatbeats.js), gated in test/bench.js — the
+  // floatbeat geomean ≤ 0.85× + per-beat backstop cover the whole corpus.
 ]
 
 // Auto-calibrated median µs/op: warm, size a batch to ~30ms, take the best-of-9
