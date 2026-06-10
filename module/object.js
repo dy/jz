@@ -11,7 +11,7 @@ import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block
 import { emit } from '../src/bridge.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -990,7 +990,7 @@ function runtimeKeysFromTemp(t, tag) {
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
   // and the watr resolver requires the symbol to be declared.
   if (!ctx.scope.globals.has('__schema_tbl'))
-    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+    declGlobal('__schema_tbl', 'i32')
   const tt = tempI32(`${tag}t`)
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: `${tag}e` })
   return ['block', ['result', 'f64'],
@@ -1007,7 +1007,7 @@ function runtimeKeysFromTemp(t, tag) {
 function emitRuntimeValues(obj) {
   inc('__ptr_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
-    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+    declGlobal('__schema_tbl', 'i32')
   const t = temp('rv'), tt = tempI32('rvt')
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rve' })
   return typed(['block', ['result', 'f64'],
@@ -1025,7 +1025,7 @@ function emitRuntimeValues(obj) {
 function emitRuntimeEntries(obj) {
   inc('__ptr_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
-    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+    declGlobal('__schema_tbl', 'i32')
   const t = temp('re'), tt = tempI32('ret')
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'ree' })
   return typed(['block', ['result', 'f64'],

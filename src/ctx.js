@@ -99,6 +99,17 @@ export const derive = (parent) => ({ ...parent })
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 
+/** Declare a module global as a structured record — the single shape behind
+ *  every `ctx.scope.globals` entry:
+ *    { type: 'i32'|'i64'|'f64', mut: bool, init: number|string, export: string|null }
+ *  `init` is a number or a watr const literal (`-1`, `nan:0x…`, hex). Replaces
+ *  the old WAT-text strings: type queries are field reads, emission builds IR
+ *  directly (no parse-back), and `globalTypes` is set in the same move. */
+export const declGlobal = (name, type, init = 0, opts) => {
+  ctx.scope.globals.set(name, { type, mut: opts?.mut !== false, init, export: opts?.export ?? null })
+  ctx.scope.globalTypes.set(name, type)
+}
+
 /** Wrap an emit handler with a declarative stdlib-dependency list. The deps
  *  become data — exposed as `.deps` (tabulatable, analyzable) — and are `inc`'d
  *  on every call, while the body `fn` stays a pure `args → IR` builder (also
@@ -189,7 +200,7 @@ export function reset(proto, globals, bridge) {
 
   ctx.scope = {
     chain: derive(globals),
-    globals: new Map(),
+    globals: new Map(), // name → { type, mut, init, export } records (see declGlobal)
     userGlobals: new Set(),
     globalTypes: new Map(),
     globalValTypes: null,

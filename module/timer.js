@@ -28,7 +28,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
 import { emit, deps, hostImport } from '../src/bridge.js'
-import { inc, PTR, LAYOUT } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
@@ -230,9 +230,9 @@ const setupWasi = (ctx) => {
   // $__timer_queue: i32 — base address of timer array
   // $__timer_next_id: i32 — next timer ID
   // $__timer_count: i32 — number of active timers
-  ctx.scope.globals.set('__timer_queue', '(global $__timer_queue (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__timer_next_id', '(global $__timer_next_id (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__timer_count', '(global $__timer_count (mut i32) (i32.const 0))')
+  declGlobal('__timer_queue', 'i32')
+  declGlobal('__timer_next_id', 'i32')
+  declGlobal('__timer_count', 'i32')
 
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {

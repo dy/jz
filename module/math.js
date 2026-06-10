@@ -14,7 +14,7 @@
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bridge.js'
-import { inc } from '../src/ctx.js'
+import { inc, declGlobal } from '../src/ctx.js'
 import { repOf } from '../src/reps.js'
 
 export default (ctx) => {
@@ -1126,9 +1126,9 @@ export default (ctx) => {
 
   // Global for random state — seeded with the fixed constant (deterministic) or,
   // in entropy mode, overwritten from the host on first Math.random() call.
-  ctx.scope.globals.set('math.rng_state', `(global $math.rng_state (mut i32) (i32.const ${rngSeedConst}))`)
+  declGlobal('math.rng_state', 'i32', rngSeedConst)
   if (rngEntropy) {
-    ctx.scope.globals.set('math.rng_seeded', '(global $math.rng_seeded (mut i32) (i32.const 0))')
+    declGlobal('math.rng_seeded', 'i32')
     // One i32 of host entropy, floored at 1 (xorshift32 is dead at state 0).
     wat('__rng_seed', ctx.transform.host === 'wasi'
       ? `(func $__rng_seed (result i32)

@@ -13,7 +13,7 @@ import { emit, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody } from '../src/ast.js'
-import { ctx, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, getter, declGlobal } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -472,10 +472,10 @@ export default (ctx) => {
   // entries or touching the lookup/delete hot paths. i32: wraps after 2^32 total
   // inserts — unreachable in practice; fresh per wasm instance.
   if (!ctx.scope.globals.has('__seq'))
-    ctx.scope.globals.set('__seq', '(global $__seq (mut i32) (i32.const 0))')
+    declGlobal('__seq', 'i32')
 
   if (!ctx.scope.globals.has('__dyn_props'))
-    ctx.scope.globals.set('__dyn_props', '(global $__dyn_props (mut f64) (f64.const 0))')
+    declGlobal('__dyn_props', 'f64')
   // 1-slot inline cache for the global __dyn_props lookup. Hot path for
   // metacircular workloads (watr WAT parser): ~96% of execution sits in
   // __dyn_get_t / __ihash_get_local. Caches last-seen (off → propsPtr) at
@@ -483,15 +483,15 @@ export default (ctx) => {
   // propsPtr is replaced (rehash on grow). Sentinel cache_off = -1 cannot
   // collide with a real memory offset (always non-negative i32).
   if (!ctx.scope.globals.has('__dyn_get_cache_off'))
-    ctx.scope.globals.set('__dyn_get_cache_off', '(global $__dyn_get_cache_off (mut i32) (i32.const -1))')
+    declGlobal('__dyn_get_cache_off', 'i32', -1)
   if (!ctx.scope.globals.has('__dyn_get_cache_props'))
-    ctx.scope.globals.set('__dyn_get_cache_props', '(global $__dyn_get_cache_props (mut f64) (f64.const 0))')
+    declGlobal('__dyn_get_cache_props', 'f64')
   // Schema name table for __dyn_get's OBJECT-schema fallback (polymorphic-receiver
   // `.prop` access). Same declaration as json.js — defined here too so collection
   // doesn't transitively require json. compile.js's schemaInit populates it when
   // schema list is non-empty AND (__stringify OR __dyn_get) is included.
   if (!ctx.scope.globals.has('__schema_tbl'))
-    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+    declGlobal('__schema_tbl', 'i32')
 
   // __ext_* imports carry NaN-boxed pointers across the env boundary as i64
   // (not f64) to dodge V8's f64 NaN canonicalization at the wasm↔JS edge —

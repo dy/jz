@@ -1937,7 +1937,7 @@ function inferTypeFromContext(fn, gName, bodyStart) {
  * Pool entries sorted by usage descending, so hottest get lowest indices (1-byte LEB128).
  * Break-even: N ≥ 2 uses (pool cost: 11 B global decl + 2N bytes vs 9N original).
  *
- * Mutates `funcs` in place; writes new global decls via `addGlobal(name, watString)`.
+ * Mutates `funcs` in place; writes new global decls via `addGlobal(name, constLiteral)`.
  */
 export function hoistConstantPool(funcs, addGlobal) {
   const MIN_USES = 2
@@ -1968,7 +1968,7 @@ export function hoistConstantPool(funcs, addGlobal) {
   for (const [k] of sorted) {
     const name = `__fc${gId++}`
     const lit = k.slice(2)
-    addGlobal(name, `(global $${name} (mut f64) (f64.const ${lit}))`)
+    addGlobal(name, lit)
     hoist.set(k, name)
   }
   if (!hoist.size) return

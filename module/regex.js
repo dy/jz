@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
-import { ctx, err, inc, PTR, LAYOUT, getter } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, getter, declGlobal } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 
@@ -767,8 +767,8 @@ export default (ctx) => {
     // Reserve mutable globals for capture group start/end (shared across regexes by index)
     for (let i = 1; i <= (ast.groups || 0); i++) {
       if (!ctx.scope.globals.has(`__re_g${i}_start`)) {
-        ctx.scope.globals.set(`__re_g${i}_start`, `(global $__re_g${i}_start (mut i32) (i32.const -1))`)
-        ctx.scope.globals.set(`__re_g${i}_end`, `(global $__re_g${i}_end (mut i32) (i32.const -1))`)
+        declGlobal(`__re_g${i}_start`, 'i32', -1)
+        declGlobal(`__re_g${i}_end`, 'i32', -1)
       }
     }
     ctx.runtime.regex.groups.set(id, ast.groups || 0)
@@ -811,7 +811,7 @@ export default (ctx) => {
     if ((flags || '').includes('g') || (flags || '').includes('y')) {
       const liGlobal = `__re_lastIndex_${id}`
       if (!ctx.scope.globals.has(liGlobal))
-        ctx.scope.globals.set(liGlobal, `(global $${liGlobal} (mut i32) (i32.const 0))`)
+        declGlobal(liGlobal, 'i32')
     }
 
     inc(funcName, searchName, searchFromName, '__str_to_buf')

@@ -23,7 +23,7 @@
  */
 
 import { handlerArgs, refsName, ASSIGN_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
-import { ctx, err, derive, emitArity } from '../ctx.js'
+import { ctx, err, derive, emitArity, declGlobal } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
@@ -829,7 +829,7 @@ function scalarArrayDestruct(pattern, rhs) {
 function declareGlobal(name, user = true) {
   if (depth !== 0 || typeof name !== 'string') return name
   if (ctx.scope.globals.has(name)) err(`'${name}' conflicts with a compiler internal — choose a different name`)
-  ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+  declGlobal(name, 'f64')
   if (user) ctx.scope.userGlobals.add(name)
   return name
 }
@@ -968,7 +968,7 @@ function prepDecl(op, ...inits) {
           ctx.scope.chain[i] = declName
         }
         if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
-        ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
+        declGlobal(declName, 'f64')
         ctx.scope.userGlobals.add(declName)
       } else if (typeof declName === 'string') {
         // Bare hoisted decl inside a function (var X jzified to `let X` at top
@@ -1109,7 +1109,7 @@ function prepDecl(op, ...inits) {
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
         if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
-        ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
+        declGlobal(declName, 'f64')
         ctx.scope.userGlobals.add(declName)
       }
       rest.push(['=', declName, normed])
@@ -1625,7 +1625,7 @@ const handlers = {
         if (defFunc('default', prep(val))) return null
       }
       // export default expr → create global 'default'
-      ctx.scope.globals.set('default', `(global $default (mut f64) (f64.const 0))`)
+      declGlobal('default', 'f64')
       ctx.scope.userGlobals.add('default')
       return ['=', 'default', prep(val)]
     }
@@ -2359,9 +2359,9 @@ function prepareModule(specifier, source) {
     const func = ctx.func.list.find(f => f.name === localName)
     if (func) { renameFunc(func, mangled); func._modulePrefix = prefix }
     if (ctx.scope.globals.has(localName)) {
-      const wat = ctx.scope.globals.get(localName).replace(`$${localName}`, `$${mangled}`)
+      // Records carry no name — a rename is a pure Map re-key.
+      ctx.scope.globals.set(mangled, ctx.scope.globals.get(localName))
       ctx.scope.globals.delete(localName)
-      ctx.scope.globals.set(mangled, wat)
       if (ctx.scope.userGlobals.has(localName)) { ctx.scope.userGlobals.delete(localName); ctx.scope.userGlobals.add(mangled) }
       if (ctx.scope.globalTypes.has(localName)) { ctx.scope.globalTypes.set(mangled, ctx.scope.globalTypes.get(localName)); ctx.scope.globalTypes.delete(localName) }
     }
@@ -2410,9 +2410,8 @@ function prepareModule(specifier, source) {
       const func = ctx.func.list.find(f => f.name === alias)
       if (func) renameFunc(func, mangled)
       if (ctx.scope.globals.has(alias)) {
-        const wat = ctx.scope.globals.get(alias).replace(`$${alias}`, `$${mangled}`)
+        ctx.scope.globals.set(mangled, ctx.scope.globals.get(alias))
         ctx.scope.globals.delete(alias)
-        ctx.scope.globals.set(mangled, wat)
         if (ctx.scope.userGlobals.has(alias)) { ctx.scope.userGlobals.delete(alias); ctx.scope.userGlobals.add(mangled) }
       }
     }
