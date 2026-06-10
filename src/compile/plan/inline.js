@@ -275,6 +275,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // argument is a known function name the resulting indirect call collapses to
   // a direct `call` (devirtualization).
   const forwarders = new Set()
+  // Loop-free leaves — safe to splice into EXPORTED callers too: the tier-up
+  // rationale for skipping exports concerns relocating loop KERNELS into cold
+  // entry points, not pulling a leaf INTO an export's hot loop (game-of-life's
+  // step calls rot per cell; pre-Turboshaft wasm tiers never inline calls).
+  const leaves = new Set()
   for (const func of ctx.func.list) {
     const sites = sitesByCallee.get(func.name)
     // Exported leaf/kernel with exactly one internal caller (e.g. fill→beat in
@@ -317,7 +322,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
     if (!hasLoop) {
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
-      if (nodeSize(func.body) > 30) continue
+      // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
+      // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
+      // for most of 260k cells/frame). V8's pre-Turboshaft wasm tiers never
+      // inline cross-function, so an out-of-line leaf in a hot loop is a hard
+      // per-cell tax on Node ≤ 22 — and still saves call setup on newer tiers.
+      const allSitesInLoop = sites.every(site =>
+        site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false))
+      if (nodeSize(func.body) > (allSitesInLoop ? 80 : 30)) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -334,6 +346,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
+    if (!hasLoop) leaves.add(func.name)
     candidates.set(func.name, func)
   }
   if (!candidates.size) return false
@@ -355,7 +368,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // Forwarders cross into an exported caller too: the tier-up rationale that
     // keeps candidates out of exports concerns relocated loop kernels, not
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
-    if (fixedSiteExported || forwarders.has(name) || sites?.length === 1) exportedCandidates.set(name, func)
+    if (fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) exportedCandidates.set(name, func)
   }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue

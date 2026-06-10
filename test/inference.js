@@ -145,11 +145,13 @@ test('paramReps val: consistent ARRAY callers fold to direct header read', () =>
 test('paramReps val: caller disagreement forces __length poly', () => {
   // Caller a passes array, caller b passes string → val sticky-null on the
   // lattice → callee falls back to fully-polymorphic __length.
+  // sourceInline off: inlined, each site resolves monomorphically and the
+  // poly __length (the mechanism under test) correctly disappears.
   const wat = jz.compile(`
     const lenOf = (xs) => xs.length
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf('foo')
-  `, { wat: true })
+  `, { wat: true, optimize: { sourceInline: false } })
   ok(count(wat, /\$__length\b/g) >= 1, 'sticky-null val should keep __length')
 })
 
@@ -157,11 +159,13 @@ test('intConst: unanimous int-literal arg folds local.get to i32 const', () => {
   // Every caller passes k=7 → narrow.js D-phase sets paramReps[scale][1]
   // .intConst=7. compile.js seeds localReps.intConst; emitLocalGet sees it
   // and emits the literal instead of a local read.
+  // sourceInline off: the fixture observes the narrowing through $scale's
+  // body, and the leaf inliner would otherwise (correctly) dissolve it.
   const wat = jz.compile(`
     const scale = (x, k) => x * k
     export const a = (x) => scale(x, 7)
     export const b = (x) => scale(x, 7)
-  `, { wat: true })
+  `, { wat: true, optimize: { sourceInline: false } })
   const body = wat.match(/\(func \$scale[\s\S]*?^  \)/m)
   ok(body, 'expected $scale func')
   ok(/f64\.const 7/.test(body[0]), 'expected k folded to f64.const 7')
@@ -175,7 +179,7 @@ test('intConst: caller disagreement keeps local.get', () => {
     const scale = (x, k) => x * k
     export const a = (x) => scale(x, 7)
     export const b = (x) => scale(x, 9)
-  `, { wat: true })
+  `, { wat: true, optimize: { sourceInline: false } })
   const body = wat.match(/\(func \$scale[\s\S]*?^  \)/m)
   ok(body, 'expected $scale func')
   ok(/local\.get \$k/.test(body[0]), 'disagreement should keep local.get')
