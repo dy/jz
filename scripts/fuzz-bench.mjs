@@ -118,16 +118,24 @@ const summary = run()
 // firmness visibility (¾-win) but not gated, for the same portability reason. The
 // truly portable "firm" signal is a jz-vs-jz throughput ratchet — see TODO below.
 // --gate=N overrides every category's geomean cap (legacy uniform mode).
+//
+// `max` sizing: it's the net for a *single-program* blow-up (a miscompile emitting
+// pathological code) — which the geomean cannot catch, since one blown program among
+// 30 barely moves the average. So it must sit ABOVE the legit hardware tier-gap
+// outlier and BELOW a real miscompile. Observed shared-CI-runner legit ceilings:
+// float ~1.05×, int ~1.24×, mixed ~1.68× — earlier int/mixed maxes (1.35/1.75) sat a
+// hair over those, so they were tripwires that flaked on a noisy run, not blow-up
+// nets. Sized now with noise margin (still nets a ≥1.6×/≥2.25× single-program blow-up).
 const FLOORS = {
-  float: { geo: 0.90, max: 1.25 },   // firm: jz's hardware-robust win
-  int:   { geo: 1.12, max: 1.35 },
-  mixed: { geo: 1.25, max: 1.75 },   // V8 wasm-tier floor (hardware-variable) — blow-up gate only
+  float: { geo: 0.90, max: 1.25 },   // firm: jz's hardware-robust win (legit max ~1.05×)
+  int:   { geo: 1.12, max: 1.60 },   // geomean is the guard; max nets a single-program blow-up over the ~1.24× outlier
+  mixed: { geo: 1.25, max: 2.25 },   // V8 wasm-tier floor (hardware-variable); max clears the ~1.68× outlier
 }
 const fmt = (x) => Number.isFinite(x) ? x.toFixed(2) + '×' : 'no-data'
 const override = Number((process.argv.find(a => a.startsWith('--gate=')) || '').slice(7)) || null
 const fails = []
 for (const [cat, s] of Object.entries(summary)) {
-  const t = FLOORS[cat] || { geo: 1.15, max: 1.75 }
+  const t = FLOORS[cat] || { geo: 1.15, max: 2.0 }
   const geoCap = override ?? t.geo
   if (!(s.geo <= geoCap)) fails.push(`${cat} geomean ${fmt(s.geo)} > ${geoCap}×`)
   if (!override && !(s.max <= t.max)) fails.push(`${cat} max ${fmt(s.max)} > ${t.max}× — blow-up, inspect the slowest seed`)
