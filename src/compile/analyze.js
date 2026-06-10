@@ -520,27 +520,65 @@ export function analyzeBody(body) {
   let unsignedLocals
   try {
     walk(body)
+    widenLocalTypes(body, locals)
+    // Narrow proven uint32 accumulator locals to unsigned i32. Runs post-widen so
+    // a local already demoted to f64 above (e.g. compared against an f64) is
+    // reconsidered with final types — and stays f64, since a relational compare
+    // is a non-transparent read that disqualifies narrowing anyway.
+    unsignedLocals = narrowUint32(body, locals)
+  } finally {
+    ctx.func.localValTypesOverlay = prevOverlay
+    ctx.func.localTypedElemsOverlay = prevTypedOverlay
+  }
 
-    // Second pass: widen i32 locals compared against f64 — EXCEPT integer counters
-    // used as affine array indices, which provably stay in i32 range (see
-    // collectI32SafeIndexVars). Keeping those i32 gives direct indexing with no
-    // per-access trunc_sat; the compare coerces the counter to f64 instead. A
-    // genuinely-fractional counter (`i = i / 3`) is still widened by the assignment
-    // fixpoint below, which runs after this pass and overrides the i32 decision.
+  // SRoA: dissolve non-escaping object-literal bindings into field locals.
+  // The dead `o` local is dropped — every `o` reference is rewritten by the
+  // codegen flat hooks, so a stray `local.get $o` becomes a loud wasm
+  // validation error instead of a silent miscompile.
+  const flatObjects = doSchemas ? scanFlatObjects(body) : new Map()
+  for (const [name, props] of flatObjects) {
+    for (let i = 0; i < props.names.length; i++) locals.set(`${name}#${i}`, 'f64')
+    locals.delete(name)
+  }
+
+  // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
+  // Consumed by emitDecl, which lowers the initializer to a SLICE_BIT view.
+  const sliceViews = doSchemas ? scanSliceViews(body) : new Set()
+
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals }
+  _bodyFactsCache.set(body, result)
+  return result
+}
+
+/**
+ * Post-walk wasm-type widening over `locals`, in place — analyzeBody stage 2.
+ *
+ * Pass A (widenPass): i32 locals compared against f64 widen — EXCEPT integer
+ * counters used as affine array indices (collectI32SafeIndexVars: i32-range
+ * proven, direct indexing with no per-access trunc_sat) and integer-certain
+ * locals (intCertainMap: every definition integer-valued). An f64 counter
+ * would poison the loop body's arithmetic and the increment (f64.add per
+ * iteration), the dominant cost of `for (i<n) acc=(acc+i)|0` — measured ~18×
+ * vs V8 before this. The compare coerces the counter once. Sound for n ≤ 2³¹
+ * (the asm.js-style integer contract); a fractional assignment poisons
+ * intCertain → widens normally.
+ *
+ * Pass B (assignment fixpoint): re-resolve decl/assign RHS types now that
+ * pass A widened. `let x2 = zx*zx` declared i32 because zx was i32 at scan
+ * time must widen when zx re-types to f64 — else trunc_sat silently floors
+ * the fractional value (mandelbrot escape: 3.515 → 3). Re-checks `=` and
+ * compound assigns too: a single-pass walk sees each assign once with stale
+ * operand types, missing widens through loop back-edges. keepI32 vars are
+ * exempt: a hoisted product `o = y*w` types f64 but is proven integer.
+ * Monotonic (i32 → f64 only), bounded by locals count.
+ */
+function widenLocalTypes(body, locals) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
-  // Integer-certain locals (every definition integer-valued — a `let i=0; i+=k`
-  // affine counter) also stay i32 when compared against an f64 bound, EVEN when
-  // not an array index: an f64 counter would otherwise poison the loop body's
-  // arithmetic and the increment (f64.add per iteration instead of i32.add), the
-  // dominant cost of a hot loop like `for (i<n) acc=(acc+i)|0` — measured ~18×
-  // vs V8 before this. The compare coerces the counter once (`f64.lt convert(i) n`).
-  // Sound for n ≤ 2^31 (i stays non-negative i32); n > 2^31 is the asm.js-style
-  // integer contract. A fractional assignment poisons intCertain → widens normally.
   const intCounters = intCertainMap(body)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => i32SafeIdx.has(name) || (intCounters.get(name) === true && !f64IdxVars.has(name))
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
-  function widenPass(node) {
+  const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     if (CMP_OPS.has(op)) {
@@ -553,16 +591,6 @@ export function analyzeBody(body) {
   }
   widenPass(body)
 
-  // Re-resolve let-decl RHS types now that widenPass has widened. A `let x2 =
-  // zx*zx` declared at i32 because zx was i32 at scan time must widen if zx
-  // was later re-typed to f64. Without this, integer-init locals shadowed
-  // by f64-arithmetic RHSs end up with `i32.trunc_sat_f64_s` truncating the
-  // fractional value (e.g. mandelbrot escape: `x2 = zx*zx` losing 3.515 → 3).
-  // Also re-checks `=` and compound-assign reassignments — single-pass walk
-  // visits each assign once with stale operand types, missing widens through
-  // back-edges (`iy = 2.0 * ix * iy + 1.0` where `ix` widens later in the loop
-  // body, demanding `iy` widen on the next iteration).
-  // Monotonic: only widens i32 → f64. Bound by locals count so no infinite loop.
   let widened = true
   while (widened) {
     widened = false
@@ -575,11 +603,6 @@ export function analyzeBody(body) {
           const a = node[i]
           if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
             const name = a[1], rhs = a[2]
-            // keepI32 (index-safe / integer-certain) vars are proven integer-valued
-            // even when the RHS types f64 — a hoisted product `o = y*w` is f64-typed
-            // but integer and feeds an array index. widenPass already keeps these
-            // i32; don't let the assignment fixpoint re-widen them. (Fractional and
-            // out-of-i32-range vars are not keepI32, so they still widen.)
             if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64' && !keepI32(name)) {
               locals.set(name, 'f64'); widened = true
             }
@@ -606,34 +629,6 @@ export function analyzeBody(body) {
     }
     recheck(body)
   }
-
-  // Narrow proven uint32 accumulator locals to unsigned i32. Runs post-widen so
-  // a local already demoted to f64 above (e.g. compared against an f64) is
-  // reconsidered with final types — and stays f64, since a relational compare
-  // is a non-transparent read that disqualifies narrowing anyway.
-  unsignedLocals = narrowUint32(body, locals)
-} finally {
-    ctx.func.localValTypesOverlay = prevOverlay
-    ctx.func.localTypedElemsOverlay = prevTypedOverlay
-  }
-
-  // SRoA: dissolve non-escaping object-literal bindings into field locals.
-  // The dead `o` local is dropped — every `o` reference is rewritten by the
-  // codegen flat hooks, so a stray `local.get $o` becomes a loud wasm
-  // validation error instead of a silent miscompile.
-  const flatObjects = doSchemas ? scanFlatObjects(body) : new Map()
-  for (const [name, props] of flatObjects) {
-    for (let i = 0; i < props.names.length; i++) locals.set(`${name}#${i}`, 'f64')
-    locals.delete(name)
-  }
-
-  // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
-  // Consumed by emitDecl, which lowers the initializer to a SLICE_BIT view.
-  const sliceViews = doSchemas ? scanSliceViews(body) : new Set()
-
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals }
-  _bodyFactsCache.set(body, result)
-  return result
 }
 
 /** Drop the cached analyzeBody entry for this body. Used by emitFunc after
