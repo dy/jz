@@ -656,21 +656,42 @@ export function hoistInvariantLoop(fn) {
     }
     for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
 
-    // Per-local occurrence counts over the loop body — for the tee-privacy check.
+    // Per-subtree local-occurrence counts and write-sets, memoized bottom-up —
+    // the tee-privacy check queries them for EVERY candidate node, and the old
+    // per-query re-walk (countIn/gatherBound) was quadratic on watr-scale loop
+    // bodies (the single largest compile-time hotspot, ~200ms/compile). All
+    // queries happen during `collect`, before any splice mutates the loop, so
+    // the memo cannot go stale; it is dropped with this processLoop frame.
+    const countsMemo = new Map()  // node → Map(local → occurrences in subtree)
+    const writesMemoL = new Map() // node → Set(locals written in subtree)
+    const EMPTY_COUNTS = new Map(), EMPTY_WRITES = new Set()
+    const countsOf = (node) => {
+      if (!Array.isArray(node)) return EMPTY_COUNTS
+      let m = countsMemo.get(node)
+      if (m) return m
+      m = new Map()
+      const op = node[0]
+      if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string')
+        m.set(node[1], 1)
+      for (let i = 1; i < node.length; i++)
+        for (const [k, v] of countsOf(node[i])) m.set(k, (m.get(k) || 0) + v)
+      countsMemo.set(node, m)
+      return m
+    }
+    const writesIn = (node) => {
+      if (!Array.isArray(node)) return EMPTY_WRITES
+      let s = writesMemoL.get(node)
+      if (s) return s
+      s = new Set()
+      if ((node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string') s.add(node[1])
+      for (let i = 1; i < node.length; i++) for (const w of writesIn(node[i])) s.add(w)
+      writesMemoL.set(node, s)
+      return s
+    }
+    // Whole-loop counts (the former countLocals walk) — one memoized query.
     const localCount = new Map()
-    const countLocals = (node) => {
-      if (!Array.isArray(node)) return
-      if ((node[0] === 'local.get' || node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string')
-        localCount.set(node[1], (localCount.get(node[1]) || 0) + 1)
-      for (let i = 1; i < node.length; i++) countLocals(node[i])
-    }
-    for (let i = 1; i < loopNode.length; i++) countLocals(loopNode[i])
-    const countIn = (node, name) => {
-      if (!Array.isArray(node)) return 0
-      let c = ((node[0] === 'local.get' || node[0] === 'local.set' || node[0] === 'local.tee') && node[1] === name) ? 1 : 0
-      for (let i = 1; i < node.length; i++) c += countIn(node[i], name)
-      return c
-    }
+    for (let i = 1; i < loopNode.length; i++)
+      for (const [k, v] of countsOf(loopNode[i])) localCount.set(k, (localCount.get(k) || 0) + v)
 
     // Pure & invariant given `bound` (locals written *within* the candidate, hence
     // local to it). A read of a bound local is OK (its in-subtree value is the
@@ -708,16 +729,10 @@ export function hoistInvariantLoop(fn) {
       const op = node[0]
       // Skip trivial leaves: hoisting a bare get/const buys nothing.
       if (op === 'local.get' || op === 'global.get' || op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return false
-      const bound = new Set()
-      const gatherBound = (n) => {
-        if (!Array.isArray(n)) return
-        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') bound.add(n[1])
-        for (let i = 1; i < n.length; i++) gatherBound(n[i])
-      }
-      gatherBound(node)
+      const bound = writesIn(node)
       // Every local the subtree writes must be private to it (no other use in the
       // loop) — else moving the write to the pre-header changes another reader.
-      for (const b of bound) if (localCount.get(b) !== countIn(node, b)) return false
+      for (const b of bound) if (localCount.get(b) !== countsOf(node).get(b)) return false
       // Only hoist what V8's wasm tier won't (a HARD_OP) — leave pure arithmetic
       // for V8's own LICM and the lane-vectorizer.
       return hasHardOp(node) && pureGiven(node, bound)

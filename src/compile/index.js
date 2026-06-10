@@ -1240,7 +1240,7 @@ export default function compile(ast, profiler) {
     }
   }
 
-  const programFacts = timePhase(profiler, 'plan', () => plan(ast))
+  const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
@@ -1248,28 +1248,30 @@ export default function compile(ast, profiler) {
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const funcFacts = new Map()
-  for (const func of ctx.func.list) {
-    if (func.raw) continue
-    const facts = analyzeFuncForEmit(func, programFacts)
-    funcFacts.set(func, facts)
-    captureFuncInspect(func, facts, programFacts)
-  }
+  timePhase(profiler, 'analyzeFuncs', () => {
+    for (const func of ctx.func.list) {
+      if (func.raw) continue
+      const facts = analyzeFuncForEmit(func, programFacts)
+      funcFacts.set(func, facts)
+      captureFuncInspect(func, facts, programFacts)
+    }
+  })
   // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the
   // `structInline` carrier. Runs once the per-function reps have settled (they
   // are codegen truth) and before any function is emitted.
-  analyzeStructInline(funcFacts, programFacts)
-  const funcs = ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts))
+  timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
+  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []
   let compiledBodyCount = 0
-  const compilePendingClosures = () => {
+  const compilePendingClosures = () => timePhase(profiler, 'emitClosures', () => {
     const bodies = ctx.closure.bodies || []
     for (let bodyIndex = compiledBodyCount; bodyIndex < bodies.length; bodyIndex++) {
       closureFuncs.push(emitClosureBody(bodies[bodyIndex]))
     }
     compiledBodyCount = bodies.length
-  }
+  })
   compilePendingClosures()
 
   // `wasm:js-string` imports — drained from `ctx.core.jsstring`, one
@@ -1353,7 +1355,7 @@ export default function compile(ast, profiler) {
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
-  buildStartFn(ast, sec, closureFuncs, compilePendingClosures)
+  timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
 
   // Host globals (globalThis/process/WebAssembly/…) referenced as values are
   // recorded in ctx.core.hostGlobals during emit; register them as env imports
@@ -1369,13 +1371,13 @@ export default function compile(ast, profiler) {
 
   finalizeClosureTable(sec)
 
-  pullStdlib(sec)
+  timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
 
   stripStaticDataPrefix(sec)
 
   ensureThrowRuntime(sec)
 
-  optimizeModule(sec)
+  timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
 
   // Populate globals (after __start — const folding may update declarations).
   // Records build IR directly — no WAT-text parse-back.
