@@ -102,6 +102,41 @@ const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
 const isCandidateCall = (node, candidates) =>
   Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && candidates.has(node[1])
 
+// Prefix flattening for expression-position inlining. A helper like
+//   let distance = (x1,y1,x2,y2) => { let dx=x1-x2; let dy=y1-y2; return Math.sqrt(dx*dx+dy*dy) }
+// called as `Math.sin(distance(...) * res)` can't splice statements into an
+// expression context — but when every prefix stmt is `let name = <pure
+// arithmetic>`, substituting the decls into the return value turns it into a
+// zero-prefix expression. Duplicated subtrees (`dx` used twice → `x1-x2`
+// twice) are pure, and the watr-layer CSE collapses the copies.
+const PURE_FLATTEN_OPS = new Set(['+', '-', '*', '/', '%', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>'])
+const pureFlattenExpr = (n) => {
+  if (typeof n === 'number' || typeof n === 'string') return true  // literal or ident
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op == null) return true                                       // boxed literal [null, v]
+  if (op === '()' && n.length === 2) return pureFlattenExpr(n[1])   // grouping parens
+  return PURE_FLATTEN_OPS.has(op) && n.slice(1).every(pureFlattenExpr)
+}
+const substIdents = (n, subst) => {
+  if (typeof n === 'string') return subst.get(n) ?? n
+  if (!Array.isArray(n)) return n
+  return n.map((c, i) => i === 0 ? c : substIdents(c, subst))
+}
+const flattenPrefix = (shape) => {
+  if (!shape || shape.value === null || !shape.prefix.length) return shape
+  const subst = new Map()
+  for (const stmt of shape.prefix) {
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) return null
+    const d = stmt[1]
+    if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !pureFlattenExpr(d[2])) return null
+    subst.set(d[1], substIdents(d[2], subst))  // earlier decls feed later RHSs
+  }
+  const value = substIdents(shape.value, subst)
+  if (nodeSize(value) > 100) return null  // duplication blow-up guard
+  return { prefix: [], value }
+}
+
 // Recursively substitute calls to expr-bodied candidates anywhere in `node`.
 // Used for tiny pure-expression helpers (`isAlpha(c) => …`) that get called
 // from expression contexts (if-conditions, ternary tests). For these the
@@ -118,7 +153,7 @@ const inlineInExpr = (node, candidates) => {
   }
   if (isCandidateCall(next, candidates)) {
     const args = callArgs(next)
-    const shape = args && inlinedBody(candidates.get(next[1]), args)
+    const shape = flattenPrefix(args && inlinedBody(candidates.get(next[1]), args))
     if (shape && shape.value !== null && shape.prefix.length === 0) {
       return { node: shape.value, changed: true }
     }
@@ -353,10 +388,20 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
 
   // Trivial expr-bodied candidates can be substituted at any expression position
   // (if-condition, ternary, etc.). Stmt-bodied ones go through inlineInStmt's
-  // statement-level path which preserves prefix ordering.
+  // statement-level path which preserves prefix ordering — EXCEPT flattenable
+  // block bodies (pure-arith let decls + trailing return, e.g. distance's
+  // dx/dy), which inlineInExpr turns into zero-prefix expressions per site.
+  const flattenableBody = (func) => {
+    const stmts = blockStmts(func.body)
+    if (!stmts) return false
+    return stmts.every((s, i) => i === stmts.length - 1
+      ? Array.isArray(s) && s[0] === 'return'
+      : Array.isArray(s) && (s[0] === 'let' || s[0] === 'const') && s.length === 2
+        && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && pureFlattenExpr(s[1][2]))
+  }
   const exprOnlyCandidates = new Map()
   for (const [name, func] of candidates) {
-    if (!Array.isArray(func.body) || func.body[0] !== '{}') exprOnlyCandidates.set(name, func)
+    if (!Array.isArray(func.body) || func.body[0] !== '{}' || flattenableBody(func)) exprOnlyCandidates.set(name, func)
   }
 
   let changed = false
@@ -393,8 +438,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       : inlineInStmt(func.body, activeCandidates)
     let body = r.changed ? r.node : func.body
     let bodyChanged = r.changed
-    if (!func.exported && exprOnlyCandidates.size) {
-      const e = inlineInExpr(body, exprOnlyCandidates)
+    // Expression-position pass. Exported callers take the leaf-safe subset —
+    // the same tier-up rationale as the statement path (leaves into exports
+    // are fine; relocated kernels are not).
+    const exprActive = func.exported
+      ? new Map([...exprOnlyCandidates].filter(([n]) => exportedCandidates.has(n)))
+      : exprOnlyCandidates
+    if (exprActive.size) {
+      const e = inlineInExpr(body, exprActive)
       if (e.changed) { body = e.node; bodyChanged = true }
     }
     if (bodyChanged) { func.body = body; changed = true }

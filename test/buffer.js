@@ -617,6 +617,10 @@ test('subview — overlapping views share bytes', () => {
 // === Subview: out-of-range index returns undefined ===
 
 test('subview — out-of-range index is undefined', () => {
+  // Pins the DYNAMIC-dispatch read path (unknown receiver → generic arr[i]),
+  // which yields undefined for OOB. sourceInline off: the leaf inliner would
+  // otherwise splice get's body and converge the site onto the documented
+  // fast-path semantic (typed OOB → 0 — see README "known divergences").
   const { exports } = jz(`
     export let get = (arr, i) => arr[i]
     export let main = () => {
@@ -624,7 +628,7 @@ test('subview — out-of-range index is undefined', () => {
       let sub = new Uint8Array(buf, 0, 4)
       return get(sub, 10)
     }
-  `)
+  `, { optimize: { sourceInline: false } })
   is(exports.main(), undefined)
 })
 
