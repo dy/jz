@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jz repl — JS → WASM, compiled in your browser</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ── Swiss / International Typographic Style: paper-white, black ink, geometric sans ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ink: #000; --paper: #fff; --mid: #757575; --faint: #e8e8e8;
+}
+html, body { height: 100%; }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: var(--sans);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+
+/* ── masthead: black band, same grammar as the examples gallery ── */
+header {
+  background: var(--ink); color: var(--paper);
+  display: flex; align-items: center;
+  padding: 14px 20px;
+}
+.wordmark { font-size: 19px; letter-spacing: -.02em; line-height: 1; }
+.wordmark .mark { font-weight: 700; color: var(--paper); }
+.wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
+header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 14px; }
+header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
+header nav a { color: var(--paper); opacity: .7; text-decoration: none; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+header nav a:hover { opacity: 1; }
+header .gh { display: flex; }
+
+/* ── toolbar ── */
+.bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 20px; border-bottom: 1px solid var(--ink);
+  font-size: 12px; flex-wrap: wrap;
+}
+.bar label { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
+select, .bar button, .prompt button {
+  font-family: var(--sans); font-size: 12px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--ink); border-radius: 0;
+  padding: 4px 10px; cursor: pointer;
+}
+select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
+.bar button:hover, .prompt button:hover { background: var(--ink); color: var(--paper); }
+.check { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.check input { appearance: none; width: 13px; height: 13px; border: 1px solid var(--ink); cursor: pointer; }
+.check input:checked { background: var(--ink); box-shadow: inset 0 0 0 2px var(--paper); }
+#stat { margin-left: auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
+#stat .b { font-weight: 700; }
+#stat .err { font-weight: 700; }
+#stat .dim { color: var(--mid); }
+.badge { display: inline-block; border: 1px solid var(--ink); font-size: 9.5px; font-weight: 700;
+  letter-spacing: .1em; padding: 1px 5px; vertical-align: 1px; margin-left: 8px; }
+
+/* ── main split ── */
+main { flex: 1; display: flex; min-height: 0; }
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.code { position: relative; }
+#editor, #hl {
+  position: absolute; inset: 0; margin: 0; padding: 16px 20px;
+  font: 13px/1.55 var(--mono); tab-size: 2; white-space: pre;
+  border: 0; background: transparent;
+}
+#editor {
+  resize: none; outline-offset: -2px; overflow: auto;
+  color: transparent; caret-color: var(--ink); z-index: 1;
+}
+#editor::selection { background: rgba(0, 0, 0, .14); }
+#hl { overflow: hidden; pointer-events: none; color: var(--ink); }
+/* monochrome syntax: weight + gray steps, no hue */
+#hl .k { font-weight: 700; }                      /* keyword */
+#hl .t { font-weight: 600; }                      /* Type / builtin */
+#hl .n { font-weight: 600; color: #3a3a3a; }      /* number */
+#hl .s { color: #6e6e6e; }                        /* string */
+#hl .c { color: #9c9c9c; }                        /* comment */
+.right { border-left: 1px solid var(--ink); }
+
+/* tabs */
+.tabs { display: flex; border-bottom: 1px solid var(--ink); }
+.tabs button {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .14em;
+  background: var(--paper); color: var(--ink); border: 0; border-right: 1px solid var(--ink);
+  padding: 8px 18px; cursor: pointer;
+}
+.tabs button.on { background: var(--ink); color: var(--paper); }
+.tabs .free { flex: 1; border-right: 0; }
+
+/* output */
+#out { flex: 1; overflow: auto; padding: 14px 20px; font: 12.5px/1.6 var(--mono); }
+#out .in { color: var(--mid); }
+#out .in::before { content: '› '; }
+#out .res { font-weight: 700; }
+#out .log { color: var(--ink); }
+#out .log::before { content: '· '; color: var(--mid); }
+#out .err { font-weight: 700; }
+#out .err::before { content: '✗ '; }
+#out .note { color: var(--mid); }
+#out div { white-space: pre-wrap; word-break: break-word; }
+#out .rule { border-top: 1px solid var(--faint); margin: 8px 0; }
+
+/* wat */
+#wat { flex: 1; overflow: auto; padding: 14px 20px; font: 11.5px/1.5 var(--mono); white-space: pre; display: none; }
+
+/* prompt */
+.prompt { display: flex; gap: 8px; border-top: 1px solid var(--ink); padding: 10px 20px; align-items: center; }
+.prompt .chev { font-family: var(--mono); font-weight: 700; }
+.prompt input {
+  flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--ink); background: var(--paper);
+  outline-offset: -2px; padding: 4px 2px;
+}
+
+/* thin scrollbars, BW */
+#editor, #out, #wat { scrollbar-width: thin; scrollbar-color: #bbb transparent; }
+#editor::-webkit-scrollbar, #out::-webkit-scrollbar, #wat::-webkit-scrollbar { width: 8px; height: 8px; }
+#editor::-webkit-scrollbar-thumb, #out::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb { background: #ccc; }
+#editor::-webkit-scrollbar-thumb:hover, #out::-webkit-scrollbar-thumb:hover, #wat::-webkit-scrollbar-thumb:hover { background: #888; }
+
+@media (max-width: 760px) {
+  main { flex-direction: column; }
+  .right { border-left: 0; border-top: 1px solid var(--ink); }
+  header .tag { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark"><span class="mark">jz</span><span class="sub">repl</span></div>
+  <span class="tag">type JS — it compiles to WASM in your browser, live</span>
+  <nav>
+    <a href="../examples/">examples</a>
+    <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
+      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </nav>
+</header>
+
+<div class="bar">
+  <label for="preset">preset</label>
+  <select id="preset" aria-label="preset"></select>
+  <label for="opt">opt</label>
+  <select id="opt" aria-label="optimization level">
+    <option value="0">O0</option>
+    <option value="1">O1 size</option>
+    <option value="2" selected>O2</option>
+    <option value="3">O3 speed</option>
+  </select>
+  <label class="check"><input type="checkbox" id="strict"> strict</label>
+  <span id="stat"></span>
+  <button id="share" title="copy a link to this code">link</button>
+  <button id="dl" title="download compiled module">.wasm</button>
+</div>
+
+<main>
+  <div class="pane code">
+    <pre id="hl" aria-hidden="true"></pre>
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source"></textarea>
+  </div>
+  <div class="pane right">
+    <div class="tabs">
+      <button id="tabOut" class="on">output</button>
+      <button id="tabWat">wat</button>
+      <span class="free"></span>
+    </div>
+    <div id="out" aria-live="polite"></div>
+    <pre id="wat"></pre>
+    <div class="prompt">
+      <span class="chev">›</span>
+      <input id="expr" placeholder="call an export — dist(3, 4)" spellcheck="false" autocomplete="off">
+      <button id="run">run</button>
+      <button id="bench" title="time this expression: same source as plain JS vs jz-WASM">js vs wasm</button>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+// The whole point: the compiler runs HERE, in the page — parse, type inference,
+// WASM emit, instantiate. No server, no build step. (dist/jz.js is the
+// standalone bundle — `npm run build` regenerates it.)
+import jz, { compile } from '../dist/jz.js'
+
+const $ = id => document.getElementById(id)
+const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr'), hlEl = $('hl')
+
+// ── syntax highlight: one regex, monochrome classes (comment/string/number/keyword/Type) ──
+const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
+const TOKEN_CLS = ['c', 's', 'n', 'k', 't']
+const highlight = (src) => {
+  let html = '', last = 0, m
+  TOKEN.lastIndex = 0
+  while ((m = TOKEN.exec(src))) {
+    html += esc(src.slice(last, m.index))
+    const i = m.slice(1).findIndex(g => g !== undefined)
+    html += `<span class="${TOKEN_CLS[i]}">${esc(m[0])}</span>`
+    last = TOKEN.lastIndex
+  }
+  return html + esc(src.slice(last)) + '\n'
+}
+const paint = () => { hlEl.innerHTML = highlight(editor.value) }
+const syncScroll = () => { hlEl.scrollTop = editor.scrollTop; hlEl.scrollLeft = editor.scrollLeft }
+editor.addEventListener('scroll', syncScroll)
+
+// ── presets: each one is a use-case ────────────────────────────────────────
+const PRESETS = {
+  start: {
+    name: 'start here',
+    expr: 'dist(3, 4)',
+    src: `// jz — minimal JS that compiles to WASM, on every keystroke.
+// The stats above are the real compile time and module size.
+// Call exports from the prompt below — values marshal across.
+
+export let dist = (x, y) => (x*x + y*y) ** 0.5
+// ↑ types inferred: f64 — no annotations
+
+export let bits = (a, b) => a | b
+// ↑ the | operator pins both params to i32
+
+export let greet = (name) => 'hello ' + name
+// ↑ strings cross the boundary as UTF-8
+
+console.log('compiled + instantiated, top-level ran')`,
+  },
+  simd: {
+    name: 'auto-SIMD',
+    expr: 'waves(1.5)',
+    src: `// Plain loops over typed arrays vectorize to v128 — check the WAT tab
+// for f64x2 lanes, and the v128 badge above. Then hit "js vs wasm".
+
+export let waves = (k) => {
+  let a = new Float64Array(8192)
+  for (let i = 0; i < a.length; i++) a[i] = i * 0.001
+  let s = 0
+  for (let p = 0; p < 40; p++) {
+    for (let i = 0; i < a.length; i++) a[i] = a[i] * 0.9995 + k * 0.001   // ← SIMD map
+    for (let i = 0; i < a.length; i++) s += a[i]                          // ← SIMD reduce
+  }
+  return s
+}`,
+  },
+  mandelbrot: {
+    name: 'mandelbrot kernel',
+    expr: 'mandel(64)',
+    src: `// Escape-time kernel over a grid — pure f64 arithmetic, no allocations.
+// Bench it: "js vs wasm" runs the same source through both engines, honestly.
+
+export let mandel = (limit) => {
+  let total = 0
+  for (let py = 0; py < 128; py++) {
+    for (let px = 0; px < 128; px++) {
+      let cr = px / 64 - 1.5, ci = py / 64 - 1
+      let zr = 0, zi = 0, n = 0
+      while (n < limit && zr*zr + zi*zi < 4) {
+        let t = zr*zr - zi*zi + cr
+        zi = 2*zr*zi + ci
+        zr = t
+        n++
+      }
+      total += n
+    }
+  }
+  return total
+}`,
+  },
+  hash: {
+    name: 'string hash',
+    expr: "hash('hello world')",
+    src: `// Integer pipeline — bitwise ops pin everything to i32, zero boxing.
+// FNV-1a over UTF-8 bytes (string indexing counts bytes in jz).
+
+export let hash = (s) => {
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < s.length; i++) {
+    h = h ^ s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}`,
+  },
+  lint: {
+    name: 'the linter',
+    expr: 'f(1)',
+    src: `// jz lowers legacy JS by default (var, ==, function — see it compile).
+// Now tick "strict" above: the canonical subset rejects each legacy
+// construct with a pointed error. The language is the linter.
+
+var x = 1
+
+function f(n) {
+  if (n == x) return 1
+  return 0
+}
+
+export { f }`,
+  },
+}
+
+// ── compile pipeline ────────────────────────────────────────────────────────
+const state = { src: '', exports: null, memory: null, bytes: null, wat: '', ok: false }
+const opts = () => ({ strict: $('strict').checked, optimize: +$('opt').value })
+
+const fmtB = n => n.toLocaleString('en-US') + ' B'
+
+const build = () => {
+  const src = editor.value
+  try {
+    const o = opts()
+    const t0 = performance.now()
+    const bytes = compile(src, o)
+    const ms = performance.now() - t0
+    const logs = capture(() => {
+      const { exports, memory } = jz(src, o)        // instantiate — top-level runs
+      state.exports = exports; state.memory = memory
+    })
+    state.src = src; state.bytes = bytes; state.ok = true
+    state.wat = compile(src, { ...o, wat: true })
+    const simd = state.wat.includes('v128')
+    stat.innerHTML = `<span class="b">✓ ${fmtB(bytes.length)}</span> <span class="dim">· ${ms < 1 ? ms.toFixed(2) : ms.toFixed(1)} ms in-browser</span>${simd ? '<span class="badge">v128</span>' : ''}`
+    for (const l of logs) print('log', l)
+    if (watEl.style.display === 'block') watEl.textContent = state.wat
+    history.replaceState(null, '', '#' + encodeHash(src))
+  } catch (e) {
+    state.ok = false
+    stat.innerHTML = `<span class="err">✗ ${esc(firstLine(e))}</span>`
+    stat.title = String(e.message || e)
+  }
+}
+
+let deb = 0
+editor.addEventListener('input', () => { paint(); syncScroll(); clearTimeout(deb); deb = setTimeout(build, 250) })
+$('strict').addEventListener('change', build)
+$('opt').addEventListener('change', build)
+
+// ── output / eval ───────────────────────────────────────────────────────────
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const firstLine = e => String(e.message || e).split('\n')[0]
+const print = (cls, text) => {
+  const d = document.createElement('div')
+  d.className = cls
+  d.textContent = text
+  out.appendChild(d)
+  out.scrollTop = out.scrollHeight
+}
+const rule = () => { const d = document.createElement('div'); d.className = 'rule'; out.appendChild(d) }
+
+// Capture console output during wasm/js execution (default env.print wiring
+// routes to console.log/console.error).
+const capture = (fn) => {
+  const logs = [], { log, error } = console
+  console.log = (...a) => logs.push(a.join(' '))
+  console.error = (...a) => logs.push(a.join(' '))
+  try { fn() } finally { console.log = log; console.error = error }
+  return logs
+}
+
+const fmt = (v) => {
+  if (typeof v === 'number') return Object.is(v, -0) ? '-0' : String(v)
+  if (typeof v === 'string') return `'${v}'`
+  if (v == null || typeof v === 'boolean') return String(v)
+  if (ArrayBuffer.isView(v)) {
+    const a = Array.from(v.subarray(0, 8)), tail = v.length > 8 ? `, … ×${v.length}` : ''
+    return `${v.constructor.name} [${a.join(', ')}${tail}]`
+  }
+  try { return JSON.stringify(v) } catch { return String(v) }
+}
+
+// Evaluate an expression with the module's exports in scope.
+// Function-constructor bodies are sloppy-mode, so `with` is available.
+const evalIn = (scope, code) => new Function('$', `with ($) { return (${code}) }`)(scope)
+
+const runExpr = () => {
+  const code = expr.value.trim()
+  if (!code) return
+  if (!state.exports) { print('err', 'nothing compiled yet'); return }
+  if (!state.ok) print('note', 'compile error — running the last good module')
+  print('in', code)
+  try {
+    let result
+    const logs = capture(() => { result = evalIn(state.exports, code) })
+    for (const l of logs) print('log', l)
+    print('res', fmt(result))
+    state.memory?.reset?.()
+  } catch (e) { print('err', firstLine(e)) }
+  hist.push(code); hi = hist.length
+  expr.value = ''
+}
+
+$('run').addEventListener('click', runExpr)
+expr.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runExpr()
+  else if (e.key === 'ArrowUp' && hi > 0) { expr.value = hist[--hi]; e.preventDefault() }
+  else if (e.key === 'ArrowDown') { hi = Math.min(hist.length, hi + 1); expr.value = hist[hi] || ''; e.preventDefault() }
+})
+const hist = []; let hi = 0
+
+// ── js vs wasm — same source, two engines, honest numbers ──────────────────
+const measure = (fn, after) => {
+  // grow batch until it takes ≥60ms, then report ops/s from the largest batch
+  let n = 1
+  for (;;) {
+    const t0 = performance.now()
+    for (let i = 0; i < n; i++) fn()
+    const dt = performance.now() - t0
+    after?.()
+    if (dt >= 60) return n / dt * 1000
+    n = Math.min(n * 4, n * Math.ceil(80 / Math.max(dt, 0.25)) + 1)
+  }
+}
+
+$('bench').addEventListener('click', async () => {
+  const code = expr.value.trim() || $('preset').selectedOptions[0]?.dataset.expr || ''
+  if (!code) { print('err', 'type an expression to bench, e.g. dist(3, 4)'); return }
+  if (!state.exports) { print('err', 'nothing compiled yet'); return }
+  if (!state.ok) print('note', 'compile error — benching the last good module')
+  print('in', `${code}   — js vs wasm`)
+  try {
+    // the same source is a valid ES module: import it and run it as plain JS
+    const url = URL.createObjectURL(new Blob([state.src], { type: 'text/javascript' }))
+    let jsMod
+    try { jsMod = await import(url) } finally { URL.revokeObjectURL(url) }
+    const wasmFn = () => evalIn(state.exports, code)
+    const jsFn = () => evalIn(jsMod, code)
+    const wr = wasmFn(), jr = jsFn()
+    state.memory?.reset?.()
+    // numbers compare with relative epsilon — SIMD reassociates f64 sums
+    const same = typeof wr === 'number' && typeof jr === 'number'
+      ? Math.abs(wr - jr) <= 1e-9 * Math.max(Math.abs(wr), Math.abs(jr), 1)
+      : fmt(wr) === fmt(jr)
+    if (!same) print('note', `results differ — js: ${fmt(jr)} · wasm: ${fmt(wr)} (see "differences with JS" in the readme)`)
+    // alternate engines, two rounds each, keep the better round
+    const reset = () => state.memory?.reset?.()
+    const w = Math.max(measure(wasmFn, reset), measure(wasmFn, reset))
+    const j = Math.max(measure(jsFn), measure(jsFn))
+    const ratio = w / j
+    const opsFmt = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x.toFixed(1)
+    print('res', `wasm ${opsFmt(w)} ops/s · js ${opsFmt(j)} ops/s — ${ratio >= 1 ? `wasm ${ratio.toFixed(2)}× faster` : `js ${(1 / ratio).toFixed(2)}× faster`}`)
+    if (ratio < 1) print('note', 'V8’s JIT ties or wins warm scalar loops — jz wins typed-array/SIMD and transcendental-heavy kernels, and stays this fast on any wasm host')
+    rule()
+  } catch (e) { print('err', firstLine(e)) }
+})
+
+// ── tabs ────────────────────────────────────────────────────────────────────
+const setTab = (wat) => {
+  $('tabOut').classList.toggle('on', !wat)
+  $('tabWat').classList.toggle('on', wat)
+  out.style.display = wat ? 'none' : 'block'
+  watEl.style.display = wat ? 'block' : 'none'
+  if (wat) watEl.textContent = state.ok ? state.wat : '; fix the compile error to see WAT'
+}
+$('tabOut').addEventListener('click', () => setTab(false))
+$('tabWat').addEventListener('click', () => setTab(true))
+
+// ── toolbar: presets, share, download ───────────────────────────────────────
+for (const [id, p] of Object.entries(PRESETS)) {
+  const o = document.createElement('option')
+  o.value = id; o.textContent = p.name; o.dataset.expr = p.expr
+  $('preset').appendChild(o)
+}
+const loadPreset = (id) => {
+  const p = PRESETS[id]; if (!p) return
+  editor.value = p.src
+  paint()
+  expr.placeholder = 'call an export — ' + p.expr
+  expr.value = ''
+  out.textContent = ''
+  build()
+}
+$('preset').addEventListener('change', () => loadPreset($('preset').value))
+
+$('share').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(location.href)
+    const b = $('share'); const t = b.textContent
+    b.textContent = 'copied'; setTimeout(() => b.textContent = t, 900)
+  } catch { /* clipboard unavailable: the URL hash already carries the code */ }
+})
+
+$('dl').addEventListener('click', () => {
+  if (!state.ok || !state.bytes) return
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([state.bytes], { type: 'application/wasm' }))
+  a.download = 'module.wasm'
+  a.click()
+  URL.revokeObjectURL(a.href)
+})
+
+// ── url hash: #<base64url(source)> ──────────────────────────────────────────
+const encodeHash = (src) => btoa(String.fromCharCode(...new TextEncoder().encode(src)))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const decodeHash = (h) => {
+  const b = atob(h.replace(/-/g, '+').replace(/_/g, '/'))
+  return new TextDecoder().decode(Uint8Array.from(b, c => c.charCodeAt(0)))
+}
+
+// editor niceties: Tab = 2 spaces, Cmd/Ctrl+Enter focuses the prompt
+editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault()
+    const { selectionStart: s, selectionEnd: en, value: v } = editor
+    editor.value = v.slice(0, s) + '  ' + v.slice(en)
+    editor.selectionStart = editor.selectionEnd = s + 2
+    editor.dispatchEvent(new Event('input'))
+  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) expr.focus()
+})
+
+// ── boot ────────────────────────────────────────────────────────────────────
+const h = location.hash.slice(1)
+if (h) {
+  try { editor.value = decodeHash(h); paint(); build() }
+  catch { loadPreset('start') }
+} else loadPreset('start')
+</script>
+</body>
+</html>
