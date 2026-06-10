@@ -69,6 +69,7 @@ export const PASS_NAMES = [
   'hoistPtrType',
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
+  'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
   'cseScalarLoad',
@@ -731,6 +732,181 @@ export function hoistInvariantLoop(fn) {
 
   const processNode = (node, parent, idx) => {
     if (!Array.isArray(node)) return
+    if (node[0] === 'loop') {
+      const snaps = processLoop(node)
+      if (snaps.length) parent.splice(idx, 0, ...snaps)
+      return
+    }
+    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
+ * Narrow an f64 loop bound to i32. `for (let i = 0; i < n; i++)` with an f64
+ * param `n` emits `(f64.lt (f64.convert_i32_s $i) (local.get $n))` — an f64
+ * convert+compare every iteration that ALSO blocks the lane-vectorizer (it
+ * requires an i32-governed trip count). The naive-DSP export shape
+ * `(ptr, n) => { for (i = 0; i < n; i++) … }` therefore never vectorized
+ * without a hand-written `n|0`. This pass is that annotation, as a proof.
+ *
+ * When $i is a proven-non-negative i32 counter and $n is loop-invariant:
+ *   convert_i32_s(i) < n  ⟺  i < trunc_sat(ceil(n))      for all i ≥ 0
+ *   - fractional n rounds up (i < 5.5 ⟺ i < 6); integral n exact
+ *   - NaN: ceil→NaN, trunc_sat→0 ⇒ `i < 0` false — matches the false f64 compare
+ *     (THIS case is why i ≥ 0 must be proven: a negative i would flip it true)
+ *   - n ≤ −2³¹ saturates to INT32_MIN ⇒ always false — matches
+ *   - n ≥ 2³¹ saturates to INT32_MAX ⇒ terminates after 2³¹−1 iterations where
+ *     the original wrapped $i negative and spun forever — the only divergence,
+ *     pathological in both versions (a JS double counter would keep counting).
+ * Non-negativity proof: $i is a non-param i32 local whose EVERY write in the
+ * function (counters get re-zeroed between loops) is a non-negative i32.const
+ * or `$i + positive-const`. Wrap-around past 2³¹ needs 2³¹ agreeing iterations
+ * first, so trajectories are identical in every non-pathological program.
+ *
+ * Snap `(local.set $__lbK (i32.trunc_sat_f64_s (f64.ceil (local.get $n))))`
+ * goes in the loop pre-header (re-snapped per outer iteration when nested —
+ * trunc_sat/ceil are total, safe even for zero-trip loops); the compare becomes
+ * `(i32.lt_s $i $__lbK)` — the exact shape the lane-vectorizer matches.
+ * Bottom-up, refcount-guarded, idempotent (rewritten conds no longer match).
+ */
+export function narrowLoopBound(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Cheap early-out: no loop ⇒ nothing to narrow.
+  let hasLoop = false
+  const scanLoop = (n) => {
+    if (!Array.isArray(n) || hasLoop) return
+    if (n[0] === 'loop') { hasLoop = true; return }
+    for (let i = 1; i < n.length && !hasLoop; i++) scanLoop(n[i])
+  }
+  for (let i = bodyStart; i < fn.length && !hasLoop; i++) scanLoop(fn[i])
+  if (!hasLoop) return
+
+  // Header types. Params are excluded as counters: their init is caller-supplied,
+  // so non-negativity is unprovable.
+  const localTypes = new Map(), params = new Set()
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (!Array.isArray(c) || typeof c[1] !== 'string') continue
+    if (c[0] === 'param') params.add(c[1])
+    if (c[0] === 'param' || c[0] === 'local') localTypes.set(c[1], c[2])
+  }
+
+  // Every write per local across the WHOLE function — not just in-loop: a counter
+  // reused by a later loop is re-zeroed between them, and a negative write
+  // anywhere voids the proof.
+  const writes = new Map()
+  const collectWrites = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      let arr = writes.get(n[1]); if (!arr) writes.set(n[1], arr = [])
+      arr.push(n[2])
+    }
+    for (let i = 1; i < n.length; i++) collectWrites(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) collectWrites(fn[i])
+
+  const constVal = (n) => Array.isArray(n) && n[0] === 'i32.const' ? Number(n[1]) : NaN
+  const nonNegCounter = (name) => {
+    if (params.has(name) || localTypes.get(name) !== 'i32') return false
+    const ws = writes.get(name)
+    if (!ws) return true  // never written ⇒ stays at default 0
+    return ws.every(v => {
+      if (!Array.isArray(v)) return false
+      if (v[0] === 'i32.const') return Number(v[1]) >= 0
+      if (v[0] !== 'i32.add') return false
+      if (Array.isArray(v[1]) && v[1][0] === 'local.get' && v[1][1] === name) return constVal(v[2]) > 0
+      if (Array.isArray(v[2]) && v[2][0] === 'local.get' && v[2][1] === name) return constVal(v[1]) > 0
+      return false
+    })
+  }
+
+  // Collision-proof snap ids (same scheme as hoistInvariantLoop's $__li).
+  const usedLb = new Set()
+  const scanLb = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__lb')) {
+      const t = n[1].slice(5); if (/^\d+$/.test(t)) usedLb.add(+t)
+    }
+    for (let i = 0; i < n.length; i++) scanLb(n[i])
+  }
+  scanLb(fn)
+  let lbCounter = 0
+  const freshLb = () => { while (usedLb.has(lbCounter)) lbCounter++; const id = lbCounter++; usedLb.add(id); return `$__lb${id}` }
+  const newLocals = []
+  const refcount = buildRefcount(fn)
+
+  // `(f64.lt (f64.convert_i32_s (local.get $i)) (local.get $n))` or mirrored
+  // `(f64.gt (local.get $n) (f64.convert_i32_s (local.get $i)))`.
+  const match = (n) => {
+    const conv = n[0] === 'f64.lt' ? n[1] : n[0] === 'f64.gt' ? n[2] : null
+    const bnd = n[0] === 'f64.lt' ? n[2] : n[0] === 'f64.gt' ? n[1] : null
+    if (!Array.isArray(conv) || conv[0] !== 'f64.convert_i32_s') return null
+    const ig = conv[1]
+    if (!Array.isArray(ig) || ig[0] !== 'local.get' || typeof ig[1] !== 'string') return null
+    if (!Array.isArray(bnd) || bnd[0] !== 'local.get' || typeof bnd[1] !== 'string') return null
+    return { ctr: ig[1], bound: bnd[1] }
+  }
+
+  const processLoop = (loopNode) => {
+    // Inner loops first — their sites belong to their own pre-header (the bound
+    // may be written by THIS loop between inner runs).
+    for (let i = 1; i < loopNode.length; i++)
+      if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i)
+
+    // Locals written anywhere in this loop (incl. nested) — bound invariance.
+    const written = new Set()
+    const scanW = (n) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') written.add(n[1])
+      for (let i = 1; i < n.length; i++) scanW(n[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scanW(loopNode[i])
+
+    const sites = []
+    const collect = (node) => {
+      if (!Array.isArray(node)) return
+      if (node[0] === 'loop') return  // already processed bottom-up
+      const m = match(node)
+      if (m && (refcount.get(node) || 0) <= 1
+            && localTypes.get(m.bound) === 'f64' && !written.has(m.bound)
+            && nonNegCounter(m.ctr)) { sites.push({ node, m }); return }
+      for (let i = 1; i < node.length; i++) collect(node[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i])
+
+    const snapFor = new Map()  // bound name → snap local (one per distinct bound)
+    const snaps = []
+    for (const { node, m } of sites) {
+      let snap = snapFor.get(m.bound)
+      if (!snap) {
+        snap = freshLb()
+        snapFor.set(m.bound, snap)
+        newLocals.push(['local', snap, 'i32'])
+        snaps.push(['local.set', snap, ['i32.trunc_sat_f64_s', ['f64.ceil', ['local.get', m.bound]]]])
+      }
+      node.length = 3
+      node[0] = 'i32.lt_s'; node[1] = ['local.get', m.ctr]; node[2] = ['local.get', snap]
+    }
+    return snaps
+  }
+
+  const processNode = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    // Break-block idiom `(block $brk (loop …))`: snaps go BEFORE the block —
+    // any statement between the block label and the loop is "foreign content"
+    // to the lane-vectorizer's matcher and would defeat the whole point.
+    if (node[0] === 'block' && typeof node[1] === 'string' && node.length === 3
+        && Array.isArray(node[2]) && node[2][0] === 'loop') {
+      const snaps = processLoop(node[2])
+      if (snaps.length) parent.splice(idx, 0, ...snaps)
+      return
+    }
     if (node[0] === 'loop') {
       const snaps = processLoop(node)
       if (snaps.length) parent.splice(idx, 0, ...snaps)
@@ -2007,6 +2183,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantLoop === false &&
+      cfg.narrowLoopBound === false &&
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
@@ -2018,6 +2195,9 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
+  // Before LICM: the snapped i32 bound is itself a hoistable hard-op subtree, so
+  // an outer loop's LICM can lift it further when the bound is outer-invariant.
+  if (!cfg || cfg.narrowLoopBound !== false) narrowLoopBound(fn)
   // Unified LICM (replaces hoistInvariantToInt32 / PtrOffsetLoop / CellLoads).
   // Run at both maturity points (idempotent): pre-fusedRewrite catches the raw
   // ToInt32/ptr-offset/arithmetic shapes; post-hoistAddrBase catches cell loads.

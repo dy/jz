@@ -1721,3 +1721,49 @@ test('wat copy-prop: a copy whose source is later reassigned is NOT propagated p
   const ex = jz('export const f = (a) => { let b = a; a = 9; return (b + a) | 0 }')
   is(ex.exports.f(3), 12)   // 3 + 9, NOT 9 + 9
 })
+
+// === narrowLoopBound (f64 loop bound → hoisted i32) ===
+// `(ptr, n) => { for (let i = 0; i < n; i++) … }` with an f64 export param kept
+// an f64 convert+compare in the loop header — and blocked the lane-vectorizer,
+// which needs an i32-governed trip count. The pass hoists
+// `i32.trunc_sat_f64_s(f64.ceil(n))` to the pre-header when the counter is a
+// proven-non-negative i32 local (NaN→0 trips, fractional rounds up).
+
+test('narrowLoopBound: f64 export-param bound compares in i32, trunc hoisted', () => {
+  const body = compileMain(`
+    export const main = (n) => {
+      let s = 0
+      for (let i = 0; i < n; i++) s += 1.5
+      return s
+    }
+  `)
+  ok(/i32\.trunc_sat_f64_s/.test(body) && /f64\.ceil/.test(body), 'bound snapped via trunc_sat(ceil(n))')
+  ok(/i32\.lt_s/.test(body), 'loop compares in i32')
+  const loop = body.slice(body.indexOf('(loop'))
+  ok(!/f64\.convert_i32_s/.test(loop), 'no per-iteration counter convert left in the loop')
+})
+
+test('narrowLoopBound: unlocks lane-vectorizer for the naive (ptr, n) DSP shape', () => {
+  const wat = jz.compile(
+    `export let sum = (ptr, n) => { let a = new Float64Array(ptr); let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }`,
+    { wat: true, optimize: 3, alloc: false },
+  )
+  ok(/f64x2\./.test(wat), 'naive f64-bound typed loop should vectorize without a hand-written |0')
+})
+
+test('narrowLoopBound: fractional / NaN / negative / zero bounds match JS', () => {
+  const src = `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i + 1; return s }`
+  const js = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i + 1; return s }
+  const { main } = run(src)
+  for (const n of [10, 5.5, 0.5, 1e-9, 0, -3, NaN]) is(main(n), js(n), `n=${n}`)
+})
+
+test('narrowLoopBound: counter that starts negative is NOT narrowed (NaN soundness)', () => {
+  // i ∈ [-2, …): with bound NaN the f64 compare is false at i=-2 (zero trips);
+  // a naive i32 rewrite (NaN→0) would run two iterations. The non-negativity
+  // proof must reject this counter and keep the f64 compare.
+  const src = `export const main = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }`
+  const js = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }
+  const { main } = run(src)
+  for (const n of [NaN, -1, 0, 2.5, 3]) is(main(n), js(n), `n=${n}`)
+})
