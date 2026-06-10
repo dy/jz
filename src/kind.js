@@ -94,6 +94,191 @@ function literalBool(expr) {
   return null
 }
 
+/**
+ * Per-op val-type rules — the dispatch table behind `valTypeOf`. Each entry
+ * takes the op's args and returns a VAL kind or undefined (→ null). Set-driven
+ * families (BOOL_OPS, NUMERIC_*) enroll at module init, so adding an operator
+ * is a kind-traits table entry, not a new branch here.
+ */
+const VT = Object.create(null)
+
+// Self-describing boolean literal from the host→kernel AST boundary (normalizeBigints).
+VT.bool = () => VAL.BOOL
+// Boolean-result operators: relational/equality compares and logical-not always
+// yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
+for (const op of BOOL_OPS) VT[op] = VT.bool
+// Self-describing bigint literal (`normalizeBigints`) — same VAL as a raw `255n`.
+VT.bigint = () => VAL.BIGINT
+VT['['] = () => VAL.ARRAY
+VT.str = VT.strcat = () => VAL.STRING
+VT['=>'] = () => VAL.CLOSURE
+VT['//'] = () => VAL.REGEX
+
+VT['{}'] = (args) => {
+  const hasSpread = args.some(p => Array.isArray(p) && p[0] === '...')
+  if (!hasSpread) return args[0]?.[0] === ':' ? VAL.OBJECT : null
+  // Spread literal — mirror emitObjectSpread (module/object.js). When every
+  // spread source has a compile-time schema, emit builds a fixed-shape OBJECT
+  // and the existing schema-by-name read path resolves props with no val-type
+  // tag, so leave it untyped (tagging OBJECT here regresses it — the merged
+  // schema isn't bound to this name). When any source's schema is unknown, emit
+  // builds a dynamic HASH (emitDynamicSpread); that result carries no schema, so
+  // the binding MUST be HASH-typed or computed/static reads silently misdispatch
+  // (fixed-slot / array index) and return undefined — the bug this fixes.
+  for (const p of args)
+    if (Array.isArray(p) && p[0] === '...' && !spreadSchema(p[1])) {
+      // `{ ...src }` with a single unknown spread aliases src — carry its type.
+      return args.length === 1 ? valTypeOf(args[0][1]) : VAL.HASH
+    }
+  return null
+}
+
+VT['?:'] = (args) => {
+  const truthy = literalTruthiness(args[0])
+  if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
+  const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
+  return ta && ta === tb ? ta : null
+}
+
+// Value-preserving logical: `&&`/`||` return one of their operands.
+// When both sides share a type, return it. When one side is boolean
+// (a condition/guard) and the other has a known non-boolean type,
+// return the non-boolean type — common in `condition && numericValue`
+// guard patterns where the falsey boolean is coerced to 0 in numeric context.
+VT['&&'] = VT['||'] = (args) => {
+  const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
+  if (ta && ta === tb) return ta
+  if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
+  if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
+  return null
+}
+
+// `[]` op covers both array literals (1 arg) and index access (2 args).
+// Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
+// Index access:  `arr[i]` → ['[]', arr, i].
+VT['[]'] = (args) => {
+  if (args.length < 2) return VAL.ARRAY
+  // Indexed read on a known typed-array receiver yields Number except for
+  // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
+  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
+    return typedCtorElemValType(ctx.types.typedElem?.get(args[0])) || VAL.NUMBER
+  // Indexed read on a STRING returns a 1-char string (SSO at runtime).
+  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
+  if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING
+  // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
+  // Set by analyzeValTypes from body observations + emitFunc preseed for params.
+  if (typeof args[0] === 'string') {
+    const elemVt = ctx.func.localReps?.get(args[0])?.arrayElemValType
+    if (elemVt) return elemVt
+  }
+  // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
+  // chord/pattern tables; literal op is `[`, elements inline). Every element is a
+  // Number, so the load is a Number; this lets toNumF64 skip __to_num on the result
+  // and propagates numericness outward (e.g. a closure arg that then marks its param
+  // numeric, or the surrounding `-arr[i]` that feeds a numeric accumulator).
+  if (Array.isArray(args[0]) && args[0][0] === '[' && args[0].length > 1
+      && args[0].slice(1).every(e => valTypeOf(e) === VAL.NUMBER)) return VAL.NUMBER
+  return null
+}
+
+VT['.'] = (args) => {
+  if (typeof args[1] !== 'string') return null
+  // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
+  // to a slot whose VAL kind is monomorphic across program-wide observations,
+  // return that kind. Lets `+`, `===`, method dispatch skip runtime str-key
+  // checks on numeric properties of known shapes. Precise-only — see
+  // ctx.schema.slotVT for why structural subtyping is intentionally off.
+  if (ctx.schema?.slotVT) {
+    const slotVT = ctx.schema.slotVT(args[0], args[1])
+    if (slotVT) return slotVT
+  }
+  // OBJECT `.prop` propagation: when the receiver chain roots at a binding
+  // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
+  // child's val-type. Generic for any compile-time-known JSON literal.
+  const sh = shapeOf(args[0])
+  if (sh?.val === VAL.OBJECT || sh?.val === VAL.HASH) {
+    const child = sh.props[args[1]]
+    if (child) return child.val
+  }
+  return null
+}
+
+// Arithmetic expressions: BigInt if either operand is BigInt, else number.
+const numericBinaryVT = (args) =>
+  valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
+for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
+// `~`, `++`, `--`, `**` preserve/propagate BigInt…
+const numericUnaryVT = (args) =>
+  valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
+for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
+// …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
+VT['>>>'] = VT['u+'] = () => VAL.NUMBER
+
+VT['+'] = (args) => {
+  const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
+  if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+  if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+  return VAL.NUMBER
+}
+
+// Assignment & compound-assign expressions return the rhs value. Without this,
+// `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
+// string-concat dispatch on two pure-numeric subexpressions.
+VT['='] = (args) => valTypeOf(args[1])
+VT['+='] = (args) => {
+  const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
+  const tb = valTypeOf(args[1])
+  if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+  if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+  return VAL.NUMBER
+}
+const compoundNumericVT = (args) => {
+  const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
+  return ta === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
+}
+for (const op of COMPOUND_NUMERIC_OPS) VT[op] = compoundNumericVT
+
+VT['()'] = (args) => {
+  const callee = args[0]
+  // __iter_arr normalizes an iterable to an index-iterable Array: Set→keys,
+  // Map→[k,v], while Array/String/TypedArray pass through unchanged. The result
+  // type drives the downstream arr[i]/.length dispatch, so a Set/Map source
+  // becomes ARRAY and everything else keeps the source's own type.
+  if (callee === '__iter_arr') {
+    const t = valTypeOf(args[1])
+    return t === VAL.SET || t === VAL.MAP ? VAL.ARRAY : t
+  }
+  // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
+  if (Array.isArray(callee) && callee[0] === '?') {
+    const truthy = literalTruthiness(callee[1])
+    if (truthy != null) return valTypeOf(truthy ? callee[2] : callee[3])
+    const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
+    return ta && ta === tb ? ta : null
+  }
+  // Constructor results + user function return-type inference
+  if (typeof callee === 'string') {
+    if (callee === 'JSON.parse') {
+      const src = jsonConstString(args[1])
+      if (src != null) {
+        const c = src.trimStart()[0]
+        if (c === '{') return VAL.OBJECT
+        if (c === '[') return VAL.ARRAY
+        if (c === '"') return VAL.STRING
+        if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
+      }
+    } else {
+      const vt = calleeValType(callee, args, ctx)
+      if (vt != null) return vt
+    }
+  }
+  if (Array.isArray(callee) && callee[0] === '.') {
+    const [, obj, method] = callee
+    const vt = methodValType(method, obj, valTypeOf(obj), ctx)
+    if (vt != null) return vt
+  }
+  return null
+}
+
 export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
@@ -111,178 +296,7 @@ export function valTypeOf(expr) {
     if (typeof args[0] === 'symbol') return null    // prepared null sentinel
     return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
   }
-
-  // Self-describing boolean literal from the host→kernel AST boundary (normalizeBigints).
-  if (op === 'bool') return VAL.BOOL
-
-  // Boolean-result operators: relational/equality compares and logical-not always
-  // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
-  if (BOOL_OPS.has(op)) return VAL.BOOL
-
-  // Self-describing bigint literal (`normalizeBigints`) — same VAL as a raw `255n`.
-  if (op === 'bigint') return VAL.BIGINT
-
-  if (op === '[') return VAL.ARRAY
-  if (op === 'str' || op === 'strcat') return VAL.STRING
-  if (op === '=>') return VAL.CLOSURE
-  if (op === '//') return VAL.REGEX
-  if (op === '{}') {
-    const hasSpread = args.some(p => Array.isArray(p) && p[0] === '...')
-    if (!hasSpread) return args[0]?.[0] === ':' ? VAL.OBJECT : null
-    // Spread literal — mirror emitObjectSpread (module/object.js). When every
-    // spread source has a compile-time schema, emit builds a fixed-shape OBJECT
-    // and the existing schema-by-name read path resolves props with no val-type
-    // tag, so leave it untyped (tagging OBJECT here regresses it — the merged
-    // schema isn't bound to this name). When any source's schema is unknown, emit
-    // builds a dynamic HASH (emitDynamicSpread); that result carries no schema, so
-    // the binding MUST be HASH-typed or computed/static reads silently misdispatch
-    // (fixed-slot / array index) and return undefined — the bug this fixes.
-    for (const p of args)
-      if (Array.isArray(p) && p[0] === '...' && !spreadSchema(p[1])) {
-        // `{ ...src }` with a single unknown spread aliases src — carry its type.
-        return args.length === 1 ? valTypeOf(args[0][1]) : VAL.HASH
-      }
-    return null
-  }
-  if (op === '?:') {
-    const truthy = literalTruthiness(args[0])
-    if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
-    const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
-    return ta && ta === tb ? ta : null
-  }
-  // Value-preserving logical: `&&`/`||` return one of their operands.
-  // When both sides share a type, return it. When one side is boolean
-  // (a condition/guard) and the other has a known non-boolean type,
-  // return the non-boolean type — common in `condition && numericValue`
-  // guard patterns where the falsey boolean is coerced to 0 in numeric context.
-  if (op === '&&' || op === '||') {
-    const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
-    if (ta && ta === tb) return ta
-    if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
-    if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
-    return null
-  }
-  // `[]` op covers both array literals (1 arg) and index access (2 args).
-  // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
-  // Index access:  `arr[i]` → ['[]', arr, i].
-  if (op === '[]') {
-    if (args.length < 2) return VAL.ARRAY
-    // Indexed read on a known typed-array receiver yields Number except for
-    // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
-    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
-      return typedCtorElemValType(ctx.types.typedElem?.get(args[0])) || VAL.NUMBER
-    // Indexed read on a STRING returns a 1-char string (SSO at runtime).
-    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
-    if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING
-    // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
-    // Set by analyzeValTypes from body observations + emitFunc preseed for params.
-    if (typeof args[0] === 'string') {
-      const elemVt = ctx.func.localReps?.get(args[0])?.arrayElemValType
-      if (elemVt) return elemVt
-    }
-    // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
-    // chord/pattern tables; literal op is `[`, elements inline). Every element is a
-    // Number, so the load is a Number; this lets toNumF64 skip __to_num on the result
-    // and propagates numericness outward (e.g. a closure arg that then marks its param
-    // numeric, or the surrounding `-arr[i]` that feeds a numeric accumulator).
-    if (Array.isArray(args[0]) && args[0][0] === '[' && args[0].length > 1
-        && args[0].slice(1).every(e => valTypeOf(e) === VAL.NUMBER)) return VAL.NUMBER
-  }
-  // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
-  // to a slot whose VAL kind is monomorphic across program-wide observations,
-  // return that kind. Lets `+`, `===`, method dispatch skip runtime str-key
-  // checks on numeric properties of known shapes. Precise-only — see
-  // ctx.schema.slotVT for why structural subtyping is intentionally off.
-  if (op === '.' && typeof args[1] === 'string' && ctx.schema?.slotVT) {
-    const slotVT = ctx.schema.slotVT(args[0], args[1])
-    if (slotVT) return slotVT
-  }
-  // OBJECT `.prop` propagation: when the receiver chain roots at a binding
-  // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
-  // child's val-type. Generic for any compile-time-known JSON literal.
-  if (op === '.' && typeof args[1] === 'string') {
-    const sh = shapeOf(args[0])
-    if (sh?.val === VAL.OBJECT || sh?.val === VAL.HASH) {
-      const child = sh.props[args[1]]
-      if (child) return child.val
-    }
-  }
-  // Arithmetic expressions: BigInt if either operand is BigInt, else number
-  if (NUMERIC_BINARY_OPS.includes(op)) {
-    if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-  if (NUMERIC_UNARY_OPS.has(op)) {
-    // `~`, `++`, `--`, `**` preserve/propagate BigInt; `>>>` and unary-plus throw
-    // on bigint operands so they always yield Number.
-    if (op === '>>>' || op === 'u+') return VAL.NUMBER
-    if (valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT)) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-  if (op === '+') {
-    const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
-    if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
-    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-  // Assignment & compound-assign expressions return the rhs value. Without this,
-  // `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
-  // string-concat dispatch on two pure-numeric subexpressions.
-  if (op === '=') return valTypeOf(args[1])
-  if (op === '+=') {
-    const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
-    const tb = valTypeOf(args[1])
-    if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
-    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-  if (COMPOUND_NUMERIC_OPS.has(op)) {
-    const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
-    const tb = valTypeOf(args[1])
-    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-
-  if (op === '()') {
-    const callee = args[0]
-    // __iter_arr normalizes an iterable to an index-iterable Array: Set→keys,
-    // Map→[k,v], while Array/String/TypedArray pass through unchanged. The result
-    // type drives the downstream arr[i]/.length dispatch, so a Set/Map source
-    // becomes ARRAY and everything else keeps the source's own type.
-    if (callee === '__iter_arr') {
-      const t = valTypeOf(args[1])
-      return t === VAL.SET || t === VAL.MAP ? VAL.ARRAY : t
-    }
-    // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
-    if (Array.isArray(callee) && callee[0] === '?') {
-      const truthy = literalTruthiness(callee[1])
-      if (truthy != null) return valTypeOf(truthy ? callee[2] : callee[3])
-      const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
-      return ta && ta === tb ? ta : null
-    }
-    // Constructor results + user function return-type inference
-    if (typeof callee === 'string') {
-      if (callee === 'JSON.parse') {
-        const src = jsonConstString(args[1])
-        if (src != null) {
-          const c = src.trimStart()[0]
-          if (c === '{') return VAL.OBJECT
-          if (c === '[') return VAL.ARRAY
-          if (c === '"') return VAL.STRING
-          if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
-        }
-      } else {
-        const vt = calleeValType(callee, args, ctx)
-        if (vt != null) return vt
-      }
-    }
-    if (Array.isArray(callee) && callee[0] === '.') {
-      const [, obj, method] = callee
-      const vt = methodValType(method, obj, valTypeOf(obj), ctx)
-      if (vt != null) return vt
-    }
-  }
-  return null
+  return VT[op]?.(args) ?? null
 }
 
 export function jsonConstString(expr) {
