@@ -415,11 +415,13 @@ test('bench: floatbeat geomean jz/v8 ≤ 0.85× (jz wins the jukebox corpus, SIM
 // that the corpus geomean would absorb. The jz/V8 per-beat ratio is host-bound on shared CI
 // runners — a transcendental/allocation-heavy beat (Celesta: 9 sin + 5 exp + 4 const arrays
 // per sample) runs ~1.4× there but <0.8× locally on the *identical* wasm — the same reason
-// native-C parity is informational on CI. So the backstop is a loose gross-regression net
-// (2×) on CI and tight (1.2×) off-CI where the hardware is stable — post-narrowLoopBound
-// every beat runs ≤ 0.78× locally, so 1.2 still flags a 1.5× single-beat cliff; the
-// geomean ≤ 0.85× above is the real per-corpus guarantee (jz wins regardless of runner).
-const fbBackstop = process.env.CI ? 2.0 : 1.2
+// native-C parity is informational on CI. So the backstop is a gross-regression net on CI
+// (2×, shared-runner noise; ratchet down as the slowest beats gain margin) and ~parity
+// (1.05×) off-CI where hardware is stable — every beat runs ≤ 0.93× locally, so any beat
+// merely TYING V8 on a dev machine now fails; the geomean ≤ 0.85× above is the per-corpus
+// guarantee on every runner. End state: ≤ 1.0 per beat, everywhere — the faster-than-JS
+// guarantee is per-program, not on-average; each compiler win should tighten these.
+const fbBackstop = process.env.CI ? 2.0 : 1.05
 for (const { name, ratio } of fbRatios) {
   test(`bench: floatbeat "${name}" jz ≤ ${fbBackstop}× V8 (no gross regression)`, () => {
     ok(ratio <= fbBackstop, `floatbeat ${name}: jz ${ratio.toFixed(2)}× V8 > ${fbBackstop}× — gross codegen regression`)
