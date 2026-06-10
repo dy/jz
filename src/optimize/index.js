@@ -419,7 +419,13 @@ export function hoistAddrBase(fn) {
  * sound for the duration. The whitelist below is the read-only set
  * (no mutation possible); any other callee touching X invalidates hoisting.
  */
-const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux', '$__len'])
+// Read-only i32-returning calls: safe to hoist when operands are invariant,
+// and their presence in a loop must not block other hoists (hasUnsafeCall).
+// __jss_* are wasm:js-string host builtins over IMMUTABLE JS strings — pure by
+// the same argument as the __ptr_* helpers (charCodeAt won't itself hoist —
+// its index varies — but whitelisting it keeps hasUnsafeCall false so the
+// loop-invariant __jss_length in the same loop condition CAN hoist).
+const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
 
 export function hoistInvariantPtrOffset(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
