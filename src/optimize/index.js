@@ -70,6 +70,7 @@ export const PASS_NAMES = [
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
+  'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
   'cseScalarLoad',
@@ -1632,6 +1633,144 @@ export function collectVolatileGlobals(funcs) {
     for (let i = 2; i < fn.length; i++) scan(fn[i])
   }
   return volatile
+}
+
+/**
+ * Transitive global-write sets per function: name → Set of globals the function
+ * writes directly OR through any (transitively) called function. The precise
+ * complement to `collectVolatileGlobals`' coarse module-wide set — a global
+ * written only by `init` is volatile module-wide, yet perfectly stable inside
+ * a function whose call graph never reaches `init`.
+ *
+ * Unknown callees (imports — absent from the module's func list) write nothing:
+ * wasm imports cannot touch module globals. `call_indirect`/`call_ref` targets
+ * are unknown wasm functions — treat as writing every global any function
+ * writes (the sound over-approximation).
+ */
+export function collectReachableGlobalWrites(funcs) {
+  const writes = new Map(), callees = new Map(), indirect = new Set(), all = new Set()
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
+    const w = new Set(), c = new Set()
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === 'global.set' && typeof n[1] === 'string') { w.add(n[1]); all.add(n[1]) }
+      else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') c.add(n[1])
+      else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') indirect.add(fn[1])
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    for (let i = 2; i < fn.length; i++) scan(fn[i])
+    writes.set(fn[1], w); callees.set(fn[1], c)
+  }
+  // Worklist fixpoint over the call graph.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, w] of writes) {
+      const before = w.size
+      if (indirect.has(name)) for (const g of all) w.add(g)
+      for (const callee of callees.get(name)) {
+        const cw = writes.get(callee)
+        if (cw) for (const g of cw) w.add(g)
+      }
+      if (w.size !== before) changed = true
+    }
+  }
+  return writes
+}
+
+/**
+ * Hoist `__ptr_offset` resolution of stable typed-array GLOBALS to one resolve
+ * per function. Locals get their pointer unboxed once at bind time, but a
+ * module-global typed array (`let x; init = () => { x = new Float64Array(n) }`
+ * — the idiomatic DSP-state shape: rfft, game-of-life, reaction-diffusion)
+ * re-resolves on EVERY element access:
+ *   (call $__ptr_offset (i64.reinterpret_f64 (global.get $x)))
+ * — 68 such calls in rfft's transform alone, ~7× slower than V8. LICM can't
+ * hoist them out of loops: its global-invariance rule requires a call-free
+ * loop, and the resolve itself is a call. promoteGlobals can't either: `init`
+ * writes the global, so it's volatile module-wide.
+ *
+ * The precise facts make it sound here: TYPED pointees never forward (only
+ * ARRAY/SET/MAP do — same bits ⇒ same offset), so the snapshot is stable iff
+ * the global's VALUE is stable through the function — i.e. the function
+ * neither writes G itself nor (transitively) calls anything that does
+ * (`collectReachableGlobalWrites`). The entry-time resolve is total
+ * (`__ptr_offset` bounds-checks garbage to itself), so hoisting past a
+ * zero-trip loop or an early return is safe.
+ *
+ * @param {Array} fn - func IR node
+ * @param {Set<string>} stablePtrGlobals - '$name's of VAL.TYPED module globals
+ * @param {Map<string,Set<string>>} reachableWrites - from collectReachableGlobalWrites
+ */
+export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
+  if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // `(call $__ptr_offset (i64.reinterpret_f64 (global.get $G)))` → G, or null.
+  const siteGlobal = (n) =>
+    Array.isArray(n) && n[0] === 'call' && n[1] === '$__ptr_offset' && n.length === 3
+      && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64'
+      && Array.isArray(n[2][1]) && n[2][1][0] === 'global.get' && typeof n[2][1][1] === 'string'
+      ? n[2][1][1] : null
+
+  const counts = new Map(), ownWrites = new Set(), ownCallees = new Set()
+  let hasIndirect = false
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    const g = siteGlobal(n)
+    if (g != null) { counts.set(g, (counts.get(g) || 0) + 1); return }
+    if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
+    else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
+    else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
+    for (let i = 1; i < n.length; i++) scan(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  if (!counts.size) return
+
+  const calleeWrites = (g) => {
+    if (hasIndirect) return true  // unknown targets — assume they write
+    for (const c of ownCallees) if (reachableWrites?.get(c)?.has(g)) return true
+    return false
+  }
+
+  // Collision-proof snap ids (same scheme as hoistInvariantLoop's $__li).
+  const used = new Set()
+  const scanIds = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__go')) {
+      const t = n[1].slice(5); if (/^\d+$/.test(t)) used.add(+t)
+    }
+    for (let i = 0; i < n.length; i++) scanIds(n[i])
+  }
+  scanIds(fn)
+  let idCounter = 0
+  const freshId = () => { while (used.has(idCounter)) idCounter++; const id = idCounter++; used.add(id); return `$__go${id}` }
+
+  const chosen = new Map()  // global → snap local
+  for (const [g, c] of counts) {
+    if (c < 2 || !stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites(g)) continue
+    chosen.set(g, freshId())
+  }
+  if (!chosen.size) return
+
+  const replace = (n) => {
+    if (!Array.isArray(n)) return
+    for (let i = 1; i < n.length; i++) {
+      const g = siteGlobal(n[i])
+      if (g != null && chosen.has(g)) n[i] = ['local.get', chosen.get(g)]
+      else replace(n[i])
+    }
+  }
+  for (let i = bodyStart; i < fn.length; i++) replace(fn[i])
+
+  const decls = [], snaps = []
+  for (const [g, name] of chosen) {
+    decls.push(['local', name, 'i32'])
+    snaps.push(['local.set', name, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]])
+  }
+  fn.splice(bodyStart, 0, ...decls, ...snaps)
 }
 
 /**

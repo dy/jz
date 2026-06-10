@@ -362,6 +362,20 @@ test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', 
   ok(/^PASS:/m.test(out), `perf-fuzz did not report PASS:\n${out}`)
 })
 
+// ── Examples corpus gate: every demo's per-frame hot path, jz vs V8 ─────────
+// The kernel corpus missed the module-global-state shape (rfft 0.13×,
+// reaction-diffusion 0.19×, game-of-life 0.41× — all invisible while the
+// kernels stayed green) until hoistGlobalPtrOffset landed. examples/bench.mjs
+// runs the SAME demo source as jz wasm vs V8 ESM and self-gates: geomean > 1
+// AND every non-`opt` example ≥ 0.9× — it exits non-zero otherwise, so a
+// regression in any demo (the public face of jz) trips CI, not a user.
+test('bench: examples corpus — jz beats V8 per frame (geomean > 1, winners ≥ 0.9×)', () => {
+  let out
+  try { out = execFileSync('node', [join(ROOT, 'examples/bench.mjs')], { encoding: 'utf8', cwd: ROOT }) }
+  catch (e) { ok(false, `examples perf regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
+  ok(/✓ jz faster overall/.test(out), `examples bench did not report pass:\n${out}`)
+})
+
 // ── Floatbeat perf gate ──────────────────────────────────────────────────────
 // The numeric kernel corpus never exercises closures + arrays + per-sample dispatch
 // the way the jukebox floatbeats do, so a codegen regression there is invisible to it

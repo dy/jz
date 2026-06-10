@@ -49,7 +49,8 @@ import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize/index.js'
+import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, resolveOptimize } from './src/optimize/index.js'
+import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
 import {
@@ -474,6 +475,22 @@ const jzCompileInner = (code, opts = {}) => {
     else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
   }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
+  // Stable typed module globals: resolve the __ptr_offset once per function.
+  // TYPED pointees never forward, so the snapshot only needs the global's value
+  // stable through the function — the reachable-writes call graph proves that
+  // precisely. Independent of watr (the auto-config turns watr off for large
+  // sources — exactly the module-global DSP-state programs this pass exists
+  // for: rfft, reaction-diffusion); when watr DID run, it goes before the post
+  // leaf passes so the snapped local participates in hoistAddrBase/cseScalarLoad.
+  if (cfg.hoistGlobalPtrOffset !== false && ctx.scope.globalValTypes) {
+    const typedGlobals = new Set()
+    for (const [k, v] of ctx.scope.globalValTypes) if (v === VAL.TYPED) typedGlobals.add(`$${k}`)
+    if (typedGlobals.size) {
+      const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
+      const reach = collectReachableGlobalWrites(funcs)
+      for (const node of funcs) hoistGlobalPtrOffset(node, typedGlobals, reach)
+    }
+  }
   // Final peephole pass: watOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
