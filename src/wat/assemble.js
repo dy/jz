@@ -13,7 +13,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP } from '../ctx.js'
+import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal } from '../ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -477,15 +477,7 @@ export function optimizeModule(sec) {
     sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
     ctx.runtime.strPool = poolRef.pool
   }
-  // Backfill globalTypes for runtime globals declared only in ctx.scope.globals
-  // (e.g., __schema_tbl, __strBase). Parses the WAT string to infer i32/f64/i64.
-  if (ctx.scope.globals) {
-    for (const [name, wat] of ctx.scope.globals) {
-      if (!wat || ctx.scope.globalTypes.has(name)) continue
-      const m = wat.match(/\(global\s+\$?\S+\s+(?:\(mut\s+)?(i32|i64|f64|f32)/)
-      if (m) ctx.scope.globalTypes.set(name, m[1])
-    }
-  }
+  // (globalTypes backfill gone: declGlobal sets the type at declaration.)
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
   const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
@@ -504,11 +496,7 @@ export function optimizeModule(sec) {
     }
   }
   if (!cfg || cfg.hoistConstantPool !== false)
-    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => {
-      ctx.scope.globals.set(name, wat)
-      const m = wat.match(/\(global\s+\$?\S+\s+(?:\(mut\s+)?(i32|i64|f64|f32)/)
-      if (m) ctx.scope.globalTypes.set(name, m[1])
-    })
+    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, lit) => declGlobal(name, 'f64', lit))
 
   // Second promoteGlobals pass disabled: promoting hoistConstantPool's __fc*
   // globals regressed the watr perf micro-pin (WASM compile time increased).
@@ -525,12 +513,8 @@ export function optimizeModule(sec) {
     const heapBase = (dataLen + 7) & ~7
     // Non-shared memory always carries a $__heap global — start it past the
     // static data so the bump allocator never overwrites a literal.
-    ctx.scope.globals.set('__heap', `(global $__heap (export "__heap") (mut i32) (i32.const ${heapBase}))`)
-    ctx.scope.globalTypes.set('__heap', 'i32')
-    if (ctx.scope.globals.has('__heap_start')) {
-      ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
-      ctx.scope.globalTypes.set('__heap_start', 'i32')
-    }
+    declGlobal('__heap', 'i32', heapBase, { export: '__heap' })
+    if (ctx.scope.globals.has('__heap_start')) declGlobal('__heap_start', 'i32', heapBase)
     for (const s of sec.stdlib)
       if (s[0] === 'func' && s[1] === '$__clear')
         for (let i = 2; i < s.length; i++)

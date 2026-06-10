@@ -16,7 +16,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -202,7 +202,7 @@ export default (ctx) => {
   // Heap-base watermark: gates header-backed propsPtr fast paths so static-data
   // OBJECT slots (offsets < heap base) don't misread arbitrary memory at off-16.
   // Updated by optimizeModule() when data segment exceeds HEAP.START bytes.
-  ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${HEAP.START}))`)
+  declGlobal('__heap_start', 'i32', HEAP.START)
 
   // Shared memory keeps the heap pointer in linear memory (memory[HEAP.PTR_ADDR]):
   // wasm globals are per-instance, so threads sharing one memory must share one
@@ -250,7 +250,7 @@ export default (ctx) => {
   } else {
     // Own memory: heap offset in a global, exported so the JS-side adapter
     // (alloc:false, no `_alloc` export) shares the pointer.
-    ctx.scope.globals.set('__heap', `(global $__heap (export "__heap") (mut i32) (i32.const ${HEAP.START}))`)
+    declGlobal('__heap', 'i32', HEAP.START, { export: '__heap' })
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
@@ -988,7 +988,7 @@ export default (ctx) => {
     if (!ctx.runtime.typeofStrs) {
       ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object', 'boolean']
       for (const s of ctx.runtime.typeofStrs)
-        ctx.scope.globals.set(`__tof_${s}`, `(global $__tof_${s} (mut f64) (f64.const 0))`)
+        declGlobal(`__tof_${s}`, 'f64')
     }
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.

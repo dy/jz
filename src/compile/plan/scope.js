@@ -19,12 +19,12 @@
  * @module compile/plan/scope
  */
 
-import { ctx, warn } from '../../ctx.js'
+import { ctx, warn, declGlobal } from '../../ctx.js'
 import { ASSIGN_OPS, T, refsAny } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'
-import { MAX_CLOSURE_ARITY, UNDEF_WAT } from '../../ir.js'
+import { MAX_CLOSURE_ARITY, UNDEF_NAN } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
@@ -114,9 +114,8 @@ export const unboxConstTypedGlobals = () => {
     const aux = typedElemAux(ctor)
     if (aux == null) continue
     const decl = ctx.scope.globals.get(name)
-    if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
-    ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
-    ctx.scope.globalTypes.set(name, 'i32')
+    if (!(decl?.mut && decl.type === 'f64')) continue
+    declGlobal(name, 'i32')
     updateGlobalRep(name, { ptrKind: VAL.TYPED, ptrAux: aux })
   }
 }
@@ -156,7 +155,7 @@ export const inferModuleIntGlobals = (ast) => {
   const candidates = new Set()
   for (const name of ctx.scope.userGlobals) {
     const decl = ctx.scope.globals.get(name)
-    if (typeof decl !== 'string' || !decl.includes('(mut f64)')) continue
+    if (!(decl?.mut && decl.type === 'f64')) continue
     if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER) continue
     if (ctx.func.names?.has(name)) continue
     candidates.add(name)
@@ -260,8 +259,7 @@ export const inferModuleIntGlobals = (ast) => {
 
   for (const name of candidates) {
     if (fractional.has(name)) continue
-    ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
-    ctx.scope.globalTypes.set(name, 'i32')
+    declGlobal(name, 'i32')
     // Advisory only (off unless opts.warnings): the value flows in from a parameter,
     // which may be a fractional Number that the i32 carrier truncates.
     if (ctx.warnings && fromParam.has(name))
@@ -284,7 +282,7 @@ export const inferModuleIntGlobals = (ast) => {
  *   - reassigned (`multiProp`) slot → dissolve into a plain f64 module global:
  *     `__dyn_get/__dyn_set` → `global.get/global.set`. The indirect call stays
  *     (a genuinely reassigned function pointer needs `call_indirect`). Pure
- *     storage relocation: the global inits to `UNDEF_WAT`, exactly mirroring
+ *     storage relocation: the global inits to the undefined NaN atom, exactly mirroring
  *     "key never set → __dyn_get yields undefined".
  *   - written once to its lifted `$f$prop` function and only ever *called*
  *     (never read as a value) → the `__dyn_set` is dead: emit already lowers
@@ -329,8 +327,7 @@ export const flattenFuncNamespaces = (ast) => {
   for (const decide of flat.values())
     for (const d of decide.values())
       if (d.global && !ctx.scope.globals.has(d.global)) {
-        ctx.scope.globals.set(d.global, `(global $${d.global} (mut f64) ${UNDEF_WAT})`)
-        ctx.scope.globalTypes.set(d.global, 'f64')
+        declGlobal(d.global, 'f64', `nan:${UNDEF_NAN}`)
       }
   const decisionFor = (obj, prop) =>
     typeof obj === 'string' && typeof prop === 'string' && flat.has(obj)
@@ -540,7 +537,7 @@ export const materializeAutoBoxSchemas = (programFacts) => {
     const schemaId = ctx.schema.register(schema)
     ctx.schema.vars.set(name, schemaId)
     if (ctx.func.names.has(name) && !ctx.scope.globals.has(name))
-      ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+      declGlobal(name, 'f64')
     if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
     ctx.schema.autoBox.set(name, { schemaId, schema })
   }

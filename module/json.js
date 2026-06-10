@@ -13,7 +13,7 @@ import { emit, bool, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
-import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 function jsonConstString(ctx, expr) {
@@ -206,23 +206,23 @@ export default (ctx) => {
   // Scratch buffer approach: __json_buf is a growable output buffer.
   // Functions append bytes to it, __json_pos tracks current write position.
 
-  ctx.scope.globals.set('__jbuf', '(global $__jbuf (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+  declGlobal('__jbuf', 'i32')
+  declGlobal('__jpos', 'i32')
+  declGlobal('__jcap', 'i32')
+  declGlobal('__schema_tbl', 'i32')
   // Pretty-print state for the `space` argument. $__jgap points at the gap
   // string bytes ($__jgaplen of them); $__jdepth is the live nesting depth.
   // $__jgaplen == 0 ⇒ compact mode — every indent emission below is gated on
   // it, so the no-space path stays byte-identical to the unindented output.
-  ctx.scope.globals.set('__jgap', '(global $__jgap (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__jgaplen', '(global $__jgaplen (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__jdepth', '(global $__jdepth (mut i32) (i32.const 0))')
+  declGlobal('__jgap', 'i32')
+  declGlobal('__jgaplen', 'i32')
+  declGlobal('__jdepth', 'i32')
   // Cycle-detection stack: the i64 values of the containers currently open on
   // the recursion path. JSON.stringify of a structure that points back at an
   // ancestor must throw a TypeError. $__jstack is a lazily-allocated buffer of
   // up to 256 entries; $__jsp is the live depth.
-  ctx.scope.globals.set('__jstack', '(global $__jstack (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__jsp', '(global $__jsp (mut i32) (i32.const 0))')
+  declGlobal('__jstack', 'i32')
+  declGlobal('__jsp', 'i32')
 
   // __jput(byte: i32) — append one byte to output buffer
   ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
@@ -582,19 +582,19 @@ export default (ctx) => {
 
   // === JSON.parse ===
 
-  ctx.scope.globals.set('__jpstr', '(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
-  ctx.scope.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
-  ctx.scope.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
+  declGlobal('__jpstr', 'i32')  // input string offset
+  declGlobal('__jplen', 'i32')  // input length
+  declGlobal('__jppos', 'i32')  // current parse position
   // Side-channel hash for the most-recently-parsed string. __jp_str folds an
   // FNV-1a pass into its scan loop; __jp_obj forwards it to __hash_set_local_h
   // and skips the redundant __str_hash call inside the generic insert. 0 is a
   // sentinel meaning "string had escapes — recompute via __str_hash".
-  ctx.scope.globals.set('__jp_keyh', '(global $__jp_keyh (mut i32) (i32.const 0))')
+  declGlobal('__jp_keyh', 'i32')
   // Sticky syntax-error flag. Set by any parser sub-routine on malformed input;
   // checked once by __jp after the top-level value, which throws if it is set.
   // Sticky (never cleared mid-parse) so recursive descent need not thread an
   // error result through every call — __jp resets it per invocation.
-  ctx.scope.globals.set('__jp_err', '(global $__jp_err (mut i32) (i32.const 0))')
+  declGlobal('__jp_err', 'i32')
   // Runtime schema infrastructure. __schema_next points at the first free slot
   // in $__schema_tbl reserved for runtime registration; compile.js initializes
   // it to ctx.schema.list.length when __jp_obj is included. The schema cache
@@ -604,8 +604,8 @@ export default (ctx) => {
   // every __hash_set_local). Cache slot layout: i32 hash, i32 sid (8 bytes).
   // Hash 0 = empty slot; we bump <=1 to 2 like __str_hash to avoid sentinel
   // collision with valid hashes.
-  ctx.scope.globals.set('__schema_next', '(global $__schema_next (mut i32) (i32.const 0))')
-  ctx.scope.globals.set('__schema_cache', '(global $__schema_cache (mut i32) (i32.const 0))')
+  declGlobal('__schema_next', 'i32')
+  declGlobal('__schema_cache', 'i32')
 
   // Sentinel-driven peek: __jp copies input to a scratch buffer with 0xFF bytes
   // appended past the end. i32.load8_s sign-extends, so the sentinel reads as -1

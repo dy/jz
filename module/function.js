@@ -17,7 +17,7 @@ import { findFreeVars } from '../src/compile/analyze.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
-import { PTR, LAYOUT, inc, err } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err, declGlobal } from '../src/ctx.js'
 
 // A closure whose every return value is provably a plain number lets each caller
 // skip the `__to_num` result coercion — the dominant per-sample cost in closure-heavy
@@ -250,7 +250,7 @@ export default (ctx) => {
       // The full args array offset is published in $__closure_spill so a rest-param
       // callee can recover elements beyond width W (the W inline slots hold args[0..W-1];
       // the rest reads args[W..argc-1] straight from the spill array). Unbounded arity.
-      ctx.scope.globals.set('__closure_spill', '(global $__closure_spill (mut i32) (i32.const 0))')
+      declGlobal('__closure_spill', 'i32')
       const arrT = tempI32('sa')
       const lenL = tempI32('sl')
       const setup = [

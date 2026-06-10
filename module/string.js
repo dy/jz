@@ -16,7 +16,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, m
 import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { inc, PTR, LAYOUT, err } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -106,7 +106,7 @@ export default (ctx) => {
     // use, independent of string length AND reused across uses.
     if (!ctx.runtime.strPool) {
       ctx.runtime.strPool = ''
-      ctx.scope.globals.set('__strBase', '(global $__strBase (mut i32) (i32.const 0))')
+      declGlobal('__strBase', 'i32')
     }
     let off = ctx.runtime.strPoolDedup.get(str)
     if (off === undefined) {

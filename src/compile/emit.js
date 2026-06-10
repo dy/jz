@@ -817,7 +817,7 @@ export function emitDecl(...inits) {
       // must still run (e.g. `const V = NULLISH + 1` where NULLISH is a cross-module /
       // dynamic const: V is i32-typed but unfolded, and without this it stays 0).
       if (ctx.scope.globalTypes.has(name)) {
-        if (ctx.scope.consts?.has(name) && !/\(mut\b/.test(ctx.scope.globals.get(name) || '')) continue
+        if (ctx.scope.consts?.has(name) && !ctx.scope.globals.get(name)?.mut) continue
         const gt = ctx.scope.globalTypes.get(name)
         result.push(['global.set', `$${name}`, gt === 'i32' ? asI32(val) : asF64(val)])
         continue

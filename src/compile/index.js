@@ -26,7 +26,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR } from '../ast.js'
 import { intLiteralValue } from '../static.js'
 import {
@@ -152,7 +152,7 @@ const ensureThrowRuntime = (sec) => {
   if (!ctx.runtime.throws) return
 
   if (!ctx.scope.globals.has('__jz_last_err_bits'))
-    ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
+    declGlobal('__jz_last_err_bits', 'i64')
   if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'tag' && t[1] === '$__jz_err'))
     sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
   if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))
@@ -1088,7 +1088,7 @@ function emitClosureBody(cb) {
   if (cb.rest) {
     const fixedN = fixedParamN
     const restSlots = W - fixedN
-    ctx.scope.globals.set('__closure_spill', '(global $__closure_spill (mut i32) (i32.const 0))')
+    declGlobal('__closure_spill', 'i32')
     fn.push(['local.set', `$${restLen}`,
       ['select',
         ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
@@ -1175,7 +1175,7 @@ export default function compile(ast, profiler) {
 
   // Check user globals don't conflict with runtime globals (modules loaded after user decls)
   for (const name of ctx.scope.userGlobals)
-    if (!ctx.scope.globals.get(name)?.includes('mut f64'))
+    if (!(ctx.scope.globals.get(name)?.mut && ctx.scope.globals.get(name)?.type === 'f64'))
       err(`'${name}' conflicts with a compiler internal — choose a different name`)
 
   // Pre-fold const globals: evaluate constant initializers before function compilation
@@ -1231,10 +1231,7 @@ export default function compile(ast, profiler) {
           foldedDecls.add(name)
           changed = true
           const isInt = Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX
-          ctx.scope.globals.set(name, isInt
-            ? `(global $${name} i32 (i32.const ${v}))`
-            : `(global $${name} f64 (f64.const ${v}))`)
-          ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
+          declGlobal(name, isInt ? 'i32' : 'f64', v, { mut: false })
           // Cache integer values for cross-call const-arg propagation: `f(N)` where
           // `const N = 8` should observe the param as intConst=8.
           if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
@@ -1380,8 +1377,12 @@ export default function compile(ast, profiler) {
 
   optimizeModule(sec)
 
-  // Populate globals (after __start — const folding may update declarations)
-  sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
+  // Populate globals (after __start — const folding may update declarations).
+  // Records build IR directly — no WAT-text parse-back.
+  sec.globals.push(...[...ctx.scope.globals].filter(([, g]) => g).map(([n, g]) => ['global', `$${n}`,
+    ...(g.export ? [['export', `"${g.export}"`]] : []),
+    g.mut ? ['mut', g.type] : g.type,
+    [`${g.type}.const`, g.init]]))
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)
