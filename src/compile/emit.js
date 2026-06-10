@@ -2006,8 +2006,207 @@ function tryFnPropCall(callee, obj, method, parsed) {
 
 const LEADING_STRATEGIES = [tryFlatObjectMethod, tryCharCodeAtFast, trySpliceInsert, tryFnPropCall]
 
-/** Method-call dispatch: `obj.method(args)`. Linear strategy chain. Strategies
- *  (first match wins):
+// Strategies 5–12 share the receiver's resolved value type and the
+// `callMethod` shim — packaged once into a dispatch-context record `c` =
+// `{ obj, method, parsed, vt, callMethod }` so each strategy is a named
+// function in TYPED_STRATEGIES, same first-match-wins contract as
+// LEADING_STRATEGIES. The last entry (external fallback) is total.
+
+// 5. Boxed object: delegate method to inner value (slot 0)
+function tryBoxedDelegate({ obj, method, callMethod }) {
+  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
+    const innerVt = repOf(obj)?.val
+    const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
+    if (innerEmitter) {
+      const innerName = `${obj}${T}inner`
+      if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
+      const boxBase = tempI32('bb')
+      // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
+      // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
+      const loadInner = [
+        ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
+        ['local.set', `$${innerName}`, ctx.abi.object.ops.load(['local.get', `$${boxBase}`], 0)]]
+      const result = callMethod(innerName, innerEmitter)
+      // Mutating methods may reallocate; writeback inner value to boxed slot
+      if (BOXED_MUTATORS.has(method)) {
+        const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
+        return block64(...loadInner, asF64(result), wb)
+      }
+      // Non-mutating: just load inner and call
+      return block64(...loadInner, asF64(result))
+    }
+  }
+}
+
+// 6. valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
+// property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
+// the builtin emitter for any receiver that can carry a dynamic-prop
+// sidecar — a sidecar-bearing static type (array/typed/object) OR a
+// statically-unknown receiver (e.g. an array-element read `arr[0]`, whose
+// type is only known at runtime). Probe the sidecar and call it when it
+// holds a closure, else fall back to the builtin (generic when untyped:
+// `.valueOf` returns the receiver, `.toString` runs type-aware __to_str).
+// Parallels the member-READ check in module/core.js emitPropAccess (which
+// stays scoped to known sidecar types). (watr's `str()` attaches
+// `bytes.valueOf = () => s`, recovered via `.valueOf()`.)
+function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
+  if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
+      && !parsed.hasSpread && parsed.normal.length === 0
+      && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
+    const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
+    if (builtin) {
+      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
+        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), []),  // CALL the override
+        (o) => asF64(callMethod(o, builtin)))                                // else the builtin method
+    }
+  }
+}
+
+// 7. Known type → static dispatch
+function tryStaticDispatch({ obj, method, vt, callMethod }) {
+  if (vt && ctx.core.emit[`.${vt}:${method}`]) {
+    return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
+  }
+}
+
+// 8. Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
+// analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
+// runtime dispatch resolves whether the operand is actually a string or an array.
+// Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
+// emitter which already knows how to handle them.
+function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
+  const strKey = `.string:${method}`, genKey = `.${method}`
+  if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+    const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
+    const strEmitter = ctx.core.emit[strKey]
+    const genEmitter = ctx.core.emit[genKey]
+    // A string/array method is only valid on a NaN-boxed pointer (string/array/…).
+    // A finite number receiver has none of these methods — `f64.eq(t,t)` is true only
+    // for a non-NaN value, so guard the dispatch with it: a number yields `undefined`
+    // (spec: `(5).indexOf` is undefined, so `5?.indexOf?.(x)` short-circuits) instead
+    // of feeding the number's bits to `__ptr_type` → the else/array branch → an OOB
+    // load at a bogus "pointer". Only the number/±Inf path changes (OOB → undefined);
+    // every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
+    return block64(
+      ['local.set', `$${t}`, asF64(emit(obj))],
+      ['if', ['result', 'f64'],
+        ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+        ['then', undefExpr()],
+        ['else', block64(
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+            ['then', callMethod(t, strEmitter)],
+            ['else', callMethod(t, genEmitter)]])]])
+  }
+}
+
+// 9. Schema property closure call: `x.prop(args)` where prop is a closure slot in
+// x's schema. Boxed schemas don't currently support spread callers (each box
+// hands the inner value through), so spread is restricted to the non-boxed path.
+function trySchemaClosureCall({ obj, method, parsed }) {
+  if (typeof obj === 'string' && ctx.schema.slotOf && ctx.closure.call) {
+    const idx = ctx.schema.slotOf(obj, method)
+    if (idx >= 0) {
+      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
+      if (parsed.hasSpread && !ctx.schema.isBoxed?.(obj)) {
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
+      }
+      return ctx.closure.call(propRead, parsed.normal)
+    }
+  }
+}
+
+// 10. Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
+// `.delete`) assumes a Map/Set receiver: a proven collection already
+// dispatched via `.${vt}:${method}` above, so reaching here means the
+// receiver is not a proven collection. A zero-arg call then cannot be the
+// collection op (each needs ≥1 key/value arg) — it is a user/closure
+// method (e.g. `new C().get()`). Skip the collection emitter so it falls
+// through to closure/dynamic dispatch instead of crashing on `emit(key)`.
+function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
+  const collectionMisfit = COLLECTION_METHODS.has(method) &&
+    !parsed.hasSpread && parsed.normal.length === 0
+  const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
+    !parsed.hasSpread && parsed.normal.length > 1
+  // A proven plain-object/dict receiver never inherits the Array/collection
+  // builtins these generic emitters serve — an own property of the same name
+  // shadows them (ES prototype semantics). Skip the builtin so the dynamic
+  // property-call dispatch below reads the actual slot/sidecar closure. This
+  // is the type-based generalization of the collection/strIndex arity guards
+  // above: it is what lets self-host user methods whose names collide with
+  // builtins — `ctx.schema.slotOf(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
+  // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
+  const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
+  if (ctx.core.emit[`.${method}`] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+    return callMethod(obj, ctx.core.emit[`.${method}`])
+  }
+}
+
+// 11. Dynamic property function call on non-external values. Two emission shapes:
+// (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
+//     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
+//     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
+function tryDynamicPropCall({ obj, method, parsed, vt }) {
+  if (ctx.closure.call) {
+    if (ctx.transform.strict)
+      err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
+    const objTmp = temp('mobj')
+    const propTmp = temp('mprop')
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const arrayIR = buildArrayWithSpreads(combined)
+    const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
+    const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
+    inc('__dyn_get_expr', '__ptr_type')
+    if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
+    const extFallback = closureOnly ? undefExpr()
+      : ['if', ['result', 'f64'],
+          ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
+          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+            ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+            ['i64.reinterpret_f64', arrayIR]]]],
+          ['else', undefExpr()]]
+    return block64(
+      ['local.set', `$${objTmp}`, asF64(emit(obj))],
+      ['local.set', `$${propTmp}`, propRead],
+      ['if', ['result', 'f64'],
+        ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
+        ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+        ['else', extFallback]])
+  }
+}
+
+// 12. Unknown callee — assume external method. Total: always returns.
+function externalMethodFallback({ obj, method, parsed }) {
+  if (ctx.transform.strict)
+    err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
+  // Under wasi there is no host `__ext_call` — the call lowers to a
+  // no-op returning `undefined`. This is by-design so polymorphic code
+  // can target js and wasi from one source; users who want fail-fast
+  // pass `strict: true` (handled above).
+  if (ctx.transform.host === 'wasi') return undefExpr()
+  inc('__ext_call')
+  ctx.features.external = true
+  const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+  const arrayIR = buildArrayWithSpreads(combined)
+  return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+    ['i64.reinterpret_f64', asF64(emit(obj))],
+    ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+    ['i64.reinterpret_f64', arrayIR]]], 'f64')
+}
+
+const TYPED_STRATEGIES = [
+  tryBoxedDelegate, trySidecarToPrimitive, tryStaticDispatch, tryRuntimeStringFork,
+  trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall, externalMethodFallback,
+]
+
+/** Method-call dispatch: `obj.method(args)`. Linear strategy chain, first
+ *  match wins. 1–4 are context-free (LEADING_STRATEGIES); 5–12 share the
+ *  resolved receiver type + callMethod shim via the dispatch-context record
+ *  (TYPED_STRATEGIES — the last entry is total):
  *    1. SRoA flat-object method (read closure from `o#i` local)
  *    2. charCodeAt with statically-proven in-bounds index → i32 fast path
  *    3. splice with insert items → __arr_splice (the one method that delete+insert)
@@ -2046,179 +2245,15 @@ function emitMethodCall(callee, parsed, callArgs) {
     && vt !== VAL.BUFFER && vt !== VAL.TYPED) vt = null
 
   // Method-emitter shim — threads parsed/method through the shared dispatcher so
-  // call sites (boxed-object delegation, sidecar valueOf/toString, etc.) keep the
-  // simple `callMethod(receiver, emitter)` shape.
-  const callMethod = (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method)
-
-  // Boxed object: delegate method to inner value (slot 0)
-  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
-    const innerVt = repOf(obj)?.val
-    const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
-    if (innerEmitter) {
-      const innerName = `${obj}${T}inner`
-      if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
-      const boxBase = tempI32('bb')
-      // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
-      // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
-      const loadInner = [
-        ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
-        ['local.set', `$${innerName}`, ctx.abi.object.ops.load(['local.get', `$${boxBase}`], 0)]]
-      const result = callMethod(innerName, innerEmitter)
-      // Mutating methods may reallocate; writeback inner value to boxed slot
-      if (BOXED_MUTATORS.has(method)) {
-        const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
-        return block64(...loadInner, asF64(result), wb)
-      }
-      // Non-mutating: just load inner and call
-      return block64(...loadInner, asF64(result))
-    }
+  // strategies keep the simple `callMethod(receiver, emitter)` shape.
+  const c = {
+    obj, method, parsed, vt,
+    callMethod: (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method),
   }
-
-  // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
-  // property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
-  // the builtin emitter for any receiver that can carry a dynamic-prop
-  // sidecar — a sidecar-bearing static type (array/typed/object) OR a
-  // statically-unknown receiver (e.g. an array-element read `arr[0]`, whose
-  // type is only known at runtime). Probe the sidecar and call it when it
-  // holds a closure, else fall back to the builtin (generic when untyped:
-  // `.valueOf` returns the receiver, `.toString` runs type-aware __to_str).
-  // Parallels the member-READ check in module/core.js emitPropAccess (which
-  // stays scoped to known sidecar types). (watr's `str()` attaches
-  // `bytes.valueOf = () => s`, recovered via `.valueOf()`.)
-  if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
-      && !parsed.hasSpread && parsed.normal.length === 0
-      && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
-    const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
-    if (builtin) {
-      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), []),  // CALL the override
-        (o) => asF64(callMethod(o, builtin)))                                // else the builtin method
-    }
+  for (const strategy of TYPED_STRATEGIES) {
+    const r = strategy(c)
+    if (r !== undefined) return r
   }
-
-  // Known type → static dispatch
-  if (vt && ctx.core.emit[`.${vt}:${method}`]) {
-    return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
-  }
-
-  // Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
-  // analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
-  // runtime dispatch resolves whether the operand is actually a string or an array.
-  // Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
-  // emitter which already knows how to handle them.
-  const strKey = `.string:${method}`, genKey = `.${method}`
-  if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
-    const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
-    const strEmitter = ctx.core.emit[strKey]
-    const genEmitter = ctx.core.emit[genKey]
-    // A string/array method is only valid on a NaN-boxed pointer (string/array/…).
-    // A finite number receiver has none of these methods — `f64.eq(t,t)` is true only
-    // for a non-NaN value, so guard the dispatch with it: a number yields `undefined`
-    // (spec: `(5).indexOf` is undefined, so `5?.indexOf?.(x)` short-circuits) instead
-    // of feeding the number's bits to `__ptr_type` → the else/array branch → an OOB
-    // load at a bogus "pointer". Only the number/±Inf path changes (OOB → undefined);
-    // every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
-    return block64(
-      ['local.set', `$${t}`, asF64(emit(obj))],
-      ['if', ['result', 'f64'],
-        ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-        ['then', undefExpr()],
-        ['else', block64(
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-            ['then', callMethod(t, strEmitter)],
-            ['else', callMethod(t, genEmitter)]])]])
-  }
-
-  // Schema property closure call: `x.prop(args)` where prop is a closure slot in
-  // x's schema. Boxed schemas don't currently support spread callers (each box
-  // hands the inner value through), so spread is restricted to the non-boxed path.
-  if (typeof obj === 'string' && ctx.schema.slotOf && ctx.closure.call) {
-    const idx = ctx.schema.slotOf(obj, method)
-    if (idx >= 0) {
-      const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-      if (parsed.hasSpread && !ctx.schema.isBoxed?.(obj)) {
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
-      }
-      return ctx.closure.call(propRead, parsed.normal)
-    }
-  }
-
-  // Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
-  // `.delete`) assumes a Map/Set receiver: a proven collection already
-  // dispatched via `.${vt}:${method}` above, so reaching here means the
-  // receiver is not a proven collection. A zero-arg call then cannot be the
-  // collection op (each needs ≥1 key/value arg) — it is a user/closure
-  // method (e.g. `new C().get()`). Skip the collection emitter so it falls
-  // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
-  const collectionMisfit = COLLECTION_METHODS.has(method) &&
-    !parsed.hasSpread && parsed.normal.length === 0
-  const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
-    !parsed.hasSpread && parsed.normal.length > 1
-  // A proven plain-object/dict receiver never inherits the Array/collection
-  // builtins these generic emitters serve — an own property of the same name
-  // shadows them (ES prototype semantics). Skip the builtin so the dynamic
-  // property-call dispatch below reads the actual slot/sidecar closure. This
-  // is the type-based generalization of the collection/strIndex arity guards
-  // above: it is what lets self-host user methods whose names collide with
-  // builtins — `ctx.schema.slotOf(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
-  // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
-  const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
-  if (ctx.core.emit[genKey] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
-    return callMethod(obj, ctx.core.emit[genKey])
-  }
-
-  // Dynamic property function call on non-external values. Two emission shapes:
-  // (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
-  //     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
-  //     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
-  if (ctx.closure.call) {
-    if (ctx.transform.strict)
-      err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
-    const objTmp = temp('mobj')
-    const propTmp = temp('mprop')
-    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-    const arrayIR = buildArrayWithSpreads(combined)
-    const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
-    const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
-    inc('__dyn_get_expr', '__ptr_type')
-    if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
-    const extFallback = closureOnly ? undefExpr()
-      : ['if', ['result', 'f64'],
-          ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
-          ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
-            ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-            ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-            ['i64.reinterpret_f64', arrayIR]]]],
-          ['else', undefExpr()]]
-    return block64(
-      ['local.set', `$${objTmp}`, asF64(emit(obj))],
-      ['local.set', `$${propTmp}`, propRead],
-      ['if', ['result', 'f64'],
-        ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-        ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
-        ['else', extFallback]])
-  }
-
-  // Unknown callee — assume external method.
-  if (ctx.transform.strict)
-    err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
-  // Under wasi there is no host `__ext_call` — the call lowers to a
-  // no-op returning `undefined`. This is by-design so polymorphic code
-  // can target js and wasi from one source; users who want fail-fast
-  // pass `strict: true` (handled above).
-  if (ctx.transform.host === 'wasi') return undefExpr()
-  inc('__ext_call')
-  ctx.features.external = true
-  const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-  const arrayIR = buildArrayWithSpreads(combined)
-  return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-    ['i64.reinterpret_f64', asF64(emit(obj))],
-    ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-    ['i64.reinterpret_f64', arrayIR]]], 'f64')
 }
 
 /** Builtin / module-emitter call: `Math.max(...)`, `JSON.parse(...)`, etc. The
