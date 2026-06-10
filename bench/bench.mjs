@@ -16,6 +16,7 @@ const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes'
+const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const PORF_BIN = process.env.PORF_BIN || 'porf'
@@ -120,6 +121,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
 const wasmPath = c => join(caseBuild(c), `${c.id}.wasm`)
 const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
+const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -358,6 +360,18 @@ const targets = {
     available: () => has(HERMES_BIN),
     bin: flatPath,
     run: c => tryRun('hermes', c, () => writeFlat(c), [HERMES_BIN, flatPath(c)]),
+  },
+  // Static Hermes — AOT JS → native via C/LLVM. Hand-run reference point:
+  // build `shermes` from facebook/hermes (needs the LLVM toolchain) and point
+  // SHERMES_BIN at it. Untyped JS compiles too (stays dynamic, still AOT).
+  shermes: {
+    name: 'Static Hermes (shermes -O → native)',
+    available: () => has(SHERMES_BIN),
+    bin: shermesBinPath,
+    run: c => tryRun('shermes', c, () => {
+      writeFlat(c)
+      execFileSync(SHERMES_BIN, ['-O', flatPath(c), '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, [shermesBinPath(c)]),
   },
   graaljs: {
     name: 'GraalJS',
