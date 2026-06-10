@@ -9,6 +9,16 @@
 /** Template placeholder in prepared AST (prepare.js). */
 export const T = '\uE000'
 
+// === Atom sentinels (shared by prepare + emit \u2014 keeps the stage boundary
+// import-clean: emit must not reach into prepare for a constant) ===
+
+// `null` and `undefined` are distinct NaN-box atoms (aux 1 vs 2), so they get
+// distinct sentinels \u2014 collapsing both to one made `cond ? undefined : x`
+// surface as `null` (the value flows through emit's symbol case, which can
+// only carry one atom).
+export const JZ_NULL = Symbol('null')
+export const JZ_UNDEF = Symbol('undefined')
+
 // === Numeric range (shared by analyze + ir) ===
 
 export const I32_MIN = -2147483648

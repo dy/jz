@@ -22,7 +22,7 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, ASSIGN_OPS } from '../ast.js'
+import { handlerArgs, refsName, ASSIGN_OPS, JZ_NULL, JZ_UNDEF } from '../ast.js'
 import { ctx, err, derive, emitArity } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
@@ -520,12 +520,8 @@ export default function prepare(node) {
   return ast
 }
 
-// Named constants → numeric literals. `null` and `undefined` are distinct NaN-box
-// atoms (aux 1 vs 2), so they get distinct sentinels — collapsing both to one made
-// `cond ? undefined : x` surface as `null` (the value flows through emit's symbol
-// case, which can only carry one atom).
-export const JZ_NULL = Symbol('null')
-export const JZ_UNDEF = Symbol('undefined')
+// Named constants → numeric literals. The JZ_NULL/JZ_UNDEF atom sentinels live
+// in ast.js — shared with emit without crossing the prepare↔compile boundary.
 const CONSTANTS = { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF }
 // NaN/Infinity stay as special f64 values in emit()
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }

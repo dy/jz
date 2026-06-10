@@ -23,7 +23,7 @@
 
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
-  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam,
+  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF,
 } from '../ast.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
@@ -53,7 +53,6 @@ import {
   reconstructArgsWithSpreads, tcoTailRewrite,
 } from '../ir.js'
 import { extractRefinements, withRefinements } from './flow-types.js'
-import { JZ_UNDEF } from '../prepare/index.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
