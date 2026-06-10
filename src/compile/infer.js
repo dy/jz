@@ -66,7 +66,7 @@ import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 /** Match a `typeof name <op> lit` predicate. Returns `{ name, code, eq }` —
  *  `name` is the typeof's operand binding, `code` is either the raw type
  *  string ('string'|'number'|'function'|…) or the prepare-normalized typeof
- *  code (-1|-2|-3|-4|-5|-6, see TYPEOF_MAP in prepare.js), and `eq` is true
+ *  code (TYPEOF in ast.js), and `eq` is true
  *  for `==`/`===` (false for `!=`/`!==`). Returns null when the node isn't a
  *  typeof predicate. */
 export function typeofPredicate(node) {

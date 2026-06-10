@@ -19,10 +19,10 @@
 
 import { ctx } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned } from '../ast.js'
+import { isReassigned, TYPEOF } from '../ast.js'
 import { typeofPredicate } from './infer.js'
 
-const TYPEOF_CODE_TO_VAL = { [-1]: VAL.NUMBER, [-2]: VAL.STRING, [-6]: VAL.CLOSURE }
+const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.STRING, [TYPEOF.function]: VAL.CLOSURE }
 
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
  *  (sense=true = then-branch, sense=false = else-branch). `out` is a Map mutated
@@ -44,7 +44,7 @@ export function extractRefinements(cond, out, sense = true) {
       if (wantPositive) {
         const val = TYPEOF_CODE_TO_VAL[tp.code]
         if (val) mergeRefinement(out, tp.name, { val })
-      } else if (tp.code === 'string' || tp.code === -2) {
+      } else if (tp.code === 'string' || tp.code === TYPEOF.string) {
         // Negative branch of typeof-string guard (e.g. post `if (typeof x === 'string') return`)
         // proves the binding is not a primitive string in the suffix scope — feeds B4's
         // length / subscript dispatch elision the same way write-shape evidence does.

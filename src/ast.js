@@ -19,6 +19,16 @@ export const T = '\uE000'
 export const JZ_NULL = Symbol('null')
 export const JZ_UNDEF = Symbol('undefined')
 
+/** `typeof` comparison codes, keyed by the JS typeof string — negative so they
+ *  can't collide with positive user-supplied PTR kinds in the same compare slot
+ *  (prepare folds `typeof x == "number"` to `[op, ['typeof', x], [, TYPEOF.number]]`;
+ *  emit's emitTypeofCmp and flow-types' refinements dispatch on the codes).
+ *  Null-proto: prepare indexes it with arbitrary user strings — a plain literal
+ *  would leak `constructor`/`toString` through the lookup. */
+export const TYPEOF = Object.freeze(Object.assign(Object.create(null), {
+  number: -1, string: -2, undefined: -3, boolean: -4, object: -5, 'function': -6, bigint: -7,
+}))
+
 // === Numeric range (shared by analyze + ir) ===
 
 export const I32_MIN = -2147483648
