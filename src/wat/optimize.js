@@ -688,6 +688,203 @@ const branch = (ast) => {
   })
 }
 
+// ==================== GUARD-AWARE TAG REFINEMENT ====================
+
+/**
+ * Fold NaN-box tag reads under dominating tag guards (jz-domain knowledge).
+ *
+ * jz reads a value's 4-bit NaN-box tag in three equivalent forms:
+ *   A. (i32.and (i32.wrap_i64 (i64.shr_u PTR (i64.const 47))) (i32.const 15))
+ *   B. (i32.wrap_i64 (i64.and (i64.shr_u PTR (i64.const 47)) (i64.const 15)))
+ *   C. (call $__ptr_type PTR)
+ * where PTR is (i64.reinterpret_f64 (local.get $X)) or an i64 local copy of it.
+ *
+ * After `inlineOnce` splices a generic helper (e.g. $__len's 5-way tag
+ * dispatch) into an arm already guarded by `tag(X) == K`, the recomputed tag
+ * is a known constant — but no structural pass can see it: forms A and B
+ * differ shape-wise, and the value flows through reinterpret/copy locals.
+ * This pass tracks tag-of-X facts through if-arms and folds tag reads to
+ * constants; the regular fold/branch/vacuum passes then delete the dead
+ * dispatch arms. This is the single biggest source of wasm-opt's remaining
+ * slack on jz output (~10% on typed-array modules).
+ *
+ * Soundness model — facts and aliases are keyed by the f64 SOURCE local $X
+ * (tags live in the value's bits, so only local writes can invalidate, never
+ * calls/stores):
+ *   - any local.set/tee of $X kills its fact and every alias derived from it
+ *   - leaving a block kills facts/aliases for locals written inside it
+ *     (a br may have skipped the write)
+ *   - entering a loop kills facts for locals written anywhere in it
+ *     (the back edge re-enters after the write)
+ *   - then/else facts are layered over a snapshot and restored on exit;
+ *     writes inside either arm kill outer facts afterward
+ *   - within straight-line code, sequential registration is exact: wasm has
+ *     no goto, so execution between branch points is linear
+ */
+const guardRefine = (ast) => {
+  if (Array.isArray(ast)) for (const node of ast) if (Array.isArray(node) && node[0] === 'func') refineGuards(node)
+  return ast
+}
+
+const EMPTY_SET = new Set()
+
+const refineGuards = (fn) => {
+  const ptrAlias = new Map()  // i64 local → f64 source local (reinterpret copy)
+  const tagAlias = new Map()  // i32 local → f64 source local (holds tag(X))
+  const eqFact = new Map()    // f64 local → known tag K
+  const neFact = new Map()    // f64 local → Set of excluded tags
+
+  const intVal = (n) => {
+    if (!Array.isArray(n) || n.length !== 2 || (n[0] !== 'i32.const' && n[0] !== 'i64.const')) return null
+    const v = typeof n[1] === 'string' ? Number(n[1].replaceAll('_', '')) : Number(n[1])
+    return Number.isFinite(v) ? v : null
+  }
+  const i32Val = (n) => Array.isArray(n) && n[0] === 'i32.const' ? intVal(n) : null
+
+  // PTR node → f64 source local, or null.
+  const ptrSrc = (n) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && typeof n[1][1] === 'string') return n[1][1]
+    if (n[0] === 'local.get' && typeof n[1] === 'string') return ptrAlias.get(n[1]) ?? null
+    return null
+  }
+  // tag-of-X node (forms A/B/C or a tag-alias local read) → X, or null.
+  const tagSrc = (n) => {
+    if (!Array.isArray(n)) return null
+    const op = n[0]
+    if (op === 'local.get' && typeof n[1] === 'string') return tagAlias.get(n[1]) ?? null
+    if (op === 'call' && n[1] === '$__ptr_type' && n.length === 3) return ptrSrc(n[2])
+    const shifted = (m) => Array.isArray(m) && m[0] === 'i64.shr_u' && intVal(m[2]) === 47 ? ptrSrc(m[1]) : null
+    if (op === 'i32.and' && n.length === 3) {  // form A (mask either side)
+      const [a, b] = i32Val(n[2]) === 15 ? [n[1], null] : i32Val(n[1]) === 15 ? [n[2], null] : [null, null]
+      if (a && Array.isArray(a) && a[0] === 'i32.wrap_i64') return shifted(a[1])
+    }
+    if (op === 'i32.wrap_i64' && Array.isArray(n[1]) && n[1][0] === 'i64.and') {  // form B
+      const m = n[1]
+      if (intVal(m[2]) === 15) return shifted(m[1])
+      if (intVal(m[1]) === 15) return shifted(m[2])
+    }
+    return null
+  }
+
+  const killLocal = (name) => {
+    ptrAlias.delete(name); tagAlias.delete(name); eqFact.delete(name); neFact.delete(name)
+    for (const [p, x] of ptrAlias) if (x === name) ptrAlias.delete(p)
+    for (const [t, x] of tagAlias) if (x === name) tagAlias.delete(t)
+  }
+  // Write-sets are queried per if/loop/block; memoize bottom-up so each node is
+  // visited once per function, not once per enclosing construct. Keyed by node
+  // identity — sound because walkSeq only ever *replaces* whole subtrees
+  // (parent[idx] = const), never adds writes to an existing one.
+  const writesMemo = new Map()
+  const writesOf = (n) => {
+    if (!Array.isArray(n)) return EMPTY_SET
+    let s = writesMemo.get(n)
+    if (s) return s
+    s = new Set()
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') s.add(n[1])
+    for (let i = 1; i < n.length; i++) for (const w of writesOf(n[i])) s.add(w)
+    writesMemo.set(n, s)
+    return s
+  }
+  const snap = () => [new Map(eqFact), new Map([...neFact].map(([k, s]) => [k, new Set(s)])), new Map(ptrAlias), new Map(tagAlias)]
+  const reset = (m, src) => { m.clear(); for (const [k, v] of src) m.set(k, v) }
+  const restore = ([e, n, p, t]) => { reset(eqFact, e); reset(neFact, n); reset(ptrAlias, p); reset(tagAlias, t) }
+
+  // Facts implied by `cond` being truthy (sense=true) / falsy (sense=false).
+  const condFacts = (cond, sense, out) => {
+    if (!Array.isArray(cond)) return out
+    const op = cond[0]
+    if (op === 'i32.eqz') return condFacts(cond[1], !sense, out)
+    if (op === 'i32.and' && sense && cond.length === 3) { condFacts(cond[1], true, out); condFacts(cond[2], true, out); return out }
+    if (op === 'i32.or' && !sense && cond.length === 3) { condFacts(cond[1], false, out); condFacts(cond[2], false, out); return out }
+    if ((op === 'i32.eq' || op === 'i32.ne') && cond.length === 3) {
+      let x = tagSrc(cond[1]), k = i32Val(cond[2])
+      if (x == null || k == null) { x = tagSrc(cond[2]); k = i32Val(cond[1]) }
+      if (x != null && k != null) out.push({ x, k, eq: (op === 'i32.eq') === sense })
+      return out
+    }
+    const x = tagSrc(cond)  // bare tag as condition: truthy ⇒ tag≠0, falsy ⇒ tag==0
+    if (x != null) out.push({ x, k: 0, eq: !sense })
+    return out
+  }
+  const addFacts = (fs) => {
+    for (const { x, k, eq } of fs) {
+      if (eq) eqFact.set(x, k)
+      else { let s = neFact.get(x); if (!s) neFact.set(x, s = new Set()); s.add(k) }
+    }
+  }
+
+  const walkSeq = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    if (op === 'local.set' || op === 'local.tee') {
+      if (Array.isArray(node[2])) walkSeq(node[2], node, 2)
+      const name = node[1]
+      if (typeof name !== 'string') return
+      killLocal(name)
+      const v = node[2]
+      if (Array.isArray(v)) {
+        if (v[0] === 'i64.reinterpret_f64' && Array.isArray(v[1]) && v[1][0] === 'local.get' && typeof v[1][1] === 'string') ptrAlias.set(name, v[1][1])
+        else if (v[0] === 'local.get' && typeof v[1] === 'string' && ptrAlias.has(v[1])) ptrAlias.set(name, ptrAlias.get(v[1]))
+        else { const tx = tagSrc(v); if (tx != null) tagAlias.set(name, tx) }
+      }
+      return
+    }
+
+    if (op === 'if') {
+      const { condIdx } = parseIf(node)
+      if (Array.isArray(node[condIdx])) walkSeq(node[condIdx], node, condIdx)
+      const cond = node[condIdx]  // re-read: the walk may have folded it
+      const { thenBranch, elseBranch } = parseIf(node)
+      const writes = writesOf(node)
+      const pre = snap()
+      addFacts(condFacts(cond, true, []))
+      if (thenBranch) for (let i = 1; i < thenBranch.length; i++) walkSeq(thenBranch[i], thenBranch, i)
+      restore(pre)
+      addFacts(condFacts(cond, false, []))
+      if (elseBranch) for (let i = 1; i < elseBranch.length; i++) walkSeq(elseBranch[i], elseBranch, i)
+      restore(pre)
+      for (const w of writes) killLocal(w)
+      return
+    }
+
+    if (op === 'loop') {
+      const writes = writesOf(node)
+      for (const w of writes) killLocal(w)
+      for (let i = 1; i < node.length; i++) walkSeq(node[i], node, i)
+      for (const w of writes) killLocal(w)
+      return
+    }
+
+    if (op === 'block') {
+      for (let i = 1; i < node.length; i++) walkSeq(node[i], node, i)
+      for (const w of writesOf(node)) killLocal(w)
+      return
+    }
+
+    // Whole-node tag read under an equality fact → constant.
+    const tx = tagSrc(node)
+    if (tx != null && eqFact.has(tx) && parent) { parent[idx] = ['i32.const', eqFact.get(tx)]; return }
+
+    // eq/ne against a constant under a ne-fact (eq-facts are covered by the
+    // tag-read fold above plus the regular `fold` pass).
+    if ((op === 'i32.eq' || op === 'i32.ne') && node.length === 3) {
+      let x = tagSrc(node[1]), k = i32Val(node[2])
+      if (x == null || k == null) { x = tagSrc(node[2]); k = i32Val(node[1]) }
+      if (x != null && k != null && neFact.get(x)?.has(k) && parent) {
+        parent[idx] = ['i32.const', op === 'i32.eq' ? 0 : 1]
+        return
+      }
+    }
+
+    for (let i = 1; i < node.length; i++) walkSeq(node[i], node, i)
+  }
+
+  for (let i = 1; i < fn.length; i++) walkSeq(fn[i], fn, i)
+}
+
 // ==================== DEAD CODE ELIMINATION ====================
 
 /** Control flow terminators */
@@ -2975,6 +3172,7 @@ const reorder = (ast) => {
 const PASSES = [
   ['stripmut',      stripmut,       true,  'strip mut from never-written globals'],
   ['globals',       globals,        true,  'propagate immutable global constants'],
+  ['guardRefine',   guardRefine,    true,  'fold NaN-box tag reads under dominating tag guards'],
   ['fold',          fold,           true,  'constant folding'],
   ['identity',      identity,       true,  'remove identity ops (x + 0 → x)'],
   ['peephole',      peephole,       true,  'x-x→0, x&0→0, etc.'],

@@ -1188,9 +1188,13 @@ golden('closure-heavy parser', `export let f = (s) => {
 // The `callFree`/`writesReceiver` recursion adds a per-loop guard plus the
 // snapshot store; soundness fix (prior bytes assumed unconditional hoist,
 // which was unsafe when the loop body invoked anything).
+// 1062→873: guardRefine (wat/optimize.js) folds NaN-box tag reads under the
+// dominating `tag==K` guard, so the generic helpers inlineOnce splices into
+// `new Float64Array(x)`'s ARRAY arm drop their impossible tag-dispatch arms
+// (typed/hash/set/map branches of the inlined __len, the __typed_shift call).
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1062)
+}`, 873)
