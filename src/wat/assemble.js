@@ -36,7 +36,7 @@ const parseTemplate = (str) => {
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
-import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
+import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
 import { emit } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
 
@@ -482,7 +482,17 @@ export function optimizeModule(sec) {
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
   const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
   const volatileGlobals = collectVolatileGlobals(allFuncs)
-  for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals)
+  const reachableWrites = collectReachableGlobalWrites(allFuncs)
+  // Offset-hoist BEFORE promoteGlobals (inside optimizeFunc): value-promoting a
+  // stable-pointee global to a $_pg local would destroy the global.get pattern
+  // this pass matches, reverting rfft/diffusion to per-iteration resolves. After
+  // the hoist, the surviving global.get count is 1 (the entry snap) — naturally
+  // below promoteGlobals' threshold, so the two passes compose either way.
+  if (!cfg || cfg.hoistGlobalPtrOffset !== false) {
+    const stable = stablePtrGlobalNames()
+    if (stable.size) for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, reachableWrites)
+  }
+  for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, 'pre', reachableWrites)
   if (!cfg || cfg.arenaRewind !== false) {
     const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
     const fnByName = new Map()
