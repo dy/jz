@@ -13,7 +13,7 @@ import { instantiate } from '../../interop.js'
 // Gallery order — drives the prev/next nav (wraps around). Grouped Life · Fields ·
 // Geometry · Audio, three to a row for a 3×4 README grid.
 export const EXAMPLES = [
-  'game-of-life', 'lenia', 'reaction-diffusion',
+  'game-of-life', 'lenia', 'diffusion',
   'interference', 'plasma', 'chladni',
   'mandelbrot', 'attractors', 'raymarcher',
   'rfft', 'zzfx', 'jukebox',

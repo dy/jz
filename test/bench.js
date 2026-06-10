@@ -364,7 +364,7 @@ test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', 
 
 // ── Examples corpus gate: every demo's per-frame hot path, jz vs V8 ─────────
 // The kernel corpus missed the module-global-state shape (rfft 0.13×,
-// reaction-diffusion 0.19×, game-of-life 0.41× — all invisible while the
+// diffusion 0.19×, game-of-life 0.41× — all invisible while the
 // kernels stayed green) until hoistGlobalPtrOffset landed. examples/bench.mjs
 // runs the SAME demo source as jz wasm vs V8 ESM and self-gates: geomean > 1
 // AND every non-`opt` example ≥ 0.9× — it exits non-zero otherwise, so a

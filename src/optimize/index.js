@@ -1683,7 +1683,7 @@ export function collectReachableGlobalWrites(funcs) {
  * Hoist `__ptr_offset` resolution of stable typed-array GLOBALS to one resolve
  * per function. Locals get their pointer unboxed once at bind time, but a
  * module-global typed array (`let x; init = () => { x = new Float64Array(n) }`
- * — the idiomatic DSP-state shape: rfft, game-of-life, reaction-diffusion)
+ * — the idiomatic DSP-state shape: rfft, game-of-life, diffusion)
  * re-resolves on EVERY element access:
  *   (call $__ptr_offset (i64.reinterpret_f64 (global.get $x)))
  * — 68 such calls in rfft's transform alone, ~7× slower than V8. LICM can't

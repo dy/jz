@@ -46,7 +46,7 @@ const EXAMPLES = [
   { name: 'chladni', frame: 'frame(freq)',
     make: (e) => { e.resize(760, 760); let f = 40; return () => e.frame(f = f < 2000 ? f + 7 : 40) } },
 
-  { name: 'reaction-diffusion', frame: 'frame (8 substeps)',
+  { name: 'diffusion', frame: 'frame (8 substeps)',
     make: (e) => { e.resize(448, 448); e.clear(); e.seedRect(200, 200, 248, 248); return () => e.frame() } },
 
   // Serial recurrence (x,y chain), no cross-iteration ILP — yet jz wins ~1.3×

@@ -163,11 +163,11 @@ Not supported
 <details>
 <summary><strong>What are the differences with JS?</strong></summary>
 
-- **Numbers are f64**; integer-proven values (`| 0`, loop counters) are `i32` and **wrap at ±2³¹**.
+- **Numbers are f64**; integer-proven values (loop counters, array idx, `| 0`) are `i32` and **wrap at ±2³¹**.
 - **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
 - **Objects are fixed-shape structs** — keys added after the literal stay readable but don't enumerate (`Object.keys`/`for…in`); use a `Map` for dynamic keys.
 - **Typed arrays are fixed-size** — `arr.length = n` won't compile, and out-of-bounds reads give `0`.
-- **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` are plain `Map`/`Set`.
+- **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` wired to `Map`/`Set`.
 - **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. Exact shortest-form needs a multi-KB Ryū/Grisu formatter.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
 - **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`) – the IANA timezone database is hundreds of KB.
@@ -470,7 +470,7 @@ Geomean speed across the [bench corpus →](bench/README.md).
 <tr>
 <td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
 <td width="33%"><a href="https://dy.github.io/jz/examples/lenia/"><img src="examples/thumbs/lenia.webp" width="100%" alt="Lenia"></a><br><b>lenia</b> — continuous cellular automaton; smooth-kernel "digital life".</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/reaction-diffusion/"><img src="examples/thumbs/reaction-diffusion.webp" width="100%" alt="Reaction-diffusion"></a><br><b>reaction-diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/diffusion/"><img src="examples/thumbs/diffusion.webp" width="100%" alt="Diffusion"></a><br><b>diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
 </tr>
 <tr>
 <td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>

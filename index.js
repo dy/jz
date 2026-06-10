@@ -480,7 +480,7 @@ const jzCompileInner = (code, opts = {}) => {
   // stable through the function — the reachable-writes call graph proves that
   // precisely. Independent of watr (the auto-config turns watr off for large
   // sources — exactly the module-global DSP-state programs this pass exists
-  // for: rfft, reaction-diffusion); when watr DID run, it goes before the post
+  // for: rfft, diffusion); when watr DID run, it goes before the post
   // leaf passes so the snapped local participates in hoistAddrBase/cseScalarLoad.
   if (cfg.hoistGlobalPtrOffset !== false && ctx.scope.globalValTypes) {
     const typedGlobals = new Set()
