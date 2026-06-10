@@ -28,6 +28,7 @@
  */
 
 import { LAYOUT, ctx } from '../ctx.js'
+import { VAL } from '../reps.js'
 import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
@@ -1724,6 +1725,18 @@ export function collectReachableGlobalWrites(funcs) {
  * @param {Set<string>} stablePtrGlobals - '$name's of VAL.TYPED module globals
  * @param {Map<string,Set<string>>} reachableWrites - from collectReachableGlobalWrites
  */
+// Never-forwarding pointee kinds: every PTR tag outside __ptr_offset's
+// forwarding set {ARRAY, HASH, SET, MAP} — same bits ⇒ same offset.
+export const STABLE_PTR_VALS = new Set([VAL.TYPED, VAL.STRING, VAL.OBJECT, VAL.BUFFER, VAL.CLOSURE])
+
+/** '$name' set of stable-pointee module globals (hoistGlobalPtrOffset targets). */
+export const stablePtrGlobalNames = () => {
+  const out = new Set()
+  if (ctx.scope.globalValTypes)
+    for (const [k, v] of ctx.scope.globalValTypes) if (STABLE_PTR_VALS.has(v)) out.add(`$${k}`)
+  return out
+}
+
 export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)
@@ -1823,7 +1836,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
  * @param {Map<string,string>} [globalTypes] - Optional: global name → wasm type ('i32'|'f64'|'i64'|'funcref')
  * @param {Set<string>} [volatileGlobals] - Optional: globals mutated outside `$__start` (see collectVolatileGlobals)
  */
-export function promoteGlobals(fn, globalTypes, volatileGlobals) {
+export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -1831,8 +1844,8 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals) {
   // Collect global.get counts, detect any global.set, and note whether the
   // function makes a call (a callee may mutate a volatile global between reads).
   const getCounts = new Map()  // globalName → count
-  const written = new Set()
-  let hasCall = false
+  const written = new Set(), callees = new Set()
+  let hasCall = false, hasIndirect = false
 
   const scan = (node) => {
     if (!Array.isArray(node)) return
@@ -1846,7 +1859,8 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals) {
       if (node[2]) scan(node[2])
       return
     }
-    if (op === 'call' || op === 'call_indirect') hasCall = true
+    if (op === 'call' || op === 'return_call') { hasCall = true; if (typeof node[1] === 'string') callees.add(node[1]) }
+    else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') { hasCall = true; hasIndirect = true }
     for (let i = 1; i < node.length; i++) scan(node[i])
   }
 
@@ -1867,7 +1881,12 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals) {
   for (const [gName, count] of getCounts) {
     if (count < 3 || written.has(gName)) continue
     // Unsound to cache a callee-mutable global across a call in this function.
-    if (hasCall && volatileGlobals && volatileGlobals.has(gName)) continue
+    // With reachableWrites the test is exact per call edge (a global written
+    // only by init stays promotable in functions whose call graph never
+    // reaches init); without it, fall back to the coarse module-wide set.
+    if (hasCall && (reachableWrites
+      ? (hasIndirect || [...callees].some(c => reachableWrites.get(c)?.has(gName)))
+      : volatileGlobals?.has(gName))) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
     if (!type) continue  // can't determine type, skip
@@ -2344,7 +2363,7 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  * @param phase 'pre' (default, pre-watr leaf pass) or 'post' (re-run after watr) —
  *        gates the passes that only pay off once watr has reshaped the IR.
  */
-export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre') {
+export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre', reachableWrites) {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantLoop === false &&
@@ -2378,7 +2397,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   }
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
-  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals)
+  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   // Vectorizer runs PRE-watr unless full watr is enabled (`watr: true`). For full watr,
   // defer to post — full passes (notably `inlineOnce` + the post-inline `propagate`
   // sweep) reshape the IR so much that pre-watr SIMD patterns get scrambled. Light
