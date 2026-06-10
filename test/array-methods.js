@@ -649,3 +649,22 @@ test('Array.from: a non-callable mapfn throws (TypeError), not an internal crash
   is(run('export let f = () => { let a = Array.from([1, 2, 3], x => x * 10); return a[2] }').f(), 30)
   is(run('export let f = () => Array.from([1, 2, 3]).length').f(), 3)
 })
+
+// === .length assignment ===
+
+test('.length =: plain array resizes (grow & shrink), even when scalarization-eligible', () => {
+  // Regression: literal arrays with only "safe" uses were scalarized / promoted to
+  // Int32Array, folding the `.length` assignment TARGET into a literal —
+  // `Assignment to non-variable: [null,2]`. A member write on the binding must
+  // disqualify scalarization and typed promotion; resize stays an ARRAY op.
+  is(run('export let f = () => { let a = [1, 2]; a.length = 5; return a.length }').f(), 5)
+  is(run('export let f = () => { let a = [1, 2, 3]; a.length = 1; return a.length }').f(), 1)
+  is(run('export let f = () => { let a = [1, 2]; a.length = 4; return a[0] + a.length }').f(), 5)
+})
+
+test('.length =: typed array rejects with a clear fixed-size error', () => {
+  const fixedSize = /fixed-size/
+  throws(() => compile('export let f = () => { let a = new Float64Array(2); a.length = 5; return a.length }'), fixedSize)
+  throws(() => compile('export let f = (i) => { let a = new Float64Array(2); a[i] = 1; a.length = 5; return a.length }'), fixedSize)
+  throws(() => compile('export let f = () => { let a = new Float64Array(2); a.length++; return a.length }'), fixedSize)
+})

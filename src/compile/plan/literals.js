@@ -77,11 +77,19 @@ const scalarObjectProps = (expr) => {
 
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
+// `name.length = n` (resize) / `name.prop op= v` / `++name.length`: a member
+// write on the binding can't be modeled by fixed scalar slots — the fold would
+// turn the assignment TARGET into a literal (`[null, len] = v`).
+const isMemberWriteTarget = (op, node, name) =>
+  (ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--')
+  && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') && node[1][1] === name
+
 const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
+  if (isMemberWriteTarget(op, node, name)) return false
   if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   // Element write `name[idx] (op)= v` / `name[idx]++`: an out-of-bounds index
@@ -174,6 +182,7 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (!Array.isArray(node)) return true
   const op = node[0]
   if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isMemberWriteTarget(op, node, name)) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
   if ((op === '++' || op === '--') && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name)
@@ -739,6 +748,16 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
     for (const n of candidates.keys()) {
       if (!disqualified.has(n) && refsName(node, n, { skipArrow: false })) disqualified.add(n)
     }
+    return
+  }
+
+  // Member write target `name.length = n` / `++name.length` — resize is an
+  // ARRAY-only op (TYPED is fixed-size); disqualify.
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') &&
+      Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+      typeof node[1][1] === 'string' && candidates.has(node[1][1])) {
+    disqualified.add(node[1][1])
+    for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
     return
   }
 
