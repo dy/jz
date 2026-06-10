@@ -1455,9 +1455,14 @@ export default function compile(ast, profiler) {
       if (typeof b === 'object' && b.def != null) d[String(i)] = b.def
     })
     if (!p.length) continue
-    const entry = { name: '', p }
-    if (Object.keys(d).length) entry.d = d
-    for (const exportName of exportNamesOf(f.name)) extExports.push({ ...entry, name: exportName })
+    // Build each export entry as a direct literal — no `entry.d = d` after the fact and no
+    // `{...entry, name}` spread. The self-host kernel's fixed-schema objects don't enumerate
+    // a key added to a non-empty literal (JSON.stringify/spread would silently drop a post-hoc
+    // `d`), and spreading a 3-key literal mis-resolves the merged schema there. Constructing
+    // the final shape directly sidesteps both.
+    const hasDefaults = Object.keys(d).length > 0
+    for (const exportName of exportNamesOf(f.name))
+      extExports.push(hasDefaults ? { name: exportName, p, d } : { name: exportName, p })
   }
   if (extExports.length)
     sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
