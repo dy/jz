@@ -136,6 +136,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.locals = new Map()
   ctx.func.localReps = null
   ctx.func.boxed = new Map()
+  ctx.func.cellTypes = new Set()
   ctx.func.stack = []
   ctx.func.current = { params: [], results: [] }
   // Reserve prepare-generated temp names (for-of `arrVar`/`idx`/`len`,

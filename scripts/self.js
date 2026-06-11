@@ -46,22 +46,34 @@ function optimizeTail(module, cfg) {
   return optimized
 }
 
-/**
- * @param {string} source - JS source
- * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
- * @returns {Uint8Array} compiled wasm bytes
- */
-export default function compileSelf(source, strict) {
+// Shared front half of every kernel entry: reset ctx, apply the option JSON,
+// parse + lower. `optJSON` is the one options channel across the wasm ABI —
+// a JSON string of the host-facing `opts.optimize` value (level number, alias
+// string, or per-pass object via resolveOptimize), falsy → optimize off.
+// Every entry takes the same (source, strict, optJSON) triple.
+function setupSelf(strict, optJSON) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
   resetProgramFactsCache()
   ctx.transform.jzify = jzify
-  ctx.transform.optimize = resolveOptimize(false)
+  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
   ctx.transform.strict = !!strict
+}
+function lower(source, strict) {
   const parsed = parse(source)
-  const ast = strict ? parsed : jzify(parsed)
-  return watrCompile(optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize))
+  return strict ? parsed : jzify(parsed)
+}
+
+/**
+ * @param {string} source - JS source
+ * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
+ * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
+ * @returns {Uint8Array} compiled wasm bytes
+ */
+export default function compileSelf(source, strict, optJSON) {
+  setupSelf(strict, optJSON)
+  return watrCompile(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
 
 /**
@@ -87,31 +99,16 @@ export default function compileSelf(source, strict) {
  * @returns {string} JSON array of `{ code, message, ... }` entries
  */
 export function compileWarnings(source, strict, optJSON) {
-  reset(emitter, GLOBALS, {
-    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
-  })
-  resetProgramFactsCache()
-  ctx.transform.jzify = jzify
-  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
-  ctx.transform.strict = !!strict
+  setupSelf(strict, optJSON)
   const sink = { entries: [] }
   initWarnings(sink)
-  const parsed = parse(source)
-  const ast = strict ? parsed : jzify(parsed)
-  optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize)
+  optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize)
   initWarnings(null)
   return JSON.stringify(sink.entries)
 }
 
 export function compileWat(source, strict, optJSON) {
-  reset(emitter, GLOBALS, {
-    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
-  })
-  resetProgramFactsCache()
-  ctx.transform.jzify = jzify
-  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
-  ctx.transform.strict = !!strict
-  const parsed = parse(source)
-  const ast = strict ? parsed : jzify(parsed)
-  return watrPrint(optimizeTail(compileAst(prepare(ast)), ctx.transform.optimize))
+  setupSelf(strict, optJSON)
+  return watrPrint(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
+

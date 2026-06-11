@@ -88,21 +88,18 @@ export const compileViaKernel = (code, opts = {}) => {
     // verbatim: self.js's compileWat now runs the full index.js optimization tail
     // (watOptimize + the optimizeFunc 'post' pass), so the self-host emits the same
     // WAT IR native does. Explicit optimize:false / 0 stays off.
-    let optJSON = 0
-    if (opts.optimize !== false && opts.optimize !== 0) {
-      const base = opts.optimize == null ? DEFAULT_OPT : opts.optimize
-      if (base !== false && base !== 0) {
-        const o = (base && typeof base === 'object')
-          ? base
-          : { level: base === true ? 2 : base }
-        optJSON = self.memory.String(JSON.stringify(o))
-      }
-    }
-    return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSON))
+    return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts)))
   }
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
-  // syntax) to match the native compiler's accept/reject behavior.
-  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0)
+  // syntax) to match the native compiler's accept/reject behavior. The optimize
+  // config travels the same optJSON channel as the wat/warnings legs — the
+  // BYTES leg opts in when the caller or JZ_TEST_OPTIMIZE asks. Unoptioned
+  // default stays the kernel's historical optimize:false: running the kernel's
+  // own optimizer surfaced (and fixed) the deadStoreElim index-shift
+  // miscompile, but ~79 further in-kernel divergences remain to triage —
+  // `JZ_TEST_OPTIMIZE=2 npm run test:wasm` is the ratchet (drive to zero).
+  const explicit = opts.optimize != null || process.env.JZ_TEST_OPTIMIZE != null
+  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, explicit ? optJSONFor(self, opts) : 0)
   const bin = self.memory.read(out)
   return bin instanceof Uint8Array ? bin : new Uint8Array(bin)
 }

@@ -1592,7 +1592,7 @@ export function deadStoreElim(fn) {
       // an implicit stack value (e.g. a `try_table` catch payload) — removing it
       // would unbalance the stack.
       if (op === 'drop' && node.length === 2 && isPure(node[1])) {
-        dead.push({ parent: items, idx: i, drop: true })
+        dead.push({ parent: items, node, drop: true })
       }
 
       // Local write tracking
@@ -1603,10 +1603,9 @@ export function deadStoreElim(fn) {
           // if its RHS is pure — `local.set $x (call f …)` where `f` mutates
           // memory must still run. (A `local.tee` is always safe: removal demotes
           // it to its value expression, so any side effects there are preserved.)
-          const pn = prev.parent[prev.idx]
-          if (pn[0] === 'local.tee' || isPure(pn[2])) dead.push(prev)
+          if (prev.node[0] === 'local.tee' || isPure(prev.node[2])) dead.push(prev)
         }
-        lastWrite.set(node[1], { parent: items, idx: i })
+        lastWrite.set(node[1], { parent: items, node })
       }
 
       // Recurse into nested blocks with fresh state
@@ -1631,20 +1630,20 @@ export function deadStoreElim(fn) {
 
   scanBlock(fn, bodyStart, fn.length)
 
-  // Remove in reverse order so indices stay valid
-  for (let i = dead.length - 1; i >= 0; i--) {
-    const d = dead[i]
-    if (d.drop) {
-      d.parent.splice(d.idx, 1)
+  // Removal is IDENTITY-based: entries are pushed at SUPERSEDE time, so
+  // same-parent indices are not monotonic (name A's earlier write can be
+  // superseded after name B's later one). Index-order splicing then shifts
+  // remaining entries onto innocent neighbors — the self-host L2 divergence
+  // deleted a typed-literal f64.store exactly this way. Re-locating each
+  // captured node at removal time is immune to any ordering or prior splice.
+  for (const d of dead) {
+    const at = d.parent.indexOf(d.node)
+    if (at < 0) continue  // already removed (nested duplicate) — nothing to do
+    if (!d.drop && d.node[0] === 'local.tee') {
+      // tee in statement position: replace with just the value (implicitly dropped)
+      d.parent[at] = d.node[2]
     } else {
-      const node = d.parent[d.idx]
-      if (node[0] === 'local.tee') {
-        // tee in statement position: replace with just the value (implicitly dropped)
-        d.parent[d.idx] = node[2]
-      } else {
-        // set in statement position: remove entirely
-        d.parent.splice(d.idx, 1)
-      }
+      d.parent.splice(at, 1)
     }
   }
 }
