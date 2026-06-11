@@ -110,6 +110,13 @@ executable), or the source file for raw-JS interpreters where there is no
 compile step. For source files with imports, raw-JS size is only the entry file;
 jz size is the bundled wasm artifact.
 
+Note the preset trade: these speed tables build jz at the default
+(`optimize: 2`, speed-leaning — loop unroll + SIMD lift), while the dedicated
+size comparison (`npm run bench:size`) builds with `optimize: 'size'` —
+typically ~2× smaller on the same kernel (biquad: 3.5 kB default vs 1.6 kB
+size-tuned). Pick the preset for what you ship; the two tables are not the
+same artifact.
+
 Runtime command overrides:
 
 `watr` is intentionally compiled by jz with a size-oriented pass config
