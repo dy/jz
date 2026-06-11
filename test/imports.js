@@ -657,3 +657,22 @@ test('nested module imports do not stack prefixes', () => {
   )
   is(exports.g(), 42)
 })
+
+// === Cross-module array resize ===
+
+test('cross-module: importer `.length = 0` between owner pushes keeps one array', () => {
+  // `.length =` on a global used to be recorded as a schema PROPERTY write,
+  // auto-boxing the binding (['__inner__','length']): element reads then
+  // deref'd the box while the resize path persisted the raw array ptr into
+  // the global — a read/write protocol split that read garbage (62) here.
+  const mods = { './state.js': 'export const arr = [7]\nexport let ownerPush = (v) => { arr.push(v); return 0 }\nexport let readLen = () => arr.length' }
+  const { exports } = jz(`
+    import { arr, ownerPush, readLen } from './state.js'
+    export let t = () => {
+      ownerPush(42)
+      arr.length = 0
+      ownerPush(9)
+      return readLen() * 10 + arr[0]
+    }`, { modules: mods })
+  is(exports.t(), 19)
+})
