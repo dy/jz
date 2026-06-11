@@ -272,14 +272,78 @@ const treeshake = (ast) => {
 const roundEven = (x) => x - Math.floor(x) !== 0.5 ? Math.round(x) : 2 * Math.round(x / 2)
 
 // Bit-exact reinterpret helpers (preserve NaN payloads).
+//
+// SELF-HOST CONTRACT: this file runs inside the jz kernel, whose BigInt is a
+// raw mod-2^64 i64 carrier — BigInt64Array views are a legacy f64-value shim
+// (reads return the FLOAT, not the bits), decimal stringification of >2^53
+// values and asIntN/asUintN are unfaithful, and adding 2^64 wraps to +0.
+// Everything here therefore sticks to the verified-faithful surface:
+// Uint32Array aliasing, hex toString(16)/parseInt(,16)/padStart, BigInt('0x…')
+// construction, BigInt ===/< comparison, and string arithmetic for two's
+// complement. The signed canonicalization `v > MAX_I64 → v − 2^64` is exact
+// natively AND a no-op in-kernel (2^64 ≡ 0 there) — correct in both worlds.
 const _rb8 = new ArrayBuffer(8)
 const _rf64 = new Float64Array(_rb8)
-const _ri64 = new BigInt64Array(_rb8)
+const _ru32 = new Uint32Array(_rb8)   // LE halves: [0]=lo, [1]=hi
 const _rb4 = new ArrayBuffer(4)
 const _rf32 = new Float32Array(_rb4)
 const _ri32 = new Int32Array(_rb4)
-const i64FromF64 = (x) => { _rf64[0] = x; return _ri64[0] }
-const f64FromI64 = (x) => { _ri64[0] = BigInt.asIntN(64, x); return _rf64[0] }
+const _hex8 = (u) => (u >>> 0).toString(16).padStart(8, '0')
+/** Two's complement of a 16-digit hex magnitude — pure string math. */
+const _twosComp16 = (mag) => {
+  let out = '', carry = 1
+  for (let i = 15; i >= 0; i--) {
+    const d = (15 - parseInt(mag[i], 16)) + carry
+    out = (d & 15).toString(16) + out
+    carry = d >> 4
+  }
+  return out
+}
+/** Bits of an i64 BigInt (any sign) as a 16-digit hex string. Takes BigInt,
+ *  returns STRING — safe to call across kernel function boundaries (strings
+ *  are tagged; raw BigInts lose their kind at returns/polymorphic slots). */
+const _i64Hex16 = (v) => {
+  const h = v.toString(16)
+  return h[0] === '-' ? _twosComp16(h.slice(1).padStart(16, '0')) : h.padStart(16, '0')
+}
+// ============================== i64 VALUE CONTRACT ==========================
+// Within this optimizer an i64 const VALUE is the canonical STRING
+// '0x' + 16 lowercase hex digits (the raw bits). Strings survive every kernel
+// boundary; a BigInt held in a polymorphic slot ({type,value}), an untyped
+// param, or a return value is kind-erased in-kernel and every subsequent
+// BigInt op on it misdispatches. BigInt math is constructed AND consumed
+// inside single folder bodies only; folders return hex strings (or null).
+const ZERO64 = '0x0000000000000000', ONE64 = '0x0000000000000001', NEG164 = '0xffffffffffffffff'
+/** Canonicalize any i64.const node value (number | decimal/hex string | bigint).
+ *  EVERY _i64Hex16 argument here is a freshly-constructed BigInt: passing the
+ *  raw polymorphic `val` through would poison _i64Hex16's param kind for ALL
+ *  callers in-kernel (param types are per-function — one kind-erased call site
+ *  degrades v.toString(16) to dynamic dispatch on raw bits everywhere). */
+const _i64Canon = (val) => {
+  if (typeof val === 'string') {
+    const s = val.replaceAll('_', '')
+    if (s.length === 18 && s[1] === 'x') return '0x' + s.slice(2).toLowerCase()
+    return '0x' + _i64Hex16(BigInt(s))
+  }
+  // bigint stragglers (native-only defensive) route through String → fresh BigInt.
+  if (typeof val === 'bigint') return '0x' + _i64Hex16(BigInt(String(val)))
+  return '0x' + _i64Hex16(BigInt(Math.trunc(val) || 0))
+}
+/** Signed-order key: flip the sign bit, then equal-length hex compares
+ *  lexicographically in signed order. Pure strings — kernel-safe. */
+const _sb = (h) => (parseInt(h[2], 16) ^ 8).toString(16) + h.slice(3)
+/** Hex-string i64 ops used by several folders — all pure string/number math. */
+const _i64Lo = (h) => parseInt(h.slice(10), 16) | 0
+const _i64HiU = (h) => parseInt(h.slice(2, 10), 16) >>> 0
+/** Wrap a native-only BigInt fold: construct, compute, hex — null on kernel
+ *  (asIntN is unfaithful there and yields null, which propagates). */
+const _i64Arith = (r) => r == null ? null : '0x' + _i64Hex16(r)
+const i64FromF64 = (x) => { _rf64[0] = x; return '0x' + _hex8(_ru32[1]) + _hex8(_ru32[0]) }
+const f64FromI64 = (h) => {
+  _ru32[1] = parseInt(h.slice(2, 10), 16)
+  _ru32[0] = parseInt(h.slice(10), 16)
+  return _rf64[0]
+}
 const i32FromF32 = (x) => { _rf32[0] = x; return _ri32[0] }
 const f32FromI32 = (x) => { _ri32[0] = x | 0; return _rf32[0] }
 
@@ -287,10 +351,10 @@ const f32FromI32 = (x) => { _ri32[0] = x | 0; return _rf32[0] }
 const i32c = (fn) => (a, b) => fn(a, b) ? 1 : 0
 /** Build unsigned i32 comparison folder */
 const u32c = (fn) => (a, b) => fn(a >>> 0, b >>> 0) ? 1 : 0
-/** Build i64 comparison folder */
-const i64c = (fn) => (a, b) => fn(a, b) ? 1 : 0
-/** Build unsigned i64 comparison folder */
-const u64c = (fn) => (a, b) => fn(BigInt.asUintN(64, a), BigInt.asUintN(64, b)) ? 1 : 0
+/** Signed i64 comparison folder — biased-hex lexicographic (kernel-safe). */
+const i64c = (fn) => (a, b) => fn(_sb(a), _sb(b)) ? 1 : 0
+/** Unsigned i64 comparison folder — canonical hex compares lexicographically. */
+const u64c = (fn) => (a, b) => fn(a, b) ? 1 : 0
 
 /**
  * Constant folders, keyed by op. Each entry is the fold function; the result
@@ -327,26 +391,29 @@ const FOLDABLE = {
   'i32.clz':   (a) => Math.clz32(a),
   'i32.ctz':   (a) => a === 0 ? 32 : 31 - Math.clz32(a & -a),
   'i32.popcnt': (a) => { let c = 0; while (a) { c += a & 1; a >>>= 1 } return c },
-  'i32.wrap_i64':   (a) => Number(BigInt.asIntN(32, a)),
+  'i32.wrap_i64':   (a) => _i64Lo(a),
   'i32.extend8_s':  (a) => (a << 24) >> 24,
   'i32.extend16_s': (a) => (a << 16) >> 16,
 
-  // i64 (using BigInt)
-  'i64.add': (a, b) => BigInt.asIntN(64, a + b),
-  'i64.sub': (a, b) => BigInt.asIntN(64, a - b),
-  'i64.mul': (a, b) => BigInt.asIntN(64, a * b),
-  'i64.div_s': (a, b) => b !== 0n ? BigInt.asIntN(64, a / b) : null,
-  'i64.div_u': (a, b) => b !== 0n ? BigInt.asUintN(64, BigInt.asUintN(64, a) / BigInt.asUintN(64, b)) : null,
-  'i64.rem_s': (a, b) => b !== 0n ? BigInt.asIntN(64, a % b) : null,
-  'i64.rem_u': (a, b) => b !== 0n ? BigInt.asUintN(64, BigInt.asUintN(64, a) % BigInt.asUintN(64, b)) : null,
-  'i64.and': (a, b) => BigInt.asIntN(64, a & b),
-  'i64.or':  (a, b) => BigInt.asIntN(64, a | b),
-  'i64.xor': (a, b) => BigInt.asIntN(64, a ^ b),
-  'i64.shl':   (a, b) => BigInt.asIntN(64, a << (b & 63n)),
-  'i64.shr_s': (a, b) => BigInt.asIntN(64, a >> (b & 63n)),
-  'i64.shr_u': (a, b) => BigInt.asUintN(64, BigInt.asUintN(64, a) >> (b & 63n)),
-  'i64.eq':   i64c((a, b) => a === b),
-  'i64.ne':   i64c((a, b) => a !== b),
+  // i64 — hex-string in, hex-string out. Arithmetic constructs BigInts LOCALLY
+  // (in-expression: kernel param/return kind erasure never applies); asIntN/
+  // asUintN are native-only — in-kernel they yield null and the fold skips
+  // (sound degradation, never a wrong constant).
+  'i64.add': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) + BigInt(b))),
+  'i64.sub': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) - BigInt(b))),
+  'i64.mul': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) * BigInt(b))),
+  'i64.div_s': (a, b) => b !== ZERO64 ? _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) / BigInt.asIntN(64, BigInt(b)))) : null,
+  'i64.div_u': (a, b) => b !== ZERO64 ? _i64Arith(BigInt(a) / BigInt(b)) : null,
+  'i64.rem_s': (a, b) => b !== ZERO64 ? _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) % BigInt.asIntN(64, BigInt(b)))) : null,
+  'i64.rem_u': (a, b) => b !== ZERO64 ? _i64Arith(BigInt(a) % BigInt(b)) : null,
+  'i64.and': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) & BigInt(b))),
+  'i64.or':  (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) | BigInt(b))),
+  'i64.xor': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) ^ BigInt(b))),
+  'i64.shl':   (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) << (BigInt(b) & 63n))),
+  'i64.shr_s': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) >> (BigInt(b) & 63n))),
+  'i64.shr_u': (a, b) => _i64Arith(BigInt(a) >> (BigInt(b) & 63n)),
+  'i64.eq':   (a, b) => a === b ? 1 : 0,
+  'i64.ne':   (a, b) => a !== b ? 1 : 0,
   'i64.lt_s': i64c((a, b) => a < b),
   'i64.lt_u': u64c((a, b) => a < b),
   'i64.gt_s': i64c((a, b) => a > b),
@@ -355,12 +422,12 @@ const FOLDABLE = {
   'i64.le_u': u64c((a, b) => a <= b),
   'i64.ge_s': i64c((a, b) => a >= b),
   'i64.ge_u': u64c((a, b) => a >= b),
-  'i64.eqz': (a) => a === 0n ? 1 : 0,
-  'i64.extend_i32_s': (a) => BigInt(a),
-  'i64.extend_i32_u': (a) => BigInt(a >>> 0),
-  'i64.extend8_s':    (a) => BigInt.asIntN(64, BigInt.asIntN(8, a)),
-  'i64.extend16_s':   (a) => BigInt.asIntN(64, BigInt.asIntN(16, a)),
-  'i64.extend32_s':   (a) => BigInt.asIntN(64, BigInt.asIntN(32, a)),
+  'i64.eqz': (a) => a === ZERO64 ? 1 : 0,
+  'i64.extend_i32_s': (a) => '0x' + _hex8(a >> 31) + _hex8(a),
+  'i64.extend_i32_u': (a) => '0x00000000' + _hex8(a),
+  'i64.extend8_s':  (a) => { const v = (_i64Lo(a) << 24) >> 24; return '0x' + _hex8(v >> 31) + _hex8(v) },
+  'i64.extend16_s': (a) => { const v = (_i64Lo(a) << 16) >> 16; return '0x' + _hex8(v >> 31) + _hex8(v) },
+  'i64.extend32_s': (a) => { const v = _i64Lo(a); return '0x' + _hex8(v >> 31) + _hex8(v) },
 
   // f32/f64 (NaN/precision-aware via Math.fround)
   'f32.add': (a, b) => Math.fround(a + b),
@@ -396,12 +463,14 @@ const FOLDABLE = {
   // Numeric conversions (value-preserving where representable)
   'f32.convert_i32_s': (a) => Math.fround(a | 0),
   'f32.convert_i32_u': (a) => Math.fround(a >>> 0),
-  'f32.convert_i64_s': (a) => Math.fround(Number(BigInt.asIntN(64, a))),
-  'f32.convert_i64_u': (a) => Math.fround(Number(BigInt.asUintN(64, a))),
+  // (hi|0)·2^32 + lo is the exact signed value with ONE rounding at the add —
+  // correct f64 conversion semantics, pure number math (kernel-safe).
+  'f32.convert_i64_s': (a) => Math.fround((_i64HiU(a) | 0) * 4294967296 + parseInt(a.slice(10), 16)),
+  'f32.convert_i64_u': (a) => Math.fround(_i64HiU(a) * 4294967296 + parseInt(a.slice(10), 16)),
   'f64.convert_i32_s': (a) => (a | 0),
   'f64.convert_i32_u': (a) => (a >>> 0),
-  'f64.convert_i64_s': (a) => Number(BigInt.asIntN(64, a)),
-  'f64.convert_i64_u': (a) => Number(BigInt.asUintN(64, a)),
+  'f64.convert_i64_s': (a) => (_i64HiU(a) | 0) * 4294967296 + parseInt(a.slice(10), 16),
+  'f64.convert_i64_u': (a) => _i64HiU(a) * 4294967296 + parseInt(a.slice(10), 16),
   'f32.demote_f64':    (a) => Math.fround(a),
   'f64.promote_f32':   (a) => Math.fround(a),
 }
@@ -413,11 +482,29 @@ const FOLDABLE = {
  * (jz, etc.) encode their pointer/sentinel bits into. Returns null if `s` is
  * not a NaN literal so callers can fall through to plain Number parsing.
  */
+/** Full 64-bit hex of a WAT f64 NaN literal — pure string/number math, the
+ *  payload double is NEVER materialized. In the self-host kernel a NaN-box bit
+ *  pattern held as a raw f64 VALUE is indistinguishable from a live pointer
+ *  (String / property reads misread it), so reinterpret folding must move the
+ *  bits as TEXT. Returns '0x…' (16 digits) or null when `s` isn't a NaN literal. */
+const _nanBitsHex = (s) => {
+  const i = s?.indexOf?.('nan')
+  if (i < 0 || i == null) return null
+  const tail = s.slice(i + 4).replaceAll('_', '')
+  const payload = (s[i + 3] === ':' && tail !== 'canonical' && tail !== 'arithmetic' ? BigInt(tail) : 0x8000000000000n)
+  const h = payload.toString(16).padStart(16, '0')
+  const hi = (parseInt(h.slice(0, 8), 16) | 0x7ff00000 | (s[0] === '-' ? 0x80000000 : 0)) >>> 0
+  return '0x' + _hex8(hi) + h.slice(8)
+}
+
 const _parseNanF64 = (s, i = s?.indexOf?.('nan')) => {
   if (i < 0 || i == null) return null
-  let tail = s.slice(i + 4).replaceAll('_', ''),
-      bits = (s[i + 3] === ':' && tail !== 'canonical' && tail !== 'arithmetic' ? BigInt(tail) : 0x8000000000000n)
-  _ri64[0] = BigInt.asIntN(64, bits | 0x7ff0000000000000n | (s[0] === '-' ? 1n << 63n : 0n))
+  const tail = s.slice(i + 4).replaceAll('_', '')
+  const payload = (s[i + 3] === ':' && tail !== 'canonical' && tail !== 'arithmetic' ? BigInt(tail) : 0x8000000000000n)
+  // Assemble exponent/sign on the u32 halves — kernel-safe (BigInt <</| are not).
+  const h = payload.toString(16).padStart(16, '0')
+  _ru32[1] = (parseInt(h.slice(0, 8), 16) | 0x7ff00000 | (s[0] === '-' ? 0x80000000 : 0)) >>> 0
+  _ru32[0] = parseInt(h.slice(8), 16)
   return _rf64[0]
 }
 const _parseNanF32 = (s, i = s?.indexOf?.('nan')) => {
@@ -437,7 +524,7 @@ const getConst = (node) => {
   if (!Array.isArray(node) || node.length !== 2) return null
   const [op, val] = node
   if (op === 'i32.const') return { type: 'i32', value: (typeof val === 'string' ? parseInt(val.replaceAll('_', '')) : val) | 0 }
-  if (op === 'i64.const') return { type: 'i64', value: typeof val === 'string' ? BigInt(val.replaceAll('_', '')) : BigInt(val) }
+  if (op === 'i64.const') return { type: 'i64', value: _i64Canon(val) }
   if (op === 'f32.const') {
     const n = _parseNanF32(val)
     return { type: 'f32', value: n !== null ? n : Math.fround(Number(val)) }
@@ -457,7 +544,7 @@ const getConst = (node) => {
  */
 const makeConst = (type, value) => {
   if (type === 'i32') return ['i32.const', value | 0]
-  if (type === 'i64') return ['i64.const', value]
+  if (type === 'i64') return ['i64.const', typeof value === 'number' ? value : _i64Canon(value)]   // canonical hex: kernel-safe print, exact round-trip
   if (type === 'f32') return ['f32.const', Math.fround(value)]
   if (type === 'f64') return ['f64.const', value]
   return null
@@ -482,6 +569,27 @@ const fold = (ast) => {
     // shapes native never produces).
     // Unary
     if (node.length === 2) {
+      // NaN-payload reinterprets fold at the TEXT level — the payload double
+      // must never ride as a raw f64 value (see _nanBitsHex). Applies in both
+      // directions: nan: literal → i64 bits, and NaN-pattern i64 → nan: literal.
+      if (node[0] === 'i64.reinterpret_f64') {
+        const inner = node[1]
+        if (Array.isArray(inner) && inner.length === 2 && inner[0] === 'f64.const' && typeof inner[1] === 'string') {
+          const bits = _nanBitsHex(inner[1])
+          if (bits) return ['i64.const', bits]
+        }
+      }
+      if (node[0] === 'f64.reinterpret_i64') {
+        const c = getConst(node[1])
+        if (c && c.type === 'i64') {
+          const h = c.value.slice(2)
+          const hi = parseInt(h.slice(0, 8), 16) >>> 0
+          const lo = parseInt(h.slice(8), 16) >>> 0
+          const isNaN64 = (hi & 0x7ff00000) === 0x7ff00000 && ((hi & 0xfffff) !== 0 || lo !== 0)
+          if (isNaN64) return ['f64.const',
+            ((hi & 0x80000000) !== 0 ? '-' : '') + 'nan:0x' + (hi & 0xfffff).toString(16).padStart(5, '0') + h.slice(8)]
+        }
+      }
       const a = getConst(node[1])
       if (!a) return
       const r = fn(a.value)
@@ -522,34 +630,34 @@ const rightIdentity = (neutral) => (a, b) => getConst(b)?.value === neutral ? a 
 const IDENTITIES = {
   // x + 0 → x, 0 + x → x
   'i32.add': commutativeIdentity(0),
-  'i64.add': commutativeIdentity(0n),
+  'i64.add': commutativeIdentity(ZERO64),
   // x - 0 → x
   'i32.sub': rightIdentity(0),
-  'i64.sub': rightIdentity(0n),
+  'i64.sub': rightIdentity(ZERO64),
   // x * 1 → x, 1 * x → x
   'i32.mul': commutativeIdentity(1),
-  'i64.mul': commutativeIdentity(1n),
+  'i64.mul': commutativeIdentity(ONE64),
   // x / 1 → x
   'i32.div_s': rightIdentity(1),
   'i32.div_u': rightIdentity(1),
-  'i64.div_s': rightIdentity(1n),
-  'i64.div_u': rightIdentity(1n),
+  'i64.div_s': rightIdentity(ONE64),
+  'i64.div_u': rightIdentity(ONE64),
   // x & -1 → x, -1 & x → x (all bits set)
   'i32.and': commutativeIdentity(-1),
-  'i64.and': commutativeIdentity(-1n),
+  'i64.and': commutativeIdentity(NEG164),
   // x | 0 → x, 0 | x → x
   'i32.or': commutativeIdentity(0),
-  'i64.or': commutativeIdentity(0n),
+  'i64.or': commutativeIdentity(ZERO64),
   // x ^ 0 → x, 0 ^ x → x
   'i32.xor': commutativeIdentity(0),
-  'i64.xor': commutativeIdentity(0n),
+  'i64.xor': commutativeIdentity(ZERO64),
   // x << 0 → x, x >> 0 → x
   'i32.shl': rightIdentity(0),
   'i32.shr_s': rightIdentity(0),
   'i32.shr_u': rightIdentity(0),
-  'i64.shl': rightIdentity(0n),
-  'i64.shr_s': rightIdentity(0n),
-  'i64.shr_u': rightIdentity(0n),
+  'i64.shl': rightIdentity(ZERO64),
+  'i64.shr_s': rightIdentity(ZERO64),
+  'i64.shr_u': rightIdentity(ZERO64),
   // f + 0 → x (careful with -0.0, skip for floats)
   // f * 1 → x (careful with NaN, skip for floats)
 }
@@ -596,16 +704,14 @@ const strength = (ast) => {
       }
     }
     if (op === 'i64.mul') {
-      const cb = getConst(b)
-      if (cb && cb.value > 0n && (cb.value & (cb.value - 1n)) === 0n) {
-        const shift = BigInt(cb.value.toString(2).length - 1)
-        return ['i64.shl', a, ['i64.const', shift]]
-      }
-      const ca = getConst(a)
-      if (ca && ca.value > 0n && (ca.value & (ca.value - 1n)) === 0n) {
-        const shift = BigInt(ca.value.toString(2).length - 1)
-        return ['i64.shl', b, ['i64.const', shift]]
-      }
+      // hex value → LOCAL BigInt (in-expression construction is kernel-safe);
+      // shift counts emit as plain numbers.
+      const cb = getConst(b), vb = cb ? BigInt(cb.value) : null
+      if (vb != null && vb > 0n && (vb & (vb - 1n)) === 0n)
+        return ['i64.shl', a, ['i64.const', vb.toString(2).length - 1]]
+      const ca = getConst(a), va = ca ? BigInt(ca.value) : null
+      if (va != null && va > 0n && (va & (va - 1n)) === 0n)
+        return ['i64.shl', b, ['i64.const', va.toString(2).length - 1]]
     }
 
     // x / 2^n → x >> n (unsigned only, signed division is more complex)
@@ -617,11 +723,9 @@ const strength = (ast) => {
       }
     }
     if (op === 'i64.div_u') {
-      const cb = getConst(b)
-      if (cb && cb.value > 0n && (cb.value & (cb.value - 1n)) === 0n) {
-        const shift = BigInt(cb.value.toString(2).length - 1)
-        return ['i64.shr_u', a, ['i64.const', shift]]
-      }
+      const cb = getConst(b), vb = cb ? BigInt(cb.value) : null
+      if (vb != null && vb > 0n && (vb & (vb - 1n)) === 0n)
+        return ['i64.shr_u', a, ['i64.const', vb.toString(2).length - 1]]
     }
 
     // x % 2^n → x & (2^n - 1) (unsigned only)
@@ -632,10 +736,9 @@ const strength = (ast) => {
       }
     }
     if (op === 'i64.rem_u') {
-      const cb = getConst(b)
-      if (cb && cb.value > 0n && (cb.value & (cb.value - 1n)) === 0n) {
-        return ['i64.and', a, ['i64.const', cb.value - 1n]]
-      }
+      const cb = getConst(b), vb = cb ? BigInt(cb.value) : null
+      if (vb != null && vb > 0n && (vb & (vb - 1n)) === 0n)
+        return ['i64.and', a, ['i64.const', '0x' + _i64Hex16(vb - 1n)]]
     }
   })
 }
@@ -658,7 +761,7 @@ const branch = (ast) => {
       const { condIdx, cond, thenBranch, elseBranch } = parseIf(node)
       const c = getConst(cond)
       if (!c) return
-      const taken = c.value !== 0 && c.value !== 0n ? thenBranch : elseBranch
+      const taken = c.value !== 0 && c.value !== ZERO64 ? thenBranch : elseBranch
       if (taken && taken.length > 1) {
         const contents = taken.slice(1)
         // Preserve the if's block type (result/param). A typed `if` leaves a value
@@ -678,7 +781,7 @@ const branch = (ast) => {
       const cond = node[node.length - 1]
       const c = getConst(cond)
       if (!c) return
-      if (c.value === 0 || c.value === 0n) return ['nop']
+      if (c.value === 0 || c.value === ZERO64) return ['nop']
       return ['br', node[1]]
     }
 
@@ -688,7 +791,7 @@ const branch = (ast) => {
       const cond = node[node.length - 1]
       const c = getConst(cond)
       if (!c) return
-      if (c.value === 0 || c.value === 0n) return node[2] // b
+      if (c.value === 0 || c.value === ZERO64) return node[2] // b
       return node[1] // a
     }
   })
@@ -1082,7 +1185,7 @@ const isTinyConst = (node) => {
   const c = getConst(node)
   if (!c) return false
   if (c.type === 'i32') { const v = c.value | 0; return v >= -64 && v <= 63 }
-  if (c.type === 'i64') { const v = typeof c.value === 'bigint' ? c.value : BigInt(c.value); return v >= -64n && v <= 63n }
+  if (c.type === 'i64') { const v = BigInt(c.value); return v <= 63n || v >= 0xffffffffffffffc0n }   // unsigned bits: [0,63] or two's-comp [−64,−1]
   return false
 }
 
@@ -1647,8 +1750,11 @@ const devirt = (ast) => {
   }
   if (!slots.size) return ast
 
-  const i64of = (n) => BigInt(String(n[1]))
-  const isC64 = (n, v) => Array.isArray(n) && n[0] === 'i64.const' && i64of(n) === v
+  // All i64 const handling is canonical-hex STRING math (see the i64 VALUE
+  // CONTRACT above): a helper RETURNING a BigInt is kind-erased in-kernel and
+  // every op on it misdispatches — devirt silently no-ops.
+  const isC64 = (n, hex) => Array.isArray(n) && n[0] === 'i64.const' && _i64Canon(n[1]) === hex
+  const MASK15 = '0x0000000000007fff', SHIFT32 = '0x0000000000000020'
   // Collect the i64 constants reachable through reinterpret/select arms.
   const boxConsts = (v, out) => {
     if (!Array.isArray(v)) return false
@@ -1663,8 +1769,8 @@ const devirt = (ast) => {
     const a = e[1]
     if (!Array.isArray(a) || a[0] !== 'i64.and') return null
     let sh = a[1], mk = a[2]
-    if (!isC64(mk, 32767n)) { sh = a[2]; mk = a[1] }
-    if (!isC64(mk, 32767n) || !Array.isArray(sh) || sh[0] !== 'i64.shr_u' || !isC64(sh[2], 32n)) return null
+    if (!isC64(mk, MASK15)) { sh = a[2]; mk = a[1] }
+    if (!isC64(mk, MASK15) || !Array.isArray(sh) || sh[0] !== 'i64.shr_u' || !isC64(sh[2], SHIFT32)) return null
     const ri = sh[1]
     if (!Array.isArray(ri) || ri[0] !== 'i64.reinterpret_f64') return null
     return Array.isArray(ri[1]) && ri[1][0] === 'local.get' && typeof ri[1][1] === 'string' ? ri[1][1] : null
@@ -1692,7 +1798,7 @@ const devirt = (ast) => {
       const out = []
       if (boxConsts(n[2], out)) {
         const m = cands.get(n[1]) || new Map()
-        for (const c of out) m.set(i64of(c), c)
+        for (const c of out) m.set(_i64Canon(c[1]), c)
         cands.set(n[1], m)
       } else cands.set(n[1], null)
     })
@@ -1731,7 +1837,7 @@ const devirt = (ast) => {
       if (!m || m.size === 0 || m.size > 2) return
       const arms = []
       for (const cNode of m.values()) {
-        const name = slots.get(Number((i64of(cNode) >> 32n) & 32767n))
+        const name = slots.get(_i64HiU(_i64Canon(cNode[1])) & 32767)
         if (!name || !sigOk(name)) return
         arms.push([cNode, name])
       }
@@ -1814,10 +1920,10 @@ const inlineOnce = (ast) => {
   // zero-init here (skip inlining such callees).
   const zeroFor = (t) => {
     if (t === 'i32') return ['i32.const', 0]
-    if (t === 'i64') return ['i64.const', 0n]
+    if (t === 'i64') return ['i64.const', 0]
     if (t === 'f32') return ['f32.const', 0]
     if (t === 'f64') return ['f64.const', 0]
-    if (t === 'v128') return ['v128.const', 'i64x2', 0n, 0n]
+    if (t === 'v128') return ['v128.const', 'i64x2', 0, 0]
     // Nullable ref types (`(ref null …)`, `funcref`, `externref`, `anyref`, etc.)
     // zero-init to `ref.null …` per call; emitting that here would need the exact
     // heap-type. Non-nullable refs aren't zero-init at all (codegen must seed
@@ -2336,9 +2442,9 @@ const selfFold = (val) => (a, b) => equal(a, b) && isPure(a) ? val : null
 const PEEPHOLE = {
   // Self-cancelling / tautological binary ops — drop both (equal) operands.
   'i32.sub': selfFold(['i32.const', 0]),
-  'i64.sub': selfFold(['i64.const', 0n]),
+  'i64.sub': selfFold(['i64.const', 0]),
   'i32.xor': selfFold(['i32.const', 0]),
-  'i64.xor': selfFold(['i64.const', 0n]),
+  'i64.xor': selfFold(['i64.const', 0]),
   'i32.eq':  selfFold(['i32.const', 1]),
   'i64.eq':  selfFold(['i32.const', 1]),
   'i32.ne':  selfFold(['i32.const', 0]),
@@ -2367,8 +2473,8 @@ const PEEPHOLE = {
     return null
   },
   'i64.mul': (a, b) => {
-    if (getConst(b)?.value === 0n && isPure(a)) return ['i64.const', 0n]
-    if (getConst(a)?.value === 0n && isPure(b)) return ['i64.const', 0n]
+    if (getConst(b)?.value === ZERO64 && isPure(a)) return ['i64.const', 0]
+    if (getConst(a)?.value === ZERO64 && isPure(b)) return ['i64.const', 0]
     return null
   },
   'i32.and': (a, b) => {
@@ -2379,8 +2485,8 @@ const PEEPHOLE = {
   },
   'i64.and': (a, b) => {
     if (equal(a, b) && isPure(b)) return a
-    if (getConst(b)?.value === 0n && isPure(a)) return ['i64.const', 0n]
-    if (getConst(a)?.value === 0n && isPure(b)) return ['i64.const', 0n]
+    if (getConst(b)?.value === ZERO64 && isPure(a)) return ['i64.const', 0]
+    if (getConst(a)?.value === ZERO64 && isPure(b)) return ['i64.const', 0]
     return null
   },
   'i32.or': (a, b) => {
@@ -2391,8 +2497,8 @@ const PEEPHOLE = {
   },
   'i64.or': (a, b) => {
     if (equal(a, b) && isPure(b)) return a
-    if (getConst(b)?.value === -1n && isPure(a)) return ['i64.const', -1n]
-    if (getConst(a)?.value === -1n && isPure(b)) return ['i64.const', -1n]
+    if (getConst(b)?.value === NEG164 && isPure(a)) return ['i64.const', -1]
+    if (getConst(a)?.value === NEG164 && isPure(b)) return ['i64.const', -1]
     return null
   },
 
@@ -2419,7 +2525,12 @@ const peephole = (ast) => {
 
 /** Bytes a signed-LEB128 integer encodes to. */
 const slebSize = (v) => {
-  let x = typeof v === 'bigint' ? v : BigInt(Math.trunc(Number(v) || 0))
+  let x = typeof v === 'bigint' ? v
+    : typeof v === 'string' ? BigInt(v.replaceAll('_', ''))
+    : BigInt(Math.trunc(Number(v) || 0))
+  // Signed view of raw bits — exact natively; in-kernel the arm is dead
+  // (BigInt('0x…') already arrives as the signed i64 carrier there).
+  if (x > 0x7fffffffffffffffn) x = x - 0x8000000000000000n - 0x8000000000000000n
   let n = 1
   while (true) {
     const b = x & 0x7fn

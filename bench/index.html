@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JZ bench</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<style>
+/* Swiss B&W, same system as ../repl */
+@font-face {
+  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url(../examples/lib/jost.woff2) format('woff2');
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ink: #000; --paper: #fff; --mid: #757575; --soft: #595959; --faint: #e8e8e8;
+  --band: #0a0a0a; --red: #c00;
+  --padx: 32px;
+}
+html { scroll-behavior: smooth; }
+body { background: var(--paper); color: var(--ink); font-family: var(--sans);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+header { background: var(--band); color: var(--paper); display: flex; align-items: center; padding: 30px var(--padx) 28px; }
+.wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
+.wordmark .mark { font-weight: 700; color: #fff; }
+.wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
+header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
+header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
+header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+header nav a:hover { opacity: 1; }
+header .gh { display: flex; }
+
+main { max-width: 1080px; margin: 0 auto; padding: 0 var(--padx) 90px; }
+section { margin-top: 64px; }
+h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 18px; }
+h2 .n { color: var(--mid); font-weight: 400; margin-right: 10px; }
+p { font-size: 14px; line-height: 1.55; max-width: 70ch; }
+p + p { margin-top: 10px; }
+a { color: var(--ink); }
+.dim { color: var(--mid); }
+code, .mono { font-family: var(--mono); font-size: .92em; }
+
+/* intro */
+.intro { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; margin-top: 42px; }
+.intro h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 700; letter-spacing: -.02em; line-height: 1.08; }
+.intro .side { font-size: 13.5px; line-height: 1.55; max-width: 46ch; color: var(--soft); }
+button {
+  font-family: var(--sans); font-size: 12px; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--ink); border-radius: 0; padding: 6px 14px; cursor: pointer;
+  text-transform: uppercase; letter-spacing: .1em;
+}
+button:hover { background: var(--ink); color: var(--paper); }
+button:disabled { opacity: .4; cursor: default; }
+button:disabled:hover { background: var(--paper); color: var(--ink); }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.runall { margin-top: 12px; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
+#globalstat { color: var(--mid); }
+
+/* stat strip — the 10-second story; numbers are the copy */
+.strip { display: flex; gap: 42px; flex-wrap: wrap; margin-top: 40px; border-top: 1px solid var(--ink); padding-top: 18px; }
+.stat { text-decoration: none; display: flex; flex-direction: column; gap: 3px; }
+.stat b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
+.stat:hover b { text-decoration: underline; text-underline-offset: 4px; }
+
+/* bar rows */
+.row { display: grid; grid-template-columns: 220px 1fr 120px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
+.row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
+.row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.bar { height: 15px; position: relative; background: transparent; }
+.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--ink); background: var(--paper); min-width: 2px; }
+.bar i.solid { background: var(--ink); }
+.bar i.hatch { background: repeating-linear-gradient(45deg, #fff 0 3px, #bbb 3px 5px); }
+.bar i.diff { border-color: var(--red); }
+.bar .cut { position: absolute; right: 8px; top: 0; bottom: 0; width: 7px; background: var(--paper);
+  border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
+.row.strong .lab, .row.strong .val { font-weight: 700; }
+.row.you .lab { font-weight: 700; }
+.row .par { font-family: var(--mono); font-size: 10px; color: var(--red); margin-left: 6px; }
+.bandlab { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--mid); margin: 14px 0 4px; }
+.subdiv { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--mid); margin: 10px 0 4px; border-top: 1px solid var(--faint); padding-top: 8px; }
+.legend { display: flex; gap: 22px; font-size: 11px; color: var(--mid); margin: 12px 0 4px; align-items: center; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 22px; height: 11px; border: 1px solid var(--ink); vertical-align: -2px; margin-right: 6px; }
+.legend i.solid { background: var(--ink); }
+.legend i.hatch { background: repeating-linear-gradient(45deg, #fff 0 3px, #bbb 3px 5px); }
+.fineprint { font-size: 11px; color: var(--mid); margin-top: 10px; max-width: 80ch; }
+
+/* per-case cards */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+.chips button { padding: 4px 10px; font-size: 10.5px; }
+.chips button.on { background: var(--ink); color: var(--paper); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 30px 38px; }
+.card { border-top: 1px solid var(--ink); padding-top: 10px; }
+.card h3 { font-size: 13px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; }
+.card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
+.card h3 .play { margin-left: auto; font-size: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: .1em;
+  text-decoration: none; border: 1px solid var(--ink); padding: 2px 8px; cursor: pointer; background: var(--paper); color: var(--ink); }
+.card h3 .play:hover { background: var(--ink); color: var(--paper); }
+.card .insight { font-size: 12px; color: var(--soft); line-height: 1.5; margin: 5px 0 8px; max-width: 60ch; }
+.card .row { grid-template-columns: 124px 1fr 132px; font-size: 11.5px; padding: 2.5px 0; }
+.card .bar { height: 12px; }
+
+/* editable kernel */
+#kernel { width: 100%; min-height: 130px; resize: vertical; border: 1px solid var(--ink); padding: 12px 14px;
+  font: 12.5px/1.5 var(--mono); tab-size: 2; outline-offset: -2px; }
+.kernelbar { display: flex; gap: 10px; margin-top: 10px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
+#kernelout { font-family: var(--mono); font-size: 12px; }
+
+/* losses ledger + methodology */
+table { border-collapse: collapse; font-size: 12.5px; margin-top: 12px; }
+td, th { text-align: left; padding: 4px 18px 4px 0; vertical-align: top; }
+th { text-transform: uppercase; letter-spacing: .1em; font-size: 10.5px; color: var(--mid); font-weight: 400; }
+td.mono { font-family: var(--mono); font-size: 11.5px; }
+ul.terse { font-size: 12.5px; line-height: 1.6; max-width: 84ch; list-style: none; }
+ul.terse li { padding-left: 14px; text-indent: -14px; }
+ul.terse li::before { content: '· '; color: var(--mid); }
+ul.terse b { font-weight: 700; }
+pre.cmd { font: 11.5px/1.6 var(--mono); border: 1px solid var(--faint); padding: 10px 12px; margin-top: 10px; overflow: auto; }
+
+footer { border-top: 1px solid var(--ink); margin-top: 80px; padding: 22px var(--padx); display: flex; gap: 24px; font-size: 12px; }
+footer a { text-transform: uppercase; letter-spacing: .12em; text-decoration: none; opacity: .75; }
+footer a:hover { opacity: 1; }
+
+@media (max-width: 640px) {
+  header .tag { display: none; }
+  .row, .card .row { grid-template-columns: 1fr max-content; gap: 0 10px; }
+  .row .lab, .card .row .lab { grid-column: 1 / -1; text-align: left; }
+  .row .val { font-size: 10.5px; }
+  .cards { grid-template-columns: 1fr; }
+  .strip { gap: 26px; }
+  table { display: block; overflow-x: auto; max-width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 class="wordmark" style="font-size:19px"><span class="mark">JZ</span><span class="sub">bench</span></h1>
+  <span class="tag">measured · checksummed · rerunnable</span>
+  <nav>
+    <a href="../repl/">repl</a>
+    <a href="../examples/">examples</a>
+    <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
+      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </nav>
+</header>
+
+<main>
+
+<div class="intro">
+  <h1>Benchmarks</h1>
+  <div class="side">
+    <p id="suiteline">loading results.json…</p>
+    <div class="runall">
+      <button id="runAll">▶ run on my machine</button>
+      <span id="globalstat"></span>
+    </div>
+  </div>
+</div>
+
+<div class="strip" id="strip" hidden>
+  <a class="stat" href="#speed"><b id="s-v8">—</b><span>faster than Node · geomean</span></a>
+  <a class="stat" href="#speed"><b id="s-as">—</b><span>faster than AssemblyScript</span></a>
+  <a class="stat" href="#cases"><b id="s-nat">—</b><span>of native speed · per case</span></a>
+  <a class="stat" href="#size"><b id="s-size">—</b><span>median module</span></a>
+  <a class="stat" href="#size"><b id="s-compile">—</b><span id="s-compile-lab">compile a case · this tab</span></a>
+</div>
+
+<section id="speed">
+  <h2><span class="n">01</span>Speed across the corpus</h2>
+  <div class="legend">
+    <span><i></i>reference</span>
+    <span><i class="solid"></i>your machine</span>
+    <span><i class="hatch"></i>reference-only (can't run in a tab)</span>
+    <span>⫻ off scale</span>
+  </div>
+  <div id="geomean"></div>
+</section>
+
+<section id="cases">
+  <h2><span class="n">02</span>Per case</h2>
+  <div class="chips" id="chips"></div>
+  <div class="cards" id="cards"></div>
+</section>
+
+<section id="kernel-sec">
+  <h2><span class="n">03</span>Your kernel</h2>
+  <p class="dim" style="margin-bottom:8px">Edit, then bench: your JS engine vs JZ compiled live in this tab.</p>
+  <textarea id="kernel" spellcheck="false" aria-label="kernel source">export let main = (n) => {
+  let s = 0
+  for (let i = 0; i < n; i++) s += Math.sin(i * 0.001) * Math.cos(i * 0.0005)
+  return s
+}</textarea>
+  <div class="kernelbar">
+    <button id="kernelRun">▶ js vs wasm</button>
+    <span id="kernelout"></span>
+    <a id="replLink" href="../repl/" style="margin-left:auto;font-size:12px">open in repl →</a>
+  </div>
+</section>
+
+<section id="size">
+  <h2><span class="n">04</span>What you ship</h2>
+  <div id="sizebars"></div>
+  <p class="fineprint" id="sizenote"></p>
+  <p id="compilestat" style="margin-top:16px"></p>
+</section>
+
+<section id="losses">
+  <h2><span class="n">05</span>Where JZ loses</h2>
+  <p class="dim" style="margin-bottom:6px">Computed from the same dataset. <b>open</b> = compiler work can close it; <b>structural</b> = the trade is inherent.</p>
+  <div id="lossauto"></div>
+</section>
+
+<section id="method">
+  <h2><span class="n">06</span>Methodology</h2>
+  <ul class="terse">
+    <li><b>Protocol</b> — each case prints <code>median_us · checksum · samples · stages · runs</code>: the median of 21 runs after warmup; <code>samples</code> is the per-run workload count (matrices multiplied, bytes hashed).</li>
+    <li><b>Parity</b> — <code>ok</code>: checksum matches the cross-target majority. <code class="par" style="margin-left:0">DIFF</code>: shown red, excluded from geomeans, never hidden. <code>fma</code>: Go's arm64 <code>a*b+c</code> fusion — same algorithm, last-bit rounding.</li>
+    <li><b>Subsets</b> — geomeans cover what each target runs; the case count is printed on every row. <code>json</code> native rows hand-parse a fixed schema, not runtime <code>JSON.parse</code>. NumPy rows are C library calls — context, not contenders; excluded from the native-speed stat.</li>
+    <li><b>Sources</b> — JS rows share the byte-identical file; AS and native rows are ports of the same algorithm.</li>
+    <li><b>Your machine</b> — a tab is a noisy lab: ratios replicate, absolute µs vary. Live results never replace the reference.</li>
+  </ul>
+  <div id="vertable"></div>
+  <div id="invtable"></div>
+  <pre class="cmd" id="repro">node bench/bench.mjs                      # full matrix, every target on PATH
+node bench/bench.mjs --json               # + results.json & bench/web artifacts
+node bench/bench.mjs mat4 --targets=v8,jz,as</pre>
+  <p style="margin-top:14px">Snapshot: <a id="permalink" href="results.json"><code>results.json</code></a> — the citable object.
+  <b>Competitor authors</b>: if our invocation undersells your tool,
+  <a href="https://github.com/dy/jz/issues">PR your flags</a> — the suite should be neutral ground.</p>
+</section>
+
+</main>
+
+<footer>
+  <a href="../repl/">repl</a>
+  <a href="../examples/">examples</a>
+  <a href="https://github.com/dy/jz">github</a>
+</footer>
+
+<noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
+
+<script type="module">
+const $ = id => document.getElementById(id)
+
+// ── targets: band = which question the row answers ──────────────────────────
+// js: "is compiling worth it at all?"  wasm: "is jz the best JS→wasm route?"
+// native: "what do I give up by not rewriting?"  interp: "why not embed an engine?"
+// Invocation details live in the methodology table, not in row labels.
+const BANDS = [
+  ['js', 'run as JS'],
+  ['wasm', 'compile to wasm'],
+  ['native', 'rewrite native — reference only'],
+  ['interp', 'embed an interpreter — reference only'],
+]
+const TARGETS = {
+  v8:    { label: 'Node', band: 'js' },
+  deno:  { label: 'Deno', band: 'js' },
+  bun:   { label: 'Bun', band: 'js' },
+  spidermonkey: { label: 'SpiderMonkey', band: 'js', hatch: true },
+  graaljs: { label: 'GraalJS', band: 'js', hatch: true },
+  jz:    { label: 'JZ', band: 'wasm', strong: true },
+  wat:   { label: 'hand-WAT', band: 'wasm', hatch: true },
+  'jz-wasmtime': { label: 'JZ', sub: 'wasmtime', band: 'wasm', hatch: true },
+  as:    { label: 'AssemblyScript', band: 'wasm' },
+  porf:  { label: 'Porffor', band: 'wasm' },
+  jawsm: { label: 'jawsm', band: 'wasm' },
+  'jz-w2c': { label: 'JZ', sub: 'wasm2c', band: 'native', hatch: true },
+  nat:   { label: 'C', band: 'native', hatch: true },
+  natgcc:{ label: 'C', sub: 'gcc', band: 'native', hatch: true },
+  rust:  { label: 'Rust', band: 'native', hatch: true },
+  zig:   { label: 'Zig', band: 'native', hatch: true },
+  go:    { label: 'Go', band: 'native', hatch: true },
+  shermes: { label: 'Static Hermes', band: 'native', hatch: true },
+  numpy: { label: 'NumPy', band: 'native', hatch: true },
+  python:{ label: 'CPython', band: 'interp', hatch: true },
+  hermes:{ label: 'Hermes', band: 'interp', hatch: true },
+  qjs:   { label: 'QuickJS', band: 'interp', hatch: true },
+}
+const BREAK = 12      // linear bars; rows past this are cut, number printed
+const MULTI = new Set(['watr', 'jessie'])   // multi-module sources — repl can't load them
+
+const FAMILY = { biquad: 'numeric', mat4: 'numeric', poly: 'numeric', bitwise: 'numeric',
+  mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
+  callback: 'alloc', aos: 'alloc', watr: 'compiler', jessie: 'compiler' }
+const TAGS = { biquad: 'dsp · f64', mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32',
+  tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
+  mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
+  watr: 'compiler on itself', jessie: 'parser' }
+const INSIGHTS = {
+  biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; this is raw f64 loop throughput.',
+  mat4: 'Fixed-count loops unroll and vectorize to v128 — a JIT won’t do this from plain JS.',
+  poly: 'One sum() fed Float64Array then Int32Array — JZ keeps two typed paths where a JIT goes polymorphic.',
+  bitwise: 'imul / shift / >>> chains run as raw i32 — no NaN-box round-trips.',
+  tokenizer: 'Byte scan: charCodeAt + branches. AS’s direct string loads win — JZ still boxes the string pointer.',
+  callback: 'Array.map with a closure lowers to a preallocated typed loop — no per-call allocation.',
+  aos: 'Object rows copied into typed columns — memory-bound; schema fields read at fixed offsets.',
+  mandelbrot: 'f64 escape loop with a data-dependent break — everything compiled lands within ~10%.',
+  json: 'Runtime JSON.parse specialized to the literal’s stable shape. Native rows hand-parse a known schema — not equivalents.',
+  sort: 'In-place heapsort — call-heavy nested loops, indices provably i32. NumPy row is its C sort.',
+  crc32: 'Table-driven byte CRC. NumPy row is zlib’s C crc32 — the library ceiling; compiled code clusters behind it.',
+  watr: 'JZ compiling its own WAT assembler — 200 kB of branchy compiler code; V8’s profile-guided tiers win. A loss, shown.',
+  jessie: 'The jessie parser JZ itself builds on — recursion- and allocation-heavy. The JZ build currently throws at runtime: an open compiler bug, shown not hidden.',
+}
+// Loss ledger: cause + status per known (case, target) loss; structural classes appended.
+const LOSS_NOTES = {
+  'tokenizer/as': ['AS reads chars as raw memory loads; JZ still NaN-boxes the string pointer', 'open — string carrier'],
+  'watr/v8': ['V8 profile-tiers a 200 kB hot compiler at runtime', 'open — code layout'],
+  'watr/deno': ['same V8 tiering, Deno runtime', 'open — code layout'],
+  'watr/bun': ['JSC tiering on the same large hot path', 'open — code layout'],
+  'json/v8': ['engine JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
+  'json/deno': ['engine JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
+  'json/bun': ['JSC’s JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
+  'crc32/bun': ['JSC’s codegen on the byte-LUT loop', 'open — optimizer headroom'],
+  'sort/bun': ['JSC’s codegen on call-heavy nested loops', 'open — optimizer headroom'],
+}
+const LOSS_STRUCTURAL = [
+  ['cold start', 'vs new Function', '200–1400×', 'AOT does real work (infer · narrow · vectorize · encode) the JIT defers', 'structural — for hot kernels, not eval-per-frame'],
+  ['boundary', 'per-element calls', '—', 'every JS↔wasm crossing pays marshaling', 'structural — batch via typed arrays, keep data in wasm memory'],
+]
+
+// detected visitor engine
+const ENGINE = (() => {
+  const ua = navigator.userAgent
+  if (/firefox/i.test(ua)) return 'SpiderMonkey'
+  if (/safari/i.test(ua) && !/chrome|chromium|edg/i.test(ua)) return 'JavaScriptCore'
+  return 'V8'
+})()
+
+// ── data ─────────────────────────────────────────────────────────────────────
+let DATA = null
+let CORPUS = []     // cases with a jz row — geomeans, stats, losses
+let CASES = []      // all cases — the per-case grid (jessie has no jz row yet)
+const local = {}    // caseId → { js, jzwasm, jzlive }
+let filter = 'all'
+
+const fmtMs = us => us >= 100000 ? (us / 1000).toFixed(0) + ' ms' : us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us + ' µs'
+const fmtB = b => b == null ? '' : b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' kB'
+const fmtX = x => x >= 100 ? x.toFixed(0) + '×' : x >= 10 ? x.toFixed(1) + '×' : x.toFixed(2) + '×'
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const geo = xs => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length)
+const median = xs => { const a = [...xs].sort((x, y) => x - y); return a.length ? (a[a.length >> 1] + a[(a.length - 1) >> 1]) / 2 : null }
+const nCases = n => `${n} case${n === 1 ? '' : 's'}`
+
+// Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
+// + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
+const rowHtml = ({ label, sub, rel, maxLin, text, hatch, solid, strong, parity }) => {
+  const cut = rel > BREAK
+  const w = cut ? 100 : (rel / maxLin * 100)
+  return `<div class="row${strong ? ' strong' : ''}${solid ? ' you' : ''}">
+    <span class="lab">${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
+    <span class="bar"><i class="${solid ? 'solid' : hatch ? 'hatch' : ''}${parity === 'DIFF' ? ' diff' : ''}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
+    <span class="val">${esc(text)}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
+  </div>`
+}
+
+// ── headline: banded geomeans, normalized to the fastest row ─────────────────
+const geoRatio = tid => {
+  const rs = []
+  for (const c of CORPUS) {
+    const r = c.targets[tid], j = c.targets.jz
+    if (r && j && r.parity !== 'DIFF') rs.push(r.medianUs / j.medianUs)
+  }
+  return rs.length ? { geo: geo(rs), n: rs.length } : null
+}
+
+const localGeos = () => {
+  const out = []
+  const LK = { js: `${ENGINE} — JS`, jzwasm: 'JZ artifact', jzlive: 'JZ live-compiled' }
+  for (const key of ['js', 'jzwasm', 'jzlive']) {
+    const rs = []
+    for (const r of Object.values(local))
+      if (r[key]?.medianUs && r.jzlive?.medianUs && r[key].parity !== 'DIFF') rs.push(r[key].medianUs / r.jzlive.medianUs)
+    if (rs.length) out.push({ label: LK[key], sub: nCases(rs.length), geo: geo(rs) })
+  }
+  return out
+}
+
+const renderGeomean = () => {
+  const rows = []
+  for (const [band] of BANDS)
+    for (const [tid, t] of Object.entries(TARGETS)) {
+      if (t.band !== band) continue
+      const g = geoRatio(tid)
+      if (g) rows.push({ tid, band, ...t, ...g })
+    }
+  const min = Math.min(...rows.map(r => r.geo))
+  const yours = localGeos()
+  const rels = rows.map(r => r.geo / min).concat(yours.map(r => r.geo))
+  const maxLin = Math.max(...rels.filter(r => r <= BREAK), 1)
+  let html = ''
+  for (const [band, lab] of BANDS) {
+    const bandRows = rows.filter(r => r.band === band).sort((a, b) => a.geo - b.geo)
+    if (!bandRows.length) continue
+    html += `<div class="bandlab">${lab}</div>`
+    for (const r of bandRows)
+      html += rowHtml({ label: r.label, sub: `${r.sub ? r.sub + ' · ' : ''}${nCases(r.n)}`,
+        rel: r.geo / min, maxLin, text: fmtX(r.geo / min), hatch: r.hatch, strong: r.strong })
+  }
+  if (yours.length) {
+    html += `<div class="subdiv">your machine — vs JZ live-compiled</div>`
+    for (const r of yours.sort((a, b) => a.geo - b.geo))
+      html += rowHtml({ label: r.label, sub: r.sub, rel: r.geo, maxLin, text: fmtX(r.geo), solid: true })
+  }
+  $('geomean').innerHTML = html
+}
+
+// ── stat strip ───────────────────────────────────────────────────────────────
+const SYS_NATIVE = ['nat', 'natgcc', 'rust', 'zig', 'go']
+const renderStrip = () => {
+  const v8 = geoRatio('v8'), as = geoRatio('as')
+  if (v8) $('s-v8').textContent = v8.geo.toFixed(1) + '×'
+  if (as) $('s-as').textContent = as.geo.toFixed(1) + '×'
+  // per-case speed vs the best systems-language row: >1 = jz faster
+  const spd = []
+  for (const c of CORPUS) {
+    const best = Math.min(...SYS_NATIVE.map(t => c.targets[t]?.parity !== 'DIFF' && c.targets[t]?.medianUs || Infinity))
+    if (best < Infinity) spd.push(best / c.targets.jz.medianUs)
+  }
+  if (spd.length) $('s-nat').textContent = `${Math.min(...spd).toFixed(1)}–${Math.max(...spd).toFixed(1)}×`
+  const med = median(CORPUS.map(c => c.targets.jz.bytes).filter(Boolean))
+  if (med) $('s-size').textContent = fmtB(med)
+  const liveMs = Object.values(local).map(r => r.jzlive?.compileMs).filter(Boolean)
+  if (liveMs.length) {
+    $('s-compile').textContent = Math.round(median(liveMs)) + ' ms'
+    $('s-compile-lab').textContent = `compile a case — yours, ${nCases(liveMs.length)}`
+  } else {
+    const ref = median(CORPUS.map(c => c.compileMs).filter(Boolean))
+    if (ref) $('s-compile').textContent = '~' + Math.round(ref) + ' ms'
+  }
+  $('strip').hidden = false
+}
+
+// ── per-case cards ───────────────────────────────────────────────────────────
+const CHIPS = ['all', 'numeric', 'string', 'alloc', 'compiler']
+const renderChips = () => {
+  $('chips').innerHTML = CHIPS.map(f =>
+    `<button data-f="${f}" class="${filter === f ? 'on' : ''}">${f}</button>`).join('')
+}
+
+const cardRows = c => {
+  const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid])
+    .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r })).sort((a, b) => a.medianUs - b.medianUs)
+  // bar anchor: fastest browser-class row, so a freak-fast native row (zlib crc32)
+  // can't crush the scale; printed ratios stay vs the true fastest
+  const ok = entries.filter(r => r.parity !== 'DIFF')
+  const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
+  const base = anchor < Infinity ? anchor : ok[0].medianUs
+  const fastest = ok[0].medianUs
+  const rels = entries.map(r => r.medianUs / base)
+  const maxLin = Math.max(...rels.filter(r => r <= BREAK), 1)
+  let html = entries.map(r => rowHtml({
+    label: r.label, sub: r.sub, rel: r.medianUs / base, maxLin,
+    text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, hatch: r.hatch, strong: r.strong, parity: r.parity,
+  })).join('')
+  const l = local[c.id]
+  if (l && (l.js || l.jzwasm || l.jzlive)) {
+    const rows = [['js', ENGINE], ['jzwasm', 'JZ artifact'], ['jzlive', 'JZ live']]
+      .filter(([k]) => l[k]?.medianUs).map(([k, label]) => ({ k, label, ...l[k] }))
+    const lbase = Math.min(...rows.map(r => r.medianUs))
+    const lrels = rows.map(r => r.medianUs / lbase)
+    const lmax = Math.max(...lrels.filter(r => r <= BREAK), 1)
+    html += `<div class="subdiv">your machine — ${esc(ENGINE)}</div>`
+    for (const r of rows)
+      html += rowHtml({ label: r.label, sub: r.k === 'jzlive' && r.compileMs ? `compiled ${r.compileMs} ms` : '',
+        rel: r.medianUs / lbase, maxLin: lmax,
+        text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: true, parity: r.parity })
+  }
+  return html
+}
+
+const renderCards = () => {
+  let html = ''
+  for (const c of CASES) {
+    if (filter !== 'all' && FAMILY[c.id] !== filter) continue
+    const play = MULTI.has(c.id)
+      ? `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" title="source on GitHub">src ↗</a>`
+      : `<button class="play" data-play="${c.id}" title="open this kernel in the repl — run, edit, js vs wasm">▶ repl</button>`
+    html += `<div class="card" data-cid="${c.id}">
+      <h3>${esc(c.id)}<span class="fam">${esc(TAGS[c.id] || '')}</span>${play}</h3>
+      <p class="insight">${esc(INSIGHTS[c.id] || c.name)}</p>
+      ${cardRows(c)}
+    </div>`
+  }
+  $('cards').innerHTML = html
+}
+
+$('chips').addEventListener('click', e => {
+  const f = e.target.dataset?.f
+  if (!f) return
+  filter = f; renderChips(); renderCards()
+})
+$('cards').addEventListener('click', async e => {
+  const cid = e.target.dataset?.play
+  if (!cid) return
+  try {
+    // repl has no module resolution — inline the benchlib harness, same flat
+    // transform bench.mjs uses for shell targets
+    let src = await fetchText(`./${cid}/${cid}.js`)
+    if (src.includes('../_lib/benchlib.js')) {
+      const lib = await fetchText('./_lib/benchlib.js')
+      src = lib.replace(/\bexport let\b/g, 'let') + '\n' +
+        src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
+    }
+    window.open('../repl/#' + b64url(src), '_blank')
+  } catch {}
+})
+
+// ── what you ship ────────────────────────────────────────────────────────────
+const renderSize = () => {
+  // shared case set: every row covers the same cases, or the comparison lies
+  const shared = CORPUS.filter(c => c.targets.jz?.bytes && c.targets.as?.bytes)
+  if (!shared.length) return
+  const rows = [
+    { label: 'the .js you ship today', bytes: geo(shared.map(c => c.targets.v8?.bytes).filter(Boolean)) },
+    { label: 'JZ-compiled .wasm', strong: true, bytes: geo(shared.map(c => c.targets.jz.bytes)) },
+    { label: 'AssemblyScript .wasm', sub: 'ported source', bytes: geo(shared.map(c => c.targets.as.bytes)) },
+  ]
+  const wat = CORPUS.filter(c => c.targets.wat?.bytes)
+  if (wat.length) rows.push({ label: 'hand-WAT', sub: `the floor · ${nCases(wat.length)}`, hatch: true,
+    bytes: geo(wat.map(c => c.targets.wat.bytes)) })
+  // live geo over the same shared case set, or the bar comparison lies (watr's
+  // 205 kB bundle sits outside it)
+  const live = shared.map(c => local[c.id]?.jzlive?.wasmBytes).filter(Boolean)
+  if (live.length) rows.push({ label: 'JZ live-compiled', sub: `your tab · ${nCases(live.length)}`, solid: true, bytes: geo(live) })
+  const max = Math.max(...rows.map(r => r.bytes))
+  $('sizebars').innerHTML = rows.map(r => rowHtml({
+    label: r.label, sub: r.sub, rel: r.bytes / max * BREAK, maxLin: BREAK,
+    text: fmtB(Math.round(r.bytes)), hatch: r.hatch, solid: r.solid, strong: r.strong,
+  })).join('')
+  $('sizenote').textContent = `Bytes over the wire, geomean of the same ${shared.length} kernels — the compiled module ` +
+    `costs about what the source did. No runtime inside: your code plus a bump allocator; the size preset shaves ~2× more. ` +
+    `Porffor runs from source (no artifact to weigh); live-compiled builds carry the browser preset.`
+  const ref = median(CORPUS.map(c => c.compileMs).filter(Boolean))
+  const liveMs = Object.values(local).map(r => r.jzlive?.compileMs).filter(Boolean)
+  $('compilestat').innerHTML =
+    `<b>Compile</b> — ${liveMs.length
+      ? `<b>${Math.round(median(liveMs))} ms</b> a case in this tab (${nCases(liveMs.length)}; reference ${Math.round(ref)} ms)`
+      : `~<b>${Math.round(ref)} ms</b> a case on the reference machine — press ▶ above to measure your tab`};
+    watr's 205 kB bundle ~2.7 s, a small kernel under a millisecond (<a href="../repl/">repl</a>).
+    asc, rustc and zig take seconds per module and can't run in a page at all.`
+}
+
+// ── where jz loses: the engineering ledger ───────────────────────────────────
+const renderLosses = () => {
+  const lines = []
+  for (const c of CORPUS) {
+    const jz = c.targets.jz
+    for (const [tid, r] of Object.entries(c.targets)) {
+      const t = TARGETS[tid]
+      if (!t || tid === 'jz' || t.hatch || r.parity === 'DIFF') continue
+      if (r.medianUs < jz.medianUs) {
+        const note = LOSS_NOTES[`${c.id}/${tid}`] || ['under investigation', 'open']
+        lines.push({ cid: c.id, label: t.label, x: jz.medianUs / r.medianUs, why: note[0], status: note[1] })
+      }
+    }
+  }
+  lines.sort((a, b) => b.x - a.x)
+  $('lossauto').innerHTML = `<table>
+    <tr><th>case</th><th>loses to</th><th>by</th><th>why</th><th>status</th></tr>` +
+    lines.map(l => `<tr><td>${esc(l.cid)}</td><td>${esc(l.label)}</td><td class="mono">${l.x.toFixed(2)}×</td><td>${esc(l.why)}</td><td>${esc(l.status)}</td></tr>`).join('') +
+    LOSS_STRUCTURAL.map(([a, b, x, why, st]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td><td class="mono">${esc(x)}</td><td>${esc(why)}</td><td>${esc(st)}</td></tr>`).join('') +
+    `</table>`
+}
+
+// ── intro line + methodology tables ──────────────────────────────────────────
+const renderMeta = () => {
+  const m = DATA.meta
+  const tids = new Set()
+  for (const c of CASES) for (const tid of Object.keys(c.targets)) tids.add(tid)
+  $('suiteline').textContent =
+    `${CASES.length} workloads · ${tids.size} targets · every result checksum-verified. Reference: ${m.host.cpu} · ${m.date} · ${m.commit}`
+  $('vertable').innerHTML = `<table><tr><th>reference</th><th>versions</th></tr>
+    <tr><td>${esc(m.host.cpu)} · ${esc(m.host.platform)}/${esc(m.host.arch)} · ${esc(m.date)} · <a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a></td>
+    <td class="mono">${Object.entries(m.versions).map(([k, v]) => `${esc(k)} ${esc(v)}`).join('<br>')}</td></tr></table>`
+  if (m.invocations) $('invtable').innerHTML = `<table><tr><th>target</th><th>invocation</th></tr>` +
+    Object.entries(m.invocations).map(([tid, cmd]) =>
+      `<tr><td>${esc(TARGETS[tid]?.label ?? tid)}${TARGETS[tid]?.sub ? ' · ' + esc(TARGETS[tid].sub) : ''}</td><td class="mono">${esc(cmd)}</td></tr>`).join('') + `</table>`
+  $('permalink').href = m.commit ? `https://github.com/dy/jz/blob/${m.commit}/bench/results.json` : 'results.json'
+}
+
+// ── live runner ──────────────────────────────────────────────────────────────
+// checksum may print signed from jz (documented `x >>> 0` i32-narrowing) —
+// parse either sign, compare modulo 2³²
+const PROTO = /median_us=(\d+) checksum=(-?\d+)/
+const captureLine = async fn => {
+  let line = null
+  const orig = console.log
+  console.log = (...a) => { const s = a.join(' '); if (PROTO.test(s)) line = s; else orig(...a) }
+  try { await fn() } finally { console.log = orig }
+  const m = line && line.match(PROTO)
+  if (!m) throw new Error('no result line')
+  return { medianUs: +m[1], checksum: +m[2] }
+}
+
+let jzMod = null, interopMod = null
+const loadJz = async () => jzMod ||= await import('../dist/jz.js')
+const loadInterop = async () => interopMod ||= await import('../dist/interop.js')
+
+const fetchText = async p => {
+  const r = await fetch(p)
+  if (!r.ok) throw new Error('fetch ' + p)
+  return r.text()
+}
+// watr's module graph (only live-compiled case with deps beyond benchlib)
+const watrModules = async () => {
+  const base = '../node_modules/watr/src/'
+  const [compileSrc, encode, cnst, parse, util] = await Promise.all(
+    ['compile.js', 'encode.js', 'const.js', 'parse.js', 'util.js'].map(f => fetchText(base + f)))
+  return {
+    './watr-compile.js': `import compileWatr from '../../node_modules/watr/src/compile.js'\nexport const compile = (src) => compileWatr(src)\n`,
+    '../../node_modules/watr/src/compile.js': compileSrc,
+    './encode.js': encode, './const.js': cnst, './parse.js': parse, './util.js': util,
+  }
+}
+
+let runSeq = 0
+const RUNNERS = {
+  js: async cid => captureLine(async () => {
+    const m = await import(`./${cid}/${cid}.js?r=${++runSeq}`)   // fresh module record per run
+    m.main()
+  }),
+  jzwasm: async cid => {
+    const res = await fetch(`./web/${cid}.wasm`)
+    if (!res.ok) throw new Error('no artifact')
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    const { instantiate } = await loadInterop()
+    return captureLine(async () => {
+      const { exports } = await instantiate(bytes)
+      exports.main()
+    })
+  },
+  jzlive: async cid => {
+    const [src, lib] = await Promise.all([fetchText(`./${cid}/${cid}.js`), fetchText('./_lib/benchlib.js')])
+    const modules = { '../_lib/benchlib.js': lib, ...(cid === 'watr' ? await watrModules() : {}) }
+    const { compile } = await loadJz()
+    const t0 = performance.now()
+    const bytes = compile(src, { jzify: cid === 'watr', modules, optimize: { level: 'speed' } })
+    const compileMs = +(performance.now() - t0).toFixed(1)
+    const { instantiate } = await loadInterop()
+    const r = await captureLine(async () => {
+      const { exports } = await instantiate(bytes)
+      exports.main()
+    })
+    return { ...r, compileMs, wasmBytes: bytes.length }
+  },
+}
+
+const renderAll = () => { renderStrip(); renderGeomean(); renderCards(); renderSize(); renderLosses() }
+
+const runCase = async cid => {
+  local[cid] ||= {}
+  const ref = DATA.cases[cid]?.ref
+  for (const key of ['js', 'jzwasm', 'jzlive']) {
+    try {
+      const r = await RUNNERS[key](cid)
+      r.parity = ref == null || (r.checksum >>> 0) === (ref >>> 0) ? 'ok' : 'DIFF'
+      local[cid][key] = r
+      renderAll()
+      await new Promise(res => setTimeout(res, 30))   // let the bars paint
+    } catch (e) {
+      local[cid][key] = null
+      if (key !== 'jzwasm') console.warn(`${cid}/${key}:`, e)
+    }
+  }
+  renderAll()
+}
+
+const showCopy = () => {
+  if (!Object.keys(local).length || $('copyMd')) return
+  $('globalstat').insertAdjacentHTML('afterend', ` <a href="#" id="copyMd">copy my results</a>`)
+  $('copyMd').addEventListener('click', e => { e.preventDefault(); copyMarkdown() })
+}
+
+$('runAll').addEventListener('click', async () => {
+  $('runAll').disabled = true
+  for (let i = 0; i < CORPUS.length; i++) {
+    $('globalstat').textContent = `${i + 1}/${CORPUS.length} — ${CORPUS[i].id}`
+    await runCase(CORPUS[i].id)
+  }
+  $('globalstat').textContent = 'done — '
+  $('runAll').disabled = false
+  showCopy()
+})
+
+// ── copy results as a markdown table (for forum comments) ───────────────────
+const copyMarkdown = async () => {
+  const rows = [`### jz bench — ${ENGINE}, ${navigator.platform || 'unknown'} ([rerun](${location.href}))`,
+    '', `| case | ${ENGINE} (JS) | jz artifact | jz live-compiled |`, '| --- | ---: | ---: | ---: |']
+  for (const [cid, r] of Object.entries(local)) {
+    const f = x => x ? fmtMs(x.medianUs) + (x.parity === 'DIFF' ? ' ⚠DIFF' : '') : '—'
+    rows.push(`| ${cid} | ${f(r.js)} | ${f(r.jzwasm)} | ${f(r.jzlive)}${r.jzlive?.compileMs ? ` (compile ${r.jzlive.compileMs} ms)` : ''} |`)
+  }
+  rows.push('', `reference: ${DATA.meta.host.cpu}, ${DATA.meta.date}, jz ${DATA.meta.versions.jz}`)
+  await navigator.clipboard.writeText(rows.join('\n'))
+  $('globalstat').textContent = 'copied — paste anywhere markdown works '
+}
+
+// ── editable kernel ──────────────────────────────────────────────────────────
+const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const measure = fn => {
+  let n = 1
+  for (;;) {
+    const t0 = performance.now()
+    for (let i = 0; i < n; i++) fn()
+    const dt = performance.now() - t0
+    if (dt >= 60) return n / dt * 1000
+    n = Math.min(n * 4, n * Math.ceil(80 / Math.max(dt, 0.25)) + 1)
+  }
+}
+$('kernelRun').addEventListener('click', async () => {
+  const src = $('kernel').value
+  const out = $('kernelout')
+  try {
+    out.textContent = 'compiling…'
+    const { default: jz } = await loadJz()
+    const t0 = performance.now()
+    const { exports } = jz(src, { optimize: { level: 'speed' } })
+    const compileMs = (performance.now() - t0).toFixed(1)
+    const jsMod = await import(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })))
+    const wf = () => exports.main(100000), jf = () => jsMod.main(100000)
+    wf(); jf()
+    const ws = [], js_ = []
+    for (let r = 0; r < 3; r++) { ws.push(measure(wf)); js_.push(measure(jf)) }
+    const med = a => a.sort((x, y) => x - y)[a.length >> 1]
+    const w = med(ws), j = med(js_), ratio = w / j
+    out.textContent = `compiled ${compileMs} ms · wasm ${Math.round(w).toLocaleString()} ops/s · js ${Math.round(j).toLocaleString()} ops/s — ${ratio >= 1 ? `wasm ${ratio.toFixed(2)}× faster` : `js ${(1 / ratio).toFixed(2)}× faster`}`
+  } catch (e) { out.textContent = '✗ ' + String(e.message || e).split('\n')[0] }
+  $('replLink').href = '../repl/#' + b64url($('kernel').value)
+})
+$('kernel').addEventListener('input', () => { $('replLink').href = '../repl/#' + b64url($('kernel').value) })
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+try {
+  DATA = await fetch('./results.json').then(r => { if (!r.ok) throw 0; return r.json() })
+  const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
+  CORPUS = all.filter(c => c.targets.jz)
+  CASES = CORPUS.concat(all.filter(c => !c.targets.jz))
+  renderMeta(); renderChips(); renderAll()
+} catch {
+  $('suiteline').textContent = 'no results.json yet'
+  $('geomean').innerHTML = '<p class="dim">Run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
+}
+</script>
+</body>
+</html>

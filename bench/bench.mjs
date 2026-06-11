@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpus, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
@@ -36,6 +36,9 @@ const CASE_NAMES = {
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
   watr: 'watr WAT compiler',
+  // jz row currently throws at runtime (open compiler bug) — JS-engine rows
+  // still publish; the bench page shows the case with the gap stated.
+  jessie: 'jessie parser',
 }
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
@@ -437,6 +440,34 @@ const targets = {
   },
 }
 
+// Exact invocation per target — emitted into results.json meta so the bench
+// page methodology table renders from data, not a hand-maintained copy.
+// <case> stands for the case id.
+const TARGET_CMDS = {
+  nat: 'clang -O3 -ffp-contract=off <case>.c',
+  natgcc: 'gcc -O3 -ffp-contract=off <case>.c',
+  rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
+  go: 'go build -ldflags="-s -w" <case>.go',
+  zig: 'zig build-exe <case>.zig -O ReleaseFast',
+  python: 'python3 <case>.py',
+  numpy: 'python3 <case>.npy.py',
+  wat: 'wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)',
+  v8: 'node run-v8.mjs <case>.js',
+  deno: 'deno run --allow-read run-v8.mjs <case>.js',
+  bun: 'bun run-v8.mjs <case>.js',
+  spidermonkey: 'js <case>-flat.js',
+  hermes: 'hermes <case>-flat.js',
+  shermes: 'shermes -O <case>-flat.js -o <case>',
+  graaljs: 'graaljs <case>-flat.js',
+  qjs: 'qjs --std <case>-flat.js',
+  porf: 'porf --allocator-chunks=128 run <case>-flat.js',
+  jz: "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
+  as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
+  'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
+  'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
+  jawsm: 'jawsm <case>.js → node (V8 wasm)',
+}
+
 const allCases = discoverCases()
 const caseById = Object.fromEntries(allCases.map(c => [c.id, c]))
 const targetIds = Object.keys(targets)
@@ -444,14 +475,20 @@ const targetIdWidth = Math.max(11, ...targetIds.map(id => id.length))
 let selectedCases = allCases.map(c => c.id)
 let selectedTargets = targetIds
 
+// --json[=path]: write bench/results.json (consumed by bench/index.html) plus
+// per-case browser wasm artifacts under bench/web/ for the live in-page runner.
+let JSON_PATH = null
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg.startsWith('--cases=')) selectedCases = arg.slice(8).split(',').filter(Boolean)
   else if (arg.startsWith('--workloads=')) selectedCases = arg.slice(12).split(',').filter(Boolean)
+  else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
+  else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
   else if (targetIds.includes(arg)) selectedTargets = [arg]
   else if (caseById[arg]) selectedCases = [arg]
   else { console.error(`unknown case/target: ${arg}`); process.exitCode = 2 }
 }
+const jsonOut = { meta: null, cases: {} }
 if (process.exitCode) process.exit(process.exitCode)
 
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
@@ -525,6 +562,19 @@ for (const cid of selectedCases) {
   const nat = results.find(r => r.id === 'nat')
   const baseline = nat || [...results].sort((a, b) => a.medianUs - b.medianUs)[0]
 
+  if (JSON_PATH) {
+    jsonOut.cases[c.id] = {
+      name: c.name,
+      samples: results[0].samples, stages: results[0].stages, runs: results[0].runs,
+      ref: refCs,
+      targets: Object.fromEntries(results.map(r => [r.id, {
+        medianUs: r.medianUs,
+        bytes: r.bytes ?? null,
+        parity: r.checksum === refCs ? 'ok' : r.checksum === fmaCs ? 'fma' : 'DIFF',
+      }])),
+    }
+  }
+
   console.log()
   console.log(`samples=${results[0].samples} stages=${results[0].stages} runs=${results[0].runs} reference_checksum=${refCs}`)
   console.log(`  ${'target'.padEnd(28)}  ${'median'.padStart(10)}  ${'×base'.padStart(8)}  ${'throughput'.padStart(10)}  ${'size'.padStart(10)}  ${'parity'.padStart(8)}`)
@@ -560,4 +610,60 @@ if (selectedCases.length === allCases.length) {
     renderBenchSvg(rows)
     console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
+}
+
+// ── --json: machine-readable snapshot + browser wasm artifacts ───────────────
+if (JSON_PATH) {
+  const ver = cmd => versionText(cmd).trim().split('\n')[0] || null
+  const usedTargets = new Set()
+  for (const c of Object.values(jsonOut.cases)) for (const tid of Object.keys(c.targets)) usedTargets.add(tid)
+  jsonOut.meta = {
+    date: new Date().toISOString().slice(0, 10),
+    commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { return null } })(),
+    host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
+    versions: Object.fromEntries(Object.entries({
+      jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
+      node: process.version,
+      asc: has('asc') && ver('asc'),
+      porffor: has(PORF_BIN) && ver(PORF_BIN),
+      bun: has(BUN_BIN) && ver(BUN_BIN),
+      deno: has(DENO_BIN) && ver(DENO_BIN),
+      clang: has('clang') && ver('clang'),
+    }).filter(([, v]) => v)),
+    invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
+  }
+
+  // Per-case wasm for the in-page runner: default js-host lowering, so
+  // jz/interop's instantiate() wires console/perf with zero custom imports.
+  // The compile is timed (median of 3) — the same number the page measures
+  // live in the visitor's tab; reference value for the compile-time stat.
+  const webDir = join(BENCH_DIR, 'web')
+  mkdirSync(webDir, { recursive: true })
+  const built = []
+  for (const cid of selectedCases) {
+    const c = caseById[cid]
+    try {
+      const isWatr = c.id === 'watr'
+      const code = readFileSync(c.js, 'utf8')
+      const modules = {
+        '../_lib/benchlib.js': readFileSync(join(LIB, 'benchlib.js'), 'utf8'),
+        ...(isWatr ? watrModuleSources() : {}),
+      }
+      const opts = { jzify: isWatr, modules, optimize: { level: 'speed' } }
+      let wasm
+      const times = []
+      for (let i = 0; i < 3; i++) {
+        const t0 = performance.now()
+        wasm = compile(code, opts)
+        times.push(performance.now() - t0)
+      }
+      writeFileSync(join(webDir, `${c.id}.wasm`), wasm)
+      if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = +times.sort((a, b) => a - b)[1].toFixed(1)
+      built.push(cid)
+    } catch (e) {
+      console.error(`[web] ${cid}: ${String(e.message || e).split('\n')[0]}`)
+    }
+  }
+  writeFileSync(JSON_PATH, JSON.stringify(jsonOut, null, 1))
+  console.log(`\nwrote ${JSON_PATH} + bench/web/{${built.join(',')}}.wasm`)
 }
