@@ -20,8 +20,9 @@
 import { ctx } from '../../ctx.js'
 import { stmtList, T, some, isReassigned, hasControlTransfer } from '../../ast.js'
 import { constIntExpr } from '../../static.js'
-import { containsDeclOf, cloneWithSubst } from '../../type.js'
-import { clonePlain, forLoopBodyIndex, withForLoopBody } from './common.js'
+import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
+import { includeModule } from '../../autoload.js'
+import { clonePlain, forLoopBodyIndex, withForLoopBody, collectBindings, nodeSize, optimizing } from './common.js'
 
 // Nested int row literal: `[[1,2],[3]]` → { flat, starts, lens }.
 const parseNestedIntRowLit = (expr) => {
@@ -381,6 +382,91 @@ export const unrollRowLenPadLoops = () => {
     if (!func.body || func.raw) continue
     const r = unrollRowLenPadLoopsInBody(func.body)
     if (r.changed) { func.body = r.node; changed = true }
+  }
+  return changed
+}
+
+// === Char-scan range splitting ===
+//
+// `for (let i = 0; i < N; i++) { … s.charCodeAt(i) … }` with an arbitrary
+// bound N pays the OOB arm on EVERY char: charCodeAt's `i ≥ s.length` case
+// yields NaN, which forces the char local to f64 and every classifier compare
+// to f64 ops (the tokenizer/watr substrate cost). Split the iteration space:
+//
+//   for (let __ccm = Math.min(N, s.length), i = 0; i < __ccm; i++) BODY
+//   for (let i2 = Math.ceil(__ccm); i2 < N; i2++) BODY′
+//
+// The main loop's bound proof (scanBoundedLoops, via the min-aware lengthRecv)
+// makes charCodeAt emit the raw i32 fast path — the char carrier narrows to
+// i32 and the classifier chain follows. The tail keeps the original NaN
+// semantics and only runs past the string's end (cold). `Math.ceil(__ccm)` is
+// exactly the main loop's exit value (unit increments from 0): integral min →
+// min itself, fractional → first integer above, NaN → NaN (zero-trip tail,
+// matching the original's zero trips). BODY′ renames the body's decls and the
+// induction var so the main loop's narrowed i32 locals aren't widened by the
+// tail's NaN arm (locals are per-name function-wide).
+//
+// Gates: unit-increment counter from literal 0, name bound, no break/label
+// (a main-loop break must not fall into the tail), no closures (cloning would
+// duplicate them), receiver/bound/counter unwritten in body, body ≤ 400 nodes
+// (the clone doubles it — `splitCharScan: false` under optimize:'size').
+const hasOp = (node, ops) => some(node, n => ops.has(n[0]))
+const SPLIT_BLOCKERS = new Set(['break', 'label', '=>'])
+
+const trySplitFor = (node, parent, idx) => {
+  const [, init, cond, step, body] = node
+  if (!Array.isArray(cond) || cond[0] !== '<' || typeof cond[1] !== 'string' || typeof cond[2] !== 'string') return false
+  const i = cond[1], B = cond[2]
+  if (B === i) return false
+  // init: single decl `let i = 0`
+  if (!Array.isArray(init) || (init[0] !== 'let' && init[0] !== 'const') || init.length !== 2) return false
+  const iDecl = init[1]
+  if (!Array.isArray(iDecl) || iDecl[0] !== '=' || iDecl[1] !== i || constIntExpr(iDecl[2]) !== 0) return false
+  if (!isUnitIncrement(step, i)) return false
+  if (hasOp(body, SPLIT_BLOCKERS)) return false
+  if (nodeSize(body) > 250) return false
+  if (isReassigned(body, i) || isReassigned(body, B) || containsDeclOf(body, i)) return false
+  // at least one `recv.charCodeAt(i)` with a stable name receiver
+  let recv = null
+  some(body, n => {
+    if (n[0] === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'charCodeAt'
+        && typeof n[1][1] === 'string' && n[2] === i) { recv = n[1][1]; return true }
+    return false
+  })
+  if (!recv || recv === i || recv === B || isReassigned(body, recv)) return false
+
+  // tail clone: fresh induction var + fresh names for every body decl
+  const declNames = new Set()
+  collectBindings(body, declNames)
+  const rename = new Map()
+  for (const d of declNames) rename.set(d, `${T}rs${ctx.func.uniq++}_${d}`)
+  const i2 = `${T}rsi${ctx.func.uniq++}`
+  const subst = new Map([[i, i2]])
+  const tailBody = cloneWithSubst(body, subst, rename)
+  const tailStep = cloneWithSubst(step, subst, new Map())
+
+  includeModule('math')  // plan-time injection of math.min/math.ceil — prepare's auto-import has already run
+  const M = `${T}ccm${ctx.func.uniq++}`
+  node[1] = ['let', ['=', M, ['()', 'math.min', [',', B, ['.', recv, 'length']]]], iDecl]
+  node[2] = ['<', i, M]
+  const tailFor = ['for', ['let', ['=', i2, ['()', 'math.ceil', M]]], ['<', i2, B], tailStep, tailBody]
+  parent[idx] = [';', node, tailFor]
+  return true
+}
+
+export const splitCharScanLoops = () => {
+  if (!optimizing() || ctx.transform.optimize?.splitCharScan === false) return false
+  let changed = false
+  const visit = (node, parent, idx) => {
+    if (!Array.isArray(node) || node[0] === '=>') return
+    if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return }
+    for (let k = 1; k < node.length; k++) visit(node[k], node, k)
+  }
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.body) continue
+    visit(func.body, null, -1)
+    // body root itself can't be a bare `for` without a parent slot — wrap-walk
+    // handles every nested position; a top-level-for body is `{}`-wrapped.
   }
   return changed
 }

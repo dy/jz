@@ -39,7 +39,7 @@ import {
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
-import { bindNestedRowLengths, unrollRowLenPadLoops } from './loops.js'
+import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals,
@@ -82,6 +82,7 @@ export default function plan(ast, profiler) {
   sweep('inlineLocalLambdas', inlineLocalLambdas)
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(programFacts))
   if (optimizing()) {
+    sweep('splitCharScan', splitCharScanLoops)
     sweep('scalarizeArrayLiterals', scalarizeFunctionArrayLiterals)
     sweep('scalarizeObjectLiterals', scalarizeFunctionObjectLiterals)
     // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
