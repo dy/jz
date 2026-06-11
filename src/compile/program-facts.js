@@ -106,7 +106,16 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     if (fullWalk) {
       if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
         const [, obj, prop] = args[0]
-        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+        // `.length =` is the structural resize op (emit-assign handles ARRAY/
+        // TYPED/unknown receivers) — NOT a schema property. Recording it here
+        // auto-boxed the binding (['__inner__','length']): reads then deref'd
+        // the box while the resize path persisted the raw array ptr into the
+        // global — a read/write protocol split that corrupted cross-module
+        // arrays (importer `arr.length = 0` between owner pushes). Only a
+        // PROVEN object/hash receiver keeps `length` as a real property.
+        const lenVt = prop === 'length' ? ctx.scope.globalValTypes?.get(obj) : null
+        const lengthIsResize = prop === 'length' && lenVt !== VAL.OBJECT && lenVt !== VAL.HASH
+        if (!lengthIsResize && typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
           if (!acc.propMap.has(obj)) acc.propMap.set(obj, new Set())
           acc.propMap.get(obj).add(prop)
         }
