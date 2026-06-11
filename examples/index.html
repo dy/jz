@@ -5,9 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz examples</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
+/* Jost (libre Futura) self-hosted — geometric fallback where Futura isn't installed */
+@font-face {
+  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url(lib/jost.woff2) format('woff2');
+}
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {

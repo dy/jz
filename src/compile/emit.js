@@ -796,7 +796,12 @@ export function emitDecl(...inits) {
       ctx.func.locals.set(cell, 'i32')
       if (inLoop ? !loopPrebox(name) : !ctx.func.preboxed?.has(name))
         result.push(['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]])
-      result.push(['f64.store', ['local.get', `$${cell}`], asF64(val)])
+      // i32-narrowed cell stores the raw i32 (see readVar/writeVar). The undef
+      // pre-store stays f64: its NaN atom's low word is 0, which is exactly the
+      // plain-local default an i32 read of an uninitialized cell must see.
+      result.push(ctx.func.cellTypes?.has(name)
+        ? ['i32.store', ['local.get', `$${cell}`], asI32(val)]
+        : ['f64.store', ['local.get', `$${cell}`], asF64(val)])
       continue
     }
     if (isGlobal(name)) {
@@ -1374,6 +1379,9 @@ function arrayIndexKey(key) {
  *  relocate the array header (`__arr_set_idx_ptr`, `__arr_set_length`,
  *  `__arr_grow`, `__hash_set`). */
 function persistBindingPtr(name, ptr) {
+  // A NaN-boxed pointer never lands in an i32-narrowed cell: cellTypes requires
+  // intCertain (integer-valued defs only), and a binding that receives array/hash
+  // pointers is never integer-certain — so the f64 width is always right here.
   if (ctx.func.boxed?.has(name)) return ['f64.store', boxedAddr(name), ptr]
   if (isGlobal(name)) return ['global.set', `$${name}`, ptr]
   return ['local.set', `$${name}`, ptr]
@@ -2674,10 +2682,8 @@ export const emitter = {
       ? [['local.get', `$${t}`], asF64(emit(val))]
       : [asF64(emit(val)), ['local.get', `$${t}`]]
     const result = typed(['if', ['result', 'f64'], cond, ['then', thenExpr], ['else', elseExpr]], 'f64')
-    // Write back (handles boxed/global/local)
-    if (ctx.func.boxed?.has(name)) return withTemp(result, bt => [
-      ['f64.store', boxedAddr(name), ['local.get', `$${bt}`]],
-      ['local.get', `$${bt}`]])
+    // Write back — writeVar owns the cell/global/local discipline INCLUDING the
+    // i32-narrowed-cell width (a direct f64.store here desynced narrowed cells).
     return writeVar(name, result, void_)
   }])),
 

@@ -847,8 +847,12 @@ export function boxedAddr(name) {
  *  Unboxed pointer locals (repOf(name).ptrKind) tag the returned node with `.ptrKind`
  *  so downstream coercions know it's an i32 offset, not a numeric. */
 export function readVar(name) {
-  if (ctx.func.boxed?.has(name))
+  if (ctx.func.boxed?.has(name)) {
+    // i32-narrowed cell (closure-capture narrowing — see analyzeFuncForEmit's
+    // cellTypes): the cell stores a raw i32, load it directly.
+    if (ctx.func.cellTypes?.has(name)) return typed(['i32.load', boxedAddr(name)], 'i32')
     return typed(['f64.load', boxedAddr(name)], 'f64')
+  }
   if (isGlobal(name)) {
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const node = typed(['global.get', `$${name}`], gt)
@@ -899,13 +903,17 @@ export function readVar(name) {
 export function writeVar(name, valIR, void_) {
   if (ctx.func.boxed?.has(name)) {
     const addr = boxedAddr(name)
-    const v = asF64(valIR)
-    if (void_) return typed(['block', ['f64.store', addr, v]], 'void')
-    const t = temp()
-    return typed(['block', ['result', 'f64'],
+    // i32-narrowed cell: store the raw i32 (mirrors the integer-global write
+    // gate below — the storage type decides the coercion).
+    const i32Cell = ctx.func.cellTypes?.has(name)
+    const st = i32Cell ? 'i32.store' : 'f64.store'
+    const v = i32Cell ? asI32(valIR) : asF64(valIR)
+    if (void_) return typed(['block', [st, addr, v]], 'void')
+    const t = i32Cell ? tempI32() : temp()
+    return typed(['block', ['result', i32Cell ? 'i32' : 'f64'],
       ['local.set', `$${t}`, v],
-      ['f64.store', addr, ['local.get', `$${t}`]],
-      ['local.get', `$${t}`]], 'f64')
+      [st, addr, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]], i32Cell ? 'i32' : 'f64')
   }
   if (isGlobal(name)) {
     // Scalar globals are f64 by default, but integer-global inference (plan.js)
