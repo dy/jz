@@ -14,6 +14,7 @@
   --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ink: #000; --paper: #fff; --mid: #757575; --faint: #e8e8e8;
+  --padx: 32px;
 }
 html, body { height: 100%; }
 body {
@@ -23,18 +24,18 @@ body {
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 
-/* ── masthead: black band, same grammar as the examples gallery ── */
+/* ── masthead: identical to the examples gallery (same padding, font, sizes) ── */
 header {
-  background: var(--ink); color: var(--paper);
+  background: #0a0a0a; color: var(--paper);
   display: flex; align-items: center;
-  padding: 14px 20px;
+  padding: 30px var(--padx) 28px;
 }
 .wordmark { font-size: 19px; letter-spacing: -.02em; line-height: 1; }
-.wordmark .mark { font-weight: 700; color: var(--paper); }
+.wordmark .mark { font-weight: 700; color: #fff; }
 .wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
-header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 14px; }
+header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
 header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
-header nav a { color: var(--paper); opacity: .7; text-decoration: none; font-size: 12px;
+header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
   text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
 header nav a:hover { opacity: 1; }
 header .gh { display: flex; }
@@ -42,7 +43,7 @@ header .gh { display: flex; }
 /* ── toolbar ── */
 .bar {
   display: flex; align-items: center; gap: 10px;
-  padding: 9px 20px; border-bottom: 1px solid var(--ink);
+  padding: 9px var(--padx); border-bottom: 1px solid var(--ink);
   font-size: 12px; flex-wrap: wrap;
 }
 .bar label { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
@@ -69,7 +70,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .code { position: relative; }
 #editor, #hl {
-  position: absolute; inset: 0; margin: 0; padding: 16px 20px;
+  position: absolute; inset: 0; margin: 0; padding: 16px var(--padx);
   font: 13px/1.55 var(--mono); tab-size: 2; white-space: pre;
   border: 0; background: transparent;
 }
@@ -99,7 +100,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .tabs .free { flex: 1; border-right: 0; }
 
 /* output */
-#out { flex: 1; overflow: auto; padding: 14px 20px; font: 12.5px/1.6 var(--mono); }
+#out { flex: 1; overflow: auto; padding: 14px var(--padx); font: 12.5px/1.6 var(--mono); }
 #out .in { color: var(--mid); }
 #out .in::before { content: '› '; }
 #out .res { font-weight: 700; }
@@ -112,10 +113,10 @@ main { flex: 1; display: flex; min-height: 0; }
 #out .rule { border-top: 1px solid var(--faint); margin: 8px 0; }
 
 /* wat */
-#wat { flex: 1; overflow: auto; padding: 14px 20px; font: 11.5px/1.5 var(--mono); white-space: pre; display: none; }
+#wat { flex: 1; overflow: auto; padding: 14px var(--padx); font: 11.5px/1.5 var(--mono); white-space: pre; display: none; }
 
 /* prompt */
-.prompt { display: flex; gap: 8px; border-top: 1px solid var(--ink); padding: 10px 20px; align-items: center; }
+.prompt { display: flex; gap: 8px; border-top: 1px solid var(--ink); padding: 10px var(--padx); align-items: center; }
 .prompt .chev { font-family: var(--mono); font-weight: 700; }
 .prompt input {
   flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--ink); background: var(--paper);
@@ -138,7 +139,7 @@ main { flex: 1; display: flex; min-height: 0; }
 <body>
 
 <header>
-  <div class="wordmark"><span class="mark">jz</span><span class="sub">repl</span></div>
+  <div class="wordmark"><span class="mark">JZ</span><span class="sub">repl</span></div>
   <span class="tag">type JS — it compiles to WASM in your browser, live</span>
   <nav>
     <a href="../examples/">examples</a>
@@ -217,7 +218,7 @@ editor.addEventListener('scroll', syncScroll)
 const PRESETS = {
   start: {
     name: 'start here',
-    expr: 'dist(3, 4)',
+    expr: 'orbit(100000)',
     src: `// jz — minimal JS that compiles to WASM, on every keystroke.
 // The stats above are the real compile time and module size.
 // Call exports from the prompt below — values marshal across.
@@ -225,11 +226,15 @@ const PRESETS = {
 export let dist = (x, y) => (x*x + y*y) ** 0.5
 // ↑ types inferred: f64 — no annotations
 
-export let bits = (a, b) => a | b
-// ↑ the | operator pins both params to i32
-
 export let greet = (name) => 'hello ' + name
 // ↑ strings cross the boundary as UTF-8
+
+export let orbit = (n) => {
+  let x = 0
+  for (let i = 0; i < n; i++) x += Math.sin(i * 0.001) * Math.cos(i * 0.0005)
+  return x
+}
+// ↑ a real workload — hit "js vs wasm" on orbit(100000)
 
 console.log('compiled + instantiated, top-level ran')`,
   },
@@ -250,43 +255,51 @@ export let waves = (k) => {
   return s
 }`,
   },
-  mandelbrot: {
-    name: 'mandelbrot kernel',
-    expr: 'mandel(64)',
-    src: `// Escape-time kernel over a grid — pure f64 arithmetic, no allocations.
-// Bench it: "js vs wasm" runs the same source through both engines, honestly.
+  plasma: {
+    name: 'plasma field',
+    expr: 'plasma(1.5)',
+    src: `// The classic demoscene plasma — a field of layered sines.
+// Transcendental-heavy loops are where AOT wasm beats the JIT.
 
-export let mandel = (limit) => {
-  let total = 0
-  for (let py = 0; py < 128; py++) {
-    for (let px = 0; px < 128; px++) {
-      let cr = px / 64 - 1.5, ci = py / 64 - 1
-      let zr = 0, zi = 0, n = 0
-      while (n < limit && zr*zr + zi*zi < 4) {
-        let t = zr*zr - zi*zi + cr
-        zi = 2*zr*zi + ci
-        zr = t
-        n++
-      }
-      total += n
+export let plasma = (t) => {
+  let acc = 0
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      let v = Math.sin(x * 0.12 + t) + Math.sin(y * 0.13 - t)
+      v += Math.sin((x + y) * 0.09 + t * 1.3)
+      v += Math.cos(x * 0.07 - y * 0.11 + t * 0.5)
+      v += Math.sin(Math.sqrt(x*x + y*y) * 0.18 - t * 0.7)
+      v += Math.cos(v + t)
+      acc += v
     }
   }
-  return total
+  return acc
 }`,
   },
-  hash: {
-    name: 'string hash',
-    expr: "hash('hello world')",
-    src: `// Integer pipeline — bitwise ops pin everything to i32, zero boxing.
-// FNV-1a over UTF-8 bytes (string indexing counts bytes in jz).
+  biquad: {
+    name: 'audio biquad',
+    expr: 'filter(4096)',
+    src: `// Audio DSP — 4 cascaded lowpass biquads over a 4096-sample block.
+// Recursive filters can't SIMD; jz wins on raw f64 throughput.
 
-export let hash = (s) => {
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < s.length; i++) {
-    h = h ^ s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
+export let filter = (n) => {
+  let x = new Float64Array(n)
+  for (let i = 0; i < n; i++) x[i] = Math.sin(i * 0.3) + Math.sin(i * 1.7) * 0.5
+  let b0 = 0.067455, b1 = 0.134911, b2 = 0.067455
+  let a1 = -1.142981, a2 = 0.412802
+  for (let s = 0; s < 4; s++) {
+    let z1 = 0, z2 = 0
+    for (let i = 0; i < n; i++) {
+      let inp = x[i]
+      let out = b0 * inp + z1
+      z1 = b1 * inp - a1 * out + z2
+      z2 = b2 * inp - a2 * out
+      x[i] = out
+    }
   }
-  return h >>> 0
+  let acc = 0
+  for (let i = 0; i < n; i++) acc += x[i]
+  return acc
 }`,
   },
   lint: {
@@ -419,34 +432,75 @@ const measure = (fn, after) => {
   }
 }
 
+const fnExports = () => Object.keys(state.exports || {})
+  .filter(k => typeof state.exports[k] === 'function' && !k.startsWith('_'))
+
 $('bench').addEventListener('click', async () => {
-  const code = expr.value.trim() || $('preset').selectedOptions[0]?.dataset.expr || ''
-  if (!code) { print('err', 'type an expression to bench, e.g. dist(3, 4)'); return }
   if (!state.exports) { print('err', 'nothing compiled yet'); return }
+  // the benched expression is whatever's in the prompt — any call, any export.
+  // Empty prompt falls back to the preset's default, if that export still exists.
+  let code = expr.value.trim()
+  if (!code) {
+    const pe = $('preset').selectedOptions[0]?.dataset.expr || ''
+    if (typeof state.exports[pe.match(/^\w+/)?.[0]] === 'function') code = pe
+  }
+  if (!code) { print('err', `type a call to bench — exports: ${fnExports().join(', ') || 'none'}`); return }
   if (!state.ok) print('note', 'compile error — benching the last good module')
   print('in', `${code}   — js vs wasm`)
   try {
     // the same source is a valid ES module: import it and run it as plain JS
-    const url = URL.createObjectURL(new Blob([state.src], { type: 'text/javascript' }))
+    const blob = () => URL.createObjectURL(new Blob([state.src], { type: 'text/javascript' }))
+    const url = blob()
     let jsMod
     try { jsMod = await import(url) } finally { URL.revokeObjectURL(url) }
     const wasmFn = () => evalIn(state.exports, code)
     const jsFn = () => evalIn(jsMod, code)
     const wr = wasmFn(), jr = jsFn()
     state.memory?.reset?.()
-    // numbers compare with relative epsilon — SIMD reassociates f64 sums
+    // numbers compare with relative epsilon — SIMD reassociates f64 sums, and
+    // jz's own sin/cos/exp kernels are ~1e-7-class (drift accumulates in sums)
     const same = typeof wr === 'number' && typeof jr === 'number'
-      ? Math.abs(wr - jr) <= 1e-9 * Math.max(Math.abs(wr), Math.abs(jr), 1)
+      ? Math.abs(wr - jr) <= 1e-6 * Math.max(Math.abs(wr), Math.abs(jr), 1)
       : fmt(wr) === fmt(jr)
-    if (!same) print('note', `results differ — js: ${fmt(jr)} · wasm: ${fmt(wr)} (see "differences with JS" in the readme)`)
-    // alternate engines, two rounds each, keep the better round
+    if (!same) print('note', `results differ — js ${fmt(jr)} · wasm ${fmt(wr)} (readme: differences with JS)`)
+    // WARM — V8 at full JIT tier-up: interleave engines across rounds
+    // (thermal/warm-up fairness), keep medians.
     const reset = () => state.memory?.reset?.()
-    const w = Math.max(measure(wasmFn, reset), measure(wasmFn, reset))
-    const j = Math.max(measure(jsFn), measure(jsFn))
+    const ws = [], js_ = []
+    for (let r = 0; r < 5; r++) { ws.push(measure(wasmFn, reset)); js_.push(measure(jsFn)) }
+    const med = a => a.sort((x, y) => x - y)[a.length >> 1]
+    const w = med(ws), j = med(js_)
     const ratio = w / j
     const opsFmt = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x.toFixed(1)
-    print('res', `wasm ${opsFmt(w)} ops/s · js ${opsFmt(j)} ops/s — ${ratio >= 1 ? `wasm ${ratio.toFixed(2)}× faster` : `js ${(1 / ratio).toFixed(2)}× faster`}`)
-    if (ratio < 1) print('note', 'V8’s JIT ties or wins warm scalar loops — jz wins typed-array/SIMD and transcendental-heavy kernels, and stays this fast on any wasm host')
+    const verdict = (r) => r >= 1 ? `wasm ${r.toFixed(2)}× faster` : `js ${(1 / r).toFixed(2)}× faster`
+    const wantCold = w < 2e5
+    print('res', `${wantCold ? 'repeat call  ' : ''}wasm ${opsFmt(w)} ops/s · js ${opsFmt(j)} ops/s — ${verdict(ratio)}`)
+    if (w > 1e6) {
+      print('note', 'too small to compare engines — this times the call overhead; bench an export that does more work')
+    } else if (wantCold) {
+      // COLD — first call on fresh copies of each engine, one timed window per
+      // side. The JS first call runs in the interpreter (the JIT hasn't seen
+      // the code yet); the wasm is machine code the moment it instantiates.
+      const N = Math.min(24, Math.max(12, Math.ceil(w * 0.005)))
+      const wasmCopies = [], jsCopies = []
+      const u2 = blob()
+      try {
+        for (let i = 0; i < N; i++) {
+          wasmCopies.push(jz(state.src, opts()).exports)
+          jsCopies.push(await import(u2 + '#' + i))    // fragment → fresh module record
+        }
+      } finally { URL.revokeObjectURL(u2) }
+      let t0 = performance.now()
+      for (const e of wasmCopies) evalIn(e, code)
+      const wCold = (performance.now() - t0) / N
+      t0 = performance.now()
+      for (const m of jsCopies) evalIn(m, code)
+      const jCold = (performance.now() - t0) / N
+      const ms = x => x >= 1 ? x.toFixed(2) + ' ms' : (x * 1000).toFixed(0) + ' µs'
+      const cr = jCold / wCold
+      print('res', `first call   wasm ${ms(wCold)} · js ${ms(jCold)} — ${cr >= 1 ? `wasm ${cr.toFixed(1)}× faster` : `js ${(1 / cr).toFixed(1)}× faster`}`)
+    }
+    if (w <= 1e6 && ratio < 1) print('note', 'js needs warm-up to reach this — wasm holds its speed from the first call, on any host')
     rule()
   } catch (e) { print('err', firstLine(e)) }
 })
