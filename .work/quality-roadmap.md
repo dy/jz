@@ -35,11 +35,31 @@ compiler** · **pipeline directness** · **diagnostics/debuggability**.
   handler bypassing writeVar with a direct f64.store. Examples geomean 1.76×;
   watr best-run 1080→1018 µs (modest as designed — its captures are mostly
   objects/strings, out of intCertain scope).
-- [ ] 1.4 int-accumulator general path [L] — deferred (owner YAGNI; peephole covers
-  the measured shapes).
-- [ ] 1.5 deferred-on-no-workload: extending-add i8/i16 SIMD (trigger: color-space),
-  AoS→SoA [L], scalarization cap 32→64, call_indirect devirt (trigger: callback
-  workload).
+- [x] **1.4 int-accumulator general path** — `narrowI32` ring algebra at the toI32
+  chokepoint (ir.js): ToInt32 is reduction mod 2^32 and {+,−,×} are RING ops under
+  it, so exact-int f64 trees compute in i32 with wrap-early operands — exactness
+  tracked via per-node maxAbs < 2^53. `/` narrows at the ToInt32 root only
+  (fractions aren't ring-compatible) with const divisor ∉{0,1} (÷−1 → `0−x`, dodges
+  the INT_MIN trap); `%` peels faithful signed-convert dividends at emit (const
+  divisor → i32.rem_s). div/mod/mul-const loops now pure i32 (were f64 dances).
+  Mixed div/mod/mul kernel: 209→25 ms (8.5×), 52× vs V8. Pinned: optimizer.js
+  narrowI32 ×3 (loop shapes, wrap/sign differential incl. INT_MIN/−1, f64 edges).
+- [x] **1.5 prepared-for-generic-cases** (was deferred-on-no-workload):
+  - extending-add i8/i16 SIMD — widening byte/short sums (`s += u8[i]`) lift via
+    `extadd_pairwise` chain into i32x4 partials; value-exact mod 2^32 (pairwise
+    intermediates can't overflow; wrap-add associative). Bare-load-only gate
+    (lane arithmetic would wrap at i8 where scalar widens first). 5.8× vs V8 on
+    1MB byte-sum. Pinned: simd.js ×5 (u8/s8/u16/s16 + negative gate).
+  - scalarization cap 32→64 — no LEB128 cliff: at 64 elems scalarized form is
+    ~2.2× SMALLER (stores fold; local refs out-LEB memory ops) and 2.5× faster.
+    Covers 8×8 block kernels. 'size' preset keeps its own cap 8.
+  - call_indirect devirt — `devirt` pass (wat/optimize.js, post-rounds, off under
+    'size' via devirtIndirect knob): two-candidate closure locals (select of i64
+    consts) → guarded direct calls with the ORIGINAL call_indirect as fallback
+    arm (zero-init flows exact); const slots → bare direct call. Table mutation
+    disables module-wide. 2.4× on callback loop (76→32 ms), beats hand-devirt
+    (V8 inlines tramps through the direct calls). Pinned: closures.js ×3.
+  - AoS→SoA [L] — still deferred: no workload, layout transform is invasive.
 - [x] interference parity (feb3341) — expression-position inlining: flattenable
   pure-arith decl prefixes substitute into the return value (distance/dx/dy/sqrt);
   exported callers take the leaf-safe subset. 1.01×, 11/11 winners.
