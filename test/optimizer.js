@@ -1827,3 +1827,43 @@ test('splitCharScan: break in body disables the split (a main-loop break must no
   const { find } = run(src)
   for (const n of [0, 2, 6, 10]) is(find('aaBaaa', n), js('aaBaaa', n), `n=${n}`)
 })
+
+test('for-bound snapshot: read-only builtin calls do not block the .length hoist', () => {
+  // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
+  // Math.imul body re-decoded the NaN-boxed string length every iteration
+  // (≈3× slower on byte loops). Read-only builtins can't resize the receiver,
+  // so the bound must snapshot into a pre-loop i32 local (boundSafeCalls).
+  const src = `export const main = (s) => {
+    let h = 0x811c9dc5 | 0
+    for (let i = 0; i < s.length; i++) {
+      h = h ^ s.charCodeAt(i)
+      h = Math.imul(h, 0x01000193)
+    }
+    return h >>> 0
+  }`
+  const wat = jz.compile(src, { wat: true, optimize: { jsstring: false } })
+  const fa = wat.indexOf('func $main')
+  const fn = wat.slice(fa, wat.indexOf('(func', fa + 1))
+  const loop = fn.slice(fn.indexOf('loop'))
+  ok(loop.length > 0, 'main has a loop')
+  ok(!loop.includes('16383'), 'length decode (SSO mask 16383) must be hoisted out of the loop')
+  // behavior unchanged vs JS
+  const js = (s) => { let h = 0x811c9dc5 | 0; for (let i = 0; i < s.length; i++) { h = h ^ s.charCodeAt(i); h = Math.imul(h, 0x01000193) } return h >>> 0 }
+  const { main } = run(src, { optimize: { jsstring: false } })
+  is(main('hello world'), js('hello world'))
+})
+
+test('for-bound snapshot: a mutating call in the body still re-reads the bound', () => {
+  // push() grows the array mid-loop — JS re-reads the bound every iteration,
+  // so the read-only whitelist must NOT claim this loop (2 elems + 1 pushed → 3 iters).
+  const src = `export const main = () => {
+    let a = [1, 2]
+    let n = 0
+    for (let i = 0; i < a.length; i++) {
+      if (i === 0) a.push(9)
+      n++
+    }
+    return n
+  }`
+  is(run(src).main(), 3)
+})
