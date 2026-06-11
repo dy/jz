@@ -308,7 +308,7 @@ const detectOptimizeConfig = (ast, code) => {
   // jz's already-optimized IR and inflates output. Disable it automatically.
   const isLarge = s.sourceChars > 4000 || s.funcCount > 40 || s.maxFuncBodySize > 300
   const isMachineLike = s.callSites > 300 && s.stringLiteralCount < 10
-  if (isLarge || isMachineLike) cfg.watr = false
+  if (isLarge || isMachineLike) { cfg.watr = false; cfg.splitCharScan = false }
   // Typed-array heavy: tighten scalarization thresholds when we see large
   // fixed-size arrays; keep defaults for small/dynamic ones.
   if (s.typedArrayCount > 0 && s.maxTypedArrayLen > 0) {

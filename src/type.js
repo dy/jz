@@ -81,7 +81,7 @@ export function ternaryCtorOfRhs(rhs, resolveName) {
 // (raw-byte) contract instead. This is a static guarantee, not a guess.
 
 /** Step expression of a `for` that increments `name` by exactly 1. */
-function isUnitIncrement(step, name) {
+export function isUnitIncrement(step, name) {
   if (!Array.isArray(step)) return false
   if (step[0] === '++' && step[1] === name) return true
   // postfix `i++` in value position lowers to `(++i) - 1`
@@ -122,6 +122,14 @@ function lengthRecv(expr) {
   if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
   if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length'
       && typeof expr[1] === 'string') return expr[1]
+  // `Math.min(X, recv.length)` (either arg order): min ≤ recv.length regardless
+  // of X, so the bound proof carries through. This is the shape
+  // splitCharScanLoops plants for the in-bounds main loop of a split scan.
+  if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') {
+    const argsNode = expr[2]
+    const args = Array.isArray(argsNode) && argsNode[0] === ',' ? argsNode.slice(1) : [argsNode]
+    for (const a of args) { const r = lengthRecv(a); if (r) return r }
+  }
   return null
 }
 

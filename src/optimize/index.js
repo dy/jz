@@ -92,6 +92,7 @@ export const PASS_NAMES = [
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
+  'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
@@ -144,7 +145,7 @@ const LEVEL_PRESETS = Object.freeze({
   balanced: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
     ...ALL_ON,
-    smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
+    smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
