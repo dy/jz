@@ -104,6 +104,31 @@ const callFree = node => {
   for (let i = 1; i < node.length; i++) if (!callFree(node[i])) return false
   return true
 }
+// Calls that provably can't resize ANY receiver: read-only builtin methods
+// (no mutators, no callback-takers — a callback could close over the receiver
+// and push) and pure namespaces. Everything else (user fns, push/splice,
+// map/forEach) may reach the bound receiver through an alias — disqualifies
+// the length snapshot. A user object shadowing one of these names with a
+// mutating closure is a documented divergence (same class as for-of's).
+const _BOUND_PURE_NS = new Set(['Math', 'math', 'Number', 'String', 'JSON', 'console', 'Date', 'performance'])
+const _BOUND_RO_METHODS = new Set([
+  'charCodeAt', 'charAt', 'codePointAt', 'at', 'indexOf', 'lastIndexOf', 'includes',
+  'startsWith', 'endsWith', 'slice', 'substring', 'trim', 'toUpperCase', 'toLowerCase',
+  'join', 'concat', 'toString', 'get', 'has', 'now',
+])
+const boundSafeCalls = node => {
+  if (!Array.isArray(node)) return true
+  if (node[0] === 'new') return false
+  if (node[0] === '()' || node[0] === '?.()') {
+    const callee = node[1]
+    const safe = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') &&
+      (_BOUND_RO_METHODS.has(callee[2]) ||
+       (typeof callee[1] === 'string' && _BOUND_PURE_NS.has(callee[1])))
+    if (!safe) return false
+  }
+  for (let i = 1; i < node.length; i++) if (!boundSafeCalls(node[i])) return false
+  return true
+}
 const writesReceiver = (node, recv) => {
   if (!Array.isArray(node)) return false
   const op = node[0]
@@ -2002,7 +2027,7 @@ const handlers = {
           const recv = lenExpr[1]
           const bound = ['|', lenExpr, [, 0]]
           const lengthStable = typeof recv === 'string' &&
-            callFree(body) && callFree(step) && !writesReceiver(body, recv) && !writesReceiver(step, recv)
+            boundSafeCalls(body) && boundSafeCalls(step) && !writesReceiver(body, recv) && !writesReceiver(step, recv)
           if (lengthStable) {
             // Body can't change the bound → snapshot it once into an i32 local. Keeps
             // the counter `i` i32 through compare + `i++` (no per-iteration f64 round
