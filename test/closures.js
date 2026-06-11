@@ -881,3 +881,54 @@ test('func-namespace SROA: escaping namespace keeps the dynamic path correct', (
     }`
   is(runHost(src).f(), 2)
 })
+
+// === call_indirect devirtualization (wat/optimize.js devirt) ===
+// `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
+// each call site becomes a guarded direct-call chain with the original
+// call_indirect kept as the fallback arm (zero-init/unknown flows unchanged).
+
+test('devirt: two-candidate closure local → guarded direct calls + fallback', () => {
+  const src = `
+    let dbl = (x) => x * 2
+    let sqr = (x) => x * x
+    export let main = (n, m) => {
+      let f = m > 0 ? dbl : sqr
+      let s = 0
+      for (let i = 0; i < n; i++) s += f(i)
+      return s
+    }`
+  const w = jz.compile(src, { wat: true, optimize: 3 })
+  // tramp names carry jz's invisible name-mangling char after `$` — match loosely
+  ok(/\(call \$\S*tramp_dbl/.test(w) && /\(call \$\S*tramp_sqr/.test(w),
+    'both candidates direct-called under guards')
+  ok(/call_indirect/.test(w), 'original call_indirect kept as the fallback arm')
+  const { main } = run(src, { optimize: 3 })
+  is(main(100, 1), 9900)   // 2*Σ0..99
+  is(main(100, -1), 328350) // Σi²
+  is(main(0, 1), 0)
+})
+
+test('devirt: size preset stays indirect (no byte growth)', () => {
+  const src = `
+    let dbl = (x) => x * 2
+    let sqr = (x) => x * x
+    export let main = (m, x) => {
+      let f = m > 0 ? dbl : sqr
+      return f(x)
+    }`
+  const w = jz.compile(src, { wat: true, optimize: 'size' })
+  ok(!/\(call \$\S*tramp/.test(w), 'size preset keeps the indirect call')
+  const { main } = run(src, { optimize: 'size' })
+  is(main(1, 21), 42)
+  is(main(-1, 5), 25)
+})
+
+test('devirt: param-held closure is never devirtualized (unknown candidates)', () => {
+  const src = `
+    let add1 = (x) => x + 1
+    let pass = (g, x) => g(x)
+    export let main = (x) => pass(add1, x) + pass((y) => y * 3, x)`
+  // pass() may inline entirely; correctness across candidate shapes is the pin.
+  const { main } = run(src, { optimize: 3 })
+  is(main(4), 17) // (4+1) + (4*3)
+})

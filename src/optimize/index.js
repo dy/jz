@@ -88,6 +88,7 @@ const UNDEF_BITS = atomNanHex(2)
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
+  'devirtIndirect',           // call_indirect w/ known closure consts → guarded direct calls (WAT-level, grows bytes)
   'hoistPtrType',
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
@@ -146,6 +147,7 @@ const LEVEL_PRESETS = Object.freeze({
   size: Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
+    devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.

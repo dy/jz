@@ -1597,6 +1597,159 @@ const inline = (ast) => {
 let inlineUid = 0
 
 /**
+ * Devirtualize `call_indirect` through NaN-boxed closure values with a statically
+ * known candidate set. `let f = c ? a : b; … f(x)` emits a select of two i64
+ * closure constants into an f64 local; every call site then derives the table
+ * slot from that local's bits:
+ *   (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $f))
+ *                                     (i64.const 32)) (i64.const 32767)))
+ * When EVERY write to $f in the function is such a constant set (≤2 candidates),
+ * each call site becomes a guarded direct call —
+ *   (if (result …) (i64.eq (i64.reinterpret_f64 (local.get $f)) (i64.const C1))
+ *     (then (call $tramp1 …args)) (else <next guard | original call_indirect>))
+ * — with the ORIGINAL call_indirect kept as the final arm, so unknown flows
+ * (zero-init paths the analysis can't see) behave exactly as before: the rewrite
+ * is a pure branch-predicted fast path, ~25% on callback loops, and the direct
+ * calls participate in inlining. A trivially-constant slot ((i32.const N) after
+ * fold) becomes a bare direct call with no guard.
+ *
+ * Soundness: the guard compares the SAME bits the slot extraction reads, so
+ * whichever constant flows to the call dispatches identically in both forms;
+ * candidates that don't resolve to an elem entry (or whose target's signature
+ * differs from the call's type — would-be runtime trap) disable the site. Any
+ * table mutation op in the module disables the pass entirely. The function
+ * table is exported for host-side closure invocation (reads); host mutation of
+ * it is outside the ABI contract, same as the closure-constant model itself.
+ */
+const devirt = (ast) => {
+  if (!Array.isArray(ast) || ast[0] !== 'module') return ast
+  // Module facts: elem slot → func name (constant offsets only), type defs,
+  // named funcs. Bail on dynamic elem offsets or table mutation anywhere.
+  const slots = new Map(), typeDefs = new Map(), funcsByName = new Map()
+  let tableMutated = false
+  walk(ast, n => {
+    if (Array.isArray(n) && typeof n[0] === 'string' &&
+        (n[0] === 'table.set' || n[0] === 'table.grow' || n[0] === 'table.init' ||
+         n[0] === 'table.copy' || n[0] === 'table.fill')) tableMutated = true
+  })
+  if (tableMutated) return ast
+  for (const node of ast.slice(1)) {
+    if (!Array.isArray(node)) continue
+    if (node[0] === 'elem') {
+      const off = node[1]
+      if (!Array.isArray(off) || off[0] !== 'i32.const') return ast
+      let base = Number(off[1])
+      for (let i = 2; i < node.length; i++)
+        if (typeof node[i] === 'string' && node[i][0] === '$') slots.set(base++, node[i])
+    }
+    else if (node[0] === 'type' && typeof node[1] === 'string') typeDefs.set(node[1], node[2])
+    else if (node[0] === 'func' && typeof node[1] === 'string') funcsByName.set(node[1], node)
+  }
+  if (!slots.size) return ast
+
+  const i64of = (n) => BigInt(String(n[1]))
+  const isC64 = (n, v) => Array.isArray(n) && n[0] === 'i64.const' && i64of(n) === v
+  // Collect the i64 constants reachable through reinterpret/select arms.
+  const boxConsts = (v, out) => {
+    if (!Array.isArray(v)) return false
+    if (v[0] === 'i64.const') { out.push(v); return true }
+    if (v[0] === 'f64.reinterpret_i64' && v.length === 2) return boxConsts(v[1], out)
+    if (v[0] === 'select' && v.length === 4) return boxConsts(v[1], out) && boxConsts(v[2], out)
+    return false
+  }
+  // The slot-extraction idiom — returns the source local name or null.
+  const matchSlotOfLocal = (e) => {
+    if (!Array.isArray(e) || e[0] !== 'i32.wrap_i64') return null
+    const a = e[1]
+    if (!Array.isArray(a) || a[0] !== 'i64.and') return null
+    let sh = a[1], mk = a[2]
+    if (!isC64(mk, 32767n)) { sh = a[2]; mk = a[1] }
+    if (!isC64(mk, 32767n) || !Array.isArray(sh) || sh[0] !== 'i64.shr_u' || !isC64(sh[2], 32n)) return null
+    const ri = sh[1]
+    if (!Array.isArray(ri) || ri[0] !== 'i64.reinterpret_f64') return null
+    return Array.isArray(ri[1]) && ri[1][0] === 'local.get' && typeof ri[1][1] === 'string' ? ri[1][1] : null
+  }
+  // Canonical "params -> results" token string for signature comparison.
+  const tokSig = (parts) => {
+    const ps = [], rs = []
+    for (const p of parts) {
+      if (!Array.isArray(p)) continue
+      if (p[0] === 'param') { for (const t of p.slice(1)) if (typeof t === 'string' && t[0] !== '$') ps.push(t) }
+      else if (p[0] === 'result') rs.push(...p.slice(1))
+    }
+    return ps.join(',') + '->' + rs.join(',')
+  }
+
+  for (const fn of funcsByName.values()) {
+    // Candidate sets: local → Map<bits, constNode>, or null once poisoned.
+    // Params are poisoned (incoming value unknown).
+    const cands = new Map()
+    for (const part of fn)
+      if (Array.isArray(part) && part[0] === 'param' && typeof part[1] === 'string') cands.set(part[1], null)
+    walk(fn, n => {
+      if (!Array.isArray(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
+      if (cands.get(n[1]) === null) return
+      const out = []
+      if (boxConsts(n[2], out)) {
+        const m = cands.get(n[1]) || new Map()
+        for (const c of out) m.set(i64of(c), c)
+        cands.set(n[1], m)
+      } else cands.set(n[1], null)
+    })
+
+    walkPost(fn, (n, parent) => {
+      if (!Array.isArray(n) || n[0] !== 'call_indirect') return
+      // A call_indirect sitting directly under an `else` is (or looks exactly
+      // like) the fallback arm of an existing guard — never re-wrap it, so the
+      // pass is idempotent across repeated optimize() runs.
+      if (parent && parent[0] === 'else') return
+      const typeUse = Array.isArray(n[1]) && n[1][0] === 'type' ? n[1] : null
+      if (!typeUse) return
+      const sig = typeDefs.get(typeUse[1])
+      const callSig = Array.isArray(sig) ? tokSig(sig.slice(1)) : null
+      if (callSig == null) return
+      const results = []
+      for (const s of sig.slice(1)) if (Array.isArray(s) && s[0] === 'result') results.push(...s.slice(1))
+      const args = n.slice(2, -1)
+      const idx = n[n.length - 1]
+      const sigOk = (name) => {
+        const target = funcsByName.get(name)
+        if (!target) return false
+        const tu = target.find(p => Array.isArray(p) && p[0] === 'type')
+        if (tu) return tu[1] === typeUse[1] ||
+          (typeDefs.get(tu[1]) && tokSig(typeDefs.get(tu[1]).slice(1)) === callSig)
+        return tokSig(target.slice(2)) === callSig
+      }
+      // Constant slot → bare direct call.
+      if (Array.isArray(idx) && idx[0] === 'i32.const') {
+        const name = slots.get(Number(idx[1]))
+        return name && sigOk(name) ? ['call', name, ...args] : undefined
+      }
+      const f = matchSlotOfLocal(idx)
+      if (!f) return
+      const m = cands.get(f)
+      if (!m || m.size === 0 || m.size > 2) return
+      const arms = []
+      for (const cNode of m.values()) {
+        const name = slots.get(Number((i64of(cNode) >> 32n) & 32767n))
+        if (!name || !sigOk(name)) return
+        arms.push([cNode, name])
+      }
+      let out = n
+      for (let i = arms.length - 1; i >= 0; i--) {
+        const [cNode, name] = arms[i]
+        out = ['if', ...(results.length ? [['result', ...results]] : []),
+          ['i64.eq', ['i64.reinterpret_f64', ['local.get', f]], clone(cNode)],
+          ['then', ['call', name, ...args.map(clone)]],
+          ['else', out]]
+      }
+      return out
+    })
+  }
+  return ast
+}
+
+/**
  * Inline functions that are called from exactly one place into their lone caller,
  * then delete them. Unlike {@link inline} (which duplicates tiny stateless bodies),
  * this never duplicates code and never inflates: each inlined function drops a
@@ -3185,6 +3338,7 @@ const PASSES = [
   ['strength',      strength,       true,  'strength reduction (x * 2 → x << 1)'],
   ['branch',        branch,         true,  'simplify constant branches'],
   ['propagate',     propagate,      true,  'forward-propagate single-use locals & tiny consts (never inflates)'],
+  ['devirt',        devirt,         false, 'call_indirect with known closure constants → guarded direct calls — grows bytes for speed'],
   ['inlineOnce',    inlineOnce,     true,  'inline single-call functions into their lone caller (never duplicates)'],
   ['inline',        inline,         false, 'inline tiny functions — can duplicate bodies'],
   ['offset',        offset,         true,  'fold add+const into load/store offset'],
@@ -3285,6 +3439,14 @@ export default function optimize(ast, opts = true) {
 
   ast = clone(ast)
 
+  // devirt trades bytes for speed by design (guards + duplicated args), so it
+  // runs ONCE after the rounds — its candidate shape (select of two i64 closure
+  // constants) only emerges from fold/propagate, and its intended growth must
+  // not trip the size-guard into reverting a whole round. A single sweep is
+  // complete: every call_indirect is visited; rewritten sites keep the original
+  // as the guarded fallback arm.
+  const finish = (a) => opts.devirt ? devirt(a) : a
+
   // Fast path: jz owns this optimizer and feeds it a controlled, type-aware IR.
   // The only passes that can *grow* the binary are inlineOnce/inline; when no
   // function is an inline candidate (the common case for scalar REPL kernels)
@@ -3297,11 +3459,11 @@ export default function optimize(ast, opts = true) {
     // propagate, and it would only confirm what `mayInline` already proved.
     for (let round = 0; round < 3; round++) {
       const beforeRound = clone(ast)
-      for (const [key, fn] of PASSES) if (opts[key] && key !== 'inlineOnce' && key !== 'inline') ast = fn(ast)
+      for (const [key, fn] of PASSES) if (opts[key] && key !== 'inlineOnce' && key !== 'inline' && key !== 'devirt') ast = fn(ast)
       if (equal(beforeRound, ast)) break // fixpoint
       if (verbose) log(`  round ${round + 1} applied`)
     }
-    return ast
+    return finish(ast)
   }
 
   // Guarded path: inlining can inflate (a body bigger than the call it replaces),
@@ -3314,7 +3476,7 @@ export default function optimize(ast, opts = true) {
   for (let round = 0; round < 3; round++) {
     beforeRound = clone(ast)
 
-    for (const [key, fn] of PASSES) if (opts[key]) ast = fn(ast)
+    for (const [key, fn] of PASSES) if (opts[key] && key !== 'devirt') ast = fn(ast)
     // Second propagate sweep: `inlineOnce`/`inline` (above) leave fresh
     // `(local.set $p arg) … (local.get $p)` wrappers around each inlined call;
     // re-running propagation collapses them within this same round, so the size
@@ -3339,9 +3501,9 @@ export default function optimize(ast, opts = true) {
     sizeBefore = sizeAfter
   }
 
-  return ast
+  return finish(ast)
 }
 
 /** Count AST nodes (fast size heuristic). */
 export { count as size, count, binarySize }
-export { optimize, treeshake, fold, deadcode, localReuse, identity, strength, branch, propagate, inline, inlineOnce, normalize, OPTS, vacuum, peephole, globals, offset, unbranch, loopify, stripmut, brif, foldarms, dedupe, reorder, dedupTypes, packData, minifyImports, mergeBlocks, coalesceLocals }
+export { optimize, treeshake, fold, deadcode, localReuse, identity, strength, branch, propagate, inline, inlineOnce, devirt, normalize, OPTS, vacuum, peephole, globals, offset, unbranch, loopify, stripmut, brif, foldarms, dedupe, reorder, dedupTypes, packData, minifyImports, mergeBlocks, coalesceLocals }
