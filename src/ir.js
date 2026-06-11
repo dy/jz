@@ -829,6 +829,10 @@ export function needsDynShadow(target) {
 // Centralizes the boxed/global/local 3-way dispatch (used by =, ++/--, +=, etc.)
 
 /** Check if name is a module-scope global (not shadowed by local/param). */
+/** Bound in the current function frame — a declared local or a parameter. */
+export const isBoundName = name =>
+  ctx.func.locals?.has(name) || ctx.func.current?.params?.some(p => p.name === name)
+
 export function isGlobal(name) {
   return ctx.scope.globals.has(name) && !ctx.func.locals?.has(name) && !ctx.func.current?.params?.some(p => p.name === name)
 }
