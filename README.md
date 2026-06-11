@@ -12,7 +12,7 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
-**[repl](https://dy.github.io/jz/repl/)** · **[examples](https://dy.github.io/jz/examples/)**
+**[repl](https://dy.github.io/jz/repl/)** · **[examples](https://dy.github.io/jz/examples/)** · **[bench](https://dy.github.io/jz/bench/)**
 
 
 ## Why?
