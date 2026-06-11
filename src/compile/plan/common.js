@@ -111,7 +111,11 @@ export const SCALAR_TYPED_COERCE = {
   'new.Int8Array': 'i8', 'new.Uint8Array': 'u8',
 }
 
-export const maxScalarTypedArrayLen = () => ctx.transform.optimize?.scalarTypedArrayLen ?? 32
+// Default 64 covers the 8×8 block kernels (DCT/JPEG-shaped). Measured at 64
+// elements: scalarized form is ~2.2× SMALLER (stores fold away; local refs
+// out-LEB the memory ops they replace) and 2.5× faster than the memory form —
+// there is no LEB128 cliff in practice.
+export const maxScalarTypedArrayLen = () => ctx.transform.optimize?.scalarTypedArrayLen ?? 64
 
 /** Recognize `new TypedArrayCtor(N)` with `N` a static small integer.
  *  Returns `{len, coerce}` or null. */

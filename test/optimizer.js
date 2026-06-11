@@ -862,9 +862,9 @@ test('sourceInline: does NOT inline nested typed-array kernel unless all typed a
       }
     }
     const runKernel = () => {
-      const x = new Float64Array(64)
+      const x = new Float64Array(80)
       const state = new Float64Array(4)
-      const out = new Float64Array(64)
+      const out = new Float64Array(80)
       x[0] = 2
       state[0] = 1
       cascade(x, state, out, 4)
