@@ -156,3 +156,16 @@ test:wasm` is the triage switch (4 failures to drive to zero).
 - Self-host options (uniform (source, strict, optJSON) triple + setupSelf/lower
   DRY) verified: kernel compiles at any level/alias/per-pass object; L2/L3/'size'
   probes correct on the repro.
+
+## Kernel-L2 ratchet status (2026-06-11, post three fixes)
+Landed root-cause fixes: (1) dse index-shift [latent native, 4c03b12],
+(2) fold Function.length arity [kernel-only, 4c03b12], (3) `.length=`
+auto-box protocol split [NATIVE cross-module corruption, 1836a3b — repro:
+importer resize between owner pushes read garbage; pinned in test/imports.js].
+Ratchet remaining: `JZ_TEST_OPTIMIZE=2 node test/index.js types optimizer
+strings closures array-methods` → 99 failures, distinct roots sampled:
+`?.()` null short-circuit, slot-types NUMBER/STRING on .prop AST, arenaRewind
+persist-on-return. Each is an in-kernel JS-semantics deviation biting the
+compiler's own code — same hunt protocol as the three landed: minimal native
+probe of the construct → kernel-vs-native WAT diff → root-cause → pin.
+Default (optimize:false) leg green; wat/warnings legs green at L2.
