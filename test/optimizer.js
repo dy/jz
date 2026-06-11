@@ -1867,3 +1867,61 @@ test('for-bound snapshot: a mutating call in the body still re-reads the bound',
   }`
   is(run(src).main(), 3)
 })
+
+// === narrowI32: general int-accumulator narrowing (ir.js toI32 ring algebra) ===
+// ToInt32 is reduction mod 2^32; {+,−,×} are ring ops under it, so exact-int f64
+// trees compute in i32 with no trunc/Infinity guard. `/`/`%` narrow with const
+// divisors (`/` only at the ToInt32 root; `%` peels faithful converts at emit).
+
+test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
+  for (const stmt of [
+    's = (s + ((a[i] / 4) | 0)) | 0',
+    's = (s + (a[i] % 10)) | 0',
+    's = (s + a[i] * 3) | 0',
+  ]) {
+    const src = `export let f = (p, n) => {
+      let a = new Int32Array(p)
+      let s = 0
+      for (let i = 0; i < n; i++) ${stmt}
+      return s
+    }`
+    const wat = jz.compile(src, { wat: true, optimize: 3 })
+    const fi = wat.indexOf('(func $f')
+    const body = wat.slice(fi, wat.indexOf('\n  (func', fi + 5))
+    const loop = body.slice(body.lastIndexOf('(loop'))
+    ok(!/f64\.(add|sub|mul|div|trunc)/.test(loop.slice(0, loop.indexOf('(br '))),
+      `no f64 round-trip in loop for: ${stmt}`)
+  }
+})
+
+test('narrowI32: differential vs JS across wrap/sign edges', () => {
+  const exprs = [
+    ['(x * -1000000) | 0',           x => (x * -1000000) | 0],
+    ['(x / -1) | 0',                 x => (x / -1) | 0],          // INT_MIN/−1: no trap, wraps
+    ['(x % -7) | 0',                 x => (x % -7) | 0],
+    ['(x * 3 + x * 5 - 9) | 0',      x => (x * 3 + x * 5 - 9) | 0],
+    ['((x % 10) + (x / 2 | 0)) | 0', x => ((x % 10) + (x / 2 | 0)) | 0],
+    ['(-x) | 0',                     x => (-x) | 0],
+  ]
+  const vals = [0, 1, -1, 2147483647, -2147483648, 1234567890, -1234567891]
+  for (const [e, ref] of exprs) {
+    const src = `export let f = (p) => { let a = new Int32Array(p); return ${e.replace(/x/g, 'a[0]')} }`
+    const { f } = run(src)
+    for (const v of vals) is(f(new Int32Array([v])), ref(v | 0), `${e} at x=${v}`)
+  }
+})
+
+test('narrowI32: f64 edges (NaN/±Inf/fraction) keep exact ToInt32 semantics', () => {
+  const exprs = [
+    ['(x + 5) | 0',   x => (x + 5) | 0],
+    ['(x / 4) | 0',   x => (x / 4) | 0],
+    ['(x % 10) | 0',  x => (x % 10) | 0],
+    ['(x + 0.5) | 0', x => (x + 0.5) | 0],
+  ]
+  // |x| ≥ 2^63 excluded: toI32's documented saturation boundary (asm.js-style).
+  const vals = [0.5, -3.7, NaN, Infinity, -Infinity, 2**31, 2**52, 42]
+  for (const [e, ref] of exprs) {
+    const { f } = run(`export let f = (x) => ${e}`)
+    for (const v of vals) is(f(v), ref(v), `${e} at x=${v}`)
+  }
+})
