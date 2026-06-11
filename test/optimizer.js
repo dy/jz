@@ -1770,3 +1770,60 @@ test('narrowLoopBound: counter that starts negative is NOT narrowed (NaN soundne
   const { main } = run(src)
   for (const n of [NaN, -1, 0, 2.5, 3]) is(main(n), js(n), `n=${n}`)
 })
+
+// === splitCharScan (charCodeAt iteration-range splitting) ===
+// `for (i = 0; i < N; i++) … s.charCodeAt(i) …` with an arbitrary bound paid
+// the OOB NaN arm per char (f64 carrier + f64 classifier compares). The split
+// at Math.min(N, s.length) lets the bound proof fire in the main loop.
+
+test('splitCharScan: main loop narrows the char carrier to i32', () => {
+  const wat = jz.compile(`
+    export let count = (s, n) => {
+      let hits = 0
+      for (let i = 0; i < n; i++) {
+        const c = s.charCodeAt(i)
+        if (c >= 48 && c <= 57) hits++
+      }
+      return hits
+    }
+  `, { wat: true, optimize: { watr: false } })
+  // two loops (main + OOB tail), and the bound snap goes through math.min
+  ok((wat.match(/\(loop /g) || []).length >= 2, 'loop split into main + tail')
+  ok(/f64\.min|call \$math\.min/.test(wat), 'main bound is min(N, s.length)')
+})
+
+test('splitCharScan: integral / fractional / NaN / negative bounds match JS', () => {
+  const src = `export let scan = (s, n) => {
+    let h = 0
+    for (let i = 0; i < n; i++) {
+      const c = s.charCodeAt(i)
+      h = (h * 31 + (c >= 65 ? 1 : c >= 48 ? 2 : 3)) | 0
+    }
+    return h
+  }`
+  const js = (s, n) => {
+    let h = 0
+    for (let i = 0; i < n; i++) {
+      const c = s.charCodeAt(i)
+      h = (h * 31 + (c >= 65 ? 1 : c >= 48 ? 2 : 3)) | 0
+    }
+    return h
+  }
+  const { scan } = run(src)
+  const s = 'a1B2c3'
+  // OOB region (n > length) exercises the tail's NaN classification (c≥… false → 3)
+  for (const n of [0, 3, 6, 9, 4.5, 7.5, NaN, -1]) is(scan(s, n), js(s, n), `n=${n}`)
+})
+
+test('splitCharScan: break in body disables the split (a main-loop break must not fall into the tail)', () => {
+  const src = `export let find = (s, n) => {
+    let at = -1
+    for (let i = 0; i < n; i++) {
+      if (s.charCodeAt(i) === 66) { at = i; break }
+    }
+    return at
+  }`
+  const js = (s, n) => { let at = -1; for (let i = 0; i < n; i++) if (s.charCodeAt(i) === 66) { at = i; break } return at }
+  const { find } = run(src)
+  for (const n of [0, 2, 6, 10]) is(find('aaBaaa', n), js('aaBaaa', n), `n=${n}`)
+})
