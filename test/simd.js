@@ -744,6 +744,69 @@ test('vectorize: reduction tail correctness when N is not a multiple of LANES', 
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
+// ---- widening (extadd_pairwise) byte/short sums ----------------------------
+// `s += u8[i]` has an i32 accumulator over i8/i16 lanes — lifted via the
+// extadd_pairwise chain into i32x4 partials. Value-exact mod 2^32 (wrap-add
+// is associative+commutative; pairwise intermediates can't overflow).
+
+const widenSum = (ctor, fill, N = 1003, seed = 0) => `
+    export const main = () => {
+      const N = ${N}
+      const a = new ${ctor}(N)
+      for (let i = 0; i < N; i++) a[i] = ${fill}
+      let s = ${seed} | 0
+      for (let i = 0; i < N; i++) s = (s + a[i]) | 0
+      return s | 0
+    }
+  `
+
+test('vectorize: u8 sum reduction widens via extadd_pairwise chain', () => {
+  const src = widenSum('Uint8Array', '(i * 37) & 0xff')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/i16x8\.extadd_pairwise_i8x16_u/.test(w) && /i32x4\.extadd_pairwise_i16x8_u/.test(w),
+    'expected unsigned extadd chain i8x16 → i16x8 → i32x4')
+})
+
+test('vectorize: s8 sum reduction widens sign-extended', () => {
+  const src = widenSum('Int8Array', '(i * 37) - 128')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/i16x8\.extadd_pairwise_i8x16_s/.test(w) && /i32x4\.extadd_pairwise_i16x8_s/.test(w),
+    'expected signed extadd chain')
+})
+
+test('vectorize: u16 sum reduction widens with one extadd step (wraps exactly)', () => {
+  // Seed near INT32_MAX so the running sum wraps — vectorized partials must
+  // match the scalar wrap bit-for-bit (mod 2^32 exactness).
+  const src = widenSum('Uint16Array', '(i * 2654) & 0xffff', 1003, 2147480000)
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/i32x4\.extadd_pairwise_i16x8_u/.test(wat(src, SIMD_OPT)), 'expected one unsigned i16x8→i32x4 extadd')
+})
+
+test('vectorize: s16 sum reduction widens sign-extended', () => {
+  const src = widenSum('Int16Array', '(i * 997) - 32768')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/i32x4\.extadd_pairwise_i16x8_s/.test(wat(src, SIMD_OPT)), 'expected signed i16x8→i32x4 extadd')
+})
+
+test('vectorize: narrow sum with lane arithmetic must NOT widen (i8 wrap ≠ i32 widen-then-add)', () => {
+  // `(a[i] ^ 3)` on i8 lanes would wrap at lane width before widening, while
+  // the scalar code zero-extends FIRST — only the bare load is liftable.
+  const src = `
+    export const main = () => {
+      const N = 256
+      const a = new Uint8Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 37) & 0xff
+      let s = 0
+      for (let i = 0; i < N; i++) s = (s + (a[i] ^ 3)) | 0
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(!/extadd_pairwise/.test(wat(src, SIMD_OPT)), 'expected no extadd lift on lane arithmetic')
+})
+
 test('vectorize: multi-stmt reduction body must NOT lift', () => {
   const src = `
     export const main = () => {
