@@ -90,6 +90,8 @@ main { flex: 1; display: flex; min-height: 0; }
 #hl .n { font-weight: 600; color: #3a3a3a; }      /* number */
 #hl .s { color: var(--soft); }                    /* string */
 #hl .c { color: var(--mid); }                     /* comment */
+/* the page's only hue: semantic red, compile-error position */
+#hl .e { text-decoration: underline wavy #c00 2px; text-underline-offset: 3px; }
 .right { border-left: 1px solid var(--ink); }
 
 /* tabs */
@@ -217,9 +219,28 @@ const highlight = (src) => {
     html += `<span class="${TOKEN_CLS[i]}">${esc(m[0])}</span>`
     last = TOKEN.lastIndex
   }
-  return html + esc(src.slice(last)) + '\n'
+  return html + esc(src.slice(last))
 }
-const paint = () => { hlEl.innerHTML = highlight(editor.value) }
+// `errAt` ({line, col}, 1-based) wraps the token at the error position in a
+// red-squiggle span. Slicing the source in three keeps character offsets in
+// lockstep with the textarea, so the overlay never drifts.
+const paint = (errAt = null) => {
+  const src = editor.value
+  if (!errAt) { hlEl.innerHTML = highlight(src) + '\n'; return }
+  const lines = src.split('\n')
+  const ln = Math.min(Math.max(errAt.line, 1), lines.length)
+  let off = 0
+  for (let i = 0; i < ln - 1; i++) off += lines[i].length + 1
+  off += Math.min(Math.max(errAt.col - 1, 0), lines[ln - 1].length)
+  let tok = src.slice(off).match(/^\S+/)?.[0]
+  if (!tok) {            // at line end / EOF — underline the previous char
+    if (off > 0) { off -= 1; tok = src[off] === '\n' ? '' : src[off] }
+    if (!tok) { hlEl.innerHTML = highlight(src) + '\n'; return }
+  }
+  hlEl.innerHTML = highlight(src.slice(0, off)) +
+    `<span class="e">${highlight(tok)}</span>` +
+    highlight(src.slice(off + tok.length)) + '\n'
+}
 const syncScroll = () => { hlEl.scrollTop = editor.scrollTop; hlEl.scrollLeft = editor.scrollLeft }
 editor.addEventListener('scroll', syncScroll)
 
@@ -369,10 +390,14 @@ const build = () => {
       } catch {}
     }, 0)
     setHash(src)
+    paint()                                  // clear a previous error squiggle
   } catch (e) {
     state.ok = false
+    const msg = String(e.message || e)
     stat.innerHTML = `<span class="err">✗ ${esc(firstLine(e))}</span>`
-    stat.title = String(e.message || e)
+    stat.title = msg
+    const at = msg.match(/\bat (\d+):(\d+)/)
+    if (at) paint({ line: +at[1], col: +at[2] })
   }
 }
 
