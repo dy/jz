@@ -401,6 +401,22 @@ const REDUCE_OPS = {
   },
 }
 
+// Widening byte/short sums: an i32 accumulator fed by ONE bare narrow load
+// (`s += u8[i]`). The lane data is i8/i16 but the accumulator is i32, so the
+// plain lane-add path can't apply — instead each 16-byte vector collapses via
+// extadd_pairwise into i32x4 partial sums. VALUE-EXACT mod 2³² (unlike float
+// reductions): pairwise intermediates can't overflow (2×255 < 2¹⁶, 2×(−128)
+// fits i16; the i16→i32 step extends before adding), and wrap-add is
+// associative+commutative. Restricted to a BARE load: arithmetic on the
+// narrow lanes before widening would wrap at lane width where the scalar
+// code widens first.
+const WIDEN_LOADS = {
+  'i32.load8_u':  { laneType: 'i8',  steps: ['i16x8.extadd_pairwise_i8x16_u', 'i32x4.extadd_pairwise_i16x8_u'] },
+  'i32.load8_s':  { laneType: 'i8',  steps: ['i16x8.extadd_pairwise_i8x16_s', 'i32x4.extadd_pairwise_i16x8_s'] },
+  'i32.load16_u': { laneType: 'i16', steps: ['i32x4.extadd_pairwise_i16x8_u'] },
+  'i32.load16_s': { laneType: 'i16', steps: ['i32x4.extadd_pairwise_i16x8_s'] },
+}
+
 // op-name → REDUCE entry across all lane types (the op-name itself encodes
 // the lane type prefix, e.g. `i32.add` ⇒ i32 lanes).
 const REDUCE_OP_LOOKUP = (() => {
@@ -976,8 +992,12 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   } else return null
 
   // Accumulator's declared local type must match the lane element type.
+  // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
+  // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
   const accType = fnLocals.get(accName)
-  if (accType !== reduceEntry.laneType) return null
+  const widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
+    && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
+  if (!widen && accType !== reduceEntry.laneType) return null
 
   // Bound classification (same as tryVectorize).
   let bound = exitInfo.bound
@@ -987,7 +1007,7 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
 
   // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of
   // accName forbidden (the accumulator only appears in the outer wrapper).
-  const laneType = reduceEntry.laneType
+  const laneType = widen ? widen.laneType : reduceEntry.laneType
   const stride = LANE_INFO[laneType].stride
   const addrLocals = new Map()
   const offsetTees = new Map()
@@ -1051,13 +1071,17 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const lanes = info.lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
 
-  const initAcc = ['local.set', simdAccName, [info.splat, reduceEntry.constNode ?? reduceEntry.identity]]
+  // Widening sum: the ACCUMULATOR vector is i32x4 regardless of the (narrow)
+  // lane type; each iteration's 16-byte load collapses via extadd_pairwise.
+  const accSplat = widen ? 'i32x4.splat' : info.splat
+  const accumOperand = widen ? widen.steps.reduce((e, s) => [s, e], liftedExpr) : liftedExpr
+  const initAcc = ['local.set', simdAccName, [accSplat, reduceEntry.constNode ?? reduceEntry.identity]]
   const simdBlock = ['block', simdBrkLabel,
     ['loop', simdLoopLabel,
       ['br_if', simdBrkLabel,
         ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
       ['local.set', simdAccName,
-        [reduceEntry.simd, ['local.get', simdAccName], liftedExpr]],
+        [reduceEntry.simd, ['local.get', simdAccName], accumOperand]],
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
       ['br', simdLoopLabel]
     ]
@@ -1080,8 +1104,10 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
     mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
   } else {
     // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
+    // Widening sum folds the 4 i32x4 PARTIALS, not the (narrow) data lanes.
+    const foldLanes = widen ? 4 : lanes
     let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
-    for (let k = 1; k < lanes; k++) {
+    for (let k = 1; k < foldLanes; k++) {
       horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
     }
     // Merge the SIMD result into the live accumulator. For canon (min/max) the
