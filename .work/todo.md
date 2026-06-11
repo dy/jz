@@ -13,8 +13,8 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
   Vibecoder + audio + live-coding proof in one. Needs: syntax highlight, waveform
-  renderer, recipe-book/DB, samples collection, Chladni renderer.
-- [ ] **Playground site** = gallery + floatbeat + WAT-showing REPL; every item a shareable
+  renderer, recipe-book/DB, samples collection, 1st class waveform, spectrogram etc renderers, artistic renderer (Chladni etc). Should be very easy way to share - likely compressed code in URL. Have to persist samples somehow (github gist like d3 blocks? Anything else?)
+- [ ] **Playground site** = WAT-showing REPL; every item a shareable
   permalink. The demo *is* the marketing. Greenfield (no playground/ yet).
 - [ ] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
   cross-AI optimizer passes; **release 0.6.0**.

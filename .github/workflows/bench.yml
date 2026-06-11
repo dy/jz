@@ -12,6 +12,8 @@ on:
       - '.work/**'
       - 'LICENSE'
       - 'CONTRIBUTING.md'
+      - 'bench/results.json'
+      - 'bench/web/**'
   pull_request:
     paths-ignore:
       - '**/*.md'
@@ -20,6 +22,8 @@ on:
       - '.work/**'
       - 'LICENSE'
       - 'CONTRIBUTING.md'
+      - 'bench/results.json'
+      - 'bench/web/**'
 jobs:
   bench:
     runs-on: ubuntu-latest
@@ -40,3 +44,18 @@ jobs:
           porf --version || true
           wasm-opt --version || true
       - run: npm run test:bench
+      # Refresh the bench-page dataset: bench/index.html renders results.json and
+      # instantiates bench/web/*.wasm for its live in-browser runner. Push-to-main
+      # only; the paths-ignore above keeps the commit from re-triggering this
+      # workflow. clang/rustc/go are preinstalled on ubuntu runners, so native
+      # reference rows come from the same consistent machine as the JS/wasm rows.
+      - name: publish bench snapshot
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          node bench/bench.mjs --targets=nat,rust,go,v8,as,porf,jz,wat --json || exit 1
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git pull --rebase origin main || true
+          git add bench/results.json bench/web
+          git diff --cached --quiet || git commit -m 'bench: refresh results.json + web artifacts [skip ci]'
+          git push

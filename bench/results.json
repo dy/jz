@@ -1,0 +1,852 @@
+{
+ "meta": {
+  "date": "2026-06-11",
+  "commit": "b3290d5",
+  "host": {
+   "platform": "darwin",
+   "arch": "arm64",
+   "cpu": "Apple M4 Max"
+  },
+  "versions": {
+   "jz": "0.5.1",
+   "node": "v25.9.0",
+   "asc": "Version 0.27.1",
+   "porffor": "0.61.13",
+   "bun": "1.3.14",
+   "deno": "deno 2.6.7 (stable, release, aarch64-apple-darwin)",
+   "clang": "Homebrew clang version 19.1.6"
+  },
+  "invocations": {
+   "v8": "node run-v8.mjs <case>.js",
+   "deno": "deno run --allow-read run-v8.mjs <case>.js",
+   "bun": "bun run-v8.mjs <case>.js",
+   "rust": "rustc -C opt-level=3 -C target-cpu=native <case>.rs",
+   "go": "go build -ldflags=\"-s -w\" <case>.go",
+   "zig": "zig build-exe <case>.zig -O ReleaseFast",
+   "numpy": "python3 <case>.npy.py",
+   "qjs": "qjs --std <case>-flat.js",
+   "as": "asc <case>.as.ts -O3 --runtime stub --noAssert",
+   "jz": "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
+   "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)",
+   "jz-wasmtime": "jz --host wasi <case>.js → wasmtime --invoke main",
+   "porf": "porf --allocator-chunks=128 run <case>-flat.js",
+   "python": "python3 <case>.py"
+  }
+ },
+ "cases": {
+  "jessie": {
+   "name": "jessie",
+   "samples": 26688,
+   "stages": 1,
+   "runs": 21,
+   "ref": 2418067300,
+   "targets": {
+    "v8": {
+     "medianUs": 1653,
+     "bytes": 2700,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 1567,
+     "bytes": 2700,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1214,
+     "bytes": 2700,
+     "parity": "ok"
+    }
+   }
+  },
+  "biquad": {
+   "name": "biquad filter cascade",
+   "samples": 480000,
+   "stages": 8,
+   "runs": 21,
+   "ref": 422839881,
+   "targets": {
+    "rust": {
+     "medianUs": 3790,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 6380,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 3621,
+     "bytes": 396488,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 2227255,
+     "bytes": 2592,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 8802,
+     "bytes": 3284,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 9245,
+     "bytes": 3284,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 5323,
+     "bytes": 3284,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 802875,
+     "bytes": 4531,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6390,
+     "bytes": 1962,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 4597,
+     "bytes": 3662,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 4682,
+     "bytes": 767,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 4592,
+     "bytes": 8215,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 96.5
+  },
+  "mat4": {
+   "name": "mat4 multiply",
+   "samples": 3200000,
+   "stages": 4,
+   "runs": 21,
+   "ref": 2929747182,
+   "targets": {
+    "rust": {
+     "medianUs": 1282,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 8437,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1960,
+     "bytes": 396488,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 281790,
+     "bytes": 1606,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 8527,
+     "bytes": 1198,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7480,
+     "bytes": 1198,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 2489,
+     "bytes": 1198,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 748697,
+     "bytes": 2445,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6652,
+     "bytes": 1604,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 63745,
+     "bytes": 2445,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 1519,
+     "bytes": 3191,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 5818,
+     "bytes": 414,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 1606,
+     "bytes": 8085,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 77.1
+  },
+  "poly": {
+   "name": "polymorphic reduce",
+   "samples": 1310720,
+   "stages": 2,
+   "runs": 21,
+   "ref": 3026383685,
+   "targets": {
+    "rust": {
+     "medianUs": 360,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 558,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 569,
+     "bytes": 396376,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 446,
+     "bytes": 1237,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 1666,
+     "bytes": 1014,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 1656,
+     "bytes": 1014,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 940,
+     "bytes": 1014,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 45297,
+     "bytes": 2269,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 812,
+     "bytes": 1334,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 264,
+     "bytes": 1320,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 581,
+     "bytes": 359,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 270,
+     "bytes": 6138,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 59.4
+  },
+  "bitwise": {
+   "name": "bitwise mix",
+   "samples": 8388608,
+   "stages": 3,
+   "runs": 21,
+   "ref": 3216842766,
+   "targets": {
+    "rust": {
+     "medianUs": 933,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 3730,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3005,
+     "bytes": 396392,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 10729,
+     "bytes": 1620,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 3784,
+     "bytes": 1005,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 3361,
+     "bytes": 1005,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 2927,
+     "bytes": 1005,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 792891,
+     "bytes": 2252,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8765,
+     "bytes": 1575,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 992,
+     "bytes": 1249,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 3527,
+     "bytes": 355,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 1067,
+     "bytes": 6053,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 52.4
+  },
+  "tokenizer": {
+   "name": "tokenizer scan",
+   "samples": 40448,
+   "stages": 5,
+   "runs": 21,
+   "ref": 2031286465,
+   "targets": {
+    "rust": {
+     "medianUs": 85,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 51,
+     "bytes": 1674322,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 85,
+     "bytes": 396448,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 3676,
+     "bytes": 2024,
+     "parity": "ok"
+    },
+    "python": {
+     "medianUs": 4375,
+     "bytes": 2112,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 133,
+     "bytes": 1997,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 241,
+     "bytes": 1997,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 120,
+     "bytes": 1997,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 4503,
+     "bytes": 3252,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 59,
+     "bytes": 1593,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 295,
+     "bytes": 3252,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 76,
+     "bytes": 2319,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 58,
+     "bytes": 344,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 73,
+     "bytes": 6960,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 67.3
+  },
+  "callback": {
+   "name": "callback map",
+   "samples": 262144,
+   "stages": 2,
+   "runs": 21,
+   "ref": 893685701,
+   "targets": {
+    "rust": {
+     "medianUs": 285,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 335,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 328,
+     "bytes": 396400,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 33011,
+     "bytes": 1095,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 616,
+     "bytes": 1315,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 638,
+     "bytes": 1315,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 709,
+     "bytes": 1315,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 24162,
+     "bytes": 2570,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 794,
+     "bytes": 1906,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 267,
+     "bytes": 1405,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 349,
+     "bytes": 266,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 264,
+     "bytes": 6054,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 53.6
+  },
+  "aos": {
+   "name": "AoS to SoA",
+   "samples": 1048576,
+   "stages": 3,
+   "runs": 21,
+   "ref": 2813671365,
+   "targets": {
+    "rust": {
+     "medianUs": 861,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 635,
+     "bytes": 1674370,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 650,
+     "bytes": 396376,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 1810,
+     "bytes": 1448,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 1255,
+     "bytes": 1089,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 1259,
+     "bytes": 1089,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1602,
+     "bytes": 1089,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 114087,
+     "bytes": 2336,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1369,
+     "bytes": 2202,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 694,
+     "bytes": 1795,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 766,
+     "bytes": 481,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 819,
+     "bytes": 6437,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 62.2
+  },
+  "mandelbrot": {
+   "name": "mandelbrot escape",
+   "samples": 65536,
+   "stages": 256,
+   "runs": 21,
+   "ref": 3520419621,
+   "targets": {
+    "rust": {
+     "medianUs": 8779,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 9003,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 8861,
+     "bytes": 396400,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 9676,
+     "bytes": 1841,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 9731,
+     "bytes": 1841,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 8904,
+     "bytes": 1841,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 290467,
+     "bytes": 3088,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8790,
+     "bytes": 1325,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 9761,
+     "bytes": 3088,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 8762,
+     "bytes": 1130,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 8874,
+     "bytes": 5939,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 78.7
+  },
+  "json": {
+   "name": "JSON parse+walk (single literal source)",
+   "samples": 512,
+   "stages": 4,
+   "runs": 21,
+   "ref": 2797819845,
+   "targets": {
+    "rust": {
+     "medianUs": 319,
+     "bytes": 407528,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 828,
+     "bytes": 2060786,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 463,
+     "bytes": 456056,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 876,
+     "bytes": 1202,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 267,
+     "bytes": 1226,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 206,
+     "bytes": 1226,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 162,
+     "bytes": 1226,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 1588,
+     "bytes": 2481,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 216,
+     "bytes": 10043,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 98.3
+  },
+  "sort": {
+   "name": "in-place heapsort",
+   "samples": 196608,
+   "stages": 2,
+   "runs": 21,
+   "ref": 1238395589,
+   "targets": {
+    "rust": {
+     "medianUs": 6757,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 7123,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 6579,
+     "bytes": 396392,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 3692,
+     "bytes": 1373,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 7203,
+     "bytes": 1602,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7318,
+     "bytes": 1602,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 6488,
+     "bytes": 1602,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 243480,
+     "bytes": 2849,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 7379,
+     "bytes": 1982,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 4931,
+     "bytes": 1758,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 7913,
+     "bytes": 6433,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 70
+  },
+  "crc32": {
+   "name": "CRC-32 table hash",
+   "samples": 3604480,
+   "stages": 1,
+   "runs": 21,
+   "ref": 304463882,
+   "targets": {
+    "rust": {
+     "medianUs": 6759,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 6701,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 6881,
+     "bytes": 396392,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 175,
+     "bytes": 1240,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 9543,
+     "bytes": 1873,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 9494,
+     "bytes": 1873,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 6676,
+     "bytes": 1873,
+     "parity": "ok"
+    },
+    "qjs": {
+     "medianUs": 109153,
+     "bytes": 3128,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8708,
+     "bytes": 1473,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 58402,
+     "bytes": 3128,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 8652,
+     "bytes": 1563,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 8576,
+     "bytes": 6356,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 68.3
+  },
+  "watr": {
+   "name": "watr WAT compiler",
+   "samples": 24,
+   "stages": 3,
+   "runs": 21,
+   "ref": 3419154861,
+   "targets": {
+    "v8": {
+     "medianUs": 908,
+     "bytes": 2645,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 993,
+     "bytes": 2645,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 985,
+     "bytes": 2645,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 1064,
+     "bytes": 205210,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 2715.1
+  }
+ }
+}
