@@ -450,10 +450,23 @@ function analyzeFuncForEmit(func, programFacts) {
     ? cseSafeLoadBases(body, ctx.func.locals, ctx.func.localReps)
     : new Set()
 
+  // Closure-capture narrowing: a boxed var whose every defining RHS — owner
+  // body AND nested arrows, the narrower's intCertain contract — is integer-
+  // valued keeps its CELL in i32, so readVar/writeVar skip the f64↔i32
+  // round-trip per access. Params are excluded: their cell is seeded from the
+  // raw f64 param value, which would desync an i32-read cell. Same asm.js-style
+  // range contract as plain intCertain locals.
+  const cellTypes = new Set()
+  for (const name of ctx.func.boxed.keys()) {
+    if (sig.params.some(p => p.name === name)) continue
+    if (ctx.func.localReps?.get(name)?.intCertain === true) cellTypes.add(name)
+  }
+
   return {
     block,
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
+    cellTypes,
     flatObjects: new Map(ctx.func.flatObjects),
     sliceViews: new Set(ctx.func.sliceViews),
     cseLoadBases,
@@ -632,6 +645,7 @@ function emitFunc(func, funcFacts, programFacts) {
   const block = funcFacts.block
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
+  ctx.func.cellTypes = new Set(funcFacts.cellTypes)
   ctx.func.flatObjects = new Map(funcFacts.flatObjects)
   ctx.func.sliceViews = new Set(funcFacts.sliceViews)
   ctx.func.localReps = cloneRepMap(funcFacts.localReps)
@@ -915,6 +929,9 @@ function emitClosureBody(cb) {
   }
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+  // i32-narrowed cells: the owner decided the cell width (funcFacts.cellTypes);
+  // every body sharing the cell must read/write it at that width.
+  ctx.func.cellTypes = new Set(cb.cellI32 || [])
   const parentBoxedCaptures = new Set(cb.boxed || [])
   ctx.func.preboxed = new Set()
   // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a

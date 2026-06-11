@@ -164,10 +164,14 @@ export default (ctx) => {
     // All closures use uniform convention: (env: f64, args_array: f64) → f64
     // The body unpacks individual params from the args array
     const boxedCaptures = envCaptures.filter(c => ctx.func.boxed?.has(c))
+    // i32-narrowed cells travel with the capture: the closure body must access
+    // the shared cell at the same width the owner does (see funcFacts.cellTypes).
+    const cellI32Captures = boxedCaptures.filter(c => ctx.func.cellTypes?.has(c))
     const bodyFn = { name: fnName, params, body, captures: envCaptures, arity: 1,
       ...(restParam && { rest: restParam }),
       ...(defaults && { defaults }),
       ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }),
+      ...(cellI32Captures.length && { cellI32: new Set(cellI32Captures) }),
       ...(captureIntConsts.size && { intConsts: captureIntConsts }),
       ...(captureIntCertain.size && { intCertain: captureIntCertain }),
       ...(captureValTypes.size && { valTypes: captureValTypes }),

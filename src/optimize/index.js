@@ -541,7 +541,7 @@ const CELL_PREFIX = '$' + T + 'cell_'
 // straight-line pattern match. So a subtree is hoisted only if it contains one.
 const HARD_OPS = new Set([
   'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
-  'select', 'f64.load', 'call',
+  'select', 'f64.load', 'i32.load', 'call',
 ])
 const hasHardOp = (n) => Array.isArray(n) && (HARD_OPS.has(n[0]) || n.some((c, i) => i > 0 && hasHardOp(c)))
 
@@ -655,7 +655,7 @@ export function hoistInvariantLoop(fn) {
       if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
-      if (op === 'f64.store' && node.length >= 3) {
+      if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
         const a = node[1]
         if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
       }
@@ -721,7 +721,7 @@ export function hoistInvariantLoop(fn) {
         const inner = bound.has(node[1]) ? new Set([...bound].filter(b => b !== node[1])) : bound
         return pureGiven(node[2], inner)
       }
-      if (op === 'f64.load' && node.length === 2) {
+      if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
         const a = node[1]
         return Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
           && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))

@@ -220,6 +220,7 @@ export function reset(proto, globals, bridge) {
     localReps: null,
     refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true} inside a type-guarded branch
     boxed: new Map(),
+    cellTypes: new Set(), // boxed vars whose CELL stores raw i32 (closure-capture narrowing)
     stack: [],
     uniq: 0,
     inTry: false,
