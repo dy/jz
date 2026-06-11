@@ -97,6 +97,66 @@ export const asPtrOffset = (n, ptrKind) => {
 /** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : t === 'v128' ? n : asF64(n)
 
+/**
+ * Narrow an f64 arithmetic tree under ToInt32 — the general int-accumulator path.
+ *
+ * ToInt32 is reduction mod 2^32, and {+, −, ×} form a RING under that modulus:
+ * operands may wrap to i32 eagerly and the final result still equals ToInt32 of
+ * the JS value — PROVIDED the original f64 computation was exact (no rounding).
+ * Exactness is tracked structurally: every interior node's worst-case magnitude
+ * (`maxAbs`, real un-wrapped value) must stay below 2^53. Leaves are peeled
+ * `f64.convert_i32_*` wrappers (≤2^31/2^32) and integer constants.
+ *
+ * `/` is NOT a ring op (fractions): it narrows only at the ToInt32 ROOT, with a
+ * FAITHFUL numerator (i32 value == JS value — wrapped sums excluded) and a
+ * constant integer divisor. i32.div_s truncates toward zero exactly like
+ * ToInt32 of the f64 quotient (error < ulp/2 < distance-to-integer for any i32
+ * numerator); c ∈ {0,−1,1} are diverted (trap / INT_MIN trap / identity).
+ *
+ * Returns {node (i32-typed), maxAbs, faithful} or null — callers use `.node`.
+ */
+const narrowI32 = (x, isRoot) => {
+  if (!Array.isArray(x)) return null
+  if (x.type === 'i32') return { node: x, maxAbs: 2 ** 31, faithful: true }
+  const op = x[0]
+  if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
+    // Peel — same as toI32's peephole. _u values ∈ [0, 2^32): the re-tag IS the
+    // wrap (ring-compatible), but the i32 view differs from the JS value above
+    // 2^31, so _u is not faithful.
+    return {
+      node: Array.isArray(x[1]) ? typed(x[1], 'i32') : x[1],
+      maxAbs: op === 'f64.convert_i32_s' ? 2 ** 31 : 2 ** 32,
+      faithful: op === 'f64.convert_i32_s',
+    }
+  if (op === 'f64.const' && typeof x[1] === 'number' && Number.isInteger(x[1]) && Math.abs(x[1]) < 2 ** 52)
+    return { node: typed(['i32.const', x[1] | 0], 'i32'), maxAbs: Math.abs(x[1]), faithful: Math.abs(x[1]) < 2 ** 31 }
+  if (op === 'f64.add' || op === 'f64.sub' || op === 'f64.mul') {
+    const a = narrowI32(x[1]), b = narrowI32(x[2])
+    if (!a || !b) return null
+    const maxAbs = op === 'f64.mul' ? a.maxAbs * b.maxAbs : a.maxAbs + b.maxAbs
+    if (maxAbs >= 2 ** 53) return null
+    const iop = op === 'f64.add' ? 'i32.add' : op === 'f64.sub' ? 'i32.sub' : 'i32.mul'
+    return { node: typed([iop, a.node, b.node], 'i32'), maxAbs, faithful: false }
+  }
+  if (op === 'f64.neg') {
+    const a = narrowI32(x[1])
+    if (!a) return null
+    return { node: typed(['i32.sub', ['i32.const', 0], a.node], 'i32'), maxAbs: a.maxAbs, faithful: false }
+  }
+  if (op === 'f64.div' && isRoot) {
+    const a = narrowI32(x[1])
+    if (!a || !a.faithful) return null
+    const c = Array.isArray(x[2]) && x[2][0] === 'f64.const' && typeof x[2][1] === 'number' ? x[2][1] : null
+    if (c == null || !Number.isInteger(c) || c === 0 || c === 1 || Math.abs(c) >= 2 ** 31) return null
+    // c = −1 would trap on INT_MIN; 0 − x wraps INT_MIN → INT_MIN, matching ToInt32(2^31).
+    const node = c === -1
+      ? typed(['i32.sub', ['i32.const', 0], a.node], 'i32')
+      : typed(['i32.div_s', a.node, ['i32.const', c]], 'i32')
+    return { node, maxAbs: 2 ** 31, faithful: c !== -1 }
+  }
+  return null
+}
+
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
  *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
@@ -115,6 +175,10 @@ export const toI32 = n => {
     const v = n[1]
     return typed(['i32.const', Number.isFinite(v) ? v | 0 : 0], 'i32')   // JS `|0` is ToInt32
   }
+  // General int-arithmetic narrowing: an exact-int f64 tree of {+,−,×,neg,/C}
+  // computes in i32 (mod-2^32 ring) — no trunc/guard at all.
+  const nw = narrowI32(n, true)
+  if (nw) return nw.node
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   const isLeaf = Array.isArray(n) && n.length <= 2 &&
     (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')

@@ -2449,11 +2449,18 @@ export const emitter = {
     if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
     // i32.rem_s is exact for integer operands AND fast, but it TRAPS on a zero
     // divisor where JS yields NaN. Only take it when the divisor is a literal
-    // (necessarily nonzero — literal 0 is handled above); a runtime i32 divisor
-    // could be 0, so route it to f64rem (exact for in-range integers, NaN for 0).
+    // integer (necessarily nonzero — literal 0 is handled above); a runtime i32
+    // divisor could be 0, so route it to f64rem (exact for in-range integers,
+    // NaN for 0). The dividend may be a bare i32 or a FAITHFUL signed-convert
+    // wrapper (f64.convert_i32_s X — the i32 view equals the JS value): peel it.
     // `.unsigned` operand: `i32.rem_s` reads the uint32 as a negative signed value
     // ((2^32-1)%7 → rem_s(-1,7) = -1, not 3). Widen to f64 — see `+` above.
-    if (isLit(vb) && isI32Num(va) && isI32Num(vb) && !va.unsigned && !vb.unsigned) return typed(['i32.rem_s', va, vb], 'i32')
+    if (isLit(vb) && Number.isInteger(litVal(vb)) && Math.abs(litVal(vb)) < 2 ** 31 && !vb.unsigned) {
+      const pa = isI32Num(va) && !va.unsigned ? va
+        : Array.isArray(va) && va[0] === 'f64.convert_i32_s' && !va.unsigned
+          ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1]) : null
+      if (pa) return typed(['i32.rem_s', pa, ['i32.const', litVal(vb) | 0]], 'i32')
+    }
     // Fast path: positive literal divisor → inline a - trunc(a/b) * b.
     // Exact when |a| < 2^53 × |b| (all practical audio/control-range values).
     // The full __rem handles NaN/±Inf/0 edges exactly; this avoids the call overhead.
