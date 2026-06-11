@@ -190,3 +190,19 @@ tail, emit an in-bounds main loop (char = pure i32, i32 compares, SIMD-able)
 plus an OOB tail loop. Multi-day; benefits tokenizer-class scanners and the
 watr substrate (1.17× trail). Alternative cheaper slice: prove `len <= s.length`
 via dominating guards (flow-types refinement) to drop the OOB check + NaN arm.
+
+## Session 3 (2026-06-10, continued)
+- [x] **interference parity broken** (feb3341) — expression-position inlining:
+  flattenable pure-arith decl prefixes substitute into the return value; exported
+  callers take the leaf-safe subset. distance+sqrt inline into the pixel loop →
+  1.01×, examples 11/11 winners. Three fixtures pinned through-call properties →
+  sourceInline:false (subview case documents OOB convergence onto the
+  documented fast-path 0).
+- [x] **1.2 slice 2 LANDED** (0a876cb + test pin) — splitCharScan iteration-range
+  splitting: min-bound main loop (i32 char carrier, zero f64 compares) + NaN tail.
+  tokenizer 0.10→0.06ms (0.47× V8 — the case AS used to win). Bound proof extends
+  through Math.min in lengthRecv. Off under 'size' + large-source auto-config.
+  watr residual (1.12-1.30× band, abs 1.08ms unchanged) is hash/concat-bound —
+  scan loops are not its bottleneck; next lever there is 1.3 closure captures.
+- Remaining queue: 3.6 emit.js split [S], 3.4 emitClosureBody [L], 3.3 walk
+  extraction [M], 1.3 closure-capture narrowing [M], self-host options (user ask).
