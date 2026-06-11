@@ -474,20 +474,26 @@ const fold = (ast) => {
     const fn = FOLDABLE[node[0]]
     if (!fn) return
 
+    // Arity comes from the NODE — every WAT op is fixed-arity, so node.length
+    // fully determines unary vs binary. NEVER from Function.length: the
+    // self-host kernel's closures don't carry a faithful `.length`, and the
+    // old `fn.length === 1/2` checks silently disabled ALL folding in-kernel
+    // (the L2 self-host divergence — unfolded consts fed the vectorizer
+    // shapes native never produces).
     // Unary
-    if (fn.length === 1 && node.length === 2) {
+    if (node.length === 2) {
       const a = getConst(node[1])
       if (!a) return
       const r = fn(a.value)
-      if (r === null) return
+      if (r === null || r === undefined) return
       return makeConst(resultType(node[0]), r)
     }
     // Binary
-    if (fn.length === 2 && node.length === 3) {
+    if (node.length === 3) {
       const a = getConst(node[1]), b = getConst(node[2])
       if (!a || !b) return
       const r = fn(a.value, b.value)
-      if (r === null) return
+      if (r === null || r === undefined) return
       return makeConst(resultType(node[0]), r)
     }
   })

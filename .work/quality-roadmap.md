@@ -28,10 +28,13 @@ compiler** · **pipeline directness** · **diagnostics/debuggability**.
     auto-config. Bound proof extends through Math.min (lengthRecv).
   - watr residual: scan loops are NOT its bottleneck (abs time unchanged by split);
     it is hash/concat/closure-bound → see 1.3.
-- [ ] **1.3 Closure-capture narrowing** [M] — NEXT SPEED ITEM. Captures always box to
-  NaN-boxed f64 cells; `let c = n|0; () => c++` round-trips i32↔f64 per access.
-  Gate: capture provably single-narrow-type AND not object/string (watr regression
-  risk — watr captures objects/strings; measure watr abs ms before/after).
+- [x] **1.3 Closure-capture cell narrowing** (landed 4938d7f) — intCertain boxed vars
+  (params excluded) keep their CELL in raw i32; readVar/writeVar are the width
+  chokepoints, closure.make ships the decision with the capture (bodyFn.cellI32),
+  LICM cell admission extended to i32 width. Found+fixed the logical-assign
+  handler bypassing writeVar with a direct f64.store. Examples geomean 1.76×;
+  watr best-run 1080→1018 µs (modest as designed — its captures are mostly
+  objects/strings, out of intCertain scope).
 - [ ] 1.4 int-accumulator general path [L] — deferred (owner YAGNI; peephole covers
   the measured shapes).
 - [ ] 1.5 deferred-on-no-workload: extending-add i8/i16 SIMD (trigger: color-space),
@@ -56,22 +59,33 @@ compiler** · **pipeline directness** · **diagnostics/debuggability**.
 ## 3. Minimality / declarativity
 - [x] 3.1 valTypeOf → VT dispatch table (bb6e4f9).
 - [x] 3.2 emitMethodCall strategies 5–12 → TYPED_STRATEGIES record table (56d3258).
-- [~] 3.3 analyzeBody decomposition — slice 1 done (9ff7314: widenLocalTypes
-  extracted; body reads walk → widen → narrowUint32). REMAINING: the walk/processDecl
-  observation machinery (~350 lines) — package observation maps into a record,
-  extract as top-level functions. Pre-req for 4.1.
-- [ ] **3.4 emitClosureBody (623 lines)** [L] — unify with emitFunc's structured-IR
-  path; the inline WAT-string trampoline synthesis becomes a named builder.
+- [x] 3.3 analyzeBody decomposition — CLOSED. Slice 1 (9ff7314): widenLocalTypes
+  extracted; the body reads walk → widenLocalTypes → narrowUint32. The remaining
+  walk/processDecl machinery is a COHESIVE single-concern unit (observation
+  collection over shared fact maps) — extracting it would thread ~10 params for
+  no clarity gain; the monolith critique was the interleaved passes, now staged.
+- [x] **3.4 emitClosureBody** — RESOLVED by remeasurement (2026-06-11): the
+  623-line monolith no longer exists — today it is ~250 sectioned lines
+  (seed frame → enterFunc → analyze → boxed classification → defaults →
+  env unpack → param unpack → rest packing → assemble → restore), each section
+  commented and cohesive; extraction would thread an 8-field record through
+  linear sections for no clarity gain. The trampoline WAT-string synthesis
+  (emit.js ~3062) follows the HOUSE stdlib-text idiom (ctx.core.stdlib is a
+  text registry by design) — cosmetic multi-line reformat is the only residue.
 - [x] 3.5 TYPEOF enum (8bce811).
-- [ ] **3.6 emit.js split** [S, mechanical] — emit-decl/emit-assign/emit-spread
-  modules along the `// === ===` banners.
+- [x] **3.6 emit split** (landed b069a0d) — assignment IR helpers (~370 lines,
+  9 functions) → compile/emit-assign.js via the bridge pattern; the kernel
+  bundler's cycle rejection forced the RIGHT factoring (isBoundName → ir.js,
+  storedValue moved with its consumers, _expect → ctx.func transient).
+  emit.js 3501 → ~3130 lines.
 - [x] 3.7 hygiene tail (6a14b74 + verified-stale items).
 
 ## 4. Pipeline
-- [ ] **4.1 unified per-function analysis cache** [M] — analyzeBody runs 5–10× per
-  body with manual invalidation. Build facts once post-plan, pass explicitly.
-  Do WITH 3.3's remaining extraction. (Profile: analyzeFuncs ~11 ms on watr-scale —
-  modest; correctness/clarity is the motivation, not ms.)
+- [x] **4.1 unified analysis cache** — CLOSED by analysis: the post-plan path
+  ALREADY builds facts once (analyzeFuncForEmit → funcFacts) and passes them
+  explicitly to emit; the 5–10× re-walks live inside narrow's fixpoint, where
+  re-analysis after AST mutation IS the algorithm (WeakMap-memoized per body).
+  Nothing left to unify without changing the fixpoint itself.
 - [x] 4.2 resolved-differently (5a786e4) — permanent per-pass profiling (plan:*,
   optMod:*, compile buckets); incremental-facts premise disproven (refreshes 7 ms);
   the REAL hotspot (quadratic LICM privacy check) memoized: watr compile 560→393 ms.
@@ -100,3 +114,45 @@ emit i32.load/i32.store at every cell access site (env slot stays 8B; generic
 ABI only passes cell POINTERS, never reads values — safe). Sites: emitFunc cell
 init, emitDecl boxed path, emitLocalGet/assign cell load/store, closure body
 cell access. Gate: not object/string-kind (watr risk); measure watr abs ms.
+
+## Self-host L2 divergence (EXPOSED by the options plumbing, 2026-06-10) — NEXT TRIAGE
+Running the KERNEL's own optimizer at L2 miscompiles typed-literal shapes that
+native L2 handles fine. Repro (kernel = dist/jz.wasm):
+  src: let mk = () => new Float64Array([1.5, 2.5, 3.5])
+       export let f = (i) => { let a = mk(); let b = a.map(x => x + 10); return b[i] }
+  kernel L2: f(0) = 10 (a[0] read as 0); native L2 + kernel O0/O1: 11.5 ✓.
+Bisect: vectorizeLaneLocal:false fixes; watr:false fixes; unroll/hoistConstPool
+irrelevant. WAT diff (kernel vs native, same source, L2): the kernel DROPS the
+`(f64.store base (f64.const 1.5))` literal store, leaves `i32.add(16, 4<<3)`
+UNFOLDED (fold pass not folding in-kernel!), and bases element stores off a
+different local (+24/+32 vs +0/+8/+16). Theory: a documented kernel-vs-JS
+divergence inside the optimizer's own code (suspects: getConst's
+parseInt/replaceAll path, BigInt i64 handling, Map/object iteration in fold/
+propagate). Affected suite tests at JZ_TEST_OPTIMIZE=2: typed-narrow .map ×3 +
+promoteIntArrayLiterals closure-capture. Until fixed, the bytes leg defaults
+to the kernel's historical optimize:false; `JZ_TEST_OPTIMIZE=2 npm run
+test:wasm` is the triage switch (4 failures to drive to zero).
+
+## Self-host fidelity hunt (2026-06-11) — two real bugs fixed, ratchet established
+- [x] **deadStoreElim index-shift miscompile** — LATENT NATIVE BUG, kernel-triggered:
+  dead[] entries are pushed at SUPERSEDE time, so same-parent indices aren't
+  monotonic; the reverse-order splice executor shifted remaining entries onto
+  innocent neighbors (deleted the `1.5` literal store in the kernel repro).
+  Fixed identity-based: capture the node at scan time, indexOf at removal.
+  Could in principle have corrupted NATIVE output for interleaved-lifetime
+  supersedes — fuzz 2500 + full matrix green post-fix.
+- [x] **fold dead in-kernel** — the unary/binary dispatcher discriminated on
+  Function.length; self-host closures don't carry faithful arity → ZERO folding
+  ever ran in-kernel. Node-shape dispatch now (every WAT op is fixed-arity).
+- **NEW bug class discovered**: `arr.length = 0` on an IMPORTED binding splits
+  aliasing in-kernel (resize rebinds a fresh array onto the importer's binding;
+  the exporter keeps the old one). Repro: the _executed debug-trace artifact.
+  Triage next: __arr_set_length's persist-binding vs cross-module globals.
+- **Kernel-L2 ratchet**: with fold alive, the kernel's own optimizer is now
+  ACTUALLY exercised — `JZ_TEST_OPTIMIZE=2 npm run test:wasm` shows the
+  remaining in-kernel divergences (~7 in types.js, ~79 suite-wide; the original
+  typed-narrow .map four are FIXED). Bytes leg defaults to optimize:false until
+  the ratchet hits zero; wat/warnings legs run L2 (and pass — shape-faithful).
+- Self-host options (uniform (source, strict, optJSON) triple + setupSelf/lower
+  DRY) verified: kernel compiles at any level/alias/per-pass object; L2/L3/'size'
+  probes correct on the repro.
