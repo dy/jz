@@ -62,4 +62,5 @@ jobs:
           git pull --rebase origin main || true
           git add bench/results.json bench/web
           git diff --cached --quiet || git commit -m 'bench: refresh results.json + web artifacts [skip ci]'
-          git push
+          # a push landing mid-run rejects ours — rebase once and retry
+          git push || (git pull --rebase origin main && git push)
