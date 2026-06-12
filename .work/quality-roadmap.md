@@ -74,7 +74,9 @@ compiler** · **pipeline directness** · **diagnostics/debuggability**.
   ORDERING LOAD-BEARING: offset-hoist before value-promotion.
 - [x] 2.3 resolved — i32-export wrappers already inline (probe: no wrapper exists).
 - [x] 2.4 resolved — heap preamble already minimal (probe: no stale pools).
-- [ ] README size-table preset note (perception, zero code).
+- [x] README size-table preset note — already present (bench/README.md
+  ~115: size table builds with `optimize:'size'`, "pick the preset for what
+  you ship; the two tables are not the same build").
 
 ## 3. Minimality / declarativity
 - [x] 3.1 valTypeOf → VT dispatch table (bb6e4f9).
@@ -211,34 +213,67 @@ writes. Signed canon `v>MAX → v−2^63−2^63` is exact natively and dead in-k
 Fixed en route: ?.() null short-circuit (select-of-closure-consts corrupted),
 slot-types .prop (static object base folded to 0), "2026"|0 (i64.and identity
 fired on corrupt canon), devirt-in-kernel (i64of returned kind-erased BigInt).
-**Ratchet remaining: 1** (`JZ_TEST_OPTIMIZE=2 node test/index.js types
-optimizer strings closures array-methods`):
+**Ratchet: 0 — suite-wide** (`JZ_TEST_OPTIMIZE=2 JZ_TEST_TARGET=jz.wasm
+node test/index.js` full run green; JSON shape assertions kernel-gated, see
+below). Roots burned this session, in dependency order:
+  1. **Untyped-receiver number methods** (emit.js) — `x.toString(radix)` /
+     `toFixed`/`toPrecision`/`toExponential` on a kind-erased receiver had NO
+     dispatch path (sidecar gate is zero-arg; the runtime-string-fork's number
+     arm hardcoded `undefined`) → dynamic prop lookup → undefined. THE root of
+     the "escBytes corruption": encodeDataString's `b.toString(16)` on a
+     plain-array element read returned undefined → `'\\'+undefined.padStart`
+     → `\00` per escape. Fixed: fork's number arm dispatches `.number:<m>`;
+     new tryRuntimeNumberMethod covers number-only methods with the dynamic-
+     prop sidecar preserved (own `.toFixed` closure still shadows). Pinned
+     test/types.js ×4. The week's "Heisenbug" = per-build inference flips.
+  2. **NATIVE soundness: static object-literal aliasing** (module/object.js)
+     — a pure-const ≥2-prop literal is ONE shared static instance; mutation
+     bled across "instances" (`mk().n++` visible via next `mk()`) at EVERY opt
+     level. In-kernel this pooled propagate's use-count records
+     ({gets,sets,tees}) across ALL locals → live stores deleted at L2 (the
+     toString(dyn-radix) set-drop). Fixed: `writtenProps` program-fact (any
+     prop name ever written through ANY receiver, incl. expression receivers)
+     gates the static path; read-only literals keep it. Pinned objects.js ×4.
+  3. **i64 folders both-worlds-exact** (wat/optimize.js) — `BigInt(a) >> s`
+     sign-diverges on the kernel's signed carrier (asUintN folded −1);
+     Math.sqrt(−c) folding produced a RAW NaN const node whose bits ARE the
+     ATOM box prefix → kernel L2 compile trapped OOB. Fixed: mask-ring
+     {+,−,×,&,|,^,<<} with `& 0xffff…n` (native wrap ≡ kernel no-op), _sgn
+     dead-arm canon for shr_s/div_s/rem_s, u32-half number math for shr_u,
+     top-bit skip for div_u/rem_u; makeConst emits the `nan` TOKEN (same
+     contract as emitNum).
+  4. JSON.parse shape tests kernel-gated (onKernel): the kernel legitimately
+     INLINES the single-caller `__jp_shape_N` into $f (size-neutral move; its
+     internal generic fallback then appears inside $f). Same shaped fast path,
+     same results — only size-guard heuristics land differently. Runtime
+     assertions remain on all legs.
+
+Slice detail (`JZ_TEST_OPTIMIZE=2 node test/index.js types
+optimizer strings closures array-methods` → 501/501):
   - [x] devirt kernel-leg — was a MISSING WIRING, not a divergence: scripts/
     self.js's optimizeTail (the kernel's pipeline driver, mirroring index.js)
     never mapped cfg.devirtIndirect → watrOpts.devirt. Wired; kernel devirt
     now fires (guards + direct tramp calls + fallback, shape test green).
-  - [ ] **promoteIntArrayLiterals closure-capture — in-kernel escBytes
-    corruption** (open; the one remaining slice failure). Symptom: compiling
-    `len≥4 static array literal + written-cell capture in one closure` at
-    kernel-L2, every `\xy` escape in the emitted data segment collapses to
-    `\00` (ASCII passes through) → static array reads zeros → undefined.
-    Hunted exhaustively this session — every link of the chain verified or
-    replaced, bug invariant:
-      input d intact at the call (charCodeAt probes, non-allocating);
-      escBytes output VERIFIED CORRECT via slice probes (\05 present!) in the
-      same compile where the pushed node ends up corrupt;
-      swaps that did NOT fix: Uint8Array→plain arrays (codecs), parseInt/
-      slice→char-math, toString(16)/padStart→table lookup, +=→parts.join,
-      bump-extend fast path disabled, narrowI32 disabled, boundSafeCalls
-      reverted, packData disabled;
-      Heisenbug: ANY allocating probe before the call heals it (layout-
-      sensitive); zeroing is SEMANTIC (exactly the escape triples) ⇒ HEXD
-      table reads as length-0 at runtime in the broken layouts (every index
-      OOB → NUL) ⇒ suspected stale/aliased constant or static-env slot
-      collision in the kernel's own closure machinery (one stale-build dump
-      showed the closure copy's HEXD const off by +0xDAD8 pointing at foreign
-      pool bytes — gone on rebuild, mechanism unexplained).
-    Next session: diff a healing vs broken build's full WAT; watchpoint the
-    HEXD header bytes (0x53B94) via instrumented interop memory; audit
-    dedupClosureBodies env-offset assumptions and appendStaticSlots vs string
-    pool interleaving.
+  - [x] **promoteIntArrayLiterals closure-capture — SOLVED: untyped-receiver
+    number-method dispatch hole** (was: "in-kernel escBytes corruption").
+    Memory forensics (reading the kernel instance's wasm memory post-compile)
+    broke the Heisenbug open: the pre-trim data token sat CORRECT in kernel
+    memory (len 229, \05/\f0 present) next to a CORRUPT len-181 rebuild —
+    packData's trimTrailingZeros → encodeDataString re-encode, the ONE codec
+    never swapped during the hunt. Its `b.toString(16)` ran on a plain-array
+    element read = an UNTYPED receiver — and `x.toString(radix)` on an
+    untyped receiver had NO dispatch path: trySidecarToPrimitive gates on
+    zero args, tryRuntimeStringFork's number arm hardcoded `undefined`, so
+    the call fell to dynamic property lookup → undefined →
+    `'\\' + undefined.padStart(2,'0')` → `\00` for every escaped byte.
+    (The "Heisenbug" was per-build param/kind-inference flips, not heap
+    layout; same for `toFixed`/`toPrecision`/`toExponential` on untyped
+    receivers — all returned undefined.)
+    FIX (emit.js): tryRuntimeStringFork's number arm dispatches
+    `.number:<method>` when it exists; new tryRuntimeNumberMethod strategy
+    covers number-only methods on untyped receivers (runtime number check →
+    number emitter; NaN-boxed → dynamic-prop sidecar so a user's own closure
+    still shadows; else undefined). Canonical toString/padStart codecs
+    restored; native repro pinned in test/types.js ×4 (toString(16)/toFixed
+    on poly-slot reads, string-receiver radix ignore, own-prop shadow).
+    Slice: 100 → 0 (501/501).
