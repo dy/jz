@@ -52,6 +52,8 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`sort`](sort/sort.js) | in-place heapsort over a typed array; exposes call-heavy nested loops and typed-array index propagation |
 | [`crc32`](crc32/crc32.js) | table-driven CRC-32 over a mutable byte buffer; exposes integer narrowing and typed-array parameter propagation |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
+| [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
+| [`jz`](jz/jz.js) | the jz compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
 
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
