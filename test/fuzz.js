@@ -789,7 +789,13 @@ const isMain = import.meta.url === `file://${process.argv[1]}`
 // boundary — a full-range bitwise/imul operand feeding `*`/`-`/unary-`-` now widens
 // to f64 (isFullRangeI32; `+` stays i32 — the ToInt32-sunk accumulator op).
 const KNOWN_OPEN = new Set([])
-const GATE = { count: 200, seedStart: 1, inputs: 12, inputSeed: 7, optLevels: [0, 1, 2, 3], cfg: DEFAULTS }
+// JZ_FUZZ_GATE scales the gate seed counts (0 < scale ≤ 1). The kernel-target CI
+// leg (JZ_TEST_TARGET=jz.wasm on a 2-core runner) compiles every fuzz program
+// through the wasm kernel — full 200×4 alone exceeds GitHub's 6-hour job limit.
+// Local runs and the native CI legs keep the full gate.
+const GATE_SCALE = Math.min(1, Math.max(0.05, +process.env.JZ_FUZZ_GATE || 1))
+const N = (n) => Math.max(5, Math.round(n * GATE_SCALE))
+const GATE = { count: N(200), seedStart: 1, inputs: 12, inputSeed: 7, optLevels: [0, 1, 2, 3], cfg: DEFAULTS }
 if (!isMain) {
   test('fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}', () => {
     const findings = fuzz(GATE)
@@ -800,37 +806,37 @@ if (!isMain) {
       : `no regressions (${findings.length} known-open)`)
   })
   test('fuzz: Float64Array element ops match JS in seeds 1..100 × opt {0,1,2,3}', () => {
-    const findings = fuzzTyped({ ...GATE, count: 100 })
+    const findings = fuzzTyped({ ...GATE, count: N(100) })
     ok(findings.length === 0, findings.length
       ? `typed-array divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Float64Array == JS')
   })
   test('fuzz: Float64Array pure-map (incl. ?:) matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
-    const findings = fuzzTypedMap({ ...GATE, count: 120 })
+    const findings = fuzzTypedMap({ ...GATE, count: N(120) })
     ok(findings.length === 0, findings.length
       ? `typed-map divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind}${f.idx != null ? ` idx=${f.idx}` : ''} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Float64Array map == JS')
   })
   test('fuzz: Int32Array map + i32 sum reduction matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
-    const findings = fuzzTypedInt({ ...GATE, count: 120 })
+    const findings = fuzzTypedInt({ ...GATE, count: N(120) })
     ok(findings.length === 0, findings.length
       ? `typed-int divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Int32Array == JS')
   })
   test('fuzz: Int32Array min/max reduction matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
-    const findings = fuzzTypedIntMinMax({ ...GATE, count: 120 })
+    const findings = fuzzTypedIntMinMax({ ...GATE, count: N(120) })
     ok(findings.length === 0, findings.length
       ? `typed-int-minmax divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz Int32Array min/max == JS')
   })
   test('fuzz: Int32Array affine break/continue loop (IV strength reduction) matches JS', () => {
-    const findings = fuzzTypedIVSR({ ...GATE, count: 120 })
+    const findings = fuzzTypedIVSR({ ...GATE, count: N(120) })
     ok(findings.length === 0, findings.length
       ? `typed-ivsr divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz IV-SR == JS')
   })
   test('fuzz: Uint8Array memchr byte scan (SIMD i8x16) matches JS in seeds 1..120 × opt {0,1,2,3}', () => {
-    const findings = fuzzTypedByteScan({ ...GATE, count: 120 })
+    const findings = fuzzTypedByteScan({ ...GATE, count: N(120) })
     ok(findings.length === 0, findings.length
       ? `byte-scan divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz byte-scan == JS')

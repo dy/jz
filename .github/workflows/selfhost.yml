@@ -23,6 +23,7 @@ on:
 jobs:
   selfhost:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,5 +40,10 @@ jobs:
       # self-host kernel (JZ_TEST_TARGET=jz.wasm) — every program is compiled by
       # dist/jz.wasm, so any divergence from the native run is a self-host bug.
       # This is the real "does jz.wasm compile and pass everything" signal.
+      # JZ_FUZZ_GATE shrinks the fuzz seed counts: every fuzz program compiles
+      # through the wasm kernel here, and the full 200×4 gate alone exceeds the
+      # 6-hour job limit on 2-core runners (native legs keep the full gate).
       - name: full suite via dist/jz.wasm
         run: npm run test:wasm
+        env:
+          JZ_FUZZ_GATE: '0.15'
