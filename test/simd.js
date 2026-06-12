@@ -1190,3 +1190,137 @@ test('vectorize: default level 2 emits SIMD for obvious lane-local loops', () =>
   `
   ok(hasV128(wat(src)), 'expected v128 ops at default optimization')
 })
+
+// ---- memory.copy / memory.fill loop idioms ---------------------------------
+// Whole copy/fill loops become bulk-memory ops (memmove/memset in the engine):
+// for(i<N) a[i]=b[i] → overlap-guarded memory.copy; a[i]=0 / u8[i]=C →
+// memory.fill. Runs before the lane vectorizer; the overlap guard keeps the
+// original loop for dst-strictly-inside-src layouts where a forward loop and
+// memmove genuinely differ.
+
+test('memop: f64 copy loop lifts to memory.copy with overlap guard', () => {
+  const src = `
+    export const main = () => {
+      const a = new Float64Array(64)
+      const b = new Float64Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i * 1.25
+      for (let i = 0; i < 64; i++) b[i] = a[i]
+      let s = 0
+      for (let i = 0; i < 64; i++) s += b[i]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/memory\.copy/.test(wat(src, SIMD_OPT)), 'expected memory.copy')
+})
+
+test('memop: zero-fill and byte-fill loops lift to memory.fill', () => {
+  const srcZ = `
+    export const main = () => {
+      const a = new Float64Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i
+      for (let i = 0; i < 64; i++) a[i] = 0
+      let s = 1
+      for (let i = 0; i < 64; i++) s += a[i]
+      return s
+    }
+  `
+  const srcB = `
+    export const main = () => {
+      const a = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) a[i] = 42
+      let s = 0
+      for (let i = 0; i < 64; i++) s = (s + a[i]) | 0
+      return s
+    }
+  `
+  is(runVec(srcZ, SIMD_OPT).main(), 1)
+  is(runVec(srcB, SIMD_OPT).main(), 42 * 64)
+  ok(/memory\.fill/.test(wat(srcZ, SIMD_OPT)), 'zero fill → memory.fill')
+  ok(/memory\.fill/.test(wat(srcB, SIMD_OPT)), 'byte fill → memory.fill')
+})
+
+test('memop: overlapping same-buffer copy keeps exact forward-loop semantics', () => {
+  // dst strictly inside (src, src+len): forward loop re-reads bytes it already
+  // wrote — memmove would differ, so the guard must take the loop fallback.
+  const src = `
+    export const main = () => {
+      const a = new Float64Array(16)
+      for (let i = 0; i < 16; i++) a[i] = i
+      for (let i = 0; i < 8; i++) a[4 + i] = a[2 + i]
+      let h = 0
+      for (let i = 0; i < 16; i++) h = (h * 31 + a[i]) | 0
+      return h
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+})
+
+test('memop: induction variable and bound state exact after the lift', () => {
+  // i is read after the loop — the lift must leave it == bound.
+  const src = `
+    export const main = () => {
+      const a = new Float64Array(32)
+      const b = new Float64Array(32)
+      for (let i = 0; i < 32; i++) a[i] = i
+      let i = 0
+      for (; i < 32; i++) b[i] = a[i]
+      return i + b[31]
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), 32 + 31)
+})
+
+// ---- widening min/max reductions -------------------------------------------
+// `m = Math.max(m, u8[i])` (acc f64, narrow lanes) folds at the LOAD's own
+// width/sign — i8x16.max_u etc., 16/8 lanes per op — exact because min/max
+// never rounds and narrow values are exact in f64. Only the one horizontal
+// result converts to f64. The SIMD prefix (incl. merge) is guarded: lane-domain
+// identities (0 for u8-max) aren't neutral for an arbitrary live accumulator.
+
+test('widen minmax: u8/s16 fold at lane width, all seeds exact', () => {
+  const src = `
+    export let mx = (seed, n) => {
+      let a = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) a[i] = (i * 37 + 11) % 256
+      let m = +seed
+      for (let i = 0; i < n; i++) m = Math.max(m, a[i])
+      return m
+    }
+    export let mn = (seed, n) => {
+      let a = new Int16Array(64)
+      for (let i = 0; i < 64; i++) a[i] = (i * 379 - 9000) % 32768
+      let m = +seed
+      for (let i = 0; i < n; i++) m = Math.min(m, a[i])
+      return m
+    }
+  `
+  // `+seed` unboxes the param once so the accumulator is a plain f64 local —
+  // an unconverted param stays NaN-boxed (per-iteration __to_num) and the
+  // canon shape never forms. Vector side at optimize:3; scalar oracle NOVEC.
+  const v = runVec(src, { optimize: 3 }), s = runVec(src, NOVEC)
+  for (const seed of [NaN, -0.5, 1e9, -1e9, -0, Infinity, -Infinity])
+    for (const n of [0, 1, 15, 16, 17, 64])
+      for (const f of ['mx', 'mn'])
+        ok(Object.is(v[f](seed, n), s[f](seed, n)), `${f}(${seed}, ${n})`)
+  const w = wat(src, { optimize: 3 })
+  ok(/i8x16\.max_u/.test(w), 'u8 max folds as i8x16.max_u')
+  ok(/i16x8\.min_s/.test(w), 's16 min folds as i16x8.min_s')
+})
+
+test('widen minmax: zero-iteration SIMD range cannot clamp the accumulator', () => {
+  // n=3 < lanes: the SIMD prefix must not run its merge — identity 0 would
+  // otherwise lift a negative seed to 0.
+  const src = `
+    export let go = (n) => {
+      let a = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) a[i] = i + 1
+      let m = -7.5
+      for (let i = 0; i < n; i++) m = Math.max(m, a[i])
+      return m
+    }
+  `
+  is(runVec(src, SIMD_OPT).go(0), -7.5)
+  is(runVec(src, SIMD_OPT).go(3), 3)
+  is(runVec(src, SIMD_OPT).go(32), 32)
+})

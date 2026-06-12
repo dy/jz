@@ -417,6 +417,23 @@ const WIDEN_LOADS = {
   'i32.load16_s': { laneType: 'i16', steps: ['i32x4.extadd_pairwise_i16x8_s'] },
 }
 
+// Widening min/max over a BARE narrow load (`m = Math.max(m, u8[i])` with an
+// i32 accumulator). Unlike the widening SUM there is no overflow concern:
+// min/max at the load's own lane width over its own sign is value-exact, so
+// the fold stays at lane width (16/8 lanes per vector) and only the final
+// horizontal merge widens, via the sign-matched extract. Identity seeds the
+// vector accumulator with the op's neutral: type-min for max, type-max for min.
+const MINMAX_WIDEN = {
+  'i32.load8_u':  { pre: 'i8x16', sign: 'u', laneType: 'i8',  lo: 0,      hi: 255 },
+  'i32.load8_s':  { pre: 'i8x16', sign: 's', laneType: 'i8',  lo: -128,   hi: 127 },
+  'i32.load16_u': { pre: 'i16x8', sign: 'u', laneType: 'i16', lo: 0,      hi: 65535 },
+  'i32.load16_s': { pre: 'i16x8', sign: 's', laneType: 'i16', lo: -32768, hi: 32767 },
+}
+// jz's number model converts narrow loads to f64 before Math.min/max, so the
+// canon reduce arrives as (f64.max acc (f64.convert_i32_x LOAD)). The convert
+// sign must match the load sign for the lane fold to be value-exact.
+const MINMAX_CVT = { 'f64.convert_i32_u': 'u', 'f64.convert_i32_s': 's' }
+
 // op-name → REDUCE entry across all lane types (the op-name itself encodes
 // the lane type prefix, e.g. `i32.add` ⇒ i32 lanes).
 const REDUCE_OP_LOOKUP = (() => {
@@ -939,8 +956,16 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
     if (minmax) {
       // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
       // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
-      // op's neutral — INT_MIN for max, INT_MAX for min.
-      reduceEntry = {
+      // op's neutral — INT_MIN for max, INT_MAX for min. A bare narrow load instead folds
+      // at its own lane width/sign (MINMAX_WIDEN), 16 or 8 lanes per vector.
+      const w = isArr(minmax.exprNode) && minmax.exprNode.length === 2
+        ? MINMAX_WIDEN[minmax.exprNode[0]] : null
+      reduceEntry = w ? {
+        simd: `${w.pre}.${minmax.isMax ? 'max' : 'min'}_${w.sign}`,
+        extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
+        identity: ['i32.const', minmax.isMax ? w.lo : w.hi],
+        minmaxSelect: true, isMax: minmax.isMax, accI32: true,
+      } : {
         simd: minmax.isMax ? 'i32x4.max_s' : 'i32x4.min_s',
         extract: 'i32x4.extract_lane', laneType: 'i32',
         identity: ['i32.const', minmax.isMax ? -2147483648 : 2147483647],
@@ -997,7 +1022,26 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const accType = fnLocals.get(accName)
   const widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
     && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
-  if (!widen && accType !== reduceEntry.laneType) return null
+  // Widening float min/max: the canon over a sign-matched converted narrow load
+  // (`m = Math.max(m, u8[i])`, acc f64) folds at the load's own width — exact,
+  // since min/max never rounds and u8…i16 values are exact in f64. Only the one
+  // horizontal result converts to f64 for the merge (+ re-canon for a NaN acc).
+  if (canonC != null && (opName === 'f64.max' || opName === 'f64.min') && accType === 'f64'
+      && isArr(exprNode) && exprNode.length === 2 && MINMAX_CVT[exprNode[0]] && isArr(exprNode[1])) {
+    const w = MINMAX_WIDEN[exprNode[1][0]]
+    if (w && w.sign === MINMAX_CVT[exprNode[0]]) {
+      const isMax = opName === 'f64.max'
+      reduceEntry = {
+        simd: `${w.pre}.${isMax ? 'max' : 'min'}_${w.sign}`,
+        extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
+        identity: ['i32.const', isMax ? w.lo : w.hi],
+        minmaxSelect: true, isMax, accF64: exprNode[0], canonC,
+      }
+      exprNode = exprNode[1]
+      canonC = null
+    }
+  }
+  if (!widen && accType !== (reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
 
   // Bound classification (same as tryVectorize).
   let bound = exitInfo.bound
@@ -1097,11 +1141,22 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
     const cmpOp = reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s'
     const ht = `$__simd_h${id}`
     extraDecls.push(['local', ht, 'i32'])
-    const lane = (k) => ['i32x4.extract_lane', k, ['local.get', simdAccName]]
+    const lane = (k) => [reduceEntry.extract, k, ['local.get', simdAccName]]
     const minmaxSel = (a, b) => ['select', a, b, [cmpOp, a, b]]
     mergeStmts = [['local.set', ht, lane(0)]]
     for (let k = 1; k < lanes; k++) mergeStmts.push(['local.set', ht, minmaxSel(lane(k), ['local.get', ht])])
-    mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
+    if (reduceEntry.accF64) {
+      // Widening canon merge: one convert of the horizontal result, the scalar
+      // f64 op against the live acc, then re-canon (a NaN-seeded acc must still
+      // cross as the canonical NaN when the scalar tail is empty).
+      mergeStmts.push(['local.set', accName,
+        [opName, ['local.get', accName], [reduceEntry.accF64, ['local.get', ht]]]])
+      mergeStmts.push(['local.set', accName,
+        ['select', reduceEntry.canonC, ['local.get', accName],
+          ['f64.ne', ['local.get', accName], ['local.get', accName]]]])
+    } else {
+      mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
+    }
   } else {
     // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
     // Widening sum folds the 4 i32x4 PARTIALS, not the (narrow) data lanes.
@@ -1128,7 +1183,15 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   // scalar tail (original `i<bound` guard) cleans up regardless.
   const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes - 1]]]
 
-  const wrapper = ['block', boundSetup, initAcc, simdBlock, ...mergeStmts, blockNode]
+  // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
+  // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
+  // prefix incl. the merge so a zero-iteration range can't clamp the live acc
+  // toward the identity. Full-width entries use absolute neutrals; unguarded.
+  const core = reduceEntry.accI32 || reduceEntry.accF64
+    ? [['if', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]],
+        ['then', initAcc, simdBlock, ...mergeStmts]]]
+    : [initAcc, simdBlock, ...mergeStmts]
+  const wrapper = ['block', boundSetup, ...core, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
@@ -1469,6 +1532,162 @@ function tryStrengthReduceIV(blockNode, fnLocals, freshIdRef) {
   return { wrapper: ['block', ...preInits, blockNode], newLocalDecls }
 }
 
+// ---- memory.copy / memory.fill loop idioms ---------------------------------
+
+// Same-width store←load pairs (byte-window moves) and their element stride.
+// Sign-variant narrow loads are interchangeable for a MOVE: load8_u/load8_s
+// then store8 write the same byte back.
+const MEMOP_STORES = {
+  'f64.store':   { k: 3, loads: new Set(['f64.load']) },
+  'i64.store':   { k: 3, loads: new Set(['i64.load']) },
+  'f32.store':   { k: 2, loads: new Set(['f32.load']) },
+  'i32.store':   { k: 2, loads: new Set(['i32.load']) },
+  'i32.store16': { k: 1, loads: new Set(['i32.load16_u', 'i32.load16_s']) },
+  'i32.store8':  { k: 0, loads: new Set(['i32.load8_u', 'i32.load8_s']) },
+}
+
+/**
+ * Replace whole copy/fill loops with the engine's bulk-memory ops:
+ *
+ *   for (i < N) a[i] = b[i]   →  memory.copy (overlap-guarded)
+ *   for (i < N) a[i] = 0      →  memory.fill 0    (any element width)
+ *   for (i < N) u8[i] = C     →  memory.fill C    (byte stores only)
+ *
+ * V8 lowers memory.copy/fill to memmove/memset — typically several times the
+ * throughput of even a SIMD lane loop, and a handful of bytes instead of one.
+ * Runs BEFORE the lane vectorizer so these loops never pay the lift.
+ *
+ * Exactness:
+ *  - COPY moves the same byte window the scalar loop wrote (same-width
+ *    store←load pairs only — see MEMOP_STORES; f64 load/store round-trips are
+ *    bit-exact per spec, so NaN payloads survive). memory.copy is memmove
+ *    (as-if-buffered); the FORWARD loop differs from that exactly when the
+ *    destination starts strictly inside the source window (dst reads bytes an
+ *    earlier iteration already overwrote), so that case keeps the original
+ *    loop behind a two-compare runtime guard — every other layout (disjoint,
+ *    dst ≤ src, same array) is bit-identical.
+ *  - FILL with 0 is width-agnostic (all-zero bytes; −0.0 is excluded — its
+ *    sign bit is not zero). Non-zero fills only for byte stores with a
+ *    loop-invariant constant ∈ [0,255].
+ *  - The induction variable ends at `bound` exactly as the loop would leave
+ *    it; a zero-trip range (i ≥ bound) leaves everything untouched.
+ *  - In-bounds for the same reason the lane vectorizer's wide loads are: the
+ *    moved window is exactly the byte range the scalar iterations touch.
+ */
+function tryMemCopyFill(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  let blockLabel = null, loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+    else if (isArr(c)) return null
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  // Shape: [loop, $l, boundExit, (set,)? store, inc, br] — 1- or 2-statement body.
+  if (loopNode.length !== 6 && loopNode.length !== 7) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  const incVar = matchInc1(loopNode[endIdx - 1])
+  if (!incVar) return null
+  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+  if (!exitInfo || exitInfo.ind !== incVar) return null
+  const bound = exitInfo.bound
+  if (!(isI32Const(bound) || (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' && bound[1] !== incVar))) return null
+
+  // Body shapes (emit produces the two-statement form with a temp + shared
+  // offset tee; fold/propagate sometimes collapse it to the bare store):
+  //   1-stmt:  (T.store DADDR  CONST | (T.load SADDR))
+  //   2-stmt:  (local.set $t (T.load SADDR)) (T.store DADDR (local.get $t))
+  const addrLocals = new Map(), offsetTees = new Map()
+  const laneAddr = (a) => {
+    const m = matchLaneAddr(a, incVar, addrLocals, offsetTees)
+    if (!m || m.viaLocal) return null
+    if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
+    if (!(isArr(m.base) && m.base[0] === 'local.get' && typeof m.base[1] === 'string' && m.base[1] !== incVar)) return null
+    if (fnLocals.get(m.base[1]) !== 'i32') return null
+    return m
+  }
+  let storeStmt, valNode, tempName = null
+  if (loopNode.length === 6) {
+    storeStmt = loopNode[3]
+    if (!isArr(storeStmt) || storeStmt.length !== 3) return null
+    valNode = storeStmt[2]
+  } else {
+    const s1 = loopNode[3]
+    storeStmt = loopNode[4]
+    if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3 || typeof s1[1] !== 'string') return null
+    if (!isArr(storeStmt) || storeStmt.length !== 3) return null
+    if (!(isArr(storeStmt[2]) && storeStmt[2][0] === 'local.get' && storeStmt[2][1] === s1[1])) return null
+    tempName = s1[1]
+    if (tempName === incVar) return null
+    valNode = s1[2]
+  }
+  const entry = MEMOP_STORES[storeStmt[0]]
+  if (!entry) return null
+
+  // Classify VALUE first (the load side carries the offset tee in the 2-stmt form).
+  let fillByte = null, srcM = null
+  if (isArr(valNode) && valNode.length === 2 && (valNode[0] === 'i32.const' || valNode[0] === 'i64.const' || valNode[0] === 'f64.const' || valNode[0] === 'f32.const') && typeof valNode[1] === 'number') {
+    if (valNode[1] === 0 && !Object.is(valNode[1], -0)) fillByte = 0
+    else if (storeStmt[0] === 'i32.store8' && valNode[0] === 'i32.const' && Number.isInteger(valNode[1]) && valNode[1] >= 0 && valNode[1] <= 255) fillByte = valNode[1]
+    else return null
+  } else if (isArr(valNode) && valNode.length === 2 && entry.loads.has(valNode[0])) {
+    srcM = laneAddr(valNode[1])
+    if (!srcM || srcM.strideLog2 !== entry.k) return null
+  } else return null
+
+  const dstM = laneAddr(storeStmt[1])
+  if (!dstM || dstM.strideLog2 !== entry.k) return null
+  // Soundness for any shared offset tee resolved via `(local.get $T)` (see tryVectorize).
+  for (const [name, k] of offsetTees) {
+    if (_offsetLocalStride([loopNode[3], storeStmt], name, incVar) !== k) return null
+  }
+
+  const id = freshIdRef.next++
+  const lenB = `$__mc${id}_len`, dstA = `$__mc${id}_dst`
+  const newLocalDecls = [['local', lenB, 'i32'], ['local', dstA, 'i32']]
+  const shl = (x) => entry.k === 0 ? x : ['i32.shl', x, ['i32.const', entry.k]]
+  const boundC = () => cloneNode(bound)
+  const setup = [
+    ['local.set', lenB, shl(['i32.sub', boundC(), ['local.get', incVar]])],
+    ['local.set', dstA, ['i32.add', ['local.get', dstM.base[1]], shl(['local.get', incVar])]],
+  ]
+  // Exact loop-exit state: i ends at bound; a matched offset tee holds the
+  // LAST iteration's offset; the value temp holds the last element moved.
+  const finish = [['local.set', incVar, boundC()]]
+  const lastOff = () => shl(['i32.sub', boundC(), ['i32.const', 1]])
+  for (const name of offsetTees.keys()) finish.push(['local.set', name, lastOff()])
+  if (tempName != null && srcM) finish.push(['local.set', tempName,
+    [valNode[0], ['i32.add', ['local.get', srcM.base[1]], lastOff()]]])
+  if (tempName != null && srcM == null) finish.push(['local.set', tempName, cloneNode(valNode)])
+
+  let action
+  if (srcM == null) {
+    action = [['memory.fill', ['local.get', dstA], ['i32.const', fillByte], ['local.get', lenB]], ...finish]
+  } else {
+    const srcA = `$__mc${id}_src`
+    newLocalDecls.push(['local', srcA, 'i32'])
+    setup.push(['local.set', srcA, ['i32.add', ['local.get', srcM.base[1]], shl(['local.get', incVar])]])
+    // Forward-loop ≡ memmove unless dst starts strictly inside (src, src+len).
+    action = [['if',
+      ['i32.or',
+        ['i32.le_u', ['local.get', dstA], ['local.get', srcA]],
+        ['i32.ge_u', ['local.get', dstA], ['i32.add', ['local.get', srcA], ['local.get', lenB]]]],
+      ['then',
+        ['memory.copy', ['local.get', dstA], ['local.get', srcA], ['local.get', lenB]],
+        ...finish],
+      ['else', blockNode]]]
+  }
+
+  const wrapper = ['block',
+    ['if', ['i32.lt_s', ['local.get', incVar], boundC()],
+      ['then', ...setup, ...action]]]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Byte-scan (memchr) vectorization -------------------------------------
 
 // Match a single-byte compare against a constant or a loop-invariant target:
@@ -1636,7 +1855,8 @@ export function vectorizeLaneLocal(fn) {
       if (isArr(node[i])) walk(node, i)
     }
     if (node[0] === 'block') {
-      const r = tryVectorize(node, fnLocals, freshIdRef)
+      const r = tryMemCopyFill(node, fnLocals, freshIdRef)
+        ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef)
         ?? tryByteScan(node, fnLocals, freshIdRef)
         ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)
