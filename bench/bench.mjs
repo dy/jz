@@ -36,10 +36,25 @@ const CASE_NAMES = {
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
   watr: 'watr WAT compiler',
-  // jz row currently throws at runtime (open compiler bug) — JS-engine rows
-  // still publish; the bench page shows the case with the gap stated.
   jessie: 'jessie parser',
+  jz: 'jz JS compiler (self-host)',
 }
+
+// Cases whose source pulls in a real multi-file library: the whole relative-
+// import graph resolves to canonical absolute-path keys (same as the CLI).
+// `jz` additionally resolves bare node_modules specifiers (watr) — its
+// workload IS the compiler (scripts/self.js), so the jz row runs the full
+// self-host: jz.wasm compiling JavaScript.
+const GRAPH_CASES = new Set(['jessie', 'jz'])
+const graphSources = (c) => {
+  const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' })
+  return { code: g.code, modules: g.modules }
+}
+// The jz case embeds the whole compiler: its static data segment alone is
+// ~450 kB, so the module needs more than the 1-page default to instantiate.
+// 64 pages (4 MB) initial; the allocator's geometric memory.grow covers the
+// compile arena from there at no measurable cost (browser-friendly floor).
+const caseMemory = (c) => c.id === 'jz' ? { memory: 64 } : {}
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const versionText = cmd => {
@@ -159,13 +174,12 @@ const watrModuleSources = () => ({
 
 const compileJzHost = c => {
   const isWatr = c.id === 'watr'
-  // Cases that pull in a real multi-file library (jessie parser) resolve their
-  // whole relative-import graph to canonical absolute-path keys — same as the
-  // CLI — then swap the real benchlib for the env.logResult-patched host build.
-  const isGraph = c.id === 'jessie'
+  // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
+  // real benchlib for the env.logResult-patched host build.
+  const isGraph = GRAPH_CASES.has(c.id)
   let code, modules
   if (isGraph) {
-    ;({ code, modules } = resolveModuleGraph(c.js))
+    ;({ code, modules } = graphSources(c))
     modules[resolve(LIB, 'benchlib.js')] = benchlibHostSource()
   } else {
     code = readFileSync(c.js, 'utf8')
@@ -186,6 +200,7 @@ const compileJzHost = c => {
     // that's an optimizer bug to be fixed, not a reason to back off.
     optimize: { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
     alloc: false,
+    ...caseMemory(c),
   })
   writeFileSync(jzHostWasmPath(c), wasm)
 }
@@ -484,8 +499,11 @@ for (const arg of process.argv.slice(2)) {
   else if (arg.startsWith('--workloads=')) selectedCases = arg.slice(12).split(',').filter(Boolean)
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
   else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
-  else if (targetIds.includes(arg)) selectedTargets = [arg]
+  // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
+  // both a case (the self-host compiler workload) and a target — the case
+  // wins; select the target via --targets=jz.
   else if (caseById[arg]) selectedCases = [arg]
+  else if (targetIds.includes(arg)) selectedTargets = [arg]
   else { console.error(`unknown case/target: ${arg}`); process.exitCode = 2 }
 }
 const jsonOut = { meta: null, cases: {} }
@@ -644,12 +662,19 @@ if (JSON_PATH) {
     const c = caseById[cid]
     try {
       const isWatr = c.id === 'watr'
-      const code = readFileSync(c.js, 'utf8')
-      const modules = {
-        '../_lib/benchlib.js': readFileSync(join(LIB, 'benchlib.js'), 'utf8'),
-        ...(isWatr ? watrModuleSources() : {}),
+      const isGraph = GRAPH_CASES.has(c.id)
+      let code, modules
+      if (isGraph) {
+        ;({ code, modules } = graphSources(c))
+        modules[resolve(LIB, 'benchlib.js')] = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
+      } else {
+        code = readFileSync(c.js, 'utf8')
+        modules = {
+          '../_lib/benchlib.js': readFileSync(join(LIB, 'benchlib.js'), 'utf8'),
+          ...(isWatr ? watrModuleSources() : {}),
+        }
       }
-      const opts = { jzify: isWatr, modules, optimize: { level: 'speed' } }
+      const opts = { jzify: isWatr || isGraph, modules, optimize: { level: 'speed' }, ...caseMemory(c) }
       let wasm
       const times = []
       for (let i = 0; i < 3; i++) {
