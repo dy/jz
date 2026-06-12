@@ -129,7 +129,8 @@ export default (ctx) => {
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
     __str_idx: [],
-    __str_eq: ['__char_at', '__str_byteLen'],
+    __str_eq: ['__str_eq_cold'],
+    __str_eq_cold: ['__char_at', '__str_byteLen'],
     __str_cmp: ['__char_at', '__str_byteLen'],
     __str_range_eq: ['__char_at', '__str_byteLen'],
     __str_substring_eq: ['__str_byteLen', '__str_range_eq'],
@@ -318,7 +319,43 @@ export default (ctx) => {
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
   // ⇒ bytes differ). Heap/heap uses raw load8_u — no per-byte function calls.
   // Mixed SSO×heap is rare; falls back to __char_at.
+  // Hot/cold split: the prefix every comparison runs (bit-eq, both-SSO,
+  // both-canonical, heap length mismatch) is LOOP-FREE and small enough for
+  // the engine's wasm inliner — the call overhead disappears at every site
+  // while the byte-walk lives in __str_eq_cold. Mirrors the __ptr_offset_fwd
+  // split; a body containing a loop is excluded from V8's inliner.
   wat('__str_eq', `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+    (local $axA i32) (local $axB i32) (local $offA i32) (local $offB i32)
+    (if (i64.eq (local.get $a) (local.get $b))
+      (then (return (i32.const 1))))
+    (local.set $axA (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))))
+    (local.set $axB (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))))
+    ;; both SSO ⇒ bit-ne already decided content-ne
+    (if (i32.and
+          (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT}))
+          (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT})))
+      (then (return (i32.const 0))))
+    ;; both CANONICAL interned heap strings ⇒ bit-ne ⇒ content-ne
+    (if (i32.and
+          (i32.eq (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | 0x1})) (i32.const 0x1))
+          (i32.eq (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | 0x1})) (i32.const 0x1)))
+      (then (return (i32.const 0))))
+    ;; both PLAIN heap (not SSO, not slice): length mismatch exits without bytes
+    (if (i32.eqz (i32.or
+          (i32.and (i32.or (local.get $axA) (local.get $axB)) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT}))
+          (i32.const 0)))
+      (then
+        (local.set $offA (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (local.set $offB (i32.wrap_i64 (i64.and (local.get $b) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (if (i32.and (i32.ge_u (local.get $offA) (i32.const 4)) (i32.ge_u (local.get $offB) (i32.const 4)))
+          (then
+            (if (i32.ne
+                  (i32.load (i32.sub (local.get $offA) (i32.const 4)))
+                  (i32.load (i32.sub (local.get $offB) (i32.const 4))))
+              (then (return (i32.const 0))))))))
+    (call $__str_eq_cold (local.get $a) (local.get $b)))`)
+
+  wat('__str_eq_cold', `(func $__str_eq_cold (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $lenB i32) (local $i i32)
     (local $ta i32) (local $tb i32)
     (local $offA i32) (local $offB i32)
