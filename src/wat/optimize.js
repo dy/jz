@@ -335,9 +335,15 @@ const _sb = (h) => (parseInt(h[2], 16) ^ 8).toString(16) + h.slice(3)
 /** Hex-string i64 ops used by several folders — all pure string/number math. */
 const _i64Lo = (h) => parseInt(h.slice(10), 16) | 0
 const _i64HiU = (h) => parseInt(h.slice(2, 10), 16) >>> 0
-/** Wrap a native-only BigInt fold: construct, compute, hex — null on kernel
- *  (asIntN is unfaithful there and yields null, which propagates). */
+/** Hex-encode an i64 fold result (BigInt, any sign/world — see folder note). */
 const _i64Arith = (r) => r == null ? null : '0x' + _i64Hex16(r)
+/** SIGNED i64 BigInt from canon hex — exact natively; the subtract arm is
+ *  dead in-kernel, where BigInt('0x…') already arrives as the signed carrier. */
+const _sgn = (h) => {
+  let v = BigInt(h)
+  if (v > 0x7fffffffffffffffn) v = v - 0x8000000000000000n - 0x8000000000000000n
+  return v
+}
 const i64FromF64 = (x) => { _rf64[0] = x; return '0x' + _hex8(_ru32[1]) + _hex8(_ru32[0]) }
 const f64FromI64 = (h) => {
   _ru32[1] = parseInt(h.slice(2, 10), 16)
@@ -395,23 +401,42 @@ const FOLDABLE = {
   'i32.extend8_s':  (a) => (a << 24) >> 24,
   'i32.extend16_s': (a) => (a << 16) >> 16,
 
-  // i64 — hex-string in, hex-string out. Arithmetic constructs BigInts LOCALLY
-  // (in-expression: kernel param/return kind erasure never applies); asIntN/
-  // asUintN are native-only — in-kernel they yield null and the fold skips
-  // (sound degradation, never a wrong constant).
-  'i64.add': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) + BigInt(b))),
-  'i64.sub': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) - BigInt(b))),
-  'i64.mul': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) * BigInt(b))),
-  'i64.div_s': (a, b) => b !== ZERO64 ? _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) / BigInt.asIntN(64, BigInt(b)))) : null,
-  'i64.div_u': (a, b) => b !== ZERO64 ? _i64Arith(BigInt(a) / BigInt(b)) : null,
-  'i64.rem_s': (a, b) => b !== ZERO64 ? _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) % BigInt.asIntN(64, BigInt(b)))) : null,
-  'i64.rem_u': (a, b) => b !== ZERO64 ? _i64Arith(BigInt(a) % BigInt(b)) : null,
-  'i64.and': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) & BigInt(b))),
-  'i64.or':  (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) | BigInt(b))),
-  'i64.xor': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) ^ BigInt(b))),
-  'i64.shl':   (a, b) => _i64Arith(BigInt.asIntN(64, BigInt(a) << (BigInt(b) & 63n))),
-  'i64.shr_s': (a, b) => _i64Arith(BigInt.asIntN(64, BigInt.asIntN(64, BigInt(a)) >> (BigInt(b) & 63n))),
-  'i64.shr_u': (a, b) => _i64Arith(BigInt(a) >> (BigInt(b) & 63n)),
+  // i64 — hex-string in, hex-string out, BOTH-WORLDS-EXACT arithmetic.
+  // BigInts construct locally (in-expression — kernel kind erasure never
+  // applies), but two further kernel facts shape every folder:
+  //   (1) the kernel's BigInt is the mod-2^64 i64 CARRIER: BigInt('0xffff…')
+  //       arrives NEGATIVE there, so sign-sensitive ops (>>, /, %, unsigned
+  //       division) diverge unless the value is sign-canonicalized first;
+  //   (2) BigInt.asIntN/asUintN are unfaithful in-kernel — never used.
+  // Ring ops {+,−,×,&,|,^,<<} are mod-2^64-compatible: compute then mask with
+  // `& 0xffffffffffffffffn` (native: the wrap; kernel: AND with −1 ≡ no-op).
+  // `_sgn` yields the SIGNED value in both worlds (the subtract arm is dead
+  // in-kernel — same dead-arm trick as slebSize). shr_u is pure u32-half
+  // number math. div_u/rem_u fold only below 2^63 (signed==unsigned there);
+  // above, they skip — sound degradation, never a wrong constant.
+  'i64.add': (a, b) => _i64Arith((BigInt(a) + BigInt(b)) & 0xffffffffffffffffn),
+  'i64.sub': (a, b) => _i64Arith((BigInt(a) - BigInt(b)) & 0xffffffffffffffffn),
+  'i64.mul': (a, b) => _i64Arith((BigInt(a) * BigInt(b)) & 0xffffffffffffffffn),
+  'i64.div_s': (a, b) => b !== ZERO64 && !(a === '0x8000000000000000' && b === NEG164)
+    ? _i64Arith((_sgn(a) / _sgn(b)) & 0xffffffffffffffffn) : null,
+  'i64.div_u': (a, b) => b !== ZERO64 && !(_i64HiU(a) >>> 31) && !(_i64HiU(b) >>> 31)
+    ? _i64Arith(BigInt(a) / BigInt(b)) : null,
+  'i64.rem_s': (a, b) => b !== ZERO64
+    ? _i64Arith((_sgn(a) % _sgn(b)) & 0xffffffffffffffffn) : null,
+  'i64.rem_u': (a, b) => b !== ZERO64 && !(_i64HiU(a) >>> 31) && !(_i64HiU(b) >>> 31)
+    ? _i64Arith(BigInt(a) % BigInt(b)) : null,
+  'i64.and': (a, b) => _i64Arith(BigInt(a) & BigInt(b) & 0xffffffffffffffffn),
+  'i64.or':  (a, b) => _i64Arith((BigInt(a) | BigInt(b)) & 0xffffffffffffffffn),
+  'i64.xor': (a, b) => _i64Arith((BigInt(a) ^ BigInt(b)) & 0xffffffffffffffffn),
+  'i64.shl':   (a, b) => _i64Arith((BigInt(a) << (BigInt(b) & 63n)) & 0xffffffffffffffffn),
+  'i64.shr_s': (a, b) => _i64Arith((_sgn(a) >> (BigInt(b) & 63n)) & 0xffffffffffffffffn),
+  'i64.shr_u': (a, b) => {
+    const s = parseInt(b.slice(10), 16) & 63
+    const hi = _i64HiU(a), lo = parseInt(a.slice(10), 16) >>> 0
+    const rh = s >= 32 ? 0 : hi >>> s
+    const rl = s === 0 ? lo : s >= 32 ? hi >>> (s - 32) : ((lo >>> s) | (hi << (32 - s))) >>> 0
+    return '0x' + _hex8(rh) + _hex8(rl)
+  },
   'i64.eq':   (a, b) => a === b ? 1 : 0,
   'i64.ne':   (a, b) => a !== b ? 1 : 0,
   'i64.lt_s': i64c((a, b) => a < b),
@@ -545,8 +570,13 @@ const getConst = (node) => {
 const makeConst = (type, value) => {
   if (type === 'i32') return ['i32.const', value | 0]
   if (type === 'i64') return ['i64.const', typeof value === 'number' ? value : _i64Canon(value)]   // canonical hex: kernel-safe print, exact round-trip
-  if (type === 'f32') return ['f32.const', Math.fround(value)]
-  if (type === 'f64') return ['f64.const', value]
+  // NaN travels as the `nan` TOKEN, never a raw number: the canonical-NaN bit
+  // pattern (0x7FF8…) IS the NaN-box ATOM prefix, so a raw NaN node value
+  // inside the self-host kernel reads as a pointer and dereferences OOB
+  // (same contract as emitNum — folding Math.sqrt(-1) used to trap the
+  // kernel's L2 compile). ±Infinity is outside the box space — safe raw.
+  if (type === 'f32') { const v = Math.fround(value); return ['f32.const', v !== v ? 'nan' : v] }
+  if (type === 'f64') return ['f64.const', value !== value ? 'nan' : value]
   return null
 }
 
@@ -3160,16 +3190,17 @@ const parseDataString = (str) => {
 }
 
 /** Encode a plain byte array as a WAT data string literal; `end` bounds the
- *  bytes (always passed explicitly — see parseDataString's contract note). */
+ *  bytes (always passed explicitly — see parseDataString's contract note).
+ *  (`b` comes from a plain-array element read, i.e. an untyped receiver — the
+ *  `.toString(16)` here is exactly the dispatch the tryRuntimeNumberMethod /
+ *  runtime-string-fork number arm exists for; it used to yield `undefined`
+ *  in-kernel and zeroed every escaped byte of the emitted data segment.) */
 const encodeDataString = (bytes, end) => {
   let str = '"'
   for (let i = 0; i < end; i++) {
     const b = bytes[i]
-    if (b >= 32 && b < 127 && b !== 34 && b !== 92) {
-      str += String.fromCharCode(b)
-    } else {
-      str += '\\' + b.toString(16).padStart(2, '0')
-    }
+    if (b >= 32 && b < 127 && b !== 34 && b !== 92) str += String.fromCharCode(b)
+    else str += '\\' + b.toString(16).padStart(2, '0')
   }
   return str + '"'
 }
