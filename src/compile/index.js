@@ -1406,13 +1406,21 @@ export default function compile(ast, profiler) {
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)
   const escBytes = (s) => {
-    let esc = ''
+    // parts+join with table-lookup hex — the simplest forms of this loop
+    // (toString(16).padStart, += accumulation) all hit a layout-sensitive
+    // in-kernel corruption (escaped bytes collapse to \\00 in cell+capture+
+    // static-array compiles; see quality-roadmap "kernel escBytes corruption"
+    // — input verified intact, every codec variant swapped, bump-extend ruled
+    // out; suspected stale closure/static-env constant in the kernel image).
+    // This shape is kept because it is the kernel-friendliest of the variants.
+    const HEXD = '0123456789abcdef'
+    const parts = []
     for (let i = 0; i < s.length; i++) {
       const c = s.charCodeAt(i)
-      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += s[i]
-      else esc += '\\' + c.toString(16).padStart(2, '0')
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) parts.push(s[i])
+      else parts.push('\\', HEXD[(c >> 4) & 15], HEXD[c & 15])
     }
-    return esc
+    return parts.join('')
   }
   if (ctx.runtime.data && !ctx.memory.shared)
     sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
