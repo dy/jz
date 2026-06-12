@@ -27,6 +27,10 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
+    # The publish step commits bench/results.json + bench/web back to main;
+    # the default GITHUB_TOKEN is read-only and 403s that push without this.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
