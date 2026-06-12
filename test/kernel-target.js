@@ -93,13 +93,13 @@ export const compileViaKernel = (code, opts = {}) => {
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
   // syntax) to match the native compiler's accept/reject behavior. The optimize
   // config travels the same optJSON channel as the wat/warnings legs — the
-  // BYTES leg opts in when the caller or JZ_TEST_OPTIMIZE asks. Unoptioned
-  // default stays the kernel's historical optimize:false: running the kernel's
-  // own optimizer surfaced (and fixed) the deadStoreElim index-shift
-  // miscompile, but ~79 further in-kernel divergences remain to triage —
-  // `JZ_TEST_OPTIMIZE=2 npm run test:wasm` is the ratchet (drive to zero).
-  const explicit = opts.optimize != null || process.env.JZ_TEST_OPTIMIZE != null
-  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, explicit ? optJSONFor(self, opts) : 0)
+  // BYTES leg mirrors native's optimize default (level 2). It was pinned to the
+  // kernel's historical optimize:false while the in-kernel L2 divergences were
+  // triaged; the ratchet hit ZERO (full suite green at JZ_TEST_OPTIMIZE=2
+  // through dist/jz.wasm — i64 VALUE CONTRACT, untyped-receiver number
+  // methods, static-literal aliasing, both-worlds i64 folders), so the kernel
+  // now runs its own optimizer by default, same as native.
+  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts))
   const bin = self.memory.read(out)
   return bin instanceof Uint8Array ? bin : new Uint8Array(bin)
 }
