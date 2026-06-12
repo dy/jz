@@ -55,3 +55,69 @@ emit builds `'$'+name`-style keys per use — a SOURCE-level fix: cache
 prefixed names per binding) + per-node value-model dispatch (shape-IC for
 dyn-get/arr-idx on kind-erased receivers). Both are scoped, neither is a
 runtime micro-fix.
+
+
+## The JIT-baseline guarantee — extra-work inventory (2026-06-12, session 3)
+
+Mission restated: a jz-compiled module must never do work the JIT doesn't.
+Per-class status, from the corrected jessie profile (import-offset fixed):
+
+| extra work | share | status |
+|---|---|---|
+| tag-compare ladders (`op === 'lit'`) | was ~17% | **KILLED** — intern-bit + literal-eq inline (22fb332) |
+| `__is_truthy` helper calls | was 3.8% | **KILLED** — tee pre-step inlines every site (22a2ac4) |
+| closure-hook dispatch: tramp + call_indirect | ~10% | **OPEN — the next big one.** subscript's `parse.space/step/id` hooks are closure-valued slots written once at init; V8 calls them direct+inlined. Kill: generalize the devirt pass to K-way guarded DIRECT BODY calls for closure slots whose writes are all init-time consts — elides both the indirect call and the arity-adapting trampoline. |
+| value-model residual on scan paths (`__typed_idx`/`__ptr_offset`/`__arr_idx_known`) | ~5% | OPEN — tag-guarded inline fast paths for param-stable receivers; shape-IC longer term |
+| AST-node alloc volume (`__alloc_hdr`) | ~4% | OPEN(long) — JIT wins via escape analysis; extend jz's `_nonEscaping` to loop-local array literals |
+| map fresh-key byte-walks (self-host only) | ~10% of kernel | OPEN — jz-SOURCE fix: stop rebuilding `'$'+name` keys per use (cache per binding); not a runtime feature |
+
+Measured after this session's kills: jessie 2.84 → 2.01 ms (1.52× of JSC,
+was 1.75×); jz self-host ratio ~1.83×. The guarantee claim becomes honest
+when the closure-devirt + key-caching items land — they cover the two
+remaining double-digit classes.
+
+
+## 2026-06-12 session 3 — the CI-only x64 OOB: root-caused, fix needs design
+
+Symptom: selfhost CI (linux-x64) traps OOB while the kernel compiles
+`Math.sqrt(-1)`; byte-identical kernel passes on darwin-arm64 (verified:
+same sha256, reproduced in docker --platform linux/amd64, node22).
+
+Mechanism: wasm's one nondeterminism — NaN payload bits. x64 arithmetic
+produces SIGN-SET qNaNs (0xFFF8…), arm64 canonical ones (0x7FF8…). A NaN
+that escapes canonicalization on a narrowed path becomes, in a kind-erased
+slot, a value whose bits the dispatch layer interprets: canonical decodes
+as the harmless NaN atom (tag 0), sign-set as tag 14 + offset 0 → header
+reads at u32-wrapped negative addresses → OOB. Hosts can inject sign-set
+NaNs through typed arrays on ANY platform, so this is a general soundness
+hole, not an x64 quirk.
+
+Why the obvious fix is wrong: replacing the `f !== f` box tests with a
+strict prefix test (notBoxWat) DOES fix the kernel (verified in docker:
+all trap cases compile, kernel simd+fuzz 93/93) — but it breaks the
+i64 VALUE CONTRACT: in-kernel BigInts are raw i64 carriers, and negative
+ones (0xFFF8… bit range) legitimately alias the NaN space. __eq's bit-eq
+arm and __is_truthy were RELYING on NaN-shaped ≠ NAN_BITS meaning
+"negative kernel BigInt" (the code comments say so); the prefix-strict
+variant made every negative bigint falsy/never-self-equal and broke the
+watr i64 suites at all levels. Reverted wholesale.
+
+The DESIGNED fix (next session, pick one):
+1. Canonicalize at the narrow→boxed boundary: any f64 leaving the pure-
+   numeric domain into a kind-erased slot gets the canon select. Sound,
+   costs ~3 ops per possibly-NaN boxing store.
+2. Move kernel BigInt carriers out of the NaN-bit space (e.g. flip to an
+   offset encoding) so prefix-strict dispatch becomes valid — then the
+   notBoxWat fix (already written, in git history at the revert) lands
+   as-is and ALSO closes the host-injection hole.
+3. Find and canonicalize the specific kernel-internal NaN producer that
+   feeds the sqrt-fold path (narrowest; doesn't close the general hole).
+
+Status: CI selfhost stays red on x64 with the cause fully named; every
+local leg (native ×4 + kernel arm64) is green. The docker repro recipe:
+  rsync tree → /tmp/jz-docker (symlink node_modules), build dist,
+  docker run --platform linux/amd64 node:22 → compile 'Math.sqrt(-1)'.
+
+Side find (latent, unfixed): element-const folding ignores writes through
+a DIFFERENT typed view of the same buffer (u[0]=…; buf[0] folds to the
+init value) — aliasing must kill element facts across views.
