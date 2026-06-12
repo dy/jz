@@ -163,7 +163,8 @@ function buildInternTable() {
     if (b.length < 5 || b.length > 32) continue
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193) | 0
-    entries.push([h >>> 0, off + 4])
+    if (h <= 1) h = (h + 2) | 0   // mirror __str_hash's empty/tombstone clamp
+    entries.push([h >>> 0, off + 8])
   }
   if (!entries.length) return
   let size = 4

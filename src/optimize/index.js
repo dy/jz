@@ -35,7 +35,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 import { T } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
-import { nanPrefixHex, atomNanHex } from '../../layout.js'
+import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
@@ -2476,7 +2476,7 @@ function fusedRewrite(fn, counts) {
     if (Array.isArray(fn)) {
       for (let i = 0; i < fn.length; i++) {
         const c = fn[i]
-        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts)
+        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts, null)
       }
     }
     return
@@ -2485,17 +2485,23 @@ function fusedRewrite(fn, counts) {
   const name = typeof fn[1] === 'string' ? fn[1] : null
   const skipInline = !!(name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy' || name === '$__is_null'))
   const bodyStart = findBodyStart(fn)
+  // i64 scratch allocator for the literal-eq inline: any-shaped operand is
+  // tee'd once instead of duplicated. Decls splice in after the walk.
+  const newDecls = []
+  let scratchN = 0
+  const freshI64 = () => { const n = `$__eqt${scratchN++}`; newDecls.push(['local', n, 'i64']); return n }
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
-    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts)
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64)
   }
+  if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-function walkRewrite(node, doInline, counts) {
+function walkRewrite(node, doInline, counts, freshI64) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64)
   }
   const op = node[0]
   // Piggyback local-ref counting for sortLocalsByUse. `counts` may be undefined
@@ -2508,19 +2514,65 @@ function walkRewrite(node, doInline, counts) {
   // Identical bits ⇒ equal-unless-canonical-NaN; static-literal dedup + SSO +
   // slice interning make the hit dominant in tree-walking code (tag compares),
   // so most sites skip the call. The else arm keeps the original call.
-  if (doInline && op === 'call' && node.length === 4 && node[1] === '$__eq' && !node._eqFast) {
-    // Duplicating an arg is sound when it's a PURE small expression (consts,
-    // local reads, loads, layout arithmetic): both copies evaluate before any
-    // store can intervene (the if's cond runs, then at most the else arm).
-    // Calls / tees / grows are excluded — they observe or mutate state.
+  if (doInline && op === 'call' && (node[1] === '$__eq' || node[1] === '$__str_eq')
+      && node.length === 4 && !node._eqFast) {
     const cheap = (n) => Array.isArray(n) &&
       (n[0] === 'local.get' ||
         (n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get'))
-    if (cheap(node[2]) && cheap(node[3])) {
+    // i64.const whose bits decode to a CANONICAL interned string (STRING tag,
+    // INTERN_BIT set, SSO/SLICE clear) — i.e. a static-literal operand.
+    const internedLit = (n) => {
+      // (i64.const 0x…) or its f64-carrier form (i64.reinterpret_f64 (f64.const nan:0x…))
+      let tok = null
+      if (Array.isArray(n) && n[0] === 'i64.const') tok = n[1]
+      else if (Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1])
+        && n[1][0] === 'f64.const' && typeof n[1][1] === 'string' && n[1][1].startsWith('nan:'))
+        tok = n[1][1].slice(4)
+      if (tok == null) return false
+      let v
+      try { v = BigInt(tok) } catch { return false }
+      if (v < 0n) v += 1n << 64n
+      if (((v >> 47n) & 0xFn) !== 4n) return false
+      return ((v >> 32n) & 0x6001n) === BigInt(STR_INTERN_BIT)
+    }
+    // Literal-vs-X inline: bit-eq → 1; X carrying the canonical aux pattern →
+    // 0 (only a canonical string can content-equal a canonical literal, and
+    // canonicals are deduped; every NON-string kind is ≠ a string under ===
+    // as well, so answering 0 on the pattern is sound for ANY value). Slices,
+    // SSO, fresh heap strings and NaN fall through to the call. This is what
+    // makes `op === 'literal'` dispatch ladders cost ~3 ops per rung instead
+    // of a helper call — the V8 interned-pointer-compare equivalent.
+    const a = node[2], b = node[3]
+    const lit = internedLit(b) ? b : internedLit(a) ? a : null
+    const x = lit === b ? a : b
+    if (lit && (cheap(x) || freshI64)) {
+      node._eqFast = true
+      // Cheap operands duplicate; anything else evaluates ONCE into an i64
+      // scratch (tee in the first use), so the inline applies to un-hoisted
+      // shapes like `node[0] === 'lit'` too.
+      let first = x, reuse = x
+      if (!cheap(x)) {
+        const t = freshI64()
+        first = ['local.tee', t, x]
+        reuse = ['local.get', t]
+        node[2] = lit === b ? reuse : lit
+        node[3] = lit === b ? lit : reuse
+      }
+      const auxPat = ['i32.eq',
+        ['i32.and', ['i32.wrap_i64', ['i64.shr_u', reuse, ['i64.const', 32]]], ['i32.const', 0x6001]],
+        ['i32.const', STR_INTERN_BIT]]
+      return ['if', ['result', 'i32'],
+        ['i64.eq', first, lit],
+        ['then', ['i32.const', 1]],
+        ['else', ['if', ['result', 'i32'], auxPat,
+          ['then', ['i32.const', 0]],
+          ['else', node]]]]
+    }
+    if (node[1] === '$__eq' && cheap(a) && cheap(b)) {
       node._eqFast = true   // pre+post phases both run this walk — wrap once
       return ['if', ['result', 'i32'],
-        ['i64.eq', node[2], node[3]],
-        ['then', ['i64.ne', node[2], ['i64.const', NAN_BITS]]],
+        ['i64.eq', a, b],
+        ['then', ['i64.ne', a, ['i64.const', NAN_BITS]]],
         ['else', node]]
     }
   }

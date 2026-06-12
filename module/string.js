@@ -17,7 +17,7 @@ import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
-import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, STR_INTERN_BIT } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
@@ -83,6 +83,8 @@ const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.ha
             (i32.const 0x01000193)))
           (local.set $j (i32.add (local.get $j) (i32.const 1)))
           (br $hl)))
+        (if (i32.le_s (local.get $h) (i32.const 1))
+          (then (local.set $h (i32.add (local.get $h) (i32.const 2)))))
         (local.set $j (i32.and (local.get $h) (global.get $__internMask)))
         (block $missI (loop $plI
           (block $nextI
@@ -99,7 +101,7 @@ const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.ha
                 (i32.load8_u (i32.add (local.get $cand) (local.get $k)))))
               (local.set $k (i32.add (local.get $k) (i32.const 1)))
               (br $vl)))
-            (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $cand))))
+            (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_INTERN_BIT}) (local.get $cand))))
           (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (global.get $__internMask)))
           (br $plI)))))` : ''
 
@@ -156,16 +158,33 @@ export default (ctx) => {
     const bytes = new TextEncoder().encode(str)
     const len = bytes.length
     if (!ctx.memory.shared) {
-      // Own memory: place in static data segment (no runtime allocation)
+      // Own memory: place in static data segment (no runtime allocation).
+      // Under internStrings the layout is [hash u32][len u32][bytes] and the
+      // pointer carries STR_INTERN_BIT: statics are CANONICAL (deduped), so
+      // unequal canonicals are bit-unequal (__str_eq short-circuit) and
+      // __str_hash loads the cached FNV at -8 instead of re-hashing. The len
+      // header stays at -4 either way — no other reader changes.
+      const interned = !!ctx.transform.optimize?.internStrings
+      const hdr = interned ? 8 : 4
+      const aux = interned ? STR_INTERN_BIT : 0
       if (!ctx.runtime.data) ctx.runtime.data = ''
       const prior = ctx.runtime.dataDedup.get(str)
-      if (prior !== undefined) return mkPtrIR(PTR.STRING, 0, prior + 4)
+      if (prior !== undefined) return mkPtrIR(PTR.STRING, aux, prior + hdr)
       while (ctx.runtime.data.length % 4 !== 0) ctx.runtime.data += '\0'
       const offset = ctx.runtime.data.length
+      if (interned) {
+        // byte-FNV + clamp — must equal __str_hash's output exactly (it hashes
+        // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels)
+        let h = 0x811c9dc5 | 0
+        for (let i = 0; i < len; i++) h = Math.imul(h ^ bytes[i], 0x01000193) | 0
+        if (h <= 1) h = (h + 2) | 0
+        h = h >>> 0
+        ctx.runtime.data += String.fromCharCode(h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF)
+      }
       ctx.runtime.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
       for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(bytes[i])
       ctx.runtime.dataDedup.set(str, offset)
-      return mkPtrIR(PTR.STRING, 0, offset + 4)
+      return mkPtrIR(PTR.STRING, aux, offset + hdr)
     }
     // Shared memory: pack all string literals into one passive data segment with 4-byte
     // length prefixes. At __start, alloc the whole pool once and memory.init it in a single
@@ -304,6 +323,7 @@ export default (ctx) => {
     (local $ta i32) (local $tb i32)
     (local $offA i32) (local $offB i32)
     (local $ssoA i32) (local $ssoB i32)
+    (local $axA i32) (local $axB i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -318,6 +338,19 @@ export default (ctx) => {
       (i32.const ${LAYOUT.SSO_BIT})))
     ;; Both SSO with !bit-eq ⇒ content differs (high 32 bits hold tag+aux; both equal here).
     (if (i32.and (local.get $ssoA) (local.get $ssoB))
+      (then (return (i32.const 0))))
+    ;; Both CANONICAL interned heap strings (STR_INTERN_BIT, SSO/SLICE clear):
+    ;; canonicals are deduped, so bit-ne ⇒ content-ne — the V8 pointer-compare
+    ;; equivalent. This is the dominant unequal case in tag-dispatch chains
+    ;; (op === 'literal' ladders over static literals).
+    (local.set $axA (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))))
+    (local.set $axB (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))))
+    (if (i32.and
+          (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                   (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+          (i32.and
+            (i32.eq (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))
+            (i32.eq (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))))
       (then (return (i32.const 0))))
     ;; Both heap STRING fast path: inline len from header. Chunk by 4 bytes via unaligned
     ;; i32.load (wasm guarantees unaligned-OK), then byte-tail. Most string comparisons fail

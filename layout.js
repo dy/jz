@@ -104,6 +104,16 @@ export const nanPrefixHex = () =>
 export const atomNanHex = atomId =>
   '0x' + (LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 
+/** STRING aux bit 0 on a PLAIN-HEAP string (SSO and SLICE clear): this is a
+ *  CANONICAL interned string — the static-pool copy (or an intern-table hit
+ *  resolving to it). Two canonicals are bit-equal iff content-equal, so
+ *  __str_eq answers unequal canonicals without touching bytes, and interned
+ *  statics carry a cached FNV hash at offset-8 ([hash u32][len u32][bytes])
+ *  that __str_hash loads instead of re-hashing. Inert elsewhere: slice-length
+ *  bits are only read under SLICE_BIT, SSO length under SSO_BIT, and plain-
+ *  heap consumers read the len header at -4 regardless of aux. */
+export const STR_INTERN_BIT = 0x1
+
 /** Pre-shifted STRING SSO aux bit as i64 hex. */
 export const ssoBitI64Hex = () =>
   '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
