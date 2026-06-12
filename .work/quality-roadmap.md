@@ -277,3 +277,62 @@ optimizer strings closures array-methods` → 501/501):
     restored; native repro pinned in test/types.js ×4 (toString(16)/toFixed
     on poly-slot reads, string-receiver radix ignore, own-prop shadow).
     Slice: 100 → 0 (501/501).
+
+## 2026-06-12 — bench page self-host case + two latent soundness bugs
+
+The "include jz.wasm on the bench page" request turned into a soundness
+session: wiring the self-host compiler as a bench workload exposed three real
+compiler bugs (all pinned with tests, all committed).
+
+- [x] **Schema shape-consensus poisoning** (974a979). "First literal
+  assignment fixes the shape" bound a var's schema to ONE object literal
+  while ignoring every other assignment — Map/table lookups, ternary arms,
+  other literals, even DEAD code. Slot reads then misread foreign layouts
+  (.laneType returning another shape's slot-0; .accF64 reading past a 4-slot
+  object). Killed ALL reduce vectorization in the kernel via the (dead)
+  minmax-widen literal in tryReduceVectorize. Fix: bindAssignSchema consensus
+  in prepare (any disagreeing assignment unbinds + poisons), idOf/slotOf/
+  emit-ptrAux/program-facts all respect ctx.schema.poisoned; structural
+  subtyping skipped for poisoned names. Found by 90-line delta-reduction of
+  the kernel regression → standalone jz repro at optimize:false.
+- [x] **rep.nullable lost across closure captures** (974a979). A capture
+  whose parent binding could hold null (`let x = null` then assigned a
+  number) lost the nullable mark inside the closure body → `x == null`
+  folded to constant false → first-write guards skipped. In-kernel:
+  _offsetLocalStride's `stride == null` never fired in its recursive walker
+  → every offset-tee copy loop failed the soundness check → memory.copy
+  recognition dead in jz.wasm. Fix: closure.make captures nullable
+  (captureNullables); emitClosureBody seeds it.
+- [x] **fusedRewrite $__is_truthy inline omitted FALSE** (d6be210). The
+  inline checked 4 falsy patterns where the real helper checks 5 — boolean
+  false became truthy through `x || y` at every optimize level ≥ 1. THIS was
+  the long-documented "jessie jz-row throws" bench gap, and the CI selfhost
+  fuzz divergence (seeds 7/18). Both jessie and jz bench workloads now
+  produce byte-identical output across false/1/2/3/speed.
+- [x] **Bench: `jz` case** (bench/jz/jz.js) — the whole compiler pipeline
+  (scripts/self.js graph, resolveNode for watr) compiling three small
+  programs at L2; jz row = jz.wasm compiling JavaScript. ~64 ms vs V8
+  ~39 ms (≈1.9× of JSC baseline), parity ok. Graph cases (jessie, jz) now
+  build web artifacts too: bench/web/jessie.wasm + bench/web/jz.wasm join
+  watr.wasm. Case/target name clash ('jz') resolved: bare arg = case.
+  memory: 64 pages initial for the jz case (450 kB data segment; growth
+  covers the arena).
+- [x] CI: bench publish needed `permissions: contents: write` (403 on push);
+  example wasm artifacts regenerated after the codegen changes (1e2dff9).
+  selfhost fuzz failure was the FALSE bug — fixed by d6be210.
+- [x] Perf (4f89986): memory.copy/fill loop idioms (overlap-guarded
+  memmove/memset; 4.5× on 1 MB f64 copy+zero) and widening min/max
+  reductions (i8x16/i16x8 min/max at lane width; 44× on 1 M u8 max).
+  Entry-guarded SIMD prefix: lane-domain identities aren't neutral for an
+  arbitrary live accumulator.
+
+Next perf generalizations (approved, not yet started):
+- [ ] devirt K>2 + closure-array dispatch tables (`handlers[state]()`).
+- [ ] param-kind overlay for narrowValResults: hardParamVal(name,k) ===
+  VAL.NUMBER consensus → seed param rep val NUMBER (excludes exports /
+  value-used), unboxing e.g. `let m = seed` accumulators so the minmax canon
+  forms without `+seed` (infra exists: hardParamVal + applyPointerParamAbi
+  precedent in narrow.js).
+- [ ] emit-level same-type raw element move so narrow (u8/i16/i32) copy
+  loops also match tryMemCopyFill (currently value-model conversion trees
+  block the idiom).
