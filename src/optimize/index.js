@@ -2476,7 +2476,7 @@ function fusedRewrite(fn, counts) {
     if (Array.isArray(fn)) {
       for (let i = 0; i < fn.length; i++) {
         const c = fn[i]
-        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts, null)
+        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts, null, null)
       }
     }
     return
@@ -2490,18 +2490,19 @@ function fusedRewrite(fn, counts) {
   const newDecls = []
   let scratchN = 0
   const freshI64 = () => { const n = `$__eqt${scratchN++}`; newDecls.push(['local', n, 'i64']); return n }
+  const freshF64 = () => { const n = `$__eqf${scratchN++}`; newDecls.push(['local', n, 'f64']); return n }
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
-    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64)
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64, freshF64)
   }
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-function walkRewrite(node, doInline, counts, freshI64) {
+function walkRewrite(node, doInline, counts, freshI64, freshF64) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64, freshF64)
   }
   const op = node[0]
   // Piggyback local-ref counting for sortLocalsByUse. `counts` may be undefined
@@ -2591,6 +2592,14 @@ function walkRewrite(node, doInline, counts, freshI64) {
         && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') return ['i32.or',
       ['i64.eq', node[2], ['i64.const', NULL_BITS]],
       ['i64.eq', node[2], ['i64.const', UNDEF_BITS]]]
+    // Expression-arg __is_truthy: evaluate once into an f64 scratch via tee —
+    // the local.tee form below then expands inline (covers `(c = next()) || …`
+    // and every condition the emitter didn't pre-hoist).
+    if (fname === '$__is_truthy' && freshF64 && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
+        && Array.isArray(node[2][1])
+        && node[2][1][0] !== 'local.get' && node[2][1][0] !== 'local.tee') {
+      node[2] = ['i64.reinterpret_f64', ['local.tee', freshF64(), node[2][1]]]
+    }
     if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
         && Array.isArray(node[2][1]) && (node[2][1][0] === 'local.get' || node[2][1][0] === 'local.tee')) {
       // `local.tee $x SRC` evaluates SRC once, stores to $x, returns the value —
