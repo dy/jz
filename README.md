@@ -17,16 +17,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM ([known divergences](#faq)).
-
-* **Plain JS in, no annotations** — types inferred from the code you already write ([how](#faq))
-* **Compiles in-browser in milliseconds** — pure synchronous compiler; live, on-keystroke ([FAQ](#faq))
-* **Single-digit-kB output** — no runtime, no GC; size gated in CI ([bench](bench/README.md))
-* **Auto-SIMD** — plain loops vectorize to v128 ([optimizations](#faq))
-* **Same source, two engines** — run as JS or as WASM, honest A/B with one toggle
-* **Goes native** — wasm2c pipeline beats V8 on the example corpus ([details](scripts/native/README.md))
-* **Self-hosting** — `dist/jz.wasm` is jz compiled by jz, gated in CI
-
+jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM ([known divergences](#faq)). In other words, get extra performance from your computing JS code by compiling it to WASM.
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
