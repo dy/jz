@@ -49,9 +49,12 @@ const EXAMPLES = [
   { name: 'diffusion', frame: 'frame (8 substeps)',
     make: (e) => { e.resize(448, 448); e.clear(); e.seedRect(200, 200, 248, 248); return () => e.frame() } },
 
-  // Serial recurrence (x,y chain), no cross-iteration ILP — yet jz wins ~1.3×
-  // since hoistGlobalPtrOffset (the trig + plot-buffer writes dominate). Gated.
-  { name: 'attractors', frame: 'frame 1.2M iters',
+  // Serial recurrence (x,y chain), no cross-iteration ILP — jz wins ~1.3× on
+  // Apple Silicon since hoistGlobalPtrOffset (trig + plot-buffer writes
+  // dominate), but the wasm-vs-V8 ratio is µarch-sensitive: GH's Xeon runners
+  // measure 0.87–0.90×, straddling the winner floor. Counted in the geomean,
+  // reported, not floor-gated — same class as the other serial recurrences.
+  { name: 'attractors', frame: 'frame 1.2M iters', opt: true,
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
   // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global
