@@ -30,3 +30,28 @@ mechanism.
 "min(V8, JSC) as the floor — beaten outright on 9 of 14 workloads, V8
 beaten on 11 of 14; the three compiler-on-itself workloads trail by
 1.1–1.9× with the cause named and tracked (shape-IC dispatch)."
+
+
+## 2026-06-12 session 2 — intern-bit landed, frontier sharpened
+
+Landed (22fb332): STR_INTERN_BIT canonical strings — bit-ne canonicals answer
+≠ in 3 ops, cached FNV header, fusedRewrite literal-eq inline (any-shaped
+operand tee'd once). Dispatch-ladder microbench 54→31 ms; **watr flipped to
+beating V8** (1.35 vs 1.37 ms). jz self-host 64→~61 ms (±3 noise).
+
+Measured dead-ends (do not retry without new evidence):
+- Runtime map-key interning at the hash boundary: REGRESSION on fresh-concat
+  keys (the probe must walk bytes to identify a fresh string — same cost as
+  the verify it replaces) + an OOB; reverted. The verify-walk is irreducible
+  for fresh keys; V8 pays it too (cons-string hash+compare).
+- crc32 vs JSC: jz's stream is optimal (2 loads + 4 ALU/byte); jz.wasm runs
+  identically on V8 (11.98) and JSC (11.94) wasm — JSC's B3 JS tier (9.2)
+  out-schedules both wasm backends on the serial LUT chain. Engine-level,
+  reclassified structural in the page ledger. (A ×4 partial unroll could
+  shave the ~3 loop-overhead ops/iter ≈ 15% — pass not yet written.)
+
+jz self-host residual (~1.6× vs jz.js): fresh-key byte-walks (jz's own
+emit builds `'$'+name`-style keys per use — a SOURCE-level fix: cache
+prefixed names per binding) + per-node value-model dispatch (shape-IC for
+dyn-get/arr-idx on kind-erased receivers). Both are scoped, neither is a
+runtime micro-fix.

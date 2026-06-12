@@ -311,13 +311,12 @@ const INSIGHTS = {
 // Loss ledger: cause + status per known (case, target) loss; structural classes appended.
 const LOSS_NOTES = {
   'tokenizer/as': ['AS reads chars as raw memory loads; JZ still NaN-boxes the string pointer', 'open — string carrier'],
-  'watr/v8': ['V8 profile-tiers a 200 kB hot compiler at runtime', 'open — code layout'],
-  'watr/deno': ['same V8 tiering, Deno runtime', 'open — code layout'],
-  'watr/bun': ['JSC tiering on the same large hot path', 'open — code layout'],
+  'watr/deno': ['V8 tiering, Deno runtime — the node row now wins after canonical-string interning', 'open — margin within noise'],
+  'watr/bun': ['JSC tiering on the same large hot path', 'open — shape-IC dispatch'],
   'json/v8': ['engine JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
   'json/deno': ['engine JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
   'json/bun': ['JSC’s JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
-  'crc32/bun': ['JSC’s codegen on the byte-LUT loop', 'open — optimizer headroom'],
+  'crc32/bun': ['serially-dependent LUT chain: JZ’s stream is optimal (2 loads + 4 ALU/byte) and runs identically on V8 and JSC wasm — JSC’s B3 JS tier schedules it tighter than either wasm backend', 'structural — wasm-engine scheduling, not codegen'],
   'jessie/v8': ['polymorphic AST nodes hit dyn-dispatch where the JIT uses shape ICs', 'open — shape-IC dispatch'],
   'jessie/bun': ['same dynamic-receiver tax against JSC’s ICs', 'open — shape-IC dispatch'],
   'jz/v8': ['kind-erased IR tree: every node[i]/.prop is a runtime dispatch; JITs use inline caches', 'open — shape-IC dispatch'],
