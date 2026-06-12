@@ -211,15 +211,34 @@ writes. Signed canon `v>MAX → v−2^63−2^63` is exact natively and dead in-k
 Fixed en route: ?.() null short-circuit (select-of-closure-consts corrupted),
 slot-types .prop (static object base folded to 0), "2026"|0 (i64.and identity
 fired on corrupt canon), devirt-in-kernel (i64of returned kind-erased BigInt).
-**Ratchet remaining: 2** (`JZ_TEST_OPTIMIZE=2 node test/index.js types
+**Ratchet remaining: 1** (`JZ_TEST_OPTIMIZE=2 node test/index.js types
 optimizer strings closures array-methods`):
-  - promoteIntArrayLiterals closure-capture: REAL in-kernel miscompile — a
-    len≥4 static array literal + a written-cell capture in the SAME closure
-    → ctx.runtime.data arrives at emission truthy but length-0 (escBytes sees
-    a corrupted string). All pieces simulate correctly in isolation (append,
-    escBytes, churn, binary strings) — suspect kernel-runtime string/heap
-    corruption only manifest in the full compiler. Minimal pair pinned:
-    `cap arr5 no cell` data=179 ✓ vs `cap arr5 + cell` data=0 ✗.
-  - devirt kernel-leg shape: kernel devirt currently a missed optimization
-    (correct fallback call_indirect kept) — shape assertion fails on the
-    kernel leg only; semantics preserved.
+  - [x] devirt kernel-leg — was a MISSING WIRING, not a divergence: scripts/
+    self.js's optimizeTail (the kernel's pipeline driver, mirroring index.js)
+    never mapped cfg.devirtIndirect → watrOpts.devirt. Wired; kernel devirt
+    now fires (guards + direct tramp calls + fallback, shape test green).
+  - [ ] **promoteIntArrayLiterals closure-capture — in-kernel escBytes
+    corruption** (open; the one remaining slice failure). Symptom: compiling
+    `len≥4 static array literal + written-cell capture in one closure` at
+    kernel-L2, every `\xy` escape in the emitted data segment collapses to
+    `\00` (ASCII passes through) → static array reads zeros → undefined.
+    Hunted exhaustively this session — every link of the chain verified or
+    replaced, bug invariant:
+      input d intact at the call (charCodeAt probes, non-allocating);
+      escBytes output VERIFIED CORRECT via slice probes (\05 present!) in the
+      same compile where the pushed node ends up corrupt;
+      swaps that did NOT fix: Uint8Array→plain arrays (codecs), parseInt/
+      slice→char-math, toString(16)/padStart→table lookup, +=→parts.join,
+      bump-extend fast path disabled, narrowI32 disabled, boundSafeCalls
+      reverted, packData disabled;
+      Heisenbug: ANY allocating probe before the call heals it (layout-
+      sensitive); zeroing is SEMANTIC (exactly the escape triples) ⇒ HEXD
+      table reads as length-0 at runtime in the broken layouts (every index
+      OOB → NUL) ⇒ suspected stale/aliased constant or static-env slot
+      collision in the kernel's own closure machinery (one stale-build dump
+      showed the closure copy's HEXD const off by +0xDAD8 pointing at foreign
+      pool bytes — gone on rebuild, mechanism unexplained).
+    Next session: diff a healing vs broken build's full WAT; watchpoint the
+    HEXD header bytes (0x53B94) via instrumented interop memory; audit
+    dedupClosureBodies env-offset assumptions and appendStaticSlots vs string
+    pool interleaving.

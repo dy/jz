@@ -37,6 +37,10 @@ function optimizeTail(module, cfg) {
     if (watrOpts === true) watrOpts = { loopify: false }
     else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
   }
+  if (cfg.devirtIndirect) {
+    if (watrOpts === true) watrOpts = { devirt: true }
+    else if (typeof watrOpts === 'object' && watrOpts.devirt === undefined) watrOpts.devirt = true
+  }
   if (!cfg.watr) return module
   const optimized = watOptimize(module, watrOpts)
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null

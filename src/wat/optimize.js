@@ -3128,37 +3128,42 @@ const dedupTypes = (ast) => {
 
 // ==================== DATA SEGMENT PACKING ====================
 
-/** Parse a WAT data string literal into Uint8Array */
+/** Parse a WAT data string literal into a plain byte array. Plain arrays —
+ *  not Uint8Array — throughout the data codecs: typed-array views/methods have
+ *  spotty native lowerings (subarray dispatches to the HOST, in-situ variable-
+ *  index reads misread in the kernel), while plain number arrays are the
+ *  optimizer's lingua franca and proven kernel-faithful. */
 const parseDataString = (str) => {
-  if (typeof str !== 'string' || str.length < 2 || str[0] !== '"') return new Uint8Array()
-  const inner = str.slice(1, -1)
+  if (typeof str !== 'string' || str.length < 2 || str[0] !== '"') return []
   const bytes = []
-  for (let i = 0; i < inner.length; i++) {
-    if (inner[i] === '\\') {
-      const next = inner[++i]
-      if (next === 'x' || next === 'X') {
-        bytes.push(parseInt(inner.slice(i + 1, i + 3), 16))
-        i += 2
-      } else if (/[0-9a-fA-F]/.test(next) && /[0-9a-fA-F]/.test(inner[i + 1])) {
-        bytes.push(parseInt(inner.slice(i, i + 2), 16))
-        i++
-      } else if (next === 'n') bytes.push(10)
-      else if (next === 't') bytes.push(9)
-      else if (next === 'r') bytes.push(13)
-      else if (next === '\\') bytes.push(92)
-      else if (next === '"') bytes.push(34)
-      else bytes.push(next.charCodeAt(0))
+  // Hex digit value by char code, −1 for non-hex — pure number math (no
+  // regex/slice/parseInt on string views; see contract note above).
+  const hexv = (c) => c >= 48 && c <= 57 ? c - 48 : c >= 97 && c <= 102 ? c - 87 : c >= 65 && c <= 70 ? c - 55 : -1
+  const end = str.length - 1   // skip surrounding quotes
+  for (let i = 1; i < end; i++) {
+    const c = str.charCodeAt(i)
+    if (c !== 92) { bytes.push(c); continue }
+    const n = str.charCodeAt(++i)
+    if (n === 120 || n === 88) {        // \xHH
+      bytes.push((hexv(str.charCodeAt(i + 1)) << 4) | hexv(str.charCodeAt(i + 2)))
+      i += 2
     } else {
-      bytes.push(inner.charCodeAt(i))
+      const h1 = hexv(n), h2 = i + 1 < end ? hexv(str.charCodeAt(i + 1)) : -1
+      if (h1 >= 0 && h2 >= 0) { bytes.push((h1 << 4) | h2); i++ }
+      else if (n === 110) bytes.push(10)       // \n
+      else if (n === 116) bytes.push(9)        // \t
+      else if (n === 114) bytes.push(13)       // \r
+      else bytes.push(n)                       // \\ \" and any other escaped char
     }
   }
-  return new Uint8Array(bytes)
+  return bytes
 }
 
-/** Encode Uint8Array as WAT data string literal */
-const encodeDataString = (bytes) => {
+/** Encode a plain byte array as a WAT data string literal; `end` bounds the
+ *  bytes (always passed explicitly — see parseDataString's contract note). */
+const encodeDataString = (bytes, end) => {
   let str = '"'
-  for (let i = 0; i < bytes.length; i++) {
+  for (let i = 0; i < end; i++) {
     const b = bytes[i]
     if (b >= 32 && b < 127 && b !== 34 && b !== 92) {
       str += String.fromCharCode(b)
@@ -3169,33 +3174,26 @@ const encodeDataString = (bytes) => {
   return str + '"'
 }
 
-/** Trim trailing zeros from data content items.
- *  Assembles via Uint8Array.set (not push(...spread)) — a data segment can be
- *  hundreds of KB, and spreading it as call args overflows V8's argument stack. */
+/** Trim trailing zeros from data content items. Per-byte pushes (never
+ *  push(...spread) — a segment can be hundreds of KB and spreading overflows
+ *  V8's argument stack; never Uint8Array — see parseDataString's note). */
 const trimTrailingZeros = (items) => {
-  const chunks = []
-  let total = 0
+  const bytes = []
   for (const item of items) {
-    let chunk
     if (typeof item === 'string') {
-      chunk = parseDataString(item)
+      const chunk = parseDataString(item)
+      for (let i = 0; i < chunk.length; i++) bytes.push(chunk[i])
     } else if (Array.isArray(item) && item[0] === 'i8') {
-      chunk = new Uint8Array(item.length - 1)
-      for (let i = 1; i < item.length; i++) chunk[i - 1] = Number(item[i]) & 0xff
+      for (let i = 1; i < item.length; i++) bytes.push(Number(item[i]) & 0xff)
     } else {
       return items // non-trimmable item
     }
-    chunks.push(chunk)
-    total += chunk.length
   }
-  const bytes = new Uint8Array(total)
-  let off = 0
-  for (const c of chunks) { bytes.set(c, off); off += c.length }
   let end = bytes.length
   while (end > 0 && bytes[end - 1] === 0) end--
   if (end === bytes.length) return items
   if (end === 0) return []
-  return [encodeDataString(bytes.subarray(0, end))]
+  return [encodeDataString(bytes, end)]
 }
 
 /** Extract { memidx, offset } from an active data segment with constant offset */
@@ -3253,11 +3251,9 @@ const mergeDataSegments = (a, b) => {
       typeof aContent[0] === 'string' && typeof bContent[0] === 'string') {
     const aBytes = parseDataString(aContent[0])
     const bBytes = parseDataString(bContent[0])
-    const merged = new Uint8Array(aBytes.length + bBytes.length)
-    merged.set(aBytes)
-    merged.set(bBytes, aBytes.length)
+    for (let i = 0; i < bBytes.length; i++) aBytes.push(bBytes[i])
     a.length = aIdx
-    a.push(encodeDataString(merged))
+    a.push(encodeDataString(aBytes, aBytes.length))
     return true
   }
 
