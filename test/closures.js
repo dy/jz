@@ -932,3 +932,42 @@ test('devirt: param-held closure is never devirtualized (unknown candidates)', (
   const { main } = run(src, { optimize: 3 })
   is(main(4), 17) // (4+1) + (4*3)
 })
+
+// ---- nullable mark across captures ------------------------------------------
+// A capture whose parent binding can hold null (`let x = null` later assigned a
+// number) must keep its nullable mark inside the closure body — the body's own
+// write facts (val NUMBER) would otherwise fold `x == null` to constant false
+// and skip the guard. Found via the self-host kernel: _offsetLocalStride's
+// `stride == null` first-write guard never fired in a recursive walker, killing
+// every offset-tee memory.copy recognition in jz.wasm.
+
+test('capture nullable: null-compare guard survives recursive closure writes', () => {
+  const r = run(`
+    export let go = () => {
+      let stride = null, ok = true
+      function walk(n, d) {
+        if (d > 0) walk(n, d - 1)
+        if (d === 0) {
+          if (stride == null) stride = 3
+          else if (stride !== 3) ok = false
+        }
+      }
+      walk(0, 1)
+      return (stride === 3 ? 10 : 0) + (ok ? 1 : 0)
+    }
+  `)
+  is(r.go(), 11)
+})
+
+test('capture nullable: strict ===null guard inside plain closure', () => {
+  const r = run(`
+    export let go = () => {
+      let x = null
+      function set(v) { if (x === null) x = v }
+      set(7)
+      set(9)
+      return x
+    }
+  `)
+  is(r.go(), 7)
+})

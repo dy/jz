@@ -1044,3 +1044,93 @@ test('static literal: read-only literals keep the shared static instance', () =>
     export let f = () => { let a = mk(); let b = mk(); return a.x + b.y }`)
   is(f(), 16)
 })
+
+// ---- schema shape-consensus (poisoning) ------------------------------------
+// A variable's literal schema binds ONLY while every assignment agrees on that
+// one shape. A disagreeing assignment — non-literal source (table/Map lookup)
+// or different-shape literal, even in dead code — unbinds and poisons the name:
+// fixed-slot reads against one literal's layout would misread the other
+// sources' objects (the `.x` = foreign slot-0 class of bug, found via the
+// self-host kernel where a dead-branch literal poisoned tryReduceVectorize's
+// table entries and killed all reduce vectorization in jz.wasm).
+
+test('schema poison: dead-code literal must not fix slots for a table-sourced var', () => {
+  const r = run(`
+    const TBL = { k: { a: 7, b: 8, c: 9 } }
+    export let go = (m) => {
+      let e = TBL.k
+      if (m === 999) { e = { z: 5, w: 6 } }
+      return (e.a | 0) * 100 + ((e.z | 0) % 100)
+    }
+  `)
+  is(r.go(0), 700)   // .a real read; .z undefined → 0 (not slot-0 of {z,w} layout)
+})
+
+test('schema poison: decl literal + branch reassign from table reads dynamically', () => {
+  const r = run(`
+    const TBL = { k: { a: 7, b: 8, c: 9 } }
+    export let go = (m) => {
+      let e = { x: 1, y: 2 }
+      if (m) e = TBL.k
+      return (e.a | 0) * 100 + ((e.x | 0) % 100)
+    }
+  `)
+  is(r.go(0), 1)     // literal shape: a undefined, x = 1
+  is(r.go(1), 700)   // table shape: a = 7, x undefined
+})
+
+test('schema poison: module global reassigned from table reads dynamically', () => {
+  const r = run(`
+    const TBL = { k: { a: 7, b: 8, c: 9 } }
+    let g = { x: 1, y: 2 }
+    export let go = (m) => {
+      if (m) g = TBL.k
+      return (g.a | 0) * 100 + ((g.x | 0) % 100)
+    }
+  `)
+  is(r.go(1), 700)
+})
+
+test('schema poison: ternary literals + Map-sourced entries share one variable', () => {
+  // The exact vectorizer shape: dead two-literal ternary + live Map.get, then
+  // reads of props that exist only on some shapes.
+  const r = run(`
+    const OPS = {
+      i32: { add: { simd: 'i32x4.add', extract: 'lane', laneType: 'i32', constNode: ['i32.const', 0] } },
+      f64: { add: { simd: 'f64x2.add', extract: 'lane', laneType: 'f64', constNode: ['f64.const', 0] } },
+    }
+    const LOOKUP = (() => {
+      const m = new Map()
+      for (const lt of Object.keys(OPS)) for (const op of Object.keys(OPS[lt])) m.set(lt + '.' + op, OPS[lt][op])
+      return m
+    })()
+    export let go = (mode) => {
+      let entry
+      if (mode === 1) {
+        const w = null
+        entry = w ? { simd: 'i8x16.max_u', laneType: 'i8' }
+          : { simd: 'i32x4.max_s', laneType: 'i32', minmaxSelect: true }
+      } else {
+        entry = LOOKUP.get('i32.add')
+        if (!entry) return 'no-entry'
+      }
+      if (0) { entry = { laneType: 'i8', identity: ['i32.const', 0], minmaxSelect: true, accF64: 'z' } }
+      if ('i32' !== (entry.accI32 ? 'i32' : entry.accF64 ? 'f64' : entry.laneType)) return 'GATE-FAIL'
+      return 'pass:' + entry.simd
+    }
+  `)
+  is(r.go(0), 'pass:i32x4.add')
+  is(r.go(1), 'pass:i32x4.max_s')
+})
+
+test('schema binding intact: single-shape literal still resolves props', () => {
+  // No disagreeing assignment → the literal schema binds (fast path preserved).
+  const r = run(`
+    export let go = () => {
+      let e = { x: 3, y: 4 }
+      e = { x: 5, y: 6 }
+      return e.x * 10 + e.y
+    }
+  `)
+  is(r.go(), 56)
+})

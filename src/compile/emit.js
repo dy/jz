@@ -845,7 +845,8 @@ export function emitDecl(...inits) {
         // OBJECT-only: aux *is* the schemaId; mirror to ctx.schema.vars + rep.schemaId so
         // .prop slot resolution sees a precise binding. TYPED/CLOSURE aux carries other
         // semantics (elem code / funcIdx) and must not leak into schema lookups.
-        if (val.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name)) {
+        // Poisoned names (shape-disagreeing assignments) must stay schema-free.
+        if (val.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name) && !ctx.schema.poisoned?.has(name)) {
           ctx.schema.vars.set(name, val.ptrAux)
           updateRep(name, { schemaId: val.ptrAux })
         }
