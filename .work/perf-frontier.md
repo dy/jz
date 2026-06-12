@@ -121,3 +121,20 @@ local leg (native ×4 + kernel arm64) is green. The docker repro recipe:
 Side find (latent, unfixed): element-const folding ignores writes through
 a DIFFERENT typed view of the same buffer (u[0]=…; buf[0] folds to the
 init value) — aliasing must kill element facts across views.
+
+
+### RESOLVED (same session): the x64 OOB — two-line fix at the true origin
+
+The poisoned value was found by an in-kernel probe: a sign-set qNaN NUMBER
+sitting in an f64.const node — `makeConst`'s `value !== value` NaN guard
+MISSED it because in-kernel `!==` routes through __eq's bit-equality, where
+a sign-set qNaN compares EQUAL to itself (the arm that keeps negative
+i64-carrier BigInts correct). Detector swapped to `Number.isNaN` (unboxes
+to f64, f64.ne — catches every payload) in makeConst (f32+f64 arms) and
+getConst, normalizing any folded NaN to the canonical literal. Verified in
+docker linux-x64: all trap cases compile; simd+fuzz+watr green. BigInt
+semantics untouched; dispatch untouched; native no-op.
+
+LESSON (add to the i64 VALUE CONTRACT notes): in-kernel, `x !== x` is NOT
+a NaN test — it is bit-inequality for NaN-shaped carriers. NaN tests in
+compiler internals must be Number.isNaN.
