@@ -41,6 +41,7 @@ const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
 const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
+const FALSE_BITS = atomNanHex(4)
 
 /**
  * Optimization passes, partitioned by phase. The `level` presets pick which
@@ -2525,16 +2526,21 @@ function walkRewrite(node, doInline, counts) {
       const lget = ['local.get', lname]
       const first = ref[0] === 'local.tee' ? ref : lget
       const bits = ['i64.reinterpret_f64', lget]
+      // Mirror $__is_truthy (module/core.js) exactly: FIVE falsy patterns —
+      // canonical NaN, null, undefined, the empty SSO string, AND boolean
+      // false. Omitting FALSE made inlined `x || y` treat false as truthy.
       return ['if', ['result', 'i32'],
         ['f64.eq', first, lget],
         ['then', ['f64.ne', lget, ['f64.const', 0]]],
         ['else', ['i32.and',
           ['i32.and',
-            ['i64.ne', bits, ['i64.const', NAN_BITS]],
-            ['i64.ne', bits, ['i64.const', NULL_BITS]]],
-          ['i32.and',
-            ['i64.ne', bits, ['i64.const', UNDEF_BITS]],
-            ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]]]]
+            ['i32.and',
+              ['i64.ne', bits, ['i64.const', NAN_BITS]],
+              ['i64.ne', bits, ['i64.const', NULL_BITS]]],
+            ['i32.and',
+              ['i64.ne', bits, ['i64.const', UNDEF_BITS]],
+              ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]],
+          ['i64.ne', bits, ['i64.const', FALSE_BITS]]]]]
     }
   }
 
