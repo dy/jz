@@ -17,6 +17,7 @@ import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
+import { ptrOffsetFwdWat } from '../layout.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -27,13 +28,14 @@ export default (ctx) => {
   deps({
     __eq: ['__str_eq', '__ptr_type'],
     __typeof: ['__ptr_type', '__is_nullish'],
-    __len: ['__typed_shift', '__ptr_offset'],
+    __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
-    __ptr_offset: [],
+    __ptr_offset: ['__ptr_offset_fwd'],
+    __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __set_len: [],
+    __set_len: ['__ptr_offset_fwd'],
     __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
@@ -132,6 +134,8 @@ export default (ctx) => {
         (i64.or
           (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const ${LAYOUT.AUX_MASK})) (i64.const ${LAYOUT.AUX_SHIFT}))
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const ${LAYOUT.OFFSET_MASK})))))))`
+
+  ctx.core.stdlib['__ptr_offset_fwd'] = ptrOffsetFwdWat()
 
   ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr i64) (result i32)
     (local $bits i64) (local $off i32) (local $t i32)

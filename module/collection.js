@@ -46,6 +46,20 @@ function numConstLiteral(expr) {
 const sameValueZeroEq = '(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 const strEq = '(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
+// Hash-first probe guard: each slot stores the key's hash in its low 32 bits
+// (high 32 = insertion seq), so a collision step can reject on one i32 compare
+// instead of a full key compare. Equal keys always have equal stored hashes
+// (the insert wrote strHash/mapHash of that very key), so the guard never
+// skips a true match — it only skips the ~all-of-them unequal probes that were
+// walking shared-prefix bytes through __str_eq (31M unequal content-compares
+// per self-host bench run before this). If-expression for short-circuit:
+// i32.and would still evaluate the call.
+const hashGuard = (eqExpr) =>
+  `(if (result i32) (i32.eq (i32.load (local.get $slot)) (local.get $h))
+    (then ${eqExpr}) (else (i32.const 0)))`
+const strEqG = hashGuard(strEq)
+const sameValueZeroEqG = hashGuard(sameValueZeroEq)
+
 // Open-addressing probe walked additively by entrySize: avoids an i32.mul + mask per
 // step (vs recomputing slot = off + idx*entrySize). Needs $off/$cap/$h set and $end/$slot
 // locals declared. `idxExpr` is the first-slot index (defaults to h mod cap; cap is pow2).
@@ -674,9 +688,9 @@ export default (ctx) => {
   }
 
   // Generated Set probe functions
-  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET)
+  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
   // === Map ===
 
@@ -789,11 +803,11 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.SET}:forEach`] = collForEach(SET_ENTRY, 8, 8)
 
   // Generated Map probe functions
-  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEq, PTR.MAP, UNDEF_NAN, ctx.features.external)
-  ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, false, ctx.features.external)
-  ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP)
+  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.features.external)
+  ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.features.external)
+  ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 
   // new Map(iterable) seeder. Source is another Map (copy live [key,val] slots) or
   // an array of [key,value] pairs (`new Map([["a",1],…])`); any other arg yields an
@@ -903,13 +917,13 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY}))))`
 
-  ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true, false, true)
+  ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
+  ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)
+  ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEqG, PTR.HASH)
+  ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
   // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
   // Used as the bucket-level primitive for __dyn_del.
-  ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
+  ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64 bits), value is per-object props hash.
   // Uses bit-hash + i64.eq — no string allocation for the unique integer key.
   ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
@@ -941,10 +955,14 @@ export default (ctx) => {
   // literals — single bit-eq decides). Falls back to __str_eq when bits differ
   // so runtime-registered schemas (e.g. JSON.parse OBJECTs whose keys are
   // freshly heap-allocated by __jp_str) still resolve correctly.
+  // If-expression, NOT i32.or: `or` evaluates both arms, calling __str_eq even
+  // when the bit-eq already decided — that bare call per schema-key step was
+  // the hottest __str_eq producer in the self-host (the kernel includes __jp
+  // for optJSON, so the fallback arm is always compiled in).
   const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
-    ? `(i32.or
-        (i64.eq ${storedKey} ${userKey})
-        (call $__str_eq ${storedKey} ${userKey}))`
+    ? `(if (result i32) (i64.eq ${storedKey} ${userKey})
+        (then (i32.const 1))
+        (else (call $__str_eq ${storedKey} ${userKey})))`
     : `(i64.eq ${storedKey} ${userKey})`
   const buildObjectSchemaArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
@@ -989,9 +1007,7 @@ export default (ctx) => {
         (local.set $idx (i32.const 0))
         (block $schemaSetDone (loop $schemaSetLoop
           (br_if $schemaSetDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-          (if (call $__str_eq
-                (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
-                (local.get $key))
+          (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
               (br $schemaSetDone)))
@@ -1104,8 +1120,11 @@ export default (ctx) => {
       (local.set $slot (i32.add (local.get $poff) (i32.mul (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))) (i32.const ${MAP_ENTRY}))))
       (block $hdone (loop $hprobe
         (br_if $dynDone (i64.eqz (i64.load (local.get $slot))))
-        (if (call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
-          (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))
+        ;; hash-first: slot stores the key's hash in its low 32 bits — one i32
+        ;; compare rejects collision steps without walking key bytes.
+        (if (i32.eq (i32.load (local.get $slot)) (local.get $h))
+          (then (if (call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+            (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))))
         (local.set $slot (i32.add (local.get $slot) (i32.const ${MAP_ENTRY})))
         (if (i32.ge_u (local.get $slot) (local.get $pend)) (then (local.set $slot (local.get $poff))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
@@ -1414,9 +1433,9 @@ export default (ctx) => {
     (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root))))`
 
   // Generated HASH probe functions
-  ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external, true)
-  ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true, ctx.features.external)
-  ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external)
+  ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.features.external, true)
+  ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, ctx.features.external)
+  ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.features.external)
 
   // === `delete obj[k]`: lift from prepare for computed-key removal ===
   // Static-key `delete obj.x` / `delete obj["x"]` is rejected in prepare (fixed schema);

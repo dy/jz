@@ -134,18 +134,36 @@ export const ATOM_HI = {
 export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
 export const oobNanIR = () => ['f64.const', oobNanLiteral()]
 
-/** Heap forwarding-pointer follow loop (WAT fragment).
+/** Heap forwarding-pointer follow (WAT fragment).
  *  ARRAY/HASH/SET/MAP relocate on growth, leaving the old cell as a forwarding
- *  header: cap=-1 sentinel at off-4, relocated offset at off-8. This chases the
- *  chain to the live store. `off` is the i32 local (token incl. `$`) holding the
- *  current offset — mutated in place. `lowGuard` adds the `off < 8` bailout
- *  inside the loop; omit it when the caller already proved off≥8 before entry.
- *  Emits a `(block $done (loop $follow …))` — the host func must not reuse those
- *  labels. Single source for the 6 inline copies across core/array stdlib. */
+ *  header: cap=-1 sentinel at off-4, relocated offset at off-8. `off` is the
+ *  i32 local (token incl. `$`) holding the current offset — mutated in place.
+ *  `lowGuard` adds the `off < 8` bailout; omit it when the caller already
+ *  proved off≥8.
+ *
+ *  Shape: a loop-free in-bounds + sentinel CHECK with a cold call into
+ *  $__ptr_offset_fwd (the actual chase loop, module/core.js) only when the
+ *  first hop is a real forward. Keeping every inline copy loop-free is what
+ *  lets the engine inline the hot heap helpers (__ptr_offset, __len,
+ *  __arr_idx_known, __typed_idx…) — a body containing a loop is excluded from
+ *  V8's wasm inliner, and these helpers sit on ~25% of self-host compile time.
+ *  Callers must list '__ptr_offset_fwd' in their deps()/wat() dependency set. */
 export const followForwardingWat = (off = '$off', { lowGuard = true } = {}) =>
-  `(block $done (loop $follow${lowGuard ? `
-      (br_if $done (i32.lt_u (local.get ${off}) (i32.const 8)))` : ''}
-      (br_if $done (i32.gt_u (local.get ${off}) (i32.shl (memory.size) (i32.const 16))))
-      (br_if $done (i32.ne (i32.load (i32.sub (local.get ${off}) (i32.const 4))) (i32.const -1)))
-      (local.set ${off} (i32.load (i32.sub (local.get ${off}) (i32.const 8))))
-      (br $follow)))`
+  `(if (i32.and
+        ${lowGuard ? `(i32.ge_u (local.get ${off}) (i32.const 8))` : '(i32.const 1)'}
+        (i32.le_u (local.get ${off}) (i32.shl (memory.size) (i32.const 16))))
+    (then (if (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 4))) (i32.const -1))
+      (then (local.set ${off} (call $__ptr_offset_fwd (local.get ${off})))))))`
+
+/** The cold forwarding-chase loop behind followForwardingWat — the only body
+ *  allowed to loop. Re-checks the sentinel each hop (first re-check is
+ *  redundant with the caller's guard; the cold path doesn't care). */
+export const ptrOffsetFwdWat = () =>
+  `(func $__ptr_offset_fwd (param $off i32) (result i32)
+    (block $done (loop $follow
+      (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+      (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+      (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+      (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (br $follow)))
+    (local.get $off))`

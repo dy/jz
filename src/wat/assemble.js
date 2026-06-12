@@ -562,6 +562,19 @@ export function stripStaticDataPrefix(sec) {
       dv.setUint32(slotOff, off - prefix, true)
     }
   }
+  // The intern index (buildInternTable) stores raw static-string ptrs as u32
+  // slots — shift each occupied slot like every other static reference, and
+  // re-declare the (already-declared) base global at its post-strip position.
+  if (ctx.runtime.internTable) {
+    const { base, size } = ctx.runtime.internTable
+    for (let i = 0; i < size; i++) {
+      const slot = base + i * 8 + 4
+      const off = dv.getUint32(slot, true)
+      if (off >= prefix) dv.setUint32(slot, off - prefix, true)
+    }
+    ctx.runtime.internTable.base = base - prefix
+    declGlobal('__internBase', 'i32', base - prefix, { mut: false })
+  }
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
   ctx.runtime.data = s

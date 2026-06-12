@@ -107,6 +107,7 @@ export const PASS_NAMES = [
   'specializeMkptr',
   'specializePtrBase',
   'sortStrPoolByFreq',
+  'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)
   'hoistConstantPool',
   'sourceInline',
   'smallConstForUnroll',
@@ -149,6 +150,7 @@ const LEVEL_PRESETS = Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
+    internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
@@ -2500,6 +2502,28 @@ function walkRewrite(node, doInline, counts) {
   // when fusedRewrite is called outside optimizeFunc (whole-module pass).
   if (counts && (op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string')
     counts.set(node[1], (counts.get(node[1]) || 0) + 1)
+
+  // Generic-equality bit-eq fast path: $__eq's own first branch hoisted to the
+  // site when both args duplicate cheaply (local.get / reinterpret of one).
+  // Identical bits ⇒ equal-unless-canonical-NaN; static-literal dedup + SSO +
+  // slice interning make the hit dominant in tree-walking code (tag compares),
+  // so most sites skip the call. The else arm keeps the original call.
+  if (doInline && op === 'call' && node.length === 4 && node[1] === '$__eq' && !node._eqFast) {
+    // Duplicating an arg is sound when it's a PURE small expression (consts,
+    // local reads, loads, layout arithmetic): both copies evaluate before any
+    // store can intervene (the if's cond runs, then at most the else arm).
+    // Calls / tees / grows are excluded — they observe or mutate state.
+    const cheap = (n) => Array.isArray(n) &&
+      (n[0] === 'local.get' ||
+        (n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get'))
+    if (cheap(node[2]) && cheap(node[3])) {
+      node._eqFast = true   // pre+post phases both run this walk — wrap once
+      return ['if', ['result', 'i32'],
+        ['i64.eq', node[2], node[3]],
+        ['then', ['i64.ne', node[2], ['i64.const', NAN_BITS]]],
+        ['else', node]]
+    }
+  }
 
   // Inline-ptr-helpers: $__ptr_type / $__ptr_aux / $__is_nullish / $__is_null / $__is_truthy
   if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {

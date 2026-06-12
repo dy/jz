@@ -242,7 +242,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
 
 export default (ctx) => {
   deps({
-    __arr_idx: [],
+    __arr_idx: ['__ptr_offset_fwd'],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
@@ -256,8 +256,9 @@ export default (ctx) => {
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
-      ? ['__len']
-      : ['__len', '__ptr_offset'],
+      ? ['__len', '__ptr_offset_fwd']
+      : ['__len', '__ptr_offset', '__ptr_offset_fwd'],
+    __arr_idx_known: ['__ptr_offset_fwd'],
   })
 
   // Iteration methods invoke callbacks with an implicit trailing index: .map/

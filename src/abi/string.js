@@ -332,10 +332,31 @@ export const sso = {
       return preface
     },
 
-    /** Content equality. Both args: f64 slot carriers. Returns i32 boolean. */
+    /** Content equality. Both args: f64 slot carriers. Returns i32 boolean.
+     *  The bit-eq fast path is inlined at the site: static-literal dedup, SSO
+     *  packing and slice interning make identical bits the DOMINANT equal case
+     *  (a compiler comparing tree tags against literals hits it ~always), so
+     *  most comparisons skip the __str_eq call entirely. Content compare only
+     *  on bit-mismatch. */
     eq: (aF64, bF64, ctx) => {
       ctx.core.includes.add('__str_eq')
-      return ['call', '$__str_eq', ssoI64(aF64), ssoI64(bF64)]
+      // i64 temps allocated through the passed ctx — importing ir.js's tempI64
+      // here would close the abi→ir→ctx→abi module cycle the kernel bundler
+      // rejects (mirrors freshLocal's registration).
+      const fresh = () => {
+        let n
+        do { n = `seq${ctx.func.uniq++}` } while (ctx.func.locals.has(n))
+        ctx.func.locals.set(n, 'i64')
+        return n
+      }
+      const ta = fresh(), tb = fresh()
+      return ['block', ['result', 'i32'],
+        ['local.set', `$${ta}`, ssoI64(aF64)],
+        ['local.set', `$${tb}`, ssoI64(bF64)],
+        ['if', ['result', 'i32'],
+          ['i64.eq', ['local.get', `$${ta}`], ['local.get', `$${tb}`]],
+          ['then', ['i32.const', 1]],
+          ['else', ['call', '$__str_eq', ['local.get', `$${ta}`], ['local.get', `$${tb}`]]]]]
     },
 
     /** Three-way byte compare. Both args: f64 slot carriers. Returns i32 ∈ {-1, 0, 1}. */

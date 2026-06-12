@@ -141,6 +141,55 @@ const isBoundaryWrapped = (func) => {
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
 }
 
+// Static-string intern index (the `internStrings` pass). Open-addressing table
+// over the deduped static string literals (5–32 bytes): [hash u32][ptr u32]
+// pairs appended to the data segment, FNV-1a matching __str_hash's heap branch.
+// __str_slice/__str_slice_view probe it so a runtime substring whose content
+// equals any source literal returns the CANONICAL static pointer — string
+// equality then short-circuits on bit-eq instead of walking bytes (a compiler
+// or parser compares each token against tag literals many times; ~25% of
+// self-host compile time was __str_eq/__eq/__str_hash volume). Built before
+// pullStdlib (the slice thunks emit the probe only when `__internBase` exists);
+// stripStaticDataPrefix shifts the stored ptr slots like every other static
+// reference. Misses cost one FNV + one probe per slice; the table is read-only.
+function buildInternTable() {
+  const cfg = ctx.transform.optimize
+  if (!cfg || cfg.internStrings === false) return
+  if (ctx.memory.shared || !ctx.runtime.dataDedup?.size) return
+  const enc = new TextEncoder()
+  const entries = []
+  for (const [str, off] of ctx.runtime.dataDedup) {
+    const b = enc.encode(str)
+    if (b.length < 5 || b.length > 32) continue
+    let h = 0x811c9dc5 | 0
+    for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193) | 0
+    entries.push([h >>> 0, off + 4])
+  }
+  if (!entries.length) return
+  let size = 4
+  while (size < entries.length * 2) size = (size * 2) | 0
+  const mask = size - 1
+  const slots = new Uint32Array(size * 2)
+  for (let e = 0; e < entries.length; e++) {
+    const h = entries[e][0], off = entries[e][1]
+    let i = h & mask
+    while (slots[i * 2 + 1] !== 0) i = (i + 1) & mask
+    slots[i * 2] = h
+    slots[i * 2 + 1] = off
+  }
+  while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+  const base = ctx.runtime.data.length
+  let s = ''
+  for (let i = 0; i < slots.length; i++) {
+    const v = slots[i]
+    s += String.fromCharCode(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF)
+  }
+  ctx.runtime.data += s
+  ctx.runtime.internTable = { base, size }
+  declGlobal('__internBase', 'i32', base, { mut: false })
+  declGlobal('__internMask', 'i32', mask, { mut: false })
+}
+
 const ensureThrowRuntime = (sec) => {
   // A pulled stdlib helper may throw $__jz_err even when no user `throw` set the
   // flag (e.g. __to_num on a Symbol). Detect it from the included stdlib bodies
@@ -1388,6 +1437,8 @@ export default function compile(ast, profiler) {
   dedupClosureBodies(closureFuncs, sec)
 
   finalizeClosureTable(sec)
+
+  buildInternTable()
 
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
 
