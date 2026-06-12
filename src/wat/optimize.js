@@ -1790,6 +1790,15 @@ const devirt = (ast) => {
   }
   if (!slots.size) return ast
 
+  // Closure-valued GLOBALS: multiProp function-property slots dissolve into
+  // f64 module globals (plan/scope.js flattenFuncNamespaces) — the subscript
+  // hook pattern (`parse.space = fn`, overridden per feature at module init).
+  // Every observed `global.set $G <closure-const>` contributes a candidate;
+  // a non-const store poisons the global. The guard ladder stays SOUND even
+  // with an incomplete set — unknown values take the original call_indirect
+  // fallback arm — so candidates only need to cover the hot value.
+  const globalCands = new Map()
+
   // All i64 const handling is canonical-hex STRING math (see the i64 VALUE
   // CONTRACT above): a helper RETURNING a BigInt is kind-erased in-kernel and
   // every op on it misdispatches — devirt silently no-ops.
@@ -1799,10 +1808,27 @@ const devirt = (ast) => {
   const boxConsts = (v, out) => {
     if (!Array.isArray(v)) return false
     if (v[0] === 'i64.const') { out.push(v); return true }
+    // f64-carrier closure const (`f64.const nan:0xHEX`) — the form module-init
+    // global.set stores for hook slots; normalize to its i64 bits.
+    if (v[0] === 'f64.const' && typeof v[1] === 'string' && v[1].startsWith('nan:')) {
+      out.push(['i64.const', _i64Canon(v[1].slice(4))])
+      return true
+    }
     if (v[0] === 'f64.reinterpret_i64' && v.length === 2) return boxConsts(v[1], out)
     if (v[0] === 'select' && v.length === 4) return boxConsts(v[1], out) && boxConsts(v[2], out)
     return false
   }
+  walk(ast, n => {
+    if (!Array.isArray(n) || n[0] !== 'global.set' || typeof n[1] !== 'string') return
+    if (globalCands.get(n[1]) === null) return
+    const out = []
+    if (boxConsts(n[2], out)) {
+      const m = globalCands.get(n[1]) || new Map()
+      for (const c of out) m.set(_i64Canon(c[1]), c)
+      globalCands.set(n[1], m)
+    } else globalCands.set(n[1], null)
+  })
+
   // The slot-extraction idiom — returns the source local name or null.
   const matchSlotOfLocal = (e) => {
     if (!Array.isArray(e) || e[0] !== 'i32.wrap_i64') return null
@@ -1813,7 +1839,10 @@ const devirt = (ast) => {
     if (!isC64(mk, MASK15) || !Array.isArray(sh) || sh[0] !== 'i64.shr_u' || !isC64(sh[2], SHIFT32)) return null
     const ri = sh[1]
     if (!Array.isArray(ri) || ri[0] !== 'i64.reinterpret_f64') return null
-    return Array.isArray(ri[1]) && ri[1][0] === 'local.get' && typeof ri[1][1] === 'string' ? ri[1][1] : null
+    const leaf = ri[1]
+    if (Array.isArray(leaf) && leaf[0] === 'local.get' && typeof leaf[1] === 'string') return { local: leaf[1] }
+    if (Array.isArray(leaf) && leaf[0] === 'global.get' && typeof leaf[1] === 'string') return { global: leaf[1] }
+    return null
   }
   // Canonical "params -> results" token string for signature comparison.
   const tokSig = (parts) => {
@@ -1839,6 +1868,13 @@ const devirt = (ast) => {
       if (boxConsts(n[2], out)) {
         const m = cands.get(n[1]) || new Map()
         for (const c of out) m.set(_i64Canon(c[1]), c)
+        cands.set(n[1], m)
+      } else if (Array.isArray(n[2]) && n[2][0] === 'global.get' && typeof n[2][1] === 'string'
+          && globalCands.get(n[2][1])) {
+        // promoteGlobals snapshot (`$_pg = global.get $G`) — inherit G's set
+        const g = globalCands.get(n[2][1])
+        const m = cands.get(n[1]) || new Map()
+        for (const [hex, c] of g) m.set(hex, c)
         cands.set(n[1], m)
       } else cands.set(n[1], null)
     })
@@ -1873,19 +1909,20 @@ const devirt = (ast) => {
       }
       const f = matchSlotOfLocal(idx)
       if (!f) return
-      const m = cands.get(f)
-      if (!m || m.size === 0 || m.size > 2) return
+      const m = f.local != null ? cands.get(f.local) : globalCands.get(f.global)
+      if (!m || m.size === 0 || m.size > 4) return
       const arms = []
       for (const cNode of m.values()) {
         const name = slots.get(_i64HiU(_i64Canon(cNode[1])) & 32767)
         if (!name || !sigOk(name)) return
         arms.push([cNode, name])
       }
+      const readBack = f.local != null ? ['local.get', f.local] : ['global.get', f.global]
       let out = n
       for (let i = arms.length - 1; i >= 0; i--) {
         const [cNode, name] = arms[i]
         out = ['if', ...(results.length ? [['result', ...results]] : []),
-          ['i64.eq', ['i64.reinterpret_f64', ['local.get', f]], clone(cNode)],
+          ['i64.eq', ['i64.reinterpret_f64', clone(readBack)], clone(cNode)],
           ['then', ['call', name, ...args.map(clone)]],
           ['else', out]]
       }
