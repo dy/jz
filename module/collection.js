@@ -14,6 +14,7 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, getter, declGlobal } from '../src/ctx.js'
+import { STR_INTERN_BIT } from '../layout.js'
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -878,6 +879,11 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $ls))))
       (else
+        ;; canonical interned static: cached post-clamp FNV at -8 (see layout.js)
+        (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+              (i32.and (i32.ge_u (local.get $off) (i32.const 8))
+                (i32.eq (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))))
+          (then (return (i32.load (i32.sub (local.get $off) (i32.const 8))))))
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
           (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
         ;; 4-byte unrolled FNV-1a: each iter loads i32, mixes 4 bytes (little-endian) sequentially.

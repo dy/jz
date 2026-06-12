@@ -17,7 +17,7 @@ import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
-import { ptrOffsetFwdWat } from '../layout.js'
+import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -79,7 +79,15 @@ export default (ctx) => {
               (i32.and
                 (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
                 (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
-              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (then
+                ;; both canonical interned (bit-ne already known) ⇒ unequal —
+                ;; skip the __str_eq call entirely (see STR_INTERN_BIT, layout.js)
+                (if (result i32)
+                  (i32.and
+                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))
+                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT})))
+                  (then (i32.const 0))
+                  (else (call $__str_eq (local.get $a) (local.get $b)))))
               (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
