@@ -283,15 +283,15 @@ const TARGETS = {
   qjs:   { label: 'QuickJS', band: 'interp', hatch: true },
 }
 const BREAK = 12      // linear bars; rows past this are cut, number printed
-const MULTI = new Set(['watr', 'jessie'])   // multi-module sources — repl can't load them
+const MULTI = new Set(['watr', 'jessie', 'jz'])   // multi-module sources — repl can't load them
 
 const FAMILY = { biquad: 'numeric', mat4: 'numeric', poly: 'numeric', bitwise: 'numeric',
   mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
-  callback: 'alloc', aos: 'alloc', watr: 'compiler', jessie: 'compiler' }
+  callback: 'alloc', aos: 'alloc', watr: 'compiler', jessie: 'compiler', jz: 'compiler' }
 const TAGS = { biquad: 'dsp · f64', mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32',
   tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
   mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
-  watr: 'compiler on itself', jessie: 'parser' }
+  watr: 'compiler on itself', jessie: 'parser', jz: 'self-host' }
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; this is raw f64 loop throughput.',
   mat4: 'Fixed-count loops unroll and vectorize to v128 — a JIT won’t do this from plain JS.',
@@ -305,7 +305,8 @@ const INSIGHTS = {
   sort: 'In-place heapsort — call-heavy nested loops, indices provably i32. NumPy row is its C sort.',
   crc32: 'Table-driven byte CRC. NumPy row is zlib’s C crc32 — the library ceiling; compiled code clusters behind it.',
   watr: 'JZ compiling its own WAT assembler — 200 kB of branchy compiler code; V8’s profile-guided tiers win. A loss, shown.',
-  jessie: 'The jessie parser JZ itself builds on — recursion- and allocation-heavy. The JZ build currently throws at runtime: an open compiler bug, shown not hidden.',
+  jessie: 'The jessie parser JZ itself builds on — recursion- and allocation-heavy. The JZ row runs at engine speed range; the dynamic-dispatch tax is the tracked frontier.',
+  jz: 'The number nobody else can print: jz.wasm — the compiler compiled by itself — compiling JavaScript. Byte-identical output to every engine row, checksummed.',
 }
 // Loss ledger: cause + status per known (case, target) loss; structural classes appended.
 const LOSS_NOTES = {
@@ -317,7 +318,10 @@ const LOSS_NOTES = {
   'json/deno': ['engine JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
   'json/bun': ['JSC’s JSON.parse is hand-tuned C++; JZ’s parser is compiled JS', 'open — parser headroom'],
   'crc32/bun': ['JSC’s codegen on the byte-LUT loop', 'open — optimizer headroom'],
-  'sort/bun': ['JSC’s codegen on call-heavy nested loops', 'open — optimizer headroom'],
+  'jessie/v8': ['polymorphic AST nodes hit dyn-dispatch where the JIT uses shape ICs', 'open — shape-IC dispatch'],
+  'jessie/bun': ['same dynamic-receiver tax against JSC’s ICs', 'open — shape-IC dispatch'],
+  'jz/v8': ['kind-erased IR tree: every node[i]/.prop is a runtime dispatch; JITs use inline caches', 'open — shape-IC dispatch'],
+  'jz/bun': ['same — the self-host magnifies the dynamic-receiver tax across the whole pipeline', 'open — shape-IC dispatch'],
 }
 const LOSS_STRUCTURAL = [
   ['cold start', 'vs new Function', '200–1400×', 'AOT does real work (infer · narrow · vectorize · encode) the JIT defers', 'structural — for hot kernels, not eval-per-frame'],
@@ -335,7 +339,7 @@ const ENGINE = (() => {
 // ── data ─────────────────────────────────────────────────────────────────────
 let DATA = null
 let CORPUS = []     // cases with a jz row — geomeans, stats, losses
-let CASES = []      // all cases — the per-case grid (jessie has no jz row yet)
+let CASES = []      // all cases — the per-case grid
 const local = {}    // caseId → { js, jzwasm, jzlive }
 let filter = 'all'
 
