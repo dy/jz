@@ -2385,8 +2385,24 @@ function prepareModule(specifier, source) {
 
   ctx.module.moduleStack.push(specifier)
 
-  // Name mangling prefix: ./math.jz → _math_jz
-  const prefix = specifier.replace(/[^a-zA-Z0-9]/g, '_')
+  // Name mangling prefix. Long specifiers (the bundler keys modules by
+  // ABSOLUTE path — 40-60 byte '_Users_…' / '_home_runner_…' prefixes on every
+  // symbol) compact to 'm<N>_<basename>': symbol strings shrink ~4×, which is
+  // a direct hot-path win in the SELF-HOST — watr resolves every `call $name`
+  // and `local.get $name` through name-keyed maps, paying hash+compare per
+  // byte, and shared 35-byte path prefixes defeated the hash-probe early-outs.
+  // Deterministic per compile (registration order); short relative specifiers
+  // keep the readable form.
+  const sanitized = specifier.replace(/[^a-zA-Z0-9]/g, '_')
+  let prefix
+  if (sanitized.length <= 24) prefix = sanitized
+  else {
+    if (!ctx.module.prefixIds) ctx.module.prefixIds = new Map()
+    let id = ctx.module.prefixIds.get(specifier)
+    if (id == null) { id = ctx.module.prefixIds.size; ctx.module.prefixIds.set(specifier, id) }
+    const base = sanitized.replace(/_(js|mjs|jz)$/, '').match(/[a-zA-Z0-9]+$/)?.[0] ?? ''
+    prefix = `m${id}_${base.slice(-16)}`
+  }
 
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.func.exports

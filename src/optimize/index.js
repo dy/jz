@@ -2488,7 +2488,16 @@ function fusedRewrite(fn, counts) {
   // i64 scratch allocator for the literal-eq inline: any-shaped operand is
   // tee'd once instead of duplicated. Decls splice in after the walk.
   const newDecls = []
+  // pre+post phases both run this pass — continue numbering past any scratch
+  // locals the earlier phase already declared, or the decls collide.
   let scratchN = 0
+  for (let i = 2; i < fn.length; i++) {
+    const d = fn[i]
+    if (Array.isArray(d) && d[0] === 'local' && typeof d[1] === 'string') {
+      const m = d[1].match(/^\$__eq[tf](\d+)$/)
+      if (m) scratchN = Math.max(scratchN, +m[1] + 1)
+    }
+  }
   const freshI64 = () => { const n = `$__eqt${scratchN++}`; newDecls.push(['local', n, 'i64']); return n }
   const freshF64 = () => { const n = `$__eqf${scratchN++}`; newDecls.push(['local', n, 'f64']); return n }
   for (let i = bodyStart; i < fn.length; i++) {

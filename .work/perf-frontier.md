@@ -138,3 +138,32 @@ semantics untouched; dispatch untouched; native no-op.
 LESSON (add to the i64 VALUE CONTRACT notes): in-kernel, `x !== x` is NOT
 a NaN test — it is bit-inequality for NaN-shaped carriers. NaN tests in
 compiler internals must be Number.isNaN.
+
+
+## 2026-06-12 session 4 — the parity wall, characterized by exhaustion
+
+Goal: jz.wasm (self-host) ≤ V8/JSC. Current: ~45 ms vs JSC ~26 / V8 ~29
+(quiet machine) = 1.6-1.8×. Six further interventions measured FLAT:
+generic eq tee-wrap at all 5.5k dynamic sites (+65 kB, reverted),
+__str_eq hot/cold split (kept — principled, zero-cost), compact module
+prefixes (kept — symbol hygiene + build speed; long names never reached
+the runtime hot path), runtime key-interning (reverted earlier), V8
+--wasm-inlining-budget=20000 gave +4.5% (engine-side confirmation that
+call granularity matters but is not the wall).
+
+CONCLUSION (now evidence, not theory): no single helper holds the gap.
+The residual is the DISTRIBUTED per-op value-model tax — every node[i],
+.prop, poly call on the compiler's own kind-erased data pays 2-5× a JIT's
+shape-IC'd equivalent, spread over hundreds of functions (profile tail:
+2.9% walk, 2.6% walkPost, 2.3% ptr_offset, 2.3% arr_idx, 1.7% dyn_get,
+then ~1%×dozens). Closing it = the named structural projects:
+1. shape-IC dispatch for dyn-get/arr-idx (per-site caches keyed by
+   tag/schemaId in the box aux),
+2. escape-analyzed stack allocation for loop-local AST nodes,
+3. devirt alias rung (baseSpace pattern: global initialized from another
+   const slot via dyn-get — needs init-store alias tracking),
+4. emit-side prefixed-name caching in jz's own source.
+Each is compiler-engineering scale (days, not session hours). The bench
+suite meanwhile: 10/14 beat min(V8,JSC) outright; watr at engine parity;
+jessie 1.5-1.6×; the self-host case is the honest open frontier and the
+page ledger says exactly that.
