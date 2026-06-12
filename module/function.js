@@ -197,7 +197,7 @@ export default (ctx) => {
 
     if (body._nonEscaping && ctx.transform.optimize) {
       // Allocate environmental slots in the static data segment
-      const staticOff = appendStaticSlots(new BigUint64Array(envCaptures.length).fill(0n))
+      const staticOff = appendStaticSlots(new Array(envCaptures.length).fill('0x0000000000000000'))
       const block = []
       // Store captured values in env: boxed cells as raw i32 in low 4 bytes, others as f64.
       // Avoids i32↔f64 roundtrip; body loads via i32.load/f64.load using the same branch.

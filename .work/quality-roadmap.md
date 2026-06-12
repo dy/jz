@@ -182,10 +182,44 @@ Landed root-cause fixes: (1) dse index-shift [latent native, 4c03b12],
 (2) fold Function.length arity [kernel-only, 4c03b12], (3) `.length=`
 auto-box protocol split [NATIVE cross-module corruption, 1836a3b — repro:
 importer resize between owner pushes read garbage; pinned in test/imports.js].
-Ratchet remaining: `JZ_TEST_OPTIMIZE=2 node test/index.js types optimizer
-strings closures array-methods` → 99 failures, distinct roots sampled:
-`?.()` null short-circuit, slot-types NUMBER/STRING on .prop AST, arenaRewind
-persist-on-return. Each is an in-kernel JS-semantics deviation biting the
-compiler's own code — same hunt protocol as the three landed: minimal native
-probe of the construct → kernel-vs-native WAT diff → root-cause → pin.
 Default (optimize:false) leg green; wat/warnings legs green at L2.
+
+## Kernel-L2 ratchet: 100 → 2 (2026-06-11, i64 VALUE CONTRACT)
+**Root**: one shared cause behind ~98 of the 100 slice failures — BigInt i64
+handling inside the WAT optimizer is kernel-divergent in FOUR independent ways
+(probed minimally, each pinned by jz-program simulation):
+  1. BigInt64Array/BigUint64Array aliased views are a legacy f64-VALUE shim
+     (reads return the float, not the bits) — i64FromF64/f64FromI64 never
+     worked in-kernel; same for DataView.{get,set}BigUint64.
+  2. BigInt.asIntN/asUintN yield null in-kernel (→ Number(null)=0 folds:
+     i32.wrap_i64 / f64.convert_i64_* produced WRONG constants).
+  3. A BigInt crossing a RETURN, a polymorphic object slot ({type,value}), or
+     a mixed-kind param is KIND-ERASED (raw i64 bits are untagged; typeof says
+     "object", toString(16) misdispatches). One kind-erased call site poisons
+     the param for ALL callers (per-function inference).
+  4. Literals that don't fit i64 (0x1_0000_0000_0000_0000n, 1n<<64n) are
+     unrepresentable on the mod-2^64 carrier and poison their whole function.
+**Fix — the i64 VALUE CONTRACT** (wat/optimize.js + ir.js + assemble.js):
+i64 const VALUES travel as canonical '0x'+16-lowercase-hex STRINGS everywhere
+(strings are tagged → survive every boundary). BigInt math is constructed AND
+consumed inside single expressions only; folders return hex strings or null;
+signed compares via biased-hex lexicographic; two's complement via string
+math; reinterpret folds of nan: literals move bits as TEXT (a NaN-box payload
+held as a raw f64 VALUE is indistinguishable from a live pointer in-kernel);
+extractF64Bits/appendStaticSlots/stripStaticDataPrefix use u32-half reads/
+writes. Signed canon `v>MAX → v−2^63−2^63` is exact natively and dead in-kernel.
+Fixed en route: ?.() null short-circuit (select-of-closure-consts corrupted),
+slot-types .prop (static object base folded to 0), "2026"|0 (i64.and identity
+fired on corrupt canon), devirt-in-kernel (i64of returned kind-erased BigInt).
+**Ratchet remaining: 2** (`JZ_TEST_OPTIMIZE=2 node test/index.js types
+optimizer strings closures array-methods`):
+  - promoteIntArrayLiterals closure-capture: REAL in-kernel miscompile — a
+    len≥4 static array literal + a written-cell capture in the SAME closure
+    → ctx.runtime.data arrives at emission truthy but length-0 (escBytes sees
+    a corrupted string). All pieces simulate correctly in isolation (append,
+    escBytes, churn, binary strings) — suspect kernel-runtime string/heap
+    corruption only manifest in the full compiler. Minimal pair pinned:
+    `cap arr5 no cell` data=179 ✓ vs `cap arr5 + cell` data=0 ✗.
+  - devirt kernel-leg shape: kernel devirt currently a missed optimization
+    (correct fallback call_indirect kept) — shape assertion fails on the
+    kernel leg only; semantics preserved.
