@@ -386,6 +386,7 @@ function recordModuleInitFacts(root) {
     dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
+    writtenProps: new Set(),
   }
   const visitFuncValue = (node) => {
     if (facts.hasFuncValue || !Array.isArray(node)) return

@@ -11,9 +11,18 @@ import { staticObjectProps } from '../static.js'
 import { intExprChecker } from '../type.js'
 import { analyzeBody } from './analyze.js'
 
+// Assignment-shaped ops whose first arg, when a `.`/`?.` member node, is a
+// PROPERTY WRITE — feeds `writtenProps` (any prop name ever written through
+// ANY receiver, including expression receivers like `m.get(k).n++`).
+const PROP_WRITE_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=',
+  '&=', '|=', '^=', '<<=', '>>=', '>>>=', '&&=', '||=', '??=', '++', '--'])
+
 export function observeNodeFacts(node, f) {
   if (!Array.isArray(node)) return
   const [op, ...args] = node
+  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) &&
+      (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string')
+    f.writtenProps.add(args[0][2])
   if (op === '[]') {
     const [obj, idx] = args
     if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
@@ -62,6 +71,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
+    writtenProps: new Set(),
   }
 }
 
@@ -73,6 +83,7 @@ function mergeWalkFacts(into, from) {
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
   if (from.hasRest) into.hasRest = true
   if (from.hasSpread) into.hasSpread = true
+  for (const p of from.writtenProps) into.writtenProps.add(p)
   for (const [obj, props] of from.propMap) {
     if (!into.propMap.has(obj)) into.propMap.set(obj, new Set())
     for (const p of props) into.propMap.get(obj).add(p)
@@ -192,6 +203,7 @@ export function collectProgramFacts(ast) {
       f.anyDyn = true
       for (const v of initFacts.dynVars) f.dynVars.add(v)
     }
+    if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
     if (doArity) {
       if (initFacts.maxDef > f.maxDef) f.maxDef = initFacts.maxDef
       if (initFacts.maxCall > f.maxCall) f.maxCall = initFacts.maxCall
@@ -218,10 +230,13 @@ export function collectProgramFacts(ast) {
     analyzeSchemaSlotIntCertain(ast)
   }
 
+  // Emit-time consumers (the static object-literal fast path) read this off
+  // ctx — a mutated prop name anywhere disqualifies sharing a static instance.
+  ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
-    paramReps, hasSchemaLiterals: f.hasSchemaLiterals,
+    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, writtenProps: f.writtenProps,
   }
 }
 

@@ -999,3 +999,48 @@ test('computed property names: effectful coercion runs and key stores under coer
   const exports = run(`export let _run = () => { let x = 0; let o = { [(x = 1, "k")]: 2 }; return x + o["k"] }`, { jzify: true })
   is(exports._run(), 3)
 })
+
+// === static object-literal soundness: shared instance vs mutation ===
+// A pure-constant ≥2-prop literal takes the static-data fast path — ONE shared
+// instance returned from every evaluation. That used to leak writes between
+// "instances" (`mk().n++` visible through the next `mk()`), at every opt level;
+// inside the self-host kernel the same bug pooled propagate's use-count records
+// ({gets,sets,tees}) across ALL locals, deleting live stores at kernel-L2.
+// writtenProps (program-facts) now disqualifies literals whose prop names are
+// ever written; read-only literals keep the static path.
+
+test('static literal: direct mutation does not alias instances', () => {
+  const { f } = run(`
+    let mk = () => ({ n: 0, m: 0 })
+    export let f = () => { let a = mk(); let b = mk(); a.n++; return b.n }`)
+  is(f(), 0)
+})
+
+test('static literal: mutation through call-expression receiver', () => {
+  const { f } = run(`
+    let mk = () => ({ n: 0, m: 0 })
+    let pick = (x) => x
+    export let f = () => { let a = mk(); let b = mk(); pick(a).n++; return b.n }`)
+  is(f(), 0)
+})
+
+test('static literal: mutation through Map storage (use-count record shape)', () => {
+  const { f } = run(`
+    let counts = new Map()
+    let ensure = (name) => { if (!counts.has(name)) counts.set(name, { gets: 0, sets: 0, tees: 0 }); return counts.get(name) }
+    export let f = () => {
+      ensure('a').gets++
+      ensure('b').sets++
+      ensure('a').gets++
+      let a = counts.get('a'), b = counts.get('b')
+      return a.gets * 100 + a.sets * 10 + b.sets
+    }`)
+  is(f(), 201)  // a: gets 2 sets 0 · b: sets 1
+})
+
+test('static literal: read-only literals keep the shared static instance', () => {
+  const { f } = run(`
+    let mk = () => ({ x: 7, y: 9 })
+    export let f = () => { let a = mk(); let b = mk(); return a.x + b.y }`)
+  is(f(), 16)
+})

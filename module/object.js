@@ -108,7 +108,15 @@ export default (ctx) => {
     // must land at its named slot `schema.indexOf(name)` — a positional `slot = i`
     // store would scatter values into the wrong (or another field's) slots.
     const slotOf = schemaId === litId ? (i => i) : (i => schema.indexOf(names[i]))
-    if (values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
+    // SOUNDNESS GATE: a static literal is ONE shared instance — every evaluation
+    // returns the same pointer. That is only faithful when the object is never
+    // mutated: `let mk = () => ({n:0,m:0}); mk().n++` must not bleed into the
+    // next mk(). writtenProps (program-facts) holds every property name ever
+    // written through ANY receiver — including expression receivers like
+    // `map.get(k).n++` that no alias analysis could attribute — so a literal
+    // whose schema intersects it allocates per-evaluation instead.
+    const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n))
+    if (neverWritten && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       const emitted = values.map(storedValue)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
