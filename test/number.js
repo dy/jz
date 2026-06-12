@@ -264,3 +264,28 @@ test('Number: String() preserves the fraction when the integer part exceeds 2^31
 test('Number: String() does not trap for large values below 1e21', () => {
   is(run(`export let f = () => String(999999900000000000000)`).f(), String(999999900000000000000))
 })
+
+// ---- platform-NaN const folding (the linux-x64 selfhost OOB) ----------------
+// x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical
+// ones. A folded NaN (Math.sqrt(-1) on the narrowed path) must normalize to
+// the canonical atom before it rides a kind-erased const-node slot — and the
+// detector must be Number.isNaN, not `v !== v`: in-kernel `!==` goes through
+// __eq's bit-equality, where a sign-set qNaN equals itself (the arm that keeps
+// negative i64-carrier BigInts working), so the !== guard missed exactly the
+// payload that traps. Byte-identical kernels passed on arm64 and OOB'd on
+// linux-x64 until this.
+
+test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
+  const r = run(`
+    export const main = () => {
+      const N = 64
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i + 1
+      a[13] = Math.sqrt(-1)
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = Math.max(m, a[i])
+      return (m !== m) | 0
+    }
+  `, { optimize: 2 })
+  is(r.main(), 1)
+})

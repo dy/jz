@@ -556,7 +556,17 @@ const getConst = (node) => {
   }
   if (op === 'f64.const') {
     const n = _parseNanF64(val)
-    return { type: 'f64', value: n !== null ? n : Number(val) }
+    const v = n !== null ? n : Number(val)
+    // Normalize ANY NaN to the literal NaN — Number.isNaN, NOT `v !== v`:
+    // in-kernel `!==` routes through __eq's bit-equality, where a sign-set
+    // qNaN (what x64 wasm arithmetic produces) compares EQUAL to itself (the
+    // arm that keeps negative i64-carrier BigInts working), so the !== guard
+    // misses it. Number.isNaN unboxes to f64 and uses f64.ne — catches every
+    // payload. The literal-NaN assignment rewrites the carrier to the
+    // canonical atom, so the value can ride kind-erased slots safely (the
+    // linux-x64-only selfhost OOB; arm64 arithmetic NaNs are already
+    // canonical). Native no-op.
+    return { type: 'f64', value: Number.isNaN(v) ? NaN : v }
   }
   return null
 }
@@ -575,8 +585,8 @@ const makeConst = (type, value) => {
   // inside the self-host kernel reads as a pointer and dereferences OOB
   // (same contract as emitNum — folding Math.sqrt(-1) used to trap the
   // kernel's L2 compile). ±Infinity is outside the box space — safe raw.
-  if (type === 'f32') { const v = Math.fround(value); return ['f32.const', v !== v ? 'nan' : v] }
-  if (type === 'f64') return ['f64.const', value !== value ? 'nan' : value]
+  if (type === 'f32') { const v = Math.fround(value); return ['f32.const', Number.isNaN(v) ? 'nan' : v] }
+  if (type === 'f64') return ['f64.const', Number.isNaN(value) ? 'nan' : value]
   return null
 }
 
