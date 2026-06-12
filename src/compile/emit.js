@@ -1710,17 +1710,20 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
     const strEmitter = ctx.core.emit[strKey]
     const genEmitter = ctx.core.emit[genKey]
     // A string/array method is only valid on a NaN-boxed pointer (string/array/…).
-    // A finite number receiver has none of these methods — `f64.eq(t,t)` is true only
-    // for a non-NaN value, so guard the dispatch with it: a number yields `undefined`
-    // (spec: `(5).indexOf` is undefined, so `5?.indexOf?.(x)` short-circuits) instead
-    // of feeding the number's bits to `__ptr_type` → the else/array branch → an OOB
-    // load at a bogus "pointer". Only the number/±Inf path changes (OOB → undefined);
-    // every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
+    // `f64.eq(t,t)` is true only for a non-NaN value, so guard the dispatch with
+    // it. A plain-number receiver dispatches the `.number:` emitter when the
+    // method has one (`x.toString(16)` on an untyped x — the kernel-L2 ratchet's
+    // data-segment corruption root: this used to yield `undefined`, and
+    // `'\\' + undefined.padStart(2,'0')` collapsed every escaped byte to \\00);
+    // methods numbers don't have keep yielding `undefined` (spec: `(5).indexOf`
+    // is undefined) instead of feeding number bits to `__ptr_type` → OOB.
+    // Every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
+    const numEmitter = ctx.core.emit[`.number:${method}`]
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
         ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-        ['then', undefExpr()],
+        ['then', numEmitter ? asF64(callMethod(t, numEmitter)) : undefExpr()],
         ['else', block64(
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
           ['if', ['result', 'f64'],
@@ -1728,6 +1731,26 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
             ['then', callMethod(t, strEmitter)],
             ['else', callMethod(t, genEmitter)]])]])
   }
+}
+
+// 8b. Number-only method (toFixed/toPrecision/toExponential/toString-with-radix
+// when no string fork applies) on an untyped receiver: a runtime number check
+// routes to the `.number:` emitter; a NaN-boxed receiver probes the dynamic-prop
+// sidecar (a user's own `.toFixed` closure must win — ES own-property shadowing)
+// and otherwise yields `undefined`, the same result the dynamic path produced.
+function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
+  const numEmitter = ctx.core.emit[`.number:${method}`]
+  if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
+  const t = `${T}rn${ctx.func.uniq++}`
+  ctx.func.locals.set(t, 'f64')
+  return block64(
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    ['if', ['result', 'f64'],
+      ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+      ['then', asF64(callMethod(t, numEmitter))],
+      ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+        () => undefExpr())]])
 }
 
 // 9. Schema property closure call: `x.prop(args)` where prop is a closure slot in
@@ -1828,7 +1851,8 @@ function externalMethodFallback({ obj, method, parsed }) {
 
 const TYPED_STRATEGIES = [
   tryBoxedDelegate, trySidecarToPrimitive, tryStaticDispatch, tryRuntimeStringFork,
-  trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall, externalMethodFallback,
+  tryRuntimeNumberMethod, trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall,
+  externalMethodFallback,
 ]
 
 /** Method-call dispatch: `obj.method(args)`. Linear strategy chain, first

@@ -945,3 +945,57 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
   const r2 = runAnalyze('let f = () => { let i = 5.5; let j = i + 1 }')
   is(r2.i, false); is(r2.j, false)
 })
+
+// === untyped-receiver number methods (the kernel-L2 data-corruption root) ===
+// `x.toString(16)` / `x.toFixed(d)` where x's static kind is erased (polymorphic
+// slot, mixed-element array) used to fall through every dispatch strategy to a
+// dynamic property lookup → `undefined`. Inside the self-host kernel that turned
+// encodeDataString's `'\\' + b.toString(16).padStart(2,'0')` into `\00` for every
+// escaped byte, zeroing the emitted data segment of cell+capture+static-array
+// programs. The runtime-string-fork number arm + tryRuntimeNumberMethod now
+// dispatch `.number:*` emitters off a runtime number check.
+
+test('untyped receiver: toString(radix) dispatches the number emitter', () => {
+  const { f } = runHost(`
+    let mk = (x) => ({ v: x })
+    export let f = () => {
+      let a = mk(240)
+      let b = mk('s')
+      return a.v.toString(16)
+    }`)
+  is(f(), 'f0')
+})
+
+test('untyped receiver: toFixed dispatches the number emitter', () => {
+  const { f } = runHost(`
+    let mk = (x) => ({ v: x })
+    export let f = () => {
+      let a = mk(2.5)
+      let b = mk('s')
+      return a.v.toFixed(1)
+    }`)
+  is(f(), '2.5')
+})
+
+test('untyped receiver: string toString(radix) ignores the radix (JS semantics)', () => {
+  const { f } = runHost(`
+    let mk = (x) => ({ v: x })
+    export let f = () => {
+      let a = mk('abc')
+      let b = mk(1)
+      return a.v.toString()
+    }`)
+  is(f(), 'abc')
+})
+
+test('untyped receiver: own-property toFixed closure shadows the builtin', () => {
+  const { f } = runHost(`
+    let mk = (x) => ({ v: x })
+    export let f = () => {
+      let o = mk(7)
+      let p = mk('s')
+      o.toFixed = (d) => 'custom'
+      return o.toFixed(1)
+    }`)
+  is(f(), 'custom')
+})
