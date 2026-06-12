@@ -247,6 +247,13 @@ export function reset(proto, globals, bridge) {
   ctx.schema = {
     list: [],
     vars: new Map(),
+    poisoned: new Set(),   // names whose assignments disagree on shape (literal +
+                           //   non-literal, or two different literals). A poisoned
+                           //   name never (re)binds in schema.vars: fixed-slot reads
+                           //   against ONE literal's layout would misread the other
+                           //   sources' objects. Populated by prepare's `=` handler;
+                           //   end-of-prepare state is what compile reads, so the
+                           //   conflict is order-insensitive.
     register: null,
     find: null,
     targetStack: [],

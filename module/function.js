@@ -137,6 +137,11 @@ export default (ctx) => {
     // call_indirect on the captured pointer). Gated on isReassigned over the inner body
     // so a local rewrite of the captured name disables propagation.
     const captureDirectClosures = new Map()
+    // Propagate the parent's `nullable` mark: a capture whose parent binding can
+    // hold null/undefined (e.g. `let x = null` later assigned a number) must keep
+    // that fact inside the body, or the body's own write facts (val = NUMBER)
+    // would let `x == null` fold to a constant false and skip the guard.
+    const captureNullables = new Set()
     for (const name of envCaptures) {
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
@@ -147,6 +152,7 @@ export default (ctx) => {
       const bodyName = ctx.func.directClosures?.get(name)
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
       if (repOf(name)?.intCertain === true) captureIntCertain.add(name)
+      if (repOf(name)?.nullable) captureNullables.add(name)
     }
 
     const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
@@ -174,6 +180,7 @@ export default (ctx) => {
       ...(cellI32Captures.length && { cellI32: new Set(cellI32Captures) }),
       ...(captureIntConsts.size && { intConsts: captureIntConsts }),
       ...(captureIntCertain.size && { intCertain: captureIntCertain }),
+      ...(captureNullables.size && { nullables: captureNullables }),
       ...(captureValTypes.size && { valTypes: captureValTypes }),
       ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
       ...(captureTypedElems.size && { typedElems: captureTypedElems }),

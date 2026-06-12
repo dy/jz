@@ -41,8 +41,12 @@ export function initSchema(ctx) {
 
   /** schemaId for a variable name: ValueRep first, then module-level ctx.schema.vars.
    *  Both paths exist because vars covers names without a per-function ValueRep
-   *  (prepare-phase rest/destructure tracking, module-level autoboxes). */
-  ctx.schema.idOf = (name) => repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+   *  (prepare-phase rest/destructure tracking, module-level autoboxes).
+   *  Poisoned names (shape-disagreeing assignments, see prepare's
+   *  bindAssignSchema) resolve to NO schema regardless of store: a fixed-slot
+   *  read against one literal's layout would misread the other sources. */
+  ctx.schema.idOf = (name) => ctx.schema.poisoned?.has(name) ? undefined
+    : repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
 
   /** Resolve variable name to its schema props array, or null. */
   ctx.schema.resolve = (varName) => {
@@ -86,6 +90,11 @@ export function initSchema(ctx) {
     // can match HASH/ARRAY/etc. values as if they had OBJECT layout, producing
     // slot reads on unrelated memory. Funnel those through dynamic dispatch.
     if (typeof varName !== 'string') return -1
+    // Poisoned names hold objects of KNOWN-disagreeing shapes; the structural
+    // closed-world bet (receiver is one of the schemas containing the prop) is
+    // exactly wrong for them — its other shapes may lack the prop while another
+    // value occupies the would-be slot. Always dynamic.
+    if (ctx.schema.poisoned?.has(varName)) return -1
     const vt = lookupValType(varName)
     if (vt !== VAL.OBJECT) return -1
     // Structural subtyping: walk only schemas that contain this prop.

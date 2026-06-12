@@ -379,7 +379,9 @@ export function analyzeSchemaSlotIntCertain(ast) {
       if (typeof obj === 'string') {
         // Same precise-path resolution as ctx.schema.slotVT — no structural
         // fallback (slot index could differ across schemas with the same prop).
-        const sid = repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+        // Poisoned names carry no schema (shape-disagreeing assignments).
+        const sid = ctx.schema.poisoned?.has(obj) ? undefined
+          : repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
         if (sid != null) {
           const idx = ctx.schema.list[sid]?.indexOf(prop)
           if (idx >= 0) observeSlot(sid, idx, isInt(node[2]))

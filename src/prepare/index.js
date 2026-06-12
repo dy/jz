@@ -601,6 +601,30 @@ function deleteStaticGlobal(name) {
   ctx.scope.shapeStrArrays?.delete(name)
 }
 
+// Schema id when prhs is a bare object literal with static keys, else null.
+function objLiteralSid(prhs) {
+  if (!Array.isArray(prhs) || prhs[0] !== '{}') return null
+  const props = staticObjectProps(prhs.slice(1))
+  return props ? ctx.schema.register(props.names) : null
+}
+
+// Shape-consensus accounting for every `name = …` assignment. `sid` is the
+// RHS literal's schema id (null for any non-literal source). A name's schema
+// binds only while ALL its assignments agree on that one literal shape: the
+// first literal binds; any disagreeing assignment — non-literal RHS or a
+// different-shape literal — unbinds and poisons. Poisoned names never rebind,
+// so compile-time fixed-slot reads can't be aimed at one shape while the
+// variable holds another (the misread class: `.x` returning a foreign
+// object's slot-0 value). Compile consumes the END state — order-insensitive.
+function bindAssignSchema(name, sid) {
+  const had = ctx.schema.vars.get(name)
+  if (had != null) {
+    if (had !== sid) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
+  } else if (sid != null) {
+    if (!ctx.schema.poisoned?.has(name)) ctx.schema.vars.set(name, sid)
+  } else ctx.schema.poisoned?.add(name)
+}
+
 const hasFunc = name => ctx.func.names.has(name)
 // A builtin name (`Map`, `Array`, `Math`, …) is shadowed when the user bound it
 // as a local (let/const/param, via `isDeclared`), a top-level function (via
@@ -1363,22 +1387,25 @@ const handlers = {
         recordGlobalRep(plhs, prhs)
         if (Array.isArray(prhs) && prhs[0] === '{}') {
           const props = staticObjectProps(prhs.slice(1))
-          if (props) ctx.schema.vars.set(plhs, ctx.schema.register(props.names))
-        }
-      }
+          if (props) bindAssignSchema(plhs, ctx.schema.register(props.names))
+        } else bindAssignSchema(plhs, null)
+      } else bindAssignSchema(plhs, objLiteralSid(prhs))
       // Static string/array facts hold only while every assignment is constant.
       if (!assignedStaticGlobals.has(plhs) && (staticStr != null || staticArr)) bindStaticGlobal(plhs, staticStr, staticArr)
       else deleteStaticGlobal(plhs)
       assignedStaticGlobals.add(plhs)
     }
-    // Local object-literal assignment to a not-yet-shaped variable — e.g. a `var`
-    // that jzify hoisted into `let x; x = {…}`. Recording the schema here lets the
-    // binding behave like `let x = {…}`: fixed-slot field access and for-in unroll.
-    // First assignment fixes the shape (mirrors the global rule above).
-    else if (typeof plhs === 'string' && Array.isArray(prhs) && prhs[0] === '{}'
-        && !ctx.schema.vars.has(plhs)) {
-      const props = staticObjectProps(prhs.slice(1))
-      if (props) ctx.schema.vars.set(plhs, ctx.schema.register(props.names))
+    // Object-literal assignment to a variable — e.g. a `var` that jzify hoisted
+    // into `let x; x = {…}`. Recording the schema lets the binding behave like
+    // `let x = {…}`: fixed-slot field access and for-in unroll. SOUNDNESS: the
+    // shape holds only while EVERY assignment to the name agrees — one literal
+    // shape, no other sources. Any disagreeing assignment (non-literal RHS such
+    // as a table/Map lookup, or a different-shape literal) unbinds and poisons
+    // the name; fixed-slot reads against one literal's layout would misread the
+    // other sources' objects (e.g. `.x` returning another shape's slot-0 value).
+    // Compile reads the END state, so the conflict check is order-insensitive.
+    else if (typeof plhs === 'string') {
+      bindAssignSchema(plhs, objLiteralSid(prhs))
     }
     return ['=', plhs, prhs]
   },
