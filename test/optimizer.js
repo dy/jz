@@ -1925,3 +1925,33 @@ test('narrowI32: f64 edges (NaN/±Inf/fraction) keep exact ToInt32 semantics', (
     for (const v of vals) is(f(v), ref(v), `${e} at x=${v}`)
   }
 })
+
+// ---- fusedRewrite $__is_truthy inline: boolean false is falsy --------------
+// The inline expansion mirrors module/core.js's $__is_truthy — five falsy bit
+// patterns (NaN, null, undefined, empty SSO string, boolean FALSE). The FALSE
+// arm was missing, so any `x || y` lowered through the inlined check treated
+// boolean false as truthy. Surfaced as the jessie/jz bench rows mis-parsing at
+// every optimize level ≥ 1 while optimize:false stayed correct.
+
+test('fusedRewrite: || sees boolean false through a boxed local as falsy', () => {
+  const src = `
+    export let go = (s) => {
+      let v = s === 'no' ? false : s
+      return (v || 'fb') + ''
+    }
+    export let chain = (s) => {
+      let a = s === 'x' ? s : false
+      let b = a || ''
+      let c = b || 0
+      let d = c || null
+      return (d || 'end') + ''
+    }
+  `
+  for (const opt of [false, 1, 2, 3]) {
+    const r = run(src, { optimize: opt })
+    is(r.go('no'), 'fb', `go falsy @opt ${opt}`)
+    is(r.go('yes'), 'yes', `go truthy @opt ${opt}`)
+    is(r.chain('q'), 'end', `chain all-falsy @opt ${opt}`)
+    is(r.chain('x'), 'x', `chain truthy @opt ${opt}`)
+  }
+})
