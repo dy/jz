@@ -353,48 +353,73 @@ export function ptrTypeIR(valIR, valType) {
     ['i64.const', 0xF]]]
 }
 
+// SELF-HOST CONTRACT: f64 slot BITS travel as canonical '0x'+16-hex STRINGS.
+// A BigInt crossing a function return / array element / object slot is
+// kind-erased in the kernel (raw i64 bits are untagged) and every subsequent
+// op on it misdispatches; BigInt64Array/BigUint64Array views and
+// DataView.{get,set}BigUint64 are a legacy f64-value shim there. Strings are
+// tagged and survive every boundary; BigInt math happens only inside single
+// expressions. (Same contract as wat/optimize.js's i64 VALUE CONTRACT.)
 const _F64_BITS_BUF = new ArrayBuffer(8)
 const _F64_BITS_F = new Float64Array(_F64_BITS_BUF)
-const _F64_BITS_U = new BigUint64Array(_F64_BITS_BUF)
+const _F64_BITS_U32 = new Uint32Array(_F64_BITS_BUF)  // LE halves: [0]=lo, [1]=hi
+const _hx8 = (u) => (u >>> 0).toString(16).padStart(8, '0')
 
 /** Return i64 bit pattern (BigInt) of a pure-literal IR node, or null if non-literal. */
 export function extractF64Bits(node) {
   if (!Array.isArray(node)) return null
   if (node[0] === 'f64.const') {
-    if (typeof node[1] === 'number') { _F64_BITS_F[0] = node[1]; return _F64_BITS_U[0] }
+    if (typeof node[1] === 'number') { _F64_BITS_F[0] = node[1]; return '0x' + _hx8(_F64_BITS_U32[1]) + _hx8(_F64_BITS_U32[0]) }
     if (typeof node[1] === 'string' && node[1].startsWith('nan:')) {
-      try { return BigInt(node[1].slice(4)) | 0x7FF0000000000000n } catch { return null }
+      try {
+        const v = BigInt(node[1].slice(4)) | 0x7ff0000000000000n
+        return '0x' + v.toString(16).padStart(16, '0')
+      } catch { return null }
     }
     return null
   }
   if (node[0] === 'f64.reinterpret_i64' && Array.isArray(node[1]) && node[1][0] === 'i64.const' && typeof node[1][1] === 'string') {
     const s = node[1][1]
     if (s.startsWith('-')) {
-      const abs = s.slice(1)
-      try { return ((1n << 64n) - BigInt(abs)) & 0xFFFFFFFFFFFFFFFFn } catch { return null }
+      // Two's complement WITHOUT a 2^64 term: (-1 − |v|) + 1 ≡ 2^64 − |v| both
+      // natively and on the kernel's mod-2^64 carrier (1n<<64n is unrepresentable
+      // there and would silently corrupt).
+      try {
+        const v = (0xffffffffffffffffn - BigInt(s.slice(1)) + 1n) & 0xffffffffffffffffn
+        return '0x' + v.toString(16).padStart(16, '0')
+      } catch { return null }
     }
-    try { return BigInt(s) } catch { return null }
+    try {
+      const v = BigInt(s)
+      return '0x' + v.toString(16).padStart(16, '0')
+    } catch { return null }
   }
   return null
 }
 
-/** Append `slots` (BigInt i64 each) to ctx.runtime.data 8-byte aligned, return raw byte offset of first slot.
- *  Slots that look like NaN-boxed pointers are recorded in `ctx.runtime.staticPtrSlots` so the
- *  prefix-strip pass can patch their embedded offsets. */
+/** Append `slots` ('0x'+16-hex bit strings, see contract above) to
+ *  ctx.runtime.data 8-byte aligned, return raw byte offset of first slot.
+ *  Slots that look like NaN-boxed pointers are recorded in
+ *  `ctx.runtime.staticPtrSlots` so the prefix-strip pass can patch their
+ *  embedded offsets. Writes go through u32 halves — DataView's BigInt
+ *  accessors are unfaithful in the self-host kernel. */
 export function appendStaticSlots(slots, headerBytes = 0) {
   if (!ctx.runtime.data) ctx.runtime.data = ''
   while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
   const off = ctx.runtime.data.length
   const u8 = new Uint8Array(headerBytes + slots.length * 8)
   const dv = new DataView(u8.buffer)
-  for (let i = 0; i < slots.length; i++) dv.setBigUint64(headerBytes + i * 8, slots[i], true)
+  for (let i = 0; i < slots.length; i++) {
+    const h = slots[i]
+    dv.setUint32(headerBytes + i * 8, parseInt(h.slice(10), 16) >>> 0, true)
+    dv.setUint32(headerBytes + i * 8 + 4, parseInt(h.slice(2, 10), 16) >>> 0, true)
+  }
   let chunk = ''
   for (let i = 0; i < u8.length; i++) chunk += String.fromCharCode(u8[i])
   ctx.runtime.data += chunk
   if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
   for (let i = 0; i < slots.length; i++) {
-    const bits = slots[i]
-    if (((bits >> 48n) & 0xFFF8n) === BigInt(LAYOUT.NAN_PREFIX)) {
+    if ((parseInt(slots[i].slice(2, 6), 16) & 0xFFF8) === LAYOUT.NAN_PREFIX) {
       ctx.runtime.staticPtrSlots.push(off + i * 8)
     }
   }

@@ -547,17 +547,19 @@ export function stripStaticDataPrefix(sec) {
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
   const dv = new DataView(buf.buffer)
   if (ctx.runtime.staticPtrSlots) {
+    // u32-half reads/writes — DataView's BigInt accessors are unfaithful in the
+    // self-host kernel; the offset lives entirely in the LE low word and the
+    // tag/aux fields entirely in the high word, so plain number math suffices.
     for (const slotOff of ctx.runtime.staticPtrSlots) {
       if (slotOff < prefix) continue
-      const bits = dv.getBigUint64(slotOff, true)
-      if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX) continue
-      const ty = Number((bits >> TAG_SHIFT_BIG) & TAG_MASK_BIG)
+      const hi = dv.getUint32(slotOff + 4, true)
+      if (((hi >>> 16) & 0xFFF8) !== LAYOUT.NAN_PREFIX) continue
+      const ty = (hi >>> 15) & 15
       if (!SHIFTABLE.has(ty)) continue
-      if (ty === PTR.STRING && ((bits >> AUX_SHIFT_BIG) & SSO_BIT_BIG)) continue
-      const off = Number(bits & OFFSET_MASK_BIG)
+      if (ty === PTR.STRING && ((hi >>> (LAYOUT.AUX_SHIFT - 32)) & LAYOUT.SSO_BIT)) continue
+      const off = dv.getUint32(slotOff, true)
       if (off < prefix) continue
-      const hi = bits & ~OFFSET_MASK_BIG
-      dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
+      dv.setUint32(slotOff, off - prefix, true)
     }
   }
   let s = ''
