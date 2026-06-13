@@ -284,7 +284,8 @@ const targets = {
     available: c => !!c.c && has('clang'),
     bin: natBinPath,
     run: c => tryRun('nat', c, () => {
-      execFileSync('clang', ['-O3', '-ffp-contract=off', '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      // native-tuned, symmetric with rustc -C target-cpu=native (arm64 clang rejects -march=native)
+      execFileSync('clang', ['-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-ffp-contract=off', '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
       try { execFileSync('strip', [natBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natBinPath(c)]),
   },
@@ -459,7 +460,7 @@ const targets = {
 // page methodology table renders from data, not a hand-maintained copy.
 // <case> stands for the case id.
 const TARGET_CMDS = {
-  nat: 'clang -O3 -ffp-contract=off <case>.c',
+  nat: 'clang -O3 -march=native -ffp-contract=off <case>.c',
   natgcc: 'gcc -O3 -ffp-contract=off <case>.c',
   rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
   go: 'go build -ldflags="-s -w" <case>.go',
