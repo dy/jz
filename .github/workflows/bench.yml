@@ -37,6 +37,10 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      # Zig native reference rows (cases with a .zig baseline).
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
       # Competitor toolchains + binaryen (provides wasm-opt).
       - run: npm install --no-save assemblyscript@~0.27.0 porffor@~0.61.0 binaryen
       - name: expose toolchains on PATH
@@ -56,7 +60,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,rust,go,v8,as,porf,jz,wat --json || exit 1
+          node bench/bench.mjs --targets=nat,rust,zig,go,v8,as,porf,jz,wat --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true
