@@ -108,7 +108,9 @@ test('minimal: dead pure expression statement is eliminated at O2', () => {
 // the allocator in wholesale — only a *reached* allocator does, and a module-scope const
 // reaches none. (≤3-element arrays are excluded — see the known-gap below.)
 const CONST_AGGREGATES = {
-  'array (≥4 literals)': 'export const x = [1, 2, 3, 4, 5, 6]',
+  'small array': 'export const x = [1, 2, 3]',
+  'single-element array': 'export const x = [42]',
+  'larger array': 'export const x = [1, 2, 3, 4, 5, 6]',
   'object literal': 'export const x = { a: 1, b: 2 }',
 }
 for (const [name, src] of Object.entries(CONST_AGGREGATES)) {
@@ -119,23 +121,39 @@ for (const [name, src] of Object.entries(CONST_AGGREGATES)) {
   })
 }
 
-// === KNOWN REDUNDANCY (targets, not yet minimal) ===
-// Documented so each gap stays visible with a home for its fix.
-//  · Small (≤3-elem) constant arrays still allocate. The static-data path that would make
-//    them const pointers is gated at len≥4 because it aliases one shared region, so a
-//    function-local literal mutated in place leaks across calls (a latent bug at len≥4 too).
-//    Lifting the gate needs a no-mutation / module-scope-only proof on the literal.
-//  · `new Date()` (and other single heap-pointer constructors) drag in the full
-//    allocator + memgrow for one pointer.
-// (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap — `a[0]` is a polymorphic
-//  array/string index and `+` a polymorphic add/concat, so its allocator is genuinely
-//  reachable, not redundant.)
-test('minimal [known-gap]: small const array still allocates', () => {
+// === Fully-static template literals fold to one string constant ===
+// `a${123}b`, `hello ${1+2} world` — every interpolation is a compile-time constant, so
+// prepare folds the template to a single literal (static data segment / SSO box), with no
+// runtime concat and no heap machinery. A dynamic interpolation still concatenates.
+const STATIC_TEMPLATES = {
+  'number interp': 'export const x = `a${123}b`',
+  'arithmetic interp': 'export const x = `hello ${1 + 2} world`',
+  'sso result': 'export const x = `${2 * 3}x`',
+}
+for (const [name, src] of Object.entries(STATIC_TEMPLATES)) {
+  test(`minimal: static template (${name}) — no allocator`, () => {
+    if (skip) return
+    ok(!hasAllocator(src), `${name}: a fully-static template allocates nothing`)
+  })
+}
+
+// === Function-local array literals stay fresh per call (no static aliasing) ===
+// The static-data path is module-scope-only: a function-local literal that is mutated in
+// place must NOT alias a shared region, or the mutation leaks across calls. (Imported,
+// not run via WAT probes — this is a value-correctness invariant.)
+import jz from '../index.js'
+test('minimal: function-local mutated array is fresh each call', () => {
   if (skip) return
-  const over = hasAllocator('export const x = [1, 2, 3]')
-  if (!over) ok(true, 'small const array no longer allocates — promote and lift the len≥4 gate')
-  else ok(true, 'KNOWN: const [1,2,3] allocates; static path gated at len≥4 pending a no-mutation proof')
+  const g = jz('export let g = () => { let a = [1,2,3,4]; a[0] = a[0] + 1; return a }').exports.g
+  is(JSON.stringify(g()), '[2,2,3,4]', 'call 1')
+  is(JSON.stringify(g()), '[2,2,3,4]', 'call 2 must not see call 1’s mutation')
 })
+
+// === KNOWN REDUNDANCY (targets, not yet minimal) ===
+// `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
+// memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —
+// `a[0]` is a polymorphic array/string index and `+` a polymorphic add/concat, so its
+// allocator is genuinely reachable, not redundant.)
 test('minimal [known-gap]: new Date still drags in the allocator', () => {
   if (skip) return
   const over = hasAllocator('export const d = new Date(0)')

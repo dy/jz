@@ -321,6 +321,30 @@ function lookupStaticStringArray(name) {
   return ctx.scope.shapeStrArrays?.get(resolved) ?? null
 }
 
+/** Evaluate a constant numeric expression (number literals + basic arithmetic) for
+ *  compile-time string/template folding. Returns null when it isn't a pure-number
+ *  constant — string `+` and dynamic parts fall through to the caller's runtime path. */
+function constNum(node) {
+  if (Array.isArray(node) && node[0] == null && typeof node[1] === 'number') return node[1]
+  if (!Array.isArray(node)) return null
+  const [op, a, b] = node
+  if ((op === 'u-' || op === '-' || op === '+') && b === undefined) {
+    const x = constNum(a)
+    return x == null ? null : op === 'u-' || op === '-' ? -x : +x
+  }
+  const x = constNum(a), y = constNum(b)
+  if (x == null || y == null) return null
+  switch (op) {
+    case '+': return x + y
+    case '-': return x - y
+    case '*': return x * y
+    case '/': return y === 0 ? null : x / y
+    case '%': return y === 0 ? null : x % y
+    case '**': return x ** y
+  }
+  return null
+}
+
 function staticStringExpr(node) {
   const lit = stringValue(node)
   if (lit != null) return lit
@@ -341,7 +365,11 @@ function staticStringExpr(node) {
   if (op === '`') {
     let out = ''
     for (const part of args) {
-      const s = staticStringExpr(part)
+      let s = staticStringExpr(part)
+      // A numeric interpolation (`${123}`, `${1+2}`) is a constant in string context —
+      // ToString it so a fully-static template folds to one literal instead of a runtime
+      // concat. (Only the template case stringifies numbers; `+` stays polymorphic.)
+      if (s == null) { const n = constNum(part); if (n != null) s = String(n) }
       if (s == null) return null
       out += s
     }
@@ -1432,6 +1460,10 @@ const handlers = {
 
   // Template literal: [``, part, ...] → fused single-allocation string concat.
   '`'(...parts) {
+    // Fully-static template (`a${123}b`, `hello ${1+2} world`) folds to a single string
+    // literal — a static data segment / SSO box, no runtime concat and no heap machinery.
+    const folded = staticStringExpr(['`', ...parts])
+    if (folded != null) return staticString(folded)
     includeForStringValue()
     const nodes = parts.map(p =>
       Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
