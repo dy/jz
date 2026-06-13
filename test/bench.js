@@ -47,6 +47,10 @@ const SPEED = {
   callback:       { v8: 'win',  as: 'win',  porf: 'todo' },
   mat4:           { v8: 'win',  as: 'win',  porf: 'todo' },
   poly:           { v8: 'win',  as: 'tie',  porf: 'todo' },
+  // dot-product / multiply-accumulate reduction. JZ vectorizes it to 4 independent
+  // SIMD accumulators (a fixed deterministic reassociation), beating the strict-fp
+  // serial sum V8/AS/native run — by a wide margin (jz/v8 ~0.07×, jz/as ~0.03×).
+  dotprod:        { v8: 'win',  as: 'win',  porf: 'todo' },
   biquad:         { v8: 'win',  as: 'win',  porf: 'todo' },
   mandelbrot:     { v8: 'tie',  as: 'tie',  porf: 'todo' },
   bitwise:        { v8: 'win',  as: 'win',  porf: 'todo' },
@@ -91,6 +95,10 @@ const NATIVE = {
   callback: 'tie',  mat4: 'win',     poly: 'win',  biquad: 'near',
   mandelbrot: 'tie', bitwise: 'tie', tokenizer: 'win', aos: 'tie',
   json: 'near',     sort: 'win',     crc32: 'tie', watr: 'na',
+  // jz beats `clang -O3 -ffp-contract=off` ~10× here: the multi-accumulator SIMD
+  // reassociation extracts ILP the strict-fp serial sum can't. A genuine win (not
+  // host-noise) — the margin dwarfs cross-substrate variance.
+  dotprod: 'win',
 }
 const NATIVE_TOL = { win: 1.05, tie: 1.20, near: 1.50 }
 // Aggregate guarantee: jz geomean stays within the native-parity band of C.
@@ -114,6 +122,7 @@ const SIZE = {
   json:           { as: 'na',   porf: 'win' },
   sort:           { as: 'tie',  porf: 'win' },
   crc32:          { as: 'win',  porf: 'win' },
+  dotprod:        { as: 'win',  porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
@@ -133,7 +142,8 @@ const WASMOPT_SLACK_MIN = 0.70
 // tightens, ratchet this down rather than letting it drift up silently.
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
-  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750, watr: 245000,
+  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
+  dotprod: 1450, watr: 245000,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────
