@@ -316,6 +316,7 @@ export function reset(proto, globals, bridge) {
   ctx.memory = {
     shared: false,
     pages: 0,
+    max: 0,         // 0 = unbounded; >0 emits a maximum on the memory type (cap growth)
   }
 
   ctx.error = {

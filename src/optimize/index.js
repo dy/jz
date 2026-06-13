@@ -59,12 +59,12 @@ const FALSE_BITS = atomNanHex(4)
  *   3 — level 2 + larger array/hash initial caps + `hoistConstantPool` off
  *       (inline `f64.const` over mutable globals); trades size for speed.
  *
- * String aliases (the size↔speed tradeoff lives entirely in the unroll/scalar
- * knobs; watr is on for all three):
- *   'size'     — loop/const unroll + lane vectorization off, tight scalar-replacement
- *                caps. Smallest wasm.
- *   'balanced' — the default (= level 2).
- *   'speed'    — full nested unroll + lane vectorization (= level 3).
+ * String presets (the size↔speed tradeoff lives entirely in the unroll/scalar
+ * knobs; watr is on for both):
+ *   'size'  — loop/const unroll + lane vectorization off, tight scalar-replacement
+ *             caps. Smallest wasm.
+ *   'speed' — full nested unroll + lane vectorization (= level 3).
+ * The default (level 2) has no string name — omit `optimize` or pass `2`.
  *
  * # Two-layer contract (this file vs src/wat/optimize.js)
  * Both layers walk the same S-expression IR; the boundary is KNOWLEDGE, not
@@ -144,8 +144,8 @@ const LEVEL_PRESETS = Object.freeze({
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
   3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true }),
-  // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
-  balanced: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
+  // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
+  // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
@@ -166,7 +166,7 @@ const LEVEL_PRESETS = Object.freeze({
  *   resolveOptimize(undefined | true)         → level 2 stable defaults
  *   resolveOptimize(false | 0)                → all off
  *   resolveOptimize(1 | 2 | 3)                → preset for that level
- *   resolveOptimize('size' | 'speed' | 'balanced') → named alias preset
+ *   resolveOptimize('size' | 'speed')         → named preset ('speed' = level 3)
  *   resolveOptimize({ level: 1, watr: true }) → level 1 base, with watr forced on
  *   resolveOptimize({ level: 'size', vectorizeLaneLocal: true }) → 'size' base, override
  *   resolveOptimize({ hoistAddrBase: false }) → level 2 base, hoistAddrBase off

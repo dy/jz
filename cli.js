@@ -36,8 +36,10 @@ Examples:
   jz program.js --wat              # → program.wat
   jz program.js -o out.wasm        # custom output name
   jz program.js -o -               # write to stdout
-  jz program.js -O3                # aggressive optimization
+  jz program.js -O3                # optimize for speed
   jz program.js -Os                # optimize for size
+  jz program.js -D DEBUG=false     # inject a compile-time constant
+  jz program.js --memory 64        # 64 initial pages (4 MB)
   jz program.js --host wasi        # emit WASI Preview 1 imports
   jz --strict program.js           # strict mode
   jz --jzify lib.js                # → lib.jz
@@ -45,11 +47,19 @@ Examples:
 
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
-  -O<n>, --optimize <n>     Optimization level: 0 off, 1 size-only, 2 default,
-                            3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
+  -O<n>, --optimize <n>     Optimization level: 0 off, 1 minimal, 2 default (all
+                            stable passes), 3 speed. -Os optimizes for size.
+  --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
+                            else string). Repeatable.
   --host <js|wasi>          Runtime-service lowering (default js)
+  --memory <pages>          Initial memory size in 64 KiB pages
+  --max-memory <pages>      Cap memory growth at this many pages (default unbounded)
+  --import-memory           Import env.memory instead of exporting own memory
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
+  --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
+  --no-tail-call            Use ordinary call frames instead of return_call
   --names                   Emit wasm name section for profilers/debuggers
+  --stats                   Print compile-phase timings to stderr
   --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
   --jzify                   Transform JS to jz source (no compilation)
   --eval, -e                Evaluate expression or file
@@ -121,17 +131,47 @@ async function handleJzify(args) {
   }
 }
 
-// -O<n>/-Os/-Ob/-Of and --optimize <val> → value accepted by compile()'s `optimize` opt
-const OPT_ALIAS = { s: 'size', b: 'balanced', f: 'speed' }
+// -O<n> numeric levels (0–3); -Os → size preset. The 'size'/'speed' strings are
+// also accepted via `--optimize <name>` for parity with the JS API (-O3 = speed).
+const OPT_ALIAS = { s: 'size' }
 function parseOptimize(v) {
   if (v == null) return undefined
   if (/^\d+$/.test(v)) return +v
   return OPT_ALIAS[v] ?? v
 }
 
+// -D NAME=VALUE / --define NAME=VALUE → [key, value]. VALUE is parsed as JSON when
+// it can be (numbers, booleans, null, JSON arrays/objects); otherwise a bare string.
+function parseDefine(s) {
+  const eq = s.indexOf('=')
+  if (eq === -1) throw new Error(`--define expects NAME=VALUE (got '${s}')`)
+  let value
+  try { value = JSON.parse(s.slice(eq + 1)) } catch { value = s.slice(eq + 1) }
+  return [s.slice(0, eq), value]
+}
+
+function parsePages(v, flag) {
+  const n = parseInt(v, 10)
+  if (!Number.isInteger(n) || n < 1) throw new Error(`${flag} expects a positive integer page count (64 KiB/page)`)
+  return n
+}
+
+// --stats: dump top-level compile-phase timings to stderr (stdout stays clean for
+// `-o -`). Sub-phase (optMod:*) detail is left to the programmatic `profile` sink.
+function printStats(profile) {
+  const rows = Object.entries(profile.totals || {}).filter(([n]) => !n.includes(':'))
+  if (!rows.length) return
+  const width = Math.max(5, ...rows.map(([n]) => n.length))
+  const total = rows.reduce((sum, [, ms]) => sum + ms, 0)
+  console.error('compile stats (ms):')
+  for (const [name, ms] of rows) console.error(`  ${name.padEnd(width)} ${ms.toFixed(2)}`)
+  console.error(`  ${'total'.padEnd(width)} ${total.toFixed(2)}`)
+}
+
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
-  let optimize, host, alloc = true, names = false
+  let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false
+  let memory, maxMemory, importMemory = false, define
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -140,11 +180,19 @@ async function handleCompile(args) {
     else if (a === '--strict') strict = true
     else if (a === '--resolve') resolveNode = true
     else if (a === '--imports') importsFile = args[++i]
+    else if (a === '--define' || a === '-D') { const [k, v] = parseDefine(args[++i]); (define ||= {})[k] = v }
+    else if (a.startsWith('-D') && a.length > 2) { const [k, v] = parseDefine(a.slice(2)); (define ||= {})[k] = v }
     else if (a === '--optimize' || a === '-O') optimize = parseOptimize(args[++i])
     else if (/^-O.+/.test(a)) optimize = parseOptimize(a.slice(2))
     else if (a === '--host') host = args[++i]
+    else if (a === '--memory') memory = parsePages(args[++i], '--memory')
+    else if (a === '--max-memory') maxMemory = parsePages(args[++i], '--max-memory')
+    else if (a === '--import-memory') importMemory = true
     else if (a === '--no-alloc') alloc = false
+    else if (a === '--no-simd') noSimd = true
+    else if (a === '--no-tail-call') noTailCall = true
     else if (a === '--names') names = true
+    else if (a === '--stats') stats = true
     else if (!inputFile) inputFile = a
   }
 
@@ -161,6 +209,7 @@ async function handleCompile(args) {
   // `.jz` files are treated as strict; `--strict` forces it for any extension.
   if (inputFile.endsWith('.jz')) strict = true
   const warnings = { entries: [] }
+  const profile = stats ? {} : null
   const opts = {
     wat,
     warnings,
@@ -168,8 +217,15 @@ async function handleCompile(args) {
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),
     ...(host && { host }),
+    ...(memory !== undefined && { memory }),
+    ...(maxMemory !== undefined && { maxMemory }),
+    ...(importMemory && { importMemory: true }),
     ...(alloc === false && { alloc: false }),
-    ...(names && { profile: { names: true } }),
+    ...(noSimd && { noSimd: true }),
+    ...(noTailCall && { noTailCall: true }),
+    ...(define && { define }),
+    ...(names && { names: true }),
+    ...(profile && { profile }),
     ...(Object.keys(modules).length && { modules }),
   }
 
@@ -182,6 +238,7 @@ async function handleCompile(args) {
 
   for (const w of warnings.entries)
     console.warn(formatWarning(w))
+  if (profile) printStats(profile)
 
   if (outputFile === '-') {
     process.stdout.write(result)
