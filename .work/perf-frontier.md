@@ -240,3 +240,63 @@ jessie's tramp share alone measured ~7%.
   name-map lookups hit bit-eq. Bench-flat individually (emit is a minority
   of kernel compile time); kept as architecture.
 - #2 confirmed deprioritized: compiler AST nodes escape by design.
+
+
+## Session 6 — #1b shape-IC BUILT, measured COLD, reverted (the decisive datum)
+
+Implemented the frontier's keystone: a runtime shape-IC for dyn-get. Chose the
+LOW-RISK form (a shared 256-entry direct-mapped `(key,schemaId)→slot` cache living
+ENTIRELY inside `__dyn_get_t_h`, keyed on `(keyHash ^ sid) & 255`, entry
+[key i64][sid i32][slotByteOff i32]) over the per-site inline IC the spec named —
+because the per-site form trips three real hazards a parallel design pass surfaced:
+the inline `global.set` fill marks every calling function arena-UNSAFE (regressing
+an existing win), `promoteGlobals` can snapshot a per-site cache global into a
+loop-entry local (defeating the fill), and O(hundreds) of sites × globals bloats
+the binary. The in-helper cache avoids all three: memory stores (not global.set)
+never mark a function arena-unsafe (assemble.js only flags global.set/indirect
+calls, and __dyn_get_t_h has 4 params so it's never an arena candidate anyway);
+the one new global ($__objic) is a constant base set once in __start (safe to
+promote); ~4 KB fixed region, zero per-site cost.
+
+Sound by construction (suite 2103/1-skip green WITH it): a schema is immutable, so
+(schemaId, key) fixes the slot for the instance lifetime; the cache keys on the
+interned key BITS not just the hash (no wrong-slot on hash collision); any miss —
+cold (zeroed region → key bits 0, never a real carrier), index collision,
+off-schema key, non-OBJECT, or NaN/negative-BigInt receiver (its high bits never
+match an OBJECT pattern) — falls through to the existing dispatch and NEVER traps.
+
+THE DATUM (instrumented jessie run, hit/fill/total counters):
+- `__dyn_get_t_h` is HOT: **111,579 calls per jessie run**.
+- OBJECT-schema arm: **0**. Cache fills: **0**. The IC is COLD.
+- i.e. ALL 111 K dynamic reads are HASH / ARRAY / dyn-props-sidecar receivers;
+  ZERO go through the OBJECT schema slot path the IC caches.
+
+Why: jz's COMPILE-TIME schema resolution (`emitSchemaSlotRead`, the free lever)
+already resolves 100% of in-schema OBJECT `.prop` reads to a direct slot load —
+they never reach the runtime helper. The runtime OBJECT-IC duplicates, at runtime,
+work already done better at compile time. Bench confirms: jessie 2.73→2.73 (tighter
+than noise), self-host 62.29→62.15 (flat), watr within noise. Reverted wholesale
+(revert-no-wins standard); files clean, suite green.
+
+CONSEQUENCES for the frontier (this redraws the map):
+1. The free compile-time lever is EXHAUSTIVE for OBJECT property reads in the
+   metacircular workloads. A runtime OBJECT shape-IC has no corpus work to do.
+   #1b as specified (OBJECT dyn-get IC) is CLOSED — not by landing it, but by
+   proving it cold. Do not re-attempt the OBJECT form without a workload that
+   actually exercises a polymorphic OBJECT receiver at runtime.
+2. The real hot dispatch is the HASH / dyn-props path: 111 K `__dyn_get_t_h`
+   calls/run on HASH-typed maps and ad-hoc sidecar props (open-address probe at
+   collection.js ~1123-1138, after the existing 1-slot `__dyn_get_cache_off`).
+   But the per-call cost is already tiny (number-guard + cached propsPtr hit +
+   1-2 hash-first probe steps, all V8-inlined) — consistent with the prior
+   profile (dyn_get ~1.7% of jessie) and with the runtime-key-interning revert
+   (session 2). A HASH-probe IC would attack a slice that is hot in COUNT but
+   already cheap per call; the evidence (9 flat dispatch interventions now)
+   predicts flat. Needs a per-call-cost measurement before any spend.
+3. Net: the self-host residual is NOT object-property dispatch in any form. It is
+   the distributed value-model tax elsewhere — arr_idx (2.3%), ptr_offset (2.3%),
+   walk/walkPost (5.5%), AST-node alloc volume — exactly as session 4 concluded
+   by exhaustion. The shape-IC was the last "single mechanism" candidate; it is
+   now measured out. Future perf work should target the native-parity corpus
+   cases (aos deinterleave, etc.) and the distributed tax via escape analysis,
+   not dispatch.
