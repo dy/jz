@@ -285,10 +285,10 @@ const TARGETS = {
 const BREAK = 12      // linear bars; rows past this are cut, number printed
 const MULTI = new Set(['watr', 'jessie', 'jz'])   // multi-module sources — repl can't load them
 
-const FAMILY = { biquad: 'numeric', mat4: 'numeric', poly: 'numeric', bitwise: 'numeric',
+const FAMILY = { biquad: 'numeric', mat4: 'numeric', poly: 'numeric', bitwise: 'numeric', dotprod: 'numeric',
   mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
   callback: 'alloc', aos: 'alloc', watr: 'compiler', jessie: 'compiler', jz: 'compiler' }
-const TAGS = { biquad: 'dsp · f64', mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32',
+const TAGS = { biquad: 'dsp · f64', mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
   tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
   mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
   watr: 'compiler on itself', jessie: 'parser', jz: 'self-host' }
@@ -296,6 +296,7 @@ const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; this is raw f64 loop throughput.',
   mat4: 'Fixed-count loops unroll and vectorize to v128 — a JIT won’t do this from plain JS.',
   poly: 'One sum() fed Float64Array then Int32Array — JZ keeps two typed paths where a JIT goes polymorphic.',
+  dotprod: 'Multiply-accumulate reduction (s += a[i]*b[i]). JZ vectorizes it to 4 independent SIMD accumulators — a fixed, deterministic reassociation that hides the FP latency. Strict-fp native (-ffp-contract=off) and the JIT keep the sum serial; ~3.6× over a single accumulator, and it beats native here because that reassociation needs -ffast-math (non-deterministic) elsewhere — JZ gets it bit-stable across engines.',
   bitwise: 'imul / shift / >>> chains run as raw i32 — no NaN-box round-trips.',
   tokenizer: 'Byte scan: charCodeAt + branches. AS’s direct string loads win — JZ still boxes the string pointer.',
   callback: 'Array.map with a closure lowers to a preallocated typed loop — no per-call allocation.',
