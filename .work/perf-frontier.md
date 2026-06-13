@@ -300,3 +300,54 @@ CONSEQUENCES for the frontier (this redraws the map):
    now measured out. Future perf work should target the native-parity corpus
    cases (aos deinterleave, etc.) and the distributed tax via escape analysis,
    not dispatch.
+
+
+## Session 7 — native-parity levers TRIED and measured (mat4 SIMD, alloc volume)
+
+Mandate: "do everything possible", stop asserting structural — MEASURE it.
+
+### mat4 SIMD: prototyped → implemented → flat → measured-structural
+mat4 is 1.38× native and emits ZERO SIMD. The matmul `s += a[r·4+k]·b[k·4+c]` is
+4 dot products per row; adjacent columns share the a-row → the existing dot-pair
+recognizer's exact shape. It didn't fire only because the accumulator reset
+`let s = 0` is hoisted to a const-pool global then promoted to a local, reading
+as `(local.set $s (local.get $_pgN))` not `(f64.const 0)` — matchF64DotSeq
+hardcoded `f64Zero`. Relaxed it (accept local.get/global.get reset, splat it as
+the dot start, sound for any value with a stability guard). mat4 then vectorized:
+152 v128 ops, 32 dot-pairs, **checksum-exact**. Measured: 2.12 vs 2.13 ms — **DEAD
+FLAT**. Reverted.
+
+Why flat (the load-bearing lesson): a raw-WAT prototype said f64x2 matmul is 2.69×
+— but that was against a MEMORY-BOUND unrolled scalar (5.11 ms). jz's actual scalar
+mat4 is 2.12 ms — 2.4× faster than that — because jz SRoA's the 16+16+16 matrix
+elements into LOCALS (register-resident, zero inner-loop memory traffic). Against
+THAT baseline the honest f64x2 ceiling is the prototype's 1.90 ms (contiguous
+v128.load of b-pairs), only ~10%. And the recognizer can't even reach 1.90: SRoA
+put b in scalar locals, so pairing must rebuild each [b_c,b_c+1] via splat+
+replace_lane — that deinterleave costs exactly what the f64x2 arithmetic saves →
+0%. Worse, native ≈ 1.54 ms (AVX 4-wide f64): even the ideal 1.90 ms f64x2 LOSES
+to native. So mat4 is genuinely SIMD-WIDTH structural — now by measurement, not
+assertion. Same logic caps aos/bitwise: wasm 128-bit f64x2/i32x4 vs AVX 256-bit.
+SRoA-to-registers (the thing that makes jz's scalar 2.4× faster than naive) is
+ALSO what blocks cheap SIMD — a real tension, but the scalar win is the better
+trade and jz already takes it.
+
+### alloc volume: measured, distributed, escapes
+jessie: **436,230 __alloc calls, 86.8 MB per run** (4× the dyn_get count). But
+these are AST nodes — they ESCAPE (the returned parse tree), so escape analysis
+can't stack-allocate them (frontier #2 confirmed by direct count). jz's bump
+allocator is already near-optimal per call (no GC/write-barriers); this is the
+~4% the profile showed — real but distributed, not a concentrated lever.
+
+### trampolines: absent
+No `tramp_` functions in the jessie kernel (31 call_indirect total). The "~7%
+tramp share" was a subscript-specific figure; #1a has no jessie surface to attack.
+
+VERDICT (measured, session 7): the native gaps are SIMD-width structural (f64x2/
+i32x4 vs AVX, ideal-case still loses); the self-host tax is distributed (alloc 4%
+escaping, dyn_get cold, walk 2.9%, …). jz is register-optimal and beats min(V8,JSC)
+on 11/14. The only paths to MORE are (a) a wasm spec advance (wider SIMD / FMA),
+or (b) a fundamentally different value model (typed fast-paths bypassing NaN-boxing
+in proven-monomorphic regions) — research-scale, not a frontier point-fix. The
+point-fix frontier is genuinely exhausted; this is now evidence across 12
+measured interventions, not a hunch.
