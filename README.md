@@ -56,14 +56,17 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 |---|---|
 | `modules: { specifier: source }` | Static ES imports to bundle. CLI import resolution does this from files automatically. |
 | `imports: { mod: host }` | Host imports `import { fn } from "mod"`. |
-| `memory` | Pass `memory: N` for owned memory with `N` initial pages, or `memory: jz.memory()` / `WebAssembly.Memory` to share across modules. |
+| `memory` | Pass `memory: N` for owned memory with `N` initial pages, or `memory: jz.memory()` / `WebAssembly.Memory` to share across modules. `maxMemory: N` caps growth; `importMemory: true` imports `env.memory` instead of exporting own. |
 | `host: 'js' \| 'wasi'` | Runtime-service lowering. Default `js`; `wasi` for standalone runtimes. |
-| `optimize` | `false`/`0` off, `1` size-only, `true`/`2` default (all stable passes), `3` trades size for speed. String aliases: `'size'`, `'balanced'` (= default), `'speed'`. Object form overrides individual passes. |
+| `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm. (Object form for per-pass overrides is internal/unstable.) |
+| `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
 | `strict: true` | Enforce the pure canonical subset: skip jzify lowering (so `var`/`function`/`class`/`==`/… are rejected, not accepted) **and** reject dynamic fallbacks (`obj[k]`, `for-in`, unknown receiver methods). Off by default — broader JS is lowered automatically. |
 | `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) for standalone modules that never marshal heap values. |
+| `noSimd: true` | Disable auto-vectorization (no jz-emitted `v128`) for engines without the SIMD proposal. Explicit `f32x4`/`i32x4` intrinsics still compile. |
 | `randomSeed` | `Math.random` seeding — default draws from host entropy (non-reproducible); a number fixes it for a reproducible sequence, `true` forces entropy explicitly. |
 | `wat: true` | `compile()` returns WAT text instead of WASM binary. |
-| `profile` | Mutable sink for compile-stage timings; set `profile.names = true` for a WASM `name` section. |
+| `names: true` | Emit a WASM `name` section (function symbols) for profilers/debuggers. |
+| `profile` | Mutable sink for compile-stage timings (`entries`/`totals` per phase). |
 </details>
 
 ## CLI
@@ -74,7 +77,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 jz program.js              # → program.wasm
 jz program.js --wat        # → program.wat
 jz program.js -o out.wasm  # custom output (- for stdout)
-jz program.js -O3          # optimization: -O0 off, -O1 size, -O2 balanced, -O3 speed
+jz program.js -O3          # optimization: -O0 off, -O1 minimal, -O2 default, -O3 speed (-Os for size)
 jz program.js --host wasi  # standalone WASI output
 jz --strict program.js     # pure canonical subset (also implied by .jz extension)
 jz -e "1 + 2"              # eval → 3
@@ -98,8 +101,10 @@ Examples:
   jz program.js --wat              # → program.wat
   jz program.js -o out.wasm        # custom output name
   jz program.js -o -               # write to stdout
-  jz program.js -O3                # aggressive optimization
+  jz program.js -O3                # optimize for speed
   jz program.js -Os                # optimize for size
+  jz program.js -D DEBUG=false     # inject a compile-time constant
+  jz program.js --memory 64        # 64 initial pages (4 MB)
   jz program.js --host wasi        # emit WASI Preview 1 imports
   jz --strict program.js           # strict mode
   jz --jzify lib.js                # → lib.jz
@@ -107,11 +112,19 @@ Examples:
 
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
-  -O<n>, --optimize <n>     Optimization level: 0 off, 1 size-only, 2 default,
-                            3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
+  -O<n>, --optimize <n>     Optimization level: 0 off, 1 minimal, 2 default (all
+                            stable passes), 3 speed. -Os optimizes for size.
+  --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
+                            else string). Repeatable.
   --host <js|wasi>          Runtime-service lowering (default js)
+  --memory <pages>          Initial memory size in 64 KiB pages
+  --max-memory <pages>      Cap memory growth at this many pages (default unbounded)
+  --import-memory           Import env.memory instead of exporting own memory
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
+  --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
+  --no-tail-call            Use ordinary call frames instead of return_call
   --names                   Emit wasm name section for profilers/debuggers
+  --stats                   Print compile-phase timings to stderr
   --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
   --jzify                   Transform JS to jz source (no compilation)
   --eval, -e                Evaluate expression or file
@@ -345,7 +358,7 @@ No runtime, no GC — a module is your code plus a small bump allocator. The geo
 
 - **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
 - **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
-- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `profile.names`).
+- **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `names: true`).
 
 Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
 
@@ -363,7 +376,7 @@ Ordinary JS is already fast — jz infers the right machine type for your number
 - **SIMD-128** — independent iterations (`a[i] = a[i]*2 + b[i]`) run several lanes at once: lane-pure maps, reductions (sum/product/min·max), conditional maps (`bitselect`), byte scans (`memchr` via `i8x16`). Loops that look back (`a[i-1]`) or carry a running total stay sequential.
 - **Smaller encoding** — tree-shaking, copy-propagation + dead-store elimination, local/string-pool reordering for 1-byte indices, pointer-call specialization, constant pooling; JS strings you only read aren't copied.
 
-Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` or `'size'`/`'balanced'`/`'speed'` (or a per-pass object): `'balanced'` (= `2`) is the default; `'speed'` trades size for inlined constants and larger buffers; `'size'` drops unrolling and SIMD.
+Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny `env.*` imports, a constant `JSON.parse` folds to a literal, JS strings stay zero-copy. Levels `0`–`3` (default `2`), or the named presets `'speed'` (= `3`, trades size for inlined constants and larger buffers) and `'size'` (drops unrolling and SIMD for the smallest wasm).
 
 </details>
 
@@ -373,7 +386,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 - **Semantics** — valid jz is valid JS: run the same source under Node and diff results (mind the [documented divergences](#faq)); `console.log` works inside compiled modules too.
 - **Codegen** — `jz program.js --wat` (API: `compile(src, { wat: true })`) shows the emitted WAT: grep `v128` to confirm a loop vectorized, `__dyn_get`/`__ext_call` to spot dynamic fallbacks inference couldn't narrow.
 - **Dynamic fallbacks** — compile with `strict: true` to turn every fallback (`obj[k]`, `for-in`, unknown receiver method) into a compile error pointing at the site.
-- **Profiling** — `--names` (API: `profile.names = true`) emits a wasm `name` section so DevTools profilers and disassemblers show real function names; the `profile` option collects per-stage compile timings.
+- **Profiling** — `--names` (API: `names: true`) emits a wasm `name` section so DevTools profilers and disassemblers show real function names; `--stats` (API: the `profile` sink) collects per-stage compile timings.
 - **Slow kernel checklist** — a stray float literal pins a counter to f64; a plain `[]` where a typed array would do; a loop-carried dependency (`a[i-1]`, running sum) blocks SIMD. The signals in *Why no type annotations?* below are the levers.
 
 </details>

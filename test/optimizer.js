@@ -1041,9 +1041,9 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(undefined).watr, true)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
-  // string aliases
-  const balanced = resolveOptimize('balanced')
-  for (const n of PASS_NAMES) is(balanced[n], resolveOptimize(2)[n], `'balanced': ${n} matches level 2`)
+  // string presets. 'balanced' was removed (it was a pure synonym for the default
+  // level 2); a stray 'balanced' now falls back to the default like any unknown string.
+  for (const n of PASS_NAMES) is(resolveOptimize('balanced')[n], resolveOptimize(2)[n], `removed 'balanced' falls back to level 2: ${n}`)
   const size = resolveOptimize('size')
   is(size.watr, true)
   is(size.smallConstForUnroll, false)

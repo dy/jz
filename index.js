@@ -68,11 +68,47 @@ const importsMayReturnExternal = (imports) =>
 // directly — keeps the self-host kernel free of host-only built-ins.
 const resolveUrl = (spec, base) => new URL(spec, base).href
 
+// Serialize a JS value to a jz source literal (numbers/booleans/strings/null/
+// undefined + literal arrays/objects). Returns null for anything not expressible
+// as a compile-time literal (functions, host objects, circular). Shared by the
+// `jz\`…${val}\`` template tag (hoists complex args) and opts.define.
+const serialize = (v) => {
+  if (v === undefined) return 'undefined'
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (v === null) return 'null'
+  if (typeof v === 'string') return JSON.stringify(v)
+  if (Array.isArray(v)) {
+    const elems = v.map(serialize)
+    return elems.every(e => e !== null) ? `[${elems.join(', ')}]` : null
+  }
+  if (typeof v === 'object') {
+    const props = Object.keys(v).map(k => {
+      const s = serialize(v[k])
+      return s !== null ? `${k}: ${s}` : null
+    })
+    return props.every(p => p !== null) ? `{${props.join(', ')}}` : null
+  }
+  return null
+}
+
+// opts.define → a one-line `let K = V; …` prelude prepended to source. Kept on a
+// single line (no trailing newline) so user line numbers past line 1 stay exact —
+// same convention the template tag uses for hoisted literals.
+const defineBindings = (define) => {
+  const parts = []
+  for (const [k, v] of Object.entries(define)) {
+    const s = serialize(v)
+    if (s === null) err(`opts.define['${k}'] is not a compile-time constant — use a number, boolean, string, null, or a literal array/object`)
+    parts.push(`let ${k} = ${s}`)
+  }
+  return parts.length ? parts.join('; ') + '; ' : ''
+}
+
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
 const compileProfiler = (profile) => {
   if (profile == null) return null
-  if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink; use { profile: { names: true } } to emit a wasm name section')
+  if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink (populated with compile-phase entries/totals); for a wasm name section use opts.names')
   profile.entries ||= []
   profile.totals ||= {}
   return {
@@ -168,12 +204,20 @@ jz.memory = enhanceMemory
  *   (so full-JS syntax like var/function/class is rejected, not lowered) and reject
  *   dynamic features (obj[k], for-in, unknown receiver method calls) at compile time.
  *   Avoids pulling dynamic-dispatch stdlib into output; large size win for static programs.
- * @param {WebAssembly.Memory|number} [opts.memory] - Shared memory import, or
- *   initial page count. Prefer `memory: N` for owned memory.
+ * @param {WebAssembly.Memory|number} [opts.memory] - Owned memory's initial page
+ *   count (`memory: N`, 64 KiB/page), or a `WebAssembly.Memory` to share across modules.
+ * @param {number} [opts.maxMemory] - Maximum memory pages — emits a ceiling on the
+ *   memory type so growth traps past it (sandbox cap). Must be ≥ the initial size.
+ *   Default: unbounded.
+ * @param {boolean} [opts.importMemory] - Import `env.memory` instead of exporting an
+ *   owned memory. For embedding into a host that provides the memory.
  * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
  *   (`_alloc`, `_clear`) for JS memory wrapping. Set false for standalone host-run
  *   modules that only call exported wasm functions.
- * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
+ * @param {Object<string,*>} [opts.define] - Compile-time constants injected as
+ *   top-level bindings before parse, e.g. `{ DEBUG: false, PORT: 8080 }`. Values may
+ *   be numbers, booleans, strings, null, or literal arrays/objects.
+ * @param {boolean|number|string|object} [opts.optimize] - Optimization level/config.
  *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
  *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *   - `true` / `2` (default): every stable jz pass + full watr (inlineOnce +
@@ -181,16 +225,20 @@ jz.memory = enhanceMemory
  *   - `3` / `'speed'`: level 2 + larger array/hash initial caps (`arrayMinCap`,
  *     `hashSmallInitCap`) + `hoistConstantPool` off (inline `f64.const` over
  *     mutable globals); trades size for speed.
- *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
- *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
+ *   - `'size'`: full passes with unrolling/SIMD off and tight scalar caps — smallest wasm.
+ *   - `{ level?, <pass>?: bool, ... }`: per-pass overrides on top of a base level.
+ *     INTERNAL/unstable — pass names track compiler internals (PASS_NAMES in
+ *     src/optimize/index.js) and change between versions; prefer the level/string forms.
+ * @param {boolean} [opts.noSimd] - Disable auto-vectorization (no jz-emitted v128) for
+ *   engines without the SIMD proposal. Explicit f32x4/i32x4 intrinsics still compile.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
  *   allocations without a host-side memory.reset().
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
- *   Set `profile.names = true` to also emit a standard wasm `name` custom section
- *   for profiler/debugger symbolication.
+ * @param {boolean} [opts.names] - Emit a standard wasm `name` custom section (function
+ *   symbols) for profiler/debugger symbolication. (Legacy: `profile.names = true`.)
  * @param {Object<string,string>} [opts.modules] - Map of module specifier → source
  *   for compile-time `import`/`export` bundling: jz resolves the module graph
  *   in-process from this map instead of reading from disk.
@@ -362,6 +410,15 @@ const setupCtx = (code, opts) => {
   initWarnings(opts.warnings)
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
+  if (opts.importMemory) ctx.memory.shared = true   // import env.memory instead of exporting own
+  if (opts.maxMemory != null) {
+    if (!Number.isInteger(opts.maxMemory) || opts.maxMemory < 1)
+      err(`opts.maxMemory must be a positive integer page count (each page is 64 KiB); got ${opts.maxMemory}`)
+    const initialPages = ctx.memory.pages || 1
+    if (opts.maxMemory < initialPages)
+      err(`opts.maxMemory (${opts.maxMemory}) is below the initial memory size (${initialPages} pages)`)
+    ctx.memory.max = opts.maxMemory
+  }
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) {
     ctx.module.hostImports = opts.imports
@@ -421,6 +478,7 @@ const rejectReservedPrefix = (node) => {
 }
 
 const jzCompileInner = (code, opts = {}) => {
+  if (opts.define) code = defineBindings(opts.define) + code
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
@@ -448,6 +506,14 @@ const jzCompileInner = (code, opts = {}) => {
       ctx.transform.optimize = resolveOptimize(autoCfg)
     }
   }
+
+  // opts.noSimd: force auto-vectorization off regardless of opt level — a
+  // portability escape hatch for engines without the SIMD proposal (parallels
+  // opts.noTailCall). Disabling the vectorizeLaneLocal pass suppresses every
+  // jz-emitted v128 (lane maps, reductions incl. reduceUnroll, byte scans);
+  // explicit f32x4/i32x4 intrinsics in source are the user's own opt-in and stay.
+  // Applied after auto-config so it wins over any re-resolved preset.
+  if (opts.noSimd) ctx.transform.optimize.vectorizeLaneLocal = false
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')
@@ -516,7 +582,9 @@ const jzCompileInner = (code, opts = {}) => {
     }
     const wasm = time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
-    if (opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
+    // opts.names emits a wasm `name` custom section (symbols for profilers/
+    // debuggers). opts.profile.names is the older spelling — still honored.
+    if (opts.names || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
     return opts.inspect ? { wasm: bytes, inspect: ctx.inspect } : bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
@@ -545,27 +613,6 @@ export default function jz(code, ...args) {
   // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, objects
   if (Array.isArray(code)) {
     const interp = {}, data = {}, hoisted = []
-
-    // Serialize JS value to jz source literal. Returns null if not serializable.
-    const serialize = (v) => {
-      if (v === undefined) return 'undefined'  // else falls through → treated as a
-      // host object → memory.Object(undefined) → Object.keys(undefined) crash
-      if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-      if (v === null) return 'null'
-      if (typeof v === 'string') return JSON.stringify(v)
-      if (Array.isArray(v)) {
-        const elems = v.map(serialize)
-        return elems.every(e => e !== null) ? `[${elems.join(', ')}]` : null
-      }
-      if (typeof v === 'object') {
-        const props = Object.keys(v).map(k => {
-          const s = serialize(v[k])
-          return s !== null ? `${k}: ${s}` : null
-        })
-        return props.every(p => p !== null) ? `{${props.join(', ')}}` : null
-      }
-      return null
-    }
 
     let src = code[0]
     for (let i = 0; i < args.length; i++) {

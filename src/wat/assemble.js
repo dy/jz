@@ -435,8 +435,9 @@ export function pullStdlib(sec) {
     // No-op when the alloc trio was already present.
     resolveIncludes()
     const pages = ctx.memory.pages || 1
-    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
-    else sec.memory.push(['memory', ['export', '"memory"'], pages])
+    const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', max ? ['memory', pages, max] : ['memory', pages]])
+    else sec.memory.push(max ? ['memory', ['export', '"memory"'], pages, max] : ['memory', ['export', '"memory"'], pages])
     if (ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
       sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
   }
