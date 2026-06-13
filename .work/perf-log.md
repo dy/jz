@@ -49,3 +49,14 @@ codegen (0 dispatch); the metacircular residual is a flat-distributed polymorphi
 tax (~2.3%/helper × dozens) with no concentrated lever — the fundamental AOT
 NaN-box cost. Net session win: ptr-offset type-directed inline + forwarding
 bitmask (b1621d2): dist/jz.wasm -3.5KB, per-module -16..-119B, perf-flat, sound.
+
+### Forwarding-free model: empirically sized, rejected
+Raw-WAT prototype (80M-iter call-heavy loop, per-access forwarding check that can't
+be CSE'd vs stable offset): forwarding overhead = 3.9% in the SYNTHETIC WORST CASE
+(2.7ms of 71.3ms). Real jessie/watr CSE many accesses (LICM hoists ptr_offset when
+no growth-call in the loop), so the realistic ceiling is ~2%. A days-scale,
+every-helper-touching rewrite for ~2-4% is poor risk/reward — and b1621d2 already
+captured the non-forwarding-kind portion safely. User's "pointer structure = extra
+work" hypothesis VALIDATED (forwarding is real extra work) but it's a ~2-4% lever,
+not the headline. The headline 1.6-1.8x gap is the distributed NaN-box decode tax
+spread across every op — no single mechanism, confirmed by 3 profiles + this sizing.
