@@ -936,6 +936,20 @@ export function boxedAddr(name) {
   return ['local.get', `$${ctx.func.boxed.get(name)}`]
 }
 
+// '$'-prefixed name memo. readVar/writeVar run per IR node; rebuilding the
+// `$name` string each time costs an alloc+copy in the self-host kernel AND
+// produces a fresh instance per use — making watr's name-keyed lookups
+// content-compare. The memo returns ONE canonical instance per name, so
+// construction is a map hit and every downstream comparison is bit-eq.
+// Module-level: in-kernel it lives per instance (arena strings are immortal),
+// natively it is a plain cross-compile cache; the name vocabulary is bounded.
+const DOLLAR = new Map()
+export const dollar = (name) => {
+  let v = DOLLAR.get(name)
+  if (v === undefined) { v = '$' + name; DOLLAR.set(name, v) }
+  return v
+}
+
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get.
  *  Unboxed pointer locals (repOf(name).ptrKind) tag the returned node with `.ptrKind`
  *  so downstream coercions know it's an i32 offset, not a numeric. */
@@ -948,7 +962,7 @@ export function readVar(name) {
   }
   if (isGlobal(name)) {
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
-    const node = typed(['global.get', `$${name}`], gt)
+    const node = typed(['global.get', dollar(name)], gt)
     const grep = repOfGlobal(name)
     if (gt === 'f64' && (lookupValType(name) === VAL.NUMBER || grep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
     // ptrKind tags a raw i32 pointer offset — meaningful only for an i32-STORED
@@ -976,7 +990,7 @@ export function readVar(name) {
     return t === 'i32' ? typed(['i32.const', rep.intConst], 'i32')
                        : typed(['f64.const', rep.intConst], 'f64')
   }
-  const node = typed(['local.get', `$${name}`], t)
+  const node = typed(['local.get', dollar(name)], t)
   if (t === 'f64' && (lookupValType(name) === VAL.NUMBER || rep?.val === VAL.NUMBER)) node.valKind = VAL.NUMBER
   // Proven uint32 accumulator local (narrowUint32): a later asF64 must widen with
   // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
@@ -1013,11 +1027,11 @@ export function writeVar(name, valIR, void_) {
     // narrows purpose-focused counters/sizes to i32 — coerce the write to match.
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const v = gt === 'i32' ? asI32(valIR) : asF64(valIR)
-    if (void_) return typed(['block', ['global.set', `$${name}`, v]], 'void')
+    if (void_) return typed(['block', ['global.set', dollar(name), v]], 'void')
     const t = gt === 'i32' ? tempI32() : temp()
     return typed(['block', ['result', gt],
       ['local.set', `$${t}`, v],
-      ['global.set', `$${name}`, ['local.get', `$${t}`]],
+      ['global.set', dollar(name), ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], gt)
   }
   const t = ctx.func.locals.get(name) || 'f64'
@@ -1032,8 +1046,8 @@ export function writeVar(name, valIR, void_) {
   } else {
     coerced = t === 'v128' ? valIR : t === 'f64' ? asF64(valIR) : asI32(valIR)
   }
-  if (void_) return typed(['local.set', `$${name}`, coerced], 'void')
-  const teeNode = typed(['local.tee', `$${name}`, coerced], t)
+  if (void_) return typed(['local.set', dollar(name), coerced], 'void')
+  const teeNode = typed(['local.tee', dollar(name), coerced], t)
   if (ptrKind != null) teeNode.ptrKind = ptrKind
   return teeNode
 }

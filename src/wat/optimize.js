@@ -1818,16 +1818,82 @@ const devirt = (ast) => {
     if (v[0] === 'select' && v.length === 4) return boxConsts(v[1], out) && boxConsts(v[2], out)
     return false
   }
+  // Per-global write VALUES collected first; candidates resolved by fixpoint so
+  // the hook-alias pattern works: `baseSpace = parse.space ?? default` stores a
+  // select/if whose arms are a GLOBAL READ of another const slot plus a const —
+  // candidates = union through the alias edge. Soundness is unchanged (the
+  // guard ladder keeps the original indirect fallback for unknown values); the
+  // fixpoint only widens the candidate set. `if (result f64)` arms and
+  // `__is_nullish`-style guard CONDITIONS are skipped — only VALUE positions
+  // contribute. A write that contains anything else poisons the global.
+  const globalWrites = new Map()
   walk(ast, n => {
     if (!Array.isArray(n) || n[0] !== 'global.set' || typeof n[1] !== 'string') return
-    if (globalCands.get(n[1]) === null) return
-    const out = []
-    if (boxConsts(n[2], out)) {
-      const m = globalCands.get(n[1]) || new Map()
-      for (const c of out) m.set(_i64Canon(c[1]), c)
-      globalCands.set(n[1], m)
-    } else globalCands.set(n[1], null)
+    if (!globalWrites.has(n[1])) globalWrites.set(n[1], [])
+    globalWrites.get(n[1]).push(n[2])
   })
+  // Value-position scan: consts and global.get leaves, through reinterprets,
+  // select arms and if/result arms. Returns false (poison) on anything else.
+  const candLeaves = (v, consts, reads) => {
+    if (!Array.isArray(v)) return false
+    if (v[0] === 'i64.const') { consts.push(v); return true }
+    if (v[0] === 'f64.const' && typeof v[1] === 'string' && v[1].startsWith('nan:')) {
+      consts.push(['i64.const', _i64Canon(v[1].slice(4))]); return true
+    }
+    if ((v[0] === 'f64.reinterpret_i64' || v[0] === 'i64.reinterpret_f64') && v.length === 2)
+      return candLeaves(v[1], consts, reads)
+    if (v[0] === 'global.get' && typeof v[1] === 'string') { reads.push(v[1]); return true }
+    if (v[0] === 'local.get' || v[0] === 'local.tee') {
+      // a tee'd copy of one of the above — the tee VALUE was already scanned
+      // where it was written; the bare read alone proves nothing → poison
+      return v[0] === 'local.tee' && v.length === 3 ? candLeaves(v[2], consts, reads) : false
+    }
+    if (v[0] === 'select' && v.length === 4)
+      return candLeaves(v[1], consts, reads) && candLeaves(v[2], consts, reads)
+    if (v[0] === 'if') {
+      // (if (result T) COND (then A) (else B)) — arms are value positions
+      let ok = true, seenArm = false
+      for (let i = 1; i < v.length; i++) {
+        const p = v[i]
+        if (!Array.isArray(p)) continue
+        if (p[0] === 'then' || p[0] === 'else') {
+          seenArm = true
+          if (p.length !== 2 || !candLeaves(p[1], consts, reads)) ok = false
+        }
+      }
+      return ok && seenArm
+    }
+    return false
+  }
+  const writeFacts = new Map()   // global → { consts: [...], reads: [...] } | null
+  for (const [g, ws] of globalWrites) {
+    let consts = [], reads = [], ok = true
+    for (const w of ws) if (!candLeaves(w, consts, reads)) { ok = false; break }
+    writeFacts.set(g, ok ? { consts, reads } : null)
+  }
+  // Fixpoint: a global's candidates = its const writes ∪ candidates of every
+  // global it reads in value position. A poisoned alias poisons the reader.
+  let changed = true
+  const resolved = new Map()
+  while (changed) {
+    changed = false
+    for (const [g, f] of writeFacts) {
+      if (resolved.get(g) === null) continue
+      if (f === null) { if (resolved.get(g) !== null) { resolved.set(g, null); changed = true } continue }
+      const m = resolved.get(g) || new Map()
+      const before = m.size
+      let poisoned = false
+      for (const c of f.consts) m.set(_i64Canon(c[1]), c)
+      for (const r of f.reads) {
+        if (writeFacts.get(r) === null || resolved.get(r) === null) { poisoned = true; break }
+        const rm = resolved.get(r)
+        if (rm) for (const [hex, c] of rm) m.set(hex, c)
+      }
+      if (poisoned) { resolved.set(g, null); changed = true; continue }
+      if (!resolved.has(g) || m.size !== before) { resolved.set(g, m); changed = true }
+    }
+  }
+  for (const [g, m] of resolved) globalCands.set(g, m)
 
   // The slot-extraction idiom — returns the source local name or null.
   const matchSlotOfLocal = (e) => {
