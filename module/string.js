@@ -145,9 +145,16 @@ export default (ctx) => {
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
-  inc('__mkptr', '__alloc')
+  // No eager `inc('__mkptr', '__alloc')`: string *literals* are constants — SSO
+  // packs ≤4 ASCII bytes inline in the NaN box, longer literals land in a static
+  // data segment at a constant offset, and `mkPtrIR` folds both to an `f64.const`
+  // with no `__mkptr` call. Only *runtime* construction (concat/slice/`String(n)`/
+  // shared-memory pools) touches the heap, and every such op declares its own
+  // `__alloc`/`__mkptr` deps above (or mkPtrIR auto-incs when it emits a call). A
+  // program whose only strings are literals stays heap-free — no allocator, no
+  // memory, no `_alloc`/`_clear` exports.
 
-  // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
+  // === String literal: "abc" → SSO if ≤4 ASCII, else static data ===
 
   bind('str', (str) => {
     const MAX_SSO = 4

@@ -626,6 +626,12 @@ export default (ctx) => {
       const len = elems.length
       // R: Static data segment for arrays of pure-literal elements (own-memory only).
       // Saves N×(alloc+store) instructions in __start; raw f64 bits embedded directly.
+      // NOTE: the threshold stays at 4 deliberately. A static array aliases one shared
+      // data-segment region, so a *function-local* literal that is mutated in place
+      // (`let a = […]; a[0] = …`) leaks that mutation across calls — a latent bug at len≥4
+      // too (see tests). Lowering the bar to small arrays widened that exposure to the
+      // common `[a, b, c]` case, so it's gated until the literal carries a no-mutation /
+      // module-scope-only proof. Module-scope const exports (single instance) are safe.
       if (len >= 4 && !ctx.memory.shared) {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         const slots = elems.map(e => extractF64Bits(asF64(emit(e))))

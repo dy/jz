@@ -144,18 +144,45 @@ export const getter = (fn) => (fn.getter = true, fn)
  *  Each module co-locates its own deps with its stdlib registrations at init time. */
 export function resolveIncludes() {
   const graph = ctx.core.stdlibDeps
+  const stdlib = ctx.core.stdlib
+  // Auto-derived deps: a stdlib template that calls `$__foo` (a registered stdlib
+  // func) depends on it, whether or not the hand-maintained `deps()` list says so.
+  // Scanning the *realized* template keeps the graph honest, so a missing manual
+  // entry can't silently drop a transitively-needed helper (the bug class the old
+  // blanket `inc('__mkptr','__alloc')` masked). Factory templates are realized
+  // (called) so feature-gated branches — `${hasExt ? '(call $__ext_prop …)' : ''}`
+  // — resolve before scanning; reading raw source would over-pull the dead branch.
+  // jz's templates are pure string builders, so realizing here (and again at
+  // emission) is side-effect-free. A `$__foo` naming a global (not a stdlib func)
+  // is skipped. Realization can fail if called before its inputs are ready — then
+  // we return nothing *without caching*, so a later pass retries. Memoized per compile.
+  const autoCache = ctx.core._autoDeps ??= new Map()
+  const autoDepsOf = (name) => {
+    let found = autoCache.get(name)
+    if (found !== undefined) return found
+    const v = stdlib[name]
+    let text
+    if (typeof v === 'string') text = v
+    else if (typeof v === 'function') { try { text = v() } catch { return [] } }
+    if (typeof text !== 'string') return (autoCache.set(name, []), [])
+    found = []
+    const seen = new Set()
+    for (const m of text.matchAll(/\$(__[A-Za-z0-9_]+)/g)) {
+      const d = m[1]
+      if (d !== name && stdlib[d] && !seen.has(d)) { seen.add(d); found.push(d) }
+    }
+    autoCache.set(name, found)
+    return found
+  }
   let changed = true
   while (changed) {
     changed = false
     for (const name of [...ctx.core.includes]) {
       const entry = graph[name]
       const deps = typeof entry === 'function' ? entry() : entry
-      if (deps) for (const dep of deps) {
-        if (!ctx.core.includes.has(dep)) {
-          ctx.core.includes.add(dep)
-          changed = true
-        }
-      }
+      const add = (dep) => { if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); changed = true } }
+      if (deps) for (const dep of deps) add(dep)
+      for (const dep of autoDepsOf(name)) add(dep)
     }
   }
 }

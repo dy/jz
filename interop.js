@@ -132,16 +132,38 @@ _u32[1] = ATOM_HI[ATOM.TRUE]; _u32[0] = 0; export const TRUE_NAN = _f64[0]
 // Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
 
-// Decode f64 return value: null/undefined sentinels → JS values, numbers pass through
+// Memory-free decode of an f64 boundary value: numbers pass through, the reserved
+// atoms become null/undefined/false/true, and an SSO string unpacks its ≤4 inline
+// ASCII bytes straight from the NaN payload. These are exactly the value forms a
+// *memoryless* module can carry across the boundary — a heap string/array/object
+// would need linear memory to exist, so it can't reach here. Heap-carrying modules
+// route through `mem.read` instead (which also handles these, via memory).
 const decode = v => {
-  if (v === v) return v  // fast path: non-NaN
+  if (v === v) return v  // fast path: non-NaN number
   _f64[0] = v
+  // STRING (type 4) + SSO bit: content is the low 32 bits, length the low aux bits.
+  if (decodePtrType(_u32[1]) === 4) {
+    const a = decodePtrAux(_u32[1])
+    if (a & LAYOUT.SSO_BIT) {
+      const len = a & 0x7, off = _u32[0]; let s = ''
+      for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+      return s
+    }
+  }
   if (_u32[0] !== 0) return v
   if (_u32[1] === ATOM_HI[ATOM.NULL]) return null
   if (_u32[1] === ATOM_HI[ATOM.UNDEF]) return undefined
   if (_u32[1] === ATOM_HI[ATOM.FALSE]) return false
   if (_u32[1] === ATOM_HI[ATOM.TRUE]) return true
   return v
+}
+
+// Decode a boundary value that arrives as i64 bits (BigInt carrier) into a JS
+// value. Heap-carrying modules go through `mem.read`; a memoryless module's value
+// is a number/atom/SSO string, decodable from the bits alone.
+const readArgBits = (state, big) => {
+  const f = i64ToF64(big)
+  return state.mem ? state.mem.read(f) : decode(f)
 }
 
 export const ptr = (type, aux, offset) => {
@@ -196,7 +218,11 @@ export const memory = (src) => {
     // Instance result: { module, instance, exports, extMap }
     const raw = src?.instance?.exports || src?.exports || src
     mem = src?.exports?.memory || raw.memory
-    if (!mem) return null  // pure scalar module — no memory
+    // Memoryless module (SSO strings / atoms / numbers only — no linear memory):
+    // hand back a minimal reader instead of null so callers can still decode its
+    // boundary values from bits. `read`/`wrapVal` cover the value forms that exist
+    // without memory; `scalar` flags the fast path that skips heap marshaling.
+    if (!mem) return { read: decode, wrapVal: coerce, scalar: true }
     wasmExports = { ...raw, memory: mem }
     extMap = src.extMap || null
     mod = src.module || null
@@ -536,7 +562,9 @@ export const wrap = (memSrc, inst) => {
     const bits = lastErrBits.value
     _u32[0] = Number(bits & 0xffffffffn)
     _u32[1] = Number((bits >> 32n) & 0xffffffffn)
-    const value = mem ? mem.read(_f64[0]) : _f64[0]
+    // Memoryless module: the thrown value is a number/atom/SSO string — decode it
+    // from bits. (A heap Error/string can only exist when the module has memory.)
+    const value = mem ? mem.read(_f64[0]) : decode(_f64[0])
     if (value instanceof Error) throw value
     const wrapped = new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
@@ -554,7 +582,7 @@ export const wrap = (memSrc, inst) => {
     ext?.has(i) ? (x === undefined && ext.def?.has(i) ? ext.def.get(i) : x) : box(x)
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
-  if (!mem) {
+  if (!mem || mem.scalar) {
     for (const [name, fn] of Object.entries(realInst.exports)) {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const ext = extExp.get(name)
@@ -649,7 +677,7 @@ const installDefaultEnvImports = (mod, imports, state) => {
     // across the wasm→JS boundary (see module/console.js header). Reinterpret
     // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
     const write = (valBig, fd, sep) => {
-      const v = state.mem.read(i64ToF64(valBig))
+      const v = readArgBits(state, valBig)
       buf[fd] += String(v)
       if (sep === 32) buf[fd] += ' '
       else if (sep === 10) flush(fd)
@@ -679,13 +707,13 @@ const installDefaultEnvImports = (mod, imports, state) => {
   }
   if (envFns.has('parseFloat') && !imports.env.parseFloat) {
     imports.env.parseFloat = (valBig) => {
-      const s = state.mem.read(i64ToF64(valBig))
+      const s = readArgBits(state, valBig)
       return parseFloat(s)
     }
   }
   if (envFns.has('parseInt') && !imports.env.parseInt) {
     imports.env.parseInt = (valBig, radix) => {
-      const s = state.mem.read(i64ToF64(valBig))
+      const s = readArgBits(state, valBig)
       return parseInt(s, radix || undefined)
     }
   }
@@ -834,7 +862,11 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   const enhanced = memory(memSrc)
   state.mem = enhanced
   state.flushPrint?.()
-  return { exports: wrap(memSrc), memory: enhanced, instance: inst, module: mod }
+  // A memoryless module keeps a minimal reader internally (state.mem, for decoding
+  // its SSO/atom boundary values), but the result's `.memory` stays null — the
+  // module genuinely exposes no linear memory. `jz.memory(result)` still hands back
+  // a usable reader on demand.
+  return { exports: wrap(memSrc), memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
 }
 
 /**

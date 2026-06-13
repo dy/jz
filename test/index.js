@@ -47,6 +47,7 @@ const TESTS = [
   'jsstring',
   'booleans',
   'warnings',
+  'minimal-output',
 ]
 
 const argFilters = process.argv.slice(2)

@@ -3681,6 +3681,26 @@ const mayInline = (ast) => {
   return false
 }
 
+// A `__start` whose body DCE emptied down to nothing — plus its `(start)`
+// directive — is pure noise: the directive invokes a no-op. jz's buildStartFn
+// only emits `__start` when it has content, so an empty one is always a post-DCE
+// artifact (e.g. a top-level `1 + 2;` whose dropped value the dead-code pass
+// removed). Drop both. Header nodes (param/result/local/export/type) don't count
+// as a body — a function carrying only locals still does nothing.
+const START_HEAD = new Set(['export', 'type', 'param', 'result', 'local'])
+function pruneEmptyStart(ast) {
+  if (!Array.isArray(ast) || ast[0] !== 'module') return ast
+  const fn = ast.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+  if (!fn) return ast
+  // Skip the name (index 1) and header nodes; a bare-string node past them is a
+  // real instruction (`drop`/`nop`/`unreachable`), so it stops the scan.
+  let b = 2
+  while (b < fn.length && Array.isArray(fn[b]) && START_HEAD.has(fn[b][0])) b++
+  if (b < fn.length) return ast  // real instructions remain
+  return ast.filter(n => !(Array.isArray(n) &&
+    ((n[0] === 'func' && n[1] === '$__start') || (n[0] === 'start' && n[1] === '$__start'))))
+}
+
 export default function optimize(ast, opts = true) {
   const strictGuard = opts === true  // default: zero tolerance for bloat
   opts = normalize(opts)
@@ -3696,7 +3716,7 @@ export default function optimize(ast, opts = true) {
   // not trip the size-guard into reverting a whole round. A single sweep is
   // complete: every call_indirect is visited; rewritten sites keep the original
   // as the guarded fallback arm.
-  const finish = (a) => opts.devirt ? devirt(a) : a
+  const finish = (a) => pruneEmptyStart(opts.devirt ? devirt(a) : a)
 
   // Fast path: jz owns this optimizer and feeds it a controlled, type-aware IR.
   // The only passes that can *grow* the binary are inlineOnce/inline; when no
