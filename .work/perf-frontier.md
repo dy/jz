@@ -167,3 +167,28 @@ Each is compiler-engineering scale (days, not session hours). The bench
 suite meanwhile: 10/14 beat min(V8,JSC) outright; watr at engine parity;
 jessie 1.5-1.6×; the self-host case is the honest open frontier and the
 page ledger says exactly that.
+
+
+## Session 4 final — pointer-kind audit + the inline-slice verdict
+
+User question answered: the redundant dispatch construct is NOT a pointer
+kind — every kind earns its place except two diet candidates (BUFFER could
+fold into TYPED; SET/MAP could be one tag + entry-size-in-aux, mostly a
+binary-size win). The construct that costs more than it creates is the
+CLOSURE TRAMPOLINE LAYER: the box erases the signature, so even exact-arity
+calls pay call_indirect → tramp → body. Fix shape: arity in the box aux +
+bodies in the table → exact-arity sites call the body directly; tramp only
+for mismatch/defaults/rest. This subsumes most of the closure-dispatch tax
+and replaces the old devirt-alias rung as priority #1a.
+
+Seventh + eighth flat measurements (kind-erased x[i] ARRAY-arm inlining,
++260 kB → reverted; ratio noise band 1.71-1.85 across all of them): the
+self-host wall is NOT instruction-count at any single class of site. The
+remaining 1.6-1.8× is branch/dependency-bound across the whole value model.
+Patch-scale emit inlining is exhausted as a strategy — only the four
+structural projects move it:
+  1a. trampoline elision via arity-in-aux (closure ABI change),
+  1b. shape-IC dispatch for dyn-get (per-site schemaId caches),
+  2.  escape-analyzed AST-node allocation,
+  3.  devirt alias rung,
+  4.  emit-side key caching.
