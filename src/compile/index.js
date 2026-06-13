@@ -51,7 +51,7 @@ import {
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   valKindToPtr, findBodyStart, tcoTailRewrite,
   boolBoxIR,
-  I32_MIN, I32_MAX,
+  I32_MIN, I32_MAX, dollar,
 } from '../ir.js'
 import plan from './plan/index.js'
 import {
@@ -737,7 +737,7 @@ function emitFunc(func, funcFacts, programFacts) {
   // Boundary-wrapped exports also defer the attribute to the synthesized
   // wrapper ($${name}$exp) that reboxes the narrowed result back to f64.
   if (exported && !isBoundaryWrapped(func)) fn.push(['export', `"${name}"`])
-  fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
+  fn.push(...sig.params.map(p => ['param', dollar(p.name), p.type]))
   fn.push(...sig.results.map(t => ['result', t]))
 
   // Default params: ES spec says default applies only when arg is `undefined`
@@ -807,7 +807,7 @@ function emitFunc(func, funcFacts, programFacts) {
     // Hoist loop-invariant `__to_num(param)` coercions to a single entry rebind.
     const numCoerceInits = hoistInvariantParamCoercions(stmts, func)
     const paramInits = collectParamInits()
-    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
     // I: Skip trailing fallback when last statement is return (unreachable code)
     const lastStmt = stmts.at(-1)
     const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
@@ -822,12 +822,12 @@ function emitFunc(func, funcFacts, programFacts) {
   } else if (multi && body[0] === '[') {
     const values = body.slice(1).map(e => asF64(emit(e)))
     const paramInits = collectParamInits()
-    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
   } else {
     const ir = emit(body)
     const paramInits = collectParamInits()
-    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
@@ -1111,7 +1111,7 @@ function emitClosureBody(cb) {
     }
   }
 
-  for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+  for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
 
   // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
   // env is the CLOSURE pointer (PTR.CLOSURE) — never an ARRAY, no forwarding chain.

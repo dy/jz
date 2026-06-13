@@ -192,3 +192,51 @@ structural projects move it:
   2.  escape-analyzed AST-node allocation,
   3.  devirt alias rung,
   4.  emit-side key caching.
+
+
+## 1a implementation checklist (trampoline elision — arity-in-aux)
+
+Box today: CLOSURE tag, aux = funcIdx (tramp's table index), offset = envPtr.
+Change: aux = funcIdx | (arity << 12); bodies registered in the table at
+funcIdx + BODIES_BASE (second elem segment, same order). Exact-argc call
+sites: `(aux >> 12) == argc ? call_indirect(bodyType, …, aux&0xFFF + BASE)
+: call_indirect(ftN tramp path)`. Gate the feature off when table > 4096
+entries (12-bit idx) — emit decides once per module.
+
+Aux consumers that MUST mask &0xFFF after this (census, 2026-06-12):
+- module/function.js:294,314 — inlined __ptr_aux for closure funcIdx
+- src/wat/optimize.js devirt — slot lookup `_i64HiU(bits) & 32767` → & 0xFFF
+  (and the candidate consts produced by closure mkPtrIR change bit-pattern —
+  devirt's slots map keys stay tramp indexes; candidates carry arity bits →
+  mask at lookup)
+- module/collection.js __dyn_get_t_h CLOSURE arm — negative-key from aux
+- interop.js host decode (closure → callable wrapper) — aux → table index
+- src/compile/emit.js closure.call / directClosures paths (closureFuncIdx)
+- any `__ptr_aux` call on a closure-typed value (grep PTR.CLOSURE consumers:
+  ir.js, compile/index.js, emit.js, assemble.js, object.js, core.js,
+  json.js, function.js, collection.js)
+CORRECTION (census 2026-06-12b): tramps wrap NAMED functions used as
+closure values — they adapt uniform ftN → the func's NATIVE typed signature
+(i32 params via trunc_sat, result reboxing, rest packing). `=>` closures
+compile uniform-ABI bodies directly and never tramp. So bodies canNOT sit
+in ftN slots (signature mismatch) and the index-swap idea is void. The
+real elision paths: (a) devirt to the NATIVE function call when identity
+is known (exists — the alias/object-slot rungs widen it), (b) trust V8's
+speculative call_indirect inlining for hot monomorphic sites (it has call
+feedback), (c) for all-f64-sig named funcs emit the tramp body INLINE-able
+small so (b) fires. Re-measure the tramp share AFTER 1b lands before
+spending on an ABI change.
+
+Estimated effect: removes one call hop + arg re-pack per closure call at
+exact arity (the dominant case in parser hooks and array callbacks);
+jessie's tramp share alone measured ~7%.
+
+## Session 5 progress log
+- #3 alias rung: global→global candidate fixpoint LANDED in devirt (sound,
+  suite-green); jessie's actual hooks live on an ESCAPED object (parse is
+  exported), so their devirt needs object-slot tracking = #1b machinery.
+- #4 key caching: dollar() memo LANDED in ir.js (readVar/writeVar) +
+  decl/param emission — canonical '$name' instances end-to-end, so watr's
+  name-map lookups hit bit-eq. Bench-flat individually (emit is a minority
+  of kernel compile time); kept as architecture.
+- #2 confirmed deprioritized: compiler AST nodes escape by design.
