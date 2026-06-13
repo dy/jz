@@ -321,7 +321,7 @@ const LOSS_NOTES = {
   'jessie/bun': ['same dynamic-receiver tax against JSC’s ICs', 'open — shape-IC dispatch'],
   'jz/v8': ['kind-erased IR tree: every node[i]/.prop is a runtime dispatch; JITs use inline caches', 'open — shape-IC dispatch'],
   'jz/bun': ['same — the self-host magnifies the dynamic-receiver tax across the whole pipeline', 'open — shape-IC dispatch'],
-  'sort/as': ['x64-specific cliff: the same JZ module runs 1.7× faster than AS on arm64 V8; kernel WAT is clean (no calls, raw f64 ops)', 'open — bisecting the x64 codegen path'],
+  'sort/as': ['snapshot outlier: JZ sort scaled 3.9× from the previous box where the corpus family scales ~2.1× (shared-runner noise); JZ wins sort 1.4–1.8× on every directly measured machine', 'measurement — next snapshot decides'],
 }
 const LOSS_STRUCTURAL = [
   ['bitwise', 'native (AVX2)', '~2.4×', 'JZ emits i32x4 — the wasm SIMD ceiling is 128 bits; native-tuned builds use 256-bit AVX2 (JZ already beats baseline clang -O3 here)', 'structural — wasm SIMD width'],
