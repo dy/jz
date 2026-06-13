@@ -37,7 +37,7 @@ import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
 import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
-import { emit } from '../compile/emit.js'
+import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
 
 // NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
@@ -162,7 +162,12 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     }
   }
   seedGeneratedLocals(ast)
-  const init = emit(ast)
+  // __start has no result: emit the top-level program in void context so a stray
+  // value is dropped. `ast` is normally a `;` statement-sequence (each statement
+  // already void-dropped), but jzify unwraps a single-statement program to its
+  // bare expression — emitting that in value context leaves a value on the stack
+  // and the start function fails validation. emitVoid handles both shapes.
+  const init = emitVoid(ast)
 
   // Module-scope object literals can create closure bodies while `emit(ast)`
   // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
@@ -283,6 +288,47 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   compilePendingClosures()
   if (closureFuncs.length > beforeLateClosures)
     sec.funcs.unshift(...closureFuncs.slice(beforeLateClosures))
+}
+
+/**
+ * Hoist constant global initializers out of `__start` into immutable inline decls.
+ *
+ * A top-level `const x = <constant>` for a non-numeric value (atom `true`/`null`/
+ * `undefined`/`NaN`, an SSO or static-string NaN-box, a folded pointer) emits a
+ * `(global.set $x (f64.const …))` into `__start`, because only *numeric* consts are
+ * folded ahead of emit. But the value is a compile-time constant, so it belongs in
+ * the decl itself — `(global $x f64 (f64.const …))` — exactly like the numeric path.
+ * That drops the store, and when it empties `__start` the start function and its
+ * directive go too. Gated to single-assignment user `const`s so we never freeze a
+ * binding something else writes.
+ */
+export function hoistConstGlobalInits(sec) {
+  const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+  if (!startFn) return
+  const writes = new Map()
+  const scan = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'global.set' && typeof node[1] === 'string') writes.set(node[1], (writes.get(node[1]) || 0) + 1)
+    for (const c of node) scan(c)
+  }
+  for (const arr of [sec.funcs, sec.stdlib, sec.start]) for (const fn of arr) scan(fn)
+  for (let i = startFn.length - 1; i >= findBodyStart(startFn); i--) {
+    const stmt = startFn[i]
+    if (!Array.isArray(stmt) || stmt[0] !== 'global.set' || writes.get(stmt[1]) !== 1) continue
+    const name = typeof stmt[1] === 'string' && stmt[1][0] === '$' ? stmt[1].slice(1) : null
+    const g = name && ctx.scope.globals.get(name)
+    const c = stmt[2]
+    if (!g || !g.mut || !ctx.scope.consts?.has(name) || !ctx.scope.userGlobals?.has(name)) continue
+    if (!Array.isArray(c) || c[0] !== `${g.type}.const`) continue
+    ctx.scope.globals.set(name, { ...g, mut: false, init: c[1] })
+    startFn.splice(i, 1)
+  }
+  // Hoisting can empty `__start`. The O2 watr pass prunes a bodyless start, but at
+  // O0/O1 nothing else does — drop it (func + directive) here so a const-only module
+  // carries no start at all.
+  if (findBodyStart(startFn) >= startFn.length)
+    for (let j = sec.start.length - 1; j >= 0; j--)
+      if (Array.isArray(sec.start[j]) && sec.start[j][1] === '$__start') sec.start.splice(j, 1)
 }
 
 /**
@@ -421,24 +467,121 @@ export function finalizeClosureTable(sec) {
 }
 
 /**
+ * Stdlib funcs actually reachable from the emitted program. Seeds from real
+ * `call`/`return_call`/`ref.func` sites in the user funcs, `__start`, and the elem
+ * table, then closes transitively over the stdlib call graph (each reached helper's
+ * template references). Conservative by construction — a template `$__foo` in a
+ * feature-dead branch is kept, never dropped — so it's safe to gate inclusion and the
+ * memory/allocator decision on it. An eagerly-`inc`'d helper that nothing calls is
+ * absent, which is the whole point.
+ */
+function reachableStdlib(sec) {
+  const stdlib = ctx.core.stdlib
+  const reach = new Set(), stack = []
+  // Track every reached name (module-namespace `math.sin` included), but only follow
+  // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin_core` — the
+  // dotted module funcs are the ones the `$__`-only regex used to miss, pruning live code.
+  const add = (name) => { if (!reach.has(name)) { reach.add(name); if (stdlib[name] != null) stack.push(name) } }
+  const scanIR = (node) => {
+    if (!Array.isArray(node)) return
+    if ((node[0] === 'call' || node[0] === 'return_call' || node[0] === 'ref.func') &&
+        typeof node[1] === 'string' && node[1][0] === '$') add(node[1].slice(1))
+    for (const c of node) scanIR(c)
+  }
+  for (const fn of sec.funcs) scanIR(fn)
+  for (const fn of sec.start) scanIR(fn)
+  for (const e of sec.elem)               // closure table: bare `$fn` func refs
+    if (Array.isArray(e)) for (const c of e) if (typeof c === 'string' && c[0] === '$') add(c.slice(1))
+  // A stdlib func that self-exports (`(export "__invoke_closure")`) is a host-facing
+  // entry point — the JS host calls it directly, so it's a root even when nothing in
+  // the wasm calls it. Mirrors treeshake's inline-export rooting.
+  for (const n of ctx.core.includes) {
+    const v = stdlib[n]
+    let t = ''
+    try { t = typeof v === 'function' ? v() : v } catch { t = '' }
+    if (typeof t === 'string' && t.includes('(export "')) add(n)
+  }
+  while (stack.length) {
+    const v = stdlib[stack.pop()]
+    let text = ''
+    try { text = typeof v === 'function' ? v() : v } catch { text = '' }
+    if (typeof text === 'string') for (const m of text.matchAll(/\$([A-Za-z_][A-Za-z0-9_.]*)/g)) add(m[1])
+  }
+  return reach
+}
+
+/**
  * Phase: pull stdlib + memory.
  */
 export function pullStdlib(sec) {
   resolveIncludes()
 
-  const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
-  if (!needsMemory) ctx.scope.globals.delete('__heap')
+  // Reachability, not inclusion, decides what the output needs. `ctx.core.includes`
+  // accumulates everything a module *might* use (eager module-load `inc`s + transitive
+  // deps), but a const array / static string literal calls none of it. So we seed from
+  // the actual call sites in the emitted funcs + __start (+ elem table) and close
+  // transitively over the stdlib call graph. An eagerly-included helper that nothing
+  // calls never enters this set — so allocator, memory, and exports reflect real use.
+  const reachable = reachableStdlib(sec)
+  const realize = (n) => { const v = ctx.core.stdlib[n]; try { return typeof v === 'function' ? v() : v } catch { return '' } }
+
+  // Two distinct needs, kept separate:
+  //  · needsAlloc — the program allocates at runtime: an allocator func is reachable,
+  //    or shared-mem string literals seed a pool __start allocs. Drives the bump
+  //    allocator (`__alloc`/`__alloc_hdr`/`__clear`), the `__heap` pointer, and the
+  //    `_alloc`/`_clear` marshalling exports.
+  //  · needsMemory — linear memory must merely *exist*: we allocate, OR a literal lives
+  //    in a static data segment (a const pointer, no allocator behind it), OR a reached
+  //    helper / inline body does a load/store, OR `__ptr_type` is reached (the module
+  //    discriminates heap tags — an `instanceof`/`typeof x==='object'` whose argument the
+  //    host marshals across the boundary). A data segment with no memory is invalid wasm,
+  //    so memory can't be gated on allocation alone.
+  const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n']
+  const needsAlloc = !!ctx.runtime.strPool || ALLOC_FUNCS.some(a => reachable.has(a))
+  // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
+  // loads without calling a stdlib helper), so scan the emitted bodies too.
+  const hasMemOp = (node) => Array.isArray(node) &&
+    ((typeof node[0] === 'string' && MEM_OPS.test(node[0])) || node.some(hasMemOp))
+  // `ctx.runtime.data` is never empty here — the number module seeds a static stringify
+  // prefix (`NaNInfinity…`) at offset 0; stripStaticDataPrefix removes it when unused, so
+  // the real question is whether any data lives *beyond* that strippable prefix.
+  // An explicit `{ memory: pages }` / shared-memory option is a caller request to own
+  // linear memory (e.g. to marshal host values in), independent of what the wasm itself
+  // reaches — honour it even for an otherwise-memoryless program.
+  const explicitMemory = ctx.memory.pages > 0 || !!ctx.memory.shared
+  const needsMemory = needsAlloc || explicitMemory ||
+    (ctx.runtime.data?.length || 0) > (ctx.runtime.staticDataLen || 0) ||
+    reachable.has('__ptr_type') ||
+    [...reachable].some(n => MEM_OPS.test(realize(n))) ||
+    sec.funcs.some(hasMemOp) || sec.start.some(hasMemOp)
+  // Emit only what's reachable: drop every eagerly-`inc`'d *internal* helper the program
+  // never calls. This is what lets a const-array / static-string / atom module shed the
+  // allocator, pointer dispatchers, and length helpers that an array/object module load
+  // pulled in wholesale — and it keeps the dead allocator from dangling on the `$__heap`
+  // we delete below. Scoped to `__`-prefixed names: module-namespace funcs (`math.sin`)
+  // are pulled in on demand, never eagerly, so they're already minimal and never pruned
+  // here (guarding against any reachability blind spot in a dotted-name template).
+  for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
+  if (!needsAlloc) ctx.scope.globals.delete('__heap')
   if (needsMemory && ctx.module.modules.core) {
-    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) ctx.core.includes.add(fn)
-    // Late-add of allocators may pull in transitive deps (__alloc → __memgrow,
-    // etc.) that the initial resolveIncludes did not yet see; re-resolve.
-    // No-op when the alloc trio was already present.
-    resolveIncludes()
-    const pages = ctx.memory.pages || 1
+    if (needsAlloc) {
+      for (const fn of ['__alloc', '__alloc_hdr', '__clear']) ctx.core.includes.add(fn)
+      // Late-add of allocators may pull in transitive deps (__alloc → __memgrow,
+      // etc.) that the initial resolveIncludes did not yet see; re-resolve.
+      // No-op when the alloc trio was already present.
+      resolveIncludes()
+    }
+    // Initial pages must cover the static data segment (it loads at instantiation), not
+    // just the default 1 — otherwise a module whose constants exceed 64 KiB emits a data
+    // segment that overflows its own memory. The heap grows past this on demand via
+    // __memgrow. (Shared memory loads literals via memory.init into allocated space, so
+    // its initial size isn't pinned by the data length.)
+    const dataPages = ctx.memory.shared ? 0 : Math.ceil((ctx.runtime.data?.length || 0) / 65536)
+    const pages = Math.max(ctx.memory.pages || 1, dataPages)
     const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', max ? ['memory', pages, max] : ['memory', pages]])
     else sec.memory.push(max ? ['memory', ['export', '"memory"'], pages, max] : ['memory', ['export', '"memory"'], pages])
-    if (ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
+    if (needsAlloc && ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
       sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
   }
 

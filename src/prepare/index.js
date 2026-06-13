@@ -458,6 +458,11 @@ export default function prepare(node) {
   // import would cycle (autoload imports every module via module/index.js).
   ctx.module.include = includeModule
   includeModule('core')
+  // Empty or whitespace-only source parses to a bare '' — an empty program, not an
+  // identifier reference. Normalize to an empty statement so it compiles to a bare
+  // `(module)` instead of a `(local.get $)` against a zero-length name. (A non-empty
+  // bare identifier like `foo` parses to `'foo'` and stays a real reference.)
+  if (node === '') node = [';']
   validateCoalesceMixing(node)  // ES2020: reject unparenthesized `??` mixed with `||`/`&&`
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
@@ -1628,6 +1633,15 @@ const handlers = {
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
           ctx.func.exports[i[1]] = true
+    // export name → bare-identifier re-export (shorthand for `export { name }`).
+    // Register the binding and emit nothing; without this the name falls through
+    // to `prep(decl)` below and compiles as a dead `global.get; drop` statement
+    // while the export itself is silently lost.
+    if (typeof decl === 'string') {
+      const resolved = ctx.scope.chain[decl]
+      ctx.func.exports[decl] = (resolved && resolved !== decl) ? resolved : decl
+      return null
+    }
     // export { name, name as alias } from './mod' or export * from './mod'
     if (Array.isArray(decl) && decl[0] === 'from') {
       const mod = decl[2]?.[1]

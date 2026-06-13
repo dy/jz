@@ -215,8 +215,12 @@ test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
 
 test('alloc:false omits allocator helper exports', () => {
   if (onKernel()) return  // kernel: host {alloc:false} option doesn't reach the single-source self-host
-  const src = `export let f = () => {
-    let a = [1, 2, 3]
+  // A genuinely-allocating array (dynamic push) — a const `[1,2,3]` whose only use is
+  // `.length` now folds to the constant 3, leaving nothing on the heap, so it no longer
+  // exercises the allocator this test is about.
+  const src = `export let f = (n) => {
+    let a = []
+    for (let i = 0; i < n; i++) a.push(i)
     return a.length
   }`
   const w = wat(src, { alloc: false })

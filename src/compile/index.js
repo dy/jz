@@ -56,7 +56,7 @@ import {
 import plan from './plan/index.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
-  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix,
+  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits,
 } from '../wat/assemble.js'
 
 // =============================================================================
@@ -1449,6 +1449,13 @@ export default function compile(ast, profiler) {
 
   timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
 
+  // Fold constant `__start` global inits into immutable inline decls (drops the
+  // store, and `__start` with it when that empties it). Runs HERE — after
+  // stripStaticDataPrefix and optimizeModule — so any data-segment offset a hoisted
+  // pointer carries is already in its final, shifted form (hoisting earlier would
+  // freeze a pre-strip offset the shift pass never revisits in the global decl).
+  hoistConstGlobalInits(sec)
+
   // Populate globals (after __start — const folding may update declarations).
   // Records build IR directly — no WAT-text parse-back.
   sec.globals.push(...[...ctx.scope.globals].filter(([, g]) => g).map(([n, g]) => ['global', `$${n}`,
@@ -1564,7 +1571,7 @@ export default function compile(ast, profiler) {
   const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
-    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals }
+    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals }
   )
 
   pruneUnusedThrowRuntime(sec)
