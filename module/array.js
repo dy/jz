@@ -625,14 +625,14 @@ export default (ctx) => {
     if (!hasSpread) {
       const len = elems.length
       // R: Static data segment for arrays of pure-literal elements (own-memory only).
-      // Saves N×(alloc+store) instructions in __start; raw f64 bits embedded directly.
-      // NOTE: the threshold stays at 4 deliberately. A static array aliases one shared
-      // data-segment region, so a *function-local* literal that is mutated in place
-      // (`let a = […]; a[0] = …`) leaks that mutation across calls — a latent bug at len≥4
-      // too (see tests). Lowering the bar to small arrays widened that exposure to the
-      // common `[a, b, c]` case, so it's gated until the literal carries a no-mutation /
-      // module-scope-only proof. Module-scope const exports (single instance) are safe.
-      if (len >= 4 && !ctx.memory.shared) {
+      // Raw f64 bits embedded directly — a constant array becomes a const pointer with no
+      // alloc and no per-element store. A static array aliases ONE shared data-segment
+      // region, so this is sound only when no caller expects a fresh instance per
+      // evaluation: at module scope the literal runs exactly once. A function-local
+      // literal (which would leak in-place mutations across calls — a latent bug the old
+      // len≥4 gate also had) allocs fresh instead. Module scope lifts the size floor too,
+      // so `const x = [1, 2, 3]` is a data segment, not an alloc.
+      if (ctx.func.atModuleScope && len >= 1 && !ctx.memory.shared) {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         const slots = elems.map(e => extractF64Bits(asF64(emit(e))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)

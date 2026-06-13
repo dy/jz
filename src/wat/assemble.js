@@ -153,6 +153,11 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   analyzeValTypes(ast)
   const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
+  // Mark module-scope emission: top-level statements run exactly once, so a constant
+  // array/object literal here is a single instance that can safely live in a static
+  // data segment (no per-call freshness to violate). Function bodies — compiled
+  // separately, and the late closures below — leave this unset and alloc fresh.
+  ctx.func.atModuleScope = true
   const moduleInits = []
   if (ctx.module.moduleInits) {
     for (const mi of ctx.module.moduleInits) {
@@ -168,6 +173,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // bare expression — emitting that in value context leaves a value on the stack
   // and the start function fails validation. emitVoid handles both shapes.
   const init = emitVoid(ast)
+  ctx.func.atModuleScope = false
 
   // Module-scope object literals can create closure bodies while `emit(ast)`
   // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
