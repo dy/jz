@@ -143,7 +143,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8 }),
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true }),
   // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
   balanced: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
@@ -154,7 +154,10 @@ const LEVEL_PRESETS = Object.freeze({
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8 }),
+  // reduceUnroll: vectorize reductions with N independent accumulators (ILP/latency
+  // hiding, ~3x on dot/FIR sums) — a size↔speed trade like the pool-off above, so
+  // speed-only; level 2 / balanced / size keep the single-accumulator reduce.
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true }),
 })
 
 /**
@@ -2432,7 +2435,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (cfg && cfg.vectorizeLaneLocal === true) {
     const fullWatr = cfg.watr === true || typeof cfg.watr === 'object'
     const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
-    if (runVectorizer) vectorizeLaneLocal(fn)
+    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
@@ -2875,12 +2878,22 @@ export function treeshake(funcSections, allModuleNodes, opts) {
     }
   }
 
-  // Dead-global elimination: after dead funcs are gone, drop `(global $g …)` decls
-  // that nothing references (a `global.get`/`global.set` in a remaining func, a kept
-  // global's init expr, a data/elem offset, or an `(export … (global $g))`). Imported
-  // globals live in `allModuleNodes`, not in `opts.globals`, so they're never touched.
-  // Fixpoint: a kept global's init may reference another global.
-  const globals = removeDead && opts && Array.isArray(opts.globals) ? opts.globals : null
+  // Dead-global elimination: drop `(global $g …)` decls that nothing references
+  // (a `global.get`/`global.set` in a remaining func, a kept global's init expr, a
+  // data/elem offset, or an `(export … (global $g))`). Imported globals live in
+  // `allModuleNodes`, not in `opts.globals`, so they're never touched. Fixpoint: a
+  // kept global's init may reference another global.
+  //
+  // Compiler-internal globals (support state the user never wrote — e.g. core's
+  // `__heap_start` or the math module's `rng_state`, declared eagerly but read
+  // only by specific fast paths) are reclaimed at *every* level: leaving an
+  // unreferenced one in the output is pure noise, never a live-coding aid. User
+  // globals are reclaimed only when DCE is on, so O0/O1 still preserve declared-
+  // but-unused user bindings. `userGlobals` (names sans `$`) draws the line; absent
+  // it, fall back to the `$__` reserved-prefix heuristic.
+  const userGlobals = opts && opts.userGlobals
+  const isUserGlobal = (name) => userGlobals ? userGlobals.has(name.slice(1)) : !name.startsWith('$__')
+  const globals = opts && Array.isArray(opts.globals) ? opts.globals : null
   if (globals) {
     const collectGlobalRefs = (node, refd) => {
       if (!Array.isArray(node)) return
@@ -2897,9 +2910,11 @@ export function treeshake(funcSections, allModuleNodes, opts) {
       for (const g of globals) collectGlobalRefs(g, refd)
       for (let i = globals.length - 1; i >= 0; i--) {
         const g = globals[i]
-        if (Array.isArray(g) && g[0] === 'global' && typeof g[1] === 'string' && !refd.has(g[1])) {
-          globals.splice(i, 1); changed = true
-        }
+        if (!Array.isArray(g) || g[0] !== 'global' || typeof g[1] !== 'string' || refd.has(g[1])) continue
+        // An inline `(export …)` on the decl pins it — it's part of the module's
+        // JS-host surface (e.g. `__heap`), referenced from outside the wasm.
+        if (g.some(c => Array.isArray(c) && c[0] === 'export')) continue
+        if (removeDead || !isUserGlobal(g[1])) { globals.splice(i, 1); changed = true }
       }
     }
   }
