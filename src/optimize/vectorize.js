@@ -912,7 +912,7 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
 // Float adds are not strictly associative — vectorized reduction differs
 // from scalar reduction by ulps. Acceptable when bit-exact equality is not
 // required (which it isn't, by spec, in JS engines either).
-function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
+function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
 
   // Match outer (block (loop)) structure. Same loop-shape as tryVectorize.
@@ -1108,28 +1108,55 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   // Synthesize SIMD prefix block + horizontal reduce + (preserved scalar tail).
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
-  const simdAccName = `$__simd_acc${id}`
+  const simdAccName = `$__simd_acc${id}`   // accumulator 0 — the one the merge folds
   const simdBrkLabel = `$__simd_brk${id}`
   const simdLoopLabel = `$__simd_loop${id}`
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
 
+  // Multi-accumulator unroll. A reduction's loop-carried accumulator is a latency
+  // chain — each iteration's op waits on the previous result, so a single vector
+  // accumulator runs at FP-op latency, not throughput. N INDEPENDENT accumulators
+  // (each summing every Nth lane-chunk, combined at the end) expose instruction-
+  // level parallelism and hide the latency — ~2x on a dot/FIR reduction. It is
+  // DETERMINISTIC: only the reduction's reassociation widens (8 partial sums vs 2),
+  // the same kind the existing 2-lane fold already does, identical on every engine.
+  // Restricted to the plain horizontal-fold FP path (not min/max-select, the
+  // narrow-widening sums, or NaN-canon — those have their own fold shapes).
+  const plainReduce = !reduceEntry.minmaxSelect && !widen && canonC == null
+  const NACC = (multiAcc && plainReduce && (laneType === 'f64' || laneType === 'f32')) ? 4 : 1
+  const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
+  const laneBytes = lanes * stride
+
   // Widening sum: the ACCUMULATOR vector is i32x4 regardless of the (narrow)
   // lane type; each iteration's 16-byte load collapses via extadd_pairwise.
   const accSplat = widen ? 'i32x4.splat' : info.splat
   const accumOperand = widen ? widen.steps.reduce((e, s) => [s, e], liftedExpr) : liftedExpr
-  const initAcc = ['local.set', simdAccName, [accSplat, reduceEntry.constNode ?? reduceEntry.identity]]
+  // Accumulator k reads the same lane-aligned data as acc 0, shifted by k chunks
+  // (k·laneBytes). Acc 0 keeps the address tees (it sets them); acc k>0 reads the
+  // tee'd address (normTee → local.get) and adds the byte offset to each load.
+  const offsetLoads = (node, off) => !isArr(node) ? node
+    : node[0] === 'v128.load' ? ['v128.load', ['i32.add', node[1], ['i32.const', off]]]
+    : node.map(c => offsetLoads(c, off))
+  const accOperandFor = (k) => k === 0 ? accumOperand : offsetLoads(normTee(accumOperand), k * laneBytes)
+
+  const initAcc = []
+  for (let k = 0; k < NACC; k++) initAcc.push(['local.set', accK(k), [accSplat, reduceEntry.constNode ?? reduceEntry.identity]])
+  const loopBody = []
+  for (let k = 0; k < NACC; k++) loopBody.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
+  loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes * NACC]]])
   const simdBlock = ['block', simdBrkLabel,
     ['loop', simdLoopLabel,
       ['br_if', simdBrkLabel,
         ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ['local.set', simdAccName,
-        [reduceEntry.simd, ['local.get', simdAccName], accumOperand]],
-      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
+      ...loopBody,
       ['br', simdLoopLabel]
     ]
   ]
+  // Combine the N accumulators into acc 0 (lane-wise) before the horizontal fold.
+  const combineAccs = []
+  for (let k = 1; k < NACC; k++) combineAccs.push(['local.set', simdAccName, [reduceEntry.simd, ['local.get', simdAccName], ['local.get', accK(k)]]])
 
   // Horizontal fold + merge into the live accumulator.
   const extraDecls = []
@@ -1181,20 +1208,23 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
   // a lane-aligned start this yields the same iteration set as masking; the
   // scalar tail (original `i<bound` guard) cleans up regardless.
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes - 1]]]
+  // A full N·lanes-wide step (all N accumulators) must stay in range.
+  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes * NACC - 1]]]
 
   // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
   // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
   // prefix incl. the merge so a zero-iteration range can't clamp the live acc
   // toward the identity. Full-width entries use absolute neutrals; unguarded.
+  // (The guarded path is always NACC=1 — accI32/accF64 are non-plain reductions.)
   const core = reduceEntry.accI32 || reduceEntry.accF64
     ? [['if', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]],
-        ['then', initAcc, simdBlock, ...mergeStmts]]]
-    : [initAcc, simdBlock, ...mergeStmts]
+        ['then', ...initAcc, simdBlock, ...combineAccs, ...mergeStmts]]]
+    : [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
   const wrapper = ['block', boundSetup, ...core, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
+    ...Array.from({ length: NACC - 1 }, (_, k) => ['local', accK(k + 1), 'v128']),
     ...extraDecls,
   ]
   return { wrapper, newLocalDecls }
@@ -1825,7 +1855,7 @@ const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn) {
+export function vectorizeLaneLocal(fn, multiAcc = false) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -1857,7 +1887,7 @@ export function vectorizeLaneLocal(fn) {
     if (node[0] === 'block') {
       const r = tryMemCopyFill(node, fnLocals, freshIdRef)
         ?? tryVectorize(node, fnLocals, freshIdRef)
-        ?? tryReduceVectorize(node, fnLocals, freshIdRef)
+        ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
         ?? tryByteScan(node, fnLocals, freshIdRef)
         ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)
       if (r) {

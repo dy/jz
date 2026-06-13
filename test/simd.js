@@ -553,6 +553,29 @@ test('vectorize: i32 sum reduction lifts to i32x4.add', () => {
   ok(/i32x4\.add/.test(wat(src, SIMD_OPT)), 'i32 sum reduction → i32x4.add')
 })
 
+test('vectorize: f64 reduction unrolls to N accumulators under reduceUnroll', () => {
+  // A reduction's accumulator is a latency chain (each add waits on the prior).
+  // reduceUnroll lifts it to 4 INDEPENDENT f64x2 accumulators (ILP / latency hiding),
+  // combined before the horizontal fold — a size↔speed trade enabled at level 3 /
+  // 'speed'. It is deterministic (just wider reassociation), and with integer-valued
+  // data the sum is exact regardless of order ⇒ still matches the scalar oracle.
+  const src = `
+    export const main = () => {
+      const N = 1000
+      const a = new Float64Array(N), b = new Float64Array(N)
+      for (let i = 0; i < N; i++) { a[i] = i % 7; b[i] = i % 5 }
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i] * b[i]
+      return s
+    }
+  `
+  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true } }
+  is(runVec(src, UNROLL).main(), runVec(src, NOVEC).main())   // correct despite reassociation
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main()) // single-acc oracle also matches
+  ok(/\$__simd_acc\d+_\d+/.test(wat(src, UNROLL)), 'reduceUnroll → independent accumulators')
+  ok(!/\$__simd_acc\d+_\d+/.test(wat(src, SIMD_OPT)), 'default reduce stays single-accumulator')
+})
+
 test('vectorize: stencil (a[i] depends on a[i-1]) must NOT lift', () => {
   const src = `
     export const main = () => {
