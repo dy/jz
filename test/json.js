@@ -3,7 +3,6 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { run } from './util.js'
-import { onKernel } from './_matrix.js'
 
 // === JSON.stringify ===
 
@@ -171,14 +170,14 @@ test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const wat = compile(src, { wat: true })
   const fMatch = wat.match(/\(func \$f[\s\S]*?^  \)$/m)
   ok(fMatch, 'expected $f function in WAT')
-  // Shape assertions are native-pinned: the kernel leg legitimately INLINES the
-  // single-caller shape parser into $f (size-neutral move), which surfaces its
-  // internal generic-parser fallback inside $f — same shaped fast path, same
-  // results; only the size-guard heuristics land differently.
-  if (!onKernel()) {
-    ok(wat.includes('$__jp_shape_'))
-    ok(!/call \$__jp\b/.test(fMatch[0]))
-  }
+  // The shaped parser yields a known-SCHEMA object, so field reads compile to
+  // direct slot loads; the generic runtime parser yields a hash read through
+  // __dyn_get. The absence of __dyn_get is what proves the shape fast path fired —
+  // and unlike the old `$__jp_shape_` symbol check, it survives the single-use
+  // shape parser being inlined into $f (a size-neutral move some optimization
+  // passes make, on the kernel leg and otherwise). Decouples the assertion from
+  // byte-size heuristics so size optimizations can't silently flip it.
+  ok(!/\$__dyn_get/.test(fMatch[0]), 'shaped: fields are slot reads, not __dyn_get')
   is(run(src).f(), 12)
 })
 
@@ -196,10 +195,9 @@ test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
   const wat = compile(src, { wat: true })
   const fMatch = wat.match(/\(func \$f[\s\S]*?^  \)$/m)
   ok(fMatch, 'expected $f function in WAT')
-  if (!onKernel()) {   // shape native-pinned — see the stable-let test above
-    ok(wat.includes('$__jp_shape_'))
-    ok(!/call \$__jp\b/.test(fMatch[0]))
-  }
+  // Shaped → schema'd object → slot-read field access (no __dyn_get); robust to
+  // the shared shape parser being inlined. See the stable-let test above.
+  ok(!/\$__dyn_get/.test(fMatch[0]), 'shaped: fields are slot reads, not __dyn_get')
   is(run(src).f(0), 12)
   is(run(src).f(1), 21)
 })
