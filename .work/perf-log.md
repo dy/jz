@@ -60,3 +60,31 @@ captured the non-forwarding-kind portion safely. User's "pointer structure = ext
 work" hypothesis VALIDATED (forwarding is real extra work) but it's a ~2-4% lever,
 not the headline. The headline 1.6-1.8x gap is the distributed NaN-box decode tax
 spread across every op — no single mechanism, confirmed by 3 profiles + this sizing.
+
+## Typed-region / "avoid NaN-boxing" investigation (empirical)
+
+PREMISE REFUTED BY DATA. Raw-WAT prototypes (V8, M4):
+- Boxing (i64.reinterpret_f64 round-trip): **1.1% overhead** — effectively FREE.
+  V8 compiles bit-reinterpretation to no-ops. NaN-boxing is NOT the cost.
+- Per-op type-check (is-number / tag dispatch): **7.7%** in a tight 1-op loop —
+  THIS is the value-model tax (dispatch on polymorphic values, not boxing).
+- Typed-region (check tag ONCE vs dispatch-per-access, 3 accesses to one node):
+  **3.8%** speedup — and that's the synthetic best case where V8 can CSE the
+  inlined checks.
+
+What jz ALREADY does (the tractable wins are captured):
+- Numbers stored as raw f64 (no boxing). Proven-monomorphic locals use raw
+  i32/f64 (the `wasm` rep). Box/unbox reinterprets are free.
+- Type computation hoisted: __ptr_type is in SAFE_OFFSET_CALLS (CSE'd across
+  accesses); helpers have _t variants taking a pre-computed type; _known
+  variants skip the tag check for statically-proven kinds.
+- Real jz `node[0]+node[1]+node[2]`: 1 shared tag extract in $f, ptr_offset
+  CSE'd; the 3 typed_idx CALLS each re-check the tag internally (function
+  boundary blocks CSE) — the only residual.
+
+The residual (per-helper-call tag re-check) can only be removed by INLINING the
+raw access into the call site — exactly `inlineArrayIdx`, which the frontier
+already tried and reverted at +260KB bloat. So the typed-region is a MODEST
+(~3-4%) lever gated behind significant code bloat, attacking dispatch (not
+boxing, which is free). jz's value model is near-optimal: the transformative
+"avoid NaN-boxing" win doesn't exist because boxing was never the cost.
