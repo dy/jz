@@ -16,7 +16,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -153,9 +153,7 @@ export default (ctx) => {
     ;; (cap=-1 sentinel at -4, new offset at -8). Other types never forward, so they skip
     ;; the loop; a well-formed ptr without forwarding pays one bounds + cap check per hop.
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
-          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-            (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${FORWARDING_MASK}))
       (then
         ${followForwardingWat('$off', { lowGuard: true })}))
     (local.get $off))`

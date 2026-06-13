@@ -330,6 +330,15 @@ export function mkPtrIR(type, aux, offset) {
  *  If the node is already an unboxed pointer (ptrKind), return it directly. */
 export function ptrOffsetIR(valIR, valType) {
   if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
+  // A known non-forwarding kind (object/typed/closure/buffer/date) carries its
+  // heap offset directly in the low 32 bits — `i32.wrap_i64` extracts it in one op,
+  // skipping the `__ptr_offset` call that re-derives the tag and runs the forwarding
+  // follow only ARRAY/HASH/SET/MAP need. STRING is excluded (SSO has no heap offset);
+  // SET/MAP forward so they keep the call.
+  if (valType != null && valType !== VAL.ARRAY && valType !== VAL.SET && valType !== VAL.MAP
+      && valKindToPtr(valType) != null) {
+    return ['i32.wrap_i64', ['i64.reinterpret_f64', valIR]]
+  }
   inc('__ptr_offset')
   return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
 }
