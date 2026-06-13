@@ -60,7 +60,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true
-          git add bench/results.json bench/web
+          # dist/jz.js + dist/interop.js are what the repl + bench pages import
+          # (Pages serves the repo; a gitignored dist 404s the deployed repl).
+          npm run build
+          git add bench/results.json bench/web dist/jz.js dist/interop.js
           git diff --cached --quiet || git commit -m 'bench: refresh results.json + web artifacts [skip ci]'
           # a push landing mid-run rejects ours — rebase once and retry
           git push || (git pull --rebase origin main && git push)
