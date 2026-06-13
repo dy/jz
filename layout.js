@@ -41,6 +41,11 @@ export const PTR = {
 /** Reserved atom aux ids (PTR.ATOM). */
 export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
 
+/** Tags whose heap block can relocate on growth (ARRAY/HASH/SET/MAP) — leaving a
+ *  forwarding header that `__ptr_offset` must follow. `(1 << tag) & FORWARDING_MASK`
+ *  tests membership in one shl+and, replacing a 4-way tag-equality OR. */
+export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP)
+
 // =============================================================================
 // PTR.TYPED element-type aux codec — which typed-array flavor lives in the aux
 // field of a PTR.TYPED box. Pure (no compiler state) → lives with the NaN-box
