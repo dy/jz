@@ -1805,11 +1805,21 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   // each of kdx/kdy/kw at one site × ~14M taps/frame), so loop placement beats
   // site count as the hoist criterion.
   const counts = new Map(), inLoop = new Set(), ownWrites = new Set(), ownCallees = new Set()
+  // Globals seen via the `__ptr_offset` call form (vs. only the inline typed mask).
+  // The snapshot reuses an EXISTING form so it never resurrects a treeshaken helper:
+  // a typed-array-only module emits no `__ptr_offset` call, so snapping one in would
+  // reference a function that isn't in the module.
+  const ptrOffsetForm = new Set()
   let hasIndirect = false
   const scan = (n, loopDepth) => {
     if (!Array.isArray(n)) return
     const g = siteGlobal(n)
-    if (g != null) { counts.set(g, (counts.get(g) || 0) + 1); if (loopDepth > 0) inLoop.add(g); return }
+    if (g != null) {
+      counts.set(g, (counts.get(g) || 0) + 1)
+      if (loopDepth > 0) inLoop.add(g)
+      if (n[0] === 'call') ptrOffsetForm.add(g)
+      return
+    }
     if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
     else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
     else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
@@ -1858,7 +1868,13 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   const decls = [], snaps = []
   for (const [g, name] of chosen) {
     decls.push(['local', name, 'i32'])
-    snaps.push(['local.set', name, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]])
+    // Match an existing site's form so we never reference a treeshaken helper.
+    // For a never-forwarding pointee both forms compute the same offset, so the
+    // inline mask is a safe (and call-free) snapshot when no __ptr_offset site exists.
+    const snap = ptrOffsetForm.has(g)
+      ? ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]
+      : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['global.get', g]], ['i64.const', LAYOUT.OFFSET_MASK]]]
+    snaps.push(['local.set', name, snap])
   }
   fn.splice(bodyStart, 0, ...decls, ...snaps)
 }
