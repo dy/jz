@@ -28,46 +28,81 @@ body {
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 
-/* ── masthead: identical to the examples gallery (same padding, font, sizes) ── */
+/* ── masthead (dark): brand + site nav only — no working controls here ── */
 header {
   background: var(--band); color: var(--paper);
   display: flex; align-items: center;
-  padding: 30px var(--padx) 28px;
+  padding: 14px var(--padx);
 }
 .wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
 .wordmark .mark { font-weight: 700; color: #fff; }
 .wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
-header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
 header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
 header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
   text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
 header nav a:hover { opacity: 1; }
 header .gh { display: flex; }
 
-/* ── toolbar ── */
-.bar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px var(--padx); border-bottom: 1px solid var(--ink);
-  font-size: 12px; flex-wrap: wrap;
-}
-.bar label { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
-select, .bar button, .prompt button {
-  font-family: var(--sans); font-size: 12px;
-  background: var(--paper); color: var(--ink);
-  border: 1px solid var(--ink); border-radius: 0;
-  padding: 4px 10px; cursor: pointer;
-}
-select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
-.bar button:hover, .prompt button:hover { background: var(--ink); color: var(--paper); }
-.check { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-.check input { appearance: none; width: 13px; height: 13px; border: 1px solid var(--ink); cursor: pointer; }
-.check input:checked { background: var(--ink); box-shadow: inset 0 0 0 2px var(--paper); }
-#stat { margin-left: auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
+/* ── workspace bar (light): the one working toolbar ──
+   preset + stat (left) · output/wat tabs + link · wasm · ⚙ (right).
+   Same bar as the tabs — deliberately apart from the brand/site nav. */
+.bar { display: flex; align-items: stretch; min-height: 40px; border-bottom: 1px solid var(--ink); font-size: 12px; }
+.preset { display: flex; align-items: center; gap: 9px; padding-left: var(--padx); }
+.preset > span { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
+#stat { display: flex; align-items: center; margin-left: 18px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
 #stat .b { font-weight: 700; }
-#stat .err { font-weight: 700; }
+#stat .err { font-weight: 700; color: #c00; }
 #stat .dim { color: var(--mid); }
 .badge { display: inline-block; border: 1px solid var(--ink); font-size: 9.5px; font-weight: 700;
   letter-spacing: .1em; padding: 1px 5px; vertical-align: 1px; margin-left: 8px; }
+
+/* right group: tabs + actions, pushed right; hairline divides each segment */
+.work { margin-left: auto; display: flex; align-items: stretch; }
+.tabs { display: flex; }
+.tabs button {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .14em;
+  display: flex; align-items: center; padding: 0 18px;
+  background: var(--paper); color: var(--ink); border: 0; border-left: 1px solid var(--ink); cursor: pointer;
+}
+.tabs button.on { background: var(--ink); color: var(--paper); }
+.actions { display: flex; align-items: center; gap: 16px; padding: 0 var(--padx) 0 18px;
+  border-left: 1px solid var(--ink); }
+
+/* form controls */
+select {
+  font-family: var(--sans); font-size: 12px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--ink); border-radius: 0; padding: 4px 10px; cursor: pointer;
+}
+select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
+
+/* action icons (link · wasm · settings) — monochrome ink, fade like the nav */
+.ico { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0;
+  background: transparent; color: var(--ink); opacity: .62; cursor: pointer; font: inherit; transition: opacity .18s; }
+.ico:hover { opacity: 1; }
+.ico.wasm { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+#share.done svg { display: none; }
+#share.done::after { content: '✓'; font-weight: 700; font-size: 14px; }
+
+.check { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.check input { appearance: none; width: 13px; height: 13px; border: 1px solid var(--ink); cursor: pointer; }
+.check input:checked { background: var(--ink); box-shadow: inset 0 0 0 2px var(--paper); }
+
+/* ── ⚙ compile-options popover: opt · strict (room to grow) ── */
+.gear { position: relative; display: flex; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 10px); z-index: 10;
+  display: flex; flex-direction: column; gap: 11px;
+  min-width: 170px; padding: 13px 15px;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--ink);
+}
+.menu[hidden] { display: none; }
+.menu label { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
+.menu .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.menu .check { justify-content: flex-start; gap: 8px; color: var(--ink); }
+.menu select { text-transform: none; }
 
 /* ── main split ── */
 main { flex: 1; display: flex; min-height: 0; }
@@ -94,17 +129,6 @@ main { flex: 1; display: flex; min-height: 0; }
 #hl .e { text-decoration: underline wavy #c00 2px; text-underline-offset: 3px; }
 .right { border-left: 1px solid var(--ink); }
 
-/* tabs */
-.tabs { display: flex; border-bottom: 1px solid var(--ink); }
-.tabs button {
-  font-family: var(--sans); font-size: 10.5px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: .14em;
-  background: var(--paper); color: var(--ink); border: 0; border-right: 1px solid var(--ink);
-  padding: 8px 18px; cursor: pointer;
-}
-.tabs button.on { background: var(--ink); color: var(--paper); }
-.tabs .free { flex: 1; border-right: 0; }
-
 /* output */
 #out { flex: 1; overflow: auto; padding: 14px var(--padx); font: 12.5px/1.6 var(--mono); }
 #out .in { color: var(--mid); }
@@ -122,13 +146,20 @@ main { flex: 1; display: flex; min-height: 0; }
 /* wat */
 #wat { flex: 1; overflow: auto; padding: 14px var(--padx); font: 11.5px/1.5 var(--mono); white-space: pre; display: none; }
 
-/* prompt */
-.prompt { display: flex; gap: 8px; border-top: 1px solid var(--ink); padding: 10px var(--padx); align-items: center; }
-.prompt .chev { font-family: var(--mono); font-weight: 700; }
+/* prompt — folded into the console as its live input line (no separate band) */
+.prompt { display: flex; gap: 10px; align-items: center; padding: 6px var(--padx) 12px; }
+.prompt .chev { font-family: var(--mono); font-weight: 700; color: var(--ink); }
 .prompt input {
-  flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--ink); background: var(--paper);
-  outline-offset: -2px; padding: 4px 2px;
+  flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--ink); background: transparent;
+  outline-offset: 2px; padding: 3px 0;
 }
+.prompt input::placeholder { color: var(--mid); }
+#bench {
+  font-family: var(--sans); font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--ink); border-radius: 0;
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+#bench:hover { background: var(--ink); color: var(--paper); }
 
 /* thin scrollbars, BW */
 #editor, #out, #wat { scrollbar-width: thin; scrollbar-color: #bbb transparent; }
@@ -139,10 +170,17 @@ main { flex: 1; display: flex; min-height: 0; }
 @media (max-width: 760px) {
   main { flex-direction: column; }
   .right { border-left: 0; border-top: 1px solid var(--ink); }
-  header .tag { display: none; }
+  /* workspace bar wraps: preset + stat on row 1, tabs + actions full-width row 2 */
+  .bar { flex-wrap: wrap; }
+  .preset { padding: 10px 0 10px var(--padx); }
+  #stat { max-width: none; }
+  .work { width: 100%; border-top: 1px solid var(--faint); }
+  .tabs { flex: 1; }
+  .tabs button { flex: 1; justify-content: center; padding: 13px 18px; }
+  .actions { margin-left: 0; }
   /* ≥ 44px touch targets; 16px input so iOS doesn't zoom on focus */
-  select, .bar button, .prompt button { padding: 12px 14px; font-size: 14px; }
-  .tabs button { padding: 14px 18px; }
+  select, #bench { padding: 11px 13px; font-size: 14px; }
+  .ico { padding: 6px; }
   .prompt input { font-size: 16px; }
   .check input { width: 18px; height: 18px; }
 }
@@ -152,7 +190,6 @@ main { flex: 1; display: flex; min-height: 0; }
 
 <header>
   <h1 class="wordmark"><span class="mark">JZ</span><span class="sub">repl</span></h1>
-  <span class="tag">type JS — it compiles to WASM in your browser, live</span>
   <nav>
     <a href="../examples/">examples</a>
     <a href="../bench/">bench</a>
@@ -163,19 +200,41 @@ main { flex: 1; display: flex; min-height: 0; }
 </header>
 
 <div class="bar">
-  <label for="preset">preset</label>
-  <select id="preset" aria-label="preset"></select>
-  <label for="opt">opt</label>
-  <select id="opt" aria-label="optimization level">
-    <option value="0">O0</option>
-    <option value="1">O1 size</option>
-    <option value="2" selected>O2</option>
-    <option value="3">O3 speed</option>
-  </select>
-  <label class="check"><input type="checkbox" id="strict"> strict</label>
+  <label class="preset"><span>preset</span>
+    <select id="preset" aria-label="preset"></select>
+  </label>
   <span id="stat"></span>
-  <button id="share" title="copy a link to this code">link</button>
-  <button id="dl" title="download compiled module">.wasm</button>
+  <div class="work">
+    <div class="tabs">
+      <button id="tabOut" class="on" aria-pressed="true">output</button>
+      <button id="tabWat" aria-pressed="false">wat</button>
+    </div>
+    <div class="actions">
+      <button id="share" class="ico" title="copy a link to this code" aria-label="copy link">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.07 0l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.07 0l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+      </button>
+      <button id="dl" class="ico wasm" title="download .wasm" aria-label="download wasm">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span>wasm</span>
+      </button>
+      <div class="gear">
+        <button id="settings" class="ico" aria-label="compile options" aria-controls="menu" aria-expanded="false" title="compile options">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+        <div id="menu" class="menu" hidden>
+          <label class="row">opt
+            <select id="opt" aria-label="optimization level">
+              <option value="0">O0</option>
+              <option value="1">O1 size</option>
+              <option value="2" selected>O2</option>
+              <option value="3">O3 speed</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="strict"> strict</label>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <main>
@@ -184,17 +243,11 @@ main { flex: 1; display: flex; min-height: 0; }
     <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source"></textarea>
   </div>
   <div class="pane right">
-    <div class="tabs">
-      <button id="tabOut" class="on" aria-pressed="true">output</button>
-      <button id="tabWat" aria-pressed="false">wat</button>
-      <span class="free"></span>
-    </div>
     <div id="out" aria-live="polite"></div>
     <pre id="wat"></pre>
     <div class="prompt">
       <span class="chev">›</span>
       <input id="expr" aria-label="expression to run against the compiled exports" placeholder="call an export — dist(3, 4)" spellcheck="false" autocomplete="off">
-      <button id="run">run</button>
       <button id="bench" title="time this expression: same source as plain JS vs jz-WASM">js vs wasm</button>
     </div>
   </div>
@@ -470,7 +523,6 @@ const runExpr = () => {
   expr.value = ''
 }
 
-$('run').addEventListener('click', runExpr)
 expr.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') runExpr()
   else if (e.key === 'ArrowUp' && hi > 0) { expr.value = hist[--hi]; e.preventDefault() }
@@ -585,6 +637,7 @@ const setTab = (wat) => {
   $('tabWat').setAttribute('aria-pressed', String(wat))
   out.style.display = wat ? 'none' : 'block'
   watEl.style.display = wat ? 'block' : 'none'
+  document.querySelector('.prompt').style.display = wat ? 'none' : 'flex'   // input belongs to the console
   if (wat) {
     if (state.ok && !state.wat) { try { state.wat = compile(state.src, { ...opts(), wat: true }) } catch {} }
     watEl.textContent = state.ok ? state.wat : '; fix the compile error to see WAT'
@@ -613,8 +666,8 @@ $('preset').addEventListener('change', () => loadPreset($('preset').value))
 $('share').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(location.href)
-    const b = $('share'); const t = b.textContent
-    b.textContent = 'copied'; setTimeout(() => b.textContent = t, 900)
+    const b = $('share'); b.classList.add('done')        // chain icon → ✓ for a beat
+    setTimeout(() => b.classList.remove('done'), 1000)
   } catch { /* clipboard unavailable: the URL hash already carries the code */ }
 })
 
@@ -626,6 +679,18 @@ $('dl').addEventListener('click', () => {
   a.click()
   URL.revokeObjectURL(a.href)
 })
+
+// ── settings popover (⚙) — a disclosure: toggle, click-away, Esc ─────────────
+const gear = $('settings'), menu = $('menu')
+const closeMenu = () => { menu.hidden = true; gear.setAttribute('aria-expanded', 'false') }
+gear.addEventListener('click', (e) => {
+  e.stopPropagation()
+  menu.hidden = !menu.hidden
+  gear.setAttribute('aria-expanded', String(!menu.hidden))
+})
+menu.addEventListener('click', (e) => e.stopPropagation())   // tweaking a knob keeps it open
+document.addEventListener('click', () => { if (!menu.hidden) closeMenu() })
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) { closeMenu(); gear.focus() } })
 
 // ── url hash: #<base64url(source)> ──────────────────────────────────────────
 const encodeHash = (src) => {
