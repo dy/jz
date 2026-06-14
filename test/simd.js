@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, almost } from 'tst/assert.js'
 import { belowOpt } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
@@ -470,8 +470,11 @@ test('vectorize: SoA-3 fused map zs[i] = xs[i]*a + ys[i]*b', () => {
 })
 
 test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
-  // Compares the vectorized build against the env-level baseline; bit-equality only
-  // holds when the baseline also vectorizes (optimize >= 2) — float reductions reorder.
+  // Compares the vectorized build against the env-level baseline. The map is lane-local
+  // (bit-exact), but the trailing float sum REORDERS: at level 3 the baseline lifts it to
+  // 4 independent accumulators (reduceUnroll), a wider reassociation than SIMD_OPT's single
+  // accumulator — so the results differ in the last ULP. `almost`, not `is`. (Below opt 2
+  // the baseline doesn't vectorize at all, so there's nothing to compare.)
   if (belowOpt(2)) return
   // Four base pointers in the inner loop — common image-processing shape.
   const src = `
@@ -488,7 +491,7 @@ test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
       return s
     }
   `
-  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  almost(runVec(src, SIMD_OPT).main(), runVec(src).main())
   ok(/f64x2\./.test(wat(src, SIMD_OPT)), 'expected f64x2 ops for the SoA-4 blend')
 })
 

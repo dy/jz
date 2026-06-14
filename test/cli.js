@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync } from 
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
+import { belowOpt } from './_matrix.js'
 
 const CLI = new URL('../cli.js', import.meta.url).pathname
 
@@ -237,6 +238,9 @@ test('cli: -D / --define injects a compile-time constant', () => {
 })
 
 test('cli: --no-simd disables auto-vectorization', () => {
+  // The CLI inherits the run's JZ_TEST_OPTIMIZE: below level 2 the default doesn't
+  // auto-vectorize, so the "default vectorizes (sanity)" baseline can't hold.
+  if (belowOpt(2)) return
   const input = join(tmp, 'vec.js')
   const dflt = join(tmp, 'vec.wat')
   const nosimd = join(tmp, 'vec-nosimd.wat')
