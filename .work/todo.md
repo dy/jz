@@ -104,9 +104,17 @@ correctness risk for zero measured benefit:
 - [ ] **extending-add i8/i16→i32** [M] — byte/short sum reductions need `i16x8.extadd_pairwise_*`
   into an i32 accumulator. No kernel uses one today; trigger = histogram / checksum /
   image-brightness (color-space dogfood is the likely one).
-- [ ] **AoS→SoA layout transform** [L] — multi-week, cross-cutting; the `simd-aos-stride`
-  advisory ("split to SoA") is the answer until a struct-array numeric kernel demands it.
-  Hand-written SoA already vectorizes.
+- [x] **AoS→SoA layout transform / f64x2 deinterleave** — WON'T BUILD, measured net-negative
+  (2026-06-14). The `aos` bench IS the workload, and both SIMD forms are *slower* than the
+  current optimal scalar on wasm's 128-bit SIMD (hand-WAT, N=16384×64, arm64/V8):
+  AoS deinterleave (3×`v128.load` + 3×`i8x16.shuffle` per 2 rows) = **0.78×**; SoA contiguous
+  (no shuffle, the layout-transform best case) = **0.92×**. The kernel is memory-bandwidth-bound
+  — 2-wide SIMD moves the same bytes, so halving the instruction count doesn't help and the
+  deinterleave shuffles only add cost. V8 lowers wasm `v128` to 128-bit SSE/NEON (2 f64 lanes),
+  never 256-bit AVX2, so native's AVX2 4-lane deinterleave is structurally unreachable in
+  portable wasm. jz scalar already beats Rust on `aos` on arm64 (0.97 vs 1.23 ms); the x86-EPYC
+  gap is the AVX2 width ceiling, not a missing pass. The `simd-aos-stride` advisory stays as the
+  only "answer"; don't build the transform.
 - [ ] **scalarization cap 32→64** (`plan/common.js:114`) — perf-only, no workload; raising
   risks the 128-local LEB128 cliff. Left at 32.
 - [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
