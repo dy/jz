@@ -62,6 +62,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* stat strip — the 10-second story; numbers are the copy */
 .strip { display: flex; gap: 42px; flex-wrap: wrap; margin-top: 40px; border-top: 1px solid var(--ink); padding-top: 18px; }
 .stat { display: flex; flex-direction: column; gap: 3px; }
+.stat[title] { cursor: help; }
 .stat b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 
@@ -315,29 +316,30 @@ const SYS_NATIVE = ['nat', 'natgcc', 'rust', 'zig', 'go']
 const JS_ENGINE = { v8: 'V8', deno: 'Deno', bun: 'Bun', spidermonkey: 'SpiderMonkey', graaljs: 'GraalJS' }
 const renderStrip = () => {
   const cells = []
-  // speed vs each JS engine present (geomean of jz's per-case speedup)
+  // perf vs each JS engine present (geomean of jz's per-case speedup); higher = jz faster
   for (const [tid, t] of Object.entries(TARGETS)) {
     if (t.band !== 'js') continue
     const g = geoRatio(tid)
-    if (g) cells.push({ big: fmtX(g.geo), lab: `faster than ${JS_ENGINE[tid] || t.label}` })
+    const eng = JS_ENGINE[tid] || t.label
+    if (g) cells.push({ big: fmtX(g.geo), lab: `${eng} perf`, tip: `jz runs ${fmtX(g.geo)} the speed of ${eng} — geomean over ${g.n} cases` })
   }
-  // near-native: geomean of best-native / jz across the corpus
+  // near-native: geomean of best-native / jz; ~1× means jz matches the native binary
   const nat = []
   for (const c of CORPUS) {
     const best = Math.min(...SYS_NATIVE.map(t => c.targets[t]?.parity !== 'DIFF' && c.targets[t]?.medianUs || Infinity))
     if (best < Infinity) nat.push(best / c.targets.jz.medianUs)
   }
-  if (nat.length) cells.push({ big: fmtX(geo(nat)), lab: 'native' })
-  // size: compiled module vs the .js source and vs the other JS→wasm compiler,
-  // over the kernel set (self-host bundles dwarf their source — excluded via
-  // AS-comparability, same basis the size bars used)
+  if (nat.length) cells.push({ big: fmtX(geo(nat)), lab: 'native perf', tip: `jz vs the fastest native binary (C/Rust/Zig/Go) — geomean over ${nat.length} cases` })
+  // size: compiled .wasm vs the .js source and vs AssemblyScript's .wasm, over the
+  // kernel set (self-host bundles dwarf their source — excluded via AS-comparability);
+  // higher = jz module is larger
   const shared = CORPUS.filter(c => c.targets.jz?.bytes && c.targets.as?.bytes && c.targets.v8?.bytes)
   if (shared.length) {
     const gjz = geo(shared.map(c => c.targets.jz.bytes))
-    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.v8.bytes))), lab: 'size vs JS' })
-    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.as.bytes))), lab: 'size vs AS' })
+    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.v8.bytes))), lab: 'JS size', tip: `compiled .wasm vs the original .js source — geomean over ${shared.length} kernels (>1× = wasm is larger than the source)` })
+    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.as.bytes))), lab: 'AS size', tip: `compiled .wasm vs AssemblyScript's .wasm — geomean over ${shared.length} kernels` })
   }
-  $('strip').innerHTML = cells.map(c => `<div class="stat"><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
+  $('strip').innerHTML = cells.map(c => `<div class="stat"${c.tip ? ` title="${esc(c.tip)}"` : ''}><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
   $('strip').hidden = false
 }
 
