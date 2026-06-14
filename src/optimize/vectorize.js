@@ -191,19 +191,27 @@ const matchF64DotSeq = (stmts, i) => {
 
 const f64x2Pair = (lo, hi) => ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', lo]], ['local.get', hi]]
 
-const dotPairExpr = (a, pairs) => {
+// Build the 2-lane dot expression `a0*p0 + a1*p1 + a2*p2 + a3*p3`.
+// Default: explicit mul/add pairs (one rounding per op) — bit-identical to the
+// scalar `a*b+c` a JS engine emits. With `useRelaxedFma`, each accumulate folds
+// to `f64x2.relaxed_madd(splat(a[i]), p[i], acc)` — one VFMADD instruction with
+// a single rounding. Faster and more accurate, but the fused rounding diverges
+// from the non-fused reference (the bench `fma` parity class). Opt-in only.
+const dotPairExpr = (a, pairs, useRelaxedFma = false) => {
   let expr = ['f64x2.mul', ['f64x2.splat', ['local.get', a[0]]], pairs[0]]
   for (let i = 1; i < 4; i++) {
-    expr = ['f64x2.add', expr, ['f64x2.mul', ['f64x2.splat', ['local.get', a[i]]], pairs[i]]]
+    expr = useRelaxedFma
+      ? ['f64x2.relaxed_madd', ['f64x2.splat', ['local.get', a[i]]], pairs[i], expr]
+      : ['f64x2.add', expr, ['f64x2.mul', ['f64x2.splat', ['local.get', a[i]]], pairs[i]]]
   }
   return expr
 }
 
-const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls) => {
+const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma = false) => {
   if (!isArr(node)) return
   for (let i = 0; i < node.length; i++) {
     const child = node[i]
-    if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls)
+    if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma)
   }
   const addendTemps = new Map()
   const pairTemps = new Map()
@@ -246,7 +254,7 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
       }
       pairs.push(['local.get', tmp])
     }
-    const dot = dotPairExpr(a.left, pairs)
+    const dot = dotPairExpr(a.left, pairs, useRelaxedFma)
     const expr = addend ? ['f64x2.add', dot, ['f64x2.splat', addend]] : dot
     node.splice(i, b.end - i,
       ...prefix,
@@ -1855,7 +1863,7 @@ const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -1874,7 +1882,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false) {
   const freshIdRef = { next: 0 }
   const newLocalDeclsAll = []
 
-  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
+  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
 
   // Walk body recursively. Process inner-most matches first (post-order)
   // so we don't try to vectorize an outer loop whose inner is the lane-local one.
