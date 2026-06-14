@@ -36,7 +36,6 @@ header .gh { display: flex; }
 main { max-width: 1080px; margin: 0 auto; padding: 0 var(--padx) 90px; }
 section { margin-top: 64px; }
 h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 18px; }
-h2 .n { color: var(--mid); font-weight: 400; margin-right: 10px; }
 p { font-size: 14px; line-height: 1.55; max-width: 70ch; }
 p + p { margin-top: 10px; }
 a { color: var(--ink); }
@@ -61,9 +60,9 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
   opacity: 1; visibility: visible; transform: translateY(0); }
 
 /* intro */
-.intro { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; margin-top: 42px; }
+.intro { display: flex; flex-direction: column; gap: 22px; margin-top: 42px; }
+.introtop { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
 .intro h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 700; letter-spacing: -.02em; line-height: 1.08; }
-.intro .side { font-size: 13.5px; line-height: 1.55; max-width: 46ch; color: var(--soft); }
 button {
   font-family: var(--sans); font-size: 12px; background: var(--paper); color: var(--ink);
   border: 1px solid var(--ink); border-radius: 0; padding: 6px 14px; cursor: pointer;
@@ -73,11 +72,12 @@ button:hover { background: var(--ink); color: var(--paper); }
 button:disabled { opacity: .4; cursor: default; }
 button:disabled:hover { background: var(--paper); color: var(--ink); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.runall { margin-top: 12px; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
+.runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 
-/* stat strip — the 10-second story; numbers are the copy */
-.strip { display: flex; gap: 42px; flex-wrap: wrap; margin-top: 40px; border-top: 1px solid var(--ink); padding-top: 18px; }
+/* stat strip — the 10-second story, sat next to the title; numbers are the copy */
+.strip { display: flex; gap: 32px; flex-wrap: wrap; align-items: baseline; }
+.intro .strip { margin: 0; border: 0; padding: 0; }
 .stat { display: flex; flex-direction: column; gap: 3px; }
 .stat b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
@@ -102,8 +102,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
 .chips button { padding: 4px 10px; font-size: 10.5px; }
 .chips button.on { background: var(--ink); color: var(--paper); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 44px 38px; }
-.card { border-top: 1px solid var(--ink); padding-top: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 40px 38px; }
 .card h3 { font-size: 13px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
 .card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 .card h3 .fam[data-tip] { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
@@ -142,25 +141,23 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 <main>
 
 <div class="intro">
-  <h1>Benchmarks</h1>
-  <div class="side">
-    <p id="suiteline">Same kernels run against JS engines, JS→WASM compilers, and native code.</p>
+  <div class="introtop">
+    <h1>Benchmark</h1>
     <div class="runall">
       <button id="runAll">▶ run</button>
       <span id="globalstat"></span>
     </div>
   </div>
+  <div class="strip" id="strip" hidden></div>
 </div>
 
-<div class="strip" id="strip" hidden></div>
-
 <section id="speed">
-  <h2><span class="n">01</span>Corpus</h2>
+  <h2>Corpus</h2>
   <div id="geomean"></div>
 </section>
 
 <section id="cases">
-  <h2><span class="n">02</span>Per case</h2>
+  <h2>Per case</h2>
   <div class="chips" id="chips"></div>
   <div class="cards" id="cards"></div>
 </section>
@@ -547,8 +544,7 @@ try {
   CASES = CORPUS.concat(all.filter(c => !c.targets.jz))
   renderMeta(); renderChips(); renderAll()
 } catch {
-  $('suiteline').textContent = 'no results.json yet'
-  $('geomean').innerHTML = '<p class="dim">Run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
+  $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet — run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
 }
 </script>
 </body>
