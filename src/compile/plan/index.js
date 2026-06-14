@@ -29,6 +29,7 @@ import { collectProgramFacts, refreshProgramFacts } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
+  strictBoundaryTypeCheck,
 } from '../narrow.js'
 
 import { optimizing } from './common.js'
@@ -105,6 +106,7 @@ export default function plan(ast, profiler) {
     // fact, so `export let f = (a) => a > 2` boxes its boundary atom.
     applyJsstringBoundaryCarrierStandalone(programFacts)
     narrowBoolResults()
+    strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
     return programFacts
   }
@@ -112,6 +114,7 @@ export default function plan(ast, profiler) {
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
   t('refineDynKeys', () => refineDynKeys(programFacts))
+  strictBoundaryTypeCheck(programFacts)
 
   adviseProgram(programFacts)
   return programFacts

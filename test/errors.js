@@ -293,6 +293,40 @@ test('strict: accepts typed-array loop', () => {
   ok(wasm.byteLength > 0, `should compile, got ${wasm.byteLength}`)
 })
 
+// === strict: boundary arg/param type mismatch ===
+// A typed param (declared via default, or inferred from a type-exclusive use)
+// receiving a statically-conflicting arg is a compile error — jz doesn't coerce
+// across the call boundary, so the result would silently diverge from JS.
+
+test('strict: number-default param rejects a string argument', () =>
+  throwsStrict('export const g = (x = 0) => x + 1; export const f = () => g("hi")',
+    'strict mode', 'number param <- string arg should error'))
+
+test('strict: string-default param rejects a number argument', () =>
+  throwsStrict('export const g = (s = "") => s; export const a = () => g("x"); export const f = () => g(5)',
+    'strict mode', 'string param <- number arg should error'))
+
+test('strict: .charCodeAt-inferred string param rejects a number argument', () =>
+  throwsStrict('export const g = (s) => s.charCodeAt(0); export const a = () => g("x"); export const f = () => g(42)',
+    'strict mode', 'string-by-use param <- number arg should error'))
+
+test('strict: .push-inferred array param rejects a number argument', () =>
+  throwsStrict('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
+    'strict mode', 'array-by-use param <- number arg should error'))
+
+test('strict: matching argument types compile cleanly (no false positive)', () => {
+  // number<-number, string<-string, and a genuinely untyped param accepting anything
+  // must all pass — the check fires ONLY on a statically-certain conflict.
+  ok(compile('export const g = (x = 0) => x + 1; export const f = () => g(5)', { strict: true }).byteLength > 0)
+  ok(compile('export const g = (s) => s.charCodeAt(0); export const a = () => g("x"); export const f = () => g("hi")', { strict: true }).byteLength > 0)
+  ok(compile('export const g = (x) => x; export const a = () => g(1); export const f = () => g("hi")', { strict: true }).byteLength > 0)
+})
+
+test('strict: type mismatch is permitted in non-strict mode (divergence tolerated)', () => {
+  // Same program that errors under strict must still compile permissively.
+  ok(compile('export const g = (x = 0) => x + 1; export const f = () => g("hi")').byteLength > 0)
+})
+
 // ============================================================================
 // Error message quality — compile errors carry source location
 // ============================================================================
