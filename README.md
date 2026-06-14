@@ -32,7 +32,7 @@ jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 `npm install jz`
 
 ```js
-import jz, { compile } from 'jz'
+import jz, { compile, compileModule, instantiate } from 'jz'
 
 // Compile + instantiate
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
@@ -40,6 +40,10 @@ add(2, 3)  // 5
 
 // Compile only — raw WASM binary
 const wasm = compile('export let f = (x) => x * 2')
+
+// Compile once → instantiate many (pays the AOT + validate cost once)
+const mod = compileModule('export let f = (x) => x * 2')
+instantiate(mod).exports.f(21)  // 42 — repeat cheaply, no recompile
 
 // Async startup
 const asyncMod = await WebAssembly.compile(wasm)

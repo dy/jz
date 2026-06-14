@@ -881,23 +881,29 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
  * @param {object} [opts]  host options: imports, memory, _interp, host-shape flags
  * @returns {{ exports, memory, instance, module }}
  */
+/**
+ * Compile wasm bytes to a `WebAssembly.Module`, preferring native
+ * `wasm:js-string` builtins when the engine honors the option (V8 17+/Safari
+ * 18.4+; older engines throw or ignore it — try-fallback handles both). A
+ * `WebAssembly.Module` passed in is returned as-is. Factor it out so callers
+ * can compile once and instantiate many times without re-validating the bytes
+ * (`instantiate(toModule(wasm))` skips the per-call compile on hot loops).
+ *
+ * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
+ * @returns {WebAssembly.Module}
+ */
+export const toModule = (wasm) => {
+  if (wasm instanceof WebAssembly.Module) return wasm
+  if (jssProbeNative()) {
+    try { return new WebAssembly.Module(wasm, { builtins: ['js-string'] }) }
+    catch { return new WebAssembly.Module(wasm) }
+  }
+  return new WebAssembly.Module(wasm)
+}
+
 export const instantiate = (wasm, opts = {}) => {
   const state = prepareInterop(opts)
-  // Prefer native `wasm:js-string` builtins when the engine honors the option.
-  // The option is silently accepted by V8 17+/Safari 18.4+; older engines that
-  // don't recognize it either throw or ignore it — try-fallback handles both.
-  let mod
-  if (wasm instanceof WebAssembly.Module) {
-    mod = wasm
-  } else if (jssProbeNative()) {
-    try {
-      mod = new WebAssembly.Module(wasm, { builtins: ['js-string'] })
-    } catch {
-      mod = new WebAssembly.Module(wasm)
-    }
-  } else {
-    mod = new WebAssembly.Module(wasm)
-  }
+  const mod = toModule(wasm)
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)

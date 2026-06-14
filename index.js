@@ -54,7 +54,7 @@ import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
 import {
-  memory as enhanceMemory, instantiate as instantiateRuntime,
+  memory as enhanceMemory, instantiate as instantiateRuntime, toModule,
 } from './interop.js'
 
 // A host import that's a JS function may hand back any value, including a host
@@ -665,3 +665,25 @@ export default function jz(code, ...args) {
 export { jz }
 const jzCompile = jz.compile
 export { jzCompile as compile }
+
+/**
+ * Compile source to a cached `WebAssembly.Module` (compile + validate once).
+ * Pair with `instantiate(module, opts)` to spin up many instances without
+ * re-validating the bytes each time — the AOT compile is paid once, so repeated
+ * instantiation is cheap. Returns a `WebAssembly.Module`, built with the native
+ * `wasm:js-string` builtins fast path where the engine supports it.
+ *
+ *   import { compileModule, instantiate } from 'jz'
+ *   const mod = compileModule('export let f = x => x * 2')
+ *   const { exports } = instantiate(mod)   // repeat cheaply, no recompile
+ *
+ * @param {string} code
+ * @param {object} [opts] - same options as `compile()`
+ * @returns {WebAssembly.Module}
+ */
+export const compileModule = (code, opts = {}) => {
+  const out = jzCompile(code, opts)
+  return toModule(out && typeof out === 'object' && 'wasm' in out ? out.wasm : out)
+}
+
+export { instantiateRuntime as instantiate }
