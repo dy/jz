@@ -76,7 +76,7 @@ import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTy
 import {
   findFreeVars, findMutations, boxedCaptures,
   collectI32SafeIndexVars, collectF64StridedIndexVars, narrowUint32, scanBindingUses,
-  scanFlatObjects, scanSliceViews, USE,
+  scanFlatObjects, scanSliceViews, scanNeverGrown, USE,
 } from './analyze-scans.js'
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
@@ -545,7 +545,10 @@ export function analyzeBody(body) {
   // Consumed by emitDecl, which lowers the initializer to a SLICE_BIT view.
   const sliceViews = doSchemas ? scanSliceViews(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals }
+  // Never-relocated array bindings — reads may skip the realloc-forwarding follow.
+  const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
+
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown }
   _bodyFactsCache.set(body, result)
   return result
 }

@@ -466,6 +466,66 @@ export function scanSliceViews(body) {
 }
 
 /**
+ * Never-relocated array bindings — reads through them may skip the realloc-forwarding
+ * follow (`__ptr_offset`). A fresh array-literal binding is never relocated iff EVERY
+ * occurrence of it is a pure READ — `a[i]` (any index) or `a.length`. Anything else
+ * grows or escapes it: a grow method (push/unshift/shift/splice), a `.length`/element
+ * write (incl. compound `a.length += 1`), a bare value use (alias `let b=a`, store
+ * `w.x=a`, return, call argument, spread), a reassignment, or a dynamic call
+ * `a[i]()`/`a.m()`.
+ *
+ * MEMORY-SAFETY CRITICAL and so DEFAULT-DENY + self-contained: it does NOT trust the
+ * `escapes` map, which misses member-write RHS (`w.data = a`) and compound assigns. If
+ * the analysis is wrong and the array IS relocated, a read through the stale base
+ * corrupts memory — so any unrecognized use disqualifies. (Growing an INNER array,
+ * `a[0].push(x)`, never relocates `a` itself, so `a` stays eligible — see safeReads.)
+ */
+const grownOrEscapes = (op) => ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete'
+function safeReads(node, name) {
+  if (typeof node === 'string') return node !== name            // bare value use → escape
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  // `a(…)` / `a.m(…)` / `a[i](…)` — calling `a` or a method/element of it may grow/escape it.
+  if (op === '()') {
+    const c = node[1]
+    if (c === name) return false
+    if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && c[1] === name) return false
+  }
+  // write / update / delete on `a`, `a[..]`, or `a.x` (incl. `a.length = …` and compounds)
+  if (grownOrEscapes(op)) {
+    const t = node[1]
+    if (t === name) return false
+    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
+  }
+  // declaration: check each initializer RHS (so `let b = a` aliasing disqualifies);
+  // the bound names themselves are definitions, not uses (skips `a`'s own decl).
+  if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (Array.isArray(d) && d[0] === '=' && !safeReads(d[2], name)) return false
+    }
+    return true
+  }
+  // the only safe forms: `a.length` read, and `a[i]` index read (recurse the index expr).
+  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  if (op === '[]' && node[1] === name) return safeReads(node[2], name)
+  if (op === '...' && node[1] === name) return false            // spread → escape
+  for (let i = 1; i < node.length; i++) if (!safeReads(node[i], name)) return false
+  return true
+}
+
+export function scanNeverGrown(body) {
+  const out = new Set()
+  for (const [name, s] of scanBindingUses(body)) {
+    // Candidate: a single-declaration binding initialized from a fresh array literal.
+    if (s.decls !== 1 || !Array.isArray(s.initRhs)) continue
+    if (s.initRhs[0] !== '[' && !(s.initRhs[0] === '[]' && s.initRhs.length <= 2)) continue
+    if (safeReads(body, name)) out.add(name)
+  }
+  return out
+}
+
+/**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
  * initializer is a non-negative integer literal in [0, 2^32), every
  * reassignment is `name = (…) >>> k` (so it always holds a canonical uint32),

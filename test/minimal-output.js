@@ -272,6 +272,47 @@ for (const [name, src] of Object.entries(NO_FOLD)) {
   })
 }
 
+// === Never-relocated arrays skip the realloc-forwarding follow ===
+// A fresh array literal whose every use is a pure read (`a[i]` / `a.length`) can never
+// be grown, so its index reads derive the base directly — no `__ptr_offset` forwarding
+// chase. The SAFETY INVARIANT is the converse: any array that COULD be relocated must
+// keep forwarding, or a read through a stale base corrupts memory. Both directions are
+// pinned (the second is memory-safety-critical — see scanNeverGrown's default-deny proof).
+// Float elements stay a plain heap array (not promoted to a typed/int vector) and the
+// dynamic loop index keeps it from scalarizing — so this exercises the plain-array
+// never-grown read path specifically.
+const FIXED_ARRAYS = {
+  'float index loop': 'export let f=(n)=>{let a=[1.5,2.5,3.5,4.5]; let s=0; for(let i=0;i<4;i++) s+=a[i]*n; return s}',
+  'float reduce': 'export let f=()=>{let a=[1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5]; let s=0; for(let i=0;i<9;i++) s+=a[i]; return s}',
+}
+for (const [name, src] of Object.entries(FIXED_ARRAYS)) {
+  test(`minimal: fixed array (${name}) skips forwarding`, () => {
+    if (skip) return
+    ok(!has(src, '__ptr_offset', 2), `${name}: a never-grown array reads without the forwarding follow`)
+  })
+}
+// Memory-safety invariant: every array that can be relocated MUST keep forwarding.
+const RELOCATABLE = {
+  pushed: 'export let f=()=>{let a=[1,2]; a.push(3); return a[0]}',
+  'length grown': 'export let f=()=>{let a=[1,2]; a.length=5; return a[0]}',
+  'compound length grow': 'export let f=()=>{let a=[1,2]; a.length+=1; return a[0]}',
+  'aliased then grown': 'export let f=()=>{let a=[1,2]; let b=a; b.push(3); return a[0]}',
+  'stored then grown': 'export let f=()=>{let a=[1,2]; let w={}; w.d=a; w.d.push(3); return a[0]}',
+  'element written': 'export let f=(i)=>{let a=[1,2]; a[i]=9; return a[0]}',
+}
+for (const [name, src] of Object.entries(RELOCATABLE)) {
+  test(`minimal: relocatable array (${name}) keeps forwarding`, () => {
+    if (skip) return
+    ok(has(src, '__ptr_offset', 2), `${name}: a possibly-relocated array MUST follow forwarding (memory safety)`)
+  })
+}
+// And the relocations stay correct at runtime (the read sees the grown buffer).
+test('minimal: never-grown analysis preserves grow semantics', () => {
+  if (skip) return
+  is(jz('export let f=()=>{let a=[1,2]; a.push(3); return a[2]}').exports.f(), 3, 'pushed element readable')
+  is(jz('export let f=()=>{let a=[1,2]; let w={}; w.d=a; w.d.push(7); return a[2]}').exports.f(), 7, 'grow via alias visible through original')
+})
+
 // === KNOWN REDUNDANCY (targets, not yet minimal) ===
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —

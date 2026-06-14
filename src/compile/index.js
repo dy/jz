@@ -435,6 +435,8 @@ function analyzeFuncForEmit(func, programFacts) {
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
   }
+  // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
+  if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
   // Proven uint32 accumulator locals — readVar tags reads `.unsigned` so the
   // f64 round-trip widens with convert_i32_u (not _s).
   if (bodyFacts?.unsignedLocals) for (const n of bodyFacts.unsignedLocals) updateRep(n, { unsigned: true })

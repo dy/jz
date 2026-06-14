@@ -762,6 +762,16 @@ export default (ctx) => {
     if (keyType === VAL.STRING)
       return typed(dynLoad(ptrExpr, asF64(emit(idx))), 'f64')
     if (vt === 'array') {
+      // Base offset of the array's data region. A binding proven never relocated
+      // (scanNeverGrown — a fresh array literal whose every use is a pure read, so no
+      // grow op can ever run) skips the realloc-forwarding follow: its base is the raw
+      // post-header offset `wrap(reinterpret(ptr) & OFFSET_MASK)`, no __ptr_offset call.
+      // Memory-safe ONLY under that proof — a relocated array read through this stale
+      // base would corrupt memory (see scanNeverGrown's default-deny rationale).
+      const neverGrown = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true
+      const arrBase = () => neverGrown
+        ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
+        : (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
       // structInline Array<S>: element i is K consecutive inline f64 schema
       // cells — no per-row heap object, no stored element pointer. `arr[i]` is
       // the byte address of the element's first cell, returned as a first-class
@@ -770,11 +780,10 @@ export default (ctx) => {
       // structInline handles (src/analyze.js analyzeStructInline).
       const inlSid = inlineArraySid(arr)
       if (inlSid != null) {
-        inc('__ptr_offset')
         const baseI32 = tempI32('ab')
         const K = ctx.schema.list[inlSid].length
         const cell = typed(structInline(K).ops.elemAddr(
-          ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+          ['local.tee', `$${baseI32}`, arrBase()],
           vi), 'i32')
         cell.ptrKind = VAL.OBJECT
         cell.ptrAux = inlSid
@@ -809,14 +818,12 @@ export default (ctx) => {
         && typeof arr === 'string' && typeof idx === 'string'
         && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
       if (idxProvenInBounds) {
-        inc('__ptr_offset')
-        // __ptr_offset returns i32 — base local must be i32 (not the default
-        // f64 NaN-box temp). Flat tee form so downstream peepholes can fold
+        // base local must be i32. Flat tee form so downstream peepholes can fold
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
         return typed(ctx.abi.array.ops.load(
-          ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+          ['local.tee', `$${baseI32}`, arrBase()],
           vi), 'f64')
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
@@ -825,13 +832,12 @@ export default (ctx) => {
       // residual cost is a single (predictable) compare per access, not a call. Skipping
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
       if (keyIsNum) {
-        inc('__ptr_offset')
         const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
         return typed(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             ['i32.load', ['i32.sub',
-              ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+              ['local.tee', `$${baseI32}`, arrBase()],
               ['i32.const', 8]]]],
           ['then', ctx.abi.array.ops.load(['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
           ['else', undefExpr()]], 'f64')

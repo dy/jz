@@ -68,7 +68,7 @@ export const VAL = {
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemValType', 'carrier', 'unsigned', 'jsonShape',
-  'typedCtor', 'wasm', 'nullable',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
