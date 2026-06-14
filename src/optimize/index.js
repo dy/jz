@@ -2839,6 +2839,13 @@ export function treeshake(funcSections, allModuleNodes, opts) {
     for (let i = 2; i < fn.length; i++)
       if (Array.isArray(fn[i]) && fn[i][0] === 'export') { addRoot(name); break }
 
+  // When user funcs are NOT being reclaimed (O0/O1 keep declared-but-uncalled ones), they
+  // all survive — so they're roots for the *internal*-func reachability below. Otherwise an
+  // unreachable user func that's kept would still call a `__helper`, yet that helper would be
+  // pruned as unreached-from-exports, leaving a dangling `call $__helper`.
+  if (!removeDead && opts && opts.userFuncs)
+    for (const name of opts.userFuncs) addRoot(name)
+
   const findRoots = (node) => {
     if (!Array.isArray(node)) return
     if (node[0] === 'start' && typeof node[1] === 'string') addRoot(node[1])
@@ -2866,12 +2873,21 @@ export function treeshake(funcSections, allModuleNodes, opts) {
   for (const fn of allFuncs) if (typeof fn[1] !== 'string') visitCalls(fn)
   while (stack.length) visitCalls(funcByName.get(stack.pop()))
 
+  // Compiler-internal funcs (stdlib helpers, allocator wrappers — everything not in the
+  // user's own `ctx.func.list`) carry no source meaning, so an unreachable one is reclaimed
+  // at EVERY opt level: it's never a live-coding aid, just over-production (e.g. `s + '!'`
+  // pulls the alloc trio's `__alloc_hdr`, which string concat never calls, and a dead-branch
+  // dep like `__str_len`). User funcs are reclaimed only when DCE is on, so O0/O1 keep a
+  // declared-but-uncalled user function. Absent the set, fall back to gating everything.
+  const userFuncs = opts && opts.userFuncs
+  const isUserFunc = (name) => userFuncs ? userFuncs.has(name) : true
   let removed = 0
-  if (removeDead) {
+  if (removeDead || userFuncs) {
     for (const { arr } of funcSections) {
       for (let i = arr.length - 1; i >= 0; i--) {
         const n = arr[i]
-        if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && !reachable.has(n[1])) {
+        if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && !reachable.has(n[1]) &&
+            (removeDead || !isUserFunc(n[1]))) {
           arr.splice(i, 1); removed++
         }
       }

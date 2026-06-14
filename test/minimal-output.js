@@ -91,6 +91,37 @@ test('minimal: pure numeric module pulls no allocator', () => {
   ok(!hasAllocator('export let f = (a, b) => a * b + 1'), 'arithmetic never allocates')
 })
 
+// === No emitted compiler-internal function is dead ===
+// Every `$__foo` / `$math.foo` helper in the binary must be *reached* (called, in the elem
+// table, or exported). An eager include or a dead-branch dependency that nothing actually
+// calls is pure over-production — e.g. string concat used to ship the alloc trio's
+// `__alloc_hdr` (which it never calls) and a stray `__str_len`. Holds at every opt level.
+const deadInternalFuncs = (src, optimize) => {
+  const w = wat(src, optimize)
+  const internal = (n) => n !== '$__start' && (n.startsWith('$__') || /^\$[a-z_]+\./.test(n))
+  const defined = [...w.matchAll(/\(func (\$[\w.]+)/g)].map((m) => m[1]).filter(internal)
+  // A defined helper that appears exactly once in the module text is referenced nowhere but
+  // its own definition — dead. Any real reference (call/elem/export) makes the count ≥ 2.
+  return defined.filter((fn) => (w.match(new RegExp('\\' + fn + '(?![\\w.])', 'g')) || []).length <= 1)
+}
+const NO_DEAD = {
+  'string concat': "export let f = (s) => s + '!'",
+  'untyped property read': 'export let f = (o) => o.x',
+  'untyped index read': 'export let f = (a, i) => a[i]',
+  'array push': 'export let f = (n) => { let a = []; a.push(n); return a }',
+  'number to string': 'export let f = (n) => String(n)',
+  'object literal return': 'export let f = (n) => ({ x: n, y: n * 2 })',
+}
+for (const [name, src] of Object.entries(NO_DEAD)) {
+  test(`minimal: ${name} emits no dead internal func`, () => {
+    if (skip) return
+    for (const O of [0, 2]) {
+      const dead = deadInternalFuncs(src, O)
+      is(dead.length, 0, `${name} @O${O}: dead internal funcs — ${dead.join(', ')}`)
+    }
+  })
+}
+
 // === Empty / trivial programs ===
 test('minimal: empty program is an empty module', () => {
   if (skip) return
