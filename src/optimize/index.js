@@ -556,6 +556,22 @@ const HARD_OPS = new Set([
 ])
 const hasHardOp = (n) => Array.isArray(n) && (HARD_OPS.has(n[0]) || n.some((c, i) => i > 0 && hasHardOp(c)))
 
+// The inline typed-array base decode `(i32.wrap_i64 (i64.and (i64.reinterpret_f64
+// (local|global X)) 0xFFFFFFFF))` — what `typedBase` emits for a NaN-boxed pointer.
+// V8's wasm tier does NOT reliably LICM this i64 reinterpret chain, and it carries no
+// HARD_OP, so without this it stays per-element inside the loop. It is the typed-read
+// equivalent of the `__ptr_offset` call (a HARD_OP) that hoistGlobalPtrOffset hoists at
+// function scope; admitting it here also covers a pointer reassigned ELSEWHERE in the
+// function (the ping-pong double-buffer `a = b` in wireworld / any CA), where the base
+// is invariant within each loop but not function-wide.
+const isPtrBaseDecode = (n) =>
+  Array.isArray(n) && n[0] === 'i32.wrap_i64' && n.length === 2 &&
+  Array.isArray(n[1]) && n[1][0] === 'i64.and' && n[1].length === 3 &&
+  Array.isArray(n[1][2]) && n[1][2][0] === 'i64.const' &&
+  (typeof n[1][2][1] === 'string' ? Number(n[1][2][1]) : n[1][2][1]) === LAYOUT.OFFSET_MASK &&
+  Array.isArray(n[1][1]) && n[1][1][0] === 'i64.reinterpret_f64' && n[1][1].length === 2 &&
+  Array.isArray(n[1][1][1]) && (n[1][1][1][0] === 'local.get' || n[1][1][1][0] === 'global.get')
+
 const PURE_LICM_OPS = new Set([
   'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
   'f64.min', 'f64.max', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest', 'f64.copysign',
@@ -751,9 +767,10 @@ export function hoistInvariantLoop(fn) {
       // Every local the subtree writes must be private to it (no other use in the
       // loop) — else moving the write to the pre-header changes another reader.
       for (const b of bound) if (localCount.get(b) !== countsOf(node).get(b)) return false
-      // Only hoist what V8's wasm tier won't (a HARD_OP) — leave pure arithmetic
-      // for V8's own LICM and the lane-vectorizer.
-      return hasHardOp(node) && pureGiven(node, bound)
+      // Only hoist what V8's wasm tier won't: a HARD_OP, or the inline typed-array
+      // base decode (its i64 reinterpret chain is left in-loop otherwise). Leave
+      // plain pure arithmetic for V8's own LICM and the lane-vectorizer.
+      return (hasHardOp(node) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     }
 
     // Maximal extraction: take the largest hoistable subtree; don't descend into

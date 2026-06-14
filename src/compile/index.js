@@ -684,6 +684,33 @@ function paramAllUsesNumeric(body, name, _seen = new Set()) {
       }
       return
     }
+    // `Math.f(...)` ToNumbers every argument (Math operates on numbers), so a bare
+    // param in any arg slot is a PROVING numeric use — same contract as `*`/`-`.
+    // Without this, `Math.sin(t)` rejected the param via the generic-call fallthrough,
+    // so a numeric kernel like `Math.sin(tick) + …` lost its NUMBER proof and paid a
+    // per-use `__to_num` + a polymorphic-`+` string-concat fork (interference example).
+    // The callee is the lowered `math.sin` string at emit time (post-autoload), or the
+    // raw `(. Math sin)` member pre-lowering — match both.
+    const isMathCall = op === '()' && (
+      (typeof node[1] === 'string' && node[1].startsWith('math.')) ||
+      (Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Math'))
+    if (isMathCall) {
+      const numArg = (a) => { if (Array.isArray(a) && a[0] === ',') { numArg(a[1]); numArg(a[2]) } else numOperand(a) }
+      for (let i = 2; i < node.length; i++) numArg(node[i])
+      return
+    }
+    // Binary `+` is overloaded (numeric add | string concat). A string-literal
+    // operand means concat intent → reject. Otherwise it is numeric-COMPATIBLE but
+    // not self-PROVING (a string param would concat) — recurse the non-param operand
+    // and treat a bare param as compatible (neither prove nor reject), exactly like
+    // paramNeverString. The numeric proof must still come from a ToNumber-forcing use
+    // (`*`, `Math.*`, …); a param used ONLY in `+` stays unproven (sound).
+    if (op === '+' && node.length === 3) {
+      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      if (!names.has(node[1])) walk(node[1])
+      if (!names.has(node[2])) walk(node[2])
+      return
+    }
     if (op === '-' && node.length === 2) { numOperand(node[1]); return }  // unary negate
     if (op === '-' && node.length === 3) { numOperand(node[1]); numOperand(node[2]); return }
     // `u-`/`u+` are the normalized unary minus/plus (prepare rewrites `-x`/`+x`); both ToNumber.

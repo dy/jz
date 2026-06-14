@@ -425,6 +425,43 @@ test('paramAllUsesNumeric: forwarding to a string-using closure stays polymorphi
     'string forwarded to a string-using closure is preserved')
 })
 
+test('paramAllUsesNumeric: bare Math.* + `+` prove a numeric param inside a nested loop', () => {
+  // The interference example: an exported `tick` used as `Math.sin(tick)` (bare),
+  // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that
+  // stores into a global. `Math.f(x)` ToNumbers its arg, so a bare param there is a
+  // PROVING numeric use (like `x*2`); binary `+` is numeric-COMPATIBLE and must not
+  // reject that proof. Before the fix the generic-call fallthrough rejected the bare
+  // Math arg, so `tick` stayed unproven and every cell paid a `__to_num` plus a
+  // polymorphic `+` string-concat fork — interference ran 0.90× of JS, now ~parity.
+  // The nested loop + global store defeats the simpler expression-level inference, so
+  // the proof must come from paramAllUsesNumeric here.
+  const wat = jz.compile(`
+    let width = 0, mem
+    export let setup = (n) => { width = n; mem = new Int32Array(n); return mem }
+    export let update = (tick) => {
+      let cx = Math.sin(tick * 2.0) + Math.sin(tick), y = 0
+      while (y < 4) {
+        let x = 0
+        while (x < width) {
+          mem[width * y + x] = (Math.sin(cx - tick * 8.0 + 1.2) * 255.0) | 0
+          x = x + 1
+        }
+        y = y + 1
+      }
+    }
+  `, { wat: true })
+  const upd = wat.match(/\(func \$update[\s\S]*?\n  \)/)?.[0] || ''
+  is(count(upd, /\$__to_num\b/g), 0, 'bare Math.sin(tick) proves tick numeric — no per-cell coercion')
+  is(count(upd, /\$__str_concat\b/g), 0, 'numeric `+` — no per-cell string-concat fork')
+})
+
+test('paramAllUsesNumeric: a `+`-with-string-literal use stays a real concat (soundness)', () => {
+  // The numeric proof must NOT swallow genuine concatenation: a `+` with a string
+  // literal operand is concat intent, so the param stays polymorphic (not narrowed).
+  const wat = jz.compile(`export let f = (s) => { let r = s + "!"; return r }`, { wat: true })
+  ok(/\$__str_concat\b/.test(wat), '`+` with a string literal stays a real concat')
+})
+
 test('paramNeverString: additive exported f64 param skips the per-iteration string fork', () => {
   // The julia/floatbeat shape: `z = z*z + cre` in a hot loop, `cre` an exported f64
   // param used only additively. Binary `+` doesn't PROVE numericity (it may concat),
@@ -495,6 +532,82 @@ test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () 
   `, { wat: true })
   ok(/v128\.load\b/.test(wat), 'expected SIMD over module-level typed buf')
   is(count(wat, /\$__length\b/g), 0, 'no poly length over typed global')
+})
+
+// ─────────────────────────────────────── inferModuleLetTypes: alias-graph fixpoint
+//
+// A module `let` typed-array global must keep its kind across aliasing — a single
+// forward pass can't resolve a value that flows through a cycle or a not-yet-seen
+// sibling. The fixpoint over the whole-program assignment graph closes these.
+// Each case asserts the hot read stays a direct typed load (no __typed_idx element
+// dispatch, no __str_idx/__str_concat string fork). The shared probe: two/more
+// Float64Array globals, summed in a loop — dynamic dispatch shows up as forks.
+const FORK = /\$__typed_idx\b|\$__str_idx\b|\$__str_concat\b|\$__is_str_key\b/g
+const noFork = (body, msg) => is(count(body, FORK), 0, msg)
+
+test('inferModuleLetTypes: double-buffer swap keeps typed loads (waves regression)', () => {
+  // `let tmp = a; a = b; b = tmp` — the canonical ping-pong swap. `a` flows from
+  // `b`, `b` from a local `tmp` aliasing `a`: a 3-node cycle anchored on each
+  // global's `new Float64Array` decl. A forward pass invalidated both (made waves
+  // 16× slower — every a[i] forked __str_idx/__typed_idx, every + forked __str_concat).
+  const wat = jz.compile(`
+    let a, b
+    export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
+    export let frame = (w) => {
+      let s = 0.0, i = 0
+      while (i < w) { s = s + a[i] + b[i]; i++ }
+      let tmp = a; a = b; b = tmp
+      return s
+    }
+  `, { wat: true })
+  noFork(wat, 'swap-aliased typed globals must keep direct f64 loads, no string/typed fork')
+  ok(/f64\.load\b/.test(wat), 'expected direct f64.load over the swapped buffers')
+})
+
+test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
+  const wat = jz.compile(`
+    let a, b, c
+    export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n); c = new Float64Array(n) }
+    export let f = (w) => {
+      let s = 0.0, i = 0
+      while (i < w) { s = s + a[i] + b[i] + c[i]; i++ }
+      let t = a; a = b; b = c; c = t; return s
+    }
+  `, { wat: true })
+  noFork(wat, 'rotated typed globals stay typed')
+})
+
+test('inferModuleLetTypes: global aliased from a typed-returning user fn', () => {
+  // `a = mk(n)` — globals are typed before inlining runs, so the call is opaque to
+  // the forward pass. The `@ret:mk` virtual node carries mk's return ctor across.
+  const wat = jz.compile(`
+    let a
+    let mk = (n) => new Float64Array(n)
+    export let init = (n) => { a = mk(n) }
+    export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + a[i]; i++ } return s }
+  `, { wat: true })
+  noFork(wat, 'global from typed-returning fn must be typed')
+})
+
+test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', () => {
+  // `.subarray()` / `.slice()` return the receiver's typed-array kind.
+  const wat = jz.compile(`
+    let a, b
+    export let init = (n) => { a = new Float64Array(n); b = a.subarray(0, n) }
+    export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + b[i]; i++ } return s }
+  `, { wat: true })
+  noFork(wat, 'global from .subarray() must inherit the typed kind')
+})
+
+test('inferModuleLetTypes: alias to a NON-typed value stays polymorphic (soundness)', () => {
+  // The fixpoint must not over-promote: if any assignment yields a non-typed value,
+  // the global must keep dynamic dispatch (else a raw f64.load on a string traps).
+  const wat = jz.compile(`
+    let a
+    export let init = (n, s) => { a = new Float64Array(n); if (s) a = "oops" }
+    export let f = (i) => a[i]
+  `, { wat: true, jzify: true })
+  ok(count(wat, FORK) > 0, 'a mixed typed/string global must keep its dynamic read path')
 })
 
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {

@@ -803,6 +803,51 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
   for (let i = 0; i < 16; i++) ok(Math.abs(wp[i] - p[i]) < 1e-9, `cell ${i}: ${wp[i]} ~ ${p[i]}`)
 })
 
+test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile global)', () => {
+  if (belowOpt(1)) return  // LICM base-decode hoist is an optimization (optimize >= 1)
+  // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame
+  // (`a = b; b = tmp`). The swap makes them volatile, so function-scope hoisting
+  // (hoistGlobalPtrOffset) can't snapshot their base. But within EACH loop the pointer
+  // is invariant (the swap is between loops), so LICM must hoist the inline base decode
+  // to the loop pre-header — otherwise every neighbour read re-decodes the NaN-box
+  // (8 reads/cell in the conductor branch). 0.98× → 1.11× over V8.
+  const wat = compile(`
+    let W = 0, a, b
+    export let init = (n) => { W = n; a = new Int32Array(n); b = new Int32Array(n); return a }
+    export let step = () => {
+      let i = 1
+      while (i < W - 1) { b[i] = a[i-1] + a[i] + a[i+1]; i = i + 1 }
+      let t = a; a = b; b = t          // ping-pong swap → a, b are volatile
+      let s = 0, j = 0
+      while (j < W) { s = s + a[j]; j = j + 1 }   // reads the swapped grid
+      return s
+    }
+  `, { wat: true })
+  const step = wat.match(/\(func \$step[\s\S]*?\n  \)/)?.[0] || ''
+  // No per-element pointer decode survives inside either loop — both are hoisted to
+  // their own pre-header (the first reads pre-swap `a`, the second the post-swap `a`).
+  const loops = step.match(/\(loop[\s\S]*?\(br /g) || []
+  let inLoop = 0; for (const l of loops) inLoop += (l.match(/i64\.reinterpret_f64/g) || []).length
+  is(inLoop, 0, 'volatile double-buffer base decode is hoisted out of every loop')
+  // Correctness floor: identical to the same source as plain JS, across a swap.
+  const { exports } = jz(`
+    let W = 0, a, b
+    export let init = (n) => { W = n; a = new Int32Array(n); b = new Int32Array(n); return a }
+    export let step = () => {
+      let i = 1
+      while (i < W - 1) { b[i] = a[i-1] + a[i] + a[i+1]; i = i + 1 }
+      let t = a; a = b; b = t
+      let s = 0, j = 0
+      while (j < W) { s = s + a[j]; j = j + 1 }
+      return s
+    }
+  `)
+  const wa = exports.init(8)
+  for (let i = 0; i < 8; i++) wa[i] = i + 1   // a = [1..8]
+  // b[i] = a[i-1]+a[i]+a[i+1] for i=1..6 → [0,6,9,12,15,18,21,0]; swap; sum = 81.
+  is(exports.step(), 81, 'stencil-then-swap sum matches JS exactly')
+})
+
 test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)', () => {
   // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
   // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.
