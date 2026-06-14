@@ -702,10 +702,13 @@ test('known array numeric index skips generic array tag dispatch', () => {
     }
   `, { wat: true, optimize: { watr: false } })
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
-  // Either plain `call` or TCO'd `return_call` is fine — both invoke the
-  // monomorphic helper. tcoTailRewrite may promote tail-position calls
-  // inside the `if` arm to `return_call`.
-  ok(/\((?:return_)?call \$__arr_idx_known\b/.test(mainBody), 'known ARRAY numeric index should use monomorphic helper')
+  // A known plain ARRAY + numeric key lowers to a monomorphic access: the
+  // inline bounds-checked f64.load fast path (`idx < len ? load : undefined`,
+  // no call) — or, for back-compat, the `__arr_idx_known` helper. Both are
+  // monomorphic; neither goes through the generic tag-dispatch helper. The
+  // inline load is the current (faster) form: no call, hoistable base/len.
+  ok(/f64\.load/.test(mainBody) || /\((?:return_)?call \$__arr_idx_known\b/.test(mainBody),
+    'known ARRAY numeric index should use the monomorphic inline load (or __arr_idx_known helper)')
   ok(!/\((?:return_)?call \$__arr_idx\b(?!_known)/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
   const { main } = run(`
     export const main = (a) => {

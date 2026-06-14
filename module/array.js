@@ -784,25 +784,28 @@ export default (ctx) => {
       // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
       // plus type-dispatch overhead irrelevant for plain arrays).
       const keyIsNum = keyType === VAL.NUMBER
-      // Inline fast path: when arr has a known element schema and key is a
-      // known number, the type-tag check and bounds check inside __arr_idx are
-      // dead weight in hot kernels. Emit (f64.load (i32.add base (shl i 3)))
-      // directly. base goes through __ptr_offset (still does forwarding follow),
-      // and hoistAddrBase will CSE the (base, i) pair across the iteration body.
-      // Array<NUMBER>/<STRING>/<OBJECT> all use 8-byte f64 slot layout — direct
-      // f64.load is correct regardless of elem kind (returns raw f64 for NUMBER,
-      // NaN-boxed pointer for OBJECT/STRING; downstream typed() handles both).
-      // Fast path fires on schemaId (Array<{x,y,z}> shapes) OR plain elem-val
-      // (Array<NUMBER> from `.map(x => x*k)` etc.) — both are proven facts from
-      // the narrowing fixpoint (carried onto params via paramReps).
-      const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
-      const hasElemFact = rep?.arrayElemSchema != null || rep?.arrayElemValType != null
-      // Take the unchecked inline load ONLY when the index is proven in-bounds by an
-      // enclosing canonical loop `for (let i=C; i<arr.length; i++)`. Skipping the bounds
-      // check on an arbitrary numeric index is unsound: `a[1]` on a length-1 array would
-      // read the raw (uninitialized) cell instead of undefined. Constant / unproven
-      // indices fall through to __arr_idx(_known) below, which bounds-checks → UNDEF_NAN.
-      const idxProvenInBounds = hasElemFact && keyIsNum
+      // Inline fast path for any known plain ARRAY + numeric key: the type-tag
+      // dispatch and bounds check inside __arr_idx(_known) are dead weight in hot
+      // kernels — most visibly AST walkers doing `node[i]` over heterogeneous
+      // arrays, where no element schema/valType is ever inferred. Emit the
+      // f64.load directly. base goes through __ptr_offset (still the forwarding
+      // follow), and hoistAddrBase CSEs the (base, i) pair across the iteration
+      // body. taggedLinear stores every element as one 8-byte f64 cell —
+      // Array<NUMBER>/<STRING>/<OBJECT> alike — so a direct f64.load is correct
+      // regardless of elem kind (raw f64 for NUMBER, NaN-boxed pointer for
+      // OBJECT/STRING; downstream typed() handles both). The load shape is fixed
+      // by the carrier, not by any rep fact, so we do NOT gate on a known element
+      // schema/valType: a bare `let a = [...]` walked by index gets the same
+      // inline load as an Array<{x,y,z}>. (structInline arrays returned above via
+      // inlineArraySid; typed arrays are VAL.TYPED, handled below.)
+      //
+      // Take the UNCHECKED inline load only when the index is proven in-bounds by
+      // an enclosing canonical loop `for (let i=C; i<arr.length; i++)` — a pure
+      // index<length structural proof (scanBoundedArrIdx, src/type.js), itself
+      // element-kind-independent. Skipping the bounds check on an arbitrary numeric
+      // index is unsound: `a[1]` on a length-1 array would read the raw cell instead
+      // of undefined; those fall through to the inline bounds-checked load below.
+      const idxProvenInBounds = keyIsNum
         && typeof arr === 'string' && typeof idx === 'string'
         && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
       if (idxProvenInBounds) {
@@ -816,12 +819,12 @@ export default (ctx) => {
           ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
           vi), 'f64')
       }
-      // Known-elem array, numeric key, NOT proven in-bounds → inline bounds-checked
+      // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
       // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
       // inline, so watr hoists the loop-invariant len load and CSEs the base — the
       // residual cost is a single (predictable) compare per access, not a call. Skipping
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
-      if (hasElemFact && keyIsNum) {
+      if (keyIsNum) {
         inc('__ptr_offset')
         const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
         return typed(['if', ['result', 'f64'],
