@@ -123,6 +123,53 @@ test('extractRefinements: post-typeof-string early-return narrows notString', ()
   is(count(wat, /\$__length\b/g), 0, 'flow-narrowing should drop __length')
 })
 
+// ──────────────────────────────────────────── soundness boundary: non-exclusive use ≠ type
+//
+// The evidence ladder narrows from *type-exclusive* signals only: a method that
+// throws on the wrong receiver (`.charCodeAt`, `.push`) proves its type on every
+// non-trapping run. Signals that are DEFINED for primitives prove nothing and must
+// NOT induce a type — narrowing them swaps the polymorphic dispatch (which returns
+// the correct JS value) for a layout-assuming fast path that reads a primitive's
+// bits as a heap pointer. These tests pin that boundary: a future "infer OBJECT
+// from `o.foo`" / "infer from `x[k]`" attempt must keep primitives working or fail
+// here, loudly, instead of silently miscompiling.
+
+test('boundary: bare property READ does not narrow param → primitive stays undefined', () => {
+  // `(42).foo` is `undefined` in JS, not a trap — so `o.foo` proves nothing about
+  // `o`. The param must stay polymorphic (`__dyn_get_any`), NOT narrow to OBJECT
+  // (which would route to `__dyn_get_expr_t` and reinterpret 42's f64 bits as an
+  // OBJECT pointer → OOB heap read).
+  const ex = run(`export function f(o) { return o.foo }`)
+  is(ex.f({ foo: 7 }), 7, 'object arg reads its property')
+  is(ex.f(42), undefined, 'number arg has no .foo → undefined (polymorphism is load-bearing)')
+  is(ex.f('hi'), undefined, 'string arg has no .foo → undefined')
+  const wat = jz.compile(`export function f(o) { return o.foo }`, { wat: true })
+  // Polymorphic read uses an `_any_` dispatch variant (tag-checks at runtime).
+  // An OBJECT-narrowed param would instead emit `__dyn_get_expr_t`, which assumes
+  // OBJECT memory layout — its absence is the proof narrowing did NOT fire.
+  ok(/\$__dyn_get_any/.test(wat), 'read-only param keeps a polymorphic _any_ dispatch')
+  is(count(wat, /\$__dyn_get_expr_t\b/g), 0, 'no OBJECT-layout fast path on a bare-read param')
+})
+
+test('boundary: number-key index does not imply ARRAY → string indexing returns a char', () => {
+  // `'hello'[0]` is `'h'` — strings ARE index-accessible. A number key therefore
+  // does NOT prove the receiver is an array; narrowing `x` to ARRAY on `x[0]` would
+  // read a string pointer's bytes as array elements. The polymorphic `[]` read must
+  // honor JS string indexing.
+  const ex = run(`export function f(x) { return x[0] }`)
+  is(ex.f([9, 8]), 9, 'array arg → element 0')
+  is(ex.f('hello'), 'h', 'string arg → character 0 (number key ≠ array proof)')
+})
+
+test('boundary: string-key index does not imply OBJECT → string receiver stays valid', () => {
+  // `'hi'['a']` is `undefined` (valid — strings accept string keys, yielding
+  // undefined for non-index keys). A string key does NOT prove OBJECT; narrowing
+  // would reinterpret a string/number value as an OBJECT pointer.
+  const ex = run(`export function f(x) { return x['a'] }`)
+  is(ex.f('hi'), undefined, 'string arg, string key → undefined (string key ≠ object proof)')
+  is(ex.f(42), undefined, 'number arg, string key → undefined')
+})
+
 // ───────────────────────────────────────────────────── call-site lattice (paramReps)
 
 test('paramReps val: consistent ARRAY callers fold to direct header read', () => {
