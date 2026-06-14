@@ -20,6 +20,7 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const PORF_BIN = process.env.PORF_BIN || 'porf'
+const JAVY_BIN = process.env.JAVY_BIN || 'javy'
 
 mkdirSync(BUILD, { recursive: true })
 
@@ -274,6 +275,8 @@ int main(void) {
 
 const watWasmPath = c => join(caseBuild(c), `${c.id}-wat.wasm`)
 const jawsmWasmPath = c => join(caseBuild(c), `${c.id}-jawsm.wasm`)
+const javyWasmPath = c => join(caseBuild(c), `${c.id}-javy.wasm`)
+const javySrcPath = c => join(caseBuild(c), `${c.id}-javy.js`)
 const w2cBinPath = c => join(caseBuild(c), `${c.id}-w2c`)
 const natBinPath = c => join(caseBuild(c), `${c.id}-nat`)
 const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
@@ -454,6 +457,20 @@ const targets = {
       execFileSync('jawsm', [c.js, '-o', jawsmWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-wasm.mjs'), jawsmWasmPath(c)]),
   },
+  // Javy (Bytecode Alliance) — JS → wasm by *embedding QuickJS* in the module:
+  // the interpreter-in-wasm approach, in contrast to jz's compile-to-native-wasm.
+  // Runs as a WASI command under wasmtime. Its minimal QuickJS provider has no
+  // `performance`, so shim it onto the WASI Date clock before building.
+  javy: {
+    name: 'Javy (QuickJS → wasm)',
+    available: () => has(JAVY_BIN) && has('wasmtime'),
+    bin: javyWasmPath,
+    run: c => tryRun('javy', c, () => {
+      writeFlat(c)
+      writeFileSync(javySrcPath(c), 'globalThis.performance ??= { now: () => Date.now() };\n' + readFileSync(flatPath(c), 'utf8'))
+      execFileSync(JAVY_BIN, ['build', javySrcPath(c), '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['wasmtime', javyWasmPath(c)]),
+  },
 }
 
 // Exact invocation per target — emitted into results.json meta so the bench
@@ -482,6 +499,7 @@ const TARGET_CMDS = {
   'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
+  javy: 'javy build <case>-flat.js → wasmtime (QuickJS embedded in wasm)',
 }
 
 const allCases = discoverCases()
