@@ -709,6 +709,15 @@ export default (ctx) => {
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
+    // Literal string key on a receiver that isn't a known array/typed/string:
+    // `x['a']` IS `x.a` — delegate to the dot emitter so an untyped/OBJECT/external
+    // receiver gets the same polymorphic dispatch (__dyn_get_any_t_h, host-external
+    // aware). The local `dynLoad` fallback below calls __dyn_get, which only probes
+    // the internal HASH layout — so `x['a']` on a host object silently returned
+    // undefined while `x.a` worked. (Known ARRAY/TYPED/STRING fall through unchanged:
+    // their string-key semantics differ from a HASH/OBJECT property read.)
+    if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)
+      return emit(['.', arr, litKey])
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
     const dynLoad = (objExpr, keyExpr) => {

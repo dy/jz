@@ -21,6 +21,38 @@ test('Read property from external object', () => {
   is(getProp(mockNode), 1)
 })
 
+test('Read property from external object via literal bracket key', () => {
+  if (onWasi()) return  // wasi: external object
+  // Regression: `obj['nodeType']` IS `obj.nodeType` — both must reach the
+  // host-external read path. The `[]` emitter used to fall to `__dyn_get`
+  // (internal HASH only, no external support), so a literal-key bracket read
+  // on a host object silently returned undefined while dot access worked.
+  const { getDot, getBracket } = run(`
+    export const getDot = (obj) => obj.nodeType
+    export const getBracket = (obj) => obj['nodeType']
+  `)
+  const mockNode = { nodeType: 1, nodeName: 'DIV' }
+  is(getDot(mockNode), 1, 'dot access (control)')
+  is(getBracket(mockNode), 1, 'literal-key bracket access must match dot')
+})
+
+test('Read nested property from external object via bracket keys', () => {
+  if (onWasi()) return  // wasi: external object
+  const { f } = run(`
+    export const f = (obj) => obj['a']['b']
+  `)
+  is(f({ a: { b: 42 } }), 42, 'chained literal-key bracket reads match dot chain')
+})
+
+test('Literal-key bracket on a primitive arg stays undefined (no narrowing)', () => {
+  if (onWasi()) return
+  // The delegation must preserve polymorphism: a number/string receiver has no
+  // such property → undefined, NOT a reinterpret of its bits as an object pointer.
+  const { f } = run(`export const f = (x) => x['foo']`)
+  is(f(42), undefined, 'number arg → undefined')
+  is(f({ foo: 7 }), 7, 'object arg → property value')
+})
+
 test('Call method on external object', () => {
   if (onWasi()) return  // wasi: external object
   const { callMethod } = run(`
