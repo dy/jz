@@ -131,6 +131,30 @@ test('string +: known string operands skip generic toString helper', () => {
   ok(!wat.includes('$__static_str'))
 })
 
+test('string +=: accumulator (known STRING) skips its own re-coercion per append', () => {
+  // `s += part`: `s` is proven STRING, so the `+` emitter must not re-ToString the
+  // accumulator on every append — only the unknown `part` needs `__to_str`. Build a
+  // string the natural way and verify it matches JS exactly across mixed value types.
+  const f = run('export let f = (a, b, c) => { let s = ""; s += a; s += b; s += c; return s }').f
+  is(f(1, '-', 2), '1-2', 'number/string/number accumulate correctly')
+  is(f('x', 'y', 'z'), 'xyz', 'all-string accumulate')
+})
+
+test('string +: mixed known-string + unknown stays JS-correct (concatRaw path)', () => {
+  // The one-known-one-unknown concat coerces ONLY the unknown side, then concatRaw.
+  // Must match JS String(+) semantics for every value the unknown could be.
+  const f = run('export let f = (x) => "P:" + x').f
+  is(f(5), 'P:5')
+  is(f('hi'), 'P:hi')
+  is(f(-1.5), 'P:-1.5')
+  is(f([1, 2]), 'P:1,2', 'array → comma-joined like JS Array.toString')
+})
+
+test('string +: realistic build-string loop matches JS', () => {
+  const f = run('export let f = (n) => { let s = ""; for (let i = 0; i < n; i++) { s += i; s += "," } return s }').f
+  is(f(4), '0,1,2,3,')
+})
+
 test('string ==: compares by value', () => {
   is(run('export let f = () => "module" == "module"').f(), true)
 })

@@ -2024,9 +2024,21 @@ function tryDirectClosureCall(callee, parsed) {
   // export-param path gives. An arg we can't prove numeric poisons the slot to false.
   const pt = (ctx.closure.paramTypes ||= new Map())
   let row = pt.get(bodyName); if (!row) pt.set(bodyName, row = [])
+  // Parallel typed-array ctor lattice: a param passed the SAME typed-array ctor at
+  // every direct call site is a TYPED param, so its body reads (`buf[i]`) take the
+  // typed fast-path instead of the dynamic `__typed_idx`/`__len` route that drags in
+  // the string runtime. `null` (sticky) once two sites disagree or an arg isn't a
+  // known typed array — the same monotone meet as the numeric row. Mirrors the named-fn
+  // applyTypedPointerParamAbi, restricted to non-escaping (directly-called) closures.
+  const tc = (ctx.closure.paramTypedCtors ||= new Map())
+  let tcRow = tc.get(bodyName); if (!tcRow) tc.set(bodyName, tcRow = [])
   for (let i = 0; i < n; i++) {
     const numeric = valTypeOf(parsed.normal[i]) === VAL.NUMBER
     row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
+    const arg = parsed.normal[i]
+    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.types.typedElem?.get(arg) ?? null) : null
+    if (tcRow[i] === undefined) tcRow[i] = ctor
+    else if (tcRow[i] !== ctor) tcRow[i] = null
   }
   // Track the fewest args any call passed: a slot at index ≥ minArgc is omitted by some call
   // site (padded with UNDEF_NAN), so it may be undefined — emitClosureBody flags it nullable.
@@ -2379,9 +2391,22 @@ export const emitter = {
       // A BOOL operand renders "true"/"false" rather than its 0/1 carrier.
       const strOperand = (vt, n) => vt === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
         : vt === VAL.BOOL ? emitBoolStr(n) : asF64(emit(n))
-      const ea = strOperand(vtA, a)
-      const eb = strOperand(vtB, b)
-      return typed(ctx.abi.string.ops.cat(ea, eb, ctx), 'f64')
+      // Coercion-free sides are already strings: a known STRING is raw; OBJECT/BOOL
+      // were stringified by `strOperand`. An unknown side still needs ToString, but
+      // we can apply it *once* (explicit `__to_str` via `strI64`) and join with
+      // concatRaw — equivalent to `__str_concat`'s internal `__to_str` on that side,
+      // while NOT re-coercing the already-string side. This drops the redundant
+      // per-append `__to_str` on the accumulator in `s += part` (s proven STRING):
+      //   - both coercion-free  → concatRaw(ea, eb)
+      //   - one unknown         → concatRaw(known, __to_str(unknown))
+      //   - both unknown        → cat (unchanged; its runtime __to_str covers both)
+      const coercionFree = (vt) => vt === VAL.STRING || vt === VAL.OBJECT || vt === VAL.BOOL
+      const cfA = coercionFree(vtA), cfB = coercionFree(vtB)
+      const strI64 = (n) => typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
+      if (cfA && cfB) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strOperand(vtB, b), ctx), 'f64')
+      if (cfA) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strI64(b), ctx), 'f64')
+      if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx), 'f64')
+      return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
