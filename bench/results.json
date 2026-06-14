@@ -1,30 +1,75 @@
 {
  "meta": {
-  "date": "2026-06-12",
-  "commit": "2faf9e6",
+  "date": "2026-06-14",
+  "commit": "cd33a87",
   "host": {
    "platform": "linux",
    "arch": "x64",
-   "cpu": "AMD EPYC 9V74 80-Core Processor"
+   "cpu": "AMD EPYC 7763 64-Core Processor"
   },
   "versions": {
-   "jz": "0.5.1",
+   "jz": "0.6.0",
    "node": "v22.22.3",
    "asc": "Version 0.27.37",
    "porffor": "0.61.13",
    "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)"
   },
   "invocations": {
-   "nat": "clang -O3 -ffp-contract=off <case>.c",
+   "nat": "clang -O3 -march=native -ffp-contract=off <case>.c",
    "rust": "rustc -C opt-level=3 -C target-cpu=native <case>.rs",
    "go": "go build -ldflags=\"-s -w\" <case>.go",
    "v8": "node run-v8.mjs <case>.js",
    "as": "asc <case>.as.ts -O3 --runtime stub --noAssert",
-   "jz": "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
-   "porf": "porf --allocator-chunks=128 run <case>-flat.js"
+   "porf": "porf --allocator-chunks=128 run <case>-flat.js",
+   "jz": "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)"
   }
  },
  "cases": {
+  "dotprod": {
+   "name": "dotprod",
+   "samples": 1638400,
+   "stages": 2,
+   "runs": 21,
+   "ref": 199828677,
+   "targets": {
+    "nat": {
+     "medianUs": 1530,
+     "bytes": 22736,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1531,
+     "bytes": 356456,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 1527,
+     "bytes": 1454264,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 1562,
+     "bytes": 1500,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6134,
+     "bytes": 1333,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 14544,
+     "bytes": 2755,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 318,
+     "bytes": 1322,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 118.1
+  },
   "biquad": {
    "name": "biquad filter cascade",
    "samples": 480000,
@@ -33,37 +78,37 @@
    "ref": 422839881,
    "targets": {
     "nat": {
-     "medianUs": 10999,
-     "bytes": 14536,
+     "medianUs": 7749,
+     "bytes": 22720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 11577,
-     "bytes": 359464,
+     "medianUs": 11050,
+     "bytes": 359368,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13549,
+     "medianUs": 13415,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 19290,
+     "medianUs": 17986,
      "bytes": 3284,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 15381,
+     "medianUs": 15054,
      "bytes": 1964,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 11079,
-     "bytes": 3383,
+     "medianUs": 11153,
+     "bytes": 3369,
      "parity": "ok"
     }
    },
-   "compileMs": 164.7
+   "compileMs": 139.4
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -73,42 +118,42 @@
    "ref": 2929747182,
    "targets": {
     "nat": {
-     "medianUs": 5009,
+     "medianUs": 4784,
      "bytes": 18624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2250,
+     "medianUs": 2270,
      "bytes": 356536,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 11870,
+     "medianUs": 13166,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 22992,
+     "medianUs": 21419,
      "bytes": 1198,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 14624,
+     "medianUs": 13132,
      "bytes": 1606,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 143056,
+     "medianUs": 133362,
      "bytes": 2445,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 3115,
-     "bytes": 3234,
+     "medianUs": 2951,
+     "bytes": 3220,
      "parity": "ok"
     }
    },
-   "compileMs": 155
+   "compileMs": 130.3
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -118,37 +163,37 @@
    "ref": 3026383685,
    "targets": {
     "nat": {
-     "medianUs": 729,
-     "bytes": 18640,
+     "medianUs": 643,
+     "bytes": 22736,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 721,
-     "bytes": 357544,
+     "medianUs": 646,
+     "bytes": 356792,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 990,
+     "medianUs": 857,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2091,
+     "medianUs": 2051,
      "bytes": 1014,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 1382,
+     "medianUs": 1225,
      "bytes": 1336,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 404,
-     "bytes": 1320,
+     "medianUs": 130,
+     "bytes": 1452,
      "parity": "ok"
     }
    },
-   "compileMs": 107.4
+   "compileMs": 89
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -158,37 +203,37 @@
    "ref": 3216842766,
    "targets": {
     "nat": {
-     "medianUs": 2928,
-     "bytes": 18640,
+     "medianUs": 937,
+     "bytes": 39120,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 927,
+     "medianUs": 954,
      "bytes": 359768,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 9910,
+     "medianUs": 8443,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 11872,
+     "medianUs": 11461,
      "bytes": 1005,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 19125,
+     "medianUs": 17540,
      "bytes": 1577,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2230,
+     "medianUs": 2103,
      "bytes": 1249,
      "parity": "ok"
     }
    },
-   "compileMs": 99.8
+   "compileMs": 77
   },
   "tokenizer": {
    "name": "tokenizer scan",
@@ -198,42 +243,42 @@
    "ref": 2031286465,
    "targets": {
     "nat": {
-     "medianUs": 73,
-     "bytes": 18640,
+     "medianUs": 64,
+     "bytes": 22736,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 117,
+     "medianUs": 104,
      "bytes": 356424,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 85,
+     "medianUs": 75,
      "bytes": 1462456,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 280,
+     "medianUs": 273,
      "bytes": 1997,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 120,
+     "medianUs": 122,
      "bytes": 1598,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 759,
+     "medianUs": 784,
      "bytes": 3252,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 117,
-     "bytes": 2323,
+     "medianUs": 121,
+     "bytes": 2298,
      "parity": "ok"
     }
    },
-   "compileMs": 130.1
+   "compileMs": 99.5
   },
   "callback": {
    "name": "callback map",
@@ -243,37 +288,37 @@
    "ref": 893685701,
    "targets": {
     "nat": {
-     "medianUs": 430,
-     "bytes": 18640,
+     "medianUs": 379,
+     "bytes": 30928,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 433,
-     "bytes": 362472,
+     "medianUs": 386,
+     "bytes": 360776,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 577,
+     "medianUs": 522,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1292,
+     "medianUs": 1209,
      "bytes": 1315,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 1625,
+     "medianUs": 1408,
      "bytes": 1908,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 561,
-     "bytes": 1445,
+     "medianUs": 452,
+     "bytes": 1431,
      "parity": "ok"
     }
    },
-   "compileMs": 93
+   "compileMs": 80.9
   },
   "aos": {
    "name": "AoS to SoA",
@@ -283,37 +328,37 @@
    "ref": 2813671365,
    "targets": {
     "nat": {
-     "medianUs": 768,
-     "bytes": 18640,
+     "medianUs": 755,
+     "bytes": 39120,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 671,
-     "bytes": 358760,
+     "medianUs": 698,
+     "bytes": 358408,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1254,
+     "medianUs": 1336,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3125,
+     "medianUs": 2690,
      "bytes": 1089,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 2912,
+     "medianUs": 2718,
      "bytes": 2204,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1850,
-     "bytes": 1835,
+     "medianUs": 1650,
+     "bytes": 1821,
      "parity": "ok"
     }
    },
-   "compileMs": 97.6
+   "compileMs": 91.7
   },
   "mandelbrot": {
    "name": "mandelbrot escape",
@@ -323,42 +368,42 @@
    "ref": 3520419621,
    "targets": {
     "nat": {
-     "medianUs": 15953,
-     "bytes": 18640,
+     "medianUs": 13403,
+     "bytes": 30928,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 15022,
+     "medianUs": 13477,
      "bytes": 358488,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15339,
+     "medianUs": 13673,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 15243,
+     "medianUs": 13656,
      "bytes": 1841,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 15316,
+     "medianUs": 13732,
      "bytes": 1327,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 18067,
+     "medianUs": 16144,
      "bytes": 3088,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 15363,
+     "medianUs": 13767,
      "bytes": 1130,
      "parity": "ok"
     }
    },
-   "compileMs": 95.8
+   "compileMs": 83.6
   },
   "json": {
    "name": "JSON parse+walk (single literal source)",
@@ -368,32 +413,32 @@
    "ref": 2797819845,
    "targets": {
     "nat": {
-     "medianUs": 316,
+     "medianUs": 414,
      "bytes": 22744,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 477,
+     "medianUs": 462,
      "bytes": 381016,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1710,
+     "medianUs": 1896,
      "bytes": 1806520,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 573,
+     "medianUs": 599,
      "bytes": 1226,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 391,
-     "bytes": 10129,
+     "medianUs": 346,
+     "bytes": 10099,
      "parity": "ok"
     }
    },
-   "compileMs": 154.8
+   "compileMs": 126.8
   },
   "sort": {
    "name": "in-place heapsort",
@@ -403,37 +448,37 @@
    "ref": 1238395589,
    "targets": {
     "nat": {
-     "medianUs": 18069,
-     "bytes": 14528,
+     "medianUs": 16292,
+     "bytes": 22720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 17053,
-     "bytes": 357152,
+     "medianUs": 15187,
+     "bytes": 357024,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 17762,
+     "medianUs": 15819,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 20830,
+     "medianUs": 18643,
      "bytes": 1602,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 11966,
+     "medianUs": 12093,
      "bytes": 1946,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 19331,
-     "bytes": 1801,
+     "medianUs": 16593,
+     "bytes": 1787,
      "parity": "ok"
     }
    },
-   "compileMs": 110.1
+   "compileMs": 96.8
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -443,42 +488,42 @@
    "ref": 304463882,
    "targets": {
     "nat": {
-     "medianUs": 10148,
-     "bytes": 14528,
+     "medianUs": 8964,
+     "bytes": 18624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 10124,
-     "bytes": 358600,
+     "medianUs": 8966,
+     "bytes": 358456,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 10137,
+     "medianUs": 8967,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 10244,
+     "medianUs": 9011,
      "bytes": 1873,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 12296,
+     "medianUs": 12439,
      "bytes": 1475,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 70720,
+     "medianUs": 65986,
      "bytes": 3128,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 10144,
+     "medianUs": 8976,
      "bytes": 1563,
      "parity": "ok"
     }
    },
-   "compileMs": 112.1
+   "compileMs": 98.4
   },
   "watr": {
    "name": "watr WAT compiler",
@@ -488,17 +533,17 @@
    "ref": 3419154861,
    "targets": {
     "v8": {
-     "medianUs": 4706,
+     "medianUs": 3983,
      "bytes": 2645,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2518,
-     "bytes": 241858,
+     "medianUs": 2886,
+     "bytes": 241832,
      "parity": "ok"
     }
    },
-   "compileMs": 4758.2
+   "compileMs": 3873.4
   },
   "jessie": {
    "name": "jessie parser",
@@ -508,37 +553,37 @@
    "ref": 2418067300,
    "targets": {
     "v8": {
-     "medianUs": 4627,
+     "medianUs": 4496,
      "bytes": 2700,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5317,
-     "bytes": 89541,
+     "medianUs": 5593,
+     "bytes": 89652,
      "parity": "ok"
     }
    },
-   "compileMs": 1469.2
+   "compileMs": 1157.1
   },
   "jz": {
    "name": "jz JS compiler (self-host)",
    "samples": 3,
    "stages": 3,
    "runs": 13,
-   "ref": 123575732,
+   "ref": 3635380780,
    "targets": {
     "v8": {
-     "medianUs": 81144,
+     "medianUs": 73355,
      "bytes": 2657,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 97992,
-     "bytes": 4615537,
+     "medianUs": 94625,
+     "bytes": 4643750,
      "parity": "ok"
     }
    },
-   "compileMs": 125516.2
+   "compileMs": 106205.2
   }
  }
 }
