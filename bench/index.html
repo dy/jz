@@ -43,6 +43,23 @@ a { color: var(--ink); }
 .dim { color: var(--mid); }
 code, .mono { font-family: var(--mono); font-size: .92em; }
 
+/* tooltips — custom bubble, replaces the slow OS title popup */
+[data-tip] { position: relative; cursor: help; }
+[data-tip]::after, [data-tip]::before {
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .14s ease, transform .14s ease; }
+[data-tip]::after {
+  content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 9px); z-index: 30;
+  width: max-content; max-width: 270px;
+  background: var(--ink); color: var(--paper);
+  font: 400 11.5px/1.5 var(--sans); text-transform: none; letter-spacing: normal; text-align: left;
+  padding: 8px 11px; transform: translateY(4px); box-shadow: 0 4px 16px rgba(0, 0, 0, .22); }
+[data-tip]::before {
+  content: ''; position: absolute; left: 13px; bottom: calc(100% + 4px); z-index: 30;
+  border: 5px solid transparent; border-top-color: var(--ink); transform: translateY(4px); }
+[data-tip]:hover::after, [data-tip]:focus-visible::after,
+[data-tip]:hover::before, [data-tip]:focus-visible::before {
+  opacity: 1; visibility: visible; transform: translateY(0); }
+
 /* intro */
 .intro { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; margin-top: 42px; }
 .intro h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 700; letter-spacing: -.02em; line-height: 1.08; }
@@ -62,7 +79,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* stat strip — the 10-second story; numbers are the copy */
 .strip { display: flex; gap: 42px; flex-wrap: wrap; margin-top: 40px; border-top: 1px solid var(--ink); padding-top: 18px; }
 .stat { display: flex; flex-direction: column; gap: 3px; }
-.stat[title] { cursor: help; }
 .stat b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 
@@ -89,8 +105,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 44px 38px; }
 .card { border-top: 1px solid var(--ink); padding-top: 10px; }
 .card h3 { font-size: 13px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
-.card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); cursor: help; }
-.card h3 .fam[title] { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
+.card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
+.card h3 .fam[data-tip] { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
 .card h3 .size { font-family: var(--mono); font-weight: 400; font-size: 10.5px; color: var(--mid); }
 .card h3 .play { margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; font-weight: 400; letter-spacing: .02em;
@@ -329,17 +345,19 @@ const renderStrip = () => {
     const best = Math.min(...SYS_NATIVE.map(t => c.targets[t]?.parity !== 'DIFF' && c.targets[t]?.medianUs || Infinity))
     if (best < Infinity) nat.push(best / c.targets.jz.medianUs)
   }
-  if (nat.length) cells.push({ big: fmtX(geo(nat)), lab: 'native perf', tip: `jz vs the fastest native binary (C/Rust/Zig/Go) — geomean over ${nat.length} cases` })
-  // size: compiled .wasm vs the .js source and vs AssemblyScript's .wasm, over the
-  // kernel set (self-host bundles dwarf their source — excluded via AS-comparability);
-  // higher = jz module is larger
-  const shared = CORPUS.filter(c => c.targets.jz?.bytes && c.targets.as?.bytes && c.targets.v8?.bytes)
+  // median, not geomean: the distribution is bimodal — jz beats strict-FP native
+  // only on auto-vectorized reductions (dotprod, poly), so a geomean would let
+  // those two outliers falsely imply parity. Median = the typical case.
+  if (nat.length) cells.push({ big: fmtX(median(nat)), lab: 'native perf', tip: `jz vs the fastest native binary (C/Rust/Go), median of ${nat.length} cases — native is the floor; jz only pulls ahead on auto-vectorized FP reductions where strict-fp native can't reassociate` })
+  // size: jz's .wasm vs AssemblyScript's .wasm — the only apples-to-apples size
+  // comparison (binary vs binary, same kernels). A vs-".js-source" ratio would
+  // compare a binary to commented, unminified text, so it's intentionally omitted.
+  const shared = CORPUS.filter(c => c.targets.jz?.bytes && c.targets.as?.bytes)
   if (shared.length) {
-    const gjz = geo(shared.map(c => c.targets.jz.bytes))
-    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.v8.bytes))), lab: 'JS size', tip: `compiled .wasm vs the original .js source — geomean over ${shared.length} kernels (>1× = wasm is larger than the source)` })
-    cells.push({ big: fmtX(gjz / geo(shared.map(c => c.targets.as.bytes))), lab: 'AS size', tip: `compiled .wasm vs AssemblyScript's .wasm — geomean over ${shared.length} kernels` })
+    const r = geo(shared.map(c => c.targets.jz.bytes)) / geo(shared.map(c => c.targets.as.bytes))
+    cells.push({ big: fmtX(r), lab: 'AS size', tip: `jz's compiled .wasm vs AssemblyScript's .wasm, same kernels — geomean over ${shared.length} cases (≈1× = same size)` })
   }
-  $('strip').innerHTML = cells.map(c => `<div class="stat"${c.tip ? ` title="${esc(c.tip)}"` : ''}><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
+  $('strip').innerHTML = cells.map(c => `<div class="stat"${c.tip ? ` tabindex="0" data-tip="${esc(c.tip)}"` : ''}><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
   $('strip').hidden = false
 }
 
@@ -386,13 +404,13 @@ const renderCards = () => {
   let html = ''
   for (const c of CASES) {
     if (filter !== 'all' && FAMILY[c.id] !== filter) continue
-    const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" title="source on GitHub">${ICO.code}src</a>`
+    const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
     const play = MULTI.has(c.id)   // multi-module sources can't load in the repl
       ? srcLink
-      : `<button class="play" data-play="${c.id}" title="open this kernel in the repl — run, edit, js vs wasm">${ICO.play}repl</button>${srcLink}`
+      : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
-      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` title="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" title="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
+      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
       ${cardRows(c)}
     </div>`
   }
