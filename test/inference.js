@@ -425,6 +425,39 @@ test('paramAllUsesNumeric: forwarding to a string-using closure stays polymorphi
     'string forwarded to a string-using closure is preserved')
 })
 
+test('paramNeverString: additive exported f64 param skips the per-iteration string fork', () => {
+  // The julia/floatbeat shape: `z = z*z + cre` in a hot loop, `cre` an exported f64
+  // param used only additively. Binary `+` doesn't PROVE numericity (it may concat),
+  // so paramAllUsesNumeric rejects it — but the export boundary (`wrapVal` passes a
+  // JS number; a string arg is unsupported, → NaN) does. paramNeverString trusts it,
+  // dropping the `__is_str_key`/`__str_concat` fork that a typed-array store in the
+  // same function would otherwise drag onto every `+`.
+  const wat = jz.compile(`
+    let px
+    export const resize = (n) => { px = new Uint32Array(n); return px }
+    export const frame = (cre, cim, n) => {
+      let q = 0
+      while (q < n) {
+        let z = 0.0, zy = 0.0, it = 0
+        while (it < 160 && z*z + zy*zy < 16.0) { zy = 2.0*z*zy + cim; z = z*z - zy*zy + cre; it++ }
+        px[q] = it; q++
+      }
+    }
+  `, { wat: true, optimize: 2 })
+  is(count(wat, /\$__is_str_key\b/g), 0, 'additive numeric params must not emit a string-key fork')
+  is(count(wat, /\$__str_concat\b/g), 0, 'no string-concat helper dragged into a pure float kernel')
+})
+
+test('paramNeverString: a param used as a string is NOT falsely trusted numeric', () => {
+  // Soundness floor for the boundary trust. A string-literal `+` operand, a string
+  // method, or a member/index access on the param all disqualify it — it stays
+  // polymorphic and string semantics are preserved.
+  is(run(`export const f = (p) => "x" + p`).f('y'), 'xy', 'string-literal concat preserved')
+  is(run(`export const f = (p) => p + "x"`).f('y'), 'yx', 'reverse string concat preserved')
+  is(run(`export const f = (p) => \`v=\${p}\``).f('hi'), 'v=hi', 'template interpolation preserved')
+  is(run(`export const f = (p) => p.charCodeAt(0)`).f('A'), 65, 'string method receiver preserved')
+})
+
 test('boxedCaptures: mutated capture allocates a heap cell', () => {
   // `let n = 0; const inc = () => { n = n + 1; ... }` — the closure mutates
   // the outer var. boxedCaptures marks n boxed → cell allocated on

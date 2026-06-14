@@ -15,7 +15,6 @@ export let resize = (w, h) => {
 }
 
 export let frame = (t, cre, cim) => {
-  cre = +cre; cim = +cim   // pin numeric: keeps `… + cre`/`… + cim` off the string-concat dispatch
   let scale = 1.5
   let j = 0, py = 0
   while (py < H) {
