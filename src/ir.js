@@ -790,6 +790,14 @@ export function toStrI64(node, v) {
       return typed(['call', '$__to_str', prim], 'i64')
     }
   }
+  // Provably-integer operand → render with the i32-only formatter, bypassing __to_str's
+  // float machinery (__ftoa/__toExp/__pow10, ~2 KB). A raw i32 value (`n|0`, a bitwise
+  // result, a loop counter) carries no NaN-box, so its ToString is just digits + sign.
+  // ptrKind != null means it's an unboxed pointer (i32 offset), NOT a number — exclude.
+  if (v.type === 'i32' && v.ptrKind == null) {
+    inc('__i32_to_str')
+    return typed(['i64.reinterpret_f64', ['call', '$__i32_to_str', v]], 'i64')
+  }
   inc('__to_str')
   return typed(['call', '$__to_str', asI64(v)], 'i64')
 }

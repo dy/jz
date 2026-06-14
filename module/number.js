@@ -155,6 +155,7 @@ export default (ctx) => {
   deps({
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
+    __i32_to_str: ['__itoa', '__mkstr'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
@@ -214,6 +215,26 @@ export default (ctx) => {
     (local.set $j (i32.sub (local.get $len) (i32.const 1)))
     ${reverseBytesWat()}
     (local.get $len))`
+
+  // __i32_to_str(val: i32) → f64 (NaN-boxed string) — ToString for a value the
+  // compiler proved is a signed i32. The whole point is to bypass __ftoa's float
+  // machinery (shortest-repr search, __toExp, __pow10): a known integer renders with
+  // just __itoa over its magnitude plus a sign byte. Lets `"id " + (n|0)` and integer
+  // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
+  ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
+    (local $buf i32) (local $len i32) (local $u i32)
+    (local.set $buf (call $__alloc (i32.const 12)))
+    (if (i32.lt_s (local.get $val) (i32.const 0))
+      (then
+        (i32.store8 (local.get $buf) (i32.const 45))   ;; '-'
+        ;; magnitude as unsigned: negate via 0 - val (INT_MIN maps to itself, read u below)
+        (local.set $u (i32.sub (i32.const 0) (local.get $val)))
+        (local.set $len (call $__itoa (local.get $u) (i32.add (local.get $buf) (i32.const 1))))
+        (return (call $__mkstr (local.get $buf) (i32.add (local.get $len) (i32.const 1)))))
+      (else
+        (local.set $len (call $__itoa (local.get $val) (local.get $buf)))
+        (return (call $__mkstr (local.get $buf) (local.get $len)))))
+    (f64.const 0))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
   // Signed integer → radix string for BigInt.prototype.toString(radix). Digits go

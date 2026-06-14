@@ -114,8 +114,8 @@ export default (ctx) => {
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
     __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice'],
-    __str_indexof: ['__str_byteLen', '__to_str'],
-    __str_lastindexof: ['__str_byteLen', '__to_str'],
+    __str_indexof: ['__str_byteLen'],
+    __str_lastindexof: ['__str_byteLen'],
     __wrap1: ['__alloc', '__mkptr'],
     __str_substring: ['__str_slice'],
     __str_startswith: ['__str_byteLen'],
@@ -696,8 +696,8 @@ export default (ctx) => {
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
-    ;; ToString the search value (21.1.3.9 step 4) — coerces undefined/null/number/etc.
-    (local.set $ndl (call $__to_str (local.get $ndl)))
+    ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.9 step 4 —
+    ;; a known-string needle passes raw, so this helper carries no float-pulling __to_str.
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
     (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
@@ -741,8 +741,7 @@ export default (ctx) => {
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
-    ;; ToString the search value (21.1.3.10 step 4)
-    (local.set $ndl (call $__to_str (local.get $ndl)))
+    ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.10 step 4.
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
     ;; Empty needle always matches at the clamp(from,0,hlen) position
@@ -1442,9 +1441,22 @@ export default (ctx) => {
   // covers string/number/null/undefined needles, but two cases need help here:
   // a BOOL rides the 0/1 carrier (→ "0"/"1" not "true"/"false"), and an OBJECT
   // needs compile-time ToPrimitive(string) (__to_str can't invoke user toString).
-  const searchArg = (search) =>
-    valTypeOf(search) === VAL.BOOL ? asI64(bool(search)) :
-    valTypeOf(search) === VAL.OBJECT ? toStrI64(search, emit(search)) : asI64(emit(search))
+  // Coerce the search operand to a string AT THE CALL SITE (21.1.3.x ToString step),
+  // so the `__str_indexof` family carries no embedded `__to_str`. A known-STRING arg
+  // (the overwhelmingly common `s.indexOf("x")` / `s.indexOf(t)` shape) passes raw —
+  // dropping the whole ToString → float-formatter dep tree (~4 KB) that an internal,
+  // unconditional coercion forced into every search-method program. Mirrors
+  // `stringSearchMethod` (startsWith/endsWith), which has always coerced here.
+  const searchArg = (search) => {
+    const vt = valTypeOf(search)
+    if (vt === VAL.STRING) return asI64(emit(search))
+    if (vt === VAL.BOOL) return asI64(bool(search))
+    if (vt === VAL.OBJECT) return toStrI64(search, emit(search))
+    inc('__to_str')
+    return ['call', '$__to_str', asI64(emit(search))]
+  }
+  // Replacement operand of .replace/.replaceAll — same call-site ToString as searchArg.
+  const strReplArg = searchArg
 
   bind('.string:indexOf', (str, search, from) => {
     inc('__str_indexof')
@@ -1585,9 +1597,14 @@ export default (ctx) => {
             asI64(tail)], 'f64')]]], 'f64')
     }
     inc('__str_replace')
-    return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
+    // search/repl ToString'd at the call site (searchArg) — __str_replace's __str_indexof
+    // no longer coerces internally, so a non-string search must be stringified here.
+    return typed(['call', '$__str_replace', asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
   })
-  bind('.replaceAll', method('__str_replaceall', 'III'))
+  bind('.replaceAll', (str, search, repl) => {
+    inc('__str_replaceall')
+    return typed(['call', '$__str_replaceall', asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
+  })
 
   const caseMethod = (lo, hi, delta) => (str) => {
     inc('__str_case')
