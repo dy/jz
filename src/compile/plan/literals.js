@@ -695,9 +695,13 @@ export function foldStaticConstAggregates(ast) {
   const funcs = ctx.func.list.filter(f => f.body && !f.raw)
   // A function parameter named `x` rebinds `x` for the whole body — its `x[…]` reads
   // the param, not the module binding (params live on `f.sig`, separate from `.body`,
-  // so the body scan can't see them). `boundIn(f)` is the set of folded names a
-  // function shadows; such a function is skipped (scan) / excluded (rewrite).
+  // so the body scan can't see them). Such a function is skipped (scan) / excluded
+  // (rewrite) for that name.
   const paramNames = (f) => (f.sig?.params || []).map(p => p.name)
+  // Every AST a function can reference an outer binding from: its body PLUS each
+  // default-parameter expression (`(v = x[0]) => …`), which prepare extracts to
+  // `f.defaults` — separate from the body, so the body scan/rewrite would miss it.
+  const funcNodes = (f) => f.defaults ? [f.body, ...Object.values(f.defaults)] : [f.body]
 
   // Classify module statements. A binding's value comes from an inline decl
   // (`const x = […]`) OR — for `var`, which jzify lowers to `let x; x = […]` — a
@@ -745,7 +749,7 @@ export function foldStaticConstAggregates(ast) {
     if (inlineInit.has(name) || list.length !== 1 || !uninitDecl.has(name)) continue
     const assign = list[0], at = pos.get(assign)
     const refsBefore = moduleStmts.some((s, i) => i < at && s !== uninitDecl.get(name) && refsName(s, name, REFS_IN_EXPR))
-    const refsInFn = funcs.some(f => !paramNames(f).includes(name) && refsName(f.body, name, REFS_IN_EXPR))
+    const refsInFn = funcs.some(f => !paramNames(f).includes(name) && funcNodes(f).some(n => refsName(n, name, REFS_IN_EXPR)))
     if (refsBefore || refsInFn) continue
     consider(name, assign[2], new Set([assign, uninitDecl.get(name)]))
   }
@@ -756,7 +760,7 @@ export function foldStaticConstAggregates(ast) {
   const checkAll = (name, pred) => {
     const skip = initStmts.get(name)
     return moduleStmts.every(s => skip.has(s) || pred(s))
-      && funcs.every(f => paramNames(f).includes(name) || pred(f.body))
+      && funcs.every(f => paramNames(f).includes(name) || funcNodes(f).every(pred))
   }
   for (const [name, elems] of [...arr]) if (!checkAll(name, n => foldSafeArrayUse(n, name, elems.length))) arr.delete(name)
   for (const [name, props] of [...obj]) {
@@ -788,14 +792,16 @@ export function foldStaticConstAggregates(ast) {
     }
     seq.splice(1, seq.length - 1, ...kept)
   }
-  // Rewrite each function body, excluding the folded names its params shadow.
+  // Rewrite each function body AND its default-parameter expressions, excluding the
+  // folded names its params shadow.
   for (const f of funcs) {
     const pn = paramNames(f)
     const shadows = pn.some(p => arr.has(p) || objects.has(p))
-    if (!shadows) { f.body = rewrite(f.body); continue }
-    const fArr = new Map([...arr].filter(([n]) => !pn.includes(n)))
-    const fObj = new Map([...objects].filter(([n]) => !pn.includes(n)))
-    f.body = rewriteScalarObjectUses(rewriteScalarArrayUses(f.body, fArr), fObj)
+    const rw = shadows
+      ? (n) => rewriteScalarObjectUses(rewriteScalarArrayUses(n, new Map([...arr].filter(([k]) => !pn.includes(k)))), new Map([...objects].filter(([k]) => !pn.includes(k))))
+      : rewrite
+    f.body = rw(f.body)
+    if (f.defaults) for (const k of Object.keys(f.defaults)) f.defaults[k] = rw(f.defaults[k])
   }
   return true
 }
