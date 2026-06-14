@@ -129,7 +129,11 @@ export default (ctx) => {
   // undefined→NaN, and strings get parsed. Without this, raw NaN-boxed pointers
   // (null/undefined/strings) would propagate through math.log etc. and surface
   // as the original null/undefined sentinel after decode.
-  const fn = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64')
+  // A canon'd operand feeding a math call is redundant: the callee (log/sin/exp/…)
+  // propagates a non-canonical NaN identically and re-canon-izes its own result.
+  // `Math.log(Math.log(x))` thus sheds the inner per-call select + f64.ne.
+  const stripCanon = (v) => (v && v.canonOf != null) ? typed(v.canonOf, 'f64') : v
+  const fn = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => stripCanon(toNumF64(a, emit(a))))], 'f64')
 
   // Canonicalize a possibly-NaN f64 result. A wasm arithmetic op that mints a
   // fresh NaN (f64.sqrt of a negative, f64.min/max with a NaN operand) leaves
@@ -139,12 +143,18 @@ export default (ctx) => {
   // untyped === / typeof. So fold any NaN back to canonical where one is born.
   const canon = (node) => {
     const t = temp('cn')
-    return typed(['block', ['result', 'f64'],
+    const ir = typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, node],
       ['select',
         ['f64.const', 'nan'],
         ['local.get', `$${t}`],
         ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+    // Tag the wrapper so a NaN-propagating f64 consumer (`f64.add`/`mul`/… that
+    // itself canon-izes on escape) can strip the redundant inner canon: the raw
+    // op result `node` propagates a freshly-minted NaN identically through the
+    // consumer, and only the OUTERMOST escaping value needs the canonical form.
+    ir.canonOf = node
+    return ir
   }
 
   // sqrt(x) needs no NaN-canon when its argument is provably ≥ 0 with no spurious NaN:

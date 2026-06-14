@@ -102,6 +102,16 @@ const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'gl
 // use — wrapping is exactly its intended semantics, so it stays on the i32 path.
 const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
 
+// Strip a redundant NaN-canon wrapper (math.js `canon`) from an operand that
+// feeds a NaN-propagating f64 op. `f64.sqrt`/`min`/`max` mint a sign-nondeterministic
+// NaN that math.js canon-izes so it can't be bit-confused with a NaN-boxed pointer in
+// `===`/`typeof`. But when the result flows straight into `f64.add`/`sub`/`mul`/`div`,
+// the consumer propagates that NaN identically and is itself canon-ized if IT escapes —
+// so the inner per-op canon (local.set + select + f64.ne, ~3 ops) is dead on the
+// critical path. This is THE gap that put sqrt-heavy kernels ~23% behind V8
+// (julia/raymarcher/boids); stripping it makes them match native JS.
+const stripCanon = (v) => (v && v.canonOf != null) ? typed(v.canonOf, 'f64') : v
+
 const FIRST_CLASS_UNARY_MATH = {
   'math.abs': 'f64.abs',
   'math.sqrt': 'f64.sqrt',
@@ -2440,7 +2450,7 @@ export const emitter = {
     // op whose result can exceed i32, so `i32.add` would wrap (4294967295+1→0).
     // Widen to f64 — never wrap — matching spec. Only `>>>0`/`|0`/imul wrap.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.add', va, vb], 'i32')
-    return typed(['f64.add', toNumF64(a, va), toNumF64(b, vb)], 'f64')
+    return typed(['f64.add', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '-': (a, b) => {
     if (ctx.func._expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')
@@ -2455,7 +2465,7 @@ export const emitter = {
     // Unsigned uint32 operand: JS `-` is float (can go negative / exceed i32),
     // so avoid the wrapping i32.sub fast-path. See `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.sub', va, vb], 'i32')
-    return typed(['f64.sub', toNumF64(a, va), toNumF64(b, vb)], 'f64')
+    return typed(['f64.sub', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   'u+': a => {
     if (valTypeOf(a) === VAL.BIGINT)
@@ -2485,7 +2495,7 @@ export const emitter = {
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
-    return typed(['f64.mul', toNumF64(a, va), toNumF64(b, vb)], 'f64')
+    return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '/': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
@@ -2493,7 +2503,7 @@ export const emitter = {
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
-    return typed(['f64.div', toNumF64(a, va), toNumF64(b, vb)], 'f64')
+    return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)

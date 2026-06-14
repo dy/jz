@@ -39,6 +39,35 @@ test('Math.sqrt', async () => {
   is(await evaluate('Math.sqrt(1)'), 1)
 })
 
+test('canon-strip: sqrt/min/max feeding f64 arithmetic sheds the NaN-canon select', () => {
+  // A freshly-minted NaN (sqrt of a negative, min/max with a NaN) is canon-ized so it
+  // can't be bit-confused with a NaN-boxed pointer in untyped ===/typeof. But when the
+  // result flows STRAIGHT into f64.add/sub/mul/div (or another math call), the consumer
+  // propagates the NaN identically and re-canon-izes on escape — so the per-op select +
+  // f64.ne is dead. Stripping it is the difference between ~1.2x and parity vs V8 on
+  // sqrt-heavy kernels (julia, raymarcher, boids).
+  const wat = jz.compile(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`, { wat: true })
+  const selects = (wat.match(/select/g) || []).length
+  is(selects, 0, 'no NaN-canon select when the sqrt result feeds f64.add')
+  // log(log(x)): inner log canon also stripped (math-call arg is ToNumber'd + NaN-safe).
+  const wlog = jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true })
+  is((wlog.match(/select/g) || []).length, 0, 'no canon select for log feeding log')
+})
+
+test('canon-strip soundness: NaN-canon preserved where the result can escape untyped', () => {
+  // The strip is ONLY for direct numeric consumers. A sqrt result stored to a local and
+  // then ===/typeof-compared keeps correct NaN semantics — number-typed === uses f64.eq
+  // (NaN-by-value), so the answer is right with or without the inner canon.
+  is(run(`export const f = (x) => Math.sqrt(x)`).f(-1) !== run(`export const f = (x) => Math.sqrt(x)`).f(-1), true,
+    'sqrt(-1) is NaN (≠ itself)')
+  is(run(`export const f = (x) => { let r = Math.sqrt(x); return r === r }`).f(-1), false,
+    'sqrt(-1) === itself is false (NaN semantics preserved)')
+  is(run(`export const f = (x) => typeof (Math.sqrt(x) * 2.0)`).f(-1), 'number',
+    'NaN through arithmetic is still typeof number')
+  is(run(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`).f(2), Math.sqrt(3) + Math.sqrt(4),
+    'arithmetic sum of sqrts matches JS exactly')
+})
+
 test('Math.abs', async () => {
   is(await evaluate('Math.abs(-5)'), 5)
   is(await evaluate('Math.abs(5)'), 5)
