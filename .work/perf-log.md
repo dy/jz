@@ -107,3 +107,24 @@ Compiler fix (OPEN, needs care): (a) a `+` whose result is immediately ToInt32'd
 (b) a typed-array store should not pull `__str_concat` into stdlib scope. Both
 touch the include/treeshake + hot `+` path — deserve an isolated PR with full
 suite + golden-size verification, not an end-of-session change.
+
+### canon-strip: NaN-canon dead when result feeds a NaN-safe consumer (KEPT, big win)
+f64.sqrt/min/max mint a sign-nondeterministic NaN that math.js `canon`-izes (local +
+select + f64.ne) to stay distinct from NaN-boxed pointers in untyped ===/typeof. When
+the result feeds f64.add/sub/mul/div or another math call, the consumer propagates the
+NaN identically and re-canon-izes on escape → inner canon is dead.
+Fix: canon() tags its wrapper `.canonOf`; f64 arith ops (emit.js) + math-call args
+(math.js fn) strip via the tag. Sound: value stays type-numeric (=== lowers to f64.eq,
+NaN-by-value); only escape-to-untyped needs canonical bits, which it still gets.
+Measured (interleaved, M-series): sqrt-heavy loop 1.22x→0.85x vs V8 (now FASTER, ==
+hand-wasm). full suite 2204 pass, differential+fuzz: zero jz-vs-JS divergence.
+
+### Float-kernel ceiling: jz codegen == or beats hand-wasm; residual gap is wasm-vs-JIT
+Verified with watr hand-written wasm baselines:
+- pure sqrt loop:        jz 0.85x vs V8,  jz == hand-wasm
+- distance/force kernel: jz 1.16x vs V8,  jz 0.95x vs hand-wasm (jz BEATS hand-wasm)
+Conclusion: where jz emits optimal wasm (clean f64 arith, no canon, no fork), it
+matches or beats hand-written wasm. The residual 1.0-1.2x vs V8 on conversion-heavy
+kernels (per-iter f64.convert_i32_s for `i*0.001`) is V8's JS-JIT keeping the index
+integer and fusing better than the wasm engine — a wasm/JIT boundary, NOT a jz codegen
+gap. math.log remains 1.17x (polynomial vs native hardware log) — separate, numeric.
