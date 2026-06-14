@@ -721,7 +721,7 @@ export function emitDecl(...inits) {
     // Monotonic-extension fields (`o.newProp = …`) carry no literal value —
     // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
-    if (flatDecl && Array.isArray(init) && init[0] === '{}') {
+    if (flatDecl && Array.isArray(init) && (init[0] === '{}' || init[0] === '[' || init[0] === '[]')) {
       for (let j = 0; j < flatDecl.names.length; j++)
         result.push(['local.set', `$${name}#${j}`,
           flatDecl.values[j] === undefined ? undefExpr() : asF64(emit(flatDecl.values[j]))])

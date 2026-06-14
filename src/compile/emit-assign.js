@@ -12,7 +12,7 @@
 
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { T } from '../ast.js'
-import { staticPropertyKey } from '../static.js'
+import { staticPropertyKey, staticIndexKey } from '../static.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
@@ -159,10 +159,12 @@ export function emitElementAssign(arr, idx, val) {
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
     : null
 
-  // 1. SRoA flat object: `o['k'] = x` → `local.set $o#i` (no heap store).
-  if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+  // 1. SRoA flat object/array: `o['k'] = x` / `a[2] = x` → `local.set $o#i` (no heap
+  // store). A bare integer index resolves its slot key here (not via `litKey`).
+  if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
     const fo = ctx.func.flatObjects.get(arr)
-    const fi = fo.names.indexOf(litKey)
+    const flatKey = litKey != null ? litKey : staticIndexKey(idx)
+    const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
     if (fi >= 0) return withTemp(valueExpr, t => [
       ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])

@@ -5,7 +5,7 @@
 
 import { ASSIGN_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { staticObjectProps } from '../static.js'
+import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, NO_VALUE } from '../static.js'
 import { exprType } from '../type.js'
 
 export function findFreeVars(node, bound, free, scope) {
@@ -168,7 +168,7 @@ export function scanBindingUses(body) {
   const use = (name, kind, extra) => slot(name).uses.push(extra ? { kind, ...extra } : { kind })
 
   // Static string key of a `[]` index node, else null (computed).
-  const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : null
+  const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
 
   // A child sitting in a value position. A bare string there is a real use —
   // `walk` alone silently drops non-array children, so every value-position
@@ -350,6 +350,10 @@ export function scanBindingUses(body) {
  * Field `i` of binding `o` lives in WASM local `o#${i}` (`#` cannot occur in a
  * jz identifier, so the name is collision-free).
  */
+// Largest array literal that dissolves into scalar slots. Beyond this a single
+// constant data segment is cheaper than N locals (+ the per-slot init prologue).
+const FLAT_ARRAY_MAX = 8
+
 export function scanFlatObjects(body) {
   const cand = new Map()                 // name → {names, values}
 
@@ -357,22 +361,46 @@ export function scanFlatObjects(body) {
   // slots). Used only to reject a self-referential initializer — a literal
   // whose own field values mention the binding is not a self-contained object.
   for (const [name, s] of scanBindingUses(body)) {
-    if (s.decls !== 1 || !Array.isArray(s.initRhs) || s.initRhs[0] !== '{}') continue
-    const props = staticObjectProps(s.initRhs.slice(1))
+    if (s.decls !== 1 || !Array.isArray(s.initRhs)) continue
+    // Candidate aggregate: an object literal `{…}` (string keys) or a small array
+    // literal `[…]` (index keys "0","1",…). An array dissolves into `name#i` scalar
+    // locals exactly like an object — same `.`/`[]` flat hooks, no heap alloc — when
+    // every use is a static-index read/write. Capped at FLAT_ARRAY_MAX: a larger
+    // literal belongs in one constant data-segment region, not N spilled locals.
+    let props
+    if (s.initRhs[0] === '{}') {
+      props = staticObjectProps(s.initRhs.slice(1))
+    } else if (s.initRhs[0] === '[' || s.initRhs[0] === '[]') {
+      const elems = staticArrayElems(s.initRhs)
+      if (!elems || !elems.length || elems.length > FLAT_ARRAY_MAX) continue
+      // Holes (`[1,,3]`) and spreads (`[...x]`) aren't a fixed positional schema.
+      if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) continue
+      // Only compile-time-constant *value* elements dissolve — number/string/bool/null
+      // ("arrays hold JSON values"). A non-literal element (identifier, call, closure,
+      // arithmetic on a runtime var) can carry a function/closure whose call-indirect
+      // table index binds to the array, not a scalar local — dissolving the slot
+      // desyncs the `elem` section. Conservative: any non-constant element keeps the
+      // array heap-backed.
+      if (!elems.every(e => staticValue(e) !== NO_VALUE)) continue
+      props = { names: elems.map((_, i) => String(i)), values: elems }
+    } else continue
+    const isArr = s.initRhs[0] !== '{}'
     if (!props || new Set(props.names).size !== props.names.length) continue
     if (props.values.some(v => refsName(v, name, REFS_IN_EXPR))) continue
 
-    // Schema = literal keys ∪ plain literal-key member writes. Such a write
-    // monotonically extends the static field universe (the new field reads
-    // `undefined` until the write runs, exactly as JS does); the schema stays
-    // closed because any computed/off-schema access disqualifies below.
+    // Schema = literal keys ∪ plain literal-key member writes. For an OBJECT such a
+    // write monotonically extends the static field universe (the new field reads
+    // `undefined` until the write runs, exactly as JS does). An ARRAY has a *fixed*
+    // positional schema: `a.length = …` / `a[n] = …` (off the literal indices) resize
+    // or grow it — not a field add — so arrays never extend, and any off-schema write
+    // (including `.length`, which isn't a slot) disqualifies below.
     // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
     // value-type is exactly its literal initializer's) iff its key is absent here.
     const schema = new Set(props.names)
     const written = new Set()
     for (const u of s.uses)
       if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null) {
-        schema.add(u.key)
+        if (!isArr) schema.add(u.key)
         written.add(u.key)
       }
 

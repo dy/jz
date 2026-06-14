@@ -8,7 +8,7 @@
 
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
-import { intLiteralValue } from './static.js'
+import { intLiteralValue, staticIndexKey } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
   calleeValType, methodValType, typedCtorElemValType,
@@ -158,6 +158,20 @@ VT['&&'] = VT['||'] = (args) => {
 // Index access:  `arr[i]` → ['[]', arr, i].
 VT['[]'] = (args) => {
   if (args.length < 2) return VAL.ARRAY
+  // SRoA flat-array slot read: `a[k]` (static index) where `a` dissolved into
+  // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its
+  // element literal's — same numeric-binding as the `VT['.']` object case, so
+  // `a[0] * 2` stays a plain f64 op instead of the polymorphic ToNumber battery.
+  if (typeof args[0] === 'string') {
+    const flat = ctx.func.flatObjects?.get(args[0])
+    if (flat) {
+      const k = staticIndexKey(args[1])
+      if (k != null && !flat.written?.has(k)) {
+        const i = flat.names.indexOf(k)
+        if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+      }
+    }
+  }
   // Indexed read on a known typed-array receiver yields Number except for
   // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)

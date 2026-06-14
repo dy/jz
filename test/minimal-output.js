@@ -203,6 +203,38 @@ test('minimal: function-local mutated array is fresh each call', () => {
   is(JSON.stringify(g()), '[2,2,3,4]', 'call 2 must not see call 1’s mutation')
 })
 
+// === Small function-local literal arrays scalarize — no memory, no allocator ===
+// A non-escaping, fixed-length array of compile-time-constant values, indexed only by
+// static integers, dissolves into scalar `a#i` locals (scanFlatObjects, same machinery
+// as flat objects). No heap, no `(memory)`, no allocator — `let a=[1,2,3]; a[0]+a[2]`
+// is just two local reads. Bounded to FLAT_ARRAY_MAX elements; a constant element only.
+const FLAT_ARRAYS = {
+  'single element': 'export let f = () => { let a = [42]; return a[0] }',
+  'three reads': 'export let f = () => { let a = [1, 2, 3]; return a[0] + a[1] + a[2] }',
+  'in-bounds write': 'export let f = () => { let a = [1, 2]; a[0] = 9; return a[0] + a[1] }',
+  'string elements': 'export let f = () => { let a = ["ab", "cd"]; return a[1] }',
+}
+for (const [name, src] of Object.entries(FLAT_ARRAYS)) {
+  test(`minimal: flat array ${name} — no memory/allocator`, () => {
+    if (skip) return
+    for (const O of [0, 2]) {
+      ok(!hasMemory(src, O), `${name} @O${O}: a scalarized array needs no memory`)
+      ok(!hasAllocator(src, O), `${name} @O${O}: a scalarized array allocates nothing`)
+    }
+  })
+}
+// Scalarization is conservative: anything that isn't a plain positional read/write of a
+// constant-valued slot keeps the array heap-backed (correctness over minimalism). A
+// `.length` resize, a function/closure element (would desync the call-indirect table),
+// a dynamic index, or a runtime-valued element all fall back to a real array.
+test('minimal: scalarization-ineligible arrays stay correct', () => {
+  if (skip) return
+  is(JSON.stringify(jz('export let g = () => { let a = [5,6]; a[0]++; return a[0] }').exports.g()), '6', 'fresh per call')
+  is(jz('export let g = () => { let a = [1,2,3]; a.length = 1; return a.length }').exports.g(), 1, '.length resize stays an array')
+  is(jz('export let g = () => { let f=()=>1,h=()=>2; let a=[f,h]; return a[0]()+a[1]() }').exports.g(), 3, 'function elements call correctly')
+  is(jz('export let g = (n) => { let a=[n,n*2]; return a[0]+a[1] }').exports.g(5), 15, 'runtime-valued elements')
+})
+
 // === KNOWN REDUNDANCY (targets, not yet minimal) ===
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —

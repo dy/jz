@@ -13,7 +13,7 @@ import { inBoundsArrIdx } from '../src/type.js'
 import { emit, spread, deps } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
-import { staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/static.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
@@ -682,10 +682,13 @@ export default (ctx) => {
     const litKey = isLiteralStr(idx) ? idx[1]
       : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
       : null
-    // SRoA flat object: `o['k']` → `local.get $o#i` (analyze.js scanFlatObjects).
-    if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+    // SRoA flat object/array: `o['k']` / `a[2]` → `local.get $o#i` (scanFlatObjects).
+    // A bare integer index resolves its slot key here (not via `litKey`, which stays
+    // null for arrays so the heap-array / schema paths below are untouched).
+    if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
       const fo = ctx.func.flatObjects.get(arr)
-      const fi = fo.names.indexOf(litKey)
+      const flatKey = litKey != null ? litKey : staticIndexKey(idx)
+      const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
       if (fi >= 0) return typed(['local.get', `$${arr}#${fi}`], 'f64')
     }
     if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {

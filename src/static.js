@@ -19,6 +19,15 @@ export function intLiteralValue(expr) {
 /** Non-negative integer literal — used for string/typed-array index bounds. */
 export const nonNegIntLiteral = (node) => { const n = intLiteralValue(node); return n != null && n >= 0 ? n : null }
 
+/** Flat-array slot key for a *bare* non-negative integer index literal `[null, k]`
+ *  — returns the stringified index ("0","1",…) so an array `a[k]` resolves through
+ *  the same SRoA `name#i` machinery as an object `o.key`. Only a literal index
+ *  qualifies (not a const-folded identifier): the key must be unambiguous at scan
+ *  time, before any rep is known. Null for dynamic / non-integer / huge indices. */
+export const staticIndexKey = (node) =>
+  Array.isArray(node) && node[0] == null && Number.isInteger(node[1]) && node[1] >= 0 && node[1] < 0x100000000
+    ? String(node[1]) : null
+
 /** Fold compile-time integer expressions (literals, const bindings, + - * <<). */
 export function constIntExpr(node) {
   let lit = intLiteralValue(node)
