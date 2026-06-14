@@ -54,6 +54,7 @@ import {
   I32_MIN, I32_MAX, dollar,
 } from '../ir.js'
 import plan from './plan/index.js'
+import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits,
@@ -1307,6 +1308,11 @@ export default function compile(ast, profiler) {
       }
     }
   }
+
+  // Whole-program constant fold of module-scope aggregate literals — `var x=[1,2,3];
+  // y=x[0]` → `y=1`, dropping the array (no data segment, no __arr_idx_known) when
+  // every reference is a static read. The scalar analog of the constInts fold above.
+  timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
 

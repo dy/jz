@@ -235,6 +235,43 @@ test('minimal: scalarization-ineligible arrays stay correct', () => {
   is(jz('export let g = (n) => { let a=[n,n*2]; return a[0]+a[1] }').exports.g(5), 15, 'runtime-valued elements')
 })
 
+// === Static aggregate element access folds to a constant ===
+// A module-scope const/let/var aggregate whose every reference is a static READ is
+// replaced by its literal element/property value program-wide — `var x=[1,2,3];
+// y=x[0]` becomes `y=1`. The array is never built: no `(data`, no `(memory`, and no
+// `__arr_idx_known`/`__ptr_offset` index helper. Holds for arrays and objects, and
+// across function bodies that read the binding.
+const FOLD_AGGREGATES = {
+  'const array index': 'const x = [1, 2, 3]\nexport const y = x[0]',
+  'let array index': 'let x = [1, 2, 3]\nexport const y = x[1]',
+  'var array index': 'var x = [1, 2, 3]\nexport const y = x[2]',
+  'const object prop': 'const o = { a: 1, b: 2 }\nexport const y = o.a',
+  'array read from fn': 'const x = [10, 20]\nexport const f = () => x[0] + x[1]',
+}
+for (const [name, src] of Object.entries(FOLD_AGGREGATES)) {
+  test(`minimal: static ${name} — folds to constant`, () => {
+    if (skip) return
+    ok(!hasData(src), `${name}: a folded aggregate needs no data segment`)
+    ok(!hasMemory(src), `${name}: a folded aggregate needs no memory`)
+    ok(!has(src, '__arr_idx', 0), `${name}: a folded access needs no array-index helper`)
+  })
+}
+// Conservative: anything that isn't a static read keeps the aggregate heap-backed
+// (correctness over folding). Reassignment, element writes, exporting the aggregate,
+// dynamic indices, escapes (passed as a value) and spreads all disqualify.
+const NO_FOLD = {
+  'reassigned': 'var x = [1, 2, 3]\nx = [9]\nexport const y = x[0]',
+  'element write': 'var x = [1, 2, 3]\nx[0] = 9\nexport const y = x[0]',
+  'exported aggregate': 'export const x = [1, 2, 3]\nexport const y = x[0]',
+  'escapes as arg': 'const sum = (a) => a[0]\nconst x = [4, 5]\nexport const y = sum(x)',
+}
+for (const [name, src] of Object.entries(NO_FOLD)) {
+  test(`minimal: ${name} aggregate stays heap-backed`, () => {
+    if (skip) return
+    ok(hasData(src), `${name}: a non-static-read aggregate must remain a real aggregate`)
+  })
+}
+
 // === KNOWN REDUNDANCY (targets, not yet minimal) ===
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —

@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, T, stmtList, refsName, ASSIGN_OPS, isReassigned, hasControlTransfer,
+  some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import {
   intLiteralValue, constIntExpr, staticObjectProps, staticPropertyKey,
@@ -90,7 +90,7 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   const op = node[0]
   if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
   if (isMemberWriteTarget(op, node, name)) return false
-  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   // Element write `name[idx] (op)= v` / `name[idx]++`: an out-of-bounds index
   // grows the array (sparse-array semantics), which the fixed scalar slot set
@@ -141,7 +141,7 @@ const safeScalarObjectUse = (node, name, keys) => {
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
-  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
   if (op === '[]' && node[1] === name) {
     const key = staticPropertyKey(node[2])
@@ -181,7 +181,7 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if (isMemberWriteTarget(op, node, name)) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
@@ -619,6 +619,185 @@ function scalarizeObjectLiterals(node, escapes) {
     out.push(r.node)
   }
   return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
+// === Whole-program constant fold of module-scope aggregate literals ===
+//
+// `var x = [1,2,3]; export const y = x[0]` materializes a data-segment array and
+// indexes it through __arr_idx_known (bounds + grow-forwarding) — all dead weight
+// for a never-grown constant. When EVERY reference to a module-scope const aggregate
+// is a static READ, replace each `x[k]` / `x.length` / `o.key` by its literal value
+// program-wide; the now-unused decl is dropped, so no array is built (no data, no
+// memory, no index helper) and the global is never declared. The per-function
+// scalarizers can't do this: the decl lives at module scope and may be read from
+// several function bodies, so the check must span the whole program.
+
+const ASSIGN_OR_UPDATE = (op) => ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--'
+// Module-scope binding ops. `var` survives to compile at module scope (jzify only
+// lowers it to `let` inside functions), so fold it too — the reassignment guard
+// below keeps a re-bound `var` heap-backed.
+const isDeclOp = (op) => op === 'let' || op === 'const' || op === 'var'
+
+// Reject `delete x`, `delete x.k`, `delete x[k]` — a deletion mutates the aggregate.
+const isDeleteOf = (node, name) =>
+  node[0] === 'delete' && (node[1] === name || (Array.isArray(node[1]) && node[1][1] === name))
+
+// A reference is fold-safe only if it READS `name` via a static index/key (or
+// `.length` for arrays). Any write/update/delete, reassignment, second declaration,
+// bare value use (escape), spread, dynamic key, or non-own member (method / proto
+// chain) escapes the literal model and disqualifies the binding.
+const foldSafeArrayUse = (node, name, len) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isDeleteOf(node, name)) return false
+  if (ASSIGN_OR_UPDATE(op)) {
+    const t = node[1]
+    if (t === name) return false
+    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
+  }
+  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  if (op === '[]' && node[1] === name) return constIntExpr(node[2]) != null
+  if (op === '...' && node[1] === name) return false
+  for (let i = 1; i < node.length; i++) if (!foldSafeArrayUse(node[i], name, len)) return false
+  return true
+}
+
+const foldSafeObjectUse = (node, name, keys) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (isDeleteOf(node, name)) return false
+  if (ASSIGN_OR_UPDATE(op)) {
+    const t = node[1]
+    if (t === name) return false
+    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
+  }
+  if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])   // own key only — proto-safe
+  if (op === '[]' && node[1] === name) { const k = staticPropertyKey(node[2]); return k != null && keys.has(k) }
+  if (op === '...' && node[1] === name) return false
+  for (let i = 1; i < node.length; i++) if (!foldSafeObjectUse(node[i], name, keys)) return false
+  return true
+}
+
+const moduleStmtsOf = (seq) =>
+  Array.isArray(seq) && seq[0] === ';' ? seq.slice(1)
+  : Array.isArray(seq) && isDeclOp(seq[0]) ? [seq]
+  : []
+
+export function foldStaticConstAggregates(ast) {
+  // Span the main module AST and every bundled sub-module init — a const declared in
+  // one can be read from another or from a function body (mirrors the constInts fold).
+  const seqs = [ast, ...(ctx.module.moduleInits || [])]
+  const moduleStmts = seqs.flatMap(moduleStmtsOf)
+  const funcs = ctx.func.list.filter(f => f.body && !f.raw)
+  // A function parameter named `x` rebinds `x` for the whole body — its `x[…]` reads
+  // the param, not the module binding (params live on `f.sig`, separate from `.body`,
+  // so the body scan can't see them). `boundIn(f)` is the set of folded names a
+  // function shadows; such a function is skipped (scan) / excluded (rewrite).
+  const paramNames = (f) => (f.sig?.params || []).map(p => p.name)
+
+  // Classify module statements. A binding's value comes from an inline decl
+  // (`const x = […]`) OR — for `var`, which jzify lowers to `let x; x = […]` — a
+  // lone module-scope assignment after an uninitialized decl. The init statement(s)
+  // are excluded from the read-only scan and dropped on fold.
+  const inlineInit = new Map()    // name -> {value, stmt} | null (poisoned: >1 decl)
+  const assigns = new Map()       // name -> [assignStmt…]
+  const uninitDecl = new Map()    // name -> declStmt  (`let x` / `var x`, string declarator)
+  for (const stmt of moduleStmts) {
+    if (!Array.isArray(stmt)) continue
+    const op = stmt[0]
+    if (isDeclOp(op) && stmt.length === 2 && Array.isArray(stmt[1]) && stmt[1][0] === '=' && typeof stmt[1][1] === 'string') {
+      const name = stmt[1][1]
+      inlineInit.set(name, inlineInit.has(name) ? null : { value: stmt[1][2], stmt })
+    } else if (isDeclOp(op) && stmt.length === 2 && typeof stmt[1] === 'string') {
+      uninitDecl.set(stmt[1], stmt)
+    } else if (op === '=' && typeof stmt[1] === 'string') {
+      (assigns.get(stmt[1]) ?? assigns.set(stmt[1], []).get(stmt[1])).push(stmt)
+    }
+  }
+
+  // index of each statement in module-execution order — used to prove a `var`'s
+  // assignment dominates its reads.
+  const pos = new Map()
+  moduleStmts.forEach((s, i) => pos.set(s, i))
+
+  const arr = new Map(), obj = new Map(), initStmts = new Map()
+  const consider = (name, value, init) => {
+    if (ctx.func.exports?.[name]) return                 // exported → escapes to JS
+    const elems = scalarArrayElems(value)
+    if (elems) { arr.set(name, elems); initStmts.set(name, init); return }
+    const props = scalarObjectProps(value)
+    if (props) { obj.set(name, props); initStmts.set(name, init) }
+  }
+  for (const [name, info] of inlineInit) {
+    // a decl-initialized binding that is ALSO assigned is reassigned → not constant.
+    if (info && !assigns.has(name)) consider(name, info.value, new Set([info.stmt]))
+  }
+  for (const [name, list] of assigns) {
+    // `var` lowering: exactly one assignment, a matching uninit decl, and no
+    // competing inline decl. The assignment must dominate every read — conservatively,
+    // it precedes all other module references and the name is unused in any function
+    // body (a function could run before the assignment). `let`/`const` need no such
+    // guard (TDZ forbids use-before-init).
+    if (inlineInit.has(name) || list.length !== 1 || !uninitDecl.has(name)) continue
+    const assign = list[0], at = pos.get(assign)
+    const refsBefore = moduleStmts.some((s, i) => i < at && s !== uninitDecl.get(name) && refsName(s, name, REFS_IN_EXPR))
+    const refsInFn = funcs.some(f => !paramNames(f).includes(name) && refsName(f.body, name, REFS_IN_EXPR))
+    if (refsBefore || refsInFn) continue
+    consider(name, assign[2], new Set([assign, uninitDecl.get(name)]))
+  }
+  if (!arr.size && !obj.size) return false
+
+  // Every mention outside the binding's init statement(s) — across all module
+  // statements and all function bodies — must be a fold-safe static read.
+  const checkAll = (name, pred) => {
+    const skip = initStmts.get(name)
+    return moduleStmts.every(s => skip.has(s) || pred(s))
+      && funcs.every(f => paramNames(f).includes(name) || pred(f.body))
+  }
+  for (const [name, elems] of [...arr]) if (!checkAll(name, n => foldSafeArrayUse(n, name, elems.length))) arr.delete(name)
+  for (const [name, props] of [...obj]) {
+    const keys = new Set(props.names)
+    if (!checkAll(name, n => foldSafeObjectUse(n, name, keys))) obj.delete(name)
+  }
+  if (!arr.size && !obj.size) return false
+
+  const objects = new Map()
+  for (const [name, props] of obj) {
+    const fields = new Map()
+    props.names.forEach((k, i) => fields.set(k, props.values[i]))
+    objects.set(name, fields)
+  }
+  const rewrite = (n) => rewriteScalarObjectUses(rewriteScalarArrayUses(n, arr), objects)
+  // Every init statement (the decl and, for `var`, its lone assignment) is dropped —
+  // nothing reads the binding anymore, so no aggregate is built.
+  const dropped = new Set()
+  for (const name of [...arr.keys(), ...obj.keys()]) for (const s of initStmts.get(name)) dropped.add(s)
+
+  // Rewrite + drop init statements in each module sequence (mutate in place so
+  // callers holding `ast`/moduleInits references see the result).
+  for (const seq of seqs) {
+    if (!Array.isArray(seq) || seq[0] !== ';') continue
+    const kept = []
+    for (const stmt of seq.slice(1)) {
+      if (dropped.has(stmt)) continue
+      kept.push(rewrite(stmt))
+    }
+    seq.splice(1, seq.length - 1, ...kept)
+  }
+  // Rewrite each function body, excluding the folded names its params shadow.
+  for (const f of funcs) {
+    const pn = paramNames(f)
+    const shadows = pn.some(p => arr.has(p) || objects.has(p))
+    if (!shadows) { f.body = rewrite(f.body); continue }
+    const fArr = new Map([...arr].filter(([n]) => !pn.includes(n)))
+    const fObj = new Map([...objects].filter(([n]) => !pn.includes(n)))
+    f.body = rewriteScalarObjectUses(rewriteScalarArrayUses(f.body, fArr), fObj)
+  }
+  return true
 }
 
 function scalarizeArrayLiterals(node) {
