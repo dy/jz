@@ -9,12 +9,24 @@
   :root { --bg:#07070c; --fg:#eee; --accent:#ddd; --err:#fff; --dim:#999; }
   html,body { height:100%; margin:0; background:var(--bg); color:var(--fg);
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { display:flex; flex-direction:column; border-top:2px solid var(--accent); overflow:hidden; }
-  header { display:flex; align-items:baseline; gap:.6em; padding:8px 12px; font-size:13px; }
-  header b { color:var(--accent); font-weight:600; }
-  header .tag { color:var(--dim); }
-  header a { color:var(--dim); margin-left:auto; text-decoration:none; }
-  header a:hover { color:var(--fg); }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+  .masthead {
+    background:#0a0a0a; color:#fff; flex:0 0 auto;
+    display:flex; align-items:center; gap:16px;
+    min-height:44px;
+    padding:0 16px;
+    font-family: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  }
+  .masthead .wordmark { font-size:19px; letter-spacing:-.02em; line-height:1; text-decoration:none; color:#fff; }
+  .masthead .wordmark .mark { font-weight:700; color:#fff; }
+  .masthead .wordmark .sub { font-weight:400; color:#8a8a8a; margin-left:.45em; transition:color .18s; }
+  .masthead .wordmark .sep { color:#8a8a8a; margin-left:.4em; margin-right:-.05em; }
+  .masthead .wordmark .page { margin-left:.35em; color:#8a8a8a; }
+  .masthead .wordmark:hover .sub { color:#fff; }
+  .masthead nav { margin-left:auto; display:flex; align-items:center; gap:20px; }
+  .masthead nav a { color:#fff; opacity:.7; text-decoration:none; font-size:12px; text-transform:uppercase; letter-spacing:.14em; transition:opacity .18s; }
+  .masthead nav a:hover { opacity:1; }
+  .masthead .gh { display:flex; }
   main { flex:1; display:flex; min-height:0; }
   .pane { flex:1; min-width:0; display:flex; flex-direction:column; }
   #editor { flex:1; resize:none; border:0; outline:0; padding:12px; tab-size:2;
@@ -47,9 +59,17 @@
 </style>
 </head>
 <body>
-<header>
-  <b>jz</b> <span class="tag">floatbeat playground — edit the source, it compiles to WASM in your browser, live</span>
-  <a href="https://github.com/dy/jz/tree/main/examples/playground">source ↗</a>
+<header class="masthead">
+  <a class="wordmark" href="../" aria-label="back to all examples">
+    <span class="mark">JZ</span><span class="sub">examples</span><span class="sep">–</span><span class="page">playground</span>
+  </a>
+  <nav>
+    <a href="../../repl/">repl</a>
+    <a href="../../bench/">bench</a>
+    <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </nav>
 </header>
 <main>
   <div class="pane">

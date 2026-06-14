@@ -459,7 +459,7 @@ const PURE_F64_OPS = new Set([
  *  is correctly NOT numeric, while `cond ? n*2 : n*3` is. Conservative: any shape
  *  not provably numeric (property gets, user calls, local.get, f64.const nan:…)
  *  returns false, so the caller keeps the __to_num coercion. */
-const isNumericIR = (r) => {
+export const isNumericIR = (r) => {
   if (!Array.isArray(r)) return false
   const op = r[0]
   if (PURE_F64_OPS.has(op)) return true
@@ -731,10 +731,15 @@ export function toNumF64(node, v) {
     if (ctx.schema.slotIntCertainAt?.(node[1], node[2]) === true) return asF64(v)
   }
   // IR-level shapes that produce real f64 numbers (never NaN-boxed pointers):
-  // i32→f64 conversions, stdlib clock helper. Skip the __to_num call wrapper.
+  // i32→f64 conversions, stdlib clock helper, length/ptr helpers.
+  // Skip the __to_num call wrapper for these — they always return plain f64.
   if (Array.isArray(v)) {
     if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
     if (v[0] === 'call' && v[1] === '$__time_ms') return v
+    // __length, __str_len return f64.convert_i32_s of an i32 — never a boxed pointer.
+    if (v[0] === 'call' && (v[1] === '$__length' || v[1] === '$__len' || v[1] === '$__str_len')) return v
+    // __ptr_type returns i32 tag, __ptr_offset returns i32 offset — both numeric.
+    if (v[0] === 'call' && (v[1] === '$__ptr_type' || v[1] === '$__ptr_offset')) return v
   }
   // f64 arithmetic ops and math intrinsics never produce NaN-boxed pointers — the
   // result is always a plain f64 number. Skip __to_num for these, eliminating the
@@ -809,8 +814,16 @@ const numericTruthy = e => {
 
 // i32 ops whose result is already a 0/1 boolean (comparisons + eqz) — safe to use
 // directly as a truthiness without a redundant `!= 0`.
+// Ops whose result is already a canonical i32 boolean (0 or 1) — a condition built
+// from one needs no `i32.ne(_, 0)` normalization. Every wasm comparison returns 0/1,
+// so the f64/f32/i64 relations belong here too (they were missing — a `a > b ? …`
+// f64 compare was wrapped in a dead `i32.ne(f64.gt …, 0)` in every branch/select).
 const I32_BOOL_OPS = new Set(['i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u',
-  'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u', 'i32.eqz'])
+  'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u', 'i32.eqz',
+  'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
+  'f32.eq', 'f32.ne', 'f32.lt', 'f32.gt', 'f32.le', 'f32.ge',
+  'i64.eq', 'i64.ne', 'i64.lt_s', 'i64.lt_u', 'i64.gt_s', 'i64.gt_u',
+  'i64.le_s', 'i64.le_u', 'i64.ge_s', 'i64.ge_u', 'i64.eqz'])
 
 export function truthyIR(e) {
   // An i32 *constant* is a concrete number, not a known 0/1 boolean — fold it to its

@@ -41,7 +41,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
-  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
+  isLit, litVal, isNullishLit, isPureIR, isNumericIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -77,6 +77,10 @@ const stringOps = (node) => {
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
 const canonNum = (node) => {
+  // A literal or provably-numeric IR node is already a plain f64 — never a NaN-boxed
+  // pointer — so the canonicalization select is dead (`f64.ne(c, c)` is statically 0).
+  // `x < 0 ? 0 : x` no longer wraps its `0` arm in a select + spare local + global.
+  if (isLit(node) || isNumericIR(node)) return node
   const t = temp('cn')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, node],
@@ -1705,7 +1709,9 @@ function tryStaticDispatch({ obj, method, vt, callMethod }) {
 // emitter which already knows how to handle them.
 function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
   const strKey = `.string:${method}`, genKey = `.${method}`
-  if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+  // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
+  // Only fork when vt is truly unknown (!vt), not for proven types.
+  if (!vt && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
     const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     const strEmitter = ctx.core.emit[strKey]
@@ -2539,6 +2545,15 @@ export const emitter = {
     const elseRefs = extractRefinements(a, new Map(), false)
     const vb = withRefinements(thenRefs, b, () => emit(b))
     const vc = withRefinements(elseRefs, c, () => emit(c))
+    // `cond ? 1 : 0` is the condition bit itself; `cond ? 0 : 1` its negation. `cond`
+    // (truthyIR) is already canonical 0/1, so the select + two const arms collapse to
+    // the bit. (Both arms are literals here, so dropping their emitted IR is side-effect
+    // free.) Mirrors what `+(x > 0)` already produces.
+    if (isLit(vb) && isLit(vc)) {
+      const lb = litVal(vb), lc = litVal(vc)
+      if (lb === 1 && lc === 0) return typed(cond, 'i32')
+      if (lb === 0 && lc === 1) return typed(['i32.eqz', cond], 'i32')
+    }
     // L: Use WASM select for pure ternaries — branchless, smaller bytecode
     if (vb.type === 'i32' && vc.type === 'i32') {
       // A single i32 select is only sound when BOTH arms' i32 carriers mean the same
@@ -2579,6 +2594,21 @@ export const emitter = {
       || isNaNBoxLit(fb) || isNaNBoxLit(fc)
     const numericB = isI32Num(vb) || vb.valKind === VAL.NUMBER || vtb === VAL.NUMBER
     const numericC = isI32Num(vc) || vc.valKind === VAL.NUMBER || vtc === VAL.NUMBER
+    // Peephole: `cond ? 1 : 0` (or `cond ? 0 : 1`) is just `f64.convert_i32_s(cond)` —
+    // the select collapses because cond is already 0/1. Saves 5 instructions.
+    const isOneZero = (one, zero) => {
+      const o = one, z = zero
+      return o.type === 'i32' && Array.isArray(o) && o[0] === 'i32.const' && o[1] === 1 &&
+             z.type === 'i32' && Array.isArray(z) && z[0] === 'i32.const' && z[1] === 0
+    }
+    if ((isOneZero(vb, vc) || isOneZero(vc, vb)) && !numericB && !numericC) {
+      const condBool = truthyIR(emit(a))
+      const n = isOneZero(vb, vc)
+        ? typed(['f64.convert_i32_s', condBool], 'f64')
+        : typed(['f64.convert_i32_s', ['i32.eqz', condBool]], 'f64')
+      n.valKind = VAL.NUMBER
+      return n
+    }
     const branchB = numericB && !numericC ? canonNum(fb) : fb
     const branchC = numericC && !numericB ? canonNum(fc) : fc
     const markNumeric = (n) => {

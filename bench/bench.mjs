@@ -363,7 +363,7 @@ const targets = {
     name: 'V8 (deno)',
     available: () => has(DENO_BIN),
     bin: c => c.js,
-    run: c => tryRun('deno', c, null, [DENO_BIN, 'run', '--allow-read', join(LIB, 'run-v8.mjs'), c.js]),
+    run: c => tryRun('deno', c, null, [DENO_BIN, 'run', '--allow-read', '--allow-env', join(LIB, 'run-v8.mjs'), c.js]),
   },
   bun: {
     name: 'JavaScriptCore (bun)',
@@ -486,7 +486,7 @@ const TARGET_CMDS = {
   numpy: 'python3 <case>.npy.py',
   wat: 'wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)',
   v8: 'node run-v8.mjs <case>.js',
-  deno: 'deno run --allow-read run-v8.mjs <case>.js',
+  deno: 'deno run --allow-read --allow-env run-v8.mjs <case>.js',
   bun: 'bun run-v8.mjs <case>.js',
   spidermonkey: 'js <case>-flat.js',
   hermes: 'hermes <case>-flat.js',

@@ -32,7 +32,8 @@ body {
 header {
   background: var(--band); color: var(--paper);
   display: flex; align-items: center;
-  padding: 14px var(--padx);
+  min-height: 44px;
+  padding: 0 var(--padx);
 }
 .wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
 .wordmark .mark { font-weight: 700; color: #fff; }
@@ -311,18 +312,18 @@ const PRESETS = {
 // Size (top-right) and compile time (console) are real — measured here.
 // Call exports from the prompt below — values marshal across.
 
-export let dist = (x, y) => (x*x + y*y) ** 0.5
-// ↑ types inferred: f64 — no annotations
-
-export let greet = (name) => 'hello ' + name
-// ↑ strings cross the boundary as UTF-8
-
 export let orbit = (n) => {
   let x = 0
   for (let i = 0; i < n; i++) x += Math.sin(i * 0.001) * Math.cos(i * 0.0005)
   return x
 }
 // ↑ a real workload — hit "js vs wasm" on orbit(100000)
+
+export let shout = (s) => s.toUpperCase() + '!'
+// ↑ strings cross the boundary as UTF-8
+
+export let count = (s) => s.charCodeAt(0)
+// ↑ typed by method call — i32 return
 
 console.log('compiled + instantiated, top-level ran')`,
   },
@@ -388,6 +389,334 @@ export let filter = (n) => {
   let acc = 0
   for (let i = 0; i < n; i++) acc += x[i]
   return acc
+}`,
+  },
+  mat4: {
+    name: 'mat4 multiply',
+    expr: 'multiply(200000)',
+    src: `// 4x4 matrix multiplication — tight numeric loop, heavy f64 arithmetic.
+// Each iteration multiplies two 4x4 matrices into an output buffer.
+
+export let multiply = (iters) => {
+  let a = new Float64Array(16)
+  let b = new Float64Array(16)
+  let out = new Float64Array(16)
+  for (let i = 0; i < 16; i++) {
+    a[i] = (i + 1) * 0.125
+    b[i] = (16 - i) * 0.0625
+  }
+  for (let n = 0; n < iters; n++) {
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        let s = 0
+        for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+        out[r * 4 + c] = s + n * 0.0000001
+      }
+    }
+  }
+  return out[0] + out[15]
+}`,
+  },
+  poly: {
+    name: 'polymorphic reduce',
+    expr: 'reduce(80)',
+    src: `// Polymorphic typed-array reduction — sums f64 and i32 arrays.
+// Tests type narrowing and mixed-representation handling.
+
+export let reduce = (iters) => {
+  let f64 = new Float64Array(8192)
+  let i32 = new Int32Array(8192)
+  for (let i = 0; i < 8192; i++) {
+    f64[i] = (i % 251) * 0.25
+    i32[i] = (i * 17) & 1023
+  }
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < iters; i++) {
+    let s = 0
+    for (let j = 0; j < f64.length; j++) s += f64[j]
+    for (let j = 0; j < i32.length; j++) s += i32[j]
+    h = (h ^ (s | 0)) * 0x01000193 | 0
+  }
+  return h >>> 0
+}`,
+  },
+  bitwise: {
+    name: 'bitwise mix',
+    expr: 'mix(128)',
+    src: `// Pure integer bitwise ops — shifts, rotates, imul.
+// Hash kernel: every iteration scrambles a 64k state buffer.
+
+export let mix = (rounds) => {
+  let n = 65536
+  let state = new Int32Array(n)
+  let s = 0x1234abcd | 0
+  for (let i = 0; i < n; i++) {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    state[i] = s
+  }
+  for (let r = 0; r < rounds; r++) {
+    for (let i = 0; i < n; i++) {
+      let x = state[i] | 0
+      x ^= x << 7
+      x ^= x >>> 9
+      x = Math.imul(x, 1103515245) + 12345
+      state[i] = x ^ (x >>> 16)
+    }
+  }
+  return state[0] >>> 0
+}`,
+  },
+  tokenizer: {
+    name: 'tokenizer scan',
+    expr: 'tokenize(512)',
+    src: `// Branch-heavy lexical scan — classifies each character as
+// digit, identifier, punctuation, or whitespace. Mixes integer and
+// string operations in a tight loop.
+
+export let tokenize = (repeat) => {
+  let base = 'let alpha_12 = beta + 12345; if (alpha_12 >= 99) { total = total + alpha_12; }\\n'
+  let src = ''
+  for (let i = 0; i < repeat; i++) src = src + base
+  let n = src.length
+
+  let isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95
+
+  let h = 0x811c9dc5 | 0
+  let number = 0
+  let inNumber = 0
+  let inIdent = 0
+  let tokens = 0
+  for (let i = 0; i < n; i++) {
+    let c = src.charCodeAt(i)
+    if (c >= 48 && c <= 57) {
+      number = ((number * 10) + (c - 48)) | 0
+      inNumber = 1
+    } else {
+      if (inNumber) { h = (h ^ number) * 0x01000193 | 0; tokens++; number = 0; inNumber = 0 }
+      if (isAlpha(c)) {
+        if (!inIdent) { h = (h ^ c) * 0x01000193 | 0; tokens++ }
+        inIdent = 1
+      } else {
+        if (c > 32) { h = (h ^ c) * 0x01000193 | 0; tokens++ }
+        inIdent = 0
+      }
+    }
+  }
+  if (inNumber) { h = (h ^ number) * 0x01000193 | 0; tokens++ }
+  return ((h ^ tokens) * 0x01000193) >>> 0
+}`,
+  },
+  callback: {
+    name: 'callback map',
+    expr: 'mapReduce(64)',
+    src: `// Closure-heavy workload — array.map followed by dense reduction.
+// Tests closure allocation, inlining, and fusion.
+
+export let mapReduce = (iters) => {
+  let a = []
+  let n = 4096
+  for (let i = 0; i < n; i++) a.push((i % 97) - 48)
+
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < iters; i++) {
+    let b = a.map(x => x * 2 + i)
+    for (let j = 0; j < b.length; j++) h = (h ^ (b[j] | 0)) * 0x01000193 | 0
+  }
+  return h >>> 0
+}`,
+  },
+  aos: {
+    name: 'AoS to SoA',
+    expr: 'transform(64)',
+    src: `// Array-of-Structs to Struct-of-Arrays transformation.
+// Reads object properties, writes typed arrays — mixed shape access.
+
+export let transform = (iters) => {
+  let n = 16384
+  let rows = []
+  for (let i = 0; i < n; i++) rows.push({ x: i * 0.5, y: i + 1, z: (i & 7) - 3 })
+
+  let xs = new Float64Array(n)
+  let ys = new Float64Array(n)
+  let zs = new Float64Array(n)
+
+  for (let r = 0; r < iters; r++) {
+    for (let i = 0; i < rows.length; i++) {
+      let p = rows[i]
+      xs[i] = p.x + p.y * 0.25 + r
+      ys[i] = p.y - p.z * 0.5
+      zs[i] = p.z + p.x * 0.125
+    }
+  }
+  return xs[0] + ys[0] + zs[0]
+}`,
+  },
+  mandelbrot: {
+    name: 'mandelbrot escape',
+    expr: 'render(256)',
+    src: `// Mandelbrot set escape-time algorithm — the classic floatbench.
+// Per-pixel iteration: z := z² + c until |z|² > 4 or max_iter.
+
+export let render = (size) => {
+  let out = new Uint32Array(size * size)
+  let x0 = -2.0, x1 = 0.5
+  let y0 = -1.25, y1 = 1.25
+  let maxIter = 256
+  let dx = (x1 - x0) / size
+  let dy = (y1 - y0) / size
+
+  for (let py = 0; py < size; py++) {
+    let cy = y0 + py * dy
+    for (let px = 0; px < size; px++) {
+      let cx = x0 + px * dx
+      let zx = 0, zy = 0, i = 0
+      while (i < maxIter) {
+        let x2 = zx * zx, y2 = zy * zy
+        if (x2 + y2 > 4.0) break
+        zy = 2 * zx * zy + cy
+        zx = x2 - y2 + cx
+        i++
+      }
+      out[py * size + px] = i
+    }
+  }
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < out.length; i += 128) h = (h ^ out[i]) * 0x01000193 | 0
+  return h >>> 0
+}`,
+  },
+  json: {
+    name: 'JSON parse',
+    expr: 'parseWalk(512)',
+    src: `// JSON parsing + object traversal. Static literal folded at compile time;
+// use 'let SRC' (not const) to force runtime parsing on every iteration.
+
+let SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20}],"meta":{"scale":7,"bias":11}}'
+
+export let parseWalk = (iters) => {
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < iters; i++) {
+    let o = JSON.parse(SRC)
+    let items = o.items
+    let s = o.meta.bias
+    for (let j = 0; j < items.length; j++) {
+      let it = items[j]
+      s += it.id * o.meta.scale + it.kind + it.value
+    }
+    h = (h ^ (s | 0)) * 0x01000193 | 0
+  }
+  return h >>> 0
+}`,
+  },
+  sort: {
+    name: 'heapsort',
+    expr: 'sort(8192)',
+    src: `// In-place heapsort — comparison-heavy, no SIMD.
+// Tests branch prediction and swap operations.
+
+export let sort = (n) => {
+  let a = new Float64Array(n)
+  let s = 0x9e3779b9 | 0
+  for (let i = 0; i < n; i++) {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    a[i] = ((s >>> 0) / 4294967296)
+  }
+
+  let heapify = (n) => {
+    for (let root = (n >> 1) - 1; root >= 0; root--) {
+      let i = root
+      let child = 2 * i + 1
+      while (child < n) {
+        if (child + 1 < n && a[child] < a[child + 1]) child++
+        if (a[i] >= a[child]) break
+        let t = a[i]; a[i] = a[child]; a[child] = t
+        i = child
+        child = 2 * i + 1
+      }
+    }
+  }
+
+  heapify(n)
+  for (let end = n - 1; end > 0; end--) {
+    let t = a[0]; a[0] = a[end]; a[end] = t
+    let i = 0
+    let child = 1
+    while (child < end) {
+      if (child + 1 < end && a[child] < a[child + 1]) child++
+      if (a[i] >= a[child]) break
+      let u = a[i]; a[i] = a[child]; a[child] = u
+      i = child
+      child = 2 * i + 1
+    }
+  }
+
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < a.length; i += 256) {
+    let v = a[i] * 1000000
+    h = (h ^ (v | 0)) * 0x01000193 | 0
+  }
+  return h >>> 0
+}`,
+  },
+  crc32: {
+    name: 'CRC-32 hash',
+    expr: 'hash(16384, 220)',
+    src: `// CRC-32 (IEEE, reflected) table-driven hash over a byte buffer.
+// Pure integer kernel: Uint8Array reads, Int32Array LUT, bit ops.
+
+export let hash = (n, iters) => {
+  let buf = new Uint8Array(n)
+  let table = new Int32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let c = i
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+    table[i] = c | 0
+  }
+  let x = 0x12345678 | 0
+  for (let i = 0; i < n; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) | 0
+    buf[i] = (x >>> 16) & 0xff
+  }
+
+  let crc32 = (buf) => {
+    let c = 0xffffffff | 0
+    for (let i = 0; i < n; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+    return (c ^ 0xffffffff) >>> 0
+  }
+
+  let h = 0
+  for (let it = 0; it < iters; it++) {
+    h = (h ^ crc32(buf)) | 0
+    buf[it % n] = (buf[it % n] + 1) & 0xff
+  }
+  return h >>> 0
+}`,
+  },
+  dotprod: {
+    name: 'dot product',
+    expr: 'dot(8192, 200)',
+    src: `// Dot-product reduction — multiply-accumulate, the fundamental DSP kernel.
+// Latency-bound dependency chain; multi-accumulator vectorization earns its keep.
+
+export let dot = (n, iters) => {
+  let a = new Float64Array(n)
+  let b = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    a[i] = (i % 13) - 6
+    b[i] = ((i * 7) % 11) - 5
+  }
+
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < iters; i++) {
+    let s = 0
+    for (let j = 0; j < n; j++) s += a[j] * b[j]
+    h = (h ^ (s | 0)) * 0x01000193 | 0
+  }
+  return h >>> 0
 }`,
   },
   lint: {

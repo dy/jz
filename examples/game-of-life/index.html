@@ -45,14 +45,16 @@ ctx.imageSmoothingEnabled = false;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/game-of-life", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
+const h = hud({ kind: "jz", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
 
-let engine; // current engine — interaction handlers below read this
+let engine; // current engine
+let mem;    // shared buffer (input + output halves)
+const aliveVal = ((rgb2bgr(RGB_ALIVE) | 1) | 0xff000000) >>> 0;
 let gen = 0;
 async function start(kind) {
   const my = ++gen;
   engine = await loadEngine(kind, urls);
-  const mem = engine.init(width, height, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT);
+  mem = engine.init(width, height, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT);
 
   (function loop() {
     if (my !== gen) return;
@@ -68,19 +70,32 @@ async function start(kind) {
 }
 start(h.kind);
 
-// Click or drag to seed the current row and column with live cells
-let down = false;
-for (const ty of ["mousedown", "touchstart"]) canvas.addEventListener(ty, () => down = true);
-for (const ty of ["mouseup", "touchend"]) document.addEventListener(ty, () => down = false);
-for (const ty of ["mousemove", "touchmove", "mousedown"]) {
-  canvas.addEventListener(ty, e => {
-    if (!down) return;
-    const loc = e.touches ? (e.touches.length > 1 ? null : e.touches[0]) : e;
-    if (!loc) return;
-    const rect = canvas.getBoundingClientRect();
-    engine.fill((loc.clientX - rect.left) * width / rect.width | 0, (loc.clientY - rect.top) * height / rect.height | 0, 0.5);
-  });
+// Pen drawing: click or drag to paint live cells into the output half.
+const setCell = (x, y) => {
+  if (x < 0 || x >= width || y < 0 || y >= height) return
+  mem[size + y * width + x] = aliveVal
 }
+const pen = (cx, cy, r = 2) => {
+  const x0 = Math.max(0, cx - r), x1 = Math.min(width - 1, cx + r)
+  const y0 = Math.max(0, cy - r), y1 = Math.min(height - 1, cy + r)
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setCell(x, y)
+}
+const posFromEvent = (e) => {
+  const rect = canvas.getBoundingClientRect()
+  return {
+    x: ((e.clientX - rect.left) * width / rect.width) | 0,
+    y: ((e.clientY - rect.top) * height / rect.height) | 0,
+  }
+}
+let drawing = false
+canvas.addEventListener('pointerdown', e => {
+  drawing = true
+  try { canvas.setPointerCapture(e.pointerId) } catch {}
+  const p = posFromEvent(e); pen(p.x, p.y)
+})
+canvas.addEventListener('pointermove', e => { if (drawing) { const p = posFromEvent(e); pen(p.x, p.y) } })
+canvas.addEventListener('pointerup', e => { drawing = false; try { canvas.releasePointerCapture(e.pointerId) } catch {} })
+canvas.addEventListener('pointerleave', () => { drawing = false })
 </script>
 </body>
 </html>

@@ -23,7 +23,7 @@ html { scroll-behavior: smooth; }
 body { background: var(--paper); color: var(--ink); font-family: var(--sans);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
-header { background: var(--band); color: var(--paper); display: flex; align-items: center; padding: 30px var(--padx) 28px; }
+header { background: var(--band); color: var(--paper); display: flex; align-items: center; min-height: 44px; padding: 0 var(--padx); }
 .wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
 .wordmark .mark { font-weight: 700; color: #fff; }
 .wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
@@ -107,10 +107,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 .card h3 .fam[data-tip] { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
 .card h3 .size { font-family: var(--mono); font-weight: 400; font-size: 10.5px; color: var(--mid); }
-.card h3 .play { margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+.card h3 .play { display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; font-weight: 400; letter-spacing: .02em;
   text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--mid); }
-.card h3 .play ~ .play { margin-left: 14px; }
+.card h3 .play ~ .play { margin-left: 10px; }
 .card h3 .play .ico { display: block; }
 .card h3 .play:hover { background: none; color: var(--ink); }
 .card .row { grid-template-columns: 124px 1fr 132px; font-size: 11.5px; padding: 2.5px 0; }
@@ -178,8 +178,8 @@ const $ = id => document.getElementById(id)
 // native: "what do I give up by not rewriting?"  interp: "why not embed an engine?"
 // Invocation details live in the methodology table, not in row labels.
 const BANDS = [
-  ['js', 'Run as JS'],
-  ['wasm', 'Compile to WASM'],
+  ['js', 'JS'],
+  ['wasm', 'JS -> WASM'],
   ['native', 'Native (Reference only)'],
   ['interp', 'Interpreter (Reference only)'],
 ]
@@ -291,7 +291,7 @@ const localGeo = () => {
   const rs = []
   for (const r of Object.values(local))
     if (r.js?.medianUs && r.jzwasm?.medianUs && r.js.parity !== 'DIFF') rs.push(r.js.medianUs / r.jzwasm.medianUs)
-  return rs.length ? { label: `${ENGINE} — JS`, sub: nCases(rs.length), geo: geo(rs) } : null
+  return rs.length ? { label: 'JS', sub: nCases(rs.length), geo: geo(rs) } : null
 }
 
 const renderGeomean = () => {
@@ -316,7 +316,7 @@ const renderGeomean = () => {
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
   }
   if (yours) {
-    html += `<div class="subdiv">your machine — ${esc(ENGINE)}, vs JZ</div>`
+    html += `<div class="subdiv">JZ (your machine)</div>`
     const yr = [{ label: 'JZ', sub: yours.sub, geo: 1, solid: true, strong: true }, { label: yours.label, geo: yours.geo }]
     for (const r of yr)
       html += rowHtml({ label: r.label, sub: r.sub, rel: r.geo, maxLin, text: fmtX(r.geo), solid: r.solid, strong: r.strong })
@@ -377,7 +377,7 @@ const cardRows = c => {
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
   const lrows = l && (l.js || l.jzwasm)
-    ? [['jzwasm', 'JZ'], ['js', ENGINE]].filter(([k]) => l[k]?.medianUs).map(([k, label]) => ({ k, label, ...l[k] }))
+    ? [['jzwasm', 'JZ'], ['js', 'JS']].filter(([k]) => l[k]?.medianUs).map(([k, label]) => ({ k, label, ...l[k] }))
     : []
   const lbase = lrows.length ? Math.min(...lrows.map(r => r.medianUs)) : 1
   // one shared scale across reference + local rows, so an equal ratio is an equal
@@ -388,7 +388,7 @@ const cardRows = c => {
     text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, solid: r.strong, strong: r.strong, parity: r.parity,
   })).join('')
   if (lrows.length) {
-    html += `<div class="subdiv">your machine — ${esc(ENGINE)}</div>`
+    html += `<div class="subdiv">JZ (your machine)</div>`
     for (const r of lrows)
       html += rowHtml({ label: r.label, sub: '',
         rel: r.medianUs / lbase, maxLin,
@@ -407,7 +407,7 @@ const renderCards = () => {
       : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
-      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
+      <h3>${esc(c.id)}${play}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}</h3>
       ${cardRows(c)}
     </div>`
   }
@@ -503,35 +503,15 @@ const runCase = async cid => {
   renderAll()
 }
 
-const showCopy = () => {
-  if (!Object.keys(local).length || $('copyMd')) return
-  $('globalstat').insertAdjacentHTML('afterend', ` <a href="#" id="copyMd">copy my results</a>`)
-  $('copyMd').addEventListener('click', e => { e.preventDefault(); copyMarkdown() })
-}
-
 $('runAll').addEventListener('click', async () => {
   $('runAll').disabled = true
   for (let i = 0; i < CORPUS.length; i++) {
     $('globalstat').textContent = `${i + 1}/${CORPUS.length} — ${CORPUS[i].id}`
     await runCase(CORPUS[i].id)
   }
-  $('globalstat').textContent = 'done — '
+  $('globalstat').textContent = 'done'
   $('runAll').disabled = false
-  showCopy()
 })
-
-// ── copy results as a markdown table (for forum comments) ───────────────────
-const copyMarkdown = async () => {
-  const rows = [`### jz bench — ${ENGINE}, ${navigator.platform || 'unknown'} ([rerun](${location.href}))`,
-    '', `| case | ${ENGINE} (JS) | JZ artifact |`, '| --- | ---: | ---: |']
-  for (const [cid, r] of Object.entries(local)) {
-    const f = x => x ? fmtMs(x.medianUs) + (x.parity === 'DIFF' ? ' ⚠DIFF' : '') : '—'
-    rows.push(`| ${cid} | ${f(r.js)} | ${f(r.jzwasm)} |`)
-  }
-  rows.push('', `reference: ${DATA.meta.host.cpu}, ${DATA.meta.date}, jz ${DATA.meta.versions.jz}`)
-  await navigator.clipboard.writeText(rows.join('\n'))
-  $('globalstat').textContent = 'copied — paste anywhere markdown works '
-}
 
 // repl deep-link encoder (per-case "repl →" buttons)
 const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')

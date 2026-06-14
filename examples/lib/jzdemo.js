@@ -10,14 +10,89 @@
 
 import { instantiate } from '../../interop.js'
 
-// Gallery order — drives the prev/next nav (wraps around). Grouped Life · Fields ·
-// Geometry · Audio, three to a row for a 3×4 README grid.
+// Gallery order — drives the edge chevrons (wraps around). Visual examples only;
+// audio is handled separately in the floatbeat playground.
 export const EXAMPLES = [
   'game-of-life', 'lenia', 'diffusion',
   'interference', 'plasma', 'chladni',
   'mandelbrot', 'attractors', 'raymarcher',
-  'rfft', 'zzfx', 'jukebox',
 ]
+
+// Inject the shared top navigation bar for every example page.
+// Matches examples/index.html: dark band, geometric wordmark, nav links.
+const addMasthead = (name) => {
+  if (document.querySelector('.jz-masthead')) return
+  const header = document.createElement('header')
+  header.className = 'jz-masthead'
+  header.innerHTML = `
+    <a class="wordmark" href="../" aria-label="back to all examples">
+      <span class="mark">JZ</span><span class="sub">examples</span><span class="sep">–</span><span class="page">${name}</span>
+    </a>
+    <nav>
+      <a href="../../repl/">repl</a>
+      <a href="../../bench/">bench</a>
+      <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </nav>
+    <style>
+      .jz-masthead {
+        position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+        background: #0a0a0a; color: #fff;
+        display: flex; align-items: center; gap: 16px;
+        min-height: 44px;
+        padding: 0 16px;
+        font-family: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+      }
+      .jz-masthead .wordmark { font-size: 19px; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
+      .jz-masthead .wordmark .mark { font-weight: 700; color: #fff; }
+      .jz-masthead .wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
+      .jz-masthead .wordmark .sep { color: #8a8a8a; margin-left: .4em; margin-right: -.05em; }
+      .jz-masthead .wordmark .page { margin-left: .35em; color: #8a8a8a; }
+      .jz-masthead .wordmark:hover .sub { color: #fff; }
+      .jz-masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+      .jz-masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+      .jz-masthead nav a:hover { opacity: 1; }
+      .jz-masthead .gh { display: flex; }
+      @media (max-width: 520px) {
+        .jz-masthead { gap: 10px; padding: 0 12px; }
+        .jz-masthead .wordmark { font-size: 15px; }
+        .jz-masthead nav { gap: 12px; }
+        .jz-masthead nav a { font-size: 11px; }
+      }
+    </style>`
+  document.body.insertBefore(header, document.body.firstChild)
+}
+
+// Big left/right chevrons for switching examples without leaving the demo area.
+const addEdgeNav = (name) => {
+  if (document.querySelector('.jz-edge')) return
+  const at = EXAMPLES.indexOf(name)
+  if (at < 0) return
+  const prev = at > 0 ? EXAMPLES[at - 1] : EXAMPLES[EXAMPLES.length - 1]
+  const next = at < EXAMPLES.length - 1 ? EXAMPLES[at + 1] : EXAMPLES[0]
+  const wrap = document.createElement('div')
+  wrap.className = 'jz-edge'
+  wrap.innerHTML = `
+    <a class="jz-edge-prev" href="../${prev}/" aria-label="previous example: ${prev}">‹</a>
+    <a class="jz-edge-next" href="../${next}/" aria-label="next example: ${next}">›</a>
+    <style>
+      .jz-edge-prev, .jz-edge-next {
+        position: fixed; top: 44px; bottom: 0; width: 44px; z-index: 150;
+        display: flex; align-items: center; justify-content: center;
+        color: rgba(255,255,255,.35); background: rgba(0,0,0,.12);
+        font-size: 32px; line-height: 1; text-decoration: none;
+        transition: color .18s, background .18s; user-select: none;
+      }
+      .jz-edge-prev { left: 0; }
+      .jz-edge-next { right: 0; }
+      .jz-edge-prev:hover, .jz-edge-next:hover { color: rgba(255,255,255,.92); background: rgba(0,0,0,.35); }
+      @media (max-width: 520px) {
+        .jz-edge-prev, .jz-edge-next { width: 32px; font-size: 24px; }
+      }
+    </style>`
+  document.body.appendChild(wrap)
+}
 
 // URLs are page-relative; resolve against the document so dynamic import() (which
 // would otherwise resolve relative to this module) and fetch() agree.
@@ -45,34 +120,33 @@ const FONT_URL = new URL('./linefont.woff2', import.meta.url).href
 // literal text (anything containing a newline). Adds a `</>` toggle that overlays it.
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
 export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true }) => {
+  if (nav) { addMasthead(nav); addEdgeNav(nav) }
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
       @font-face { font-family: linefont; font-display: block; src: url("${FONT_URL}") format('woff2'); }
-      .jz-hud { position: fixed; top: 12px; right: 12px; z-index: 100;
+      .jz-hud { position: fixed; bottom: 12px; right: 12px; z-index: 100;
         font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        color: #111; background: rgba(255,255,255,.92);
-        border: 1px solid #0002; padding: 10px 12px;
-        box-shadow: 0 4px 16px #0002; user-select: none; width: 168px; }
+        color: #eee; background: rgba(10,10,10,.92);
+        border: 1px solid rgba(255,255,255,.12); padding: 10px 12px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.3); user-select: none; width: 168px; }
       .jz-hud .fps { font-size: 22px; letter-spacing: -.5px; }
       .jz-hud .fps small { font-size: 11px; opacity: .5; font-weight: 500; }
       .jz-hud .spark { display: block; height: 34px; margin: 4px 0 2px;
         font-family: linefont; font-variation-settings: 'wght' 260, 'wdth' 100;
-        font-size: 34px; line-height: 34px; color: #111; overflow: hidden;
+        font-size: 34px; line-height: 34px; color: #fff; overflow: hidden;
         white-space: nowrap; word-break: break-all; }
-      .jz-hud .ms { margin-top: 2px; font-size: 12px; }
-      .jz-hud .ms b { font-weight: 700; }
-      .jz-hud .ms small { opacity: .5; font-weight: 500; }
+      .jz-hud .ms { margin-top: 2px; font-size: 12px; color: #aaa; }
+      .jz-hud .ms b { font-weight: 700; color: #fff; }
+      .jz-hud .ms small { opacity: .7; font-weight: 500; }
       .jz-hud .seg { display: flex; margin-top: 8px;
-        border: 1px solid #0002; overflow: hidden; }
+        border: 1px solid rgba(255,255,255,.18); overflow: hidden; }
       .jz-hud .seg button { flex: 1; border: 0; background: transparent;
         font: inherit; padding: 5px 12px; cursor: pointer; color: #888; }
-      .jz-hud .seg button.on { background: #111; color: #fff; }
-      .jz-hud .gh { position: absolute; top: 9px; right: 11px; color: #111; opacity: .35; display: inline-flex; }
-      .jz-hud .gh:hover { opacity: 1; }
-      .jz-hud .cv { position: absolute; top: 9px; right: 33px; color: #111; opacity: .35; display: inline-flex; cursor: pointer; }
-      .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #111; }
-      .jz-code { position: fixed; left: 12px; top: 12px; bottom: 12px; z-index: 99; display: none;
+      .jz-hud .seg button.on { background: #eee; color: #111; }
+      .jz-hud .cv { position: absolute; top: 8px; right: 10px; color: #888; opacity: .8; display: inline-flex; cursor: pointer; }
+      .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #fff; }
+      .jz-code { position: fixed; left: 12px; top: 56px; bottom: 12px; z-index: 99; display: none;
         max-width: min(560px, 46vw); background: rgba(7,7,12,.93); border: 1px solid #ffffff1f;
         box-shadow: 0 8px 28px #0007; }
       .jz-code.show { display: block; }
@@ -89,15 +163,8 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         border: 0; background: transparent; color: #aaa; font: 18px/22px ui-monospace, Menlo, monospace;
         cursor: pointer; padding: 0; }
       .jz-code-x:hover { color: #fff; background: rgba(255,255,255,.12); }
-      .jz-hud .nav { display: flex; align-items: center; justify-content: space-between; margin: -1px 0 7px; padding-right: 42px; }
-      .jz-hud .nav b { font-weight: 700; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .jz-hud .nav button { border: 0; background: transparent; font: inherit; font-size: 18px; line-height: 1;
-        color: #888; cursor: pointer; padding: 0 2px; }
-      .jz-hud .nav button:hover { color: #111; }
     </style>
     <div class="jz-hud">
-      ${nav ? `<div class="nav"><button id="jz-prev" title="previous example">‹</button><b>${nav}</b><button id="jz-next" title="next example">›</button></div>` : ''}
-      ${src ? `<a class="gh" href="${src}" target="_blank" rel="noopener" title="source" aria-label="source"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>` : ''}
       ${code ? `<span class="cv" id="jz-cv" title="view source" aria-label="view source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span>` : ''}
       ${meter ? `<div class="fps"><span id="jz-fps">··</span> <small>FPS</small></div>
       <div class="spark" id="jz-spark"></div>
@@ -125,14 +192,6 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     if (b.dataset.k === kind) return
     kind = b.dataset.k; paint(); ms = 0; onSwitch?.(kind)
   })
-
-  // Prev/next gallery nav — wraps around EXAMPLES, jumps to the sibling example dir.
-  if (nav) {
-    const at = EXAMPLES.indexOf(nav)
-    const go = (d) => { if (at >= 0) location.href = '../' + EXAMPLES[(at + d + EXAMPLES.length) % EXAMPLES.length] + '/' }
-    el.querySelector('#jz-prev').onclick = () => go(-1)
-    el.querySelector('#jz-next').onclick = () => go(1)
-  }
 
   // Source overlay: lazy-load `code` (a URL to fetch, or literal text) on first open.
   const cvBtn = el.querySelector('#jz-cv'), codeBox = el.querySelector('#jz-code')
