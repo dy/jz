@@ -599,7 +599,13 @@ const isStrLiteral = (n) => Array.isArray(n) && (n[0] === 'str' || n[0] === 'tem
  *   - captured closures: a non-shadowing inner arrow captures the binding by
  *     reference, so its body's uses count — we recurse instead of rejecting.
  *     Catches floatbeat helpers `let s=(f)=>…t…` that read the param numerically. */
-function paramAllUsesNumeric(body, name, _seen = new Set()) {
+// requireProof=true (default): the param has a ToNumber-FORCING use (PROVES numeric).
+// requireProof=false: the param merely has NO string-requiring use (numeric-COMPATIBLE).
+// Forwarding recursions use the latter — a callee receiving the param need only be
+// string-free (e.g. fbm's `ph`, used additively inside Math.sin), since the OUTER
+// param earns its own proof from its own uses; requiring the callee be self-proven
+// wrongly rejected forwards into additive-only params.
+function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof = true) {
   if (body == null) return false
   // Local closure defs (`let f = (p,…) => …`) so a call `f(name)` can be judged by
   // f's own param numericity (see the call-arg handler in the walk).
@@ -626,6 +632,10 @@ function paramAllUsesNumeric(body, name, _seen = new Set()) {
   let ok = true, proven = false
   // A param in a numeric-operand slot is a PROVING use; recurse into a non-param sub-expr.
   const numOperand = (n) => { if (names.has(n)) proven = true; else walk(n) }
+  // Positional call args, flattening the `(, a b c)` node multi-arg calls parse to —
+  // without this a forward like `fbm(x, y, t, …)` never matched its param positions.
+  const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
+  const callArgList = (n) => n.slice(2).flatMap(flat1)
   const walk = (node) => {
     if (!ok) return
     if (typeof node === 'string') { if (names.has(node)) ok = false; return }  // bare use → reject
@@ -677,12 +687,30 @@ function paramAllUsesNumeric(body, name, _seen = new Set()) {
     // could flow in). Covers heapsort's `heapify(n)` and crc32's `crc32(buf)`.
     if (op === '()' && typeof node[1] === 'string' && closures.has(node[1]) && !_seen.has(node[1])) {
       const cl = closures.get(node[1])
-      for (let i = 2; i < node.length; i++) {
-        if (!names.has(node[i])) { walk(node[i]); continue }
-        const param = cl.params[i - 2]
-        if (param == null || !paramAllUsesNumeric(cl.body, param, new Set([..._seen, node[1]]))) { ok = false; return }
+      const args = callArgList(node)
+      for (let i = 0; i < args.length; i++) {
+        if (!names.has(args[i])) { walk(args[i]); continue }
+        const param = cl.params[i]
+        if (param == null || !paramAllUsesNumeric(cl.body, param, new Set([..._seen, node[1]]), false)) { ok = false; return }
       }
       return
+    }
+    // Same forwarding judgement for a call to a MODULE-LEVEL user function (sibling,
+    // not a body-local closure): `frame` passing its param into a helper `fbm(x,y,t,…)`.
+    // Without this the bare arg fell through and rejected, leaving an exported numeric
+    // param (plasma/raymarcher's `t`) unproven → per-pixel `__to_num` + polymorphic-`+`
+    // string forks. Judge by the callee param's own numericity (recursive, cycle-guarded).
+    if (op === '()' && typeof node[1] === 'string' && !_seen.has(node[1])) {
+      const fn = ctx.func.map?.get(node[1])
+      if (fn && fn.body && !fn.raw && Array.isArray(fn.sig?.params) && !fn.rest) {
+        const args = callArgList(node)
+        for (let i = 0; i < args.length; i++) {
+          if (!names.has(args[i])) { walk(args[i]); continue }
+          const p = fn.sig.params[i]
+          if (!p || !paramAllUsesNumeric(fn.body, p.name, new Set([..._seen, node[1]]), false)) { ok = false; return }
+        }
+        return
+      }
     }
     // `Math.f(...)` ToNumbers every argument (Math operates on numbers), so a bare
     // param in any arg slot is a PROVING numeric use — same contract as `*`/`-`.
@@ -720,7 +748,7 @@ function paramAllUsesNumeric(body, name, _seen = new Set()) {
     for (let i = 1; i < node.length; i++) walk(node[i])  // bare param reaching here → rejected above
   }
   walk(body)
-  return ok && proven
+  return requireProof ? (ok && proven) : ok
 }
 
 // String methods whose receiver MUST be a string — their presence proves the

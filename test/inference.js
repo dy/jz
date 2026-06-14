@@ -425,6 +425,34 @@ test('paramAllUsesNumeric: forwarding to a string-using closure stays polymorphi
     'string forwarded to a string-using closure is preserved')
 })
 
+test('paramAllUsesNumeric: multi-arg forward to a MODULE helper proves the param', () => {
+  // The plasma/raytrace shape: an exported `t` proven by `t * 0.6` is ALSO passed,
+  // amid several args, into a sibling module helper — `fbm(x, y, t, …)`. Two gaps
+  // conspired: (1) multi-arg calls parse to one flat `(, a b c)` node, so the
+  // forward never matched arg POSITIONS and rejected the param; (2) only body-local
+  // closures (not module functions) were forwarded into at all. With both fixed `t`
+  // proves numeric — no per-pixel `__to_num`, no polymorphic-`+` string fork inside
+  // `Math.sin(2*y + t)`. Plasma 1.0× → 1.75×, raytrace → 1.32× over V8.
+  // `g` takes 3 args and is called twice (so it stays a real function, not inlined),
+  // exercising the flat `(, …)` multi-arg node + the module-forward path. The loop
+  // stores into a global buffer (plasma's `px[j]=` shape) — that's what defeats the
+  // simpler expression-level numeric inference, leaving paramAllUsesNumeric the
+  // deciding proof; the comma-bugged forward then rejected `t` despite its `t*0.6`.
+  const wat = jz.compile(`
+    let W = 0, px
+    export let init = (n) => { W = n; px = new Int32Array(n); return px }
+    let g = (a, b, ph) => Math.sin(a * 2.0 + ph) + Math.sin(b * 4.0 + ph) + Math.sin(a * 8.0 + ph)
+                        + Math.sin(a * 16.0 + ph) + Math.sin(b * 32.0 + ph)
+    export let frame = (t) => {
+      let i = 0, t6 = t * 0.6, t3 = t * 0.3
+      while (i < W) { let y = i * 0.01; px[i] = (g(y, y, t) + g(y, y, t6) + g(y, y, t3) + Math.sin(2.0 * y + t)) | 0; i = i + 1 }
+    }
+  `, { wat: true })
+  const fr = wat.match(/\(func \$frame[\s\S]*?\n  \)/)?.[0] || ''
+  is(count(fr, /\$__to_num\b/g), 0, 'multi-arg module-forward proves t — no per-iter coercion')
+  is(count(fr, /\$__str_concat\b/g), 0, 'numeric `+` — no string-concat fork')
+})
+
 test('paramAllUsesNumeric: bare Math.* + `+` prove a numeric param inside a nested loop', () => {
   // The interference example: an exported `tick` used as `Math.sin(tick)` (bare),
   // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that
@@ -580,13 +608,23 @@ test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
 test('inferModuleLetTypes: global aliased from a typed-returning user fn', () => {
   // `a = mk(n)` — globals are typed before inlining runs, so the call is opaque to
   // the forward pass. The `@ret:mk` virtual node carries mk's return ctor across.
-  const wat = jz.compile(`
+  // BOTH arrow-body forms must anchor @ret: an arrow EXPR-body is the implicit
+  // return (the scope-aware walk only sees explicit `return` nodes, so this arm
+  // needs the enterFn implicit-return capture); a `{}` block uses explicit return.
+  const exprBody = jz.compile(`
     let a
     let mk = (n) => new Float64Array(n)
     export let init = (n) => { a = mk(n) }
     export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + a[i]; i++ } return s }
   `, { wat: true })
-  noFork(wat, 'global from typed-returning fn must be typed')
+  noFork(exprBody, 'global from expr-body typed fn must be typed')
+  const blockBody = jz.compile(`
+    let a
+    let mk = (n) => { return new Float64Array(n) }
+    export let init = (n) => { a = mk(n) }
+    export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + a[i]; i++ } return s }
+  `, { wat: true })
+  noFork(blockBody, 'global from block-body typed fn must be typed')
 })
 
 test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', () => {
@@ -608,6 +646,66 @@ test('inferModuleLetTypes: alias to a NON-typed value stays polymorphic (soundne
     export let f = (i) => a[i]
   `, { wat: true, jzify: true })
   ok(count(wat, FORK) > 0, 'a mixed typed/string global must keep its dynamic read path')
+})
+
+test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays typed (lbm regression)', () => {
+  // The swap temp `s` in `step` (aliases typed `a`) shares its NAME with the loop
+  // counter `s` in `frame` (a number, mutated by `s++`). A name-keyed alias graph
+  // let the numeric `s` poison the typed swap-temp, cascading MIXED into both
+  // buffers — every a[i] fell to runtime __str_idx/__typed_idx dispatch + f64
+  // indices (lbm: 3.9× slower than JS). Scope-qualified keys keep the two `s` apart.
+  const wat = jz.compile(`
+    let a, b
+    export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
+    export let step = (w) => {
+      let i = 0; while (i < w) { b[i] = a[i] * 2.0; i++ }
+      let s = a; a = b; b = s
+    }
+    export let frame = (n) => { let s = 0; while (s < n) { step(8); s++ } }
+  `, { wat: true })
+  noFork(wat, 'a numeric local must not poison a same-named typed swap-temp in another function')
+  ok(/f64\.load\b/.test(wat), 'expected direct f64.load over the swapped buffers')
+})
+
+// ─────────────────────────────────── typed-array index arithmetic stays i32
+//
+// A subscript is truncated to i32 at the memory boundary, so integer index math —
+// including a literal term, the `+ 1` / `(j + 1)` of a bilinear/stencil gather —
+// must compile to i32 ops, never an f64 round-trip (convert_i32 … f64.mul/add …
+// trunc_sat). A prepare-wrapped literal `[null, 1]` used to bail the WHOLE index
+// to f64 (tryI32Index rejected the Array-shaped literal before its int-literal
+// check), dragging marble's hot bilinear sample ~1.6× behind JS.
+test('typed-array index with a literal term stays pure i32 (marble regression)', () => {
+  const wat = jz.compile(`
+    let arr = new Float64Array(64)
+    let W = 8
+    export let gather = (fx, fy) => {
+      let i = fx | 0, j = fy | 0
+      return arr[j*W + i] + arr[j*W + i + 1] + arr[(j+1)*W + i] + arr[(j+1)*W + i + 1]
+    }
+  `, { wat: true })
+  const at = wat.indexOf('(func $gather')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 index truncation in the gather')
+  is(count(fn, /f64\.convert_i32_s/g), 0, 'index terms stay i32 — no i32→f64 widening')
+  ok(count(fn, /i32\.mul\b/g) >= 4, 'each row offset (j*W, (j+1)*W) computed with i32.mul')
+})
+
+test('plain-array index with a literal term stays pure i32 (sibling of marble)', () => {
+  // The non-typed ARRAY read path (module/array.js) computed its index with a bare
+  // `asI32(emit(idx))` — the same f64 round-trip on `a[j*W + x + 1]`. Routed through
+  // emitIndex so integer index math narrows to i32 there too. i32 index leaves
+  // (`jj|0`/`xx|0`) so the only f64 risk would be the index lowering itself.
+  const wat = jz.compile(`
+    export let f = (arr, jj, xx) => {
+      let j = jj | 0, x = xx | 0, W = 4
+      return arr[j*W + x] + arr[j*W + x + 1] + arr[(j+1)*W + x]
+    }
+  `, { wat: true })
+  const at = wat.indexOf('(func $f')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'plain-array index stays i32 — no f64 truncation')
+  is(count(fn, /f64\.convert_i32_s/g), 0, 'plain-array index terms stay i32')
 })
 
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
