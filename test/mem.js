@@ -172,6 +172,7 @@ test('mem.Object: key order independence', async () => {
 })
 
 test('mem.Object: ambiguous schemas throws', async () => {
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
   // { memory: 1 } forces owned memory: the two object literals fold to scalars (their
   // only reads are `a.x`/`b.y`), so nothing lands on the heap and the module is otherwise
   // memoryless — but this test marshals host objects in via the registered schemas, which
@@ -422,6 +423,7 @@ test('shared memory: duplicate schemas not re-added', () => {
 })
 
 test('one-off: inst.memory works without shared memory', () => {
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
   // { memory: 1 } requests owned (non-shared) memory. A ≤8-element array return now
   // comes back as a multi-value tuple with no heap at all, so without the explicit
   // request this module would be memoryless — and there'd be no `inst.memory` to test.

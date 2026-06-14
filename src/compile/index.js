@@ -1464,10 +1464,19 @@ export default function compile(ast, profiler) {
 
   // Populate globals (after __start — const folding may update declarations).
   // Records build IR directly — no WAT-text parse-back.
-  sec.globals.push(...[...ctx.scope.globals].filter(([, g]) => g).map(([n, g]) => ['global', `$${n}`,
-    ...(g.export ? [['export', `"${g.export}"`]] : []),
-    g.mut ? ['mut', g.type] : g.type,
-    [`${g.type}.const`, g.init]]))
+  // The wasm type comes from globalTypes (the canonical name→type map declGlobal
+  // maintains alongside the entry), falling back to the entry's own `.type`. They
+  // are normally identical, but a global whose entry object is later rebuilt (e.g.
+  // hoistConstGlobalInits' `{...g, …}` spread) must not depend on that rebuild
+  // preserving `.type` — globalTypes is the stable source, so an entry that lost
+  // its `.type` still emits a well-typed `(global …)` rather than `(undefined.const)`.
+  sec.globals.push(...[...ctx.scope.globals].filter(([, g]) => g).map(([n, g]) => {
+    const ty = ctx.scope.globalTypes.get(n) ?? g.type
+    return ['global', `$${n}`,
+      ...(g.export ? [['export', `"${g.export}"`]] : []),
+      g.mut ? ['mut', ty] : ty,
+      [`${ty}.const`, g.init]]
+  }))
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)

@@ -145,14 +145,19 @@ export default (ctx) => {
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
-  // No eager `inc('__mkptr', '__alloc')`: string *literals* are constants — SSO
-  // packs ≤4 ASCII bytes inline in the NaN box, longer literals land in a static
-  // data segment at a constant offset, and `mkPtrIR` folds both to an `f64.const`
-  // with no `__mkptr` call. Only *runtime* construction (concat/slice/`String(n)`/
-  // shared-memory pools) touches the heap, and every such op declares its own
-  // `__alloc`/`__mkptr` deps above (or mkPtrIR auto-incs when it emits a call). A
-  // program whose only strings are literals stays heap-free — no allocator, no
-  // memory, no `_alloc`/`_clear` exports.
+  // String *runtime* construction (concat/slice/split/`String(n)`/shared-memory
+  // pools) allocates and boxes pointers, so the module eagerly declares its core
+  // heap deps — same as object.js / typedarray.js / array.js. Several such helpers
+  // (`__str_slice`, `__str_split`, `__str_case`, …) call `$__mkptr`/`$__alloc` only
+  // through nested template thunks (sliceSsoPackWat/internProbeWat); resolveIncludes'
+  // auto-derivation realizes those thunks to recover the dep, but that re-realization
+  // is not reliable under self-host (the jz.wasm kernel re-runs the thunk late, with
+  // intern/heap state the native run never reaches), so a runtime string op would
+  // emit `call $__mkptr` with no definition. Declaring the deps explicitly here makes
+  // inclusion independent of thunk re-realization. Reachability pruning still drops
+  // both for a literals-only module (no `__mkptr`/`__alloc` call site → unreachable),
+  // so a heap-free program stays heap-free — no allocator, no memory, no exports.
+  inc('__mkptr', '__alloc')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else static data ===
 
