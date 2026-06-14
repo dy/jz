@@ -156,12 +156,32 @@ function refreshCallerValTypes(callerCtx) {
   }
 }
 
+// Per-caller typed-elem context: the caller's body-local typed arrays, layered
+// over the module's typed-array globals so a call like `f(globalArr)` resolves
+// `globalArr`'s ctor (inferTypedCtor reads only this map for a bare-name arg).
+// A global is visible UNLESS the caller shadows the name with a param or local
+// of its own — only then could the name denote a non-typed value. Globals are
+// sound to consult: globalTypedElem holds a name only when EVERY assignment to
+// it is the same single typed-array ctor (scope.js invalidates on any conflict),
+// so it can't denote a different kind at the call site.
+function callerTypedElemsFor(func, globalTE) {
+  const local = analyzeBody(func.body).typedElems
+  if (!globalTE.size) return local
+  const shadowed = new Set(analyzeBody(func.body).locals.keys())
+  for (const p of func.sig?.params || []) shadowed.add(p.name)
+  const merged = new Map()
+  for (const [k, v] of globalTE) if (!shadowed.has(k)) merged.set(k, v)
+  for (const [k, v] of local) merged.set(k, v)  // local typed binding shadows the global
+  return merged
+}
+
 function buildCallerTypedCtx() {
   const callerTypedCtx = new Map()
-  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
+  const globalTE = ctx.scope.globalTypedElem || new Map()
+  callerTypedCtx.set(null, globalTE)
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
+    callerTypedCtx.set(func, callerTypedElemsFor(func, globalTE))
   }
   return callerTypedCtx
 }
@@ -1242,13 +1262,9 @@ export function specializeBimorphicTyped(programFacts) {
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
 
-  // Per-caller typedElem map (literal `new TypedArray(N)` bindings inside body).
-  const callerTypedCtx = new Map()
-  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
-  }
+  // Per-caller typedElem map: body-local `new TypedArray(N)` bindings layered
+  // over the module's typed globals (shared with buildCallerTypedCtx).
+  const callerTypedCtx = buildCallerTypedCtx()
   // Per-caller typed-param map: caller's own params that F/G already narrowed
   // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
   const callerTypedParamsCtx = new Map()

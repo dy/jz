@@ -762,6 +762,47 @@ test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter conve
   ok(run.includes('(local $i i32)'), 'loop counter stays i32 against the i32 global bound')
 })
 
+test('codegen: typed-array global base decode hoists out of the stencil loop', () => {
+  if (belowOpt(1)) return  // promoteGlobals + base hoist are optimizations (optimize >= 1)
+  // A typed-array global indexed N times per cell expands each access to a
+  // `(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $_pg)) MASK))` decode of
+  // the NaN-boxed pointer. The promoted snapshot is set once at entry from a
+  // non-volatile global, so that decode is loop-invariant — it must be snapshotted
+  // ONCE, leaving each access a plain `(i32.add base (i32.shl idx 3))`. Regression
+  // for watercolor's Gauss-Seidel pressure solve (5 reads/cell × millions of cells):
+  // 0.91× → 1.02× over V8 once the per-element reinterpret/and/wrap vanished.
+  const wat = compile(`
+    let p, N = 0
+    export let init = (n) => { N = n; p = new Float64Array(n); return p }
+    export let run = () => {
+      let i = 1
+      while (i < N - 1) { p[i] = (p[i-1] + p[i] + p[i+1]) * 0.5; i = i + 1 }
+    }
+  `, { wat: true })
+  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  const loop = run.match(/\(loop[\s\S]*\(br /)?.[0] || ''
+  is((loop.match(/i64\.reinterpret_f64/g) || []).length, 0,
+    'no per-access pointer decode inside the loop — base is hoisted to entry')
+  // Exactly one decode survives: the entry snapshot of the buffer base.
+  is((run.match(/i64\.reinterpret_f64/g) || []).length, 1, 'base decoded once at function entry')
+  // Correctness floor: identical to the same source run as plain JS.
+  const { exports } = jz(`
+    let p, N = 0
+    export let init = (n) => { N = n; p = new Float64Array(n); return p }
+    export let run = () => {
+      let i = 1
+      while (i < N - 1) { p[i] = (p[i-1] + p[i] + p[i+1]) * 0.5; i = i + 1 }
+    }
+  `)
+  let p, N = 0
+  const init = (n) => { N = n; p = new Float64Array(n); return p }
+  const jsRun = () => { let i = 1; while (i < N - 1) { p[i] = (p[i-1] + p[i] + p[i+1]) * 0.5; i = i + 1 } }
+  const wp = exports.init(16); init(16)
+  for (let i = 0; i < 16; i++) p[i] = wp[i] = i * 0.5  // seed both buffers identically
+  exports.run(); jsRun()
+  for (let i = 0; i < 16; i++) ok(Math.abs(wp[i] - p[i]) < 1e-9, `cell ${i}: ${wp[i]} ~ ${p[i]}`)
+})
+
 test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)', () => {
   // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
   // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.

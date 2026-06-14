@@ -1774,12 +1774,31 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  // `(call $__ptr_offset (i64.reinterpret_f64 (global.get $G)))` → G, or null.
-  const siteGlobal = (n) =>
-    Array.isArray(n) && n[0] === 'call' && n[1] === '$__ptr_offset' && n.length === 3
-      && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64'
-      && Array.isArray(n[2][1]) && n[2][1][0] === 'global.get' && typeof n[2][1][1] === 'string'
-      ? n[2][1][1] : null
+  // `(i64.reinterpret_f64 (global.get $G))` → G, or null.
+  const reintGlobal = (n) =>
+    Array.isArray(n) && n[0] === 'i64.reinterpret_f64'
+      && Array.isArray(n[1]) && n[1][0] === 'global.get' && typeof n[1][1] === 'string'
+      ? n[1][1] : null
+  // A stable-pointee global's byte-base reaches us in two interchangeable shapes:
+  //   • forwarding-aware  `(call $__ptr_offset (i64.reinterpret_f64 (global.get $G)))`
+  //   • inline typed read `(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (global.get $G)) MASK))`
+  // The inline form is what typed-array reads emit (a fixed-size typed array never
+  // relocates, so they skip __ptr_offset's forwarding follow — see module/typedarray.js
+  // `typedBase`). For a never-forwarding pointee both yield the identical offset, so
+  // either site hoists to the one `__ptr_offset` entry snapshot. Matching only the
+  // call form left typed-array globals re-decoding the NaN-box per element in stencil
+  // sweeps (watercolor's pressure solve: 5 reads/cell × millions of cells). → G, or null.
+  const siteGlobal = (n) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'call' && n[1] === '$__ptr_offset' && n.length === 3) return reintGlobal(n[2])
+    if (n[0] === 'i32.wrap_i64' && n.length === 2 && Array.isArray(n[1]) && n[1][0] === 'i64.and' && n[1].length === 3) {
+      const mask = n[1][2]
+      if (Array.isArray(mask) && mask[0] === 'i64.const'
+          && (typeof mask[1] === 'string' ? Number(mask[1]) : mask[1]) === LAYOUT.OFFSET_MASK)
+        return reintGlobal(n[1][1])
+    }
+    return null
+  }
 
   // Per-global: static site count AND whether any site sits inside a loop. A
   // single in-loop site is a per-ITERATION resolve (lenia's convolution reads

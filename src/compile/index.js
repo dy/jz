@@ -418,7 +418,11 @@ function analyzeFuncForEmit(func, programFacts) {
       if (p.type === 'f64' && p.ptrKind == null && !p.jsstring
           && !func.defaults?.[p.name] && !ctx.func.boxed?.has(p.name)
           && !ctx.func.localReps?.get(p.name)?.val
-          && paramAllUsesNumeric(body, p.name))
+          // Numeric either by PROOF (ToNumber-forcing uses) or by the export
+          // boundary contract (never used as a string → wrapVal guarantees a
+          // number). The latter catches `acc + cre` float kernels whose `+` would
+          // otherwise pull a per-iteration string-concat fork (julia, floatbeats).
+          && (paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
         updateRep(p.name, { val: VAL.NUMBER })
     }
   }
@@ -565,21 +569,41 @@ function seedLocalIntConsts(body) {
 const PARAM_REASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=',
   '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=', '++', '--'])
 // Binary ops that unconditionally ToNumber BOTH operands, so a bare param operand
-// is a pure numeric use. `+` is excluded (may concatenate); comparisons / `===`
-// are excluded (they branch on type, never coerce a string operand to number).
+// is a pure numeric use. `+` is excluded (may concatenate); `===`/`==` are excluded
+// (they branch on type, never coerce a string operand to number).
 const NUM_BIN_OPS = new Set(['*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>'])
+// Relational ops: jz has no lexicographic compare for an untyped operand — `<`
+// lowers to `f64.lt`, taking the string path only when a *known-string* operand
+// is present (emit.js cmpOp). So a bare param compared against a non-string is a
+// pure numeric use, same as NUM_BIN_OPS. A string-literal counterpart (`x < "m"`)
+// signals string intent and is rejected (handled in the walk below).
+const REL_OPS = new Set(['<', '<=', '>', '>='])
+// A string literal/template operand poisons relational numeric inference.
+const isStrLiteral = (n) => Array.isArray(n) && (n[0] === 'str' || n[0] === 'template')
 
-/** True iff every use of param `name` in `body` is an unconditional-numeric
- *  operand, so coercing it to a number once at entry is observationally exact.
- *  Rejects conservatively: reassignment and any appearance outside a numeric
- *  operator (member/index/call-arg/return/compare/concat). Two transparencies:
+/** True iff every use of param `name` in `body` is numeric-COMPATIBLE *and* at
+ *  least one use is numeric-PROVING — so coercing it to a number once at entry is
+ *  observationally exact. Two verdict levels guard against a polymorphic slot
+ *  passing on absence of evidence:
+ *   - PROVING (`proven=true`): arithmetic / relational / bitwise / unary operand —
+ *     JS ToNumbers these, and a string/array value would have shown a disqualifying
+ *     use elsewhere.
+ *   - COMPATIBLE-ONLY: the length slot of `new TypedArray(x)` / `new ArrayBuffer(x)`.
+ *     A number sizes the buffer, but an array is COPIED and a buffer VIEWED — so a
+ *     bare param here proves nothing. A param used *solely* as `new Float64Array(arr)`
+ *     stays unproven and keeps the polymorphic ctor dispatch (else array-copy is lost).
+ *  Any other appearance (member/call-arg/return/concat/`===`/reassignment) rejects.
+ *  Two transparencies:
  *   - copy aliases: `let x = name` makes `x` carry the same value, so `x`'s uses
  *     must be numeric too (fixpoint-collected). Catches `let T = t` then `…T…`.
  *   - captured closures: a non-shadowing inner arrow captures the binding by
  *     reference, so its body's uses count — we recurse instead of rejecting.
  *     Catches floatbeat helpers `let s=(f)=>…t…` that read the param numerically. */
-function paramAllUsesNumeric(body, name) {
+function paramAllUsesNumeric(body, name, _seen = new Set()) {
   if (body == null) return false
+  // Local closure defs (`let f = (p,…) => …`) so a call `f(name)` can be judged by
+  // f's own param numericity (see the call-arg handler in the walk).
+  const closures = new Map()  // name → { params:[string], body }
   // Fixpoint-collect copy aliases: `let/const x = <name-or-alias>`.
   const names = new Set([name])
   for (let grew = true; grew;) {
@@ -587,15 +611,21 @@ function paramAllUsesNumeric(body, name) {
     const collect = (node) => {
       if (!Array.isArray(node)) return
       if ((node[0] === 'let' || node[0] === 'const') && node.length === 2
-          && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string'
-          && typeof node[1][2] === 'string' && names.has(node[1][2]) && !names.has(node[1][1])) {
-        names.add(node[1][1]); grew = true
+          && Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
+        const init = node[1][2]
+        if (typeof init === 'string' && names.has(init) && !names.has(node[1][1])) { names.add(node[1][1]); grew = true }
+        else if (Array.isArray(init) && init[0] === '=>' && !closures.has(node[1][1])) {
+          const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]   // ['()', p0, p1] → [p0,p1]
+          if (ps.every(p => typeof p === 'string')) closures.set(node[1][1], { params: ps, body: init[2] })
+        }
       }
       for (let i = 1; i < node.length; i++) collect(node[i])
     }
     collect(body)
   }
-  let ok = true
+  let ok = true, proven = false
+  // A param in a numeric-operand slot is a PROVING use; recurse into a non-param sub-expr.
+  const numOperand = (n) => { if (names.has(n)) proven = true; else walk(n) }
   const walk = (node) => {
     if (!ok) return
     if (typeof node === 'string') { if (names.has(node)) ok = false; return }  // bare use → reject
@@ -620,17 +650,114 @@ function paramAllUsesNumeric(body, name) {
     }
     if (PARAM_REASSIGN_OPS.has(op) && names.has(node[1])) { ok = false; return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
-      if (!names.has(node[1])) walk(node[1])
-      if (!names.has(node[2])) walk(node[2])
+      numOperand(node[1]); numOperand(node[2])
       return
     }
-    if (op === '-' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }  // unary negate
-    if (op === '-' && node.length === 3) { if (!names.has(node[1])) walk(node[1]); if (!names.has(node[2])) walk(node[2]); return }
+    if (REL_OPS.has(op) && node.length === 3) {         // relational: numeric unless a known string is present
+      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      numOperand(node[1]); numOperand(node[2])
+      return
+    }
+    // `new TypedArray(x)` / `new ArrayBuffer(x)`: the length argument is ToNumber'd
+    // on the alloc path, but a pointer arg is copied (array) or viewed (buffer).
+    // A bare param in the length slot is numeric-COMPATIBLE but not PROVING — skip it
+    // (no reject, no proof); other args walk normally. A param used *solely* as
+    // `new Float64Array(param)` thus stays unproven → keeps the polymorphic ctor (so
+    // `f(arr)` copies the array instead of mis-sizing a zero buffer).
+    if (op === '()' && typeof node[1] === 'string' && node[1].startsWith('new.')
+        && (node[1].endsWith('Array') || node[1] === 'new.ArrayBuffer')) {
+      for (let i = 2; i < node.length; i++) if (!names.has(node[i])) walk(node[i])
+      return
+    }
+    // Call of a LOCAL closure `f(…name…)`: forwarding the param flows its value into
+    // f's positional param. If that param is itself all-numeric (recursively, with a
+    // cycle guard), `name` in that slot is numeric-COMPATIBLE — neither rejected nor
+    // proving (so a param used *only* as a forwarded arg stays unproven, like the ctor
+    // length slot). Unknown / non-numeric callees fall through and reject (a string
+    // could flow in). Covers heapsort's `heapify(n)` and crc32's `crc32(buf)`.
+    if (op === '()' && typeof node[1] === 'string' && closures.has(node[1]) && !_seen.has(node[1])) {
+      const cl = closures.get(node[1])
+      for (let i = 2; i < node.length; i++) {
+        if (!names.has(node[i])) { walk(node[i]); continue }
+        const param = cl.params[i - 2]
+        if (param == null || !paramAllUsesNumeric(cl.body, param, new Set([..._seen, node[1]]))) { ok = false; return }
+      }
+      return
+    }
+    if (op === '-' && node.length === 2) { numOperand(node[1]); return }  // unary negate
+    if (op === '-' && node.length === 3) { numOperand(node[1]); numOperand(node[2]); return }
     // `u-`/`u+` are the normalized unary minus/plus (prepare rewrites `-x`/`+x`); both ToNumber.
-    if ((op === 'u-' || op === 'u+') && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }
-    if (op === '+' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }  // unary + = ToNumber
-    if (op === '~' && node.length === 2) { if (!names.has(node[1])) walk(node[1]); return }
+    if ((op === 'u-' || op === 'u+') && node.length === 2) { numOperand(node[1]); return }
+    if (op === '+' && node.length === 2) { numOperand(node[1]); return }  // unary + = ToNumber
+    if (op === '~' && node.length === 2) { numOperand(node[1]); return }
     for (let i = 1; i < node.length; i++) walk(node[i])  // bare param reaching here → rejected above
+  }
+  walk(body)
+  return ok && proven
+}
+
+// String methods whose receiver MUST be a string — their presence proves the
+// param is (sometimes) string and disqualifies the boundary-numeric trust.
+const STRING_RECV_METHODS = new Set([
+  'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith', 'toUpperCase',
+  'toLowerCase', 'normalize', 'localeCompare', 'padStart', 'padEnd', 'repeat',
+  'trim', 'trimStart', 'trimEnd', 'split', 'match', 'matchAll', 'replace',
+  'replaceAll', 'substring', 'substr', 'concat', 'indexOf', 'lastIndexOf',
+  'includes', 'slice',
+])
+
+/** True iff no use of exported f64 param `name` REQUIRES it to be a string — so
+ *  the interop boundary contract (`wrapVal` passes a JS number straight to an f64
+ *  param; a string arg is a type misuse already unsupported, returning NaN) makes
+ *  it provably numeric. Weaker than `paramAllUsesNumeric`: that PROVES numericity
+ *  from ToNumber-forcing ops, this DISPROVES stringness so binary `+` (the common
+ *  `accumulator + cre` shape) no longer pessimistically pulls the string-concat
+ *  fork into a pure float kernel. Only sound under the export boundary — never use
+ *  for locals/closures, whose values can genuinely be strings.
+ *
+ *  Disqualifying (string-requiring) uses:
+ *   - `+` with a string-literal/template operand (`"px" + name`) — concat intent
+ *   - a string-receiver method call (`name.charCodeAt(…)`, `name.split(…)`)
+ *   - `name[k]` / `name.length` is NOT disqualifying (works on arrays/typed too,
+ *     but an f64 param is neither — so a member access means the caller passed a
+ *     pointer, out of the f64-number contract; conservatively we reject it)
+ *   - passing `name` to a call / returning it / storing into an aggregate: the
+ *     value escapes where it could be ToString'd; reject conservatively. */
+function paramNeverString(body, name) {
+  if (body == null) return false
+  let ok = true
+  const walk = (node) => {
+    if (!ok || node == null) return
+    if (typeof node === 'string') { if (node === name) ok = false; return }  // bare escape → reject
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return                                  // shadowing-safe: closure handled conservatively (escape)
+    // `+` (binary): a string-literal/template operand makes it concat → reject.
+    // Otherwise the param is in an arithmetic add; recurse the non-name operand.
+    if (op === '+' && node.length === 3) {
+      if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
+      for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
+      return
+    }
+    // Numeric/relational/bitwise binary + unary: param operand is fine, recurse rest.
+    if ((NUM_BIN_OPS.has(op) || REL_OPS.has(op)) && node.length === 3) {
+      for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
+      return
+    }
+    if ((op === 'u-' || op === 'u+' || op === '~') && node.length === 2) {
+      if (node[1] !== name) walk(node[1]); return
+    }
+    if (op === '-' && (node.length === 2 || node.length === 3)) {
+      for (let i = 1; i < node.length; i++) if (node[i] !== name) walk(node[i])
+      return
+    }
+    // Member access / method call on the param → it's a pointer, not an f64 number:
+    // reject (out of contract). `.`/`?.`/`[]` with the name as receiver.
+    if ((op === '.' || op === '?.' || op === '[]') && node[1] === name) { ok = false; return }
+    // `=`/compound reassignment of the param to a non-numeric value: reject if it
+    // could become a string. A reassignment makes the param mutable — conservatively
+    // require the RHS to be string-free too (recurse), and the target isn't a use.
+    for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
   return ok
@@ -1027,6 +1154,32 @@ function emitClosureBody(cb) {
   if (ptRow) for (let i = 0; i < cb.params.length; i++) {
     if (ptRow[i] === true && !ctx.func.localReps?.get(cb.params[i])?.val)
       updateRep(cb.params[i], i < minArgc ? { val: VAL.NUMBER } : { val: VAL.NUMBER, nullable: true })
+  }
+  // A param passed the same typed-array ctor at every direct call site is TYPED:
+  // register its element ctor so `buf[i]` reads use the typed load (it stays an f64
+  // NaN-box in the closure ABI, but knowing the kind avoids the dynamic `__typed_idx`
+  // /`__len` dispatch that pulls the string runtime). Numeric trust (above) wins if it
+  // already classified the slot — they're disjoint anyway (NUMBER vs TYPED arg).
+  const tcRow = ctx.closure.paramTypedCtors?.get(cb.name)
+  if (tcRow) for (let i = 0; i < cb.params.length; i++) {
+    const ctor = tcRow[i]
+    if (ctor && !ctx.func.localReps?.get(cb.params[i])?.val) {
+      updateRep(cb.params[i], { val: VAL.TYPED })
+      ;(ctx.types.typedElem ||= new Map()).set(cb.params[i], ctor)
+    }
+  }
+  // Body-usage numeric trust for closure params — the same proof the export path
+  // applies (paramAllUsesNumeric). A nested helper like heapsort's `heapify(n)` whose
+  // param is used only in arithmetic/relational positions is VAL.NUMBER, so `(n>>1)-1`
+  // skips the `__to_num` coercion that would otherwise drag the ToNumber string-parse
+  // tree into a pure-integer kernel. paramAllUsesNumeric walks any AST node, so this
+  // also covers expression-bodied arrows (`(m) => m | 0`) — the common closure shape
+  // whose dynamic param would otherwise emit a polymorphic add/coerce that pulls the
+  // whole string runtime in. Call-site evidence (ptRow) already covers the monomorphic
+  // case; this also catches params the lattice left unobserved.
+  for (const p of cb.params) {
+    if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && paramAllUsesNumeric(cb.body, p))
+      updateRep(p, { val: VAL.NUMBER })
   }
 
   // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value

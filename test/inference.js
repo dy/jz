@@ -202,6 +202,44 @@ test('paramReps val: caller disagreement forces __length poly', () => {
   ok(count(wat, /\$__length\b/g) >= 1, 'sticky-null val should keep __length')
 })
 
+test('paramReps val: a default value supplies the kind for an omitted arg', () => {
+  // `g(a = [])` called with an omitted arg AND a typed-array arg: the missing-arg
+  // site contributes the default's kind (ARRAY) instead of poisoning the lattice,
+  // so the consensus is ARRAY and `.length` drops the polymorphic `__length`.
+  // This is the sound core of "declare a param's type with a default": every value
+  // reaching `g` is either a proven array or the array default.
+  const wat = jz.compile(`
+    const g = (a = []) => a.length
+    export const p = () => g([1, 2, 3])
+    export const q = () => g()
+  `, { wat: true, optimize: { sourceInline: false } })
+  is(count(wat, /\$__length\b/g), 0, 'default-supplied ARRAY consensus drops poly __length')
+})
+
+test('paramReps val: an untyped forwarded arg keeps a default param polymorphic', () => {
+  // Soundness floor. `g(a = [])` is fed `g(x)` where `x` is an exported param —
+  // an external caller may pass a string (`f("hi")` → `"hi".length` is valid JS,
+  // === 2). The default does NOT prove the runtime value is an array, so the
+  // consensus is poisoned by the untyped site and `.length` MUST stay polymorphic.
+  const wat = jz.compile(`
+    const g = (a = []) => a.length
+    export const f = (x) => g(x)
+  `, { wat: true })
+  ok(count(wat, /\$__length\b/g) >= 1, 'untyped forwarded arg must keep __length poly')
+})
+
+test('default-param narrowing: runtime stays JS-correct across arg shapes', () => {
+  // The narrowing must not change observable results. Omitted → default; typed → arg.
+  const g = run(`const g = (a = []) => a.length; export const f = (n) => n === 0 ? g() : g([1, 2, 3])`).f
+  is(g(0), 0, 'omitted arg uses the [] default (length 0)')
+  is(g(1), 3, 'typed-array arg used directly (length 3)')
+  // The soundness floor at runtime: an untyped forward of a string still reads
+  // string length (param stayed polymorphic).
+  const h = run(`const g = (a = []) => a.length; export const f = (x) => g(x)`).f
+  is(h('hi'), 2, 'string forwarded through a default param reads string length')
+  is(h([9, 8]), 2, 'array forwarded reads array length')
+})
+
 test('intConst: unanimous int-literal arg folds local.get to i32 const', () => {
   // Every caller passes k=7 → narrow.js D-phase sets paramReps[scale][1]
   // .intConst=7. compile.js seeds localReps.intConst; emitLocalGet sees it
@@ -293,6 +331,40 @@ test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
   is(count(wat, /\$__length\b/g), 0, 'no polymorphic length')
 })
 
+test('inferTypedCtor: typed-array GLOBAL arg types the callee param (direct loads)', () => {
+  // A module-global typed array passed as an arg must resolve its ctor the same
+  // as a local would — the caller-side typed-elem context layers the module's
+  // typed globals under its body locals. Regression: watercolor's `samp(f,…)` and
+  // `advect(s,s0)` took their buffers from globals (u/v/dn), so without the global
+  // layer `f`/`s0` stayed untyped and every bilinear tap went through the runtime
+  // `__typed_idx` dispatch instead of a direct `f64.load` — ~1.6× slower than JS.
+  const wat = jz.compile(`
+    let g, g0
+    let samp = (f, i) => f[i] + f[i + 1]
+    let advect = (s, s0) => { let t = 0, i = 0; while (i < 50) { t = t + samp(s0, i); s[i] = t; i = i + 1 } return t }
+    export let setup = (n) => { g = new Float64Array(n); g0 = new Float64Array(n); return g0 }
+    export let run = () => advect(g, g0)
+  `, { wat: true })
+  // samp inlines into advect; the taps must be direct loads, not dynamic dispatch.
+  is(count(wat, /\$__typed_idx\b/g), 0, 'global typed-array arg → no runtime typed-idx dispatch')
+  ok(/f64\.load\b/.test(wat), 'expected direct f64.load on the global-typed buffer')
+})
+
+test('inferTypedCtor: a caller LOCAL shadowing a typed global is not mistyped', () => {
+  // Soundness guard for the global layer: if the caller declares its own binding
+  // with a global's name, that local — not the typed global — is the arg. Here the
+  // local `g` is a plain Number, so `take(g)` must NOT inherit Float64Array; the
+  // body indexing must stay polymorphic (string-key aware), never a direct load.
+  const wat = jz.compile(`
+    let g
+    let take = (a) => a[0]
+    export let setup = (n) => { g = new Float64Array(n); return g }
+    export let run = (n) => { let g = n + 1; return take(g) }
+  `, { wat: true })
+  ok(/\$__is_str_key\b|\$__typed_idx\b|\$__dyn_get/.test(wat),
+    'shadowing local (a Number) must keep polymorphic access — global ctor must not leak')
+})
+
 test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch', () => {
   // Float64Array + plain array → typedCtor sticky-null → no SIMD, runtime
   // dispatch on every element access.
@@ -306,6 +378,51 @@ test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch',
     export const m2 = () => sumArr([1, 2, 3]) | 0
   `, { wat: true })
   ok(!/v128\.load\b/.test(wat), 'disagreement should block SIMD')
+})
+
+test('paramAllUsesNumeric: relational use proves a TypedArray-length param numeric', () => {
+  // `new Float64Array(n)` is polymorphic (length | array-copy | buffer-view). A
+  // bare param there proves nothing — but `i < n` is a numeric use (jz lowers `<`
+  // to f64.lt), so the param is VAL.NUMBER and the ctor collapses to the length
+  // path: no `.from` copy arm, no `__ptr_offset` view arm. No source type hint.
+  const wat = jz.compile(`export let f = (n) => {
+    let a = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = i
+    return a[0]
+  }`, { wat: true })
+  is(count(wat, /\$__ptr_offset\b/g), 0, 'proven-numeric length collapses the polymorphic ctor (no view arm)')
+  is(count(wat, /\.from\b/g), 0, 'no array-copy arm')
+  is(run(`export let f = (n) => { let a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i; return a.length }`).f(5), 5, 'length path sizes the buffer')
+})
+
+test('paramAllUsesNumeric: TypedArray-copy param stays polymorphic (no false proof)', () => {
+  // `arr` is used ONLY as `new Float64Array(arr)` — that slot is numeric-COMPATIBLE
+  // but not PROVING. Marking it numeric would mis-size a zero-length buffer instead
+  // of copying. It must stay polymorphic so the array-copy path runs.
+  const f = run(`export let f = (arr) => { let a = new Float64Array(arr); return a.length }`).f
+  is(f([10, 20, 30]), 3, 'array arg is copied (length 3), not treated as a length')
+})
+
+test('paramAllUsesNumeric: forwarding to a numeric local closure proves the param', () => {
+  // heapsort shape: `n` forwarded to `heapify(n)`. The call arg is judged by the
+  // closure's own param numericity (`m >> 1`, `child < m` are numeric), so `n` is
+  // VAL.NUMBER and the `new Float64Array(n)` collapses — no string runtime dragged in.
+  const wat = jz.compile(`export let sort = (n) => {
+    let a = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = i
+    let heapify = (m) => { for (let r = (m >> 1) - 1; r >= 0; r--) { let c = 2 * r + 1; if (c < m) a[r] = a[c] } }
+    heapify(n)
+    return a[0]
+  }`, { wat: true })
+  is(count(wat, /\$__ptr_offset\b/g), 0, 'forwarded-to-numeric-closure param collapses the ctor')
+  is(count(wat, /\$__to_str\b/g), 0, 'no string runtime — param never ToNumber-coerced through a string path')
+})
+
+test('paramAllUsesNumeric: forwarding to a string-using closure stays polymorphic', () => {
+  // Soundness floor: `s` forwarded to `g(x)=>x.toUpperCase()` is a STRING use, so
+  // the param must NOT be marked numeric. The string flows through correctly.
+  is(run(`export let f = (s) => { let g = (x) => x.toUpperCase(); return g(s) }`).f('hi'), 'HI',
+    'string forwarded to a string-using closure is preserved')
 })
 
 test('boxedCaptures: mutated capture allocates a heap cell', () => {
