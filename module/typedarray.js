@@ -12,7 +12,7 @@ import { emit, idx, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
-import { inc, PTR, getter } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, getter } from '../src/ctx.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -863,9 +863,19 @@ export default (ctx) => {
    *  Owned: low 32 bits of the NaN-box (or the unboxed local directly).
    *  View: load descriptor[4]. Uses ptrOffsetIR so unboxed-TYPED locals pass through
    *  without a rebox-then-unbox round trip, and globals fold to inline bit-extract. */
+  // A typed array (Float64Array/Int32Array/…) is a FIXED-SIZE allocation — it has no
+  // grow op, so it can never relocate, so its base needs no realloc-forwarding follow.
+  // An already-unboxed pointer is the offset itself; a boxed f64 pointer extracts its
+  // low-32 offset directly — no __ptr_offset call. (The general ptrOffsetIR keeps the
+  // forwarding follow because ARRAY/HASH/SET/MAP relocate and an *inferred* OBJECT can
+  // alias a relocated ARRAY — but VAL.TYPED is a narrow type that can only be a real
+  // typed array, so the follow is provably dead here.)
+  const typedBase = (objIR) => objIR.ptrKind != null && objIR.ptrKind !== VAL.ARRAY
+    ? objIR
+    : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(objIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
   const typedDataAddr = (objIR, isView) => isView
-    ? ['i32.load', ['i32.add', ptrOffsetIR(objIR, VAL.TYPED), ['i32.const', 4]]]
-    : ptrOffsetIR(objIR, VAL.TYPED)
+    ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
+    : typedBase(objIR)
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.

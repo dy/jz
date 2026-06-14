@@ -313,6 +313,17 @@ test('minimal: never-grown analysis preserves grow semantics', () => {
   is(jz('export let f=()=>{let a=[1,2]; let w={}; w.d=a; w.d.push(7); return a[2]}').exports.f(), 7, 'grow via alias visible through original')
 })
 
+// === Typed arrays never forward — they are fixed-size, never relocated ===
+// A typed array's index read derives its base directly (no __ptr_offset chase): unlike
+// ARRAY/HASH/SET/MAP (growable) or an inferred OBJECT (can alias a relocated array),
+// VAL.TYPED is a narrow type that can only be a real fixed-size typed array.
+test('minimal: typed-array reads skip the forwarding follow', () => {
+  if (skip) return
+  const src = 'export let f=(n)=>{let a=new Float64Array(16); for(let i=0;i<16;i++)a[i]=i*n; let s=0; for(let i=0;i<16;i++)s+=a[i]; return s}'
+  ok(!has(src, '__ptr_offset', 2), 'a typed array reads/writes without __ptr_offset')
+  is(jz(src).exports.f(2), 240, 'typed array still computes correctly')  // 2*sum(0..15) = 2*120
+})
+
 // === KNOWN REDUNDANCY (targets, not yet minimal) ===
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —
