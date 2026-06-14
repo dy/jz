@@ -183,6 +183,21 @@ VT['[]'] = (args) => {
 
 VT['.'] = (args) => {
   if (typeof args[1] !== 'string') return null
+  // SRoA flat-object slot read: `p.x` where `p` dissolved into scalar `p#i`
+  // locals (scanFlatObjects). A write-once slot's value-type IS its literal
+  // initializer's, so bind by it — exactly as a plain `let slot = value` local
+  // would. Without this `p.x * 2` looks like "could be anything" and pulls the
+  // ToNumber + string-format battery, though it can only be numeric. Computed
+  // on-demand (not cached at analyze time) because param val-types — `{x:n}`'s
+  // `n` is numeric-by-divergence — are only seeded at emit. A reassigned slot
+  // (`p.x = …`) stays untyped: its runtime value may differ from the literal.
+  if (typeof args[0] === 'string') {
+    const flat = ctx.func.flatObjects?.get(args[0])
+    if (flat && !flat.written?.has(args[1])) {
+      const i = flat.names.indexOf(args[1])
+      if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
+    }
+  }
   // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
   // to a slot whose VAL kind is monomorphic across program-wide observations,
   // return that kind. Lets `+`, `===`, method dispatch skip runtime str-key

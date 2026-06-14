@@ -168,6 +168,29 @@ for (const [name, src] of Object.entries(STATIC_TEMPLATES)) {
   })
 }
 
+// === Flat-object typed slots specialize — no polymorphic ToNumber/string battery ===
+// A non-escaping object literal is SRoA'd into scalar locals, and a write-once slot
+// carries its initializer's value-type (kind.js `VT['.']`). So arithmetic on a numeric
+// slot — `p.x * 2`, `p.x * p.y` — stays a plain f64 op, never the ToNumber + ftoa +
+// str_concat battery (and its allocator) that an *untyped* property read drags in.
+// Without the slot-type binding these scalarized objects ballooned ~75 B → ~5.9 KB.
+// (A reassigned slot stays conservative — its runtime value may differ; see fuzz.)
+const TYPED_SLOTS = {
+  'literal slot product': 'export let f = () => { let p = { x: 5 }; return p.x * 2 }',
+  'expression slot product': 'export let f = (n) => { let p = { x: n * 1 }; return p.x * 2 }',
+  'int-coerced param slot': 'export let f = (n) => { let p = { x: n | 0 }; return p.x * 2 }',
+  'two numeric slots': 'export let f = (n) => { let p = { x: n | 0, y: 3 }; return p.x * p.y }',
+}
+for (const [name, src] of Object.entries(TYPED_SLOTS)) {
+  test(`minimal: flat-object ${name} — no ToNumber/allocator`, () => {
+    if (skip) return
+    for (const O of [0, 2]) {
+      ok(!has(src, '$__to_num', O), `${name} @O${O}: a numeric slot must not pull ToNumber`)
+      ok(!hasAllocator(src, O), `${name} @O${O}: a scalarized numeric object allocates nothing`)
+    }
+  })
+}
+
 // === Function-local array literals stay fresh per call (no static aliasing) ===
 // The static-data path is module-scope-only: a function-local literal that is mutated in
 // place must NOT alias a shared region, or the mutation leaks across calls. (Imported,

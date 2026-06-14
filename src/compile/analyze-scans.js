@@ -366,10 +366,15 @@ export function scanFlatObjects(body) {
     // monotonically extends the static field universe (the new field reads
     // `undefined` until the write runs, exactly as JS does); the schema stays
     // closed because any computed/off-schema access disqualifies below.
+    // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
+    // value-type is exactly its literal initializer's) iff its key is absent here.
     const schema = new Set(props.names)
+    const written = new Set()
     for (const u of s.uses)
-      if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null)
+      if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null) {
         schema.add(u.key)
+        written.add(u.key)
+      }
 
     // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
     // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
@@ -385,7 +390,7 @@ export function scanFlatObjects(body) {
     const names = props.names.slice(), values = props.values.slice()
     for (const k of schema)
       if (!names.includes(k)) { names.push(k); values.push(undefined) }
-    cand.set(name, { names, values })
+    cand.set(name, { names, values, written })
   }
   return cand
 }
