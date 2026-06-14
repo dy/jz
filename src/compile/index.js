@@ -1571,7 +1571,8 @@ export default function compile(ast, profiler) {
   const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
-    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals }
+    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals,
+      userFuncs: new Set(ctx.func.list.map(f => `$${f.name}`)) }
   )
 
   pruneUnusedThrowRuntime(sec)
