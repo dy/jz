@@ -88,3 +88,22 @@ already tried and reverted at +260KB bloat. So the typed-region is a MODEST
 (~3-4%) lever gated behind significant code bloat, attacking dispatch (not
 boxing, which is free). jz's value model is near-optimal: the transformative
 "avoid NaN-boxing" win doesn't exist because boxing was never the cost.
+
+### julia: typed-store + untyped `+` → spurious string-concat fork (SOURCE-FIXED, compiler gap open)
+Symptom: julia 1.25× slower than JS. Hot per-pixel loop `zy = 2*zx*zy + cim`,
+`zx = zx2-zy2 + cre` compiled to `if(__is_str_key(cim)) __str_concat else f64.add`
+on every iteration — `cre`/`cim` are untyped exported f64 params.
+Root isolation (minimal repros): NEITHER a typed-array element store NOR an
+untyped `+` loads `__str_concat` alone; TOGETHER they do. `px[0]=5; return a+c`
+loads it; either half alone does not. The `+` emitter (emit.js:2417) forks iff
+`ctx.core.stdlib['__str_concat']` is present; a typed-array store makes it
+present (module-include interaction, not the store's own value coercion —
+verified with a constant store value). So the typed store poisons every untyped
+`+` in the function.
+Source fix (shipped, examples/julia): `cre = +cre; cim = +cim` pins numeric →
+fork gone, pixel-identical, +15% (11.8→10.3ms @400×300).
+Compiler fix (OPEN, needs care): (a) a `+` whose result is immediately ToInt32'd
+(`|0`) or stored to an integer typed array can't be a string — skip the fork;
+(b) a typed-array store should not pull `__str_concat` into stdlib scope. Both
+touch the include/treeshake + hot `+` path — deserve an isolated PR with full
+suite + golden-size verification, not an end-of-session change.
