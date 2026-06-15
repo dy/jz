@@ -359,12 +359,15 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
       // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
       // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
-      // for most of 260k cells/frame). V8's pre-Turboshaft wasm tiers never
+      // for most of 260k cells/frame; cloth's relax: ~160 nodes × 2 sites, fired
+      // per link every relaxation pass). V8's pre-Turboshaft wasm tiers never
       // inline cross-function, so an out-of-line leaf in a hot loop is a hard
       // per-cell tax on Node ≤ 22 — and still saves call setup on newer tiers.
+      // The in-loop cap is generous because the gate above bounds non-tiny leaves
+      // to ≤2 sites, so the spliced duplication is at most ~2× a bounded body.
       const allSitesInLoop = sites.every(site =>
         site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false))
-      if (nodeSize(func.body) > (allSitesInLoop ? 80 : 30)) continue
+      if (nodeSize(func.body) > (allSitesInLoop ? 200 : 30)) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner

@@ -122,6 +122,33 @@ for (const [name, src] of Object.entries(NO_DEAD)) {
   })
 }
 
+// === Hot-loop leaf helpers inline (no per-iteration call tax) ===
+// A leaf with no loop of its own, ≤2 call sites, all inside a caller's loop, is spliced
+// in — V8's pre-Turboshaft wasm tiers never inline cross-function, so an out-of-line call
+// here is a hard per-iteration cost. This pins the loop-sited-leaf size budget in
+// plan/inline.js: a ~160-node helper like cloth's `relax` (a sqrt + a handful of array
+// writes, fired per link) must fold into the loop, not survive as a `call`. Guards the
+// in-loop cap against creeping back down below the medium-helper range.
+test('minimal: medium leaf called in a hot loop inlines', () => {
+  if (skip) return
+  const src = `
+    let arr
+    let relaxish = (a, b) => {
+      let dx = arr[b] - arr[a], dy = arr[b + 1] - arr[a + 1]
+      let d = Math.sqrt(dx * dx + dy * dy) + 0.0001
+      let k = (d - 10.0) / d * 0.5
+      let mx = dx * k, my = dy * k
+      arr[a] = arr[a] + mx; arr[a + 1] = arr[a + 1] + my
+      arr[b] = arr[b] - mx; arr[b + 1] = arr[b + 1] - my
+    }
+    export let step = (n) => { let i = 0; while (i < n) { relaxish(i, i + 2); relaxish(i, i + 4); i = i + 2 } }
+    export let setup = (n) => { arr = new Float64Array(n); return arr }
+  `
+  for (const O of [2, 'speed']) {
+    ok(!has(src, 'call $relaxish', O), `@O${O}: a hot-loop leaf helper must inline, not stay a call`)
+  }
+})
+
 // === Empty / trivial programs ===
 test('minimal: empty program is an empty module', () => {
   if (skip) return
