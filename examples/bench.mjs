@@ -49,6 +49,18 @@ const EXAMPLES = [
   { name: 'diffusion', frame: 'frame (8 substeps)',
     make: (e) => { e.resize(448, 448); e.clear(); e.seedRect(200, 200, 248, 248); return () => e.frame() } },
 
+  // 5-point wave-equation stencil + render — a single light memory-bound sweep
+  // per frame (unlike diffusion's 8 compute-heavy substeps), so it saturates
+  // memory bandwidth and only ties V8: jz has no auto-SIMD for neighbor-shuffle
+  // stencils (diffusion's stencil is scalar too — it wins on substep compute).
+  // `opt` (bandwidth-bound, no headroom), reported not gated. NOTE: this also
+  // pins the double-buffer pointer-swap (`let tmp=a; a=b; b=tmp`) — that idiom
+  // once poisoned module-let typed-array inference and made `frame` 16× slower
+  // (every a[i] forked __str_idx/__typed_idx, every `+` forked __str_concat);
+  // inferModuleLetTypes' alias-graph fixpoint now resolves it.
+  { name: 'waves', frame: 'frame (stencil+render)', opt: true,
+    make: (e) => { e.resize(640, 400); e.clear(); for (let k = 0; k < 8; k++) e.drop(100 + k * 60, 200, 4, 1.2); return () => e.frame(0) } },
+
   // Serial recurrence (x,y chain), no cross-iteration ILP — jz wins ~1.3× on
   // Apple Silicon since hoistGlobalPtrOffset (trig + plot-buffer writes
   // dominate), but the wasm-vs-V8 ratio is µarch-sensitive: GH's Xeon runners

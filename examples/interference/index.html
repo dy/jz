@@ -15,14 +15,14 @@
 <canvas id="canvas"></canvas>
 
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js";
+import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js";
 
 const urls = { js: "./interference.js", wasm: "./interference.wasm" };
 const canvas = document.getElementById("canvas");
 const context = canvas.getContext("2d");
 var step = 0.012;
 
-const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/interference", code: "./interference.js", nav: "interference", onSwitch: start });
+const h = hud({ kind: "jz", hint: "drag to place the wave sources · double-click to resume", src: "https://github.com/dy/jz/tree/main/examples/interference", code: "./interference.js", nav: "interference", onSwitch: start });
 
 let gen = 0;
 async function start(kind) {
@@ -42,10 +42,19 @@ async function start(kind) {
   onresize();
   window.onresize = onresize;
 
+  // Drag to place the two wave sources; they stay where you leave them and the field
+  // keeps rippling (double-click to resume the orbiting sources).
+  const ptr = trackPointer(canvas)
+  canvas.addEventListener("dblclick", () => engine.resume?.())
   let tick = 0.0;
   (function update() {
     if (my !== gen) return; // a newer engine took over
     requestAnimationFrame(update);
+    if (ptr.down && engine.setSources) {
+      const x1 = ptr.x * width, y1 = ptr.y * height
+      const x2 = (1 - ptr.x) * width, y2 = (1 - ptr.y) * height
+      engine.setSources(x1, y1, x2, y2)
+    }
     const t0 = performance.now();
     engine.update(tick += step);
     const work = performance.now() - t0;

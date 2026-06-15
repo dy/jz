@@ -16,7 +16,7 @@
 <canvas id="c"></canvas>
 
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
+import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
 // Internal resolution: scaled to the screen aspect (no stretch), capped on the long
@@ -43,11 +43,30 @@ const setEngine = async (kind) => {
   engine.seed()
 }
 
-// Re-seed on click anywhere
-document.addEventListener("pointerdown", () => { if (engine) { px = engine.resize(IW, IH); engine.seed() } })
+// Drag to paint living "soup" that blooms into Lenia creatures; double-click to reseed.
+// Stamps are interpolated along the drag so a fast stroke seeds a continuous trail.
+const ptr = trackPointer(cv)
+const BR = 11
+let painting = false, lx = 0, ly = 0
+const stamp = (px_, py_) => { if (engine) engine.seedBrush(px_ * IW, py_ * IH, BR) }
+const strokeTo = (x, y) => {
+  const dx = x - lx, dy = y - ly
+  const n = Math.max(1, Math.ceil(Math.hypot(dx * IW, dy * IH) / (BR * 0.5)))
+  for (let i = 1; i <= n; i++) stamp(lx + dx * i / n, ly + dy * i / n)
+  lx = x; ly = y
+}
+cv.addEventListener("pointerdown", (e) => {
+  painting = true; lx = ptr.x; ly = ptr.y
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+  stamp(ptr.x, ptr.y)
+})
+cv.addEventListener("pointermove", () => { if (painting) strokeTo(ptr.x, ptr.y) })
+cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { painting = false })
+cv.addEventListener("dblclick", () => { if (engine) { px = engine.resize(IW, IH); engine.seed() } })
 
 const ui = hud({
-  kind: "jz",
+  kind: "jz", hint: "drag to paint living cells · double-click to reseed",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/lenia",
   code: "./lenia.js",

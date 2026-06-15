@@ -95,6 +95,33 @@ export let seed = () => {
 
 let buf = 0   // 0 → read cellA write cellB, 1 → read cellB write cellA
 
+// Paint a patch of living "soup" — low-amplitude noise biased into the growth window
+// (μ≈0.15) so the brush spawns self-sustaining Lenia structures instead of a blob that
+// just decays. Written to both ping-pong buffers so it survives the swap.
+export let seedBrush = (cx, cy, r) => {
+  let x0 = cx - r | 0, x1 = cx + r | 0
+  let y0 = cy - r | 0, y1 = cy + r | 0
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W - 1) x1 = W - 1
+  if (y1 > H - 1) y1 = H - 1
+  let r2 = r * r
+  let y = y0
+  while (y <= y1) {
+    let dy = y - cy, row = y * W, x = x0
+    while (x <= x1) {
+      let dx = x - cx
+      if (dx * dx + dy * dy <= r2) {
+        let v = 0.1 + Math.random() * 0.45
+        cellA[row + x] = v
+        cellB[row + x] = v
+      }
+      x++
+    }
+    y++
+  }
+}
+
 export let frame = (dt) => {
   let src = buf === 0 ? cellA : cellB
   let dst = buf === 0 ? cellB : cellA

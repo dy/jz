@@ -6,17 +6,22 @@
 //   wasm memory. The render loop never knows which one it's driving.
 //
 // loadEngine(kind, urls) → exports        pick an engine by name
-// hud({ kind, onSwitch, note })           FPS sparkline + ms + JS/jz toggle
+// hud({ kind, onSwitch, note })           FPS + ms readout + JS/jz toggle
 
 import { instantiate } from '../../interop.js'
 
 // Gallery order — drives the edge chevrons (wraps around). Visual examples only;
 // audio is handled separately in the floatbeat playground.
 export const EXAMPLES = [
-  'game-of-life', 'lenia', 'diffusion',
-  'interference', 'plasma', 'chladni',
-  'mandelbrot', 'attractors', 'raymarcher',
+  'game-of-life', 'wireworld', 'maze', 'sand', 'lenia', 'slime', 'dla',
+  'diffusion', 'watercolor', 'marble', 'interference', 'waves', 'erosion', 'plasma', 'chladni',
+  'mandelbrot', 'julia', 'attractors', 'voronoi', 'raymarcher',
+  'metaballs', 'nbody', 'swarm', 'cloth', 'cradle', 'sph', 'lbm', 'raytrace',
 ]
+
+// Jost (libre Futura) — bundled so weights render predictably (macOS "Futura" has no
+// true regular and renders heavy at every weight). Used Jost-first in the masthead.
+const JOST_URL = new URL('./jost.woff2', import.meta.url).href
 
 // Inject the shared top navigation bar for every example page.
 // Matches examples/index.html: dark band, geometric wordmark, nav links.
@@ -26,7 +31,7 @@ const addMasthead = (name) => {
   header.className = 'jz-masthead'
   header.innerHTML = `
     <a class="wordmark" href="../" aria-label="back to all examples">
-      <span class="mark">JZ</span><span class="sub">examples</span><span class="sep">–</span><span class="page">${name}</span>
+      <span class="mark">JZ</span><span class="sub">examples</span><span class="sep" aria-hidden="true">›</span><span class="page">${name}</span>
     </a>
     <nav>
       <a href="../../repl/">repl</a>
@@ -36,19 +41,20 @@ const addMasthead = (name) => {
       </a>
     </nav>
     <style>
+      @font-face { font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap; src: url("${JOST_URL}") format('woff2'); }
       .jz-masthead {
         position: fixed; top: 0; left: 0; right: 0; z-index: 200;
         background: #0a0a0a; color: #fff;
         display: flex; align-items: center; gap: 16px;
         min-height: 44px;
         padding: 0 16px;
-        font-family: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+        font-family: Jost, 'Helvetica Neue', Arial, sans-serif;
       }
-      .jz-masthead .wordmark { font-size: 19px; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
+      .jz-masthead .wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
       .jz-masthead .wordmark .mark { font-weight: 700; color: #fff; }
       .jz-masthead .wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
-      .jz-masthead .wordmark .sep { color: #8a8a8a; margin-left: .4em; margin-right: -.05em; }
-      .jz-masthead .wordmark .page { margin-left: .35em; color: #8a8a8a; }
+      .jz-masthead .wordmark .sep { font-weight: 400; color: #5a5a5a; margin: 0 .42em; }
+      .jz-masthead .wordmark .page { font-weight: 400; color: #fff; }
       .jz-masthead .wordmark:hover .sub { color: #fff; }
       .jz-masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
       .jz-masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
@@ -71,27 +77,84 @@ const addEdgeNav = (name) => {
   if (at < 0) return
   const prev = at > 0 ? EXAMPLES[at - 1] : EXAMPLES[EXAMPLES.length - 1]
   const next = at < EXAMPLES.length - 1 ? EXAMPLES[at + 1] : EXAMPLES[0]
+  const label = (n) => n.replace(/-/g, ' ')
+  const chev = (d) => `<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`
   const wrap = document.createElement('div')
   wrap.className = 'jz-edge'
   wrap.innerHTML = `
-    <a class="jz-edge-prev" href="../${prev}/" aria-label="previous example: ${prev}">‹</a>
-    <a class="jz-edge-next" href="../${next}/" aria-label="next example: ${next}">›</a>
+    <a class="jz-edge-prev" href="../${prev}/" aria-label="previous example: ${prev}">
+      <span class="chip">${chev('M15 5l-7 7 7 7')}</span><span class="label">${label(prev)}</span>
+    </a>
+    <a class="jz-edge-next" href="../${next}/" aria-label="next example: ${next}">
+      <span class="chip">${chev('M9 5l7 7-7 7')}</span><span class="label">${label(next)}</span>
+    </a>
     <style>
-      .jz-edge-prev, .jz-edge-next {
-        position: fixed; top: 44px; bottom: 0; width: 44px; z-index: 150;
+      .jz-edge a {
+        position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
+        display: flex; align-items: center; text-decoration: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
+      }
+      .jz-edge-prev { left: 14px; }
+      .jz-edge-next { right: 14px; flex-direction: row-reverse; }
+      .jz-edge .chip {
+        flex: none; width: 44px; height: 44px;
         display: flex; align-items: center; justify-content: center;
-        color: rgba(255,255,255,.35); background: rgba(0,0,0,.12);
-        font-size: 32px; line-height: 1; text-decoration: none;
-        transition: color .18s, background .18s; user-select: none;
+        color: rgba(255,255,255,.7); background: rgba(12,12,14,.42);
+        border: 1px solid rgba(255,255,255,.15);
+        backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+        box-shadow: 0 2px 12px rgba(0,0,0,.28);
+        transition: color .2s, background .2s, border-color .2s, transform .2s;
       }
-      .jz-edge-prev { left: 0; }
-      .jz-edge-next { right: 0; }
-      .jz-edge-prev:hover, .jz-edge-next:hover { color: rgba(255,255,255,.92); background: rgba(0,0,0,.35); }
+      .jz-edge .label {
+        max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
+        font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
+        color: rgba(255,255,255,.92); opacity: 0;
+        transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
+      }
+      .jz-edge a:hover .chip {
+        color: #0a0a0a; background: rgba(255,255,255,.94);
+        border-color: transparent; transform: scale(1.05);
+      }
+      .jz-edge a:hover .label { max-width: 220px; opacity: 1; }
+      .jz-edge-prev:hover .label { padding-left: 12px; }
+      .jz-edge-next:hover .label { padding-right: 12px; }
       @media (max-width: 520px) {
-        .jz-edge-prev, .jz-edge-next { width: 32px; font-size: 24px; }
+        .jz-edge-prev { left: 8px; } .jz-edge-next { right: 8px; }
+        .jz-edge .chip { width: 40px; height: 40px; }
       }
+      @media (hover: none) { .jz-edge .label { display: none; } }
     </style>`
   document.body.appendChild(wrap)
+}
+
+// Track normalized pointer state for canvas-driven examples.
+// Position updates on every move so a drag never jumps, but examples should gate
+// actual effects on `down` — interactivity is click/drag only, never hover.
+// Returns a live object `{ x, y, down, btn }`.
+export const trackPointer = (el, onChange) => {
+  const state = { x: 0.5, y: 0.5, down: false, btn: 0 }
+  const update = (e) => {
+    const r = el.getBoundingClientRect()
+    state.x = (e.clientX - r.left) / r.width
+    state.y = (e.clientY - r.top) / r.height
+    state.btn = e.button || 0
+    if (onChange) onChange(state)
+  }
+  el.addEventListener('pointerdown', (e) => {
+    state.down = true
+    try { el.setPointerCapture(e.pointerId) } catch {}
+    update(e)
+  })
+  el.addEventListener('pointermove', update)
+  el.addEventListener('pointerup', (e) => {
+    state.down = false
+    try { el.releasePointerCapture(e.pointerId) } catch {}
+    update(e)
+  })
+  el.addEventListener('pointerleave', (e) => { state.down = false; update(e) })
+  el.addEventListener('pointercancel', (e) => { state.down = false; update(e) })
+  return state
 }
 
 // URLs are page-relative; resolve against the document so dynamic import() (which
@@ -103,43 +166,45 @@ export const loadEngine = async (kind, { js, wasm }) => {
     : instantiate(new Uint8Array(await (await fetch(url(wasm))).arrayBuffer())).exports
 }
 
-// linefont: a value 0..100 is the glyph at 0x100+value; ligatures join adjacent
-// glyphs into one continuous line chart. So a string of recent samples *is* the
-// sparkline. (github.com/dy/linefont — the font ships next to this module.)
-const SPARK = 40
-const lineChars = (vals) => vals.map(v =>
-  String.fromCharCode(0x100 + Math.max(0, Math.min(100, Math.round(v))))).join('')
-const FONT_URL = new URL('./linefont.woff2', import.meta.url).href
+const SPARK = 48   // FPS history length for the sparkline
 
-// FPS sparkline + engine toggle. Call frame(workMs?) once per rendered frame with
-// the measured kernel compute time. FPS alone lies under a vsync cap (both engines
+// FPS sparkline + ms/frame readout and engine toggle. Call frame(workMs?) once per rendered
+// frame with the measured kernel compute time. FPS alone lies under a vsync cap (both engines
 // peg at the refresh rate), so the HUD also shows kernel ms — the real engine gap
-// regardless of vsync. The sparkline tracks FPS over time on a decaying-peak scale,
-// so a stall visibly dips the line. Clicking swaps engine and fires onSwitch(kind).
+// regardless of vsync. The sparkline tracks FPS over time so a stall visibly dips the line.
+// Clicking swaps engine and fires onSwitch(kind).
 // `code` (optional): the kernel source — a URL to fetch (e.g. './attractors.js') or
 // literal text (anything containing a newline). Adds a `</>` toggle that overlays it.
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
-export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true }) => {
+// `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
+export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '' }) => {
   if (nav) { addMasthead(nav); addEdgeNav(nav) }
+  if (hint && !document.querySelector('.jz-hint')) {
+    const hel = document.createElement('div')
+    hel.className = 'jz-hint'
+    hel.textContent = hint
+    hel.innerHTML += `<style>
+      .jz-hint { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 90; text-align: center;
+        pointer-events: none; transition: opacity .6s; opacity: .9;
+        font: 500 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .02em;
+        color: #888; mix-blend-mode: difference; }
+    </style>`
+    document.body.appendChild(hel)
+  }
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      @font-face { font-family: linefont; font-display: block; src: url("${FONT_URL}") format('woff2'); }
-      .jz-hud { position: fixed; bottom: 12px; right: 12px; z-index: 100;
+      .jz-hud { position: fixed; bottom: 12px; left: 12px; z-index: 100;
         font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif;
         color: #eee; background: rgba(10,10,10,.92);
-        border: 1px solid rgba(255,255,255,.12); padding: 10px 12px;
+        border: 1px solid rgba(255,255,255,.12); padding: 9px 12px;
         box-shadow: 0 4px 16px rgba(0,0,0,.3); user-select: none; width: 168px; }
-      .jz-hud .fps { font-size: 22px; letter-spacing: -.5px; }
-      .jz-hud .fps small { font-size: 11px; opacity: .5; font-weight: 500; }
-      .jz-hud .spark { display: block; height: 34px; margin: 4px 0 2px;
-        font-family: linefont; font-variation-settings: 'wght' 260, 'wdth' 100;
-        font-size: 34px; line-height: 34px; color: #fff; overflow: hidden;
-        white-space: nowrap; word-break: break-all; }
-      .jz-hud .ms { margin-top: 2px; font-size: 12px; color: #aaa; }
-      .jz-hud .ms b { font-weight: 700; color: #fff; }
-      .jz-hud .ms small { opacity: .7; font-weight: 500; }
-      .jz-hud .seg { display: flex; margin-top: 8px;
+      .jz-hud .spark { display: block; width: 100%; height: 34px; margin: 0 0 5px; }
+      .jz-hud .readout { display: flex; justify-content: space-between; align-items: baseline;
+        font-size: 12px; color: #888; }
+      .jz-hud .readout .metric { display: inline-flex; align-items: baseline; gap: .35em; }
+      .jz-hud .readout b { font-weight: 700; font-size: 13px; color: #fff; }
+      .jz-hud .seg { display: flex; margin-top: 9px;
         border: 1px solid rgba(255,255,255,.18); overflow: hidden; }
       .jz-hud .seg button { flex: 1; border: 0; background: transparent;
         font: inherit; padding: 5px 12px; cursor: pointer; color: #888; }
@@ -165,13 +230,12 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-code-x:hover { color: #fff; background: rgba(255,255,255,.12); }
     </style>
     <div class="jz-hud">
-      ${code ? `<span class="cv" id="jz-cv" title="view source" aria-label="view source"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span>` : ''}
-      ${meter ? `<div class="fps"><span id="jz-fps">··</span> <small>FPS</small></div>
-      <div class="spark" id="jz-spark"></div>
-      <div class="ms" id="jz-ms" hidden><b><span id="jz-ms-v">·</span></b> <small>ms / frame compute</small></div>` : ''}
+      ${code ? `<span class="cv" id="jz-cv" title="view source" aria-label="view source"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span>` : ''}
+      ${meter ? `<canvas class="spark" id="jz-spark"></canvas>
+      <div class="readout"><span class="metric"><b id="jz-fps">··</b> fps</span><span class="metric" id="jz-ms" hidden><b id="jz-ms-v">·</b> ms/frame</span></div>` : ''}
       <div class="seg">
-        <button data-k="js">js</button>
-        <button data-k="jz">jz</button>
+        <button data-k="js">JS</button>
+        <button data-k="jz">JZ</button>
       </div>
     </div>
     ${code ? `<div class="jz-code" id="jz-code"><button class="jz-code-x" id="jz-code-x" title="close source" aria-label="close source">×</button><pre class="jz-code-pre" id="jz-code-pre"></pre></div>` : ''}`
@@ -184,6 +248,34 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
 
   const fpsEl = el.querySelector('#jz-fps')
   const sparkEl = el.querySelector('#jz-spark')
+  const sctx = sparkEl && sparkEl.getContext('2d')
+  let sw = 0, sh = 0
+  const sizeSpark = () => {
+    const r = sparkEl.getBoundingClientRect()
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    sw = Math.max(1, Math.round(r.width)); sh = Math.max(1, Math.round(r.height))
+    sparkEl.width = sw * dpr; sparkEl.height = sh * dpr
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+  // FPS area chart: a filled gradient under the line shows the headroom (line near the
+  // top = the engine is keeping up; a dip = a stall eating into the available power).
+  const drawSpark = () => {
+    if (!sw) sizeSpark()
+    const n = hist.length, w = sw, h = sh
+    const xs = (i) => i / (n - 1) * w
+    const ys = (v) => h - (v / 100) * (h - 2) - 1
+    sctx.clearRect(0, 0, w, h)
+    sctx.beginPath(); sctx.moveTo(0, h)
+    for (let i = 0; i < n; i++) sctx.lineTo(xs(i), ys(hist[i]))
+    sctx.lineTo(w, h); sctx.closePath()
+    const grad = sctx.createLinearGradient(0, 0, 0, h)
+    grad.addColorStop(0, 'rgba(255,255,255,.40)')
+    grad.addColorStop(1, 'rgba(255,255,255,.03)')
+    sctx.fillStyle = grad; sctx.fill()
+    sctx.beginPath()
+    for (let i = 0; i < n; i++) { const x = xs(i), y = ys(hist[i]); if (i) sctx.lineTo(x, y); else sctx.moveTo(x, y) }
+    sctx.strokeStyle = 'rgba(255,255,255,.92)'; sctx.lineWidth = 1.25; sctx.stroke()
+  }
   const msRow = el.querySelector('#jz-ms'), msEl = el.querySelector('#jz-ms-v')
   const btns = [...el.querySelectorAll('button')]
   const paint = () => btns.forEach(b => b.classList.toggle('on', b.dataset.k === kind))
@@ -212,25 +304,23 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   }
 
   // EMA-smoothed over a ~0.4s window. The sparkline plots FPS on an absolute scale
-  // (full height = `ref`, which rises to the display's refresh rate), so the line
-  // sits at the true level: a smooth 120 reads near the top, a 30 reads a quarter
-  // up, and swapping to a slower engine visibly steps the line down.
+  // (full height = `ref`, which rises to the display's refresh rate), so the line sits
+  // at the true level and swapping to a slower engine visibly steps it down.
   let last = performance.now(), fps = 0, ms = 0, ref = 120
   const hist = new Array(SPARK).fill(0)
   return {
     get kind() { return kind },
     frame(workMs) {
-      if (!meter) return                         // meter hidden (e.g. spectrogram demo) — toggle only
+      if (!meter) return
       const now = performance.now(), dt = now - last; last = now
-      // A sub-4ms frame is the scheduler catching up, not a 250Hz display — cap it
-      // so a startup/GC spike can't poison the EMA. Warming fps up from 0 means it
-      // approaches the true rate from below, so `ref` latches the refresh, not a blip.
+      // Cap a sub-4ms frame (scheduler catch-up, not a 250Hz display) so a startup/GC
+      // spike can't poison the EMA or latch `ref` to a blip.
       const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps
       fps += (inst - fps) * 0.1
       fpsEl.textContent = fps >= 1 ? fps.toFixed(0) : '··'
       if (fps > ref) ref = fps
       hist.push(Math.min(100, fps / ref * 100)); hist.shift()
-      sparkEl.textContent = lineChars(hist)
+      drawSpark()
       if (workMs != null) {
         ms = ms ? ms * 0.9 + workMs * 0.1 : workMs
         msEl.textContent = ms.toFixed(ms < 10 ? 2 : 1)

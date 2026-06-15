@@ -30,7 +30,8 @@ const sizeTo = (e) => {
   px = e.resize(W, H)
 }
 
-// a base point in de-Jong parameter space; the LFOs morph it, a click jumps it.
+// a base point in de-Jong parameter space; slow LFOs drift all four params (no hover).
+// Click anywhere to jump to a fresh random attractor.
 let base = [1.9, -2.5, 1.7, -0.3]
 const ITERS = 1_200_000
 cv.addEventListener("pointerdown", () => { base = base.map(() => Math.random() * 6 - 3) })
@@ -47,10 +48,10 @@ const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
   t += 1 / 60
-  const a = base[0] + Math.sin(t * 0.11) * 0.35
-  const b = base[1] + Math.cos(t * 0.09) * 0.35
-  const c = base[2] + Math.sin(t * 0.07) * 0.35
-  const d = base[3] + Math.cos(t * 0.13) * 0.35
+  const a = base[0] + Math.sin(t * 0.05) * 0.22
+  const b = base[1] + Math.cos(t * 0.08) * 0.22
+  const c = base[2] + Math.sin(t * 0.07) * 0.22
+  const d = base[3] + Math.cos(t * 0.13) * 0.22
   const t0 = performance.now()
   engine.frame(a, b, c, d, ITERS)
   const ms = performance.now() - t0
@@ -59,7 +60,7 @@ const loop = () => {
 }
 
 const ui = hud({
-  kind: "jz",
+  kind: "jz", hint: "click to jump to a new attractor",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/attractors",
   code: "./attractors.js",

@@ -35,16 +35,25 @@ export let paint = (cx, cy, r, state) => {
   }
 }
 
-// a rectangular wire loop with one electron (head+tail) circulating it
-let loop = (cx, cy, rw, rh) => {
-  let x0 = cx - rw, x1 = cx + rw, y0 = cy - rh, y1 = cy + rh
-  if (x0 < 1 || y0 < 1 || x1 > W - 2 || y1 > H - 2) return
-  let x = x0
-  while (x <= x1) { a[y0 * W + x] = 3; a[y1 * W + x] = 3; x++ }
-  let y = y0
-  while (y <= y1) { a[y * W + x0] = 3; a[y * W + x1] = 3; y++ }
-  a[y0 * W + (x0 + 2)] = 1; a[y0 * W + (x0 + 1)] = 2     // electron heading along the top
+// a rectangular wire loop (outline) with one electron (head+tail) circulating it
+let rectLoop = (x0, y0, x1, y1) => {
+  let ax = (x0 < x1 ? x0 : x1) | 0, bx = (x0 < x1 ? x1 : x0) | 0
+  let ay = (y0 < y1 ? y0 : y1) | 0, by = (y0 < y1 ? y1 : y0) | 0
+  if (ax < 1) ax = 1
+  if (ay < 1) ay = 1
+  if (bx > W - 2) bx = W - 2
+  if (by > H - 2) by = H - 2
+  if (bx - ax < 4 || by - ay < 4) return
+  let x = ax
+  while (x <= bx) { a[ay * W + x] = 3; a[by * W + x] = 3; x++ }
+  let y = ay
+  while (y <= by) { a[y * W + ax] = 3; a[y * W + bx] = 3; y++ }
+  a[ay * W + (ax + 2)] = 1; a[ay * W + (ax + 1)] = 2    // electron heading along the top
 }
+let loop = (cx, cy, rw, rh) => rectLoop(cx - rw, cy - rh, cx + rw, cy + rh)
+
+// drag-drawn rectangle (corners in grid coords) → a conductor loop with an electron
+export let drawRect = (x0, y0, x1, y1) => rectLoop(x0, y0, x1, y1)
 
 export let seed = () => {
   clear()

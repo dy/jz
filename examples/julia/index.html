@@ -50,7 +50,7 @@ addEventListener("resize", () => engine && sizeTo(engine))
 const ptr = trackPointer(cv)
 const hint = document.getElementById("hint")
 let baseRe = -0.7, baseIm = 0.27, userSet = false
-cv.addEventListener("pointerdown", () => { hint.style.opacity = 0 })
+cv.addEventListener("pointerdown", () => {})
 
 const loop = () => {
   requestAnimationFrame(loop)

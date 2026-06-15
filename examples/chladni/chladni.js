@@ -9,6 +9,7 @@
 // baseline (imported) and the compiled wasm.
 let W = 0, H = 0, px, SC = 0, cx = 0, cy = 0   // uniform plate scale + viewport centre
 let nArr, mArr, NMODES = 0      // (n,m) mode pairs, ascending eigenfrequency √(n²+m²)
+let SHARP = 15.0                // nodal-line sharpness, pointer-controlled
 
 export let resize = (w, h) => {
   // Map pixels to plate space with ONE uniform scale (no stretch): the unit plate [0,1]²
@@ -41,6 +42,8 @@ export let resize = (w, h) => {
 
 // `freq` (Hz-ish, ~40..20000) selects the mode: higher frequency → higher eigenmode →
 // richer nodal figure. (Adjustable/audio-driven later; here the demo sweeps it.)
+export let setSharpness = (k) => { SHARP = k }
+
 export let frame = (freq) => {
   let PI = Math.PI
   let t01 = (freq - 40.0) / 19960.0
@@ -49,7 +52,7 @@ export let frame = (freq) => {
   let idx = (t01 * (NMODES - 1) + 0.5) | 0
   let n = nArr[idx], m = mArr[idx]
   let nP = n * PI, mP = m * PI
-  let K = 15.0                    // nodal-line sharpness (≈ inverse half-width in f-units)
+  let K = SHARP                   // nodal-line sharpness (≈ inverse half-width in f-units)
 
   let j = 0, py = 0
   while (py < H) {

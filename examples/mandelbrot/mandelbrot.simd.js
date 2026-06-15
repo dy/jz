@@ -8,11 +8,15 @@ const NUM_COLORS = 2048;
 const BAILOUT = 256.0;
 
 let mem;
+let viewCx = 0, viewCy = 0, viewZoom = 0;
+
 export let resize = (width, height) => {
   mem = new Uint16Array(width * height);
   return mem;
 };
 export let dataOffset = () => mem;
+
+export let setView = (cx, cy, zoom) => { viewCx = cx; viewCy = cy; viewZoom = zoom; }
 
 // SIMD natural log (Cephes logf, 4 lanes) — ~3e-7 vs Math.log over the colour range.
 let slog = (x) => {
@@ -60,9 +64,16 @@ const pixel = (real, imaginary, limit, invLimit) => {
 };
 
 export let computeLine = (y, width, height, limit) => {
-  let translateX = width * (1.0 / 1.6);
-  let translateY = height * (1.0 / 2.0);
-  let scale = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);
+  let scale, translateX, translateY;
+  if (viewZoom === 0) {
+    scale = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);
+    translateX = width * (1.0 / 1.6);
+    translateY = height * (1.0 / 2.0);
+  } else {
+    scale = viewZoom;
+    translateX = width * 0.5 - viewCx / scale;
+    translateY = height * 0.5 - viewCy / scale;
+  }
   let imaginary = (y - translateY) * scale;
   let realOffset = translateX * scale;
   let stride = y * width;

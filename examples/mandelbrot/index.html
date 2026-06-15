@@ -36,13 +36,25 @@ cnv.height = height;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
+const h = hud({ kind: "jz", hint: "drag to pan · scroll to zoom · double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
-let gen = 0;
+let gen = 0, engine, mem;
+
+// View state in complex-plane coordinates: (cx,cy) center, zoom = complex units per pixel.
+const view = { cx: 0, cy: 0, zoom: 0 };
+const resetView = () => {
+  const s = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);
+  view.cx = (width * 0.5 - width * (1.0 / 1.6)) * s;
+  view.cy = 0;
+  view.zoom = s;
+  if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
+};
+
 async function start(kind) {
   const my = ++gen;
-  const engine = await loadEngine(kind, urls);
-  const mem = engine.resize(width, height); // Uint16Array: JS buffer or wasm view
+  engine = await loadEngine(kind, urls);
+  mem = engine.resize(width, height); // Uint16Array: JS buffer or wasm view
+  resetView();
 
   let t = 0;
   (function render() {
@@ -60,6 +72,37 @@ async function start(kind) {
   })();
 }
 start(h.kind);
+
+// Pan / zoom / reset interactions.
+let dragging = false, lastX = 0, lastY = 0;
+cnv.addEventListener('pointerdown', e => {
+  dragging = true;
+  lastX = e.clientX; lastY = e.clientY;
+  try { cnv.setPointerCapture(e.pointerId) } catch {}
+});
+cnv.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  view.cx -= dx * view.zoom;
+  view.cy -= dy * view.zoom;
+  if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
+});
+cnv.addEventListener('pointerup', e => { dragging = false; try { cnv.releasePointerCapture(e.pointerId) } catch {} });
+cnv.addEventListener('pointerleave', () => { dragging = false });
+cnv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = cnv.getBoundingClientRect();
+  const pxX = e.clientX - rect.left, pxY = e.clientY - rect.top;
+  const k = Math.exp(-e.deltaY * 0.001);
+  const preX = view.cx + (pxX - width * 0.5) * view.zoom;
+  const preY = view.cy + (pxY - height * 0.5) * view.zoom;
+  view.zoom *= k;
+  view.cx = preX - (pxX - width * 0.5) * view.zoom;
+  view.cy = preY - (pxY - height * 0.5) * view.zoom;
+  if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
+}, { passive: false });
+cnv.addEventListener('dblclick', resetView);
 
 // Compute a nice set of colors using a gradient
 const colors = (() => {

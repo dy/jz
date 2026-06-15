@@ -45,7 +45,7 @@ ctx.imageSmoothingEnabled = false;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
+const h = hud({ kind: "jz", hint: "drag to spray cells · right-drag erases · scroll to size", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
 
 let engine; // current engine
 let mem;    // shared buffer (input + output halves)
@@ -63,6 +63,7 @@ async function start(kind) {
     const t0 = performance.now();
     engine.step();                           // next generation
     const work = performance.now() - t0;
+    if (drawing) spray(curX, curY, erasing); // continuous spray while held
     argb.set(mem.subarray(size, 2 * size));  // output → image
     ctx.putImageData(imageData, 0, 0);
     h.frame(work);
@@ -70,15 +71,28 @@ async function start(kind) {
 }
 start(h.kind);
 
-// Pen drawing: click or drag to paint live cells into the output half.
-const setCell = (x, y) => {
+// Spray can: hold to scatter live cells under the cursor (denser the longer you hold),
+// move to spray a trail; right-button erases solid. Wheel changes brush radius.
+const deadVal = ((rgb2bgr(RGB_DEAD) & ~1) | 0xff000000) >>> 0
+const setCell = (x, y, v) => {
   if (x < 0 || x >= width || y < 0 || y >= height) return
-  mem[size + y * width + x] = aliveVal
+  mem[size + y * width + x] = v
 }
-const pen = (cx, cy, r = 2) => {
-  const x0 = Math.max(0, cx - r), x1 = Math.min(width - 1, cx + r)
-  const y0 = Math.max(0, cy - r), y1 = Math.min(height - 1, cy + r)
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) setCell(x, y)
+let brushR = 9
+let drawing = false, erasing = false, curX = 0, curY = 0
+// Scatter ~density·area random live cells in the brush disc (erase = solid clear).
+const spray = (cx, cy, erase) => {
+  const r = brushR
+  if (erase) {
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++)
+      if (x * x + y * y <= r * r) setCell(cx + x, cy + y, deadVal)
+    return
+  }
+  const shots = Math.max(4, (r * r * 0.5) | 0)
+  for (let i = 0; i < shots; i++) {
+    const a = Math.random() * 6.2832, rr = Math.sqrt(Math.random()) * r
+    setCell((cx + Math.cos(a) * rr) | 0, (cy + Math.sin(a) * rr) | 0, aliveVal)
+  }
 }
 const posFromEvent = (e) => {
   const rect = canvas.getBoundingClientRect()
@@ -87,15 +101,26 @@ const posFromEvent = (e) => {
     y: ((e.clientY - rect.top) * height / rect.height) | 0,
   }
 }
-let drawing = false
 canvas.addEventListener('pointerdown', e => {
   drawing = true
+  erasing = e.button === 2
   try { canvas.setPointerCapture(e.pointerId) } catch {}
-  const p = posFromEvent(e); pen(p.x, p.y)
+  const p = posFromEvent(e); curX = p.x; curY = p.y
+  spray(curX, curY, erasing)
 })
-canvas.addEventListener('pointermove', e => { if (drawing) { const p = posFromEvent(e); pen(p.x, p.y) } })
+canvas.addEventListener('pointermove', e => {
+  const p = posFromEvent(e); curX = p.x; curY = p.y
+  if (drawing) e.preventDefault()
+})
 canvas.addEventListener('pointerup', e => { drawing = false; try { canvas.releasePointerCapture(e.pointerId) } catch {} })
 canvas.addEventListener('pointerleave', () => { drawing = false })
+canvas.addEventListener('contextmenu', e => e.preventDefault())
+canvas.addEventListener('wheel', e => {
+  e.preventDefault()
+  brushR += e.deltaY > 0 ? -1 : 1
+  if (brushR < 1) brushR = 1
+  if (brushR > 12) brushR = 12
+}, { passive: false })
 </script>
 </body>
 </html>

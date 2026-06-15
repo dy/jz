@@ -30,7 +30,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 16px;
-  font-family: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  font-family: Jost, 'Helvetica Neue', Arial, sans-serif;
 }
 
 .wordmark { font-size: 19px; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
@@ -111,14 +111,33 @@ html, body {
 <script>
 const EXAMPLES = [
   ['game-of-life',       "Conway's Life, straight into shared pixel memory"],
+  ['wireworld',          'a 4-state CA that races electrons along wires'],
+  ['maze',               'recursive-backtracker maze, then BFS solve'],
+  ['sand',               'falling-sand automaton — pour sand, water & walls'],
   ['lenia',              'continuous cellular automaton — smooth-kernel "digital life"'],
+  ['slime',              'Physarum slime mold — agents grow transport networks'],
+  ['dla',                'diffusion-limited aggregation — a random-walk crystal'],
   ['diffusion', 'Gray–Scott — organic coral & labyrinths'],
+  ['watercolor',         'wet-paper pigment diffusion with edge darkening'],
+  ['marble',             'paper marbling — drop ink, comb it into swirls'],
   ['interference',       'two-source wave field, recomputed every frame'],
+  ['waves',              '2D wave equation — ripples that interfere & reflect'],
+  ['erosion',            'hydraulic erosion — rain carves a fractal terrain'],
   ['plasma',             'FBM domain-warp — the classic flowing plasma'],
   ['chladni',            'Camerata plate — frequency sweeps the nodal figure'],
   ['mandelbrot',         'escape-time fractal with smooth coloring'],
+  ['julia',              'z² + c — a fractal that morphs as you steer c'],
   ['attractors',         'de Jong map — millions of iters into luminous curves'],
+  ['voronoi',            'brute-force nearest-site cells, drifting'],
   ['raymarcher',         'an SDF sphere field — Shadertoy on the CPU'],
+  ['metaballs',          'organic blobs — 2D implicit surface marching'],
+  ['nbody',              '1024-body gravity — pairwise attraction'],
+  ['swarm',              'flies that chase and circle the cursor'],
+  ['cloth',              'Verlet spring-mass cloth — grab and swing it'],
+  ['cradle',             "Newton's cradle — kinetic energy passing through"],
+  ['sph',                'SPH particle fluid — smoothed-particle hydrodynamics'],
+  ['lbm',                'lattice-Boltzmann flow — a von Kármán vortex street'],
+  ['raytrace',           'per-pixel ray-sphere intersection'],
 ]
 
 document.getElementById('grid').innerHTML = EXAMPLES.map(([name, desc]) => `

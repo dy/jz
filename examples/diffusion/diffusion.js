@@ -17,7 +17,7 @@ let uA, vA, uB, vB  // ping-pong double-buffered fields
 let px               // Uint32 pixel output
 let flip = 0         // 0: read A write B  |  1: read B write A
 let STEPS = 8
-let Du = 0.16, Dv = 0.08, F = 0.06, k = 0.062
+let Du = 0.16, Dv = 0.08, F = 0.054, k = 0.062
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -60,6 +60,61 @@ export let seedRect = (x0, y0, x1, y1) => {
     }
     y++
   }
+}
+
+// Circular brush for free-hand painting. Writes into both ping-pong halves so the patch
+// appears regardless of which buffer is currently being read.
+export let seedBrush = (cx, cy, r) => {
+  let x0 = cx - r | 0, x1 = cx + r | 0
+  let y0 = cy - r | 0, y1 = cy + r | 0
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W - 1) x1 = W - 1
+  if (y1 > H - 1) y1 = H - 1
+  let r2 = r * r
+  let y = y0
+  while (y <= y1) {
+    let dy = y - cy, row = y * W, x = x0
+    while (x <= x1) {
+      let dx = x - cx
+      if (dx * dx + dy * dy <= r2) {
+        uA[row + x] = 0.5; vA[row + x] = 1.0
+        uB[row + x] = 0.5; vB[row + x] = 1.0
+      }
+      x++
+    }
+    y++
+  }
+}
+
+// Erase a circular patch (back to rest state U=1, V=0) into both buffers.
+export let eraseBrush = (cx, cy, r) => {
+  let x0 = cx - r | 0, x1 = cx + r | 0
+  let y0 = cy - r | 0, y1 = cy + r | 0
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W - 1) x1 = W - 1
+  if (y1 > H - 1) y1 = H - 1
+  let r2 = r * r
+  let y = y0
+  while (y <= y1) {
+    let dy = y - cy, row = y * W, x = x0
+    while (x <= x1) {
+      let dx = x - cx
+      if (dx * dx + dy * dy <= r2) {
+        uA[row + x] = 1.0; vA[row + x] = 0.0
+        uB[row + x] = 1.0; vB[row + x] = 0.0
+      }
+      x++
+    }
+    y++
+  }
+}
+
+// Live parameter tweak: pointer position can drive the feed (F) and kill (k) rates.
+export let setParams = (feed, kill) => {
+  F = feed
+  k = kill
 }
 
 // One Gray-Scott sub-step reading from (rU,rV) and writing to (wU,wV).

@@ -7,7 +7,6 @@
 // the harness installs examples/lib/simd.js. Output is grayscale (r=g=b=v).
 let W = 0, H = 0, px;
 let invW = 0, invH = 0, aspect = 0;
-
 export let resize = (w, h) => {
   W = w; H = h; invW = 1.0 / w; invH = 1.0 / h; aspect = w * invH;
   px = new Uint32Array(w * h);
@@ -31,11 +30,15 @@ let sdRep = (x, y, z) => {
 // Scene = min(sphere field, ground plane y=-1.4), 4 lanes.
 let sdf = (x, y, z) => f32x4.min(sdRep(x, y, z), f32x4.add(y, f32x4.splat(1.4)));
 
-export let frame = (t) => {
-  let camAngle = t * 0.3;
-  let eyeX = Math.sin(camAngle) * 3.5;
-  let eyeY = 1.2 + Math.sin(t * 0.17) * 0.6;
-  let eyeZ = Math.cos(camAngle) * 3.5;
+// Eye passed as f64 args (a setter global gets narrowed to i32 in jz, freezing the
+// camera); all-zero falls back to the built-in t-orbit.
+export let frame = (t, eyeX, eyeY, eyeZ) => {
+  if (eyeX === 0.0 && eyeY === 0.0 && eyeZ === 0.0) {
+    let camAngle = t * 0.3;
+    eyeX = Math.sin(camAngle) * 3.5;
+    eyeY = 1.2 + Math.sin(t * 0.17) * 0.6;
+    eyeZ = Math.cos(camAngle) * 3.5;
+  }
   let invEyeLen = 1.0 / Math.sqrt(eyeX * eyeX + eyeY * eyeY + eyeZ * eyeZ);
   let fwdX = -eyeX * invEyeLen, fwdY = -eyeY * invEyeLen, fwdZ = -eyeZ * invEyeLen;
   let rtX = fwdZ, rtZ = -fwdX;

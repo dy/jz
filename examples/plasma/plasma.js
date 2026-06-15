@@ -6,9 +6,24 @@
 let W = 0, H = 0, px, invW = 0, invH = 0
 let pal                                  // 4 RGB colour-ramp stops (12 ints) the value sweeps through
 
+// Watercolor "ink": a ring buffer of soft blooms the finger deposits while dragging.
+// Each frame they fade; per pixel they lift the field value, so the drag leaves a
+// glowing, spreading trail that settles like wet paint. Guarded by `smearOn` so an
+// idle plasma pays nothing.
+let PK = 24
+let pkx = new Float64Array(PK), pky = new Float64Array(PK), pka = new Float64Array(PK)
+let pkHead = 0, smearOn = 0
+
+// exponential luminance curve, precomputed (256 entries) so the hot loop does a lookup,
+// not a per-pixel exp: deep darks, glowing highlights.
+let expLut
+
 export let resize = (w, h) => {
   W = w; H = h; invW = 1.0 / w; invH = 1.0 / h
   px = new Uint32Array(w * h)
+  expLut = new Int32Array(256)
+  let G = 2.4, den = 1.0 / (Math.exp(G) - 1.0), i = 0
+  while (i < 256) { expLut[i] = ((Math.exp(G * i / 255.0) - 1.0) * den * 255.0) | 0; i++ }
   pal = new Int32Array(12)
   // default: grayscale black → white until setPalette overrides
   pal[0] = 0;   pal[1] = 0;   pal[2] = 0
@@ -28,6 +43,13 @@ export let setPalette = (a, b, c, d, e, f, g, h, i, j, k, l) => {
   pal[9] = j;  pal[10] = k; pal[11] = l
 }
 
+// Drop a watercolor bloom at normalized (x,y) — called along the drag path.
+export let poke = (x, y) => {
+  pkx[pkHead] = x; pky[pkHead] = y; pka[pkHead] = 1.0
+  pkHead = pkHead + 1
+  if (pkHead >= PK) pkHead = 0
+}
+
 // sine-based fbm: 5 octaves, freq doubling (2,4,8,16,32), amp halving (0.5,0.25,...)
 // ph is the phase-time argument; py-only terms are hoisted by the caller.
 // Returns a value roughly in [-1, 1].
@@ -45,6 +67,11 @@ let fbm = (px_, py_, ph, a1y, a2y, a3y, a4y, a5y) => {
 }
 
 export let frame = (t) => {
+  // fade the ink blooms; note whether any are still alive (skip the per-pixel ink loop if not)
+  let any = 0, k = 0
+  while (k < PK) { pka[k] = pka[k] * 0.955; if (pka[k] > 0.02) any = 1; k++ }
+  smearOn = any
+
   let j = 0, py = 0
   let t6 = t * 0.6, t3 = t * 0.3, t7 = t * 0.7
   while (py < H) {
@@ -92,17 +119,28 @@ export let frame = (t) => {
       // v = fbm(x+r, y, t*0.3)
       let v = fbm(x + r, y, t3, v_a1y, v_a2y, v_a3y, v_a4y, v_a5y)
 
-      // map v ∈ [-1, 1] → 0..255 — no divide, just multiply + clamp
-      // norm ∈ [0, 255]
-      let norm = (v * 127.5 + 127.5) | 0
-      if (norm < 0) norm = 0
-      if (norm > 255) norm = 255
+      // map v ∈ [-1,1] → u ∈ [0,1]
+      let u = v * 0.5 + 0.5
 
-      // Contrast expansion around the midpoint: the fBm field sits near mid-gray, so
-      // stretch it (deepen darks, brighten lights) for punch instead of a flat ramp.
-      let c = (norm - 128) * 1.9 + 128
-      if (c < 0) c = 0
-      if (c > 255) c = 255
+      // watercolor ink: lift u where the finger dragged (cheap radial falloff, skipped when idle)
+      if (smearOn) {
+        let ink = 0.0, kk = 0
+        while (kk < PK) {
+          let a = pka[kk]
+          if (a > 0.02) {
+            let ddx = x - pkx[kk], ddy = y - pky[kk]
+            ink += a * 0.0009 / (0.0009 + ddx * ddx + ddy * ddy)
+          }
+          kk++
+        }
+        if (ink > 0.7) ink = 0.7        // cap so an overlapping trail blooms, never blows out
+        u += ink
+      }
+      // exponential luminance via lookup (clamped index) → punchy darks, glowing highlights
+      let idx = (u * 255.0) | 0
+      if (idx < 0) idx = 0
+      if (idx > 255) idx = 255
+      let c = expLut[idx]
 
       // map c ∈ [0,255] through the 4-stop ramp (3 segments) → RGB
       let p = c * (3.0 / 255.0)               // 0..3

@@ -9,20 +9,26 @@
   html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-  #pal { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 40;
-    font: 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #aaa; background: #0a0a12cc;
-    border: 1px solid #ddd88; padding: 7px 16px; cursor: pointer;
-    backdrop-filter: blur(6px); transition: border-color .2s, color .2s; }
-  #pal:hover { border-color: #ddd; color: #fff; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+  #pal { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40;
+    display: inline-flex; align-items: center; gap: 9px;
+    font: 600 11px 'Helvetica Neue', Helvetica, Arial, sans-serif; text-transform: uppercase; letter-spacing: .14em;
+    color: #ddd; background: rgba(10,10,12,.55); border: 1px solid rgba(255,255,255,.16);
+    padding: 8px 16px 8px 12px; cursor: pointer;
+    backdrop-filter: blur(8px); transition: border-color .2s, color .2s, background .2s; }
+  #pal:hover { border-color: rgba(255,255,255,.5); color: #fff; background: rgba(22,22,26,.7); }
+  #pal .sw { width: 13px; height: 13px; flex: none;
+    background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.22) inset; transition: transform .25s; }
+  #pal:hover .sw { transform: rotate(120deg); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<button id="pal" title="randomize palette">🎨 palette</button>
+<button id="pal" title="randomize palette"><span class="sw"></span>palette</button>
 
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
+import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
 let W = 0, H = 0, img, out32, px
@@ -77,6 +83,24 @@ const setEngine = async (kind) => {
 }
 addEventListener("resize", () => engine && sizeTo(engine))
 
+// Drag to smear watercolor blooms into the field (interpolated so the trail is solid).
+const ptr = trackPointer(cv)
+let painting = false, lpx = 0, lpy = 0
+const inkTo = (x, y) => {
+  const dx = x - lpx, dy = y - lpy
+  const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 0.02))
+  for (let i = 1; i <= n; i++) engine?.poke?.(lpx + dx * i / n, lpy + dy * i / n)
+  lpx = x; lpy = y
+}
+cv.addEventListener("pointerdown", (e) => {
+  painting = true; lpx = ptr.x; lpy = ptr.y
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+  engine?.poke?.(ptr.x, ptr.y)
+})
+cv.addEventListener("pointermove", () => { if (painting) inkTo(ptr.x, ptr.y) })
+cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { painting = false })
+
 const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
@@ -89,7 +113,7 @@ const loop = () => {
 }
 
 const ui = hud({
-  kind: "jz",
+  kind: "jz", hint: "drag to smear watercolor blooms",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/plasma",
   code: "./plasma.js",
@@ -97,7 +121,7 @@ const ui = hud({
   onSwitch: setEngine,
 })
 await setEngine(ui.kind)
-applyPalette(randomPalette())     // start on a fresh random palette
+// starts black & white (kernel default grayscale ramp); the palette button adds color
 loop()
 </script>
 </body>

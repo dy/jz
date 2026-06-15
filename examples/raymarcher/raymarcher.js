@@ -93,12 +93,15 @@ let march = (ox, oy, oz, dx, dy, dz) => {
   return -1.0             // miss — step budget exhausted
 }
 
-export let frame = (t) => {
-  // Camera: orbit around origin, eye at radius 3.5
-  let camAngle = t * 0.3
-  let eyeX = Math.sin(camAngle) * 3.5
-  let eyeY = 1.2 + Math.sin(t * 0.17) * 0.6
-  let eyeZ = Math.cos(camAngle) * 3.5
+// Eye passed as f64 args (a setter global gets narrowed to i32 in jz, freezing the
+// camera); all-zero falls back to the built-in t-orbit.
+export let frame = (t, eyeX, eyeY, eyeZ) => {
+  if (eyeX === 0.0 && eyeY === 0.0 && eyeZ === 0.0) {
+    let camAngle = t * 0.3
+    eyeX = Math.sin(camAngle) * 3.5
+    eyeY = 1.2 + Math.sin(t * 0.17) * 0.6
+    eyeZ = Math.cos(camAngle) * 3.5
+  }
 
   // Camera basis: look-at origin
   // Forward

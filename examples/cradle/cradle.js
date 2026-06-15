@@ -33,12 +33,28 @@ export let init = () => {
   th[0] = -0.7
 }
 
-// lift the nearest end ball to release angle a (px is a screen x)
-export let lift = (sx) => {
-  let i = sx < W * 0.5 ? 0 : N - 1
-  th[i] = i === 0 ? -0.7 : 0.7
-  om[i] = 0.0
+let grabbed = -1
+
+// grab the ball nearest the cursor; drag sets its angle; release lets it swing
+export let grab = (sx, sy) => {
+  let best = 1e18, bi = -1, i = 0
+  while (i < N) {
+    let bx = pvx[i] + Math.sin(th[i]) * L, by = pvy + Math.cos(th[i]) * L
+    let dx = bx - sx, dy = by - sy, d = dx * dx + dy * dy
+    if (d < best) { best = d; bi = i }
+    i++
+  }
+  if (best < (2.0 * R) * (2.0 * R)) grabbed = bi
 }
+export let dragTo = (sx) => {
+  if (grabbed < 0) return 0.0
+  let s = (sx - pvx[grabbed]) / L
+  if (s > 0.95) s = 0.95
+  if (s < -0.95) s = -0.95
+  th[grabbed] = Math.asin(s); om[grabbed] = 0.0
+  return 0.0
+}
+export let release = () => { grabbed = -1 }
 
 let ballX = (i) => pvx[i] + Math.sin(th[i]) * L
 
@@ -78,7 +94,7 @@ export let frame = (t) => {
   let s = 0
   while (s < 4) {
     let i = 0
-    while (i < N) { om[i] += -W0 * W0 * Math.sin(th[i]); th[i] += om[i]; i++ }
+    while (i < N) { if (i !== grabbed) { om[i] += -W0 * W0 * Math.sin(th[i]); th[i] += om[i] } i++ }
     // resolve collisions between neighbours: overlap + closing → swap angular velocities
     i = 0
     while (i < N - 1) {
