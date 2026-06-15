@@ -79,7 +79,7 @@ cv.addEventListener("pointerdown", (e) => { try { cv.setPointerCapture(e.pointer
 cv.addEventListener("pointerup", (e) => { try { cv.releasePointerCapture(e.pointerId) } catch {} })
 
 const ui = hud({
-  kind: "jz", hint: "drag to sweep frequency and sharpness",
+  kind: "jz", hint: "Chladni plate — nodal figures of a vibrating plate",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/chladni",
   code: "./chladni.js",

@@ -16,7 +16,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">click an end to lift a ball · double-click to reset</div>
+<div id="hint">Newton's cradle — kinetic energy passing through</div>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
@@ -25,8 +25,8 @@ const cv = document.getElementById("c"), g = cv.getContext("2d")
 let W = 0, H = 0, img, out32, px
 
 const sizeTo = (engine) => {
-  const budget = 700000
-  let scale = Math.min(1.5, window.devicePixelRatio || 1)
+  const budget = 1800000
+  let scale = Math.min(2, window.devicePixelRatio || 1)
   const want = innerWidth * innerHeight * scale * scale
   if (want > budget) scale *= Math.sqrt(budget / want)
   W = Math.round(innerWidth * scale) >> 1 << 1
@@ -44,7 +44,13 @@ const setEngine = async (kind) => {
   engine = e; sizeTo(engine)
 }
 addEventListener("resize", () => engine && sizeTo(engine))
-cv.addEventListener("pointerdown", (e) => engine && engine.lift(e.offsetX * W / cv.clientWidth))
+// drag any ball to pull it aside; release to let it swing
+const sx = () => W / cv.clientWidth, sy = () => H / cv.clientHeight
+let dragging = false
+cv.addEventListener("pointerdown", (e) => { if (!engine) return; dragging = true; try { cv.setPointerCapture(e.pointerId) } catch {}; engine.grab(e.offsetX * sx(), e.offsetY * sy()) })
+cv.addEventListener("pointermove", (e) => { if (dragging && engine) engine.dragTo(e.offsetX * sx()) })
+cv.addEventListener("pointerup", (e) => { dragging = false; engine?.release(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { dragging = false; engine?.release() })
 cv.addEventListener("dblclick", () => engine && engine.init())
 
 const loop = () => {

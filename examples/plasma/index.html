@@ -10,22 +10,22 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
-  #pal { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40;
-    display: inline-flex; align-items: center; gap: 9px;
-    font: 600 11px 'Helvetica Neue', Helvetica, Arial, sans-serif; text-transform: uppercase; letter-spacing: .14em;
-    color: #ddd; background: rgba(10,10,12,.55); border: 1px solid rgba(255,255,255,.16);
-    padding: 8px 16px 8px 12px; cursor: pointer;
-    backdrop-filter: blur(8px); transition: border-color .2s, color .2s, background .2s; }
-  #pal:hover { border-color: rgba(255,255,255,.5); color: #fff; background: rgba(22,22,26,.7); }
-  #pal .sw { width: 13px; height: 13px; flex: none;
+  /* palette: a bare square color-wheel icon, no button chrome — it rotates on hover/click */
+  #pal { position: fixed; right: 18px; bottom: 18px; z-index: 40;
+    width: 30px; height: 30px; padding: 0; margin: 0; border: 0; background: none;
+    cursor: pointer; -webkit-appearance: none; appearance: none;
+    filter: drop-shadow(0 1px 5px rgba(0,0,0,.55)); }
+  #pal .sw { display: block; width: 100%; height: 100%;
     background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-    box-shadow: 0 0 0 1px rgba(255,255,255,.22) inset; transition: transform .25s; }
+    box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset;
+    transition: transform .4s cubic-bezier(.2,.75,.2,1); }
   #pal:hover .sw { transform: rotate(120deg); }
+  #pal.flip .sw { transform: rotate(360deg); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<button id="pal" title="randomize palette"><span class="sw"></span>palette</button>
+<button id="pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>
 
 <script type="module">
 import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
@@ -60,7 +60,11 @@ const randomPalette = () => {
 }
 let palette = null
 const applyPalette = (p) => { palette = p; if (engine?.setPalette) engine.setPalette(...p) }
-document.getElementById("pal").onclick = () => applyPalette(randomPalette())
+const palBtn = document.getElementById("pal")
+palBtn.onclick = () => {                       // flip the wheel a full turn on each press
+  applyPalette(randomPalette())
+  palBtn.classList.toggle("flip")
+}
 
 const sizeTo = (engine) => {
   // 5-octave fBm per pixel is the fps ceiling — render at 0.8× the screen (CSS upscales)
@@ -113,7 +117,7 @@ const loop = () => {
 }
 
 const ui = hud({
-  kind: "jz", hint: "drag to smear watercolor blooms",
+  kind: "jz", hint: "fbm domain-warp plasma",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/plasma",
   code: "./plasma.js",

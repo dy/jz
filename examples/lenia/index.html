@@ -66,7 +66,7 @@ cv.addEventListener("pointerleave", () => { painting = false })
 cv.addEventListener("dblclick", () => { if (engine) { px = engine.resize(IW, IH); engine.seed() } })
 
 const ui = hud({
-  kind: "jz", hint: "drag to paint living cells · double-click to reseed",
+  kind: "jz", hint: "Lenia — a continuous-kernel cellular automaton · double-click to reseed",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/lenia",
   code: "./lenia.js",

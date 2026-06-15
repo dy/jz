@@ -16,7 +16,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">drag to paint · pigment blooms into the wet paper</div>
+<div id="hint">ink diffusing through wet paper</div>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
@@ -26,7 +26,7 @@ let W = 0, H = 0, img, out32, px
 
 const sizeTo = (engine) => {
   // the pressure solve is the cost — cap the grid to ~90k cells, CSS upscales the wash
-  const budget = 90000
+  const budget = 150000
   let scale = Math.min(1, window.devicePixelRatio || 1)
   const want = innerWidth * innerHeight * scale * scale
   if (want > budget) scale *= Math.sqrt(budget / want)

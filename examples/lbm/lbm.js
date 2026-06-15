@@ -14,7 +14,7 @@ let bcx = new Float64Array(8), bcy = new Float64Array(8), bcr = new Float64Array
 let n = 0
 let U0 = 0.09         // inflow speed
 let TAU = 0.62        // relaxation time (>0.5 for stability)
-let SUB = 5           // LBM steps per rendered frame
+let SUB = 4           // LBM steps per rendered frame
 
 export let resize = (w, h) => {
   W = w; H = h; n = w * h

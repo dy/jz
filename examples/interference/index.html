@@ -22,7 +22,7 @@ const canvas = document.getElementById("canvas");
 const context = canvas.getContext("2d");
 var step = 0.012;
 
-const h = hud({ kind: "jz", hint: "drag to place the wave sources · double-click to resume", src: "https://github.com/dy/jz/tree/main/examples/interference", code: "./interference.js", nav: "interference", onSwitch: start });
+const h = hud({ kind: "jz", hint: "two-source wave interference · drag the sources, double-click to resume", src: "https://github.com/dy/jz/tree/main/examples/interference", code: "./interference.js", nav: "interference", onSwitch: start });
 
 let gen = 0;
 async function start(kind) {

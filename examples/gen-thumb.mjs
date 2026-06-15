@@ -24,7 +24,7 @@ if (name === 'diffusion' && exports.seedBrush) {
   for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.6], [0.7, 0.4]])
     exports.seedBrush(fx * W, fy * H, 12)
 }
-if (name === 'swarm' && exports.addFlies) exports.addFlies(0.5, 0.5, 400)
+if (name === 'swarm' && exports.addFlies) exports.addFlies(0.5, 0.5, 70)
 if (name === 'sand' && exports.paint) {
   exports.clear?.()
   for (let i = 0; i <= 22; i++) exports.paint((0.04 + i * 0.043) * W, 0.9 * H, 15, 3)   // floor
@@ -42,27 +42,33 @@ if (name === 'marble' && exports.drop) {
   exports.tine(0.95 * W, 0.62 * H, 0.05 * W, 0.6 * H)
   exports.tine(0.3 * W, 0.95 * H, 0.34 * W, 0.05 * H)
 }
-if (name === 'waves' && exports.drop) {
+if (name === 'waves' && exports.source) {
   exports.clear?.()
-  for (const [fx, fy] of [[0.3, 0.34], [0.62, 0.4], [0.5, 0.62], [0.4, 0.52], [0.72, 0.62]])
-    exports.drop(fx * W, fy * H, 4, 1.5)
+  const R = Math.min(W, H) * 0.13
+  exports.source(0, W / 2 - R, H / 2, 0.22, 0.5)    // two in-phase driven sources → fringes
+  exports.source(1, W / 2 + R, H / 2, 0.22, 0.5)
 }
 if (name === 'watercolor' && exports.paint) {
   exports.clear?.()
   for (let i = 0; i <= 30; i++) exports.paint((0.18 + i * 0.021) * W, (0.36 + Math.sin(i * 0.32) * 0.12) * H, 12, 1.4, 0.2)
   for (let i = 0; i <= 24; i++) exports.paint((0.8 - i * 0.024) * W, (0.62 + Math.cos(i * 0.32) * 0.12) * H, 12, -1.2, 0.3)
 }
-const WARMUP = { diffusion: 320, nbody: 140, metaballs: 70, lenia: 120, attractors: 200,
+const WARMUP = { diffusion: 320, nbody: 520, metaballs: 70, lenia: 120, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 160, voronoi: 50,
-                 dla: 600, wireworld: 26, waves: 55, cloth: 130, maze: 700, sph: 500,
+                 dla: 600, wireworld: 26, waves: 360, cloth: 130, maze: 700, sph: 500,
                  erosion: 80, lbm: 150, watercolor: 200, cradle: 36 }[name] ?? 1
+// nbody trails fade fast on screen; for a still, accumulate peak brightness across
+// the run so the orbits read as long luminous curves (what the eye integrates live).
+const peak = name === 'nbody' ? new Uint8Array(W * H) : null
 for (let f = 0; f < WARMUP; f++) {
   if (name === 'swarm' && exports.setTarget)               // lead the swarm in a circle
     exports.setTarget(0.5 + Math.cos(f * 0.08) * 0.18, 0.5 + Math.sin(f * 0.08) * 0.18)
   if (name === 'raytrace') exports.frame(1.4, 0.85, -2.4)  // camera eye is a frame arg now
   else if (name === 'julia') exports.frame(0, -0.8, 0.156) // dendrite-region constant
   else exports.frame(f / 60)
+  if (peak && f > WARMUP - 260) for (let i = 0; i < W * H; i++) { const g = px[i] & 0xff; if (g > peak[i]) peak[i] = g }
 }
+if (peak) for (let i = 0; i < W * H; i++) px[i] = (255 << 24) | (peak[i] << 16) | (peak[i] << 8) | peak[i]
 
 // Write PPM (RGB) — pixels are 0xAABBGGRR in host memory (low byte = R).
 const ppm = `${dir}/thumbs/${name}.ppm`

@@ -490,26 +490,23 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 <table>
 <tr>
-<td width="33%"><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/lenia/"><img src="examples/thumbs/lenia.webp" width="100%" alt="Lenia"></a><br><b>lenia</b> — continuous cellular automaton; smooth-kernel "digital life".</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/diffusion/"><img src="examples/thumbs/diffusion.webp" width="100%" alt="Diffusion"></a><br><b>diffusion</b> — Gray-Scott; organic coral / labyrinths.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b> — Camerata-style plate; frequency sweeps the nodal figure.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/julia/"><img src="examples/thumbs/julia.webp" width="100%" alt="Julia set"></a><br><b>julia</b> — escape-time Julia set; drag the constant to morph it.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
 </tr>
 <tr>
-<td><a href="https://dy.github.io/jz/examples/interference/"><img src="examples/thumbs/interference.webp" width="100%" alt="Wave interference"></a><br><b>interference</b> — two-source wave field, recomputed every frame.</td>
-<td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
-<td><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b> — Camerata-style plate; frequency sweeps the nodal figure.</td>
-</tr>
-<tr>
-<td><a href="https://dy.github.io/jz/examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" width="100%" alt="Mandelbrot set"></a><br><b>mandelbrot</b> — escape-time fractal with smooth coloring.</td>
-<td><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
 <td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
+<td><a href="https://dy.github.io/jz/examples/nbody/"><img src="examples/thumbs/nbody.webp" width="100%" alt="N-body gravity"></a><br><b>nbody</b> — three-body gravity; fading trails trace the orbits.</td>
+<td><a href="https://dy.github.io/jz/examples/game-of-life/"><img src="examples/thumbs/game-of-life.webp" width="100%" alt="Game of Life"></a><br><b>game-of-life</b> — Conway's Life straight into shared pixel memory.</td>
 </tr>
 <tr>
-<td><a href="https://dy.github.io/jz/examples/rfft/"><img src="examples/thumbs/rfft.webp" width="100%" alt="Live spectrogram"></a><br><b>rfft</b> — live log/mel spectrogram from a jz real FFT.</td>
-<td><a href="https://dy.github.io/jz/examples/zzfx/"><img src="examples/thumbs/zzfx.webp" width="100%" alt="ZzFX sound synth"></a><br><b>zzfx</b> — the unmodified <a href="https://github.com/KilledByAPixel/ZzFX">ZzFX</a> sfx synth, compiled as-is.</td>
-<td><a href="https://dy.github.io/jz/examples/jukebox/"><img src="examples/thumbs/jukebox.webp" width="100%" alt="Floatbeat jukebox"></a><br><b>jukebox</b> — looping procedural-jazz arpeggio floatbeat; tap to play/pause.</td>
+<td><a href="https://dy.github.io/jz/examples/plasma/"><img src="examples/thumbs/plasma.webp" width="100%" alt="Plasma"></a><br><b>plasma</b> — FBM domain-warp; the classic flowing shader plasma.</td>
+<td><a href="https://dy.github.io/jz/examples/cloth/"><img src="examples/thumbs/cloth.webp" width="100%" alt="Cloth simulation"></a><br><b>cloth</b> — Verlet mass-spring sheet; drag it, watch it settle.</td>
+<td><a href="https://dy.github.io/jz/examples/erosion/"><img src="examples/thumbs/erosion.webp" width="100%" alt="Terrain erosion"></a><br><b>erosion</b> — hydraulic droplets carve a fractal terrain.</td>
 </tr>
 </table>
+
+See [all examples →](https://dy.github.io/jz/examples/)
 
 
 

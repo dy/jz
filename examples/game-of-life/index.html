@@ -45,7 +45,7 @@ ctx.imageSmoothingEnabled = false;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", hint: "drag to spray cells · right-drag erases · scroll to size", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
+const h = hud({ kind: "jz", hint: "Conway's Game of Life — right-drag to erase", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
 
 let engine; // current engine
 let mem;    // shared buffer (input + output halves)

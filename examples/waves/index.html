@@ -16,7 +16,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">click or drag to drop ripples</div>
+<div id="hint">two driven sources — wavefronts interfere into standing fringes · click to drop a ripple</div>
 
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js"
@@ -36,14 +36,25 @@ const sizeTo = (engine) => {
   px = engine.resize(W, H)
 }
 
+// two in-phase driven oscillators set up the standing interference pattern. Stored in cell
+// coords, so re-place them whenever the buffer is (re)sized.
+let srcAngle = 0, srcSep = 0.13
+const placeSources = () => {
+  if (!engine?.source) return
+  const f = 0.22, amp = 0.5, R = Math.min(W, H) * srcSep
+  const cxp = W / 2, cyp = H / 2, ca = Math.cos(srcAngle), sa = Math.sin(srcAngle)
+  engine.source(0, cxp - R * ca, cyp - R * sa, f, amp)
+  engine.source(1, cxp + R * ca, cyp + R * sa, f, amp)
+}
+
 let engine = null, gen = 0
 const setEngine = async (kind) => {
   const my = ++gen
   const e = await loadEngine(kind, { js: "./waves.js", wasm: "./waves.wasm" })
   if (my !== gen) return
-  engine = e; sizeTo(engine); engine.clear()
+  engine = e; sizeTo(engine); engine.clear(); placeSources()
 }
-addEventListener("resize", () => engine && sizeTo(engine))
+addEventListener("resize", () => { if (engine) { sizeTo(engine); placeSources() } })
 
 const hint = document.getElementById("hint")
 let painting = false, lastX = 0, lastY = 0
@@ -58,15 +69,22 @@ cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.
 cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
 cv.addEventListener("pointerleave", () => { painting = false })
 
-// autonomous: drop random ripples at random intervals (screensaver)
-let t = 0, nextDrop = 20
+// autonomous: the two sources run continuously; occasionally re-orient them and toss in a
+// stray pulse so the fringe field keeps reshaping (screensaver).
+let t = 0, nextDrop = 120, nextMove = 480
 const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
   t++
   if (t > nextDrop) {
     engine.drop(Math.random() * W, Math.random() * H, 4, 1.4)
-    nextDrop = t + 25 + Math.random() * 130
+    nextDrop = t + 160 + Math.random() * 220
+  }
+  if (t > nextMove) {
+    srcAngle = Math.random() * Math.PI
+    srcSep = 0.09 + Math.random() * 0.09
+    placeSources()
+    nextMove = t + 420 + Math.random() * 360
   }
   const t0 = performance.now()
   engine.frame(0)

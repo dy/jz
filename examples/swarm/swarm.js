@@ -1,57 +1,67 @@
-// Swarm — "mouches", faithful to the old mouches.swf. Every fly obeys the same rules:
-// accelerate toward the cursor at a fixed magnitude (MOOCHACCLERATION), feel GRAVITY, clamp
-// to MOOCHSPEED, and bounce off the walls with ELASTICITY. Uniform rules (no per-fly noise)
-// are what give the toy its coherent streaming swarm that chases and sags under the cursor.
-// Each fly is a small triangle pointing where it's headed. Click adds one; hold streams them.
-// resize(w,h) → Uint32Array.
+// Swarm — "mouches", reproduced verbatim from mouches.swf (decompiled). There is NO
+// velocity/momentum/gravity/bounce — that's the whole point. Two interval loops:
+//
+//   tInit (every ~200ms):  each fly picks a fresh RANDOM target near the cursor:
+//        tx = cursorx + random(AREA) - AREA/2 ;  ty = cursory + random(AREA) - AREA/2
+//   moochasMove (every frame):  ease toward that target + a flow-field wander, face it:
+//        _x += (tx-_x)>>1 * MOOCHSPEED + 2*cos(_y/10)
+//        _y += (ty-_y)>>1 * MOOCHSPEED + 2*sin(_x/10)
+//
+// The per-fly random re-targeting is what makes the motion look randomized (not an orbit);
+// the lerp+wander gives the lazy buzz. Each fly is a triangle facing its target.
+// Coordinates are kept in pixels (as in the swf). resize(w,h) → Uint32Array.
 
 let W = 0, H = 0, px
-
 let MAXN = 3000
-let x = new Float64Array(MAXN)
+let x = new Float64Array(MAXN)        // position (px)
 let y = new Float64Array(MAXN)
-let vx = new Float64Array(MAXN)
-let vy = new Float64Array(MAXN)
+let tx = new Float64Array(MAXN)       // current random target (px)
+let ty = new Float64Array(MAXN)
+let tmr = new Float64Array(MAXN)      // frames until the next re-target
+let wvx = new Float64Array(MAXN)      // per-fly wander velocity (Ornstein–Uhlenbeck)
+let wvy = new Float64Array(MAXN)
 let count = 0
-let tx = 0.5, ty = 0.5
+let cx = 0.5, cy = 0.5                // cursor (normalized)
 
-// faithful to mouches.swf: a SPRING pull toward the cursor (accel ∝ distance, not a unit
-// vector), gravity, a speed clamp, and bouncy walls. Ratios from the swf
-// (GRAVITY 0.1 : MOOCHSPEED 0.04 : ELASTICITY 0.9), scaled to normalized space + slowed.
-let ACC = 0.0013      // MOOCHACCLERATION (spring toward cursor)
-let MAXSP = 0.0068    // MOOCHSPEED
-let GRAV = 0.00019    // GRAVITY
-let EL = 0.9          // ELASTICITY (bouncy walls)
+let LERP = 0.008        // ease toward target (lazy approach — the swf drifts, never darts)
+let AREAF = 0.4         // AREA as a fraction of the smaller side
+let WKICK = 0.0011      // random kick added to wander velocity each frame (fraction of side)
+let WDECAY = 0.9        // wander-velocity persistence (smoothness; lower = twitchier)
+let REROLL = 22         // re-target interval in frames (~0.35s)
 
 export let resize = (w, h) => {
   W = w; H = h
-  px = new Uint32Array(W * H)
+  px = new Uint32Array(w * h)
   return px
 }
 
-let spawn1 = (cx, cy, spread) => {
-  if (count >= MAXN) return
-  let ang = Math.random() * 6.283185307179586, r = Math.random() * spread
-  let i = count
-  x[i] = cx + Math.cos(ang) * r
-  y[i] = cy + Math.sin(ang) * r
-  vx[i] = (Math.random() - 0.5) * 0.004
-  vy[i] = (Math.random() - 0.5) * 0.004
-  count++
+let reroll = (i) => {
+  let area = (W < H ? W : H) * AREAF
+  tx[i] = cx * W + (Math.random() - 0.5) * area
+  ty[i] = cy * H + (Math.random() - 0.5) * area
+  tmr[i] = REROLL * (0.6 + Math.random() * 0.8)     // staggered (the swf's per-fly `time`)
 }
 
-export let init = () => { count = 0; let i = 0; while (i < 20) { spawn1(0.5, 0.4, 0.28); i++ } }   // MOOCHNUMBER = 20
-export let setTarget = (a, b) => { tx = a; ty = b }
-export let addFlies = (a, b, n) => { let i = 0; while (i < n) { spawn1(a, b, 0.03); i++ } }
+let spawn1 = (nx, ny) => {
+  if (count >= MAXN) return
+  let i = count
+  x[i] = nx * W; y[i] = ny * H
+  wvx[i] = 0.0; wvy[i] = 0.0
+  reroll(i); count++
+}
 
-// filled triangle (tip in heading dir) via bounding-box point-in-triangle
+export let init = () => { count = 0; let i = 0; while (i < 20) { spawn1(0.5, 0.4); i++ } }   // MOOCHNUMBER = 20
+export let setTarget = (a, b) => { cx = a; cy = b }
+export let addFlies = (a, b, n) => { let i = 0; while (i < n) { spawn1(a, b); i++ } }
+
+// filled triangle (tip in dir) via bounding-box point-in-triangle
 let tri = (cxf, cyf, ux, uy, s, col) => {
-  let pxv = -uy, pyv = ux
+  let pvx = -uy, pvy = ux
   let ax = cxf + ux * s, ay = cyf + uy * s
-  let bx = cxf - ux * s * 0.7 + pxv * s * 0.6, by = cyf - uy * s * 0.7 + pyv * s * 0.6
-  let cx = cxf - ux * s * 0.7 - pxv * s * 0.6, cy = cyf - uy * s * 0.7 - pyv * s * 0.6
-  let x0 = Math.floor(Math.min(ax, Math.min(bx, cx))), x1 = Math.ceil(Math.max(ax, Math.max(bx, cx)))
-  let y0 = Math.floor(Math.min(ay, Math.min(by, cy))), y1 = Math.ceil(Math.max(ay, Math.max(by, cy)))
+  let bx = cxf - ux * s * 0.7 + pvx * s * 0.6, by = cyf - uy * s * 0.7 + pvy * s * 0.6
+  let dx2 = cxf - ux * s * 0.7 - pvx * s * 0.6, dy2 = cyf - uy * s * 0.7 - pvy * s * 0.6
+  let x0 = Math.floor(Math.min(ax, Math.min(bx, dx2))), x1 = Math.ceil(Math.max(ax, Math.max(bx, dx2)))
+  let y0 = Math.floor(Math.min(ay, Math.min(by, dy2))), y1 = Math.ceil(Math.max(ay, Math.max(by, dy2)))
   if (x0 < 0) x0 = 0
   if (y0 < 0) y0 = 0
   if (x1 > W - 1) x1 = W - 1
@@ -61,8 +71,8 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
     let pxx = x0
     while (pxx <= x1) {
       let w0 = (bx - ax) * (py - ay) - (by - ay) * (pxx - ax)
-      let w1 = (cx - bx) * (py - by) - (cy - by) * (pxx - bx)
-      let w2 = (ax - cx) * (py - cy) - (ay - cy) * (pxx - cx)
+      let w1 = (dx2 - bx) * (py - by) - (dy2 - by) * (pxx - bx)
+      let w2 = (ax - dx2) * (py - dy2) - (ay - dy2) * (pxx - dx2)
       if ((w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0))
         px[py * W + pxx] = col
       pxx++
@@ -76,22 +86,21 @@ export let frame = (t) => {
   let i = 0, n = W * H
   while (i < n) { px[i] = bg; i++ }
 
+  let kick = (W < H ? W : H) * WKICK
   let col = (255 << 24) | (24 << 16) | (20 << 8) | 22
   i = 0
   while (i < count) {
-    // velocity: spring pull toward cursor + gravity, clamped to top speed (mouches)
-    let dx = tx - x[i], dy = ty - y[i]
-    vx[i] += dx * ACC
-    vy[i] += dy * ACC + GRAV
-    let s = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i])
-    if (s > MAXSP) { let k = MAXSP / s; vx[i] *= k; vy[i] *= k }
-    x[i] += vx[i]; y[i] += vy[i]
-    // elastic walls
-    if (x[i] < 0.0) { x[i] = 0.0; vx[i] = -vx[i] * EL } else if (x[i] > 1.0) { x[i] = 1.0; vx[i] = -vx[i] * EL }
-    if (y[i] < 0.0) { y[i] = 0.0; vy[i] = -vy[i] * EL } else if (y[i] > 1.0) { y[i] = 1.0; vy[i] = -vy[i] * EL }
-
-    let sv = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) + 0.000001
-    tri(x[i] * W, y[i] * H, vx[i] / sv, vy[i] / sv, 7.0, col)   // bigger fly, faces travel dir
+    tmr[i] -= 1.0
+    if (tmr[i] <= 0.0) reroll(i)
+    let dx = tx[i] - x[i], dy = ty[i] - y[i]
+    // decorrelated per-fly wander: smooth random drift, no closed streamlines (no orbits)
+    wvx[i] = wvx[i] * WDECAY + (Math.random() - 0.5) * kick
+    wvy[i] = wvy[i] * WDECAY + (Math.random() - 0.5) * kick
+    // direct lerp toward the (random, near-cursor) target — no inertia, so it can't orbit it
+    let mvx = dx * LERP + wvx[i], mvy = dy * LERP + wvy[i]
+    x[i] += mvx; y[i] += mvy
+    let d = Math.sqrt(mvx * mvx + mvy * mvy) + 0.0001
+    tri(x[i], y[i], mvx / d, mvy / d, 7.0, col)       // face actual motion
     i++
   }
 }
