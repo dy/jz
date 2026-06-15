@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 264" width="720" height="264" role="img" aria-label="jz benchmark — geometric mean across 16 benchmark cases · lower is faster, jz = 1.00× baseline; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
-  <rect width="720" height="264" rx="12" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 364" width="720" height="364" role="img" aria-label="jz benchmark — geometric mean across 16 benchmark cases · lower is faster, jz = 1.00× baseline; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
+  <rect width="720" height="364" rx="12" fill="#ffffff"/>
 
   <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
     <rect x="174" y="43.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
@@ -17,11 +17,11 @@
     <rect x="174" y="93.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="88" x2="174" y2="102" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="88" x2="650" y2="102" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="91" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">AssemblyScript</text>
-    <text x="156" y="106" text-anchor="end" font-size="10" fill="#aeb4ba">asc -O3</text>
-    <text x="662" y="99" font-size="13" font-weight="500" fill="#868e96">2.35×</text>
-    <circle cx="182.0" cy="95" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.7552234585436746s" repeatCount="indefinite" calcMode="linear"
+    <text x="156" y="91" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">native C</text>
+    <text x="156" y="106" text-anchor="end" font-size="10" fill="#aeb4ba">clang -O3</text>
+    <text x="662" y="99" font-size="13" font-weight="500" fill="#868e96">1.13×</text>
+    <circle cx="182.0" cy="95" r="8" fill="#ffffff" stroke="#adb5bd" stroke-width="2">
+      <animate attributeName="cx" dur="1.8079999999999998s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.41s"/>
     </circle>
   </g>
@@ -29,11 +29,11 @@
     <rect x="174" y="143.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="138" x2="174" y2="152" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="138" x2="650" y2="152" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">V8</text>
-    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">Node</text>
-    <text x="662" y="149" font-size="13" font-weight="500" fill="#868e96">2.37×</text>
-    <circle cx="182.0" cy="145" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.7844622103271095s" repeatCount="indefinite" calcMode="linear"
+    <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Rust</text>
+    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">rustc -O3</text>
+    <text x="662" y="149" font-size="13" font-weight="500" fill="#868e96">1.19×</text>
+    <circle cx="182.0" cy="145" r="8" fill="#ffffff" stroke="#adb5bd" stroke-width="2">
+      <animate attributeName="cx" dur="1.904s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.82s"/>
     </circle>
   </g>
@@ -41,13 +41,37 @@
     <rect x="174" y="193.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="188" x2="174" y2="202" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="188" x2="650" y2="202" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Porffor</text>
-    <text x="156" y="206" text-anchor="end" font-size="10" fill="#aeb4ba">runs 3 / 16</text>
-    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">3.11×</text>
+    <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">AssemblyScript</text>
+    <text x="156" y="206" text-anchor="end" font-size="10" fill="#aeb4ba">asc -O3</text>
+    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">2.37×</text>
     <circle cx="182.0" cy="195" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="4.969168825582562s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.7925052502124865s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.23s"/>
     </circle>
   </g>
-  <text x="360" y="248" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#868e96">geometric mean across 16 benchmark cases · lower is faster, jz = 1.00× baseline</text>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="174" y="243.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
+    <line x1="174" y1="238" x2="174" y2="252" stroke="#ced4da" stroke-width="2"/>
+    <line x1="650" y1="238" x2="650" y2="252" stroke="#ced4da" stroke-width="2"/>
+    <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">V8</text>
+    <text x="156" y="256" text-anchor="end" font-size="10" fill="#aeb4ba">Node</text>
+    <text x="662" y="249" font-size="13" font-weight="500" fill="#868e96">2.43×</text>
+    <circle cx="182.0" cy="245" r="8" fill="#adb5bd">
+      <animate attributeName="cx" dur="3.887565095969428s" repeatCount="indefinite" calcMode="linear"
+        keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.64s"/>
+    </circle>
+  </g>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <rect x="174" y="293.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
+    <line x1="174" y1="288" x2="174" y2="302" stroke="#ced4da" stroke-width="2"/>
+    <line x1="650" y1="288" x2="650" y2="302" stroke="#ced4da" stroke-width="2"/>
+    <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Porffor</text>
+    <text x="156" y="306" text-anchor="end" font-size="10" fill="#aeb4ba">runs 3 / 16</text>
+    <text x="662" y="299" font-size="13" font-weight="500" fill="#868e96">3.29×</text>
+    <circle cx="182.0" cy="295" r="8" fill="#adb5bd">
+      <animate attributeName="cx" dur="5.265695868092516s" repeatCount="indefinite" calcMode="linear"
+        keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.05s"/>
+    </circle>
+  </g>
+  <text x="360" y="348" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#868e96">geometric mean across 16 benchmark cases · lower is faster, jz = 1.00× baseline</text>
 </svg>

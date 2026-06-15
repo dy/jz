@@ -44,6 +44,13 @@ export const SNAPSHOT = [
   { label: 'NumPy', sub: 'Python', ratio: 7.41 },
 ]
 
+// Native -O3 reference engines — the speed-of-light baseline. Always drawn (as
+// hollow "reference" rings) so the chart reads as "how close does compiled JS
+// get to native", even on a run/box without the C/Rust toolchains: their
+// committed SNAPSHOT ratios then stand in as a stable reference, not a same-run
+// measurement. Zig/Go are native too, but the chart pins C and Rust as the pair.
+export const REFERENCE = new Set(['native C', 'Rust'])
+
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
 const HERO = '#000000'   // jz — black accent (B&W identity)
 const GRAY = '#adb5bd'   // every other ball — minimal, one accent
@@ -68,6 +75,7 @@ export function benchSvg(rows, cases) {
   const lane = (r, i) => {
     const cy = top + i * rowH + rowH / 2
     const isJz = r.label === 'jz'
+    const isRef = REFERENCE.has(r.label)   // native ceiling — drawn hollow
     const color = isJz ? HERO : GRAY
     const dur = period(r.ratio)
     const bx0 = (trackX + ballR).toFixed(1)
@@ -83,7 +91,7 @@ export function benchSvg(rows, cases) {
     <text x="${labelW}" y="${cy - 4}" text-anchor="end" font-size="14" font-weight="${fw}" fill="${isJz ? HERO : '#343a40'}">${r.label}</text>
     ${r.sub ? `<text x="${labelW}" y="${cy + 11}" text-anchor="end" font-size="10" fill="#aeb4ba">${r.sub}</text>` : ''}
     <text x="${trackRight + 12}" y="${cy + 4}" font-size="13" font-weight="${fw}" fill="${isJz ? HERO : '#868e96'}">${fmt(r.ratio)}×</text>
-    <circle cx="${bx0}" cy="${cy}" r="${ballR}" fill="${color}">
+    <circle cx="${bx0}" cy="${cy}" r="${ballR}" fill="${isRef ? '#ffffff' : color}"${isRef ? ` stroke="${GRAY}" stroke-width="2"` : ''}>
       <animate attributeName="cx" dur="${dur}s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="${bx0};${bx1};${bx0}" begin="-${phase(i).toFixed(2)}s"/>
     </circle>
@@ -102,9 +110,17 @@ ${rows.map(lane).join('')}
 /** Write bench/bench.svg from `rows` (defaults to the committed snapshot).
  *  `cases` = case count for the caption; defaults to the snapshot's own count. */
 export function renderBenchSvg(rows = SNAPSHOT, cases = SNAPSHOT_N) {
-  const sorted = [...rows].sort((a, b) => a.ratio - b.ratio)
+  const sorted = withReference(rows).sort((a, b) => a.ratio - b.ratio)
   writeFileSync(SVG_PATH, benchSvg(sorted, cases))
   return SVG_PATH
+}
+
+/** Guarantee the native reference rows (C, Rust) are present: a run that lacked
+ *  their toolchain drops them, so fall back to the committed SNAPSHOT ratios.
+ *  Measured rows win — the fallback only fills genuine gaps. */
+export function withReference(rows) {
+  const have = new Set(rows.map(r => r.label))
+  return [...rows, ...SNAPSHOT.filter(r => REFERENCE.has(r.label) && !have.has(r.label))]
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

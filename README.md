@@ -481,7 +481,7 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 ## Performance
 
-<img src="bench/bench.svg?v=3" alt="jz vs alternatives — geometric mean speed across the bench corpus, jz = 1.00× baseline" width="720">
+<img src="bench/bench.svg?v=4" alt="jz vs alternatives — geometric mean speed across the bench corpus; native C and Rust shown as reference, jz = 1.00× baseline" width="720">
 
 
 See [bench →](https://dy.github.io/jz/bench/)

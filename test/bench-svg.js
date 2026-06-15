@@ -5,7 +5,7 @@
 // while every rival showed its optimization tier (clang/rustc/asc -O3).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { benchSvg, SNAPSHOT, SNAPSHOT_N } from '../scripts/bench-svg.mjs'
+import { benchSvg, withReference, REFERENCE, SNAPSHOT, SNAPSHOT_N } from '../scripts/bench-svg.mjs'
 
 const rows = [{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
 
@@ -38,4 +38,23 @@ test('bench-svg: snapshot render is internally consistent (caption N = Porffor d
   is(capN, String(SNAPSHOT_N), 'caption N = SNAPSHOT_N')
   is(porfDenom, String(SNAPSHOT_N), 'Porffor denominator = SNAPSHOT_N')
   is(capN, porfDenom, 'caption N and Porffor denominator must agree')
+})
+
+test('bench-svg: C and Rust are always shown (reference fallback when a run drops them)', () => {
+  // every reference label must have a SNAPSHOT row to fall back to, else the
+  // guarantee is silently empty — a relabel in one file and not the other
+  for (const label of REFERENCE) ok(SNAPSHOT.some(r => r.label === label), `SNAPSHOT has a "${label}" row to fall back to`)
+  const out = withReference(rows)   // rows has neither C nor Rust
+  const labels = out.map(r => r.label)
+  ok(labels.includes('native C') && labels.includes('Rust'), 'C and Rust injected when missing')
+  // a measured row wins — the fallback fills only genuine gaps, never duplicates
+  const live = withReference([...rows, { label: 'Rust', sub: 'rustc -O3', ratio: 1.05 }])
+  is(live.filter(r => r.label === 'Rust').length, 1, 'measured Rust not duplicated')
+  is(live.find(r => r.label === 'Rust').ratio, 1.05, 'measured Rust ratio kept over snapshot')
+})
+
+test('bench-svg: reference rows (C, Rust) render as hollow rings, jz/competitors solid', () => {
+  const svg = benchSvg([{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'native C', sub: 'clang -O3', ratio: 1.13 }], 12)
+  ok(svg.includes('fill="#ffffff" stroke="#adb5bd"'), 'native C drawn as a hollow reference ring')
+  ok(/<circle[^>]*fill="#000000"/.test(svg), 'jz stays a solid black ball')
 })
