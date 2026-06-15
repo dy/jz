@@ -16,7 +16,7 @@ import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from
 import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
+import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 
@@ -33,7 +33,7 @@ function allocArray(len, cap) {
  *  only an 8-byte header left off-16 pointing at adjacent data-segment bytes, so
  *  for-in / named-prop lookup (which read off-16 as the props-sidecar pointer)
  *  walked garbage → OOB (test262 built-ins/Object/keys sparse-array). */
-function staticArrayPtr(slots) {
+export function staticArrayPtr(slots) {
   if (!ctx.runtime.data) ctx.runtime.data = ''
   while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
   const headerOff = ctx.runtime.data.length
@@ -726,6 +726,7 @@ export default (ctx) => {
     const ptrExpr = asF64(va)
     const dynLoad = (objExpr, keyExpr) => {
       if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
+      warnDeopt('deopt-dyn-read', `dynamic property read \`${typeof arr === 'string' ? arr : '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
       inc('__dyn_get')
       return ['f64.reinterpret_i64', ['call', '$__dyn_get', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }

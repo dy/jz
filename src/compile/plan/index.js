@@ -95,6 +95,7 @@ export default function plan(ast, profiler) {
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(programFacts))
   }
   ctx.types.dynKeyVars = programFacts.dynVars
+  ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))

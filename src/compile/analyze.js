@@ -76,7 +76,7 @@ import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTy
 import {
   findFreeVars, findMutations, boxedCaptures,
   collectI32SafeIndexVars, collectF64StridedIndexVars, narrowUint32, scanBindingUses,
-  scanFlatObjects, scanSliceViews, scanNeverGrown, USE,
+  scanFlatObjects, scanSliceViews, scanNeverGrown, scanNumericFill, USE,
 } from './analyze-scans.js'
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
@@ -517,7 +517,7 @@ export function analyzeBody(body) {
   const prevTypedOverlay = ctx.func.localTypedElemsOverlay
   ctx.func.localValTypesOverlay = valTypes
   ctx.func.localTypedElemsOverlay = typedElems
-  let unsignedLocals
+  let unsignedLocals, numericFill
   try {
     walk(body)
     widenLocalTypes(body, locals)
@@ -526,6 +526,18 @@ export function analyzeBody(body) {
     // reconsidered with final types — and stays f64, since a relational compare
     // is a non-transparent read that disqualifies narrowing anyway.
     unsignedLocals = narrowUint32(body, locals)
+    // Numeric-fill arrays — fresh `Array(n)`/`[]` whose every element write stores a
+    // Number, so `a[i]` reads can skip __to_num (the win `[1,2,3]` already gets, for the
+    // construct-then-fill kernel shape). Runs HERE, inside the val-type overlay, so a
+    // write of a bare numeric local (`a[i] = out`) resolves via the just-built `valTypes`.
+    // A bare read of the array's OWN elements (`a[i] = a[j]`, heapsort) is Numeric by
+    // induction; any genuinely non-numeric write still fails the test and disqualifies.
+    const numericFillRhs = (rhs, selfName) => {
+      if (Array.isArray(rhs) && rhs[0] === '[]' && rhs[1] === selfName) return true
+      if (typeof rhs === 'string') return valTypes.get(rhs) === VAL.NUMBER || exprElemSourceVal(rhs) === VAL.NUMBER
+      return valTypeOf(rhs) === VAL.NUMBER
+    }
+    numericFill = scanNumericFill(body, numericFillRhs)
   } finally {
     ctx.func.localValTypesOverlay = prevOverlay
     ctx.func.localTypedElemsOverlay = prevTypedOverlay
@@ -548,7 +560,7 @@ export function analyzeBody(body) {
   // Never-relocated array bindings — reads may skip the realloc-forwarding follow.
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown }
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
   _bodyFactsCache.set(body, result)
   return result
 }
@@ -679,6 +691,13 @@ export function analyzeValTypes(body) {
   const arrElems = facts.arrElemSchemas
   for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
+  }
+  // Construct-then-fill numeric arrays (`let a = Array(n); a[i] = expr`) carry no
+  // element evidence at their decl, so the walk above leaves them untyped. scanNumericFill
+  // proved every write Numeric and every other use a pure read — record NUMBER so `arr[i]`
+  // reads skip __to_num, unless an observation already poisoned the slot to a conflict.
+  for (const name of facts.numericFill || []) {
+    if (facts.arrElemValTypes.get(name) !== null) updateRep(name, { arrayElemValType: VAL.NUMBER })
   }
   // Propagate body-observed array-elem schemas to localReps so unboxablePtrs's
   // `let p = arr[i]` rule (which only consults rep) sees the schema and can unbox `p`

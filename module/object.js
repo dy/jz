@@ -9,6 +9,7 @@
 
 import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
+import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
@@ -245,6 +246,31 @@ export default (ctx) => {
     return emitRuntimeKeys(obj)
   }
   ctx.core.emit['Object.getOwnPropertyNames'] = ctx.core.emit['Object.keys']
+
+  // for-in's read-only key enumeration (src/prepare for…in lowering). Identical to
+  // Object.keys EXCEPT: when the receiver is a bare variable with a complete static
+  // schema, the key list is a compile-time constant, so it pools ONE static-data
+  // array (no per-evaluation alloc) — eliminating for-in's hot-loop heap-growth
+  // cliff and its unbounded-allocation OOM. The pooled array is shared/read-only,
+  // which is sound because for-in only reads ks[i]/ks.length (Object.keys can't pool:
+  // user code may `.sort()`/`.reverse()` the result in place). Anything not a static
+  // schema bare-var — arrays/strings/HASH/dyn-props/expressions — delegates to
+  // Object.keys (evaluates the receiver, full runtime enumeration).
+  ctx.core.emit['__keys_ro'] = (obj) => {
+    // Pool only when the receiver's enumerable key set is provably the static
+    // schema: a bare var with NO computed-key writes (`o[k]=v`) — those are the
+    // only writes that add enumerable keys (computed reads / dot-adds don't).
+    // `mayHaveDynProps` is too coarse here — it also flags computed-READ receivers,
+    // and for-in's own `o[k]` read would otherwise veto its own pooling.
+    if (typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
+      const schema = resolveSchema(obj)
+      if (schema) {
+        const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
+        if (slots.every(b => b !== null)) return staticArrayPtr(slots)
+      }
+    }
+    return ctx.core.emit['Object.keys'](obj)
+  }
 
   // Object.prototype.hasOwnProperty(key) — own-property presence check.
   // Compile-time fold for literal keys against object literals or variables

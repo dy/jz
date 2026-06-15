@@ -21,13 +21,18 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 
-// Last measured snapshot (Apple Silicon, arm64). bench.mjs overwrites this on a
-// full run; kept here so the committed SVG regenerates deterministically.
+// Last measured snapshot (Apple Silicon, arm64). bench.mjs overwrites bench.svg
+// on a full run; this is the offline fallback so the artifact regenerates
+// deterministically between runs.
 //   ratio = geomean(engine median / jz median) over the cases the engine ran
 //           (lower = faster; jz is the 1.00× baseline). These reproduce from the
 //           per-case table in README.md. Bun is the measured JSC geomean.
+// SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
+// Porffor denominator, so the offline render is internally consistent. The live
+// bench.mjs run passes its own current count (geoCases.length) instead.
+export const SNAPSHOT_N = 12
 export const SNAPSHOT = [
-  { label: 'jz', sub: '→ wasm', ratio: 1.00 },
+  { label: 'jz', sub: '-O3', ratio: 1.00 },
   { label: 'native C', sub: 'clang -O3', ratio: 1.13 },
   { label: 'Zig', sub: 'ReleaseFast', ratio: 1.14 },
   { label: 'Rust', sub: 'rustc -O3', ratio: 1.19 },
@@ -35,7 +40,7 @@ export const SNAPSHOT = [
   { label: 'Go', sub: 'gc', ratio: 1.88 },
   { label: 'V8', sub: 'Node', ratio: 2.45 },
   { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.52 },
-  { label: 'Porffor', sub: 'runs 4 / 12', ratio: 5.55 },
+  { label: 'Porffor', sub: `runs 4 / ${SNAPSHOT_N}`, ratio: 5.55 },
   { label: 'NumPy', sub: 'Python', ratio: 7.41 },
 ]
 
@@ -43,9 +48,10 @@ const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
 const HERO = '#000000'   // jz — black accent (B&W identity)
 const GRAY = '#adb5bd'   // every other ball — minimal, one accent
 
-/** Build the animated SVG string from rows `[{ label, sub?, ratio }]`. */
-export function benchSvg(rows) {
-  const W = 720, rowH = 50, top = 20, bottom = 30
+/** Build the animated SVG string from rows `[{ label, sub?, ratio }]`.
+ *  `cases` (optional) = number of bench cases behind each geomean, for the caption. */
+export function benchSvg(rows, cases) {
+  const W = 720, rowH = 50, top = 20, bottom = 44
   const H = top + rows.length * rowH + bottom
 
   const labelW = 156, numW = 54, pad = 16
@@ -84,17 +90,20 @@ export function benchSvg(rows) {
   </g>`
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — each ball runs back and forth at a rate proportional to that engine's speed; jz is the 1.00× baseline, lower is faster">
+  const caption = `geometric mean across ${cases ? `${cases} benchmark cases` : 'the bench corpus'} · lower is faster, jz = 1.00× baseline`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
   <rect width="${W}" height="${H}" rx="12" fill="#ffffff"/>
 ${rows.map(lane).join('')}
+  <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="#868e96">${caption}</text>
 </svg>
 `
 }
 
-/** Write bench/bench.svg from `rows` (defaults to the committed snapshot). */
-export function renderBenchSvg(rows = SNAPSHOT) {
+/** Write bench/bench.svg from `rows` (defaults to the committed snapshot).
+ *  `cases` = case count for the caption; defaults to the snapshot's own count. */
+export function renderBenchSvg(rows = SNAPSHOT, cases = SNAPSHOT_N) {
   const sorted = [...rows].sort((a, b) => a.ratio - b.ratio)
-  writeFileSync(SVG_PATH, benchSvg(sorted))
+  writeFileSync(SVG_PATH, benchSvg(sorted, cases))
   return SVG_PATH
 }
 

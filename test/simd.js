@@ -1,7 +1,12 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { belowOpt } from './_matrix.js'
 import jz, { compile } from '../index.js'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 function run(code) {
   const wasm = compile(code)
@@ -515,6 +520,23 @@ test('vectorize: AoS-interleaved stride>1 does NOT lift (parity intact)', () => 
   `
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
   ok(!/\$__simd_loop\d+/.test(wat(src, SIMD_OPT)), 'AoS strided access should not lift to SIMD')
+})
+
+// Regression: sibling loops that each lift the SAME source local to a v128
+// scratch named `$<name>__v` used to emit that `local` decl twice → invalid wasm
+// ("Duplicate local"). Crashed the FFT bench kernel at the speed preset
+// (`$inl_dt__v` from the inlined twiddle builder). Post-order vectorizes
+// innermost-first and an outer loop bails once its inner became a wrapper, so no
+// two NESTED loops co-lift — sharing one scratch across SEQUENTIAL loops is
+// correct, and the decls dedupe by name at the splice. Compile the real kernel.
+test('vectorize: sibling lifts dedupe lane locals (fft kernel @ speed)', () => {
+  const ROOT = join(HERE, '..')
+  const src = readFileSync(join(ROOT, 'bench/fft/fft.js'), 'utf8')
+  const benchlib = readFileSync(join(ROOT, 'bench/_lib/benchlib.js'), 'utf8')
+  let err = null
+  try { compile(src, { modules: { '../_lib/benchlib.js': benchlib }, optimize: { level: 'speed' } }) }
+  catch (e) { err = e.message }
+  ok(err === null, `fft must compile at the speed preset (no duplicate lane locals); got: ${err}`)
 })
 
 // ---- negative cases ------------------------------------------------------

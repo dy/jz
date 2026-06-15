@@ -47,7 +47,9 @@ const TESTS = [
   'jsstring',
   'booleans',
   'warnings',
+  'forin-deopt',
   'minimal-output',
+  'bench-svg',
 ]
 
 const argFilters = process.argv.slice(2)

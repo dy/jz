@@ -25,7 +25,7 @@ import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
-import { ctx, err, inc, PTR } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
 import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import {
@@ -486,6 +486,66 @@ function unrollSmallConstFor(init, cond, step, body) {
   const out = []
   for (let i = 0; i < end; i++) out.push(...emitVoid(cloneWithSubst(body, name, i)))
   return out
+}
+
+// Max distinct keys a for-in unrolls over (bounds code size; larger key sets keep
+// the pooled-keys loop, which is already allocation-free via __keys_ro).
+const FORIN_UNROLL_MAX = 16
+
+// Pull the for-in source out of prepare's keys expression: either a bare
+// `__keys_ro(src)` call or the nullish-guarded `cond ? [] : __keys_ro(src)`.
+function keysRoSrc(node) {
+  if (!Array.isArray(node)) return null
+  if (node[0] === '()' && node[1] === '__keys_ro') return node[2]
+  if (node[0] === '?:' || node[0] === '?') {
+    const last = node[node.length - 1]
+    if (Array.isArray(last) && last[0] === '()' && last[1] === '__keys_ro') return last[2]
+  }
+  return null
+}
+
+// Unroll `for (k in o)` over a static schema. Prepare lowers for-in to a plain
+// for-loop whose key array comes from the for-in-exclusive `__keys_ro` intrinsic,
+// so a loop carrying it IS a for-in. When `o` is a bare OBJECT var with a complete
+// static schema (no computed-key writes — same gate as __keys_ro pooling), replace
+// the loop with one substituted copy of the body per key: the loop variable becomes
+// a string literal, so `o[k]` folds to a static schema slot — no keys array, no
+// per-element dynamic get. Falls back (returns null) to the pooled loop otherwise.
+function unrollForIn(init, cond, step, body) {
+  if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=') return null
+  const ksVar = init[1][1]
+  const src = keysRoSrc(init[1][2])
+  if (typeof src !== 'string') return null
+  if (!Array.isArray(cond) || cond[0] !== '<') return null
+  const ixVar = cond[1]
+  if (!Array.isArray(step) || step[0] !== '++' || step[1] !== ixVar) return null
+  // body = [';', ['let', ['=', target, ['[]', ksVar, ixVar]]], ...realBody]
+  if (!Array.isArray(body) || body[0] !== ';') return null
+  const bind = body[1]
+  if (!Array.isArray(bind) || bind[0] !== 'let' || !Array.isArray(bind[1]) || bind[1][0] !== '=') return null
+  const target = bind[1][1]
+  const acc = bind[1][2]
+  if (!Array.isArray(acc) || acc[0] !== '[]' || acc[1] !== ksVar || acc[2] !== ixVar) return null
+
+  // Unroll only with PROOF the schema is complete: a computed-key write adds
+  // enumerable keys, so bail if `src` takes one — or if the fact is unavailable
+  // (no proof ⇒ no unroll; unrolling drops the dynamic path, so erring safe matters).
+  if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src)) return null
+  if (lookupValType(src) !== VAL.OBJECT) return null
+  const keys = ctx.schema.resolve(src)
+  if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
+
+  const rest = body.slice(2)
+  const realBody = rest.length === 1 ? rest[0] : [';', ...rest]
+  // Substitution safety, mirroring unrollSmallConstFor: no reassignment/redeclare
+  // of the loop var, no nested closure capturing it (cloneWithSubst skips `=>`),
+  // and no break/continue targeting this loop.
+  if (hasOwnBreakOrContinue(realBody) || containsNestedClosure(realBody) || containsDeclOf(realBody, target)) return null
+  if (isReassigned(realBody, target)) return null
+
+  const out = []
+  for (const key of keys) out.push(...emitVoid(cloneWithSubst(realBody, new Map([[target, ['str', key]]]))))
+  return out.length ? out : ['nop']
 }
 
 function canThrow(body, seen = new Set()) {
@@ -1861,6 +1921,7 @@ function externalMethodFallback({ obj, method, parsed }) {
   // can target js and wasi from one source; users who want fail-fast
   // pass `strict: true` (handled above).
   if (ctx.transform.host === 'wasi') return undefExpr()
+  warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
   inc('__ext_call')
   ctx.features.external = true
   const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -2863,6 +2924,12 @@ export const emitter = {
     if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
+    }
+    // for-in over a static schema → unroll with key-literal substitution (folds
+    // o[k] to schema slots). Recognized via the for-in-exclusive __keys_ro intrinsic.
+    if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.forInUnroll !== false)) {
+      const fu = unrollForIn(init, cond, step, body)
+      if (fu) return fu
     }
     // Lift constant array/object literals out of the loop (allocate once, not per
     // iteration) when they are read-only + non-escaping inside it. Strip them from the

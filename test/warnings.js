@@ -98,6 +98,37 @@ test('warnings: strict mode errors on a generic-dispatch deopt', () => {
   ok(threw, 'strict mode must error on a loop-hot generic index')
 })
 
+test('warnings: deopt-dyn-read on a dynamic bracket read', () => {
+  // `o[k]` with a non-literal key can't slot-resolve → runtime hash lookup.
+  const ws = warningsFor('let o = {a:1,b:2}; let ks = ["a","b"]; export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) { let k = ks[i & 1]; s += o[k] } return s }')
+  is(ws.filter(e => e.code === 'deopt-dyn-read').length, 1)
+})
+
+test('warnings: deopt-dyn-write on a dynamic bracket write', () => {
+  const ws = warningsFor('let o = {a:0,b:0}; let ks = ["a","b"]; export let f = (n) => { for (let i = 0; i < n; i++) o[ks[i & 1]] = i; return o.a }')
+  is(ws.filter(e => e.code === 'deopt-dyn-write').length, 1)
+})
+
+test('warnings: deopt-method on an unknown-receiver method call', () => {
+  // A method on a value whose type never resolves falls through to host __ext_call.
+  // (js-host only — under wasi the call is a no-op `undefined`, not a host round-trip.)
+  if (onWasi()) return
+  const ws = warningsFor('export let f = (x) => x.frobnicate(1)')
+  is(ws.filter(e => e.code === 'deopt-method').length, 1)
+})
+
+test('warnings: no deopt on for-in over a static schema (it unrolls/slot-folds)', () => {
+  // The for-in over a fixed-shape object unrolls to static slot reads — the emit-site
+  // advisory fires only when a slow path is actually emitted, so this stays quiet.
+  const ws = warningsFor('let o = {a:1,b:2,c:3}; export let f = () => { let s = 0; for (let k in o) s += o[k]; return s }')
+  is(ws.filter(e => e.code.startsWith('deopt-')).length, 0)
+})
+
+test('warnings: no deopt on static dot access or typed-array index', () => {
+  is(warningsFor('let o = {a:1,b:2}; export let f = () => o.a + o.b').filter(e => e.code.startsWith('deopt-')).length, 0)
+  is(warningsFor('let a = new Float64Array(8); export let f = (i) => a[i & 7]').filter(e => e.code.startsWith('deopt-')).length, 0)
+})
+
 test('warnings: alloc:false modules stay quiet', () => {
   const ws = warningsFor('export let f = () => [1, 2, 3]', { alloc: false })
   is(ws.length, 0)

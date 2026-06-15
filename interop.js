@@ -275,8 +275,7 @@ export const memory = (src) => {
   if (_enhanced.has(mem)) {
     mem.schemas = schemas
     if (wasmExports?._alloc) { alloc = wasmExports._alloc; mem.alloc = alloc }
-    if (wasmExports?._clear) mem.reset = wasmExports._clear
-    else if (!mem.reset) mem.reset = jsReset
+    mem.reset = jsReset   // post-init rewind — see the note at the first-enhance path
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -497,7 +496,14 @@ export const memory = (src) => {
   }
 
   mem.alloc = alloc
-  mem.reset = wasmExports?._clear || jsReset
+  // Rewind to the JS-captured post-init heap mark, NOT the wasm `_clear` (which
+  // rewinds to the static-data end and would clobber module-global heap values —
+  // a top-level `let o = {…}` — on the first alloc after reset). `jsReset`'s base
+  // is `$__heap` read after instantiation (start ran), i.e. exactly the high-water
+  // mark above all module-init allocations. Both share `$__heap`, so a wasm `_alloc`
+  // and this reset stay consistent. (Shared memory has no `$__heap` global → base
+  // is the fixed start, preserving prior behavior.)
+  mem.reset = jsReset
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches

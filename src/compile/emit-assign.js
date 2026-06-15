@@ -10,7 +10,7 @@
  * @module compile/emit-assign
  */
 
-import { ctx, err, inc, PTR } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
 import { T } from '../ast.js'
 import { staticPropertyKey, staticIndexKey } from '../static.js'
 import { valTypeOf, shapeOf } from '../kind.js'
@@ -74,8 +74,9 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
 /** Strict-mode guard for dynamic property writes — emitted in branches that
  *  fall through to `__dyn_set` or its key-kind dispatch. */
 function ensureDynSetAllowed(arr) {
-  if (!ctx.transform.strict) return
   const arrLabel = typeof arr === 'string' ? arr : '<expr>'
+  warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
+  if (!ctx.transform.strict) return
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
 }
 

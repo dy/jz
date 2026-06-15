@@ -1907,6 +1907,13 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
 
   if (newLocalDeclsAll.length) {
-    fn.splice(bodyStart, 0, ...newLocalDeclsAll)
+    // Sibling loops (and the straight-line dot pass) can each lift the SAME source
+    // local to an identically-named `$name__v` v128 scratch. Post-order vectorizes
+    // innermost-first and an outer loop bails once its inner became a wrapper block,
+    // so no two NESTED loops ever share a lift — every collision is between
+    // SEQUENTIAL loops, where one shared scratch is correct (each writes its lanes
+    // before reading). Declaring a local twice is invalid wasm ("duplicate local"),
+    // so keep one decl per name (all dups are the identical `['local', name, 'v128']`).
+    fn.splice(bodyStart, 0, ...new Map(newLocalDeclsAll.map(d => [d[1], d])).values())
   }
 }

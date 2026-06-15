@@ -444,6 +444,23 @@ test('memory.reset(): own memory keeps page count flat across allocating calls',
   is(memory.buffer.byteLength, before, 'no growth across 500 reset cycles')
 })
 
+test('memory.reset(): module-global heap values survive a reset (rewind to post-init mark)', () => {
+  // A top-level `let o = {…}` is allocated during module init, ABOVE the static-data
+  // end. reset() must rewind to the post-init high-water mark, not the static-data end,
+  // or the next allocation overwrites the module global (was: OOB / wrong value).
+  const { exports, memory } = jz`
+    let o = { a: 11, b: 22, c: 33, d: 44 }
+    let ks = ['a', 'b', 'c', 'd']
+    export let get = (i) => o[ks[i & 3]]
+    export let alloc = (n) => { let t = []; for (let i = 0; i < n; i++) t.push(i * 7); return t.length }
+  `
+  is(exports.get(0), 11, 'module global readable before reset')
+  memory.reset()
+  exports.alloc(64)                 // a per-batch allocation after reset
+  is(exports.get(0), 11, 'module global intact after reset + realloc')
+  is(exports.get(2), 33, 'all module-global slots intact')
+})
+
 test('memory.reset(): own memory grows without reset', () => {
   const { exports, memory } = jz`
     export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }
@@ -487,7 +504,8 @@ test('memory.reset(): wires up after compile when memory was JS-only', () => {
   // JS-side reset is present immediately
   ok(typeof memory.reset === 'function')
   const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
-  // After compile, reset upgrades to the WASM _clear export — same effect
+  // After compile, reset stays the JS-side rewind (to the post-init heap mark, so
+  // module globals survive) — it does NOT switch to the wasm _clear constant rewind.
   ok(typeof memory.reset === 'function', 'reset still callable after compile')
   exports.f(100)
   memory.reset()

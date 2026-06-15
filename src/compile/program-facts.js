@@ -23,6 +23,16 @@ export function observeNodeFacts(node, f) {
   if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) &&
       (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string')
     f.writtenProps.add(args[0][2])
+  // Computed-key WRITES (`o[k]=v`, `o[k]+=v`, `o[k]++`) are the ONLY operations
+  // that add ENUMERABLE keys beyond the static schema — computed reads and dot-adds
+  // (`o.b=2`) do not enumerate in jz. Tracked separately from `dynVars` (which also
+  // counts reads) so for-in / Object.keys key pooling can trust the static schema
+  // for a receiver that is only computed-READ. (`isLiteralStr` excludes literal
+  // string keys, which place in fixed schema slots.)
+  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]') {
+    const [, wobj, widx] = args[0]
+    if (!isLiteralStr(widx) && typeof wobj === 'string') f.dynWriteVars?.add(wobj)
+  }
   if (op === '[]') {
     const [obj, idx] = args
     if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
@@ -68,7 +78,7 @@ export function invalidateProgramFactsCache(...roots) {
 
 function emptyWalkFacts() {
   return {
-    dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
     writtenProps: new Set(),
@@ -78,6 +88,7 @@ function emptyWalkFacts() {
 function mergeWalkFacts(into, from) {
   if (from.anyDyn) into.anyDyn = true
   for (const v of from.dynVars) into.dynVars.add(v)
+  for (const v of from.dynWriteVars) into.dynWriteVars.add(v)
   if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
@@ -234,7 +245,7 @@ export function collectProgramFacts(ast) {
   // ctx — a mutated prop name anywhere disqualifies sharing a static instance.
   ctx.module.writtenProps = f.writtenProps
   return {
-    dynVars: f.dynVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
+    dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, writtenProps: f.writtenProps,
   }

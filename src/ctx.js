@@ -268,6 +268,7 @@ export function reset(proto, globals, bridge) {
   ctx.types = {
     typedElem: null,
     dynKeyVars: null,
+    dynWriteVars: null,
     anyDynKey: false,
   }
 
@@ -466,6 +467,15 @@ export function warn(code, message, meta = {}, loc = null) {
     entry.column = loc - before.lastIndexOf('\n')
   }
   ctx.warnings.sink.entries.push(entry)
+}
+
+/** Advise that an emit site fell back to generic runtime dispatch (the slow,
+ *  un-inferred path). Called from the actual emission point so it fires only when
+ *  inference/optimization truly couldn't fold it — never a false positive on a
+ *  case that vectorized/unrolled/slot-folded. `ctx.error.loc` is the current AST
+ *  node's byte offset (kept up to date by the emit walk), giving line/column. */
+export function warnDeopt(code, message) {
+  warn(code, message, { fn: ctx.func.current?.name }, ctx.error.loc)
 }
 
 /** Throw with source location context. */

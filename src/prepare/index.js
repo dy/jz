@@ -44,7 +44,7 @@ import { recordGlobalRep } from '../compile/infer.js'
 import { isFuncRef } from '../ir.js'
 import {
   CTORS, COLLECTION_CTORS, TIMER_NAMES,
-  hasModule, includeModule,
+  hasModule, includeModule, includeMods,
   includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue,
   includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion,
   includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
@@ -411,7 +411,7 @@ function resolveImportMeta(spec) {
 
 function recordModuleInitFacts(root) {
   const facts = ctx.module.initFacts ||= {
-    dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(),
@@ -1279,7 +1279,7 @@ function foldNamespaceIntrospection(callee, args) {
 // Compiler-internal synthetic callees: emit-handled intrinsics, never user
 // function values — so a bare reference must not pull in the callable-value
 // (function table / closure) machinery.
-const INTRINSIC_CALLEES = new Set(['__iter_arr'])
+const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro'])
 
 function resolveCallee(callee, args) {
   if (typeof callee === 'string') {
@@ -2169,10 +2169,17 @@ const handlers = {
       // `[null, null]`, `undefined` is `[null]` (empty value slot). A numeric/string literal
       // `[null, v]` has a non-nullish value slot, so `src[1] == null` discriminates them.
       const nullish = Array.isArray(src) && src[0] == null && src[1] == null
+      // `__keys_ro` is for-in's read-only key list: identical to Object.keys, but
+      // when the receiver has a complete static schema the keys are a compile-time
+      // constant, so it pools ONE static-data array instead of allocating a fresh
+      // one each evaluation — the per-iteration heap-growth cliff (jz#deopt-forin).
+      // Sound only because for-in reads ks[i]/ks.length and never mutates (unlike
+      // user Object.keys, which permits in-place `.sort()`/`.reverse()`).
+      includeMods('core', 'object', 'string')
       const keysExpr = nullish ? ['[]', null]
         : typeof src === 'string'
-          ? ['?', ['==', src, [null, null]], ['[]', null], ['()', ['.', 'Object', 'keys'], src]]
-          : ['()', ['.', 'Object', 'keys'], src]
+          ? ['?', ['==', src, [null, null]], ['[]', null], ['()', '__keys_ro', src]]
+          : ['()', '__keys_ro', src]
       const ks = `${T}fik${ctx.func.uniq++}`, ix = `${T}fii${ctx.func.uniq++}`, lenV = `${T}fil${ctx.func.uniq++}`
       const decls = ['let',
         ['=', ks, keysExpr],
