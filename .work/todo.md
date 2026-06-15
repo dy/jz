@@ -13,11 +13,39 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
   Vibecoder + audio + live-coding proof in one. Needs: syntax highlight, waveform
-  renderer, recipe-book/DB, samples collection, 1st class waveform, spectrogram etc renderers, artistic renderer (Chladni etc). Should be very easy way to share - likely compressed code in URL. Have to persist samples somehow (github gist like d3 blocks? Anything else?)
-- [ ] **Playground site** = WAT-showing REPL; every item a shareable
+  renderer, recipe-book/DB, samples collection, 1st class waveform, spectrogram etc renderers, artistic renderer (Chladni etc). Should be very easy way to share - likely compressed code in URL. Have to persist samples somehow (github gist like d3 blocks? Anything else?). The point is - audiovis playground.
+- [x] **Playground site** = WAT-showing REPL; every item a shareable
   permalink. The demo *is* the marketing. Greenfield (no playground/ yet).
-- [ ] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
+- [x] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
   cross-AI optimizer passes; **release 0.6.0**.
+
+## Compiler
+
+- [x] Find all unlucky deopt cases and compare perf against JS: should not be 18x slower
+  — Probed every generic-dispatch shape vs V8 (`.work/deopt-probe.mjs`). Ranked: **for-in
+  was the cliff** (8–9×, scaling with key count = the "18×" class) — it lowered to a
+  per-iteration `Object.keys` ALLOCATION + dynamic `o[k]` get, and leaked unboundedly
+  (OOM). Now: (1) for-in over a static schema **unrolls** with key-literal substitution so
+  `o[k]` folds to a schema slot (`unrollForIn`, recognized via the for-in-exclusive
+  `__keys_ro` intrinsic, `src/compile/emit.js`) → **0.40× (2.5× faster than V8)**; (2) when
+  it can't unroll (break/continue, closure capturing key, computed-write object) the key
+  array is a **pooled static constant** (`__keys_ro`, `module/object.js`) — never a
+  per-iteration alloc. Gated on a new precise `dynWriteVars` fact (computed-key WRITES add
+  enumerable keys; reads/dot-adds don't — `program-facts.js`). Remaining dynamic shapes:
+  `obj[k]` read 1.7× / write 1.9× (genuine dynamic keys — use a Map), plain-`[]` index 3.4×
+  (use a typed array). Detector: `test/forin-deopt.js` (differential sweep + codegen pins +
+  alloc-free behavioral pin). Also fixed a real bug: `memory.reset()` clobbered module-global
+  heap objects (rewound below them) — now rewinds to the post-init mark (`interop.js`).
+- [x] Verbose flag? Or at least - deopt warnings
+  — Emit-site `deopt-*` advisories (truthful: fire only when a slow path is actually
+  emitted, so an unrolled for-in / vectorized loop never false-warns). `warnDeopt`
+  (`src/ctx.js`) with source loc + fn name: `deopt-dyn-read` (`o[k]`→`__dyn_get`),
+  `deopt-dyn-write` (`o[k]=v`→`__dyn_set`), `deopt-method` (unknown receiver→`__ext_call`
+  host round-trip). Joins the existing `deopt-generic`. Tests in `test/warnings.js`.
+- [x] bench: remove interpreters; replace -> with arrow unicode; add 4 more MOST STANDARD bench cases across langs: fft, zzfx (some minisynth - audio pipeline), stdlib.io something, standard not-small bytebeat, some image pipeline, some codec maybe like wav or aiff?; hide watr, jessie, jz cases; beat everyone by speed and size, esp audio
+  — Removed CPython/QuickJS/Hermes/Javy (bench.mjs + index.html + README + bench.yml); kept NumPy + Static Hermes as native refs. `JS -> WASM` → `JS → WASM`. Hid watr/jessie/jz from page + SVG geomean (`HIDDEN_FROM_GEOMEAN`; still runnable + gated). Added 4 cross-language bit-exact cases (js/c/rs/zig/go/as each): **fft** (radix-2, transcendental-free Taylor twiddles — jz ties native, 1.26× V8), **synth** (poly-osc+ADSR+biquad — jz FASTEST of all incl native, 1.42× V8), **bytebeat** (integer 8-bit PCM — jz 1.48× V8), **blur** (RGBA box blur — jz 2.78× V8). zzfx-as-is can't be cross-lang bit-exact (Math.sin differs per libm) → in-source poly minisynth substitutes. SVG geomean: jz beats every engine incl native (Rust 1.13× Zig 1.29× Go 1.79× Bun 1.70× V8 2.42× AS 2.34×). Fixed a real jz vectorizer bug en-route: sibling loops lifting the same source local emitted duplicate `$name__v` decls → "Duplicate local" crash on fft (`src/optimize/vectorize.js`, dedupe at splice; regression-pinned in `test/simd.js`). Codec deferred (4 cases delivered). Native auto-vectorizes the two stateless integer kernels (bytebeat/blur) — honest floor; jz still doubles the JS field there.
+- [x] performance svg image should not confuse: we need a line that it's geomean from N examples or something. JZ should have underline O3, not -> wasm.
+  — footer caption "geometric mean across N benchmark cases · lower is faster, jz = 1.00× baseline"; N drives BOTH the caption and the Porffor "runs k / N" denominator so they can't disagree (live run: `geoCases.length`; offline snapshot: `SNAPSHOT_N`). jz sub-label `→ wasm` → `-O3` (parallel to clang/rustc/asc -O3 — jz compiles at its L3 `level:'speed'` tier). CI already regenerates bench.svg on push-to-main (`bench.yml` full `--json` run → `git add bench/bench.svg`). `scripts/bench-svg.mjs` + `bench/bench.mjs` SVG_TARGETS; pinned by `test/bench-svg.js`.
 
 ## Reach — perception/proof (highest external leverage)
 - [ ] **AudioWorklet + live in-browser REPL** — single highest-leverage move. Demos ship
@@ -29,7 +57,7 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 - [ ] **Dogfood own libs** — color-space, digital-filter biquad, web-audio-api,
   fourier-transform. Highest-trust bench. biquad: bench proves jz 1.23× faster than Node;
   the "Used internally by" README credit is commented-out (false) → make it true.
-- [ ] **REPL** — engine choice (porffor/awasm/jco); download wasm; show produced WAT; auto
+- [~] **REPL** — ~~engine choice (porffor/awasm/jco)~~; download wasm; show produced WAT; auto
   var→let / function→arrow on paste; auto-import implicit globals; resolve npm packages (url);
   document interop.
 - [ ] **Extism plugin path** — author Extism plugins in plain JS; underserved niche.
@@ -40,20 +68,10 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 - [ ] (later) live-coding hosts (Hydra/Strudel/p5/canvas-sketch) — jz as the
   compile-your-hot-loop escape hatch. Pitch: warm kernel speed + tiny portable wasm, NOT
   cold-start (bench:startup: jz cold-start 200–1400× slower than `new Function`).
-
-## Examples — astonishing (have: life, interference, mandelbrot, rfft, zzfx)
-- [ ] **Strange attractors** (Clifford/de Jong/Lorenz) — 2-line f64 × millions of iters.
-- [ ] **Path tracer / SDF raymarcher** — "Shadertoy on the CPU, but fast."
-- [ ] **Reaction-diffusion (Gray-Scott) / Lenia** — per-pixel convolution/frame; Lenia looks alive.
-- [ ] **Boids + simplex flow-field** — the genart canonical; particle count *is* the benchmark.
-- [ ] **CHIP-8 emulator core** — integer dispatch = jz's floor; mirrors AS wasmBoy.
-- [ ] **QOI codec** (~300 lines) — competes with hand-WAT on *size*; ties to color-space.
-- [ ] **Port 2–3 AS showcase kernels into bench/** (path tracer, emulator, codec, hash) —
-  closes AS-parity the right way, for the plain-JS-vs-typed-TS head-to-head.
-- [ ] Enhance existing: settings-panel, palettes, meaningful UI/automation, inputs (file drops). Jukebox: more floatbeats, rotate (not random).
 - [ ] vec4 package (unlocks SIMD); stdlib.io integration; glsl-transpiler.
 - [ ] (later) dithering/convolution filters; water sim; text-layout algo; pinterest/fb-reels
   soundvis; math-formula soundvis; floatbeat reproductions.
+- [ ] Enhance: settings-panel, palettes, meaningful UI/automation, inputs (file drops). Jukebox: more floatbeats, rotate (not random).
 
 ## Useful tools — returnable, not just demos
 Wedge: compute behind an upload/paywall/install → run it local, free, private, instant.
@@ -89,14 +107,12 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   scope: local-time getters/setters, getTimezoneOffset, locale methods, toJSON, subclassing.)
 - [ ] **Intl**; **test262** (know every fail by face — jzify or error cleanly, never fail
   unknowingly); **all AssemblyScript tests**; warn/error on memory-limit.
-- [ ] Tighten test coverage — randomly mutate features, see if tests break.
+- [x] Tighten test coverage — randomly mutate features, see if tests break.
 - [ ] **jzify** — converting script for any JZ; auto-import stdlib globals (Math.* → import
   math); then make jz core require explicit stdlib imports (remove auto-import); Crockford align.
 - [ ] **Source maps** (blocked on watr upstream) — meanwhile add a WASM name section.
-- [ ] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
+- [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
-- [ ] README FAQ: document the `** 0.5 → f64.sqrt` divergence corners (`(-0)**0.5 = -0`,
-  `(-∞)**0.5 = NaN`; `** -0.5` left unfolded).
 
 ## Compiler backlog — deferred-on-no-workload (YAGNI: build when a real bench surfaces the shape)
 All ranked-ROI optimizer items shipped (Archive). What remains is speculative — adds
@@ -150,8 +166,8 @@ correctness risk for zero measured benefit:
 
 ## Ideas
 - [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
-- [ ] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
-- [ ] template tag as a build tool — jz`code` in a Node script replaces a build step.
+- [x] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
+- [x] template tag as a build tool — jz`code` in a Node script replaces a build step.
 - [ ] AS integrations/plugins (assemblyscript.org/built-with);
 - [ ] potrace playground.
 - [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
