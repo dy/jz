@@ -52,6 +52,52 @@ test('warnings: pure scalar module stays quiet', () => {
   is(warningsFor('export let add = (a, b) => a + b').length, 0)
 })
 
+test('warnings: deopt-generic when an unresolved global is indexed in a loop', () => {
+  // `g` assigned from an opaque param never resolves to a container → every `g[i]`
+  // is runtime dynamic dispatch (the waves-class cliff). The advisory surfaces it.
+  const ws = warningsFor(`
+    let g
+    export let init = (x) => { g = x }
+    export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + g[i]; i++ } return s }
+  `)
+  is(ws.filter(e => e.code === 'deopt-generic').length, 1)
+})
+
+test('warnings: deopt-generic stays quiet when the global resolves to a typed array', () => {
+  // The fix for the waves swap means a typed global (even ping-ponged) is proven —
+  // no dynamic dispatch, no advisory. Pins the no-false-positive boundary.
+  const typed = warningsFor(`
+    let a, b
+    export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
+    export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + a[i] + b[i]; i++ } let t = a; a = b; b = t; return s }
+  `)
+  is(typed.filter(e => e.code === 'deopt-generic').length, 0)
+})
+
+test('warnings: deopt-generic suppressed when the global is instanceof-guarded', () => {
+  // The user did the recommended fix — `g instanceof Float64Array` narrows the read
+  // to a typed load (lowered to `__is_typed(g)` by jzify). Flagging it would be noise.
+  const ws = warningsFor(`
+    let g
+    export let init = (x) => { g = x }
+    export let f = (w) => {
+      if (g instanceof Float64Array) { let s = 0.0, i = 0; while (i < w) { s = s + g[i]; i++ } return s }
+      return 0.0
+    }
+  `)
+  is(ws.filter(e => e.code === 'deopt-generic').length, 0)
+})
+
+test('warnings: strict mode errors on a generic-dispatch deopt', () => {
+  // Strict already rejects dynamic features; a hot-loop generic index is one.
+  let threw = false
+  try {
+    compile(`let g; export let init = (x) => { g = x }; export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + g[i]; i++ } return s }`,
+      { strict: true })
+  } catch (e) { threw = /strict mode:.*dynamic dispatch/.test(e.message) }
+  ok(threw, 'strict mode must error on a loop-hot generic index')
+})
+
 test('warnings: alloc:false modules stay quiet', () => {
   const ws = warningsFor('export let f = () => [1, 2, 3]', { alloc: false })
   is(ws.length, 0)

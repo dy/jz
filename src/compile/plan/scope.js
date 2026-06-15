@@ -44,62 +44,138 @@ import { invalidateProgramFactsCache } from '../program-facts.js'
 // mixed ctors) clears the candidacy, keeping the read site polymorphic.
 export const inferModuleLetTypes = (ast) => {
   if (!ctx.scope.userGlobals) return
-  // candidates: name → { ctor: string|null, valid: true } | { valid: false }
-  // valid=true with ctor=null means "still no positive evidence"; we promote
-  // only when ctor is non-null at the end. Assignments to nullish (undef/null)
-  // don't change ctor — they're consistent with any typed-array value.
-  // Per-candidate state in PARALLEL maps, not a shared mutable `{ctor, valid}` object
-  // per name: `ctorOf` holds the positive ctor evidence (name absent ⇒ not a candidate),
-  // `invalid` the demoted names. A prior shape stored one mutable object per name in a
-  // Map; under self-host those per-name objects aliased (every candidate ended up sharing
-  // one record), so a second global of a different kind invalidated the typed one and any
-  // two-global program lost its typed-array fast path. String/Set values can't alias.
-  const ctorOf = new Map()
-  const invalid = new Set()
-  for (const name of ctx.scope.userGlobals) ctorOf.set(name, null)
+  // Build an assignment/alias graph over EVERY `=`/`let`/`const` binding in the
+  // program (globals and locals alike), then resolve each global's typed-array
+  // ctor by least-fixed-point. A single forward pass can't see the double-buffer
+  // swap idiom — `let tmp = a; a = b; b = tmp` assigns `a` from `b` and `b` from
+  // a local `tmp` that aliases `a`, so neither ref resolves until its sibling is
+  // already known. The fixpoint closes that cycle: `a`/`b` each anchor on their
+  // `new Float64Array(...)` decl, the alias edges carry the ctor around the loop,
+  // and they promote to VAL.TYPED. Without it the swap poisoned both globals and
+  // every `a[i]` read forked __str_idx/__typed_idx, every `+` forked __str_concat.
+  //
+  // Lattice (per name): null (no evidence) < ctor < MIXED. `bad` evidence (a non-
+  // typed, non-alias RHS — number, string, call, arithmetic, compound-assign) jumps
+  // straight to MIXED; conflicting ctors join to MIXED. We promote a global only
+  // when its fixed point is a single concrete ctor — sound: every assignment then
+  // provably yields that typed-array kind or nullish.
+  const MIXED = MIXED_CTORS
+  const defs = new Map()  // name → { ctors:Set<string>, refs:Set<string>, bad:bool }
+  const getDef = (name) => {
+    let d = defs.get(name)
+    if (!d) defs.set(name, d = { ctors: new Set(), refs: new Set(), bad: false })
+    return d
+  }
 
   const isNullishLit = (e) => e == null || e === 'undefined' || e === 'null'
     || (Array.isArray(e) && e[0] == null && (e[1] === undefined || e[1] === null))
 
-  const observe = (name, rhs) => {
-    if (!ctorOf.has(name) || invalid.has(name)) return
+  // User-function names — a call to one is an alias edge to its return value
+  // (virtual node `@ret:<fn>`, populated from each `return`). Lets a global
+  // assigned `a = makeBuffer(n)` inherit makeBuffer's typed-array ctor without
+  // relying on the call being inlined (locals get it via inlining; globals,
+  // typed before inlining runs, did not). `@`/`:` can't occur in a JS identifier,
+  // so the virtual key never collides with a real binding.
+  const fnames = new Set()
+  for (const f of ctx.func.list) if (f.body && !f.raw && typeof f.name === 'string') fnames.add(f.name)
+  // Typed-array methods that preserve the receiver's element ctor: `.subarray`
+  // and `.slice` (same-kind view/copy), `.map` (same-kind, per propagateTyped).
+  const CTOR_PRESERVING = new Set(['subarray', 'slice', 'map'])
+
+  // Record one assignment `name = rhs` as evidence. Nullish contributes nothing
+  // (consistent with any typed-array value); a bare identifier, a ctor-preserving
+  // method on a name, or a call to a user function are alias edges; anything else
+  // that isn't a typed ctor poisons the name.
+  // Scope-qualified binding key. A module global is ONE node program-wide (bare
+  // name); a function-local is unique to its scope `sid`. Keying locals by bare
+  // name made a numeric counter `let s = 0` in one function poison a typed
+  // swap-temp `let s = a` in another — cascading MIXED into the double-buffer
+  // globals so every `a[i]` fell back to runtime __str_idx/__typed_idx dispatch
+  // (lbm: 3.9× slower than JS). `@ret:` virtual nodes stay bare (module-wide
+  // return-value anchors).
+  const key = (name, sid) => name[0] === '@' || ctx.scope.userGlobals.has(name) ? name : sid + '\x00' + name
+
+  const observe = (name, rhs, sid) => {
+    const d = getDef(key(name, sid))
     if (isNullishLit(rhs)) return
-    // Resolve typed-array ctor from `new TypedArrayCtor(...)`, ternary of typed,
-    // or a reference to a name we already know is typed.
-    let ctor = typedElemCtor(rhs) ?? ternaryCtorOfRhs(rhs)
-    if (ctor === MIXED_CTORS) { invalid.add(name); return }
-    if (!ctor && typeof rhs === 'string') {
-      if (ctx.scope.globalValTypes?.get(rhs) === VAL.TYPED)
-        ctor = ctx.scope.globalTypedElem?.get(rhs) ?? null
+    const ctor = typedElemCtor(rhs) ?? ternaryCtorOfRhs(rhs)
+    if (ctor === MIXED) { d.bad = true; return }
+    if (ctor) { d.ctors.add(ctor); return }
+    if (typeof rhs === 'string') { d.refs.add(key(rhs, sid)); return }
+    if (Array.isArray(rhs) && rhs[0] === '()') {
+      const callee = rhs[1]
+      // `recv.subarray(...)` / `recv.slice(...)` / `recv.map(...)` → inherit recv's ctor.
+      if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string'
+        && CTOR_PRESERVING.has(callee[2])) { d.refs.add(key(callee[1], sid)); return }
+      // `fn(...)` to a user function → inherit its return ctor.
+      if (typeof callee === 'string' && fnames.has(callee)) { d.refs.add('@ret:' + callee); return }
     }
-    if (!ctor) { invalid.add(name); return }
-    const prev = ctorOf.get(name)
-    if (prev && prev !== ctor) { invalid.add(name); return }
-    ctorOf.set(name, ctor)
+    d.bad = true
   }
 
-  const walk = (node) => {
+  // Scope-aware walk. Every `=>` opens a fresh scope so same-named locals across
+  // functions (and sibling closures) stay distinct. A function bound to a name
+  // descends in a name-stable scope (`fn\0name`) so the ast descent and the
+  // func.list sweep below visit it identically (idempotent), and so `return`
+  // exprs anchor on `@ret:name`.
+  let sidc = 0
+  const walk = (node, sid, retFn) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=' && typeof node[1] === 'string' && ctorOf.has(node[1])) observe(node[1], node[2])
+    if (op === '=>') { walk(node[2], 's' + (++sidc), null); return }
+    if (op === 'return' && retFn != null) observe('@ret:' + retFn, node[1], sid)
+    const assign = (name, rhs) => {
+      if (Array.isArray(rhs) && rhs[0] === '=>') { observe(name, rhs, sid); enterFn(rhs[2], name); return }
+      observe(name, rhs, sid); walk(rhs, sid, retFn)
+    }
+    if (op === '=' && typeof node[1] === 'string') return assign(node[1], node[2])
     if ((op === 'let' || op === 'const') && node.length > 1) {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && ctorOf.has(d[1]))
-          observe(d[1], d[2])
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') assign(d[1], d[2])
+        else walk(d, sid, retFn)
       }
+      return
     }
-    // Compound-assigns (`+=`, etc.) to a typed-array binding can't preserve
-    // the typed-array kind — invalidate.
-    if (ASSIGN_OPS.has(op) && op !== '=' && typeof node[1] === 'string' && ctorOf.has(node[1]))
-      invalid.add(node[1])
-    for (let i = 1; i < node.length; i++) walk(node[i])
+    // Compound-assigns (`+=`, `++`, …) can't preserve a typed-array kind — poison.
+    if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') { getDef(key(node[1], sid)).bad = true; walk(node[2], sid, retFn); return }
+    for (let i = 1; i < node.length; i++) walk(node[i], sid, retFn)
   }
-  walk(ast)
-  for (const f of ctx.func.list) if (f.body && !f.raw) walk(f.body)
+  // Descend into a function body anchored on `@ret:fn`. An arrow expr-body IS the
+  // implicit return (`(n) => new Float64Array(n)`); a `{}` block uses explicit
+  // `return` nodes (captured in walk). Without the implicit-return capture, a
+  // global assigned `a = mk(n)` from an expr-body fn never inherited mk's ctor.
+  const enterFn = (body, fn) => {
+    if (Array.isArray(body) && body[0] !== '{}') observe('@ret:' + fn, body, 'fn\x00' + fn)
+    walk(body, 'fn\x00' + fn, fn)
+  }
+  walk(ast, 'mod', null)
+  // Defensive sweep: cover any func.list body not reachable by descent from `ast`
+  // (hoisted / submodule). Name-stable scope keeps it idempotent with the descent.
+  for (const f of ctx.func.list) if (f.body && !f.raw) enterFn(f.body, f.name)
 
-  for (const [name, ctor] of ctorOf) {
-    if (invalid.has(name) || !ctor) continue
+  // Least-fixed-point over the alias graph. join: null is bottom, MIXED is top.
+  const join = (a, b) => a === MIXED || b === MIXED ? MIXED : a == null ? b : b == null ? a : a === b ? a : MIXED
+  const state = new Map()  // name → null | ctor | MIXED
+  // A ref to a name with no tracked defs resolves via an already-known typed
+  // global (const typed array / earlier-recorded rep); otherwise it's opaque → MIXED.
+  const refState = (r) => defs.has(r) ? (state.get(r) ?? null)
+    : ctx.scope.globalValTypes?.get(r) === VAL.TYPED ? (ctx.scope.globalTypedElem?.get(r) ?? MIXED)
+    : MIXED
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, d] of defs) {
+      let cur = d.bad ? MIXED : null
+      if (cur !== MIXED) for (const c of d.ctors) cur = join(cur, c)
+      if (cur !== MIXED) for (const r of d.refs) cur = join(cur, refState(r))
+      if (cur !== (state.get(name) ?? null)) { state.set(name, cur); changed = true }
+    }
+  }
+
+  for (const name of ctx.scope.userGlobals) {
+    const ctor = state.get(name)
+    if (!ctor || ctor === MIXED) continue
     if (ctx.scope.globalValTypes?.get(name) === VAL.TYPED) continue
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.TYPED)
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)

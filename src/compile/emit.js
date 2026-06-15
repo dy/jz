@@ -321,6 +321,13 @@ function intIndexIR(key) {
  */
 const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
 function tryI32Index(e) {
+  // Integer literal first — a prepare-wrapped literal `[null, k]` (and a const-int
+  // name) is itself an Array, so the operator dispatch below would reject it and
+  // bail the WHOLE index to the f64 round-trip. The classic victim is the `+ 1` /
+  // `(j + 1)` of a bilinear/stencil gather (`a[(j+1)*W + i + 1]`): one literal leaf
+  // forced `convert_i32 … f64.mul/add … trunc_sat_f64_s` across every term.
+  const lit = nonNegIntLiteral(e)
+  if (lit != null) return typed(['i32.const', lit], 'i32')
   if (Array.isArray(e)) {
     const inner = I32_INDEX_OP[e[0]]
     if (inner && e[2] != null) {
@@ -330,8 +337,6 @@ function tryI32Index(e) {
     }
     return null
   }
-  const lit = nonNegIntLiteral(e)
-  if (lit != null) return ['i32.const', lit]
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
 export const emitIndex = (idx) => tryI32Index(idx) ?? asI32(emit(idx))

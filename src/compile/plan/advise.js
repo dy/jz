@@ -1,4 +1,4 @@
-import { ctx, warn } from '../../ctx.js'
+import { ctx, warn, err } from '../../ctx.js'
 import { refsName, REFS_IN_EXPR } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
@@ -307,10 +307,64 @@ function adviseSimdLoops() {
 }
 
 /** Compile-time advisories at end of plan — extensible home for soft warnings. */
+// Generic-dispatch deopt advisory. A module global indexed inside a loop whose type
+// never resolved to a container (its VAL stays null — "any") lowers EVERY `g[i]` to
+// the runtime tag-dispatch path (__typed_idx / string fork): ~13× slower than a proven
+// typed load, and almost always a MISSED type rather than intentional polymorphism — a
+// loop-hot indexed container has one kind in practice (jz's value model already handles
+// genuinely-polymorphic parser data efficiently; that's a different regime). Like TS
+// flagging `any`, surface the bailout so it's fixed at the source — a `new T()`-typed
+// global, or an `instanceof`/`+` guard — instead of silently paying the cliff. Scoped to
+// module globals: their type is final here (params/locals resolve only at emit). Strict
+// mode, which already rejects dynamic features, escalates this to a hard error.
+function adviseGenericDispatch() {
+  if (!ctx.warnings && !ctx.transform.strict) return
+  const globals = ctx.scope.userGlobals
+  if (!globals?.size) return
+  const isGeneric = (name) => globals.has(name) && !ctx.scope.globalValTypes?.get(name)
+  // A global narrowed by `g instanceof Ctor` / `typeof g` in this function reads
+  // through the refined fast path — the user already applied the recommended fix,
+  // so flagging it would be noise. (Refinements are emit-time; this AST probe is
+  // the sound, conservative suppressor — a guard anywhere in the fn silences it.)
+  const guarded = (body) => {
+    const set = new Set()
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      // Raw forms (strict mode skips jzify, so `instanceof`/`typeof` survive)…
+      if ((n[0] === 'instanceof' || n[0] === 'typeof') && typeof n[1] === 'string') set.add(n[1])
+      // …and the lowered predicate jzify emits — `g instanceof Float64Array` becomes
+      // `__is_typed(g)`, `typeof g === 'string'` becomes `__is_str(g)`, etc.
+      else if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('__is') && typeof n[2] === 'string') set.add(n[2])
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    scan(body)
+    return set
+  }
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.body) continue
+    const fn = func.name
+    const narrowed = guarded(func.body)
+    const walk = (node, inLoop) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === '[]' && inLoop && typeof node[1] === 'string' && isGeneric(node[1]) && !narrowed.has(node[1])) {
+        const g = node[1]
+        const msg = `'${g}' is indexed (\`${g}[…]\`) in a loop but its type never resolved — every access falls back to runtime dynamic dispatch (~10× slower than a typed load). Give it one provable kind: assign \`${g} = new Float64Array(…)\`, or narrow with \`instanceof\`/\`+\`.`
+        if (ctx.transform.strict) err(`strict mode: ${msg} Pass { strict: false } to allow dynamic dispatch.`)
+        warn('deopt-generic', msg, { fn }, node.loc)
+      }
+      const nowLoop = inLoop || HEAP_LOOP_OPS.has(op)
+      for (let i = 1; i < node.length; i++) walk(node[i], nowLoop)
+    }
+    walk(func.body, false)
+  }
+}
+
 export function adviseProgram(programFacts) {
   adviseHeapGrowth()
   adviseSetMapIterationOrder()
   if (programFacts) adviseJsstringCarrier(programFacts.paramReps, programFacts.valueUsed)
   adviseSimdLoops()
+  adviseGenericDispatch()
 }
 

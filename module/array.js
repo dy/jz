@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq } from '../src/ir.js'
 import { inBoundsArrIdx } from '../src/type.js'
-import { emit, spread, deps } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey } from '../src/static.js'
@@ -718,7 +718,11 @@ export default (ctx) => {
     // their string-key semantics differ from a HASH/OBJECT property read.)
     if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)
       return emit(['.', arr, litKey])
-    const va = emit(arr), vi = asI32(emit(idx))
+    // emitIndex (not bare asI32(emit)) narrows integer index arithmetic — incl. a
+    // literal term like the `+1` of `a[i*W + x + 1]` — to i32 ops instead of the
+    // f64 convert/trunc round-trip. Non-i32 keys (string dispatch) fall back to
+    // asI32(emit) inside emitIndex, so this is a strict improvement for every branch.
+    const va = emit(arr), vi = emitIndex(idx)
     const ptrExpr = asF64(va)
     const dynLoad = (objExpr, keyExpr) => {
       if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
