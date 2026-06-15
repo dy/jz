@@ -54,7 +54,8 @@
     "bench:startup": "node scripts/bench-startup.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "for dir in examples/*/; do [ -f \"$dir/build.mjs\" ] && node \"$dir/build.mjs\"; done",
-    "prepublishOnly": "npm test && npm run test:self && npm run build"
+    "prepublishOnly": "npm test && npm run test:self",
+    "prepare": "npm run build"
   },
   "repository": {
     "type": "git",

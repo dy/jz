@@ -78,10 +78,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true
-          # dist/jz.js + dist/interop.js are what the repl + bench pages import
-          # (Pages serves the repo; a gitignored dist 404s the deployed repl).
-          npm run build
-          git add bench/results.json bench/bench.svg bench/web dist/jz.js dist/interop.js
+          # Only the bench dataset is committed here; dist/ is built + deployed by
+          # pages.yml (no longer committed). bench/web/*.wasm + results.json feed the
+          # live bench page, which pages.yml serves from these tracked files.
+          git add bench/results.json bench/bench.svg bench/web
           git diff --cached --quiet || git commit -m 'bench: refresh results.json + web artifacts [skip ci]'
           # a push landing mid-run rejects ours — rebase once and retry
           git push || (git pull --rebase origin main && git push)

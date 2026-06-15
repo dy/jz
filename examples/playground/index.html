@@ -1,215 +1,585 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0" />
-<title>Floatbeat playground — jz compiles in your browser</title>
-<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jz floatbeat — type a formula, hear music · compiled in your browser</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
 <style>
-  :root { --bg:#07070c; --fg:#eee; --accent:#ddd; --err:#fff; --dim:#999; }
-  html,body { height:100%; margin:0; background:var(--bg); color:var(--fg);
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { display:flex; flex-direction:column; overflow:hidden; }
-  .masthead {
-    background:#0a0a0a; color:#fff; flex:0 0 auto;
-    display:flex; align-items:center; gap:16px;
-    min-height:44px;
-    padding:0 16px;
-    font-family: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
-  }
-  .masthead .wordmark { font-size:19px; letter-spacing:-.02em; line-height:1; text-decoration:none; color:#fff; }
-  .masthead .wordmark .mark { font-weight:700; color:#fff; }
-  .masthead .wordmark .sub { font-weight:400; color:#8a8a8a; margin-left:.45em; transition:color .18s; }
-  .masthead .wordmark .sep { color:#8a8a8a; margin-left:.4em; margin-right:-.05em; }
-  .masthead .wordmark .page { margin-left:.35em; color:#8a8a8a; }
-  .masthead .wordmark:hover .sub { color:#fff; }
-  .masthead nav { margin-left:auto; display:flex; align-items:center; gap:20px; }
-  .masthead nav a { color:#fff; opacity:.7; text-decoration:none; font-size:12px; text-transform:uppercase; letter-spacing:.14em; transition:opacity .18s; }
-  .masthead nav a:hover { opacity:1; }
-  .masthead .gh { display:flex; }
-  main { flex:1; display:flex; min-height:0; }
-  .pane { flex:1; min-width:0; display:flex; flex-direction:column; }
-  #editor { flex:1; resize:none; border:0; outline:0; padding:12px; tab-size:2;
-    background:#0b0b12; color:#eee; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    caret-color:var(--accent); white-space:pre; }
-  #right { border-left:1px solid #1a1a24; position:relative; }
-  #scope { position:absolute; inset:0; width:100%; height:100%; display:block; }
-  #wat { position:absolute; inset:0; margin:0; padding:12px; overflow:auto; display:none;
-    background:#0b0b12ee; color:#ccc; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre; }
-  footer { display:flex; align-items:center; gap:14px; padding:7px 12px; font-size:12px;
-    background:#0b0b12; border-top:1px solid #1a1a24; min-height:18px; }
-  footer .ok { color:var(--accent); }
-  footer .bad { color:var(--err); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  button { font:inherit; font-size:12px; background:#13131c; color:var(--fg);
-    border:1px solid #2a2a2a; padding:3px 10px; cursor:pointer; }
-  button:hover { border-color:var(--accent); }
-  button.on { color:var(--accent); border-color:var(--accent); }
-  footer .spacer { margin-left:auto; }
-  #hint { position:absolute; left:0; right:0; bottom:14px; text-align:center; z-index:5;
-    color:#aaa; opacity:.8; font-size:13px; pointer-events:none; transition:opacity .4s; }
-  /* transparent, minimal scrollbars on the source + WAT panels */
-  #editor, #wat { scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.22) transparent; }
-  #editor::-webkit-scrollbar, #wat::-webkit-scrollbar { width:9px; height:9px; }
-  #editor::-webkit-scrollbar-track, #wat::-webkit-scrollbar-track { background:transparent; }
-  #editor::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border:2px solid transparent; background-clip:padding-box; }
-  #editor::-webkit-scrollbar-thumb:hover, #wat::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.3); background-clip:padding-box; }
-  #watClose { position:absolute; top:7px; right:9px; z-index:2; width:24px; height:24px; border:0;
-    background:transparent; color:#aaa; font:18px/24px 'Helvetica Neue', Helvetica, Arial, sans-serif; cursor:pointer; padding:0; }
-  #watClose:hover { color:#fff; background:rgba(255,255,255,.12); }
+/* ── Floatbeat playground — Swiss/Braun discipline on near-black. Mostly monochrome;
+      one warm accent, used only where something is live. Structure mirrors the repl:
+      code left, the signal right. ── */
+@font-face {
+  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url(../lib/jost.woff2) format('woff2');
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #08080c; --panel: #0b0b11; --band: #0a0a0a;
+  --line: #1b1b23; --faint: #14141b;
+  --ink: #e9e9ec; --dim: #80808c; --soft: #b9b9c2;
+  --accent: #e8b54a;
+  --pad: 14px; --gutter: 48px; --lh: 21px; --top: 44px;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--sans);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+
+/* ── masthead ── */
+header {
+  background: var(--band); color: #fff; flex: 0 0 auto;
+  display: flex; align-items: center; min-height: 44px; padding: 0 16px;
+  font-family: var(--sans);
+}
+.wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
+.wordmark .mark { font-weight: 700; }
+.wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
+.wordmark .sep { color: #5a5a5a; margin: 0 .42em; }
+.wordmark .page { color: #fff; }
+.wordmark:hover .sub { color: #fff; }
+header nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+header nav a:hover { opacity: 1; }
+header .gh { display: flex; }
+
+/* ── main split ── */
+main { flex: 1; display: flex; min-height: 0; }
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+
+/* ── code pane ── */
+.code { background: var(--bg); border-right: 1px solid var(--line); }
+.srcbar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 4;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px 8px 10px; pointer-events: none;
+}
+.srcbar > * { pointer-events: auto; }
+.tbtn {
+  display: inline-flex; align-items: center; gap: 7px; background: rgba(12,12,18,.66);
+  color: var(--soft); border: 1px solid var(--line); padding: 5px 11px; cursor: pointer;
+  font-family: var(--sans); font-size: 11px; text-transform: uppercase; letter-spacing: .12em;
+  backdrop-filter: blur(8px); transition: color .18s, border-color .18s;
+}
+.tbtn:hover { color: #fff; border-color: #34343f; }
+.tbtn svg { opacity: .85; }
+
+.editwrap { position: absolute; inset: 0; overflow: hidden; }
+.gutter {
+  position: absolute; left: 0; top: 0; width: var(--gutter); height: 100%;
+  padding-top: var(--top); z-index: 1; pointer-events: none;
+  font: 12px/var(--lh) var(--mono); color: var(--dim); text-align: right;
+  border-right: 1px solid var(--faint); background: var(--bg);
+}
+.gutter pre { padding-right: 10px; }
+.gutter .cur { color: var(--soft); }
+.codearea { position: absolute; left: var(--gutter); top: 0; right: 0; bottom: 0; }
+#guides { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+#hl, #editor {
+  position: absolute; inset: 0; margin: 0;
+  padding: var(--top) 16px 18px var(--pad);
+  font: 13px/var(--lh) var(--mono); tab-size: 2; white-space: pre; border: 0; background: transparent;
+}
+#hl { z-index: 1; overflow: hidden; pointer-events: none; color: var(--ink); }
+#editor { z-index: 2; resize: none; overflow: auto; color: transparent; caret-color: var(--accent); }
+#editor:focus, #editor:focus-visible { outline: none; }
+#editor::selection { background: rgba(232,181,74,.22); }
+/* monochrome syntax + a single warm tint on numbers (the one place value lives) */
+#hl .k { font-weight: 700; color: #fff; }
+#hl .t { font-weight: 600; color: var(--soft); }
+#hl .n { color: #d8b878; }
+#hl .s { color: #8f8f9c; }
+#hl .c { color: #595966; font-style: italic; }
+#hl .e { text-decoration: underline wavy #ff5b5b 2px; text-underline-offset: 3px; }
+
+footer.status {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 14px; z-index: 3;
+  padding: 7px 12px; min-height: 34px; background: var(--panel); border-top: 1px solid var(--line);
+  font: 12px/1 var(--mono);
+}
+footer.status .ok { color: var(--dim); }
+footer.status .ok b { color: var(--soft); font-weight: 400; }
+footer.status .bad { color: #ff6b6b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+footer.status .sp { margin-left: auto; }
+footer.status .sr { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-family: var(--sans); font-size: 11px; letter-spacing: .04em; }
+select {
+  font-family: var(--mono); font-size: 11px; background: var(--faint); color: var(--soft);
+  border: 1px solid var(--line); border-radius: 0; padding: 3px 5px; cursor: pointer;
+}
+.lnk { background: transparent; border: 0; color: var(--dim); cursor: pointer; font: inherit; padding: 0;
+  text-transform: uppercase; letter-spacing: .1em; font-size: 11px; transition: color .18s; font-family: var(--sans); }
+.lnk:hover, .lnk.on { color: var(--ink); }
+
+/* ── vis pane ── */
+.vis { background: var(--bg); }
+#scope { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#wat {
+  position: absolute; inset: 0; margin: 0; padding: 14px 16px; overflow: auto; display: none; z-index: 6;
+  background: rgba(8,8,12,.96); color: #b9b9c2; font: 11.5px/1.5 var(--mono); white-space: pre;
+}
+#watClose { position: absolute; top: 8px; right: 10px; z-index: 7; width: 26px; height: 26px; border: 0;
+  background: transparent; color: var(--dim); font: 18px/26px var(--mono); cursor: pointer; padding: 0; }
+#watClose:hover { color: #fff; background: rgba(255,255,255,.1); }
+
+#hint { position: absolute; left: 0; right: 0; bottom: 64px; text-align: center; z-index: 5;
+  pointer-events: none; transition: opacity .5s; color: #fff; font-size: 13px; letter-spacing: .02em;
+  text-shadow: 0 0 3px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); }
+
+.visbar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: flex; align-items: center; gap: 14px; padding: 11px 14px;
+  background: linear-gradient(to top, rgba(8,8,12,.92), rgba(8,8,12,0));
+}
+.transport { display: flex; align-items: center; gap: 4px; }
+.tp { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--soft); cursor: pointer; transition: color .15s; padding: 0; }
+.tp:hover { color: #fff; }
+.tp.play { color: var(--ink); }
+.tp.play.on { color: var(--accent); }
+.tune { font-size: 13px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38%; }
+.tune b { color: #fff; font-weight: 600; }
+.tune span { color: var(--dim); }
+.visswitch { margin-left: auto; display: flex; border: 1px solid var(--line); background: rgba(12,12,18,.5); backdrop-filter: blur(8px); }
+.visswitch button { border: 0; background: transparent; color: var(--dim); cursor: pointer;
+  font-family: var(--sans); font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; padding: 6px 10px;
+  border-bottom: 2px solid transparent; transition: color .15s; }
+.visswitch button:hover { color: var(--soft); }
+.visswitch button.on { color: #fff; border-bottom-color: var(--accent); }
+
+/* ── library drawer ── */
+.scrim { position: fixed; inset: 0; z-index: 9; background: rgba(4,4,8,.5); opacity: 0; pointer-events: none; transition: opacity .25s; }
+.scrim.open { opacity: 1; pointer-events: auto; }
+.library {
+  position: fixed; top: 44px; bottom: 0; left: 0; width: 320px; max-width: 86vw; z-index: 10;
+  background: var(--panel); border-right: 1px solid var(--line);
+  transform: translateX(-101%); transition: transform .26s cubic-bezier(.22,.6,.36,1);
+  display: flex; flex-direction: column; box-shadow: 8px 0 32px rgba(0,0,0,.4);
+}
+.library.open { transform: none; }
+.library h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
+  font-weight: 600; padding: 16px 18px 10px; display: flex; align-items: baseline; gap: 8px; }
+.library h2 span { color: #45454f; font-weight: 400; }
+.liblist { flex: 1; overflow: auto; padding: 0 8px 12px; scrollbar-width: thin; scrollbar-color: #2a2a33 transparent; }
+.libitem { display: block; width: 100%; text-align: left; border: 0; background: transparent; cursor: pointer;
+  padding: 10px 12px; color: var(--soft); border-left: 2px solid transparent; transition: background .14s, color .14s; }
+.libitem:hover { background: var(--faint); color: #fff; }
+.libitem.on { border-left-color: var(--accent); background: var(--faint); }
+.libitem .nm { display: block; font-size: 13px; font-weight: 600; color: #f0f0f2; letter-spacing: -.005em; }
+.libitem .mt { display: block; font-size: 11px; color: var(--dim); margin-top: 2px; font-family: var(--mono); }
+.libitem.new { color: var(--dim); border-top: 1px solid var(--line); margin-top: 6px; }
+.libitem.new .nm { color: var(--soft); font-weight: 400; }
+
+/* scrollbars */
+#editor { scrollbar-width: thin; scrollbar-color: #2a2a33 transparent; }
+#wat { scrollbar-width: thin; scrollbar-color: #2a2a33 transparent; }
+#editor::-webkit-scrollbar, #wat::-webkit-scrollbar, .liblist::-webkit-scrollbar { width: 9px; height: 9px; }
+#editor::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb, .liblist::-webkit-scrollbar-thumb { background: #26262f; border: 2px solid transparent; background-clip: padding-box; }
+#editor::-webkit-scrollbar-thumb:hover, #wat::-webkit-scrollbar-thumb:hover { background: #3a3a45; background-clip: padding-box; }
+
+@media (max-width: 820px) {
+  main { flex-direction: column; }
+  .code { border-right: 0; border-bottom: 1px solid var(--line); }
+  .pane { flex: 1 1 0; }
+  #editor { font-size: 16px; }       /* iOS no-zoom */
+}
 </style>
 </head>
 <body>
-<header class="masthead">
-  <a class="wordmark" href="../" aria-label="back to all examples">
-    <span class="mark">JZ</span><span class="sub">examples</span><span class="sep">–</span><span class="page">playground</span>
+
+<header>
+  <a class="wordmark" href="../" aria-label="back to examples">
+    <span class="mark">JZ</span><span class="sub">examples</span><span class="sep" aria-hidden="true">›</span><span class="page">floatbeat</span>
   </a>
   <nav>
     <a href="../../repl/">repl</a>
     <a href="../../bench/">bench</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
-      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
   </nav>
 </header>
+
 <main>
-  <div class="pane">
-    <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
-    <footer>
-      <button id="play">▶ play</button>
-      <button id="watBtn">WAT</button>
-      <span class="spacer"></span>
+  <div class="pane code">
+    <div class="srcbar">
+      <button class="tbtn" id="lib" aria-label="open library" aria-controls="library">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        Library
+      </button>
+      <button class="tbtn" id="share" aria-label="copy share link">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v7a1 1 0 001 1h14a1 1 0 001-1v-7M16 6l-4-4-4 4M12 2v13"/></svg>
+        <span id="shareLabel">Share</span>
+      </button>
+    </div>
+    <div class="editwrap">
+      <div class="gutter"><pre id="gutter"></pre></div>
+      <div class="codearea">
+        <canvas id="guides"></canvas>
+        <pre id="hl" aria-hidden="true"></pre>
+        <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="floatbeat source"></textarea>
+      </div>
+    </div>
+    <footer class="status">
       <span id="status"></span>
+      <span class="sp"></span>
+      <label class="sr">rate
+        <select id="sr" aria-label="sample rate">
+          <option value="8000">8 kHz</option>
+          <option value="22050">22.05 kHz</option>
+          <option value="44100" selected>44.1 kHz</option>
+          <option value="48000">48 kHz</option>
+        </select>
+      </label>
+      <button class="lnk" id="watBtn">WAT</button>
     </footer>
   </div>
-  <div class="pane" id="right">
+
+  <div class="pane vis" id="visPane">
     <canvas id="scope"></canvas>
     <pre id="wat"></pre>
     <button id="watClose" title="close WAT" aria-label="close WAT" hidden>×</button>
-    <div id="hint">▶ play, then edit the formula</div>
+    <div id="hint">press play, then edit the formula</div>
+    <div class="visbar">
+      <div class="transport">
+        <button class="tp" id="prev" aria-label="previous tune"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M7 6v12h2V6H7zm3 6l8 6V6l-8 6z"/></svg></button>
+        <button class="tp play" id="play" aria-label="play"><svg id="playIco" viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
+        <button class="tp" id="next" aria-label="next tune"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M15 6v12h2V6h-2zm-1 6L6 6v12l8-6z"/></svg></button>
+      </div>
+      <div class="tune" id="tune"></div>
+      <div class="visswitch" id="visswitch"></div>
+    </div>
   </div>
 </main>
 
+<div class="scrim" id="scrim"></div>
+<aside class="library" id="library" aria-label="floatbeat library">
+  <h2>Library <span id="libcount"></span></h2>
+  <div class="liblist" id="liblist"></div>
+</aside>
+
 <script type="module">
-// The whole point: the compiler runs HERE, in the page. `jz(src)` parses, infers
-// types, emits WASM and instantiates it — no server, no build step, no prebuilt
-// .wasm. Every keystroke recompiles. (dist/jz.js is the standalone compiler
-// bundle — run `npm run build` to produce it.)
-import jz, { compile } from "../../dist/jz.js"
+// The compiler runs HERE — `jz(src)` parses, infers types, emits WASM and instantiates
+// it on every edit. No server, no prebuilt .wasm, no build step. The hot sample-fill
+// loop is the part jz compiles; the visualizer reads the resulting audio off an analyser.
+import jz, { compile } from '../../dist/jz.js'
+import { FLOATBEATS } from '../jukebox/floatbeats.js'
+import { makeVisualizers } from './visualizers.js'
 
-const SR = 44100, CHUNK = Math.round(SR * 0.5)          // ½-second gapless chunks
 const $ = (id) => document.getElementById(id)
-const editor = $("editor"), status = $("status"), scope = $("scope"), watEl = $("wat")
+const editor = $('editor'), hlEl = $('hl'), gutterEl = $('gutter'), guides = $('guides')
+const statusEl = $('status'), scope = $('scope'), watEl = $('wat'), srSel = $('sr')
 
-const DEFAULT = `// jz source — valid JS, compiled to WASM live as you type.
-// fill(len, sr, off) writes \`len\` samples from absolute sample index \`off\`.
-let TAU = 6.283185307179586
-
-export let fill = (len, sr, off) => {
-  let b = new Float64Array(len)
-  let i = 0
-  while (i < len) {
-    let t = (off + i) / sr
-    let beat = t * 2.2
-    let bar = (beat * 0.25) | 0
-    let root = 55 * Math.pow(2, ((bar * 5) % 12) / 12)   // walking root
-    let s16 = (beat * 4) | 0
-    let q = s16 % 4
-    let semi = q === 0 ? 0 : q === 1 ? 4 : q === 2 ? 7 : 11
-    let hz = root * Math.pow(2, (semi + 12) / 12)         // arpeggio
-    let frac = beat * 4 - s16
-    let bf = beat - (beat | 0)
-    // fast attack ramp (Math.min) so each note starts from 0 — no onset click — then pluck decay
-    let bell = Math.sin(TAU * hz * t) * Math.min(1, frac * 25) * Math.exp(-frac * 6) * 0.25
-    let bass = Math.sin(TAU * root * 0.5 * t) * Math.min(1, bf * 25) * Math.exp(-bf * 4) * 0.2
-    b[i] = bell + bass
-    i++
-  }
-  return b
+const ACCENT = '#e8b54a'
+const DEFAULT = `(t) => {
+  // a small bell + bass arpeggio — t is the sample index, sr below sets the pitch
+  let TAU = 6.283185307179586
+  let sr = 44100
+  let beat = t / sr * 2.2
+  let bar = (beat * 0.25) | 0
+  let root = 55 * Math.pow(2, ((bar * 5) % 12) / 12)
+  let s16 = (beat * 4) | 0
+  let q = s16 % 4
+  let semi = q === 0 ? 0 : q === 1 ? 4 : q === 2 ? 7 : 11
+  let hz = root * Math.pow(2, (semi + 12) / 12)
+  let frac = beat * 4 - s16
+  let bf = beat - (beat | 0)
+  let bell = Math.sin(TAU * hz * t / sr) * Math.min(1, frac * 25) * Math.exp(-frac * 6) * 0.25
+  let bass = Math.sin(TAU * root * 0.5 * t / sr) * Math.min(1, bf * 25) * Math.exp(-bf * 4) * 0.2
+  return bell + bass
 }`
 
-// ── compile: src → engine(len, off) → Float64Array. Keeps the last good engine
-//    on error so the sound never drops while you type a half-finished line. ────
-let engine = null, lastSrc = ""
+// ── syntax highlight (one regex, monochrome classes) ──────────────────────────
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|return|if|else|for|while|do|break|continue|export|import|from|typeof|in|of|new|true|false|null|undefined|Math|Infinity|NaN)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
+const CLS = ['c', 's', 'n', 'k', 't']
+const highlight = (src) => {
+  let html = '', last = 0, m; TOKEN.lastIndex = 0
+  while ((m = TOKEN.exec(src))) {
+    html += esc(src.slice(last, m.index))
+    const i = m.slice(1).findIndex((g) => g !== undefined)
+    html += `<span class="${CLS[i]}">${esc(m[0])}</span>`
+    last = TOKEN.lastIndex
+  }
+  return html + esc(src.slice(last))
+}
+const paint = (errAt = null) => {
+  const src = editor.value
+  if (!errAt) { hlEl.innerHTML = highlight(src) + '\n'; return }
+  const lines = src.split('\n')
+  const ln = Math.min(Math.max(errAt.line, 1), lines.length)
+  let off = 0
+  for (let i = 0; i < ln - 1; i++) off += lines[i].length + 1
+  off += Math.min(Math.max(errAt.col - 1, 0), lines[ln - 1].length)
+  let tok = src.slice(off).match(/^\S+/)?.[0]
+  if (!tok) { if (off > 0) { off -= 1; tok = src[off] === '\n' ? '' : src[off] } if (!tok) { hlEl.innerHTML = highlight(src) + '\n'; return } }
+  hlEl.innerHTML = highlight(src.slice(0, off)) + `<span class="e">${highlight(tok)}</span>` + highlight(src.slice(off + tok.length)) + '\n'
+}
+
+// ── gutter · current-line · indent guides ─────────────────────────────────────
+// All three layers share the textarea's font metrics, so the editor stays a plain
+// <textarea> (native caret, selection, undo) and the chrome paints exactly behind it.
+const PADT = 44, PADL = 14, LH = 21
+let charW = 7.8
+const measureChar = () => {
+  const c = guides.getContext('2d')
+  c.font = '13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+  charW = c.measureText('M0123456789').width / 11
+}
+const curLine = () => editor.value.slice(0, editor.selectionStart).split('\n').length - 1
+const renderGutter = () => {
+  const n = editor.value.split('\n').length, cur = curLine()
+  let h = ''
+  for (let i = 0; i < n; i++) h += i === cur ? `<span class="cur">${i + 1}</span>\n` : (i + 1) + '\n'
+  gutterEl.innerHTML = h
+  gutterEl.parentElement.scrollTop = 0
+  gutterEl.style.transform = `translateY(${-editor.scrollTop}px)`
+}
+// indent depth per line (in 2-space steps); blank lines bridge to the deeper neighbour
+const depths = () => {
+  const lines = editor.value.split('\n'), d = new Array(lines.length)
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].match(/^[ \t]*/)[0]
+    d[i] = lines[i].trim() ? Math.floor(t.replace(/\t/g, '  ').length / 2) : -1
+  }
+  for (let i = 0; i < d.length; i++) if (d[i] < 0) {
+    let p = i - 1; while (p >= 0 && d[p] < 0) p--
+    let q = i + 1; while (q < d.length && d[q] < 0) q++
+    d[i] = Math.max(p >= 0 ? d[p] : 0, q < d.length ? d[q] : 0)
+  }
+  return d
+}
+let gW = 0, gH = 0, gdpr = 1
+const drawGuides = () => {
+  const r = guides.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1)
+  if (gW !== r.width || gH !== r.height || gdpr !== dpr) {
+    gW = r.width; gH = r.height; gdpr = dpr
+    guides.width = gW * dpr; guides.height = gH * dpr
+  }
+  const g = guides.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0)
+  g.clearRect(0, 0, gW, gH)
+  const top = PADT - editor.scrollTop, left = PADL - editor.scrollLeft
+  const cur = curLine()
+  // current-line band
+  const cy = top + cur * LH
+  if (cy + LH > 0 && cy < gH) { g.fillStyle = 'rgba(255,255,255,.035)'; g.fillRect(0, cy, gW, LH) }
+  // indent guides
+  const d = depths()
+  for (let i = 0; i < d.length; i++) {
+    const y = top + i * LH
+    if (y + LH < 0 || y > gH) continue
+    for (let lvl = 0; lvl < d[i]; lvl++) {
+      const x = Math.round(left + lvl * 2 * charW) + 0.5
+      g.fillStyle = (i === cur && lvl < d[cur]) ? 'rgba(232,181,74,.22)' : 'rgba(255,255,255,.06)'
+      g.fillRect(x, y, 1, LH)
+    }
+  }
+}
+const refreshChrome = () => { renderGutter(); drawGuides() }
+const syncScroll = () => { hlEl.scrollTop = editor.scrollTop; hlEl.scrollLeft = editor.scrollLeft; refreshChrome() }
+editor.addEventListener('scroll', syncScroll)
+for (const ev of ['keyup', 'click', 'select']) editor.addEventListener(ev, refreshChrome)
+
+// ── compile: editor source → engine(len, off) → clamped Float64Array ───────────
+// A bare `(t) => …` formula is wrapped into a module that exports the hot `fill`
+// loop (so jz compiles the loop); a source that already exports compiles as-is.
+const wrap = (body) => /\bexport\b/.test(body) ? body :
+`export let beat = (${body})
+export let fill = (len, off) => { let b = new Float64Array(len); let i = 0; while (i < len) { let s = beat(off + i); b[i] = s < -1 ? -1 : (s > 1 ? 1 : s); i++ } return b }`
+
+let engine = null, lastSrc = '', lastOk = false
 const buildEngine = (src) => {
+  const mod = wrap(src)
   const t0 = performance.now()
-  const bytes = compile(src)                              // → wasm size
-  const { exports, memory } = jz(src)                     // compile + instantiate
+  const bytes = compile(mod)
+  const { exports, memory } = jz(mod)
   const ms = performance.now() - t0
-  if (typeof exports.fill !== "function") throw new Error("export `fill` not found")
-  engine = (len, off) => { const v = exports.fill(len, SR, off); const out = Float64Array.from(v); memory.reset(); return out }
+  if (typeof exports.fill !== 'function') throw new Error('export `fill` not found')
+  engine = (len, off) => { const v = exports.fill(len, off); const out = Float64Array.from(v); memory.reset(); return out }
   return { ms, bytes: bytes.length }
 }
+const setStatus = (html) => { statusEl.innerHTML = html }
 const rebuild = (src) => {
   try {
     const { ms, bytes } = buildEngine(src)
-    lastSrc = src
-    status.innerHTML = `<span class="ok">✓ compiled ${bytes} B · ${ms.toFixed(1)} ms in-browser</span>`
-    if (watEl.style.display === "block") showWat(src)
+    lastSrc = src; lastOk = true
+    setStatus(`<span class="ok">✓ compiled <b>${bytes} B</b> · <b>${ms.toFixed(1)} ms</b> in-browser</span>`)
+    if (watEl.style.display === 'block') showWat(src)
+    paint()
   } catch (e) {
-    status.innerHTML = `<span class="bad">✗ ${String(e.message || e).replace(/</g, "&lt;")}</span>`
+    lastOk = false
+    const msg = String(e.message || e)
+    setStatus(`<span class="bad">✗ ${esc(msg.split('\n')[0])}</span>`)
+    const at = msg.match(/\bat (\d+):(\d+)/)
+    // wrapped formulas live on line 1+ of the module; only line-1 col shifts by the prefix
+    if (at) { const line = +at[1], col = +at[2]; paint({ line, col: line === 1 && !/\bexport\b/.test(src) ? col - 16 : col }) }
   }
 }
 
-// ── audio: stream gapless ½-s chunks just ahead of the playhead (jukebox model).
-//    A live recompile just swaps `engine` — the next chunk renders the new tune. ─
-let actx, playing = false, off = 0, streamStart = 0, nextTime = 0, queued = []
-const audio = () => { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); return actx }
+// ── audio: gapless ½-s chunks just ahead of the playhead, through master→analyser→out.
+//    A live recompile only swaps `engine`; the next chunk renders the new formula. ─────
+let SR = 44100, CHUNK = SR / 2 | 0
+let actx, master, analyser, playing = false, off = 0, streamStart = 0, nextTime = 0, queued = []
+let timeBuf = new Float32Array(2048), freqBuf = new Uint8Array(1024)
+const audio = () => {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)()
+    master = actx.createGain(); master.gain.value = 0.9
+    analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.72
+    timeBuf = new Float32Array(analyser.fftSize); freqBuf = new Uint8Array(analyser.frequencyBinCount)
+    master.connect(analyser); analyser.connect(actx.destination)
+  }
+  if (actx.state === 'suspended') actx.resume()
+  return actx
+}
 const schedule = () => {
+  if (!engine) return
   while (nextTime < actx.currentTime + 0.3) {
     const out = engine(CHUNK, off)
     const buf = actx.createBuffer(1, CHUNK, SR); buf.getChannelData(0).set(out)
-    const s = actx.createBufferSource(); s.buffer = buf; s.connect(actx.destination); s.start(nextTime)
-    queued.push(s); if (queued.length > 6) queued.shift().stop?.()
+    const s = actx.createBufferSource(); s.buffer = buf; s.connect(master); s.start(nextTime)
+    queued.push(s); if (queued.length > 6) { try { queued.shift().stop() } catch {} }
     nextTime += CHUNK / SR; off += CHUNK
   }
 }
-const startStream = () => { audio(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; $("play").textContent = "⏸ pause"; $("play").classList.add("on"); $("hint").style.opacity = 0; schedule() }
-const stopStream = () => { playing = false; for (const s of queued) { try { s.stop() } catch {} } queued = []; $("play").textContent = "▶ play"; $("play").classList.remove("on") }
-
-// ── oscilloscope ─────────────────────────────────────────────────────────────
-const g = scope.getContext("2d"); let W = 0, H = 0
-const resize = () => { const d = Math.min(2, devicePixelRatio || 1); W = scope.width = scope.clientWidth * d | 0; H = scope.height = scope.clientHeight * d | 0 }
-addEventListener("resize", resize)
-const draw = (buf) => {
-  g.fillStyle = "#07070c"; g.fillRect(0, 0, W, H)
-  const mid = H / 2, amp = H * 0.42, n = buf.length, step = n / W
-  g.strokeStyle = "#ffffff14"; g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke()
-  g.strokeStyle = "#fff"; g.lineWidth = Math.max(1, devicePixelRatio || 1); g.beginPath()
-  for (let x = 0; x < W; x++) {
-    let lo = 1, hi = -1, s0 = x * step | 0, s1 = Math.min(n, (x + 1) * step + 1 | 0)
-    for (let i = s0; i < s1; i++) { const v = buf[i]; if (v < lo) lo = v; if (v > hi) hi = v }
-    g.moveTo(x + .5, mid - hi * amp); g.lineTo(x + .5, mid - lo * amp + .5)
-  }
-  g.stroke()
+const startStream = () => { audio(); off = 0; streamStart = actx.currentTime + 0.06; nextTime = streamStart; playing = true; reflectPlay(); $('hint').style.opacity = 0; schedule() }
+const stopStream = () => { playing = false; reflectPlay(); for (const s of queued) { try { s.stop() } catch {} } queued = [] }
+const reflectPlay = () => {
+  const b = $('play'); b.classList.toggle('on', playing); b.setAttribute('aria-label', playing ? 'pause' : 'play')
+  $('playIco').innerHTML = playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'
 }
 
-// ── WAT panel — the produced WebAssembly text, recompiled on demand ────────────
-const showWat = (src) => { try { watEl.textContent = compile(src, { wat: true }) } catch (e) { watEl.textContent = "; " + (e.message || e) } }
+// ── visualizers ───────────────────────────────────────────────────────────────
+const VIS = makeVisualizers()
+let vis = VIS[2]   // spectrogram leads — the song's structure made visible
+const g2 = scope.getContext('2d')
+let W = 0, H = 0, dpr = 1
+const resize = () => {
+  dpr = Math.min(2, devicePixelRatio || 1)
+  const w = scope.clientWidth, h = scope.clientHeight
+  W = scope.width = w * dpr | 0; H = scope.height = h * dpr | 0
+  g2.setTransform(1, 0, 0, 1, 0, 0)
+  vis.resize(W, H, dpr)
+  measureChar(); drawGuides()
+}
+addEventListener('resize', resize)
 
-// ── wiring ─────────────────────────────────────────────────────────────────
-let previewOff = 0, debounce = 0
+const buildSwitch = () => {
+  const sw = $('visswitch')
+  sw.innerHTML = VIS.map((v) => `<button data-id="${v.id}"${v === vis ? ' class="on"' : ''}>${v.name}</button>`).join('')
+  sw.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    vis = VIS.find((v) => v.id === b.dataset.id)
+    sw.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
+    vis.resize(W, H, dpr)
+  })
+}
+
 const loop = () => {
   requestAnimationFrame(loop)
-  if (!engine) return
-  const head = playing ? Math.max(0, Math.round((actx.currentTime - streamStart) * SR)) : (previewOff += CHUNK)
+  if (analyser && playing) { analyser.getFloatTimeDomainData(timeBuf); analyser.getByteFrequencyData(freqBuf) }
+  else { timeBuf.fill(0); freqBuf.fill(0) }
+  vis.frame(g2, { time: timeBuf, freq: freqBuf, sr: actx ? actx.sampleRate : SR, W, H, dpr, accent: ACCENT, playing })
   if (playing) schedule()
-  draw(engine(CHUNK, head))
 }
 
-editor.value = DEFAULT
-editor.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => rebuild(editor.value), 300) })
-$("play").addEventListener("click", () => playing ? stopStream() : startStream())
+// ── WAT peek ──────────────────────────────────────────────────────────────────
+const showWat = (src) => { try { watEl.textContent = compile(wrap(src), { wat: true }) } catch (e) { watEl.textContent = '; ' + (e.message || e) } }
 const setWat = (open) => {
-  watEl.style.display = open ? "block" : "none"
-  $("watClose").hidden = !open
-  $("watBtn").classList.toggle("on", open)
+  watEl.style.display = open ? 'block' : 'none'; $('watClose').hidden = !open; $('watBtn').classList.toggle('on', open)
   if (open) showWat(lastSrc || editor.value)
 }
-$("watBtn").addEventListener("click", () => setWat(watEl.style.display !== "block"))
-$("watClose").addEventListener("click", () => setWat(false))
+$('watBtn').addEventListener('click', () => setWat(watEl.style.display !== 'block'))
+$('watClose').addEventListener('click', () => setWat(false))
 
-resize()
-rebuild(DEFAULT)
+// ── library ───────────────────────────────────────────────────────────────────
+let tuneIdx = -1
+const fmtSr = (sr) => (sr % 1000 ? (sr / 1000).toFixed(2) : sr / 1000) + ' kHz'
+const buildLibrary = () => {
+  $('libcount').textContent = FLOATBEATS.length
+  $('liblist').innerHTML = FLOATBEATS.map((t, i) =>
+    `<button class="libitem" data-i="${i}"><span class="nm">${esc(t.name)}</span><span class="mt">${esc(t.by)} · ${fmtSr(t.sr)}</span></button>`
+  ).join('') + `<button class="libitem new" data-i="-1"><span class="nm">＋ New formula</span><span class="mt">blank slate, 44.1 kHz</span></button>`
+  $('liblist').querySelectorAll('.libitem').forEach((b) => b.onclick = () => { loadTune(+b.dataset.i); closeLib() })
+}
+const markLibrary = () => $('liblist').querySelectorAll('.libitem').forEach((b) => b.classList.toggle('on', +b.dataset.i === tuneIdx))
+const setSrc = (src, sr) => {
+  editor.value = src
+  SR = sr; CHUNK = SR / 2 | 0; srSel.value = String(sr)
+  paint(); refreshChrome(); rebuild(src); setHash()
+}
+const loadTune = (i) => {
+  tuneIdx = i
+  if (i < 0) { setSrc(DEFAULT, 44100); setTune('untitled', 'you', 44100) }
+  else { const t = FLOATBEATS[i]; setSrc(t.body, t.sr); setTune(t.name, t.by, t.sr) }
+  markLibrary()
+  if (playing) { stopStream(); startStream() }
+}
+const setTune = (name, by, sr) => { $('tune').innerHTML = `<b>${esc(name)}</b> <span>· ${esc(by)} · ${fmtSr(sr)}</span>` }
+const switchTune = (dir) => { const n = FLOATBEATS.length; loadTune(tuneIdx < 0 ? (dir > 0 ? 0 : n - 1) : (tuneIdx + dir + n) % n) }
+
+const openLib = () => { $('library').classList.add('open'); $('scrim').classList.add('open') }
+const closeLib = () => { $('library').classList.remove('open'); $('scrim').classList.remove('open') }
+$('lib').addEventListener('click', () => $('library').classList.contains('open') ? closeLib() : openLib())
+$('scrim').addEventListener('click', closeLib)
+
+// ── transport wiring ──────────────────────────────────────────────────────────
+$('play').addEventListener('click', () => playing ? stopStream() : startStream())
+$('prev').addEventListener('click', () => switchTune(-1))
+$('next').addEventListener('click', () => switchTune(1))
+srSel.addEventListener('change', () => { SR = +srSel.value; CHUNK = SR / 2 | 0; if (playing) { stopStream(); startStream() } })
+
+// ── editing: live recompile, Tab→2sp, Cmd/Ctrl+Enter toggles play ──────────────
+let deb = 0
+editor.addEventListener('input', () => {
+  tuneIdx = -1; markLibrary(); paint(); refreshChrome()
+  clearTimeout(deb); deb = setTimeout(() => { rebuild(editor.value); setHash() }, 280)
+})
+editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault()
+    if (!document.execCommand('insertText', false, '  ')) {
+      const { selectionStart: s, selectionEnd: en, value: v } = editor
+      editor.value = v.slice(0, s) + '  ' + v.slice(en); editor.selectionStart = editor.selectionEnd = s + 2
+      editor.dispatchEvent(new Event('input'))
+    }
+  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); playing ? stopStream() : startStream() }
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeLib(); if (watEl.style.display === 'block') setWat(false) }
+})
+
+// ── share: #<sr>.<base64url(src)> ─────────────────────────────────────────────
+const enc = (src) => {
+  const b = new TextEncoder().encode(src); let s = ''
+  for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192))
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+const dec = (h) => new TextDecoder().decode(Uint8Array.from(atob(h.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)))
+let hashT = 0
+const setHash = () => { clearTimeout(hashT); hashT = setTimeout(() => { try { history.replaceState(null, '', '#' + SR + '.' + enc(editor.value)) } catch {} }, 700) }
+$('share').addEventListener('click', async () => {
+  try { history.replaceState(null, '', '#' + SR + '.' + enc(editor.value)); await navigator.clipboard.writeText(location.href)
+    const l = $('shareLabel'), o = l.textContent; l.textContent = 'Copied'; setTimeout(() => l.textContent = o, 1400)
+  } catch {}
+})
+
+// ── boot ──────────────────────────────────────────────────────────────────────
+buildLibrary(); buildSwitch(); measureChar(); resize()
+const fromHash = () => {
+  const h = location.hash.slice(1); if (!h) return false
+  const dot = h.indexOf('.'); if (dot < 0) return false
+  try {
+    const sr = +h.slice(0, dot) || 44100, src = dec(h.slice(dot + 1))
+    const match = FLOATBEATS.findIndex((t) => t.body === src)
+    if (match >= 0) { loadTune(match); return true }
+    tuneIdx = -1; setSrc(src, sr); setTune('shared', 'link', sr); return true
+  } catch { return false }
+}
+if (!fromHash()) loadTune(0)
+refreshChrome()
 loop()
 </script>
 </body>

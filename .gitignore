@@ -89,9 +89,9 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
+# dist/ is build output (npm run build). Not committed — built by the `prepare`
+# hook for local/npm use and by pages.yml for the deployed repl. See AGENTS.md.
 dist/*
-!dist/jz.js
-!dist/interop.js
 
 # Gatsby files
 .cache/
@@ -142,6 +142,9 @@ __pycache__
 /bench/*.bak
 
 examples/**/build/
+# Built example wasm — produced by `npm run build:examples`, served from the
+# pages.yml build artifact, not committed.
+examples/**/*.wasm
 /.playwright-mcp
 /.vscode
 *.swf

@@ -1,0 +1,67 @@
+name: pages
+# Build the site (repl + examples gallery + bench page) and deploy to GitHub Pages.
+#
+# This replaces the old "deploy from branch" model. dist/jz.js, dist/interop.js and
+# the example *.wasm are no longer committed — they're built here and uploaded as the
+# Pages artifact, so `main` stays source-only. The deployed URL is unchanged
+# (https://dy.github.io/jz/); only the source of the bytes moves from the raw repo to
+# this build artifact.
+#
+# One-time setup: Settings → Pages → Source = GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'test/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; never cancel an in-flight deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/configure-pages@v5
+      - run: npm ci
+      - name: build compiler bundle + example wasm
+        run: |
+          npm run build           # dist/jz.js + dist/interop.js — the repl/playground import these
+          npm run build:examples  # examples/**/*.wasm
+      - name: assemble _site (tracked files + freshly-built artifacts only)
+        run: |
+          rm -rf _site && mkdir _site
+          # tracked files = exactly the repo's source/HTML/thumbs/bench data — no
+          # node_modules, no .git, no gitignored junk.
+          git archive HEAD --prefix=_site/ | tar -x
+          # overlay the just-built artifacts (gitignored, so absent from the archive)
+          mkdir -p _site/dist && cp dist/jz.js dist/interop.js _site/dist/
+          find examples -name '*.wasm' -not -path '*/build/*' | while read -r f; do
+            mkdir -p "_site/$(dirname "$f")" && cp "$f" "_site/$f"
+          done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

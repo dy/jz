@@ -29,25 +29,35 @@ These are compiler/build output — edit the source, then regenerate:
 | `dist/jz.js`, `dist/interop.js` | `npm run build` | `index.js` / `interop.js` + `src/` |
 | `bench/bench.svg`, `bench/results.json` | `npm run bench` | the bench corpus |
 
-Codegen changes ripple into **example `.wasm` bytes**. CI gates this:
-`git diff --exit-code -- examples/` after `build:examples` (jukebox beats excluded —
-non-reproducible across Node versions). So rebuild examples and commit the new bytes
-**with** the source change, or the gate fails.
+These build outputs are **gitignored, not committed** (see below). You never commit
+`.wasm`/`dist` — just make sure they still *build*: CI runs `build:examples` as a
+smoke test and `test:self` for the bundle. Edit source, not output.
 
-## dist/ policy (don't "simplify" the .gitignore)
+## Build artifacts & deploy (no artifacts in git)
 
-`.gitignore` deliberately whitelists `dist/jz.js` + `dist/interop.js` and ignores
-the rest. Those two are committed because the **repl/playground import them from the
-repo** (GitHub Pages serves the repo: [repl/index.html](repl/index.html),
-[examples/playground/index.html](examples/playground/index.html)) and npm ships them.
-`dist/jz.wasm` (4.5 MB self-host artifact) is gitignored — nothing serves it. The
-`bench` workflow rebuilds and commits `dist/jz.{js,interop.js}` on push to `main`.
+`dist/` and example `.wasm` are **gitignored build output**:
+
+- **Local dev** — `npm install` runs `prepare`, which builds `dist/` (the repl needs
+  only that). For examples, run `npm run build:examples` once. The repl/examples
+  import these by relative path, so they must exist *on disk* — they do after a build,
+  they're just untracked. A fresh clone needs a build before they run locally; nothing
+  is served "from master."
+- **Deploy** — `pages.yml` builds `dist/` + example wasm and uploads them alongside
+  the tracked files as the Pages artifact. Pages Source = **GitHub Actions** (not a
+  branch); URL unchanged (https://dy.github.io/jz/).
+- **npm** — `prepare` builds `dist/` before pack, so the published tarball ships
+  `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
+  self-host artifact — never served, never published.
+
+`bench/results.json` + `bench/web/*.wasm` *are* committed (the `bench` workflow
+produces them; the bench page reads them from the tracked files).
 
 ## Git
 
 - Stage specific files by name. Never `git add -A` / `git add .`.
 - Don't `push`/`pull` unless asked. Don't run repo-wide `checkout`/`reset`/`stash`/`clean`.
-- Commit source and its regenerated artifacts together (see the drift gate above).
+- Build artifacts (`dist/`, example `.wasm`) are gitignored — never commit them; CI
+  and `prepare` build them. Commit source only.
 
 ## Semantics check
 
