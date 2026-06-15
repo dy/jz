@@ -1958,3 +1958,41 @@ test('fusedRewrite: || sees boolean false through a boxed local as falsy', () =>
     is(r.chain('x'), 'x', `chain truthy @opt ${opt}`)
   }
 })
+
+// dropEffects — dead-value-drop simplification (drop of a pure op over a tee
+// collapses to the bare store; drop of a control-flow value stays whole).
+test('dropEffects: comma-update loop (j++, k+=step) stays correct', () => {
+  // The discarded old value of `j++` is dead; eliminating it must not change the
+  // loop. j:0..7, k=3j → sum += 1003j → 1003·28 = 28084.
+  const { main } = run(`export let main = () => {
+    let sum = 0
+    for (let j = 0, k = 0; j < 8; j++, k += 3) sum = (sum + j * 1000 + k) | 0
+    return sum
+  }`)
+  is(main(), 28084)
+})
+
+test('dropEffects: dropped ternary runs exactly one branch', () => {
+  // A ternary whose value is discarded must execute ONE arm — dropEffects must
+  // not flatten an `if`/ternary's branches into both side effects.
+  const { main } = run(`export let main = () => {
+    let x = 0, y = 0
+    for (let i = 0; i < 10; i++) (i & 1) ? (x = x + 1) : (y = y + 1)
+    return x * 100 + y
+  }`)
+  is(main(), 505)   // 5·100 + 5, NOT 1010 (both arms)
+})
+
+test('dropEffects: dropped ternary-in-condition compiles (seed 192 regression)', () => {
+  // Regressed to "not enough arguments on the stack for drop" when dropEffects
+  // recursed into an `if`'s arms (unbalancing the stack) instead of keeping the
+  // control-flow value whole under a drop.
+  for (const opt of [2, 'speed']) {
+    const { main } = run(`export let main = () => {
+      let r = 0
+      if ((Math.ceil(1)) ? 0 : 0) { r = 1 } else { r = 2 }
+      return r
+    }`, { optimize: opt })
+    is(main(), 2, `opt ${opt}`)
+  }
+})

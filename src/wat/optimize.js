@@ -1204,6 +1204,38 @@ const isPure = (node) => {
   return true
 }
 
+// Structured / control-flow forms: they do NOT evaluate all children eagerly
+// (an `if` runs one arm; a `block`/`loop` scopes branches), so their side effects
+// can't be flattened to the children's — they stay whole under a drop. (`br*`,
+// `try_table` are already in IMPURE_OPS.)
+const STRUCTURED_OPS = new Set(['if', 'then', 'else', 'block', 'loop', 'try'])
+
+// `op` is an EAGER value operation: it evaluates every operand unconditionally
+// and only computes a result (arithmetic, compare, convert, select, load) — so
+// discarding its value leaves just the operands' side effects. Excludes impure
+// ops and the structured forms above.
+const isEagerValueOp = (op) => typeof op === 'string' && !IMPURE_OPS.has(op) &&
+  !STRUCTURED_OPS.has(op) && !IMPURE_SUBSTRINGS.some(s => op.includes(s))
+
+// Statements that preserve `node`'s side effects when its VALUE is discarded.
+// A fully-pure value contributes nothing; an eager value op contributes only its
+// operands' effects (the op result is dead); a `local.tee` keeps the store as a
+// `local.set`; anything else (call, store-expr, structured form) stays under a drop.
+// This turns `drop(i32.sub(tee X V, 1))` — the post-increment's dropped old value
+// — into the bare `local.set X V`, eliminating dead arithmetic the plain
+// `drop(PURE)→nop` rule can't (the tee makes the whole subtree impure).
+const dropEffects = (node) => {
+  if (!Array.isArray(node) || isPure(node)) return []
+  const op = node[0]
+  if (op === 'local.tee' && node.length === 3) return [['local.set', node[1], node[2]]]
+  if (isEagerValueOp(op)) {
+    const eff = []
+    for (let i = 1; i < node.length; i++) eff.push(...dropEffects(node[i]))
+    return eff
+  }
+  return [['drop', node]]
+}
+
 /** Count all local.get/set/tee occurrences in one walk */
 const countLocalUses = (node) => {
   const counts = new Map()
@@ -2528,9 +2560,14 @@ const vacuum = (ast) => {
     // Remove nop entirely (return array marker; parent or post-pass cleans it)
     if (op === 'nop') return ['nop']
 
-    // (drop PURE) → nop
-    if (op === 'drop' && node.length === 2 && isPure(node[1])) {
-      return ['nop']
+    // (drop V) → just V's side effects. Pure V vanishes (→ nop); a pure op over
+    // a `local.tee` collapses to the bare store (kills the post-increment's dead
+    // old-value arithmetic); impure V is kept under a drop.
+    if (op === 'drop' && node.length === 2) {
+      const eff = dropEffects(node[1])
+      if (eff.length === 0) return ['nop']
+      if (eff.length === 1) return eff[0]
+      return ['block', ...eff]
     }
 
     // (select x x cond) → x — only when cond is PURE. An impure cond may set a
@@ -2558,11 +2595,18 @@ const vacuum = (ast) => {
       for (let i = 1; i < node.length; i++) {
         const child = node[i]
         if (child === 'nop' || (Array.isArray(child) && child[0] === 'nop')) continue
-        // Pure expression followed by standalone drop → remove both
+        // Stack-form `EXPR drop`: a pure EXPR drops out entirely; a bare
+        // `tee X V drop` keeps just the store (`set X V`) — the dropped value
+        // was the only reason it was a tee.
         const next = node[i + 1]
         const isDrop = next === 'drop' || (Array.isArray(next) && next[0] === 'drop' && next.length === 1)
-        if (Array.isArray(child) && isPure(child) && isDrop) {
+        if (Array.isArray(child) && isDrop && isPure(child)) {
           i++ // skip the drop too
+          continue
+        }
+        if (Array.isArray(child) && isDrop && child[0] === 'local.tee' && child.length === 3) {
+          cleaned.push(['local.set', child[1], child[2]])
+          i++ // skip the drop
           continue
         }
         cleaned.push(child)
