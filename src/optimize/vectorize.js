@@ -514,6 +514,20 @@ function matchInc1(stmt) {
 }
 
 /**
+ * Match increment shape `(local.set $X (i32.add (local.get $X) (i32.const C)))`
+ * for any constant C. Returns { name, c } or null. Generalizes matchInc1 to the
+ * strided-pointer bumps (`p += stride`) the ramp-map recognizer must scale.
+ */
+function matchIncN(stmt) {
+  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+  const x = stmt[1], v = stmt[2]
+  if (!isArr(v) || v[0] !== 'i32.add' || v.length !== 3) return null
+  if (!isLocalGet(v[1], x)) return null
+  const c = constNum(v[2])
+  return c == null ? null : { name: x, c }
+}
+
+/**
  * Match `(br_if $LABEL (i32.eqz (i32.lt_{s,u} (local.get $I) BOUND)))`.
  * Returns { ind, bound } or null.
  */
@@ -1381,6 +1395,14 @@ function liftExprV(expr, ctx) {
   // local.get
   if (op === 'local.get' && typeof expr[1] === 'string') {
     const name = expr[1]
+    // Induction variable used AS DATA (ramp-map) → splat to a ramp vector
+    // [i, i+1, … i+LANES-1]. Only set by tryRampMap (i32 lanes); other
+    // recognizers leave ctx.rampVar undefined, so the IV stays address-only.
+    if (name === ctx.rampVar) {
+      // The ramp [i, i+1, i+2, i+3] is materialized once per iteration into
+      // ctx.rampTemp (set at the top of the lifted body); every use reads it.
+      return ['local.get', ctx.rampTemp]
+    }
     const kind = ctx.localKind.get(name)
     if (kind === 'lane') {
       const { laneName } = getOrAllocLanedLocal(name, ctx)
@@ -1857,6 +1879,185 @@ function tryByteScan(blockNode, fnLocals, freshIdRef) {
 
 const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
 
+// ---- Ramp-map recognizer ---------------------------------------------------
+//
+// Vectorize `for (i = 0; i < N; i++) out[i] = f(i)` — a store-only loop whose
+// value is a pure lane-wise i32 expression of the induction variable used AS
+// DATA. tryVectorize can't: it derives the lane type from an input LOAD (there
+// is none) and treats the IV strictly as an address index. Here the IV becomes
+// an i32x4 RAMP `[i, i+1, i+2, i+3]` and the whole body lifts to i32x4.
+//
+// Matches the post-strength-reduction shape (the IV strength-reducer runs
+// before this pass): the loop carries the logical IV (`i`, in the exit test,
+// += 1) plus one or more strided output pointers (`p += C`). Each increment is
+// scaled by LANES; the store narrows i32x4 back to the element width.
+//
+// Narrowing is truncation-exact for ANY i32 value (matching scalar store8/16):
+// `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
+// value-range assumption is needed.
+function tryRampMap(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  // Envelope: (block $brk (loop $L …)) — identical to tryVectorize.
+  let blockLabel = null, loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+    else if (isArr(c)) return null
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+
+  // End = (br $L); preceded by a run of trailing `x += C` increments.
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  const increments = []
+  let bodyEnd = endIdx - 1
+  while (bodyEnd >= 2) {
+    const inc = matchIncN(loopNode[bodyEnd])
+    if (!inc) break
+    increments.unshift(inc)
+    bodyEnd--
+  }
+  if (!increments.length) return null
+
+  // First stmt = exit guard → logical IV + bound. IV must advance by exactly 1.
+  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+  if (!exitInfo) return null
+  const ivName = exitInfo.ind
+  const ivInc = increments.find(x => x.name === ivName)
+  if (!ivInc || ivInc.c !== 1) return null
+  let bound = exitInfo.bound, boundLocal = null
+  if (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string') boundLocal = bound[1]
+  else if (!isI32Const(bound)) return null
+
+  const body = []
+  for (let i = 3; i <= bodyEnd; i++) body.push(loopNode[i])
+  if (!body.length) return null
+  if (body.some(hasGlobalSet)) return null
+  // No memory loads — a ramp map produces values purely from the index. (A load
+  // would need lane addressing; that's tryVectorize's job, not this one.)
+  const hasLoad = (n) => isArr(n) && (LOAD_OPS[n[0]] || n.slice(1).some(hasLoad))
+  if (body.some(hasLoad)) return null
+
+  // Find exactly one store. Its address is the inline lane address
+  // `base + (i << K)` — the IV strength-reducer runs AFTER this pass, so the
+  // pointer is still expressed in terms of the IV. We keep the address verbatim
+  // (scalar i32) and advance the IV by LANES, so `base + (i<<K)` lands on the
+  // next group's first element each SIMD step — for any element width.
+  let storeStmt = null, storeIdx = -1
+  for (let i = 0; i < body.length; i++) {
+    const s = body[i]
+    if (isArr(s) && STORE_OPS[s[0]]) {
+      if (storeStmt) return null
+      storeStmt = s; storeIdx = i
+    }
+  }
+  if (!storeStmt) return null
+  const storeOp = storeStmt[0]
+  if (storeStmt.length !== 3) return null
+  const elemLog2 = { 'i32.store8': 0, 'i32.store': 2 }[storeOp]
+  if (elemLog2 === undefined) return null
+  const storeAddr = storeStmt[1]
+  const addrM = matchLaneAddr(storeAddr, ivName, new Map(), new Map())
+  if (!addrM || addrM.strideLog2 !== elemLog2) return null
+  // The address subtree references the IV as a scalar index; it must not also
+  // be touched as data. Any OTHER increment local (a stray strided pointer)
+  // would need its own address handling — bail rather than guess.
+  if (increments.some(x => x.name !== ivName)) return null
+
+  // Every other body stmt must be `(local.set $lane EXPR)` — straight-line lane
+  // locals feeding the store. Classify locals for the lift.
+  const writes = new Set()
+  for (const s of body) collectWrites(s, writes)
+  if (boundLocal && writes.has(boundLocal)) return null
+  const referenced = new Set()
+  const collectRefs = (n) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') referenced.add(n[1])
+    for (let i = 1; i < n.length; i++) collectRefs(n[i])
+  }
+  for (const s of body) collectRefs(s)
+
+  const localKind = new Map()
+  for (const name of referenced) {
+    if (name === ivName) continue
+    if (writes.has(name)) {
+      let firstKind = null
+      for (const s of body) { const kAcc = firstAccess(s, name); if (kAcc) { firstKind = kAcc; break } }
+      if (firstKind === 'read') return null   // loop-carried → reduction/stencil, not a pure map
+      localKind.set(name, 'lane')
+    } else {
+      localKind.set(name, 'invariant')
+    }
+  }
+
+  // Lift. lane type is always i32 (the ramp and all narrow stores compute in i32).
+  const newLanedLocals = new Map()
+  const extraLocals = []
+  const rampId = freshIdRef.next++
+  const rampTemp = `$__ramp${rampId}`
+  extraLocals.push(['local', rampTemp, 'v128'])
+  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
+  // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
+  const lifted = [['local.set', rampTemp,
+    ['i32x4.add', ['i32x4.splat', ['local.get', ivName]], ['v128.const', 'i32x4', '0', '1', '2', '3']]]]
+  for (let i = 0; i < body.length; i++) {
+    if (i === storeIdx) {
+      const vval = liftExprV(storeStmt[2], ctx)
+      if (ctx.fail) return null
+      lifted.push(buildRampStore(storeOp, storeAddr, vval, ctx))
+    } else {
+      const r = liftStmt(body[i], ctx)
+      if (ctx.fail) return null
+      if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+    }
+  }
+  if (!lifted.length) return null
+
+  const LANES = 4
+  const id = freshIdRef.next++
+  const simdBoundName = `$__simd_bound${id}`
+  const simdBrkLabel = `$__simd_brk${id}`
+  const simdLoopLabel = `$__simd_loop${id}`
+  const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
+
+  const scaledIncs = increments.map(({ name, c }) =>
+    ['local.set', name, ['i32.add', ['local.get', name], ['i32.const', c * LANES]]])
+
+  const simdBlock = ['block', simdBrkLabel,
+    ['loop', simdLoopLabel,
+      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', ivName], ['local.get', simdBoundName]]]],
+      ...lifted,
+      ...scaledIncs,
+      ['br', simdLoopLabel]]]
+  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -LANES]]]
+  const wrapper = ['block', boundSetup, simdBlock, blockNode]
+  const newLocalDecls = [
+    ['local', simdBoundName, 'i32'],
+    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']),
+    ...extraLocals,
+  ]
+  return { wrapper, newLocalDecls }
+}
+
+// Build the store for a ramp-map iteration: i32x4 `vval` → element width of
+// `storeOp` at scalar address `addr`. i32.store is the full vector; i32.store8
+// truncates (low byte of each lane) via i8x16.shuffle — exactly matching scalar
+// store8, with no value-range assumption (shuffle selects, never saturates).
+function buildRampStore(storeOp, addr, vval, ctx) {
+  if (storeOp === 'i32.store') return ['v128.store', addr, vval]   // 4 i32 lanes → 16 bytes
+  // i32.store8: hoist vval to a temp so the shuffle reads it once; low byte of
+  // each of 4 lanes → bytes 0..3 → one i32.store (4 bytes). Shuffle lane indices
+  // are string tokens for watr's binary encoder.
+  const tmp = `$__rampv${ctx.freshIdRef.next++}`
+  ctx.extraLocals.push(['local', tmp, 'v128'])
+  const g = ['local.get', tmp]
+  const packed = ['i8x16.shuffle', ...[0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].map(String), g, g]
+  return ['block', ['local.set', tmp, vval], ['i32.store', addr, ['i32x4.extract_lane', 0, packed]]]
+}
+
 // ---- Pass entry ------------------------------------------------------------
 
 /**
@@ -1896,6 +2097,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
       const r = tryMemCopyFill(node, fnLocals, freshIdRef)
         ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
+        ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? tryByteScan(node, fnLocals, freshIdRef)
         ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)
       if (r) {

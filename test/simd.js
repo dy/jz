@@ -113,6 +113,60 @@ test('SIMD i32x4 - map add', () => {
   }`).main(), 120)
 })
 
+// === SIMD ramp-map (out[i] = f(i), induction var as DATA) — tryRampMap ===
+// No input load: the IV becomes an i32x4 ramp [i, i+1, i+2, i+3]. SIMD result is
+// checked bit-for-bit against the scalar (NOVEC) oracle.
+
+test('SIMD ramp-map - u8 bytebeat-shaped store', () => {
+  const src = `export let main = () => {
+    const out = new Uint8Array(1024)
+    for (let i = 0; i < 1024; i++) out[i] = (i * 5 & i >> 3 | i * 3) & 255
+    let h = 0
+    for (let i = 0; i < 1024; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops in ramp-map output')
+})
+
+test('SIMD ramp-map - u8 narrowing is truncation-exact (values > 255)', () => {
+  // i32.store8 keeps each lane's low byte; the i8x16.shuffle pack must truncate
+  // identically (never saturate). Values reach 6993 here, well past a byte.
+  const src = `export let main = () => {
+    const out = new Uint8Array(1000)
+    for (let i = 0; i < 1000; i++) out[i] = (i * 7) | 0
+    let h = 0
+    for (let i = 0; i < 1000; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
+})
+
+test('SIMD ramp-map - i32 full-width store', () => {
+  const src = `export let main = () => {
+    const out = new Int32Array(512)
+    for (let i = 0; i < 512; i++) out[i] = (i * i + (i << 1)) | 0
+    let h = 0
+    for (let i = 0; i < 512; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
+})
+
+test('SIMD ramp-map - tail (length not a multiple of 4) stays correct', () => {
+  const src = `export let main = () => {
+    const out = new Uint8Array(1003)
+    for (let i = 0; i < 1003; i++) out[i] = (i * 9) & 255
+    let h = 0
+    for (let i = 0; i < 1003; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
+})
+
 test('SIMD i32x4 - bitwise AND', () => {
   is(run(`export let main = () => {
     let buf = new Int32Array(4)

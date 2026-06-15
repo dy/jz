@@ -281,6 +281,20 @@ const w2cBinPath = c => join(caseBuild(c), `${c.id}-w2c`)
 const natBinPath = c => join(caseBuild(c), `${c.id}-nat`)
 const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
 
+// macOS clang/gcc from the Command Line Tools can carry a default sysroot
+// pointing at an SDK that no longer exists (a stale MacOSX<ver>.sdk after an
+// Xcode bump), so <stdio.h> isn't found and EVERY .c silently fails to compile —
+// which is exactly why `nat` quietly drops out of a local bench run. Resolve a
+// real SDK via xcrun (fallback: the CLT unversioned symlink) and pass -isysroot.
+const macSysrootArgs = (() => {
+  if (process.platform !== 'darwin') return []
+  const ok = p => { try { return p && existsSync(p) ? p : null } catch { return null } }
+  let xc = ''
+  try { xc = spawnSync('xcrun', ['--show-sdk-path'], { encoding: 'utf8' }).stdout.trim() } catch {}
+  const sdk = ok(xc) || ok('/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk')
+  return sdk ? ['-isysroot', sdk] : []
+})()
+
 const targets = {
   nat: {
     name: 'native C (clang -O3)',
@@ -288,7 +302,7 @@ const targets = {
     bin: natBinPath,
     run: c => tryRun('nat', c, () => {
       // native-tuned, symmetric with rustc -C target-cpu=native (arm64 clang rejects -march=native)
-      execFileSync('clang', ['-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-ffp-contract=off', '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', ['-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-ffp-contract=off', ...macSysrootArgs, '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
       try { execFileSync('strip', [natBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natBinPath(c)]),
   },
@@ -297,7 +311,7 @@ const targets = {
     available: c => !!c.c && has('gcc') && spawnSync('gcc', ['--version'], { encoding: 'utf8' }).stdout.includes('gcc'),
     bin: natgccBinPath,
     run: c => tryRun('natgcc', c, () => {
-      execFileSync('gcc', ['-O3', '-ffp-contract=off', '-o', natgccBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('gcc', ['-O3', '-ffp-contract=off', ...macSysrootArgs, '-o', natgccBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
       try { execFileSync('strip', [natgccBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natgccBinPath(c)]),
   },
@@ -428,7 +442,7 @@ const targets = {
       const host = join(caseBuild(c), `${c.id}-w2c-host.c`)
       execFileSync('wasm2c', [wasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
       writeFileSync(host, w2cHost(c, hFile))
-      execFileSync('clang', ['-O3', '-ffp-contract=off', `-I${WABT_W2C_DIR}`, host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${WABT_W2C_DIR}`, host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2cBinPath(c)]),
   },
   jawsm: {
