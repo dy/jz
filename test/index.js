@@ -48,6 +48,7 @@ const TESTS = [
   'booleans',
   'warnings',
   'forin-deopt',
+  'deopt',
   'minimal-output',
   'bench-svg',
 ]

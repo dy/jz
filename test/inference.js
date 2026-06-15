@@ -72,13 +72,14 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
 
 test('methodEvidence STRING: charCodeAt induces STRING (no __length poly)', () => {
   // `.charCodeAt` is a STRING_ONLY method → method source emits {val: STRING}.
-  // STRING-typed receiver routes .length through __str_byteLen, never __length.
+  // STRING-typed receiver routes .length through the string byte-length op
+  // (__str_byteLen, possibly inlined by splitCharScan), never polymorphic
+  // __length or the array-element __len.
   const wat = jz.compile(`
     export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }
   `, { wat: true })
-  is(count(wat, /\$__length\b/g), 0)
-  ok(/\$__str_byteLen\b/.test(wat) || /\$__str_len\b/.test(wat),
-    'expected STRING-specific length op')
+  is(count(wat, /\$__length\b/g), 0, 'no polymorphic __length for STRING receiver')
+  is(count(wat, /\$__len\b/g), 0, 'no array-element __len for STRING receiver')
 })
 
 test('methodEvidence STRING: expression-bodied arrow narrows too', () => {
@@ -92,8 +93,7 @@ test('methodEvidence STRING: expression-bodied arrow narrows too', () => {
     export const hd = (s) => s.charCodeAt(0) + s.length
   `, { wat: true })
   is(count(wat, /\$__length\b/g), 0, 'expr-body should not fall back to polymorphic __length')
-  ok(/\$__str_byteLen\b/.test(wat) || /\$__str_len\b/.test(wat),
-    'expected STRING-specific length op')
+  is(count(wat, /\$__len\b/g), 0, 'no array-element __len for STRING receiver')
 })
 
 test('methodEvidence ARRAY: .push induces VAL.ARRAY (no STRING branch)', () => {

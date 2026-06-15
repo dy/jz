@@ -11,7 +11,7 @@ import { VAL, lookupValType } from './reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
-  calleeValType, methodValType, typedCtorElemValType,
+  calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
@@ -233,6 +233,14 @@ VT['.'] = (args) => {
     const child = sh.props[args[1]]
     if (child) return child.val
   }
+  // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
+  // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are
+  // language invariants (the property is always a number on that kind), so typing
+  // them NUMBER lets `+` skip the string-concat dispatch. Object schema slots
+  // resolved above override this, keeping user-defined same-name slots sound.
+  const objType = typeof args[0] === 'string' ? lookupValType(args[0]) : valTypeOf(args[0])
+  const pvt = propValType(args[1], objType)
+  if (pvt) return pvt
   return null
 }
 

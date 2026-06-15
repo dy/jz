@@ -439,6 +439,24 @@ export function hoistAddrBase(fn) {
 // loop-invariant __jss_length in the same loop condition CAN hoist).
 const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
 
+// Calls that don't modify EXISTING heap memory: they may allocate (bump the heap
+// pointer) or do tag dispatch, but they never write to an address a hoisted
+// __typed_idx/__str_idx element read would revisit. Their presence must not
+// block readonly-mem-call LICM (else any `s += unknown` — which dispatches via
+// __is_str_key/__str_concat — would pin every invariant array element in-loop:
+// the jagged-array `grid[i][j]` deopt).
+const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_byteLen'])
+
+// Read-only HEAP-MEMORY calls: like SAFE_OFFSET_CALLS but they read element
+// storage that a direct f64.store/i32.store in the loop could alias. Safe to
+// hoist only when the loop has no mutating call AND no direct store at all (we
+// can't do alias analysis at WAT level). __typed_idx/__str_idx read arr[i] /
+// s[i]; plain-array element writes go through calls (caught by hasUnsafeCall),
+// and typed-array writes are direct stores (caught by hasDirectStore) — so the
+// guard covers both. This is what lets LICM hoist `grid[i]` out of a read-only
+// `for(j) { ... grid[i][j] ... }` inner loop (the jagged-array deopt).
+const READONLY_MEM_CALLS = new Set(['$__typed_idx', '$__str_idx'])
+
 export function hoistInvariantPtrOffset(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -635,7 +653,27 @@ export function hoistInvariantLoop(fn) {
     if (!Array.isArray(node)) return null
     const op = node[0]
     if (op === 'select') return resultType(node[1])
-    if (op === 'call') return SAFE_OFFSET_CALLS.has(node[1]) ? 'i32' : null  // whitelist all return i32
+    if (op === 'if') {
+      // (if (result T) cond (then ...) (else ...)) — type is the result clause.
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (Array.isArray(c) && c[0] === 'result') return c[1]
+      }
+      return null
+    }
+    if (op === 'block') {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (Array.isArray(c) && c[0] === 'result') return c[1]
+      }
+      return null
+    }
+    if (op === 'call') {
+      // SAFE_OFFSET_CALLS all return i32; READONLY_MEM_CALLS return f64 (NaN-boxed element)
+      if (SAFE_OFFSET_CALLS.has(node[1])) return 'i32'
+      if (READONLY_MEM_CALLS.has(node[1])) return 'f64'
+      return null
+    }
     if (op === 'local.get' || op === 'local.tee') return localTypes.get(node[1]) ?? null
     const dot = op.indexOf('.')
     if (dot < 0) return null
@@ -674,15 +712,16 @@ export function hoistInvariantLoop(fn) {
 
     // The loop's effect summary (scans nested loops too — conservative).
     const locals = new Set(), globals = new Set(), storedCells = new Set()
-    let hasUnsafeCall = false, hasAnyCall = false
+    let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false
     const scan = (node) => {
       if (!Array.isArray(node)) return
       const op = node[0]
       if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-      if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
+      if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
       if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
+        hasDirectStore = true
         const a = node[1]
         if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
       }
@@ -753,7 +792,27 @@ export function hoistInvariantLoop(fn) {
         return Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
           && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))
       }
-      if (op === 'call') return SAFE_OFFSET_CALLS.has(node[1]) && !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
+      if (op === 'call') {
+        if (SAFE_OFFSET_CALLS.has(node[1]))
+          return !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
+        // Read-only heap reads: additionally require no direct store (alias-safe).
+        if (READONLY_MEM_CALLS.has(node[1]))
+          return !hasUnsafeCall && !hasDirectStore && node.slice(2).every(c => pureGiven(c, bound))
+        return false
+      }
+      // A value-producing `if` whose condition and both arms are pure is itself
+      // pure — the tag-dispatch idiom `(if (result f64) tag-check (then read-A)
+      // (else read-B))` that wraps __typed_idx/__str_idx element access.
+      if (op === 'if') {
+        for (let i = 1; i < node.length; i++) {
+          const c = node[i]
+          if (!Array.isArray(c)) continue
+          if (c[0] === 'result') continue
+          if (c[0] === 'then' || c[0] === 'else') { if (!c.slice(1).every(x => pureGiven(x, bound))) return false }
+          else if (!pureGiven(c, bound)) return false   // the condition
+        }
+        return true
+      }
       if (PURE_LICM_OPS.has(op)) return node.slice(1).every(c => pureGiven(c, bound))
       return false
     }

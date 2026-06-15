@@ -97,6 +97,30 @@ export function methodValType(method, obj, objType, ctx) {
   return null
 }
 
+// Built-in PROPERTY val-types — the property-read mirror of methodValType.
+// These are language invariants: `.length` is always a number on the sized
+// value kinds, `.size` on Set/Map, `.byteLength`/`.byteOffset` on typed arrays.
+// Without this, `arr.length + x` sees `.length` as untyped and routes `+`
+// through the __is_str_key string-concat dispatch — even though `.length` can
+// never be a string on a known sized kind. (Object schema slots override this
+// earlier in VT['.'], so `{length:'x'}.length` keeps its true slot type.)
+//
+// Gate on a known objType: an untyped receiver could be an object with a
+// string-valued shadow of the same name, so leave it null there (conservative).
+// null-proto: user code reads `.valueOf`, `.toString` etc. — a plain `{}` would
+// expose inherited Object.prototype members as bogus "numeric props".
+const NUMERIC_PROPS = Object.assign(Object.create(null), {
+  length: new Set([VAL.STRING, VAL.ARRAY, VAL.TYPED]),
+  byteLength: new Set([VAL.TYPED, VAL.BUFFER]),
+  byteOffset: new Set([VAL.TYPED]),
+  size: new Set([VAL.SET, VAL.MAP]),
+})
+export function propValType(prop, objType) {
+  if (objType == null) return null
+  const kinds = NUMERIC_PROPS[prop]
+  return kinds && kinds.has(objType) ? VAL.NUMBER : null
+}
+
 export function typedCtorElemValType(ctor) {
   if (!ctor) return null
   const isView = ctor.endsWith('.view')
