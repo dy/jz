@@ -65,6 +65,18 @@ test('for-in deopt: key count above the unroll cap still correct (pooled loop)',
   diff(`export let run=(z)=>{let o={${k20}}; let s=0; for(let k in o) s+=o[k]; return s}`)   // 20 > cap → pooled loop
 })
 
+test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size budget)', () => {
+  // Unroll emits one body copy per key, so cost is keys × body — not keys alone. A
+  // multi-op body over 8 keys exceeds the size budget; unrolling it 8× is the watr
+  // size-cliff. Must keep the single pooled loop (correct, and no code blow-up).
+  const heavy = 'export let run=(z)=>{let o={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8}; let s=0; for(let k in o){ s += o[k]*o[k] + o[k]*3 - 7 } return s}'
+  diff(heavy)
+  if (belowOpt(1)) return
+  const body = funcWat(compile(heavy, { wat: true }), 'run')
+  ok(body.includes('(loop'), 'heavy body kept the single pooled loop (not unrolled)')
+  ok((body.match(/i32\.mul/g) || []).length <= 2, 'body emitted once, not duplicated per key')
+})
+
 test('for-in deopt: computed-key writes enumerate via fallback (not the static pool)', () => {
   // Empty-literal dict grown by computed writes is a true HASH — enumerate dynamically.
   diff('export let run=(z)=>{let ks=["p","q","r"]; let o={}; for(let i=0;i<3;i++) o[ks[i]]=i+1; let s=0; for(let k in o) s+=o[k]; return s}')

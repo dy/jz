@@ -714,6 +714,23 @@ test('plain-array index with a literal term stays pure i32 (sibling of marble)',
   is(count(fn, /f64\.convert_i32_s/g), 0, 'plain-array index terms stay i32')
 })
 
+// A `& m`-masked operand is provably ≤ m, so `t * (… & 63)` can't exceed 2^53 and
+// must use i32.mul — not the guarded f64.mul + Infinity-canon `select` that ToInt32
+// emits for an unbounded f64 product. That round-trip made the bytebeat kernel lose
+// ~1.4× to V8/AS on x86 (it wins on ARM either way, so only this pin or an x86 bench
+// catches the regression). mulFitsI32 now accepts a mask-bounded operand, not just a
+// small literal.
+test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
+  const wat = jz.compile(
+    'export let fill = (out, n) => { for (let t = 0; t < n; t++) out[t] = (t * (((t>>12)|(t>>8)) & (63 & (t>>4)))) & 255 }',
+    { wat: true })
+  const at = wat.indexOf('(func $fill')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  is(count(fn, /f64\.mul/g), 0, 'masked scale uses i32.mul, not f64.mul')
+  is(count(fn, /f64\.const Infinity/g), 0, 'no Infinity-canon guard in the i32 kernel')
+  ok(count(fn, /i32\.mul\b/g) >= 1, 'the t*(mask) product is an i32.mul')
+})
+
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
   // initA pushes `{x,y}`, initB pushes `{a,b}` — disagreeing schemas at the
   // lattice → paramReps[runKernel][0].arrayElemSchema sticky-nulls → callee

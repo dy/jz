@@ -41,7 +41,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
-  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
+  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64, maskBound,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -195,13 +195,18 @@ const foldConst = (va, vb, fn, guard) =>
 // JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
 // Those agree under a ToInt32/ToUint32 sink (and as plain numbers) while the
 // exact product stays f64-exact, i.e. |product| <= 2^53. Two i32 operands can
-// reach 2^62, so `i32.mul` is sound only when one side is a literal small
-// enough that, against the full i32 range (2^31) of the other, the product
-// holds within 2^53 — i.e. |literal| <= 2^22. Keeps index arithmetic (`i*4`,
-// `row*16`) on `i32.mul` while routing hash-mix-scale products to `f64.mul`.
+// reach 2^62, so `i32.mul` is sound only when one side is bounded small enough
+// that, against the full i32 range (2^31) of the other, the product holds within
+// 2^53 — i.e. its magnitude <= 2^22. A literal qualifies directly; so does a
+// masked operand (`x & 63`, `x >>> k`) whose value is provably bounded. Keeps
+// index arithmetic (`i*4`) and bitwise-masked scales (bytebeat's `t*(m&63)`) on
+// `i32.mul` while routing hash-mix-scale products to `f64.mul`.
+const FITS_I32_MAX = 0x400000  // 2^22 — see derivation above
 const mulFitsI32 = (va, vb) =>
-  (isLit(va) && Math.abs(litVal(va)) <= 0x400000) ||
-  (isLit(vb) && Math.abs(litVal(vb)) <= 0x400000)
+  (isLit(va) && Math.abs(litVal(va)) <= FITS_I32_MAX) ||
+  (isLit(vb) && Math.abs(litVal(vb)) <= FITS_I32_MAX) ||
+  (!isLit(va) && maskBound(va) <= FITS_I32_MAX) ||
+  (!isLit(vb) && maskBound(vb) <= FITS_I32_MAX)
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
@@ -517,6 +522,18 @@ function unrollSmallConstFor(init, cond, step, body) {
 // Max distinct keys a for-in unrolls over (bounds code size; larger key sets keep
 // the pooled-keys loop, which is already allocation-free via __keys_ro).
 const FORIN_UNROLL_MAX = 16
+// Total-expansion ceiling: unroll emits one body copy per key, so the size cost is
+// keys × body, not keys alone. A large body over many keys (e.g. watr's 15-key
+// schema loop) blows up code size for no deopt win — the pooled fallback is already
+// allocation-free. Cap keys × nodeSize(body); past it, keep the loop. (Tuned above
+// every unroll the corpus actually wants — the 16-key cap test lands at 80.)
+const FORIN_UNROLL_BUDGET = 128
+const forInBodyCost = (node) => {
+  if (!Array.isArray(node)) return 1
+  let n = 1
+  for (let i = 1; i < node.length; i++) n += forInBodyCost(node[i])
+  return n
+}
 
 // Pull the for-in source out of prepare's keys expression: either a bare
 // `__keys_ro(src)` call or the nullish-guarded `cond ? [] : __keys_ro(src)`.
@@ -563,6 +580,8 @@ function unrollForIn(init, cond, step, body) {
 
   const rest = body.slice(2)
   const realBody = rest.length === 1 ? rest[0] : [';', ...rest]
+  // Keep the pooled loop when unrolling would multiply a heavy body across many keys.
+  if (keys.length * forInBodyCost(realBody) > FORIN_UNROLL_BUDGET) return null
   // Substitution safety, mirroring unrollSmallConstFor: no reassignment/redeclare
   // of the loop var, no nested closure capturing it (cloneWithSubst skips `=>`),
   // and no break/continue targeting this loop.

@@ -3,7 +3,7 @@ import { is, ok, almost } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -530,6 +530,7 @@ test('vectorize: AoS-interleaved stride>1 does NOT lift (parity intact)', () => 
 // two NESTED loops co-lift — sharing one scratch across SEQUENTIAL loops is
 // correct, and the decls dedupe by name at the splice. Compile the real kernel.
 test('vectorize: sibling lifts dedupe lane locals (fft kernel @ speed)', () => {
+  if (onKernel()) return  // compiles a real bench file via the host `modules` map; the kernel owns compilation and has no module resolver
   const ROOT = join(HERE, '..')
   const src = readFileSync(join(ROOT, 'bench/fft/fft.js'), 'utf8')
   const benchlib = readFileSync(join(ROOT, 'bench/_lib/benchlib.js'), 'utf8')

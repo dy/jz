@@ -97,6 +97,22 @@ export const asPtrOffset = (n, ptrKind) => {
 /** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : t === 'v128' ? n : asF64(n)
 
+// Sound upper bound on the value of a masking expr (`&` / `>>>`), so a product
+// against it can be proven < 2^53 and narrow to i32.mul instead of the guarded f64
+// path. `& m` with a non-negative mask m clamps the result to [0, m] (regardless of
+// the other operand's sign); `>>> k` is logical, so it's ≤ 2^(32−k). Anything else
+// (signed shift, plain locals, negative mask) stays the full i32 range.
+export const maskBound = (x) => {
+  if (!Array.isArray(x)) return 2 ** 31
+  if (x[0] === 'i32.const') return x[1] >= 0 ? x[1] : 2 ** 31
+  if (x[0] === 'i32.and') return Math.min(maskBound(x[1]), maskBound(x[2]))
+  if (x[0] === 'i32.shr_u') {
+    const k = Array.isArray(x[2]) && x[2][0] === 'i32.const' ? (x[2][1] & 31) : 0
+    return k > 0 ? 2 ** (32 - k) : 2 ** 31
+  }
+  return 2 ** 31
+}
+
 /**
  * Narrow an f64 arithmetic tree under ToInt32 — the general int-accumulator path.
  *
