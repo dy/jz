@@ -17,11 +17,11 @@
     <rect x="174" y="93.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="88" x2="174" y2="102" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="88" x2="650" y2="102" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="91" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Rust</text>
-    <text x="156" y="106" text-anchor="end" font-size="10" fill="#aeb4ba">rustc -O3</text>
-    <text x="662" y="99" font-size="13" font-weight="500" fill="#868e96">1.07×</text>
+    <text x="156" y="91" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">native C</text>
+    <text x="156" y="106" text-anchor="end" font-size="10" fill="#aeb4ba">clang -O3</text>
+    <text x="662" y="99" font-size="13" font-weight="500" fill="#868e96">1.04×</text>
     <circle cx="182.0" cy="95" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="1.7111717105322697s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="1.6677450141556784s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.41s"/>
     </circle>
   </g>
@@ -29,11 +29,11 @@
     <rect x="174" y="143.5" width="476" height="3" rx="1.5" fill="#edf0f2"/>
     <line x1="174" y1="138" x2="174" y2="152" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="138" x2="650" y2="152" stroke="#ced4da" stroke-width="2"/>
-    <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Zig</text>
-    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">ReleaseFast</text>
-    <text x="662" y="149" font-size="13" font-weight="500" fill="#868e96">1.31×</text>
+    <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Rust</text>
+    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">rustc -O3</text>
+    <text x="662" y="149" font-size="13" font-weight="500" fill="#868e96">1.06×</text>
     <circle cx="182.0" cy="145" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="2.097403438402887s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="1.7033156090939672s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.82s"/>
     </circle>
   </g>
@@ -43,9 +43,9 @@
     <line x1="650" y1="188" x2="650" y2="202" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Bun</text>
     <text x="156" y="206" text-anchor="end" font-size="10" fill="#aeb4ba">JSC</text>
-    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">1.51×</text>
+    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">1.78×</text>
     <circle cx="182.0" cy="195" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="2.4126551201460966s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="2.8483373242972085s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.23s"/>
     </circle>
   </g>
@@ -55,9 +55,9 @@
     <line x1="650" y1="238" x2="650" y2="252" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Go</text>
     <text x="156" y="256" text-anchor="end" font-size="10" fill="#aeb4ba">gc</text>
-    <text x="662" y="249" font-size="13" font-weight="500" fill="#868e96">1.62×</text>
+    <text x="662" y="249" font-size="13" font-weight="500" fill="#868e96">1.83×</text>
     <circle cx="182.0" cy="245" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="2.599256056991375s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="2.9290443928366336s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.64s"/>
     </circle>
   </g>
@@ -67,9 +67,9 @@
     <line x1="650" y1="288" x2="650" y2="302" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">V8</text>
     <text x="156" y="306" text-anchor="end" font-size="10" fill="#aeb4ba">Node</text>
-    <text x="662" y="299" font-size="13" font-weight="500" fill="#868e96">1.98×</text>
+    <text x="662" y="299" font-size="13" font-weight="500" fill="#868e96">2.15×</text>
     <circle cx="182.0" cy="295" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.161748945741268s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.4399485987791785s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.05s"/>
     </circle>
   </g>
@@ -79,9 +79,9 @@
     <line x1="650" y1="338" x2="650" y2="352" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="341" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">AssemblyScript</text>
     <text x="156" y="356" text-anchor="end" font-size="10" fill="#aeb4ba">asc -O3</text>
-    <text x="662" y="349" font-size="13" font-weight="500" fill="#868e96">2.02×</text>
+    <text x="662" y="349" font-size="13" font-weight="500" fill="#868e96">2.61×</text>
     <circle cx="182.0" cy="345" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.234040602137033s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="4.182810340876353s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.46s"/>
     </circle>
   </g>
@@ -90,10 +90,10 @@
     <line x1="174" y1="388" x2="174" y2="402" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="388" x2="650" y2="402" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="391" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Porffor</text>
-    <text x="156" y="406" text-anchor="end" font-size="10" fill="#aeb4ba">runs 3 / 13</text>
-    <text x="662" y="399" font-size="13" font-weight="500" fill="#868e96">3.08×</text>
+    <text x="156" y="406" text-anchor="end" font-size="10" fill="#aeb4ba">runs 3 / 15</text>
+    <text x="662" y="399" font-size="13" font-weight="500" fill="#868e96">3.67×</text>
     <circle cx="182.0" cy="395" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="4.926330541139543s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="5.871557380413s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.87s"/>
     </circle>
   </g>
@@ -103,7 +103,7 @@
     <line x1="650" y1="438" x2="650" y2="452" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="441" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">NumPy</text>
     <text x="156" y="456" text-anchor="end" font-size="10" fill="#aeb4ba">Python</text>
-    <text x="662" y="449" font-size="13" font-weight="500" fill="#868e96">8.31×</text>
+    <text x="662" y="449" font-size="13" font-weight="500" fill="#868e96">8.79×</text>
     <circle cx="182.0" cy="445" r="8" fill="#adb5bd">
       <animate attributeName="cx" dur="10s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-3.28s"/>
