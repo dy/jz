@@ -676,7 +676,9 @@ const rawNaNToTruthy = (code, v) => {
   const wat = compile(code, { wat: true, optimize: 0 })
   const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
   const bitTested = new RegExp(`__is_truthy\\s*\\(\\s*i64\\.reinterpret_f64\\s*\\(\\s*local\\.get\\s+\\$${v}\\b`).test(body)
-  return bitTested && !/f64\.const nan/.test(body)
+  // the BARE canonical token `(f64.const nan)` of canonNum's select — not a `nan:0x…`
+  // sentinel (e.g. the "" empty-string box), which is not a NaN-canon.
+  return bitTested && !/\(f64\.const nan\)/.test(body)
 }
 
 test('nested same-truthiness ternary arithmetic NaN condition is falsy', () => {
@@ -697,6 +699,31 @@ test('nullish-coalescing numeric fallback NaN is falsy', () => {
   ok(!rawNaNToTruthy(code, 'v'), 'un-canon NaN must not reach __is_truthy')
   // `num ?? num` is now value-typed NUMBER (kind.js VT['??']) → read NaN-safe, no canon.
   is(run('export let f = (p0, p1) => { let v = (p0/p1) ?? (p1/p0); return v ? 1 : 0 }', { optimize: 0 }).f(0, 0), 0)
+})
+
+// A raw NaN-minting arithmetic op tee'd straight into a truthiness bit-test — the &&/||
+// CONDITION bug. Whitespace-stripped so the match is unambiguous across wat formatting.
+const condBitTestsRawDiv = (code) =>
+  /__is_truthy\(i64\.reinterpret_f64\(local\.tee\$\w+\(f64\.div/
+    .test(compile(code, { wat: true, optimize: 0 }).replace(/\s/g, ''))
+
+test('&& / || with an arithmetic operand: no raw NaN reaches __is_truthy', () => {
+  // `(a/b) && s` tests a/b's truthiness in the CONDITION and may return a/b as the result;
+  // a non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes
+  // through __is_truthy. The arithmetic arm must be NaN-canon'd and the cond NaN-safe.
+  // Codegen assertion — the bug is arm-invisible (arm's arithmetic NaN is already canonical).
+  for (const code of [
+    'export let f = (p, q, s) => { s = s + ""; let v = (p / q) && s; return v ? 1 : 0 }',
+    'export let f = (p, q, s) => { s = s + ""; let v = s && (p / q); return v ? 1 : 0 }',
+    'export let f = (p, q, s) => { s = s + ""; let v = s || (p / q); return v ? 1 : 0 }',
+  ]) {
+    ok(!rawNaNToTruthy(code, 'v'), 'un-canon NaN must not reach __is_truthy')
+    ok(!condBitTestsRawDiv(code), 'an a/b condition must be NaN-safe')
+  }
+  // Both-numeric `(a/b) && (c/d)`: the result is value-typed NUMBER (read NaN-safe), but the
+  // CONDITION still tests `a/b` — it must lower to numericTruthy, not __is_truthy on a raw div.
+  ok(!condBitTestsRawDiv('export let f = (p, q, r, t) => { let v = (p / q) && (r / t); return v ? 1 : 0 }'),
+    'both-numeric && condition must be NaN-safe')
 })
 
 test('reassigned modulo NaN remains falsy in later ternary condition', () => {

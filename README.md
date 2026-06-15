@@ -91,7 +91,7 @@ jz -e "1 + 2"              # eval → 3
 <summary><code>jz --help</code></summary>
 
 ```
-jz v0.5.1 - min JS → WASM compiler
+jz - min JS → WASM compiler
 
 Usage:
   jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
