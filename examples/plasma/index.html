@@ -10,61 +10,16 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
-  /* palette: a bare square color-wheel icon, no button chrome — it rotates on hover/click */
-  #pal { position: fixed; right: 18px; bottom: 18px; z-index: 40;
-    width: 30px; height: 30px; padding: 0; margin: 0; border: 0; background: none;
-    cursor: pointer; -webkit-appearance: none; appearance: none;
-    filter: drop-shadow(0 1px 5px rgba(0,0,0,.55)); }
-  #pal .sw { display: block; width: 100%; height: 100%;
-    background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-    box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset;
-    transition: transform .4s cubic-bezier(.2,.75,.2,1); }
-  #pal:hover .sw { transform: rotate(120deg); }
-  #pal.flip .sw { transform: rotate(360deg); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<button id="pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>
 
 <script type="module">
 import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
 
 const cv = document.getElementById("c"), g = cv.getContext("2d")
 let W = 0, H = 0, img, out32, px
-
-// ── palette: three RGB stops the plasma value sweeps through (lo → mid → hi) ──
-// HSL→RGB, then a hue-rotating triad (poline-ish): a dark base, a light off-hue
-// mid, and a vivid double-offset high — varied but always harmonious.
-const hsl = (h, s, l) => {
-  h = (((h % 360) + 360) % 360) / 360
-  const a = s * Math.min(l, 1 - l)
-  const f = n => { const k = (n + h * 12) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))) }
-  return [f(0), f(8), f(4)]
-}
-// Each colormap is a perceptual path from black → … → white (4 stops, 12 ints): luminance
-// rises monotonically so the plasma reads as a value field, with a meaningful hue journey
-// between. Half the time a hand-tuned classic, half a procedural two-hue sweep.
-const CMAPS = [
-  [0,0,0,   60,16,110,  245,135,75,  255,255,235],   // magma
-  [0,0,4,   50,12,95,   235,120,30,  255,255,170],   // inferno
-  [0,0,12,  30,110,170, 120,210,210, 255,255,255],   // ice
-  [0,0,0,   150,25,10,  250,180,40,  255,255,255],   // fire
-  [4,2,24,  95,40,135,  225,120,95,  255,255,255],   // dusk
-  [0,8,8,   20,120,90,  150,205,80,  255,255,235],   // moss
-]
-const randomPalette = () => {
-  if (Math.random() < 0.5) return CMAPS[Math.floor(Math.random() * CMAPS.length)].slice()
-  const h = Math.random() * 360, off = (40 + Math.random() * 120) * (Math.random() < 0.5 ? -1 : 1)
-  return [0, 0, 0, ...hsl(h, 0.9, 0.34), ...hsl(h + off, 0.85, 0.66), 255, 255, 255]
-}
-let palette = null
-const applyPalette = (p) => { palette = p; if (engine?.setPalette) engine.setPalette(...p) }
-const palBtn = document.getElementById("pal")
-palBtn.onclick = () => {                       // flip the wheel a full turn on each press
-  applyPalette(randomPalette())
-  palBtn.classList.toggle("flip")
-}
 
 const sizeTo = (engine) => {
   // 5-octave fBm per pixel is the fps ceiling — render at 0.8× the screen (CSS upscales)
@@ -83,7 +38,6 @@ const setEngine = async (kind) => {
   const e = await loadEngine(kind, { js: "./plasma.js", wasm: "./plasma.wasm" })
   if (my !== gen) return
   engine = e; sizeTo(engine)
-  if (palette) engine.setPalette(...palette)   // keep the chosen palette across js⇄jz
 }
 addEventListener("resize", () => engine && sizeTo(engine))
 
@@ -112,7 +66,7 @@ const loop = () => {
   const t0 = performance.now()
   engine.frame(t)
   const ms = performance.now() - t0
-  out32.set(px); g.putImageData(img, 0, 0)
+  ui.paint(px, out32); g.putImageData(img, 0, 0)
   ui.frame(ms)
 }
 
@@ -125,7 +79,7 @@ const ui = hud({
   onSwitch: setEngine,
 })
 await setEngine(ui.kind)
-// starts black & white (kernel default grayscale ramp); the palette button adds color
+// starts black & white (kernel default grayscale ramp); the shared palette icon adds color
 loop()
 </script>
 </body>

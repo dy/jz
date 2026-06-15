@@ -36,7 +36,7 @@ cnv.height = height;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
+const h = hud({ kind: "jz", palette: false, hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
 let gen = 0, engine, mem;
 

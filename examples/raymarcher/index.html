@@ -87,7 +87,7 @@ const loop = () => {
 }
 
 const ui = hud({
-  kind: "jz", hint: "a raymarched SDF sphere field",
+  kind: "jz", palette: false, hint: "a raymarched SDF sphere field",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/raymarcher",
   code: "./raymarcher.js",

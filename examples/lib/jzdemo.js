@@ -168,6 +168,42 @@ export const loadEngine = async (kind, { js, wasm }) => {
 
 const SPARK = 48   // FPS history length for the sparkline
 
+// ── palette: any grayscale example can be colorized by mapping luminance through a
+// colormap. Default is grayscale (the B&W look); the palette icon picks a random map. ──
+const hsl = (h, s, l) => {
+  h = (((h % 360) + 360) % 360) / 360
+  const a = s * Math.min(l, 1 - l)
+  const f = n => { const k = (n + h * 12) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))) }
+  return [f(0), f(8), f(4)]
+}
+// Each colormap is a perceptual path black → … → white (luminance rises monotonically so
+// the field still reads as a value), with a meaningful hue journey between.
+const CMAPS = [
+  [0, 0, 0, 60, 16, 110, 245, 135, 75, 255, 255, 235],   // magma
+  [0, 0, 4, 50, 12, 95, 235, 120, 30, 255, 255, 170],    // inferno
+  [0, 0, 12, 30, 110, 170, 120, 210, 210, 255, 255, 255],// ice
+  [0, 0, 0, 150, 25, 10, 250, 180, 40, 255, 255, 255],   // fire
+  [4, 2, 24, 95, 40, 135, 225, 120, 95, 255, 255, 255],  // dusk
+  [0, 8, 8, 20, 120, 90, 150, 205, 80, 255, 255, 235],   // moss
+]
+const randomPalette = () => {
+  if (Math.random() < 0.5) return CMAPS[Math.floor(Math.random() * CMAPS.length)]
+  const h = Math.random() * 360, off = (40 + Math.random() * 120) * (Math.random() < 0.5 ? -1 : 1)
+  return [0, 0, 0, ...hsl(h, 0.9, 0.34), ...hsl(h + off, 0.85, 0.66), 255, 255, 255]
+}
+// 256-entry LUT (luminance → 0xAABBGGRR) interpolated across the colormap stops
+const buildLUT = (stops) => {
+  const n = stops.length / 3, t = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255 * (n - 1), a = Math.floor(x), b = Math.min(n - 1, a + 1), f = x - a
+    const r = stops[a * 3] + (stops[b * 3] - stops[a * 3]) * f
+    const g = stops[a * 3 + 1] + (stops[b * 3 + 1] - stops[a * 3 + 1]) * f
+    const bl = stops[a * 3 + 2] + (stops[b * 3 + 2] - stops[a * 3 + 2]) * f
+    t[i] = (255 << 24) | ((bl | 0) << 16) | ((g | 0) << 8) | (r | 0)
+  }
+  return t
+}
+
 // FPS sparkline + ms/frame readout and engine toggle. Call frame(workMs?) once per rendered
 // frame with the measured kernel compute time. FPS alone lies under a vsync cap (both engines
 // peg at the refresh rate), so the HUD also shows kernel ms — the real engine gap
@@ -177,7 +213,7 @@ const SPARK = 48   // FPS history length for the sparkline
 // literal text (anything containing a newline). Adds a `</>` toggle that overlays it.
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
 // `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
-export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '' }) => {
+export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true }) => {
   if (nav) { addMasthead(nav); addEdgeNav(nav) }
   if (hint && !document.querySelector('.jz-hint')) {
     const hel = document.createElement('div')
@@ -303,6 +339,33 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     codeX.onclick = close
   }
 
+  // Palette icon: a bare square color-wheel, bottom-right. Click randomizes a colormap
+  // (rotating the wheel); `paint(src,dst)` then maps grayscale luminance through it. Until
+  // first click the LUT is null, so paint() is a plain copy and the example stays B&W.
+  let lut = null
+  if (palette) {
+    const pal = document.createElement('button')
+    pal.id = 'jz-pal'; pal.title = 'randomize palette'; pal.setAttribute('aria-label', 'randomize palette')
+    pal.innerHTML = `<span class="sw"></span><style>
+      #jz-pal { position: fixed; right: 18px; bottom: 18px; z-index: 100; width: 30px; height: 30px;
+        padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none;
+        filter: drop-shadow(0 1px 5px rgba(0,0,0,.55)); }
+      #jz-pal .sw { display: block; width: 100%; height: 100%;
+        background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
+        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
+      #jz-pal:hover .sw { transform: rotate(120deg); }
+      #jz-pal.on .sw { transform: rotate(360deg); }</style>`
+    document.body.appendChild(pal)
+    for (const ev of ['pointerdown', 'mousedown', 'click', 'touchstart']) pal.addEventListener(ev, (e) => e.stopPropagation())
+    pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on') }
+  }
+  // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
+  const blit = (src, dst) => {
+    if (!lut) { dst.set(src); return }
+    const t = lut, n = src.length
+    for (let i = 0; i < n; i++) dst[i] = t[src[i] & 0xff]
+  }
+
   // EMA-smoothed over a ~0.4s window. The sparkline plots FPS on an absolute scale
   // (full height = `ref`, which rises to the display's refresh rate), so the line sits
   // at the true level and swapping to a slower engine visibly steps it down.
@@ -310,6 +373,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const hist = new Array(SPARK).fill(0)
   return {
     get kind() { return kind },
+    paint: blit,
     frame(workMs) {
       if (!meter) return
       const now = performance.now(), dt = now - last; last = now

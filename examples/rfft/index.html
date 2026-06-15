@@ -207,7 +207,7 @@ let gainNode = null;
 
 // FPS / ms panel on by default; append ?fps=0 to hide it for clean screenshots.
 const ui = hud({
-  kind: "jz",
+  kind: "jz", palette: false,
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/rfft",
   code: "./rfft.js",

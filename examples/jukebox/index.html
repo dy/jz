@@ -141,7 +141,7 @@ const loop = () => {
 }
 
 const ui = hud({
-  kind: "jz",
+  kind: "jz", palette: false,
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/jukebox",
   nav: "jukebox",

@@ -80,7 +80,7 @@ const loop = () => {
   const t0 = performance.now()
   engine.frame(0.1)
   const ms = performance.now() - t0
-  out32.set(px)
+  ui.paint(px, out32)
   g.putImageData(img, 0, 0)
   ui.frame(ms)
 }
