@@ -6,11 +6,12 @@
 // resize(w,h) → Uint32Array; frame() steps; grab/drag/release to interact.
 
 let W = 0, H = 0, px
-let GX = 52, GY = 34       // cloth resolution
+let GX = 96, GY = 64       // cloth resolution — finer mesh, ~6k nodes
 let N = GX * GY
 let nx, ny, ox, oy         // node pos + previous pos (Verlet)
 let pin                    // 1 = pinned
 let L = 1.0                // rest length (px)
+let R = 0                  // grab pick radius (px) — set from screen, not grid
 let grabbed = -1
 let ITER = 4
 
@@ -26,6 +27,8 @@ export let resize = (w, h) => {
 
 export let init = () => {
   L = (W < H ? W : H) * 0.85 / GX
+  R = (W < H ? W : H) * 0.1                                       // ~6 cells at 52-wide; fixed in px so finer grids stay grabbable
+  let pinStep = Math.round(GX / 8.7)                              // hold the swag spacing (~9 anchors) as the grid scales
   let x0 = (W - (GX - 1) * L) * 0.5, y0 = H * 0.12
   let j = 0
   while (j < GY) {
@@ -34,7 +37,7 @@ export let init = () => {
       let k = j * GX + i
       nx[k] = x0 + i * L; ny[k] = y0 + j * L
       ox[k] = nx[k]; oy[k] = ny[k]
-      pin[k] = (j === 0 && (i % 6 === 0 || i === GX - 1)) ? 1 : 0   // top row pinned at intervals
+      pin[k] = (j === 0 && (i % pinStep === 0 || i === GX - 1)) ? 1 : 0   // top row pinned at intervals
       k++
       i++
     }
@@ -51,7 +54,7 @@ export let grab = (gx, gy) => {
     if (d < best) { best = d; bi = i }
     i++
   }
-  if (best < L * L * 36.0) grabbed = bi
+  if (best < R * R) grabbed = bi
 }
 export let drag = (gx, gy) => { if (grabbed >= 0) { nx[grabbed] = gx; ny[grabbed] = gy; ox[grabbed] = gx; oy[grabbed] = gy } }
 export let release = () => { grabbed = -1 }
