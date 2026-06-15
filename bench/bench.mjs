@@ -565,7 +565,7 @@ for (const cid of selectedCases) {
   // FMADDD — no flag to disable it — so its recurrence/butterfly rounding differs
   // by the last ulp; still IEEE-correct, same algorithm). One alternate checksum
   // per case, measured on arm64.
-  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448, nbody: 587496398 }
+  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448, nbody: 587496398, lorenz: 1903597547 }
   const fmaCs = fmaChecksums[c.id]
 
   const csCounts = {}
