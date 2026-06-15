@@ -10,7 +10,6 @@ bench/<case>/<case>.rs      optional Rust baseline
 bench/<case>/<case>.go      optional Go baseline
 bench/<case>/<case>.zig     optional Zig baseline
 bench/<case>/<case>.as.ts   optional AssemblyScript baseline
-bench/<case>/<case>.py      optional scalar CPython baseline
 bench/<case>/<case>.npy.py  optional NumPy baseline
 bench/<case>/<case>.wat     optional hand-written WAT baseline
 ```
@@ -30,8 +29,8 @@ drift as `DIFF`.
 npm run bench
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
 node bench/bench.mjs --targets=jz --cases=biquad,mat4,poly,bitwise
-node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
-node bench/bench.mjs --cases=biquad,mat4,tokenizer,json,sort,crc32
+node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,graaljs
+node bench/bench.mjs --cases=biquad,fft,synth,bytebeat,blur
 node bench/bench.mjs biquad
 node bench/bench.mjs mat4 --targets=nat,v8,jz
 ```
@@ -51,9 +50,20 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`json`](json/json.js) | runtime `JSON.parse` of one module-local source plus heterogeneous object/array walk with a stable inferred JSON shape |
 | [`sort`](sort/sort.js) | in-place heapsort over a typed array; exposes call-heavy nested loops and typed-array index propagation |
 | [`crc32`](crc32/crc32.js) | table-driven CRC-32 over a mutable byte buffer; exposes integer narrowing and typed-array parameter propagation |
+| [`dotprod`](dotprod/dotprod.js) | multiply-accumulate reduction; jz reassociates to 4 SIMD accumulators, beating strict-fp serial native |
+| [`bytebeat`](bytebeat/bytebeat.js) | classic integer "bytebeat" one-line-song synthesis to 8-bit PCM; pure i32, bit-exact everywhere |
+| [`fft`](fft/fft.js) | radix-2 Cooley–Tukey FFT over a transcendental-free twiddle table; the canonical numeric/audio kernel |
+| [`synth`](synth/synth.js) | minisynth audio pipeline — polynomial oscillator + ADSR + biquad per sample; loop-carried f64 |
+| [`blur`](blur/blur.js) | separable box blur on an RGBA8 image; integer stencil with edge clamp, the canonical image pipeline |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the jz compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
+
+The `watr`, `jessie`, and `jz` rows are self-referential — jz (or its deps)
+compiling code. They stay runnable (`--cases=watr,jessie,jz`) and gated in
+`test/bench.js`, but are hidden from the bench page and the headline geomean SVG:
+they answer a different question (compiler throughput on itself) from the
+cross-language kernel comparison the page is about.
 
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
@@ -64,9 +74,14 @@ compile-time folded, while the compiler can still specialize the stable literal
 shape. External unknown-shape JSON still uses the generic runtime parser.
 
 Native-language rows are intentionally per case. NumPy rows are used only
-where a vectorized array implementation is a meaningful Python convention;
-scalar CPython is kept to the tokenizer row to avoid turning the suite into
-a Python loop-overhead benchmark.
+where a vectorized array implementation is a meaningful Python convention.
+
+Pure interpreters (CPython, QuickJS, Hermes, Javy's embedded-QuickJS) are not
+benchmarked: this suite measures compiled-code quality, and an interpreter row
+inflates jz's lead for free without answering a question a user actually has.
+The fair field is the JIT engines (V8/Bun/Deno/SpiderMonkey/GraalJS), the other
+JS→wasm compilers (AssemblyScript, Porffor, jawsm), and the native AOT
+baselines (C/Rust/Zig/Go, NumPy's vectorized C).
 
 ### Parity classes
 
@@ -87,13 +102,11 @@ correctly-rounded; cascade is the same algorithm.
 | `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native`, when a matching `.rs` exists |
 | `go` | Go native compiler, when a matching `.go` exists |
 | `zig` | Zig `build-exe -O ReleaseFast`, when a matching `.zig` exists |
-| `python` | scalar CPython, when a matching `.py` exists |
 | `numpy` | vectorized NumPy, when a matching `.npy.py` exists |
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |
 | `bun` | raw JavaScript on Bun/JavaScriptCore |
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
-| `hermes` | raw JavaScript on Hermes |
 | `shermes` | Static Hermes — JS AOT-compiled to a native binary (`shermes -O`), when installed |
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
@@ -101,7 +114,6 @@ correctly-rounded; cascade is the same algorithm.
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `qjs` | QuickJS when installed |
 | `porf` | Porffor (`porf run`) when installed |
 | `jawsm` | jawsm when installed |
 
@@ -130,11 +142,10 @@ This keeps the target measuring the best current jz artifact for that workload.
 BUN_BIN=/path/to/bun \
 DENO_BIN=/path/to/deno \
 SPIDERMONKEY_BIN=/path/to/js \
-HERMES_BIN=/path/to/hermes \
 SHERMES_BIN=/path/to/shermes \
 GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,shermes,graaljs,porf
+node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)
@@ -277,6 +288,31 @@ nested loops with typed-array index propagation stay on the i32 path.
 
 jz is 1.1× faster than V8 raw JS and ties AS. Integer narrowing and
 typed-array parameter propagation keep the LUT lookup on raw i32.
+
+### Audio + image showcase (cross-language, bit-exact)
+
+Four standard kernels added to make the audio story concrete. All are written so
+the output is **bit-identical** across every engine and native target — integer
+math (bytebeat, blur) or transcendental-free f64 (fft, synth: in-source Taylor
+polynomials, not `Math.sin`, which differs per libm). Go's arm64 auto-FMA gives
+the documented `fma` parity class on the f64 cases.
+
+| case | jz | vs V8 | vs AS | vs fastest native | jz wasm |
+| --- | ---: | ---: | ---: | --- | ---: |
+| **synth** — osc + ADSR + biquad | **3.20 ms** | **1.42×** | **1.07×** | **beats all** (Rust 1.09×, Zig 1.14×) | 7.6 kB |
+| **fft** — radix-2 Cooley–Tukey | **1.56 ms** | **1.26×** | **1.14×** | **ties** (Rust 0.95×, Zig 0.98×) | 2.4 kB |
+| **blur** — RGBA box blur | **4.18 ms** | **2.78×** | **1.61×** | trails (Zig SIMDs the stencil) | 1.8 kB |
+| **bytebeat** — integer one-liner | **2.11 ms** | **1.48×** | **2.01×** | trails (native vectorizes) | 1.0 kB |
+
+The headline: jz beats the JS field (V8, AssemblyScript) on **every** audio/image
+case, **ties native on FFT**, and is the **fastest of all targets on the synth
+pipeline** — its per-sample loop is loop-carried (oscillator phase + biquad
+feedback), so native can't auto-vectorize it either, and jz's tight scalar f64
+codegen with no NaN-box overhead wins outright. The two stateless integer kernels
+(bytebeat, blur) are where `clang`/`zig`/`rustc` auto-vectorize an
+embarrassingly-parallel loop jz emits as scalar — native is the floor there, but
+jz still doubles the JS field. (Numbers: darwin/arm64, M-class; the live snapshot
+is [results.json](results.json).)
 
 ### watr — WAT-to-wasm compiler on small corpus
 

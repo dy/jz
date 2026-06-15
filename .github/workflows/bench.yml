@@ -41,27 +41,20 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.13.0
-      # Extra "Run as JS" runtimes (Deno, Bun) + QuickJS interpreter reference.
-      # bench.mjs gates every target on `available`, so a missing tool just drops
-      # its row — these steps are additive and never fail the run.
+      # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
+      # `available`, so a missing tool just drops its row — additive, never fails.
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@v2
-      - name: install quickjs
-        run: sudo apt-get update && sudo apt-get install -y quickjs || true
-      # CPython + NumPy native-reference rows (python3 is preinstalled on ubuntu).
+      # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
-      # Javy (QuickJS-in-wasm) Compile-to-WASM contender + wasmtime to run it.
-      # All best-effort: bench.mjs gates the javy target on both being on PATH.
-      - name: install wasmtime + javy
+      # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
+      - name: install wasmtime
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash || true
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          JAVY=v5.0.4
-          curl -fsSL "https://github.com/bytecodealliance/javy/releases/download/$JAVY/javy-x86_64-linux-$JAVY.gz" -o javy.gz \
-            && gunzip -f javy.gz && chmod +x javy && sudo mv javy /usr/local/bin/javy || true
       # Competitor toolchains + binaryen (provides wasm-opt).
       - run: npm install --no-save assemblyscript@~0.27.0 porffor@~0.61.0 binaryen
       - name: expose toolchains on PATH
@@ -81,7 +74,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,rust,zig,go,v8,deno,bun,as,porf,jz,wat,qjs,python,numpy,javy --json || exit 1
+          node bench/bench.mjs --targets=nat,rust,zig,go,v8,deno,bun,as,porf,jz,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true

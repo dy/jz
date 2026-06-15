@@ -32,6 +32,12 @@ static uint32_t checksum_u32(const uint32_t* xs, int n) {
   return h;
 }
 
+static uint32_t checksum_u8(const uint8_t* xs, int n) {
+  uint32_t h = 0x811c9dc5u;
+  for (int i = 0; i < n; i++) h = mix_u32(h, xs[i]);
+  return h;
+}
+
 static int median_us(double* samples, int n) {
   for (int i = 1; i < n; i++) {
     double v = samples[i];

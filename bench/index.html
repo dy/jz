@@ -175,13 +175,12 @@ const $ = id => document.getElementById(id)
 
 // ── targets: band = which question the row answers ──────────────────────────
 // js: "is compiling worth it at all?"  wasm: "is jz the best JS→wasm route?"
-// native: "what do I give up by not rewriting?"  interp: "why not embed an engine?"
+// native: "what do I give up by not rewriting?"
 // Invocation details live in the methodology table, not in row labels.
 const BANDS = [
   ['js', 'JS'],
-  ['wasm', 'JS -> WASM'],
+  ['wasm', 'JS → WASM'],
   ['native', 'Native (Reference only)'],
-  ['interp', 'Interpreter (Reference only)'],
 ]
 const TARGETS = {
   v8:    { label: 'Node', band: 'js' },
@@ -195,7 +194,6 @@ const TARGETS = {
   as:    { label: 'AssemblyScript', band: 'wasm' },
   porf:  { label: 'Porffor', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm' },
-  javy:  { label: 'Javy', sub: 'QuickJS in wasm', band: 'wasm', hatch: true },
   'jz-w2c': { label: 'JZ', sub: 'wasm2c', band: 'native', hatch: true },
   nat:   { label: 'C', band: 'native', hatch: true },
   natgcc:{ label: 'C', sub: 'gcc', band: 'native', hatch: true },
@@ -204,28 +202,34 @@ const TARGETS = {
   go:    { label: 'Go', band: 'native', hatch: true },
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
-  python:{ label: 'CPython', band: 'interp', hatch: true },
-  hermes:{ label: 'Hermes', band: 'interp', hatch: true },
-  qjs:   { label: 'QuickJS', band: 'interp', hatch: true },
 }
 const BREAK = 12      // linear bars; rows past this are cut, number printed
-const MULTI = new Set(['watr', 'jessie', 'jz'])   // multi-module sources — repl can't load them
+// Self-referential 'compiler' cases (jz/watr/jessie compiling code) are hidden
+// from the page + headline geomean — they're a different question from the
+// cross-language kernel comparison. Still runnable via `bench.mjs --cases` and
+// gated in test/bench.js.
+const HIDDEN = new Set(['watr', 'jessie', 'jz'])
 // idiomatic glyphs: play triangle for the repl, code chevrons for source
 const ICO = {
   play: `<svg class="ico" viewBox="0 0 12 12" width="9" height="9" aria-hidden="true"><path fill="currentColor" d="M2.5 1.3v9.4l7-4.7z"/></svg>`,
   code: `<svg class="ico" viewBox="0 0 16 12" width="13" height="10" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M5 3.2 1.5 6 5 8.8M11 3.2 14.5 6 11 8.8"/></svg>`,
 }
 
-const FAMILY = { biquad: 'numeric', mat4: 'numeric', poly: 'numeric', bitwise: 'numeric', dotprod: 'numeric',
+const FAMILY = { biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio',
+  mat4: 'numeric', poly: 'numeric', bitwise: 'numeric', dotprod: 'numeric',
   mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
-  callback: 'alloc', aos: 'alloc', watr: 'compiler', jessie: 'compiler', jz: 'compiler' }
-const TAGS = { biquad: 'dsp · f64', mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
+  callback: 'alloc', aos: 'alloc', blur: 'image' }
+const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
+  mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
   tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
   mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
-  watr: 'compiler on itself', jessie: 'parser', jz: 'self-host' }
+  blur: 'rgba · stencil' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
+  fft: 'Radix-2 Cooley–Tukey over a precomputed twiddle table — the butterfly inner loop is pure f64 +/−/×; JZ vectorizes it where a JIT won’t from plain JS.',
+  synth: 'Note render — polynomial oscillator + ADSR + biquad, per sample. Transcendental-free, so it stays bit-exact across engines while JZ runs it near native.',
+  bytebeat: 'Classic integer bytebeat — t-indexed bit/shift/modulo synthesis to 8-bit PCM. Pure i32, no NaN-box round-trips.',
   mat4: 'Fixed-count loops unroll and vectorize to v128 — a JIT won’t do this from plain JS.',
   poly: 'One sum() fed Float64Array then Int32Array — JZ keeps two typed paths where a JIT goes polymorphic.',
   dotprod: 'Multiply-accumulate reduction (s += a[i]*b[i]) — JZ vectorizes to 4 independent SIMD accumulators, a deterministic reassociation that hides FP latency and stays bit-stable across engines.',
@@ -237,9 +241,7 @@ const INSIGHTS = {
   json: 'Runtime JSON.parse specialized to the literal’s stable shape.',
   sort: 'In-place heapsort — call-heavy nested loops, indices provably i32.',
   crc32: 'Table-driven byte CRC — serially-dependent LUT chain, 2 loads + 4 ALU per byte.',
-  watr: 'JZ compiling its own WAT assembler — 200 kB of branchy compiler code.',
-  jessie: 'The jessie parser JZ itself builds on — recursion- and allocation-heavy.',
-  jz: 'jz.wasm — the compiler compiled by itself — compiling JavaScript, byte-identical to every engine row.',
+  blur: 'Separable box blur on an RGBA8 image — sliding-window stencil with integer accumulation; memory-bound layout codegen.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -359,7 +361,7 @@ const renderStrip = () => {
 }
 
 // ── per-case cards ───────────────────────────────────────────────────────────
-const CHIPS = ['all', 'numeric', 'string', 'alloc', 'compiler']
+const CHIPS = ['all', 'numeric', 'audio', 'string', 'alloc', 'image']
 const renderChips = () => {
   $('chips').innerHTML = CHIPS.map(f =>
     `<button data-f="${f}" class="${filter === f ? 'on' : ''}">${f}</button>`).join('')
@@ -402,9 +404,7 @@ const renderCards = () => {
   for (const c of CASES) {
     if (filter !== 'all' && FAMILY[c.id] !== filter) continue
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
-    const play = MULTI.has(c.id)   // multi-module sources can't load in the repl
-      ? srcLink
-      : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}`
+    const play = `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
       <h3>${esc(c.id)}${play}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}</h3>
@@ -519,7 +519,7 @@ const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).re
 // ── boot ─────────────────────────────────────────────────────────────────────
 try {
   DATA = await fetch('./results.json').then(r => { if (!r.ok) throw 0; return r.json() })
-  const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
+  const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c })).filter(c => !HIDDEN.has(c.id))
   CORPUS = all.filter(c => c.targets.jz)
   CASES = CORPUS.concat(all.filter(c => !c.targets.jz))
   renderMeta(); renderChips(); renderAll()

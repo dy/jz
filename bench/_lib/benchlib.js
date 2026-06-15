@@ -25,6 +25,14 @@ export let checksumU32 = (out) => {
   return h >>> 0
 }
 
+// Byte-buffer checksum (8-bit PCM audio, RGBA image bytes). Covers every byte —
+// the buffer IS the output signal — and the loop is outside the timed region.
+export let checksumU8 = (out) => {
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < out.length; i++) h = Math.imul(h ^ out[i], 0x01000193) | 0
+  return h >>> 0
+}
+
 export let printResult = (medianUs, checksum, samples, stages, runs) => {
   console.log(`median_us=${medianUs} checksum=${checksum} samples=${samples} stages=${stages} runs=${runs}`)
 }

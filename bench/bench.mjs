@@ -15,12 +15,10 @@ const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
 const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2c'
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
-const HERMES_BIN = process.env.HERMES_BIN || 'hermes'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const PORF_BIN = process.env.PORF_BIN || 'porf'
-const JAVY_BIN = process.env.JAVY_BIN || 'javy'
 
 mkdirSync(BUILD, { recursive: true })
 
@@ -47,6 +45,11 @@ const CASE_NAMES = {
 // workload IS the compiler (scripts/self.js), so the jz row runs the full
 // self-host: jz.wasm compiling JavaScript.
 const GRAPH_CASES = new Set(['jessie', 'jz'])
+// Self-referential 'compiler' cases (jz/watr/jessie compiling code) are excluded
+// from the headline geomean SVG + bench page — a different question from the
+// cross-language kernel comparison. Still runnable via --cases and gated in
+// test/bench.js.
+const HIDDEN_FROM_GEOMEAN = new Set(['watr', 'jessie', 'jz'])
 const graphSources = (c) => {
   const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' })
   return { code: g.code, modules: g.modules }
@@ -98,7 +101,6 @@ const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
       go: existsSync(join(dir, `${d.name}.go`)) ? join(dir, `${d.name}.go`) : null,
       zig: existsSync(join(dir, `${d.name}.zig`)) ? join(dir, `${d.name}.zig`) : null,
       as: existsSync(join(dir, `${d.name}.as.ts`)) ? join(dir, `${d.name}.as.ts`) : null,
-      py: existsSync(join(dir, `${d.name}.py`)) ? join(dir, `${d.name}.py`) : null,
       npy: existsSync(join(dir, `${d.name}.npy.py`)) ? join(dir, `${d.name}.npy.py`) : null,
       wat: existsSync(join(dir, `${d.name}.wat`)) ? join(dir, `${d.name}.wat`) : null,
       watRun: existsSync(join(dir, 'run-wat.mjs')) ? join(dir, 'run-wat.mjs') : null,
@@ -275,8 +277,6 @@ int main(void) {
 
 const watWasmPath = c => join(caseBuild(c), `${c.id}-wat.wasm`)
 const jawsmWasmPath = c => join(caseBuild(c), `${c.id}-jawsm.wasm`)
-const javyWasmPath = c => join(caseBuild(c), `${c.id}-javy.wasm`)
-const javySrcPath = c => join(caseBuild(c), `${c.id}-javy.js`)
 const w2cBinPath = c => join(caseBuild(c), `${c.id}-w2c`)
 const natBinPath = c => join(caseBuild(c), `${c.id}-nat`)
 const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
@@ -335,12 +335,6 @@ const targets = {
       execFileSync('zig', ['build-exe', c.zig, '-O', 'ReleaseFast', '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, '-femit-bin=' + zigPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [zigPath(c)]),
   },
-  python: {
-    name: 'Python (CPython)',
-    available: c => !!c.py && has('python3'),
-    bin: c => c.py,
-    run: c => tryRun('python', c, null, ['python3', c.py]),
-  },
   numpy: {
     name: 'Python (NumPy)',
     available: c => !!c.npy && has('python3') && spawnSync('python3', ['-c', 'import numpy'], { stdio: 'ignore' }).status === 0,
@@ -377,12 +371,6 @@ const targets = {
     bin: flatPath,
     run: c => tryRun('spidermonkey', c, () => writeFlat(c), [spiderMonkeyBin(), flatPath(c)]),
   },
-  hermes: {
-    name: 'Hermes',
-    available: () => has(HERMES_BIN),
-    bin: flatPath,
-    run: c => tryRun('hermes', c, () => writeFlat(c), [HERMES_BIN, flatPath(c)]),
-  },
   // Static Hermes — AOT JS → native via C/LLVM. Hand-run reference point:
   // build `shermes` from facebook/hermes (needs the LLVM toolchain) and point
   // SHERMES_BIN at it. Untyped JS compiles too (stays dynamic, still AOT).
@@ -400,12 +388,6 @@ const targets = {
     available: () => !!graalJsBin(),
     bin: flatPath,
     run: c => tryRun('graaljs', c, () => writeFlat(c), [graalJsBin(), flatPath(c)]),
-  },
-  qjs: {
-    name: 'QuickJS (qjs)',
-    available: () => has('qjs'),
-    bin: flatPath,
-    run: c => tryRun('qjs', c, () => writeFlat(c), ['qjs', '--std', flatPath(c)]),
   },
   porf: {
     name: 'Porffor',
@@ -457,20 +439,6 @@ const targets = {
       execFileSync('jawsm', [c.js, '-o', jawsmWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-wasm.mjs'), jawsmWasmPath(c)]),
   },
-  // Javy (Bytecode Alliance) — JS → wasm by *embedding QuickJS* in the module:
-  // the interpreter-in-wasm approach, in contrast to jz's compile-to-native-wasm.
-  // Runs as a WASI command under wasmtime. Its minimal QuickJS provider has no
-  // `performance`, so shim it onto the WASI Date clock before building.
-  javy: {
-    name: 'Javy (QuickJS → wasm)',
-    available: () => has(JAVY_BIN) && has('wasmtime'),
-    bin: javyWasmPath,
-    run: c => tryRun('javy', c, () => {
-      writeFlat(c)
-      writeFileSync(javySrcPath(c), 'globalThis.performance ??= { now: () => Date.now() };\n' + readFileSync(flatPath(c), 'utf8'))
-      execFileSync(JAVY_BIN, ['build', javySrcPath(c), '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
-    }, ['wasmtime', javyWasmPath(c)]),
-  },
 }
 
 // Exact invocation per target — emitted into results.json meta so the bench
@@ -482,24 +450,20 @@ const TARGET_CMDS = {
   rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
   go: 'go build -ldflags="-s -w" <case>.go',
   zig: 'zig build-exe <case>.zig -O ReleaseFast',
-  python: 'python3 <case>.py',
   numpy: 'python3 <case>.npy.py',
   wat: 'wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)',
   v8: 'node run-v8.mjs <case>.js',
   deno: 'deno run --allow-read --allow-env run-v8.mjs <case>.js',
   bun: 'bun run-v8.mjs <case>.js',
   spidermonkey: 'js <case>-flat.js',
-  hermes: 'hermes <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
-  qjs: 'qjs --std <case>-flat.js',
   porf: 'porf --allocator-chunks=128 run <case>-flat.js',
   jz: "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
   as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
   'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
-  javy: 'javy build <case>-flat.js → wasmtime (QuickJS embedded in wasm)',
 }
 
 const allCases = discoverCases()
@@ -537,7 +501,7 @@ const grid = {}
 // (C/Zig/Rust/Go), the JS/wasm field (V8/Bun/AssemblyScript/Porffor), and NumPy.
 // A target with no measured data on a run (e.g. bun absent) is simply skipped.
 const SVG_TARGETS = [
-  { id: 'jz', label: 'jz', sub: '→ wasm' },
+  { id: 'jz', label: 'jz', sub: '-O3' },
   { id: 'nat', label: 'native C', sub: 'clang -O3' },
   { id: 'zig', label: 'Zig', sub: 'ReleaseFast' },
   { id: 'rust', label: 'Rust', sub: 'rustc -O3' },
@@ -583,8 +547,11 @@ for (const cid of selectedCases) {
   }
 
   for (const r of results) r.bytes = sizeOf(r.id)
-  // Known parity classes per case — currently just FMA-fused biquad on arm64 NEON.
-  const fmaChecksums = { biquad: 3650557234 }
+  // Known FMA-fusion parity classes (Go's arm64 backend force-fuses a*b+c to
+  // FMADDD — no flag to disable it — so its recurrence/butterfly rounding differs
+  // by the last ulp; still IEEE-correct, same algorithm). One alternate checksum
+  // per case, measured on arm64.
+  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448 }
   const fmaCs = fmaChecksums[c.id]
 
   const csCounts = {}
@@ -628,23 +595,27 @@ for (const cid of selectedCases) {
   }
 }
 
-// Regenerate bench/bench.svg from freshly measured geomeans — only on a full run
-// (all cases present) so a filtered run can't clobber the committed artifact with
-// partial data. ratio = geomean(engine / jz) over correct-result cases both ran.
-if (selectedCases.length === allCases.length) {
+// Regenerate bench/bench.svg from freshly measured geomeans — only when every
+// non-hidden case ran (a filtered run can't clobber the committed artifact with
+// partial data). The SVG geomean excludes the self-referential cases anyway, so
+// the slow self-host rows need not run to refresh it. ratio = geomean(engine / jz)
+// over correct-result cases both ran.
+const svgCases = allCases.map(c => c.id).filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
+if (svgCases.every(cid => selectedCases.includes(cid))) {
+  const geoCases = selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
   const rows = []
   for (const t of SVG_TARGETS) {
     const ratios = []
-    for (const cid of selectedCases) {
+    for (const cid of geoCases) {
       const g = grid[cid]
       if (g && g[t.id] != null && g.jz != null) ratios.push(g[t.id] / g.jz)
     }
     if (!ratios.length) continue
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf' ? `runs ${ratios.length} / ${allCases.length}` : t.sub })
+    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf' ? `runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
   if (rows.length > 1 && rows.some(r => r.label === 'jz')) {
-    renderBenchSvg(rows)
+    renderBenchSvg(rows, geoCases.length)
     console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
 }
