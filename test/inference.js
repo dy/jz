@@ -140,14 +140,20 @@ test('boundary: bare property READ does not narrow param → primitive stays und
   // (which would route to `__dyn_get_expr_t` and reinterpret 42's f64 bits as an
   // OBJECT pointer → OOB heap read).
   const ex = run(`export function f(o) { return o.foo }`)
-  is(ex.f({ foo: 7 }), 7, 'object arg reads its property')
+  // A live JS object arg only marshals across the JS-host boundary; the hostless WASI
+  // boundary has no string-keyed object representation (numeric arrays still marshal).
+  // The soundness assertions below (primitives stay undefined, WAT keeps the poly
+  // dispatch) are host-independent and DO run under wasi — that's the load-bearing part.
+  if (!onWasi()) is(ex.f({ foo: 7 }), 7, 'object arg reads its property')
   is(ex.f(42), undefined, 'number arg has no .foo → undefined (polymorphism is load-bearing)')
   is(ex.f('hi'), undefined, 'string arg has no .foo → undefined')
   const wat = jz.compile(`export function f(o) { return o.foo }`, { wat: true })
-  // Polymorphic read uses an `_any_` dispatch variant (tag-checks at runtime).
-  // An OBJECT-narrowed param would instead emit `__dyn_get_expr_t`, which assumes
-  // OBJECT memory layout — its absence is the proof narrowing did NOT fire.
-  ok(/\$__dyn_get_any/.test(wat), 'read-only param keeps a polymorphic _any_ dispatch')
+  // Polymorphic read keeps a runtime tag-dispatch helper. The name is host-coupled:
+  // the JS host emits the `__dyn_get_any_*` variant, the WASI boundary lowers the same
+  // poly read through the `__dyn_get_cache_*` path. An OBJECT-narrowed param would
+  // instead emit `__dyn_get_expr_t` (OBJECT memory layout) — its absence is the
+  // host-independent proof that narrowing did NOT fire.
+  ok((onWasi() ? /\$__dyn_get_cache/ : /\$__dyn_get_any/).test(wat), 'read-only param keeps a polymorphic dispatch')
   is(count(wat, /\$__dyn_get_expr_t\b/g), 0, 'no OBJECT-layout fast path on a bare-read param')
 })
 
