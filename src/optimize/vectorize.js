@@ -1890,6 +1890,64 @@ function tryByteScan(blockNode, fnLocals, freshIdRef) {
 
 const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
 
+// ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
+//
+// The image-convolution hot shape: 4 adjacent-byte accumulators summed over a
+// window, then divided + stored — `for k: sr+=src[p]; sg+=src[p+1]; …` (blur,
+// box filters, separable convolutions). The 4 channels are 4 i32x4 lanes, the
+// 4-byte load is one widening v128.load32_zero. We vectorize ONLY the inner
+// accumulation (integer add → associative/exact → bit-identical) and extract the
+// lane sums back to the scalars; the edge-clamp address math and the per-pixel
+// divide+store stay scalar, untouched. So no float-reduction reordering, no
+// lane-juggled divide — just the dense inner loop lifted, safely.
+//
+// Operates on the OUTER pixel-loop block: its body is [exit, 4×(acc=0), …setup,
+// (block (loop INNER)), …uses-of-acc, inc, br]. INNER's body accumulates the 4
+// channels off a shared base address.
+
+// Match `(local.set $ACC (i32.add (local.get $ACC) (i32.load8_u ADDR)))` where
+// ADDR is `(local.get $base)` or `(local.tee $base EXPR)` at byte offset `off`.
+// Returns { acc, base, off, teeExpr? } or null.
+function matchChannelAccum(stmt, off) {
+  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+  const acc = stmt[1]
+  const add = stmt[2]
+  if (!isArr(add) || add[0] !== 'i32.add' || add.length !== 3) return null
+  if (!isLocalGet(add[1], acc)) return null
+  const load = add[2]
+  if (!isArr(load) || load[0] !== 'i32.load8_u') return null
+  // memarg offset: bare load → off 0; `i32.load8_u offset=N addr` → off N.
+  let addr = load[1], loadOff = 0
+  if (typeof load[1] === 'string' && /^offset=/.test(load[1])) { loadOff = +load[1].slice(7); addr = load[2] }
+  if (loadOff !== off) return null
+  if (isArr(addr) && addr[0] === 'local.tee' && addr.length === 3) return { acc, base: addr[1], off, teeExpr: addr[2] }
+  if (isLocalGet(addr)) return { acc, base: addr[1], off }
+  return null
+}
+
+// Recognize, inside the inner loop body, four consecutive channel accumulations
+// `acc0+=base[0]; acc1+=base[1]; acc2+=base[2]; acc3+=base[3]` over ONE shared
+// base. Returns { accs:[a0..a3], baseLocal, teeExpr, idx } (idx = position of the
+// first accum stmt in `body`) or null.
+function matchChannelGroup(body) {
+  for (let i = 0; i + 3 < body.length; i++) {
+    const m0 = matchChannelAccum(body[i], 0)
+    if (!m0 || m0.teeExpr == null) continue   // first load carries the address tee
+    const ms = [m0]
+    let ok = true
+    for (let c = 1; c < 4; c++) {
+      const m = matchChannelAccum(body[i + c], c)
+      if (!m || m.base !== m0.base || m.teeExpr != null) { ok = false; break }
+      ms.push(m)
+    }
+    if (!ok) continue
+    const accs = ms.map(m => m.acc)
+    if (new Set(accs).size !== 4) continue   // four distinct accumulators
+    return { accs, baseLocal: m0.base, teeExpr: m0.teeExpr, idx: i }
+  }
+  return null
+}
+
 // ---- Byte-map recognizer (ramp + widening loads) ---------------------------
 //
 // Vectorize `for (i = 0; i < N; i++) out[i] = NARROW(f_i32(…))` where the i32
@@ -2139,6 +2197,95 @@ function buildRampStore(storeOp, addr, vval, ctx) {
   return ['block', ['local.set', tmp, vval], ['i32.store', addr, ['i32x4.extract_lane', 0, packed]]]
 }
 
+// Vectorize the inner accumulation of an RGBA box-filter pixel loop. See the
+// matchChannelGroup header. Returns { wrapper, newLocalDecls } or null.
+function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  // Outer pixel loop: (block $brk (loop $L …)).
+  let blockLabel = null, loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+    else if (isArr(c)) return null
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+
+  // Pixel-loop body (between the exit guard and the back-branch). Find: four
+  // `acc_c = 0` inits and the inner accumulation loop that sums into them.
+  const bodyStart = 3, bodyEnd = endIdx - 1   // [exit] at 2, [inc?][br] at the end
+  // The four zero-inits must be consecutive `(local.set $acc (i32.const 0))`.
+  let initIdx = -1, accInits = null
+  for (let i = bodyStart; i + 3 <= bodyEnd; i++) {
+    const z = []
+    for (let c = 0; c < 4; c++) {
+      const s = loopNode[i + c]
+      if (isArr(s) && s[0] === 'local.set' && s.length === 3 && isI32Const(s[2]) && constNum(s[2]) === 0 && typeof s[1] === 'string') z.push(s[1])
+      else break
+    }
+    if (z.length === 4 && new Set(z).size === 4) { initIdx = i; accInits = z; break }
+  }
+  if (initIdx < 0) return null
+
+  // The inner accumulation loop is the (block (loop)) appearing after the inits.
+  let innerIdx = -1, innerBlock = null
+  for (let i = initIdx + 4; i <= bodyEnd; i++) {
+    const s = loopNode[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) { innerIdx = i; innerBlock = s; break }
+    if (isArr(s) && s[0] === 'loop') { innerIdx = i; innerBlock = ['block', s]; break }
+  }
+  if (!innerBlock) return null
+  // Locate the loop within the inner block and its body.
+  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
+  if (!innerLoop) return null
+  const ilEnd = innerLoop.length - 1
+  if (!(isArr(innerLoop[ilEnd]) && innerLoop[ilEnd][0] === 'br')) return null
+  const innerBody = innerLoop.slice(3, ilEnd - 1)   // between exit guard and the (k+=1)(br)
+
+  const grp = matchChannelGroup(innerBody)
+  if (!grp) return null
+  // The four accumulators summed must be exactly the four that were zero-inited
+  // (same set, in any order).
+  if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+
+  // ── Lift. accv (v128) holds the four channel sums.
+  const id = freshIdRef.next++
+  const accv = `$__chv${id}`
+  const newLocalDecls = [['local', accv, 'v128']]
+  // Zero-init → one splat.
+  const zeroInit = ['local.set', accv, ['v128.const', 'i32x4', '0', '0', '0', '0']]
+  // Inner accumulation: keep the address-producing stmts, replace the 4 channel
+  // adds with one widening add off the shared base. The base address is the
+  // tee'd expr of the first load (re-tee'd so any later `local.get base` still
+  // resolves — though the other channel loads are gone).
+  const widen = ['i32x4.extend_low_i16x8_u', ['i16x8.extend_low_i8x16_u',
+    ['v128.load32_zero', ['local.tee', grp.baseLocal, grp.teeExpr]]]]
+  const newInner = []
+  for (let i = 0; i < innerBody.length; i++) {
+    if (i === grp.idx) newInner.push(['local.set', accv, ['i32x4.add', ['local.get', accv], widen]])
+    else if (i > grp.idx && i <= grp.idx + 3) continue   // drop the other 3 channel adds
+    else newInner.push(innerBody[i])
+  }
+  // Rebuild the inner loop with the lifted body.
+  const newInnerLoop = [...innerLoop.slice(0, 3), ...newInner, ...innerLoop.slice(ilEnd - 1)]
+  const newInnerBlock = innerBlock.map(c => c === innerLoop ? newInnerLoop : c)
+  // After the inner loop, extract the four lane sums back to the scalar
+  // accumulators the divide+store code reads.
+  const extracts = accInits.map((acc, c) => ['local.set', acc, ['i32x4.extract_lane', c, ['local.get', accv]]])
+
+  // Reassemble the pixel-loop body: replace the 4 inits with the splat, the inner
+  // block with the lifted one, and insert the extracts right after it.
+  const newLoop = [...loopNode]
+  newLoop.splice(innerIdx, 1, newInnerBlock, ...extracts)   // inner block → lifted + extracts
+  newLoop.splice(initIdx, 4, zeroInit)                       // 4 inits → 1 splat (do last; lower index)
+  const wrapper = blockNode.map(c => c === loopNode ? newLoop : c)
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Pass entry ------------------------------------------------------------
 
 /**
@@ -2179,6 +2326,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
         ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
         ?? tryRampMap(node, fnLocals, freshIdRef)
+        ?? tryChannelReduce(node, fnLocals, freshIdRef)
         ?? tryByteScan(node, fnLocals, freshIdRef)
         ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)
       if (r) {

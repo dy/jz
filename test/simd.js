@@ -191,6 +191,32 @@ test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
   ok(/load32_zero/.test(w) && /extend_low/.test(w), 'expected widening u8 loads')
 })
 
+test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
+  // 4 adjacent-byte accumulators summed over a window → i32x4 (integer-exact),
+  // extracted back; the edge clamp + divide stay scalar. Checked vs NOVEC.
+  const src = `export let main = () => {
+    const src = new Uint8Array(256), dst = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) src[i] = (i * 7) & 255
+    for (let x = 0; x < 64; x++) {
+      let sr = 0, sg = 0, sb = 0, sa = 0
+      for (let k = -2; k <= 2; k++) {
+        let xi = x + k
+        if (xi < 0) xi = 0; else if (xi >= 64) xi = 63
+        const p = xi << 2
+        sr += src[p]; sg += src[p + 1]; sb += src[p + 2]; sa += src[p + 3]
+      }
+      const o = x << 2
+      dst[o] = (sr / 5) | 0; dst[o + 1] = (sg / 5) | 0; dst[o + 2] = (sb / 5) | 0; dst[o + 3] = (sa / 5) | 0
+    }
+    let h = 0
+    for (let i = 0; i < 256; i++) h = (h + dst[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.load32_zero/.test(w) && /i32x4\.add/.test(w), 'expected widening channel accumulation')
+})
+
 test('SIMD widening byte-map - store8 truncation matches (value > 255)', () => {
   // i32 product reaches 76500; the store8 keeps the low byte. The narrow pack
   // must truncate identically, not saturate.
