@@ -43,9 +43,9 @@
     <line x1="650" y1="188" x2="650" y2="202" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">AssemblyScript</text>
     <text x="156" y="206" text-anchor="end" font-size="10" fill="#aeb4ba">asc -O3</text>
-    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">2.37×</text>
+    <text x="662" y="199" font-size="13" font-weight="500" fill="#868e96">2.36×</text>
     <circle cx="182.0" cy="195" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.7925052502124865s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.7782825967701044s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.23s"/>
     </circle>
   </g>
@@ -55,9 +55,9 @@
     <line x1="650" y1="238" x2="650" y2="252" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">V8</text>
     <text x="156" y="256" text-anchor="end" font-size="10" fill="#aeb4ba">Node</text>
-    <text x="662" y="249" font-size="13" font-weight="500" fill="#868e96">2.43×</text>
+    <text x="662" y="249" font-size="13" font-weight="500" fill="#868e96">2.41×</text>
     <circle cx="182.0" cy="245" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="3.887565095969428s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.852799192813661s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.64s"/>
     </circle>
   </g>
@@ -67,9 +67,9 @@
     <line x1="650" y1="288" x2="650" y2="302" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">Porffor</text>
     <text x="156" y="306" text-anchor="end" font-size="10" fill="#aeb4ba">runs 3 / 16</text>
-    <text x="662" y="299" font-size="13" font-weight="500" fill="#868e96">3.29×</text>
+    <text x="662" y="299" font-size="13" font-weight="500" fill="#868e96">3.16×</text>
     <circle cx="182.0" cy="295" r="8" fill="#adb5bd">
-      <animate attributeName="cx" dur="5.265695868092516s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="5.060795892508058s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.05s"/>
     </circle>
   </g>
