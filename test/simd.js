@@ -171,6 +171,41 @@ test('SIMD ramp-map - tail (length not a multiple of 4) stays correct', () => {
   ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
 })
 
+// === SIMD widening byte-map (out[i] = narrow(f_i32(widen(u8 loads)))) ===
+// u8 loads feeding i32 arithmetic that overflows a byte — tryVectorize can't
+// (no i8x16.mul; shifts excluded on narrow lanes). The widening path loads the
+// 4 elements as a partial vector and zero-extends to i32x4. Checked against the
+// scalar (NOVEC) oracle.
+
+test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
+  const src = `export let main = () => {
+    const a = new Uint8Array(2048), b = new Uint8Array(2048), out = new Uint8Array(2048)
+    for (let i = 0; i < 2048; i++) { a[i] = (i * 7) & 255; b[i] = (i * 13) & 255 }
+    for (let i = 0; i < 2048; i++) out[i] = (Math.imul(a[i], 160) + Math.imul(b[i], 95) + 127) >> 8
+    let h = 0
+    for (let i = 0; i < 2048; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/load32_zero/.test(w) && /extend_low/.test(w), 'expected widening u8 loads')
+})
+
+test('SIMD widening byte-map - store8 truncation matches (value > 255)', () => {
+  // i32 product reaches 76500; the store8 keeps the low byte. The narrow pack
+  // must truncate identically, not saturate.
+  const src = `export let main = () => {
+    const a = new Uint8Array(1000), out = new Uint8Array(1000)
+    for (let i = 0; i < 1000; i++) a[i] = (i * 11) & 255
+    for (let i = 0; i < 1000; i++) out[i] = Math.imul(a[i], 300)
+    let h = 0
+    for (let i = 0; i < 1000; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 widening ops')
+})
+
 test('SIMD i32x4 - bitwise AND', () => {
   is(run(`export let main = () => {
     let buf = new Int32Array(4)

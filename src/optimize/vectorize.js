@@ -1381,6 +1381,17 @@ function liftExprV(expr, ctx) {
   const op = expr[0]
   const info = LANE_INFO[ctx.laneType]
 
+  // Widening byte-map: a narrow UNSIGNED load feeding i32-lane arithmetic. Load
+  // the 4 elements as a partial vector and zero-extend to i32x4. Only the
+  // widening recognizer sets ctx.widenLoads; tryVectorize ties the lane type to
+  // the load width and never reaches here with a narrow load under i32 lanes.
+  if (ctx.widenLoads && ctx.laneType === 'i32') {
+    if (op === 'i32.load8_u')
+      return ['i32x4.extend_low_i16x8_u', ['i16x8.extend_low_i8x16_u', ['v128.load32_zero', expr[1]]]]
+    if (op === 'i32.load16_u')
+      return ['i32x4.extend_low_i16x8_u', ['v128.load64_zero', expr[1]]]
+  }
+
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
     if (LOAD_OPS[op] !== ctx.laneType) { ctx.fail = true; return null }
@@ -1879,13 +1890,17 @@ function tryByteScan(blockNode, fnLocals, freshIdRef) {
 
 const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
 
-// ---- Ramp-map recognizer ---------------------------------------------------
+// ---- Byte-map recognizer (ramp + widening loads) ---------------------------
 //
-// Vectorize `for (i = 0; i < N; i++) out[i] = f(i)` — a store-only loop whose
-// value is a pure lane-wise i32 expression of the induction variable used AS
-// DATA. tryVectorize can't: it derives the lane type from an input LOAD (there
-// is none) and treats the IV strictly as an address index. Here the IV becomes
-// an i32x4 RAMP `[i, i+1, i+2, i+3]` and the whole body lifts to i32x4.
+// Vectorize `for (i = 0; i < N; i++) out[i] = NARROW(f_i32(…))` where the i32
+// value is built from the induction variable used AS DATA (an i32x4 RAMP
+// `[i, i+1, i+2, i+3]`) and/or WIDENED narrow loads (`u8[i]` zero-extended to
+// i32x4). tryVectorize can't express either: it derives the lane type from an
+// input load and ties the compute width to it, so a byte LUT-free map whose
+// arithmetic overflows a byte (mul, shifts) — or that has no load at all —
+// falls through to here, where everything lifts to i32x4 and narrow-stores.
+//   • pure ramp (no loads, i8 store) → 16-wide pack (bytebeat)
+//   • widening u8 loads → 4-wide (alpha blend, brightness/color/threshold)
 //
 // Matches the post-strength-reduction shape (the IV strength-reducer runs
 // before this pass): the loop carries the logical IV (`i`, in the exit test,
@@ -1936,10 +1951,6 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   for (let i = 3; i <= bodyEnd; i++) body.push(loopNode[i])
   if (!body.length) return null
   if (body.some(hasGlobalSet)) return null
-  // No memory loads — a ramp map produces values purely from the index. (A load
-  // would need lane addressing; that's tryVectorize's job, not this one.)
-  const hasLoad = (n) => isArr(n) && (LOAD_OPS[n[0]] || n.slice(1).some(hasLoad))
-  if (body.some(hasLoad)) return null
 
   // Find exactly one store. Its address is the inline lane address
   // `base + (i << K)` — the IV strength-reducer runs AFTER this pass, so the
@@ -1959,13 +1970,40 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   if (storeStmt.length !== 3) return null
   const elemLog2 = { 'i32.store8': 0, 'i32.store': 2 }[storeOp]
   if (elemLog2 === undefined) return null
-  const storeAddr = storeStmt[1]
-  const addrM = matchLaneAddr(storeAddr, ivName, new Map(), new Map())
-  if (!addrM || addrM.strideLog2 !== elemLog2) return null
-  // The address subtree references the IV as a scalar index; it must not also
-  // be touched as data. Any OTHER increment local (a stray strided pointer)
-  // would need its own address handling — bail rather than guess.
   if (increments.some(x => x.name !== ivName)) return null
+
+  // CSE'd lane offsets: a local written ONLY as `i << K` (or bare `i`) is the
+  // shared offset the IV stage threads across base pointers (src[i], dst[i],
+  // out[i] all reuse one `(local.tee $p (local.get i))`). Resolve them so the
+  // load/store address matchers accept the `(local.get $p)` reuses.
+  const offsetTees = new Map()
+  const allNames = new Set()
+  const gatherNames = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allNames.add(n[1]); for (let i = 1; i < n.length; i++) gatherNames(n[i]) }
+  for (const s of body) gatherNames(s)
+  for (const name of allNames) { const k = _offsetLocalStride(body, name, ivName); if (k != null) offsetTees.set(name, k) }
+
+  const storeAddr = storeStmt[1]
+  const addrM = matchLaneAddr(storeAddr, ivName, new Map(), offsetTees)
+  if (!addrM || addrM.strideLog2 !== elemLog2) return null
+
+  // Memory loads turn this into a widening byte-map: out[i] = narrow(f(widen(a[i])…)).
+  // Only the u8 shape is supported — every load must be a narrow UNSIGNED u8 load
+  // of the same 4 elements the store writes (base + i; the IV strength-reducer
+  // runs later). Full-width i32 maps are tryVectorize's job; mixed widths bail.
+  let hasLoads = false, loadsOk = true
+  const checkLoad = (n) => {
+    if (!isArr(n)) return
+    if (LOAD_OPS[n[0]]) {
+      hasLoads = true
+      if (storeOp !== 'i32.store8' || n[0] !== 'i32.load8_u') { loadsOk = false; return }
+      const m = matchLaneAddr(n[1], ivName, new Map(), offsetTees)
+      if (!m || m.strideLog2 !== 0) loadsOk = false
+      return  // address validated; the IV-strided subtree is not data
+    }
+    for (let i = 1; i < n.length; i++) checkLoad(n[i])
+  }
+  for (const s of body) checkLoad(s)
+  if (!loadsOk) return null
 
   // Every other body stmt must be `(local.set $lane EXPR)` — straight-line lane
   // locals feeding the store. Classify locals for the lift.
@@ -1997,16 +2035,17 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   const newLanedLocals = new Map()
   const extraLocals = []
   const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
-  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
+  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
 
   // A byte store fed by one value expression (inline, or via a single lane-local
   // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can
   // run the lane group 4× (16 samples) per iteration off four offset ramps and
   // pack the low bytes into ONE i8x16 v128.store — amortizing store + loop
   // overhead the way clang/zig's 16-wide NEON does. wideValueExpr is the
-  // expression to lift per offset; null (i32 stores, multi-stmt bodies) → 4-wide.
+  // expression to lift per offset; null (i32 stores, multi-stmt bodies, or
+  // widening loads — whose addresses would need per-offset advancing) → 4-wide.
   const wideValueExpr = (() => {
-    if (storeOp !== 'i32.store8') return null
+    if (storeOp !== 'i32.store8' || hasLoads) return null
     if (body.length === 1 && storeIdx === 0) return storeStmt[2]
     if (body.length === 2 && storeIdx === 1) {
       const set = body[0], sv = storeStmt[2]
