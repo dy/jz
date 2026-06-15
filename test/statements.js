@@ -664,17 +664,39 @@ test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
   is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
 })
 
+// A non-canonical NaN (f64.div(0,0) is 0xFFF8… on x86, 0x7FF8… on arm) must never reach
+// the bitwise __is_truthy helper, which bit-matches the canonical number-NaN and so
+// mis-reads x86's sign-set NaN as TRUTHY. The bug is invisible on arm (its arithmetic NaN
+// is already canonical) — so this asserts the codegen INVARIANT, not just a runtime value:
+// if the merged result `$<v>` is bit-tested via __is_truthy, its numeric arm must have
+// been NaN-canon'd (`select (f64.const nan) … (f64.ne x x)`). Whitespace-insensitive and
+// matches both `call`/`return_call`. (Regressed 2026-06-14 when canonNum gained an
+// `isNumericIR` skip; green on arm, red on x86 CI.)
+const rawNaNToTruthy = (code, v) => {
+  const wat = compile(code, { wat: true, optimize: 0 })
+  const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
+  const bitTested = new RegExp(`__is_truthy\\s*\\(\\s*i64\\.reinterpret_f64\\s*\\(\\s*local\\.get\\s+\\$${v}\\b`).test(body)
+  return bitTested && !/f64\.const nan/.test(body)
+}
+
 test('nested same-truthiness ternary arithmetic NaN condition is falsy', () => {
   for (const code of [
     'export let f = (p0, p1) => { let v0 = p0; let v1 = v0; let v3 = (v1 ? 0 : 0) ? p1 : (v1 / v0); return v3 ? 1 : 0 }',
     'export let f = (p0, p1) => { let v0 = p0; let v1 = v0; let v3 = (v1 ? 0 : 1) ? p1 : (v1 / v0); return v3 ? 1 : 0 }',
   ]) {
     is(run(code, { optimize: 0 }).f(-Infinity, -24.13718504831195), 0)
-    const wat = compile(code, { wat: true, optimize: 0 })
-    const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
-    const genericTruthyOnV3 = body.includes('(call $__is_truthy\n          (i64.reinterpret_f64 (local.get $v3))')
-    ok(!genericTruthyOnV3 || body.includes('(f64.const nan)'))
+    ok(!rawNaNToTruthy(code, 'v3'), 'un-canon NaN must not reach __is_truthy')
   }
+})
+
+test('nullish-coalescing numeric fallback NaN is falsy', () => {
+  // `untyped ?? (a/b)` is value-untyped → routes through __is_truthy; the numeric
+  // fallback arm must be NaN-canon'd. Same class as the ternary above (#103 / canonNum).
+  const code = 'export let f = (p0, p1) => { let v = p0 ?? (p1 / p0); return v ? 1 : 0 }'
+  is(run(code, { optimize: 0 }).f(undefined, 6995.66), 0)   // p0 nullish → v = p1/NaN = NaN → falsy
+  ok(!rawNaNToTruthy(code, 'v'), 'un-canon NaN must not reach __is_truthy')
+  // `num ?? num` is now value-typed NUMBER (kind.js VT['??']) → read NaN-safe, no canon.
+  is(run('export let f = (p0, p1) => { let v = (p0/p1) ?? (p1/p0); return v ? 1 : 0 }', { optimize: 0 }).f(0, 0), 0)
 })
 
 test('reassigned modulo NaN remains falsy in later ternary condition', () => {

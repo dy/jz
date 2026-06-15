@@ -145,7 +145,11 @@ VT['?:'] = (args) => {
 // (a condition/guard) and the other has a known non-boolean type,
 // return the non-boolean type — common in `condition && numericValue`
 // guard patterns where the falsey boolean is coerced to 0 in numeric context.
-VT['&&'] = VT['||'] = (args) => {
+// `a && b` / `a || b` / `a ?? b` all yield one of the two operands, so the result
+// type is their common type (else unknown). Giving `??` a type — not just ||/&& —
+// lets `numA ?? numB` read NaN-safe (value-typed NUMBER → f64.eq) instead of routing
+// through the bit-comparing __is_truthy, which mis-reads a non-canonical NaN.
+VT['&&'] = VT['||'] = VT['??'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta && ta === tb) return ta
   if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb

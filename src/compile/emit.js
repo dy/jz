@@ -41,7 +41,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
-  isLit, litVal, isNullishLit, isPureIR, isNumericIR, emitNum, f64rem, toNumF64, toStrI64,
+  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -76,11 +76,22 @@ const stringOps = (node) => {
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+// f64 arithmetic that can MINT a sign-nondeterministic NaN (0/0, ∞−∞, 0·∞, x%0): on x86
+// these are 0xFFF8…, on arm 0x7FF8…. sqrt/min/max/neg are NOT here — they canon at their
+// own emit (math.js / unary `-`), so they reach canonNum already canonical.
+const NAN_MINTING = new Set(['f64.div', 'f64.add', 'f64.sub', 'f64.mul'])
+
 const canonNum = (node) => {
-  // A literal or provably-numeric IR node is already a plain f64 — never a NaN-boxed
-  // pointer — so the canonicalization select is dead (`f64.ne(c, c)` is statically 0).
-  // `x < 0 ? 0 : x` no longer wraps its `0` arm in a select + spare local + global.
-  if (isLit(node) || isNumericIR(node)) return node
+  // Fold a possibly-non-canonical NaN to the canonical number-NaN before it reaches a
+  // bit-comparing consumer (__is_truthy / untyped === / typeof), which match the canonical
+  // NaN by bits and so misread x86's 0xFFF8 as truthy. ONLY an un-canon'd NaN-minting
+  // arithmetic op can carry such a value — literals, i32-conversions, opaque locals/calls
+  // (canonical by the canon-at-source invariant) and already-canon'd shapes don't — so
+  // skipping everything else keeps the size win. (The broken middle ground was
+  // `02873d0`'s `isNumericIR` skip, which dropped canon for f64.div too → x86 miscompile.)
+  const arith = Array.isArray(node) &&
+    (NAN_MINTING.has(node[0]) || (node[0] === 'call' && node[1] === '$__rem'))
+  if (!arith) return node
   const t = temp('cn')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, node],
@@ -89,6 +100,21 @@ const canonNum = (node) => {
       ['local.get', `$${t}`],
       ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
 }
+
+// Is an emitted arm `v` (AST `node`) a plain NUMBER? The predicate the two-arm merges
+// (?:, ??) share to decide canon: an i32 number, NUMBER-tagged IR, or a NUMBER
+// value-type qualifies; a pointer/opaque arm does not. `vt` is the node's resolved
+// value-type — pass it when already computed to avoid the re-resolve.
+const isNumArm = (v, node, vt = resolveValType(node, valTypeOf, lookupValType)) =>
+  isI32Num(v) || v.valKind === VAL.NUMBER || vt === VAL.NUMBER
+
+// One arm of a two-arm f64 merge (?:, ??, ||, &&) whose result may be bit-tested while
+// untyped. Canon (canonNum, a no-op unless the arm is NaN-minting arithmetic) ONLY a
+// LONE numeric arm: when both arms are numeric the merge is value-typed NUMBER and read
+// NaN-by-value (no canon); when the other arm is opaque the result is untyped, so a
+// non-canonical NaN here would be misread by __is_truthy — fold it. A pointer arm
+// (isNum=false) is never touched (canon would destroy its NaN-box).
+const canonArm = (f, isNum, otherNum) => isNum && !otherNum ? canonNum(f) : f
 
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
@@ -2693,8 +2719,8 @@ export const emitter = {
     const refPayload = (vtb && vtb === vtc && REF_EQ_KINDS.has(vtb))
       || vb.closureFuncIdx != null || vc.closureFuncIdx != null
       || isNaNBoxLit(fb) || isNaNBoxLit(fc)
-    const numericB = isI32Num(vb) || vb.valKind === VAL.NUMBER || vtb === VAL.NUMBER
-    const numericC = isI32Num(vc) || vc.valKind === VAL.NUMBER || vtc === VAL.NUMBER
+    const numericB = isNumArm(vb, b, vtb)
+    const numericC = isNumArm(vc, c, vtc)
     // Peephole: `cond ? 1 : 0` (or `cond ? 0 : 1`) is just `f64.convert_i32_s(cond)` —
     // the select collapses because cond is already 0/1. Saves 5 instructions.
     const isOneZero = (one, zero) => {
@@ -2710,8 +2736,7 @@ export const emitter = {
       n.valKind = VAL.NUMBER
       return n
     }
-    const branchB = numericB && !numericC ? canonNum(fb) : fb
-    const branchC = numericC && !numericB ? canonNum(fc) : fc
+    const branchB = canonArm(fb, numericB, numericC), branchC = canonArm(fc, numericC, numericB)
     const markNumeric = (n) => {
       if (numericB && numericC) n.valKind = VAL.NUMBER
       return n
@@ -2761,10 +2786,16 @@ export const emitter = {
         ['else', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')]], 'f64')
     }
     const t = temp()
-    const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
-    return typed(['if', ['result', 'f64'],
-      toBoolFromEmitted(teed),
-      ['then', asF64(emitRight())],
+    const numA = isNumArm(va, a)
+    const vb = emitRight(), numB = isNumArm(vb, b)
+    // `a` is the else-arm result (returned when falsy — incl NaN), so canon a lone-numeric
+    // `a` before the tee: `$t` then feeds both the result and the cond canonically.
+    const teed = typed(['local.tee', `$${t}`, canonArm(asF64(va), numA, numB)], 'f64')
+    // A numeric left arm tests truthiness NaN-by-value (not __is_truthy, which mis-reads
+    // x86's sign-set NaN as truthy) — tag it so truthyIR takes that path.
+    if (numA) teed.valKind = VAL.NUMBER
+    return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+      ['then', canonArm(asF64(vb), numB, numA)],
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
 
@@ -2796,22 +2827,30 @@ export const emitter = {
         ['else', asF64(vb)]], 'f64')
     }
     const t = temp()
+    const numA = isNumArm(va, a)
+    const vb = emitRight(), numB = isNumArm(vb, b)
+    // `a` (then-arm) is returned only when truthy — hence never NaN — so it needs no canon;
+    // the cond's NaN-safety comes from the valKind tag. Only the else (b) arm can surface
+    // as a numeric NaN.
     const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
-    return typed(['if', ['result', 'f64'],
-      toBoolFromEmitted(teed),
+    if (numA) teed.valKind = VAL.NUMBER   // numeric left arm: NaN-safe truthiness (see `&&`)
+    return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
       ['then', ['local.get', `$${t}`]],
-      ['else', asF64(emitRight())]], 'f64')
+      ['else', canonArm(asF64(vb), numB, numA)]], 'f64')
   },
 
   // a ?? b: returns b only if a is nullish
   '??': (a, b) => {
-    const va = emit(a)
+    const va = emit(a), vb = emit(b)
     const t = temp()
+    const numA = isNumArm(va, a), numB = isNumArm(vb, b)
+    // Both arms can surface as the (untyped) result — `a` when non-nullish (a NaN is not
+    // nullish, so it IS returned), `b` otherwise. Canon a lone-numeric arm; `a` before the
+    // tee so `local.get $t` is canonical. The cond is isNullish, robust to non-canon NaN.
     return typed(['if', ['result', 'f64'],
-      // Check: is a NOT nullish?
-      ['i32.eqz', isNullish(['local.tee', `$${t}`, asF64(va)])],
+      ['i32.eqz', isNullish(['local.tee', `$${t}`, canonArm(asF64(va), numA, numB)])],
       ['then', ['local.get', `$${t}`]],
-      ['else', asF64(emit(b))]], 'f64')
+      ['else', canonArm(asF64(vb), numB, numA)]], 'f64')
   },
 
   'void': a => {
