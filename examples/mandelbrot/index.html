@@ -36,7 +36,7 @@ cnv.height = height;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", palette: false, hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
+const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
 let gen = 0, engine, mem;
 
@@ -67,6 +67,7 @@ async function start(kind) {
     for (let y = 0; y < height; ++y) engine.computeLine(y, width, height, limit);
     const work = performance.now() - t0;
     for (let i = 0, n = width * height; i < n; ++i) argb[i] = colors[mem[i]];
+    h.paint(argb, argb);
     ctx.putImageData(imageData, 0, 0);
     h.frame(work);
   })();

@@ -45,7 +45,7 @@ ctx.imageSmoothingEnabled = false;
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-const h = hud({ kind: "jz", palette: false, hint: "Conway's Game of Life — right-drag to erase", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
+const h = hud({ kind: "jz", hint: "Conway's Game of Life — right-drag to erase", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
 
 let engine; // current engine
 let mem;    // shared buffer (input + output halves)
@@ -64,7 +64,7 @@ async function start(kind) {
     engine.step();                           // next generation
     const work = performance.now() - t0;
     if (drawing) spray(curX, curY, erasing); // continuous spray while held
-    argb.set(mem.subarray(size, 2 * size));  // output → image
+    h.paint(mem.subarray(size, 2 * size), argb);  // output → image
     ctx.putImageData(imageData, 0, 0);
     h.frame(work);
   })();

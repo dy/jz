@@ -42,11 +42,10 @@ if (name === 'marble' && exports.drop) {
   exports.tine(0.95 * W, 0.62 * H, 0.05 * W, 0.6 * H)
   exports.tine(0.3 * W, 0.95 * H, 0.34 * W, 0.05 * H)
 }
-if (name === 'waves' && exports.source) {
+if (name === 'waves' && exports.drop) {
   exports.clear?.()
-  const R = Math.min(W, H) * 0.13
-  exports.source(0, W / 2 - R, H / 2, 0.22, 0.5)    // two in-phase driven sources → fringes
-  exports.source(1, W / 2 + R, H / 2, 0.22, 0.5)
+  for (const [fx, fy] of [[0.3, 0.34], [0.62, 0.4], [0.5, 0.62], [0.4, 0.52], [0.72, 0.62]])
+    exports.drop(fx * W, fy * H, 4, 1.5)
 }
 if (name === 'watercolor' && exports.paint) {
   exports.clear?.()
@@ -55,7 +54,7 @@ if (name === 'watercolor' && exports.paint) {
 }
 const WARMUP = { diffusion: 320, nbody: 520, metaballs: 70, lenia: 120, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 160, voronoi: 50,
-                 dla: 600, wireworld: 26, waves: 360, cloth: 130, maze: 700, sph: 500,
+                 dla: 600, wireworld: 26, waves: 90, cloth: 130, maze: 700, sph: 500,
                  erosion: 80, lbm: 150, watercolor: 200, cradle: 36 }[name] ?? 1
 // nbody trails fade fast on screen; for a still, accumulate peak brightness across
 // the run so the orbits read as long luminous curves (what the eye integrates live).

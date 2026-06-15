@@ -78,7 +78,7 @@ const addEdgeNav = (name) => {
   const prev = at > 0 ? EXAMPLES[at - 1] : EXAMPLES[EXAMPLES.length - 1]
   const next = at < EXAMPLES.length - 1 ? EXAMPLES[at + 1] : EXAMPLES[0]
   const label = (n) => n.replace(/-/g, ' ')
-  const chev = (d) => `<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`
+  const chev = (d) => `<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`
   const wrap = document.createElement('div')
   wrap.className = 'jz-edge'
   wrap.innerHTML = `
@@ -89,40 +89,31 @@ const addEdgeNav = (name) => {
       <span class="chip">${chev('M9 5l7 7-7 7')}</span><span class="label">${label(next)}</span>
     </a>
     <style>
+      /* No chrome — just big chevrons + label, blended via difference so they read as
+         white on dark frames and black on light ones, whatever's behind them. */
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
         display: flex; align-items: center; text-decoration: none; user-select: none;
-        -webkit-tap-highlight-color: transparent;
+        -webkit-tap-highlight-color: transparent; color: #fff; mix-blend-mode: difference;
         font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
       }
-      .jz-edge-prev { left: 14px; }
-      .jz-edge-next { right: 14px; flex-direction: row-reverse; }
+      .jz-edge-prev { left: 10px; }
+      .jz-edge-next { right: 10px; flex-direction: row-reverse; }
       .jz-edge .chip {
-        flex: none; width: 44px; height: 44px;
-        display: flex; align-items: center; justify-content: center;
-        color: rgba(255,255,255,.7); background: rgba(12,12,14,.42);
-        border: 1px solid rgba(255,255,255,.15);
-        backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
-        box-shadow: 0 2px 12px rgba(0,0,0,.28);
-        transition: color .2s, background .2s, border-color .2s, transform .2s;
+        flex: none; display: flex; align-items: center; justify-content: center;
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,.25));
+        transition: transform .2s;
       }
       .jz-edge .label {
         max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
-        font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        color: rgba(255,255,255,.92); opacity: 0;
+        font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
+        opacity: 0;
         transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
       }
-      .jz-edge a:hover .chip {
-        color: #0a0a0a; background: rgba(255,255,255,.94);
-        border-color: transparent; transform: scale(1.05);
-      }
+      .jz-edge a:hover .chip { transform: scale(1.15); }
       .jz-edge a:hover .label { max-width: 220px; opacity: 1; }
-      .jz-edge-prev:hover .label { padding-left: 12px; }
-      .jz-edge-next:hover .label { padding-right: 12px; }
-      @media (max-width: 520px) {
-        .jz-edge-prev { left: 8px; } .jz-edge-next { right: 8px; }
-        .jz-edge .chip { width: 40px; height: 40px; }
-      }
+      .jz-edge-prev:hover .label { padding-left: 8px; }
+      .jz-edge-next:hover .label { padding-right: 8px; }
       @media (hover: none) { .jz-edge .label { display: none; } }
     </style>`
   document.body.appendChild(wrap)
@@ -220,10 +211,11 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     hel.className = 'jz-hint'
     hel.textContent = hint
     hel.innerHTML += `<style>
+      /* white text + difference blend → pure inversion: white on dark, black on light */
       .jz-hint { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 90; text-align: center;
-        pointer-events: none; transition: opacity .6s; opacity: .9;
+        pointer-events: none; transition: opacity .6s; opacity: .92;
         font: 500 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .02em;
-        color: #888; mix-blend-mode: difference; }
+        color: #fff; mix-blend-mode: difference; }
     </style>`
     document.body.appendChild(hel)
   }
@@ -360,10 +352,15 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on') }
   }
   // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
+  // Indexes the LUT by luminance, so it works on colored kernels too (false-color remap),
+  // not just grayscale ones. Default (lut null) is a plain copy → original colors intact.
   const blit = (src, dst) => {
     if (!lut) { dst.set(src); return }
     const t = lut, n = src.length
-    for (let i = 0; i < n; i++) dst[i] = t[src[i] & 0xff]
+    for (let i = 0; i < n; i++) {
+      const p = src[i]
+      dst[i] = t[((p & 0xff) * 77 + (p >> 8 & 0xff) * 150 + (p >> 16 & 0xff) * 29) >> 8]
+    }
   }
 
   // EMA-smoothed over a ~0.4s window. The sparkline plots FPS on an absolute scale

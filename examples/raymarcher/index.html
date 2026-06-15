@@ -82,12 +82,12 @@ const loop = () => {
   const t0 = performance.now()
   engine.frame(t, eyeX, eyeY, eyeZ)
   const ms = performance.now() - t0
-  out32.set(px); g.putImageData(img, 0, 0)
+  ui.paint(px, out32); g.putImageData(img, 0, 0)
   ui.frame(ms)
 }
 
 const ui = hud({
-  kind: "jz", palette: false, hint: "a raymarched SDF sphere field",
+  kind: "jz", hint: "a raymarched SDF sphere field",
   meter: new URLSearchParams(location.search).get("fps") !== "0",
   src: "https://github.com/dy/jz/tree/main/examples/raymarcher",
   code: "./raymarcher.js",

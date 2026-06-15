@@ -1,25 +1,13 @@
 // Wave ripples — the 2D wave equation u_tt = c²∇²u on a grid, le-frog in time over two
 // height buffers (current, previous): next = 2·cur − prev + c²·laplacian, lightly damped.
-// Click drops a pulse; circular ripples spread, reflect off the edges, and interfere.
-// Two continuously-driven point sources oscillating in phase set up a real, *standing*
-// interference pattern (hyperbolic fringes) — not just transient overlap of passing pulses.
-// A pure 5-point stencil sweep — memory-bound, the kind of loop jz vectorizes well.
-// resize(w,h) → Uint32Array; drop() for a pulse, source() for a driven oscillator.
+// Click drops a pulse; circular ripples spread, ring for a while, reflect off the edges and
+// interfere as they cross, then settle. A pure 5-point stencil sweep — memory-bound, the
+// kind of loop jz vectorizes well. resize(w,h) → Uint32Array; drop() to disturb the surface.
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
 let C2 = 0.40         // wave speed² (clean propagation; keep < 0.5 for stability)
-let DAMP = 0.995      // damping → pulses fade out, yet driven sources reach across to interfere
-
-let MAXS = 6          // continuously-driven sources (oscillators)
-let sOn = new Int32Array(MAXS)
-let sx = new Float64Array(MAXS), sy = new Float64Array(MAXS)
-let sFreq = new Float64Array(MAXS), sAmp = new Float64Array(MAXS)
-let tt = 0.0
-
-// place/replace a driven oscillator k at (x,y), angular freq f (rad/step), amplitude amp
-export let source = (k, x, y, f, amp) => { sOn[k] = 1; sx[k] = x; sy[k] = y; sFreq[k] = f; sAmp[k] = amp }
-export let clearSources = () => { let i = 0; while (i < MAXS) { sOn[i] = 0; i++ } }
+let DAMP = 0.9975     // light damping → each drop rings for a few seconds, then dissipates
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -62,18 +50,6 @@ export let frame = (t) => {
     y++
   }
   let tmp = a; a = b; b = tmp                          // swap: a is now current
-
-  // drive the continuous sources: clamp their cells to a sinusoid each step (Dirichlet
-  // forcing). Two in-phase sources → their circular wavefronts superpose into fixed fringes.
-  tt += 1.0
-  let k = 0
-  while (k < MAXS) {
-    if (sOn[k] == 1) {
-      let ix = sx[k] | 0, iy = sy[k] | 0
-      if (ix > 0 && ix < w - 1 && iy > 0 && iy < h - 1) a[iy * w + ix] = sAmp[k] * Math.sin(tt * sFreq[k])
-    }
-    k++
-  }
 
   // render: mid-gray surface, ripples lighten/darken it
   let n = w * h, i = 0
