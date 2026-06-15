@@ -10,11 +10,12 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
   body { border-top: 2px solid #ddd; }
   #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: move; }
-  #freq { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40;
-    font: 600 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
-    color: #fff; background: rgba(10,10,10,.82); border: 1px solid rgba(255,255,255,.14);
-    padding: 6px 14px; pointer-events: none; backdrop-filter: blur(6px); }
-  #freq small { color: #9a9a9a; font-weight: 500; margin-left: .15em; }
+  /* frequency readout: top-center, bare white text with a soft dark outline (no box) */
+  #freq { position: fixed; left: 50%; top: 56px; transform: translateX(-50%); z-index: 40;
+    font: 600 15px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+    color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7);
+    pointer-events: none; }
+  #freq small { opacity: .7; font-weight: 500; margin-left: .15em; }
 </style>
 </head>
 <body>
@@ -85,6 +86,7 @@ const ui = hud({
   code: "./chladni.js",
   nav: "chladni",
   onSwitch: setEngine,
+  onPalette: () => { dirty = true },   // re-blit through the new LUT (chladni only paints when dirty)
 })
 await setEngine(ui.kind)
 setPos(0.35)          // start on a clear mid-range mode and show its frequency

@@ -6,7 +6,7 @@
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
-let C2 = 0.40         // wave speed² (clean propagation; keep < 0.5 for stability)
+let C2 = 0.47         // wave speed² (high → many ring cycles per drop; keep < 0.5 for stability)
 let DAMP = 0.9975     // light damping → each drop rings for a few seconds, then dissipates
 
 export let resize = (w, h) => {

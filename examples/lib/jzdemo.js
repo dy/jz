@@ -89,25 +89,25 @@ const addEdgeNav = (name) => {
       <span class="chip">${chev('M9 5l7 7-7 7')}</span><span class="label">${label(next)}</span>
     </a>
     <style>
-      /* No chrome — just big chevrons + label, blended via difference so they read as
-         white on dark frames and black on light ones, whatever's behind them. */
+      /* No chrome — big white chevrons + label, with a soft dark outline (drop-shadow /
+         text-shadow) so they stay legible on dark, light AND mid-gray frames alike. */
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
         display: flex; align-items: center; text-decoration: none; user-select: none;
-        -webkit-tap-highlight-color: transparent; color: #fff; mix-blend-mode: difference;
+        -webkit-tap-highlight-color: transparent; color: #fff;
         font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
       }
       .jz-edge-prev { left: 10px; }
       .jz-edge-next { right: 10px; flex-direction: row-reverse; }
       .jz-edge .chip {
         flex: none; display: flex; align-items: center; justify-content: center;
-        filter: drop-shadow(0 1px 3px rgba(0,0,0,.25));
+        filter: drop-shadow(0 0 1px rgba(0,0,0,.9)) drop-shadow(0 1px 3px rgba(0,0,0,.6));
         transition: transform .2s;
       }
       .jz-edge .label {
         max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
         font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        opacity: 0;
+        opacity: 0; text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7);
         transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
       }
       .jz-edge a:hover .chip { transform: scale(1.15); }
@@ -204,18 +204,18 @@ const buildLUT = (stops) => {
 // literal text (anything containing a newline). Adds a `</>` toggle that overlays it.
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
 // `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
-export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true }) => {
+export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true, onPalette }) => {
   if (nav) { addMasthead(nav); addEdgeNav(nav) }
   if (hint && !document.querySelector('.jz-hint')) {
     const hel = document.createElement('div')
     hel.className = 'jz-hint'
     hel.textContent = hint
     hel.innerHTML += `<style>
-      /* white text + difference blend → pure inversion: white on dark, black on light */
+      /* white text + soft dark outline → legible on dark, light AND mid-gray backgrounds */
       .jz-hint { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 90; text-align: center;
-        pointer-events: none; transition: opacity .6s; opacity: .92;
+        pointer-events: none; transition: opacity .6s; opacity: .95;
         font: 500 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .02em;
-        color: #fff; mix-blend-mode: difference; }
+        color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); }
     </style>`
     document.body.appendChild(hel)
   }
@@ -340,8 +340,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     pal.id = 'jz-pal'; pal.title = 'randomize palette'; pal.setAttribute('aria-label', 'randomize palette')
     pal.innerHTML = `<span class="sw"></span><style>
       #jz-pal { position: fixed; right: 18px; bottom: 18px; z-index: 100; width: 30px; height: 30px;
-        padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none;
-        filter: drop-shadow(0 1px 5px rgba(0,0,0,.55)); }
+        padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
       #jz-pal .sw { display: block; width: 100%; height: 100%;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
         box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
@@ -349,7 +348,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       #jz-pal.on .sw { transform: rotate(360deg); }</style>`
     document.body.appendChild(pal)
     for (const ev of ['pointerdown', 'mousedown', 'click', 'touchstart']) pal.addEventListener(ev, (e) => e.stopPropagation())
-    pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on') }
+    pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on'); onPalette?.() }
   }
   // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
   // Indexes the LUT by luminance, so it works on colored kernels too (false-color remap),
