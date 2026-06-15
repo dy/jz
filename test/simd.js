@@ -117,7 +117,7 @@ test('SIMD i32x4 - map add', () => {
 // No input load: the IV becomes an i32x4 ramp [i, i+1, i+2, i+3]. SIMD result is
 // checked bit-for-bit against the scalar (NOVEC) oracle.
 
-test('SIMD ramp-map - u8 bytebeat-shaped store', () => {
+test('SIMD ramp-map - u8 bytebeat-shaped store (16-wide pack)', () => {
   const src = `export let main = () => {
     const out = new Uint8Array(1024)
     for (let i = 0; i < 1024; i++) out[i] = (i * 5 & i >> 3 | i * 3) & 255
@@ -126,7 +126,11 @@ test('SIMD ramp-map - u8 bytebeat-shaped store', () => {
     return h
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
-  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops in ramp-map output')
+  // i8 ramp stores take the 16-wide path: 4 offset ramps packed into ONE
+  // i8x16 v128.store (three shuffles), not the 4-wide narrowing i32.store.
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.store/.test(w), 'expected 16-wide packed v128.store')
+  ok((w.match(/i8x16\.shuffle/g) || []).length >= 3, 'expected 3-shuffle 16-lane pack')
 })
 
 test('SIMD ramp-map - u8 narrowing is truncation-exact (values > 255)', () => {

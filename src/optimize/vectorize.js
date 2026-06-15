@@ -1996,27 +1996,69 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // Lift. lane type is always i32 (the ramp and all narrow stores compute in i32).
   const newLanedLocals = new Map()
   const extraLocals = []
-  const rampId = freshIdRef.next++
-  const rampTemp = `$__ramp${rampId}`
-  extraLocals.push(['local', rampTemp, 'v128'])
-  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
-  // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
-  const lifted = [['local.set', rampTemp,
-    ['i32x4.add', ['i32x4.splat', ['local.get', ivName]], ['v128.const', 'i32x4', '0', '1', '2', '3']]]]
-  for (let i = 0; i < body.length; i++) {
-    if (i === storeIdx) {
-      const vval = liftExprV(storeStmt[2], ctx)
+  const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
+  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
+
+  // A byte store fed by one value expression (inline, or via a single lane-local
+  // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can
+  // run the lane group 4× (16 samples) per iteration off four offset ramps and
+  // pack the low bytes into ONE i8x16 v128.store — amortizing store + loop
+  // overhead the way clang/zig's 16-wide NEON does. wideValueExpr is the
+  // expression to lift per offset; null (i32 stores, multi-stmt bodies) → 4-wide.
+  const wideValueExpr = (() => {
+    if (storeOp !== 'i32.store8') return null
+    if (body.length === 1 && storeIdx === 0) return storeStmt[2]
+    if (body.length === 2 && storeIdx === 1) {
+      const set = body[0], sv = storeStmt[2]
+      if (isArr(set) && set[0] === 'local.set' && set.length === 3 &&
+          isLocalGet(sv, set[1]) && localKind.get(set[1]) === 'lane') return set[2]
+    }
+    return null
+  })()
+  const WIDE16 = wideValueExpr != null
+  const LANES = WIDE16 ? 16 : 4
+  const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
+    ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
+
+  let lifted
+  if (WIDE16) {
+    lifted = []
+    const vv = []
+    for (let j = 0; j < 4; j++) {
+      const rt = freshV128('ramp')
+      lifted.push(['local.set', rt, ramp(j * 4)])
+      ctx.rampTemp = rt
+      const v = liftExprV(wideValueExpr, ctx)
       if (ctx.fail) return null
-      lifted.push(buildRampStore(storeOp, storeAddr, vval, ctx))
-    } else {
-      const r = liftStmt(body[i], ctx)
-      if (ctx.fail) return null
-      if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+      const vn = freshV128('rampv')
+      lifted.push(['local.set', vn, v])
+      vv.push(vn)
+    }
+    // Pack the low byte of all 16 i32 lanes (4 vectors) into one i8x16, in order.
+    const g = (n) => ['local.get', n]
+    const sh = (a, b, idx) => ['i8x16.shuffle', ...idx.map(String), a, b]
+    const lo = freshV128('ramplo'), hi = freshV128('ramphi')
+    lifted.push(['local.set', lo, sh(g(vv[0]), g(vv[1]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
+    lifted.push(['local.set', hi, sh(g(vv[2]), g(vv[3]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
+    lifted.push(['v128.store', storeAddr, sh(g(lo), g(hi), [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23])])
+  } else {
+    ctx.rampTemp = freshV128('ramp')
+    // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
+    lifted = [['local.set', ctx.rampTemp, ramp(0)]]
+    for (let i = 0; i < body.length; i++) {
+      if (i === storeIdx) {
+        const vval = liftExprV(storeStmt[2], ctx)
+        if (ctx.fail) return null
+        lifted.push(buildRampStore(storeOp, storeAddr, vval, ctx))
+      } else {
+        const r = liftStmt(body[i], ctx)
+        if (ctx.fail) return null
+        if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+      }
     }
   }
   if (!lifted.length) return null
 
-  const LANES = 4
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
   const simdBrkLabel = `$__simd_brk${id}`
