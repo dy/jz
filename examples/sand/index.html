@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Falling sand - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+  body { border-top: 2px solid #ddd; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+  #tools { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40;
+    display: flex; gap: 1px; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.16); }
+  #tools button { border: 0; background: rgba(12,12,14,.82); color: #bbb; cursor: pointer;
+    font: 600 11px 'Helvetica Neue', Helvetica, Arial, sans-serif; text-transform: uppercase;
+    letter-spacing: .12em; padding: 8px 16px; backdrop-filter: blur(8px); }
+  #tools button.on { background: #eee; color: #111; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tools">
+  <button data-el="1" class="on">sand</button>
+  <button data-el="2">water</button>
+  <button data-el="3">wall</button>
+  <button data-el="0">erase</button>
+</div>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+let W = 0, H = 0, img, out32, px
+
+const sizeTo = (engine) => {
+  const budget = 950000
+  let scale = Math.min(1, window.devicePixelRatio || 1)
+  const want = innerWidth * innerHeight * scale * scale
+  if (want > budget) scale *= Math.sqrt(budget / want)
+  W = Math.round(innerWidth * scale) >> 1 << 1
+  H = Math.round(innerHeight * scale) >> 1 << 1
+  cv.width = W; cv.height = H
+  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(W, H)
+}
+
+let engine = null, gen = 0
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./sand.js", wasm: "./sand.wasm" })
+  if (my !== gen) return
+  engine = e; sizeTo(engine); engine.clear(); scatter()
+}
+addEventListener("resize", () => engine && sizeTo(engine))
+
+// On load, strew the canvas with random walls, then sand & water blobs to settle.
+const scatter = () => {
+  if (!engine) return
+  for (let i = 0; i < 9; i++) engine.paint(Math.random() * W, (0.45 + Math.random() * 0.5) * H, 8 + Math.random() * 22 | 0, 3)
+  for (let i = 0; i < 16; i++) engine.paint(Math.random() * W, Math.random() * H * 0.6, 12 + Math.random() * 20 | 0, Math.random() < 0.6 ? 1 : 2)
+}
+
+// element selector
+let el = 1, brush = 7
+for (const b of document.querySelectorAll("#tools button"))
+  b.onclick = () => { el = +b.dataset.el; document.querySelectorAll("#tools button").forEach(x => x.classList.toggle("on", x === b)) }
+
+// drag to pour; interpolated so a fast stroke is continuous
+let painting = false, lastX = 0, lastY = 0
+const stamp = (x, y) => { if (engine) engine.paint(x * W / cv.clientWidth, y * H / cv.clientHeight, brush, el) }
+const strokeTo = (x, y) => {
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3))
+  for (let i = 1; i <= n; i++) stamp(lastX + dx * i / n, lastY + dy * i / n)
+  lastX = x; lastY = y
+}
+cv.addEventListener("pointerdown", (e) => { painting = true; lastX = e.offsetX; lastY = e.offsetY; try { cv.setPointerCapture(e.pointerId) } catch {}; stamp(e.offsetX, e.offsetY) })
+cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
+cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { painting = false })
+cv.addEventListener("wheel", (e) => { e.preventDefault(); brush += e.deltaY > 0 ? -1 : 1; if (brush < 2) brush = 2; if (brush > 24) brush = 24 }, { passive: false })
+
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  const t0 = performance.now()
+  engine.frame(0)
+  const ms = performance.now() - t0
+  out32.set(px); g.putImageData(img, 0, 0)
+  ui.frame(ms)
+}
+
+const ui = hud({
+  kind: "jz", hint: "pick a material and drag to pour · scroll to resize",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/sand",
+  code: "./sand.js",
+  nav: "sand",
+  onSwitch: setEngine,
+})
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>

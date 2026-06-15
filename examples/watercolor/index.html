@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Watercolor - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #f6f2e9; color: #222;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+  body { border-top: 2px solid #ddd; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
+    font-size: 13px; color: #888; opacity: .85; pointer-events: none; transition: opacity .5s; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">drag to paint · pigment blooms into the wet paper</div>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+let W = 0, H = 0, img, out32, px
+
+const sizeTo = (engine) => {
+  // the pressure solve is the cost — cap the grid to ~90k cells, CSS upscales the wash
+  const budget = 90000
+  let scale = Math.min(1, window.devicePixelRatio || 1)
+  const want = innerWidth * innerHeight * scale * scale
+  if (want > budget) scale *= Math.sqrt(budget / want)
+  W = Math.round(innerWidth * scale) >> 1 << 1
+  H = Math.round(innerHeight * scale) >> 1 << 1
+  cv.width = W; cv.height = H
+  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(W, H)
+}
+
+let engine = null, gen = 0
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./watercolor.js", wasm: "./watercolor.wasm" })
+  if (my !== gen) return
+  engine = e; sizeTo(engine); engine.clear()
+}
+addEventListener("resize", () => engine && sizeTo(engine))
+
+// Drag to paint; the drag direction is injected as fluid velocity so the ink flows.
+const hint = document.getElementById("hint")
+let painting = false, lastX = 0, lastY = 0
+const R = 7
+const sx = () => W / cv.clientWidth, sy = () => H / cv.clientHeight
+const stamp = (px_, py_, fx, fy) => { if (engine) engine.paint(px_ * sx(), py_ * sy(), R, fx, fy) }
+const strokeTo = (x, y) => {
+  const dx = x - lastX, dy = y - lastY
+  const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3))
+  const fx = dx * sx() * 0.12, fy = dy * sy() * 0.12     // drag velocity → flow
+  for (let i = 1; i <= n; i++) stamp(lastX + dx * i / n, lastY + dy * i / n, fx, fy)
+  lastX = x; lastY = y
+}
+cv.addEventListener("pointerdown", (e) => {
+  painting = true; lastX = e.offsetX; lastY = e.offsetY
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+  stamp(e.offsetX, e.offsetY, 0, 0);})
+cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
+cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { painting = false })
+
+// autonomous: periodically drip ink with an outward puff so it keeps blooming (screensaver)
+let t = 0, nextDrip = 30
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  t++
+  if (!painting && t > nextDrip) {
+    const a = Math.random() * 6.28
+    engine.paint(Math.random() * W, Math.random() * H, R + 2, Math.cos(a) * 0.5, Math.sin(a) * 0.5)
+    nextDrip = t + 70 + Math.random() * 90
+  }
+  const t0 = performance.now()
+  engine.frame(0)
+  const ms = performance.now() - t0
+  out32.set(px); g.putImageData(img, 0, 0)
+  ui.frame(ms)
+}
+
+const ui = hud({
+  kind: "jz",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/watercolor",
+  code: "./watercolor.js",
+  nav: "watercolor",
+  onSwitch: setEngine,
+})
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Slime mold - jz</title>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+  body { border-top: 2px solid #ddd; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
+    font-size: 13px; color: #8a8a96; opacity: .85; pointer-events: none; transition: opacity .5s; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">drag to lure the colony · double-click to reseed</div>
+
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js"
+
+const cv = document.getElementById("c"), g = cv.getContext("2d")
+let W = 0, H = 0, img, out32, px
+
+const sizeTo = (engine) => {
+  // agent + stencil pass — cap the grid so it stays real-time
+  const budget = 750000
+  let scale = Math.min(1, window.devicePixelRatio || 1)
+  const want = innerWidth * innerHeight * scale * scale
+  if (want > budget) scale *= Math.sqrt(budget / want)
+  W = Math.round(innerWidth * scale) >> 1 << 1
+  H = Math.round(innerHeight * scale) >> 1 << 1
+  cv.width = W; cv.height = H
+  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+  px = engine.resize(W, H)
+}
+
+let engine = null, gen = 0
+const setEngine = async (kind) => {
+  const my = ++gen
+  const e = await loadEngine(kind, { js: "./slime.js", wasm: "./slime.wasm" })
+  if (my !== gen) return
+  engine = e; sizeTo(engine); engine.seed()
+}
+addEventListener("resize", () => engine && sizeTo(engine))
+
+// Autonomous; drag deposits a pheromone lure, double-click reseeds.
+const hint = document.getElementById("hint")
+let painting = false, lastX = 0, lastY = 0
+const poke = (x, y) => { if (engine) engine.poke(x * W / cv.clientWidth, y * H / cv.clientHeight, 8) }
+const strokeTo = (x, y) => {
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 4))
+  for (let i = 1; i <= n; i++) poke(lastX + dx * i / n, lastY + dy * i / n)
+  lastX = x; lastY = y
+}
+cv.addEventListener("pointerdown", (e) => { painting = true; lastX = e.offsetX; lastY = e.offsetY; try { cv.setPointerCapture(e.pointerId) } catch {}; poke(e.offsetX, e.offsetY);})
+cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
+cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { painting = false })
+cv.addEventListener("dblclick", () => engine && engine.seed())
+
+const loop = () => {
+  requestAnimationFrame(loop)
+  if (!engine) return
+  const t0 = performance.now()
+  engine.frame(0)
+  const ms = performance.now() - t0
+  out32.set(px); g.putImageData(img, 0, 0)
+  ui.frame(ms)
+}
+
+const ui = hud({
+  kind: "jz",
+  meter: new URLSearchParams(location.search).get("fps") !== "0",
+  src: "https://github.com/dy/jz/tree/main/examples/slime",
+  code: "./slime.js",
+  nav: "slime",
+  onSwitch: setEngine,
+})
+await setEngine(ui.kind)
+loop()
+</script>
+</body>
+</html>
