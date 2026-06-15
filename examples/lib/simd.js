@@ -48,8 +48,30 @@ export const v128 = {
   allTrue: (a) => { const x = I(a); return (x[0] && x[1] && x[2] && x[3]) ? 1 : 0; },
 };
 
+// ── f64x2 — two full-precision f64 lanes (8 bytes each, viewed in the same 16-byte
+// buffer). The bitwise v128 ops above operate on the Int32Array(4) view, so the
+// sign-bit twiddling f64x2.sin's quadrant flip needs works here too. A `gt` mask
+// sets all 64 bits of a lane (both i32 halves) to match wasm's all-ones/all-zero.
+const D = (b) => new Float64Array(b);
+const mkD = (a, b) => { const o = buf(), d = D(o); d[0] = a; d[1] = b; return o; };
+const d1 = (op) => (a) => { const x = D(a); return mkD(op(x[0]), op(x[1])); };
+const d2 = (op) => (a, b) => { const x = D(a), y = D(b); return mkD(op(x[0], y[0]), op(x[1], y[1])); };
+const dcmp = (op) => (a, b) => { const x = D(a), y = D(b), o = buf(), r = I(o); const m0 = op(x[0], y[0]) ? -1 : 0, m1 = op(x[1], y[1]) ? -1 : 0; r[0] = m0; r[1] = m0; r[2] = m1; r[3] = m1; return o; };
+export const f64x2 = {
+  splat: (x) => mkD(x, x),
+  lanes: (a, b) => mkD(a, b),
+  add: d2((x, y) => x + y), sub: d2((x, y) => x - y), mul: d2((x, y) => x * y), div: d2((x, y) => x / y),
+  min: d2((x, y) => Math.min(x, y)), max: d2((x, y) => Math.max(x, y)),
+  sqrt: d1(Math.sqrt), abs: d1(Math.abs), neg: d1((x) => -x),
+  floor: d1(Math.floor), ceil: d1(Math.ceil), trunc: d1(Math.trunc), nearest: d1(Math.round),
+  sin: d1(Math.sin), cos: d1(Math.cos),
+  eq: dcmp((x, y) => x === y), ne: dcmp((x, y) => x !== y),
+  lt: dcmp((x, y) => x < y), le: dcmp((x, y) => x <= y), gt: dcmp((x, y) => x > y), ge: dcmp((x, y) => x >= y),
+  lane: (v, k) => D(v)[k],
+};
+
 /** Install the SIMD intrinsics as ambient globals (idempotent). Call once before a
  *  SIMD kernel runs under a JS host that lacks native intrinsics. */
 export function installSimd(g = globalThis) {
-  if (!g.f32x4) { g.f32x4 = f32x4; g.i32x4 = i32x4; g.v128 = v128; }
+  if (!g.f32x4) { g.f32x4 = f32x4; g.i32x4 = i32x4; g.v128 = v128; g.f64x2 = f64x2; }
 }

@@ -353,10 +353,16 @@ const detectOptimizeConfig = (ast, code) => {
 
   const cfg = {}
   // Machine-generated or large code: watr's WAT-level CSE/DCE/inline fights
-  // jz's already-optimized IR and inflates output. Disable it automatically.
+  // jz's already-optimized IR and inflates output. Disable it automatically —
+  // EXCEPT when the module uses SIMD intrinsics. A v128 helper call (e.g.
+  // f64x2.sin → $math.sin2) leaves v128 params/results across the call boundary;
+  // watr's inliner folds the helper into the loop and coalesces those vectors,
+  // and without it the v128 spills to memory every iteration (~2× slower on the
+  // trig-bound attractors kernel). Explicit SIMD is a perf opt-in — keep watr on.
+  const usesSimd = !!ctx.module?.modules?.simd
   const isLarge = s.sourceChars > 4000 || s.funcCount > 40 || s.maxFuncBodySize > 300
   const isMachineLike = s.callSites > 300 && s.stringLiteralCount < 10
-  if (isLarge || isMachineLike) { cfg.watr = false; cfg.splitCharScan = false }
+  if ((isLarge || isMachineLike) && !usesSimd) { cfg.watr = false; cfg.splitCharScan = false }
   // Typed-array heavy: tighten scalarization thresholds when we see large
   // fixed-size arrays; keep defaults for small/dynamic ones.
   if (s.typedArrayCount > 0 && s.maxTypedArrayLen > 0) {

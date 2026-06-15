@@ -173,3 +173,44 @@ test('simd: masked-lockstep mandelbrot matches scalar (f32 lanes)', () => {
   const W = 80, H = 60, L = 60
   is(frame(W, H, L), scalar(W, H, L))
 })
+
+// ── f64x2 — two full-precision f64 lanes (module/simd.js) ────────────────────
+test('simd: f64x2 build + per-lane arithmetic + extract', () => {
+  const { f } = run(`export let f = (a, b) => {
+    let v = f64x2.lanes(a, b)
+    let w = f64x2.mul(v, v)
+    return f64x2.lane(w, 0) - f64x2.lane(w, 1)
+  }`)
+  is(f(3, 7), 9 - 49)        // pins f64x2.lane → f64 (was mis-typed v128: broke extract)
+  is(f(2, 0.5), 4 - 0.25)
+})
+
+test('simd: f64x2.sin / f64x2.cos — both lanes, all quadrants', () => {
+  // Distinct args per lane, spanning quadrants that need the sign flip (the
+  // quadrant negate is `r XOR (mask & -0.0)` — a lost -0.0 sign bit silently
+  // disables it, so cos(2)/sin(2) come back with the wrong sign).
+  const { s0, s1, c0, c1 } = run(`
+    export let s0 = (a, b) => f64x2.lane(f64x2.sin(f64x2.lanes(a, b)), 0)
+    export let s1 = (a, b) => f64x2.lane(f64x2.sin(f64x2.lanes(a, b)), 1)
+    export let c0 = (a, b) => f64x2.lane(f64x2.cos(f64x2.lanes(a, b)), 0)
+    export let c1 = (a, b) => f64x2.lane(f64x2.cos(f64x2.lanes(a, b)), 1)
+  `)
+  const near = (got, exp, tol = 2e-7) => ok(Math.abs(got - exp) <= tol, `${got} ≈ ${exp}`)
+  for (const [a, b] of [[0.5, 1.0], [2.0, -2.0], [3.1, -4.7], [7.3, 100.0], [-0.0, 1e6]]) {
+    near(s0(a, b), Math.sin(a)); near(s1(a, b), Math.sin(b))
+    near(c0(a, b), Math.cos(a)); near(c1(a, b), Math.cos(b))
+  }
+  is(s0(0, 0), 0); is(c0(0, 0), 1)                 // exact at origin
+  ok(Number.isNaN(s0(Infinity, 0)), 'sin(∞) → NaN') // ∞ − ∞·π propagates NaN
+})
+
+test('simd: f64x2.sin reused across a let-binding + two extracts', () => {
+  // A let-bound v128 from a helper call, extracted on both lanes, alongside a
+  // second f64x2 function in the same module — the shape that surfaced a v128
+  // local-type inference bug (the helper-result type must flow to the binding).
+  const { diff } = run(`
+    export let diff = (a, b) => { let v = f64x2.cos(f64x2.lanes(a, b)); return f64x2.lane(v, 0) - f64x2.lane(v, 1) }
+    export let other = (a, b) => f64x2.lane(f64x2.sin(f64x2.lanes(a, b)), 0)
+  `)
+  ok(Math.abs(diff(0.5, 1.0) - (Math.cos(0.5) - Math.cos(1.0))) <= 2e-7, 'cos lane0 − lane1')
+})

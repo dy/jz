@@ -127,6 +127,9 @@ const MOD_DEPS = {
   date: ['core', 'number', 'string'],
   console: ['core', 'string', 'number'],
   regex: ['core', 'string', 'array'],
+  // f64x2.sin/cos lower to math's $math.sin2/$math.cos2 WAT helpers; pull math in so
+  // they're registered. Unused math helpers are pruned by reachability — no output cost.
+  simd: ['math'],
 }
 
 export function includeModule(name) {

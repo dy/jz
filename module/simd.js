@@ -1,8 +1,9 @@
 /**
- * SIMD module — source-level f32x4 / i32x4 intrinsics that lower 1:1 to wasm SIMD
- * (v128). Lets a jz kernel process 4 lanes per instruction: the per-pixel-parallel
- * kernels (mandelbrot, raymarcher) run 4 pixels/rays in masked lockstep and beat
- * scalar V8 several-fold (validated: SIMD-4 mandelbrot ≈ 4.6× a warm-V8 scalar loop).
+ * SIMD module — source-level f32x4 / i32x4 / f64x2 intrinsics that lower 1:1 to wasm
+ * SIMD (v128). Lets a jz kernel process 4 (or, for f64x2, 2) lanes per instruction:
+ * the per-pixel-parallel kernels (mandelbrot, raymarcher) run 4 pixels/rays in masked
+ * lockstep, and the attractors kernel packs its two sines + two cosines two-per-f64x2.
+ * Several-fold over scalar V8 (validated: SIMD-4 mandelbrot ≈ 4.6× a warm-V8 scalar loop).
  *
  * A v128 value is just a local whose wasm type is `v128` (exprType returns 'v128'
  * for these calls; emit passes it through without an f64/i32 coercion). Building
@@ -18,11 +19,14 @@
  *   i32x4.splat(n) / add/sub(a,b) / lane(v,k)
  *   v128.and/or/xor(a,b) / not(a) / bitselect(t,f,mask)
  *   v128.anyTrue(v) / v128.allTrue(v) → i32 (loop-exit tests)
+ *   f64x2.splat(x) / lanes(a,b) / add/sub/mul/div/min/max / sqrt/abs/neg/… / cmp
+ *   f64x2.sin(v) / f64x2.cos(v) → both lanes through one poly ($math.sin2/$math.cos2)
+ *   f64x2.lane(v, k)          extract lane k (0..1) as a number
  *
  * @module simd
  */
 import { typed, asF64, asI32 } from '../src/ir.js'
-import { emit } from '../src/bridge.js'
+import { emit, emitter } from '../src/bridge.js'
 import { err } from '../src/ctx.js'
 
 export default (ctx) => {
@@ -82,4 +86,26 @@ export default (ctx) => {
   // ── lane extract (read a single lane back to a scalar) ───────────────────────
   e['f32x4.lane'] = (v, k) => F(['f64.promote_f32', ['f32x4.extract_lane', laneIdx(k), op(v)]])
   e['i32x4.lane'] = (v, k) => I(['i32x4.extract_lane', laneIdx(k), op(v)])
+
+  // ── f64x2 — two full-precision f64 lanes (no f32 demotion) ───────────────────
+  // For kernels whose hot value is f64: two independent angles/coords per instruction.
+  // `f64x2.sin`/`f64x2.cos` lower to the shared $math.sin2/$math.cos2 poly (module/math.js)
+  // — sin and cos of distinct args pack two-per-vector and ≈halve transcendental cost.
+  const lane2 = (k) => {
+    const v = typeof k === 'number' ? k : (Array.isArray(k) && k.length === 2 && k[0] == null && typeof k[1] === 'number') ? k[1] : null
+    if (v == null || (v | 0) !== v || v < 0 || v > 1)
+      err(`f64x2 lane index must be a 0..1 literal (got ${JSON.stringify(k)}).`)
+    return v
+  }
+  e['f64x2.splat'] = (a) => V(['f64x2.splat', asF64(emit(a))])
+  e['f64x2.lanes'] = (a, b) => V(['f64x2.replace_lane', 1, ['f64x2.splat', asF64(emit(a))], asF64(emit(b))])
+  for (const o of ['add', 'sub', 'mul', 'div', 'min', 'max'])
+    e[`f64x2.${o}`] = (a, b) => V([`f64x2.${o}`, op(a), op(b)])
+  for (const o of ['sqrt', 'abs', 'neg', 'floor', 'ceil', 'trunc', 'nearest'])
+    e[`f64x2.${o}`] = (a) => V([`f64x2.${o}`, op(a)])
+  for (const o of ['eq', 'ne', 'lt', 'le', 'gt', 'ge'])
+    e[`f64x2.${o}`] = (a, b) => V([`f64x2.${o}`, op(a), op(b)])
+  e['f64x2.sin'] = emitter(['math.sin2'], (a) => V(['call', '$math.sin2', op(a)]))
+  e['f64x2.cos'] = emitter(['math.cos2'], (a) => V(['call', '$math.cos2', op(a)]))
+  e['f64x2.lane'] = (v, k) => F(['f64x2.extract_lane', lane2(k), op(v)])
 }

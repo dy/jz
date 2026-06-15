@@ -61,12 +61,12 @@ const EXAMPLES = [
   { name: 'waves', frame: 'frame (stencil+render)', opt: true,
     make: (e) => { e.resize(640, 400); e.clear(); for (let k = 0; k < 8; k++) e.drop(100 + k * 60, 200, 4, 1.2); return () => e.frame(0) } },
 
-  // Serial recurrence (x,y chain), no cross-iteration ILP — jz wins ~1.3× on
-  // Apple Silicon since hoistGlobalPtrOffset (trig + plot-buffer writes
-  // dominate), but the wasm-vs-V8 ratio is µarch-sensitive: GH's Xeon runners
-  // measure 0.87–0.90×, straddling the winner floor. Counted in the geomean,
-  // reported, not floor-gated — same class as the other serial recurrences.
-  { name: 'attractors', frame: 'frame 1.2M iters', opt: true,
+  // Serial recurrence (x,y chain), no cross-iteration ILP. But the four transcendentals
+  // are independent WITHIN an iteration, so jz compiles the f64x2 SIMD sibling: the two
+  // sines and the two cosines pack two-per-vector (f64x2.sin/cos → $math.sin2/$math.cos2),
+  // halving the trig that dominates the loop. V8 runs the scalar baseline (no auto-SIMD
+  // for a divergent transcendental recurrence). ~1.8× here; density bit-identical to scalar.
+  { name: 'attractors', frame: 'frame 1.2M iters (SIMD-2)', jzSrc: 'attractors.simd.js',
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
   // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global

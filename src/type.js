@@ -501,7 +501,7 @@ export function exprType(expr, locals) {
     // hand a scalar back (i32x4.lane / v128.anyTrue / v128.allTrue → i32;
     // f32x4.lane → f64). See module/simd.js.
     if (typeof args[0] === 'string' && (args[0].startsWith('f32x4.') || args[0].startsWith('i32x4.') || args[0].startsWith('f64x2.') || args[0].startsWith('v128.'))) {
-      if (args[0] === 'f32x4.lane') return 'f64'
+      if (args[0] === 'f32x4.lane' || args[0] === 'f64x2.lane') return 'f64'
       if (args[0] === 'i32x4.lane' || args[0] === 'v128.anyTrue' || args[0] === 'v128.allTrue') return 'i32'
       return 'v128'
     }

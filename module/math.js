@@ -509,6 +509,44 @@ export default (ctx) => {
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x))))`)
 
+  // ── f64x2 SIMD sin/cos — both lanes through one polynomial ───────────────────
+  // The scalar sin_core/cos_core algorithm lifted to two f64 lanes: same
+  // round-to-nearest π reduction, same minimax poly (SIN_C/COS_C), same quadrant
+  // parity — but every branch becomes branchless so two independent angles cost one
+  // evaluation. A kernel computing sin and cos of distinct args (rotations, de Jong /
+  // Clifford maps, oscillator banks) packs them two-per-vector and ≈halves trig cost.
+  //   • Both reduction passes run unconditionally: for an in-range r the second pass'
+  //     q2 = nearest(r/π) = 0, so it's an exact no-op — no per-lane branch needed, and
+  //     it still rescues |x| up to ~1e15 just like the scalar's gated pass.
+  //   • NaN and ±∞ fall out as NaN through the arithmetic (∞ − ∞·π = NaN); a v128 lane
+  //     is raw f64, not a NaN-box, so the canonical-NaN guard the scalar needs is moot.
+  //   • Sign flip for odd quadrants is `r XOR (mask & −0.0)` (mask = |q|>0.5); final
+  //     min/max clamps the ~1e-8 poly overshoot to [−1,1], same as scalar.
+  const splat = (c) => `(f64x2.splat (f64.const ${c}))`
+  const horner2 = (cs) => cs.reduceRight((acc, c, i) =>
+    i === cs.length - 1 ? splat(c)
+      : `(f64x2.add ${splat(c)} (f64x2.mul (local.get $r2) ${acc}))`, '')
+  // Shared reduce → r ∈ [−π/2,π/2] in $r, quadrant parity in $q (branchless, 2 passes).
+  const reduce2 = `
+    (local.set $q (f64x2.nearest (f64x2.mul (local.get $x) ${splat(INV_PI)})))
+    (local.set $r (f64x2.sub (local.get $x) (f64x2.mul (local.get $q) ${splat(PI)})))
+    (local.set $q2 (f64x2.nearest (f64x2.mul (local.get $r) ${splat(INV_PI)})))
+    (local.set $r (f64x2.sub (local.get $r) (f64x2.mul (local.get $q2) ${splat(PI)})))
+    (local.set $q (f64x2.add (local.get $q) (local.get $q2)))
+    (local.set $q (f64x2.sub (local.get $q) (f64x2.mul ${splat(2)} (f64x2.nearest (f64x2.mul (local.get $q) ${splat(0.5)})))))
+    (local.set $r2 (f64x2.mul (local.get $r) (local.get $r)))`
+  // r XOR (|q|>0.5 ? −0.0 : 0), then clamp to [−1,1].
+  const signClamp = `
+    (local.set $r (v128.xor (local.get $r)
+      (v128.and (f64x2.gt (f64x2.abs (local.get $q)) ${splat(0.5)}) ${splat('-0.0')})))
+    (f64x2.min (f64x2.max (local.get $r) ${splat(-1)}) ${splat(1)})`
+  wat('math.sin2', `(func $math.sin2 (param $x v128) (result v128)
+    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
+    (local.set $r (f64x2.mul (local.get $r) ${horner2(SIN_C)}))${signClamp})`)
+  wat('math.cos2', `(func $math.cos2 (param $x v128) (result v128)
+    (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
+    (local.set $r ${horner2(COS_C)})${signClamp})`)
+
   // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
   // exp2's NaN/overflow/underflow guards cover exp's). Accurate to exp2's ~6e-9, better
   // than the old 7-term Taylor, and it shares one code path with `2**`.
