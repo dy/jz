@@ -122,7 +122,7 @@ export let frame = (t) => {
   while (i < N) {
     let bx = ballX(i), by = pvy + Math.cos(th[i]) * L
     line(pvx[i] | 0, pvy | 0, bx | 0, by | 0, 110)                     // string
-    disc(bx, by, R * 0.82, 36)                                         // ball
+    disc(bx, by, R, 36)                                                // ball (touches its neighbours)
     i++
   }
 }
