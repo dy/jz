@@ -856,3 +856,12 @@ test('.subarray: chained methods + sub-of-sub + Uint8 kind-aware', () => {
   is(runHost(`export let f = () => { let a = new Float64Array(6); for (let i=0;i<6;i++) a[i]=i+1; let v = a.subarray(1,5); let w = v.subarray(1,3); w[0]=88; return a[2] }`).f(), 88)
   is(runHost(`export let f = () => { let a = new Int16Array(5); for (let i=0;i<5;i++) a[i]=i*3; let v = a.subarray(2); v[0]=-9; return a[2] }`).f(), -9)
 })
+
+// A small fixed typed array whose reference is CAPTURED (bound, stored, or subarray'd)
+// must not be scalarized/mirrored — a write through the captured alias has to reach the
+// original. (subarray was the canary; the same class hit `let b = a`, `o.x = a`, `[a]`.)
+test('typed array: writes through a captured alias reach the original (no scalarize desync)', () => {
+  is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let b = a; b[0]=99; return a[0] }`).f(), 99)
+  is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let o = {x:a}; o.x[0]=99; return a[0] }`).f(), 99)
+  is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let arr = [a]; arr[0][0]=99; return a[0] }`).f(), 99)
+})

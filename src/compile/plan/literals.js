@@ -201,15 +201,30 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   return true
 }
 
-// `name.subarray(...)` returns a zero-copy VIEW that aliases `name`'s backing memory and
-// outlives the statement. Mirrored scalarization syncs scalars↔memory only AROUND each
-// unsafe statement, so a later write through the view never reaches `name`'s scalar slots
-// (and vice-versa) — the array must stay purely memory-backed. Detect the alias so the
-// scalarizer disqualifies the array entirely rather than mirroring it.
+// `name`'s reference used as a bare VALUE — anywhere except as the base of `name[i]`,
+// `name.prop`, or `name.method(...)`. That captures a second handle to its backing memory.
+const refsAsValue = (node, name) => {
+  if (node === name) return true
+  if (!Array.isArray(node)) return false
+  if (node[0] === '[]' && node[1] === name) return refsAsValue(node[2], name)   // name[i]: vet the index only
+  if ((node[0] === '.' || node[0] === '?.') && node[1] === name) return false    // name.prop / name.method()
+  if (node[0] === '()') return false                                             // a call RESULT, not name itself
+  return node.slice(1).some(e => refsAsValue(e, name))
+}
+
+// True when `name`'s backing memory ESCAPES into a persistent alias: bound to another
+// variable (`let b = name`), stored into a field or literal (`o.x = name`, `[name]`), or
+// captured as a `.subarray(...)` view. Mirrored scalarization syncs scalars↔memory only
+// AROUND each unsafe statement, so a write through the captured alias in a LATER statement
+// never reaches `name`'s scalar slots (and vice-versa) — the array must stay memory-backed.
+// A bare `name` passed only as a call ARGUMENT is transient (the callee touches it during
+// the call, already covered by the surrounding sync), so it is NOT a capture.
 const createsTypedArrayAlias = (node, name) => {
   if (!Array.isArray(node)) return false
   if (node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.'
-      && node[1][1] === name && node[1][2] === 'subarray') return true
+      && node[1][1] === name && node[1][2] === 'subarray') return true           // zero-copy view
+  if (node[0] === '=' && refsAsValue(node[2], name)) return true                  // let b = name / x = name
+  if ((node[0] === '[' || node[0] === '{}') && node.slice(1).some(e => refsAsValue(e, name))) return true  // [name] / {k:name}
   for (let i = 1; i < node.length; i++) if (createsTypedArrayAlias(node[i], name)) return true
   return false
 }
