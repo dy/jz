@@ -704,18 +704,21 @@ export function hoistInvariantLoop(fn) {
   const newLocals = []
   const refcount = buildRefcount(fn)
 
-  const processLoop = (loopNode) => {
+  const processLoop = (loopNode, nested) => {
     // Inner loops first (bottom-up) — an inner hoist creates a local.get the
-    // outer level can hoist further.
+    // outer level can hoist further. Children run in a nested context.
     for (let i = 1; i < loopNode.length; i++)
-      if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i)
+      if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i, true)
 
     // The loop's effect summary (scans nested loops too — conservative).
     const locals = new Set(), globals = new Set(), storedCells = new Set()
-    let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false
+    let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
     const scan = (node) => {
       if (!Array.isArray(node)) return
       const op = node[0]
+      // A vectorized loop (lane/v128 ops) is already register-tight and hand-tuned;
+      // extra scalar hoisting there only adds spill pressure — keep it conservative.
+      if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
       if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
       if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
@@ -826,10 +829,14 @@ export function hoistInvariantLoop(fn) {
       // Every local the subtree writes must be private to it (no other use in the
       // loop) — else moving the write to the pre-header changes another reader.
       for (const b of bound) if (localCount.get(b) !== countsOf(node).get(b)) return false
-      // Only hoist what V8's wasm tier won't: a HARD_OP, or the inline typed-array
-      // base decode (its i64 reinterpret chain is left in-loop otherwise). Leave
-      // plain pure arithmetic for V8's own LICM and the lane-vectorizer.
-      return (hasHardOp(node) || isPtrBaseDecode(node)) && pureGiven(node, bound)
+      // Top-level loops: only hoist what V8's wasm tier won't — a HARD_OP or the
+      // inline typed-array base decode — and leave plain pure arithmetic to V8's own
+      // LICM (which handles single-level loops well). NESTED (inner) loops are
+      // different: V8's wasm tier under-hoists invariants out of them (a nested
+      // rasterizer/convolution recomputes triangle/row-invariant subexpressions every
+      // iteration), so hoist any pure-invariant subtree there. Soundness is unchanged —
+      // `pureGiven` already proves the subtree is loop-invariant and side-effect-free.
+      return ((nested && !hasV128) || hasHardOp(node) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     }
 
     // Maximal extraction: take the largest hoistable subtree; don't descend into
@@ -862,17 +869,17 @@ export function hoistInvariantLoop(fn) {
     return snaps
   }
 
-  const processNode = (node, parent, idx) => {
+  const processNode = (node, parent, idx, nested = false) => {
     if (!Array.isArray(node)) return
     if (node[0] === 'loop') {
-      const snaps = processLoop(node)
+      const snaps = processLoop(node, nested)
       if (snaps.length) parent.splice(idx, 0, ...snaps)
       return
     }
-    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
+    for (let i = 0; i < node.length; i++) processNode(node[i], node, i, nested)
   }
 
-  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
+  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i, false)
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 

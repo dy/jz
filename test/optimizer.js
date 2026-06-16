@@ -2026,3 +2026,19 @@ test('range-check fusion: fused-path correctness across boundaries (i32 operand)
     for (let c = -10; c <= 200; c++) is(f(c), js(c), `${expr} @ c=${c}`)
   }
 })
+
+test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it)', () => {
+  // A subexpression invariant w.r.t. an INNER loop (`(a-b)*K` recomputed every `j`)
+  // is hoisted out of it — the per-pixel cost in nested rasterizers/convolutions
+  // (penrose, waves). Top-level loops still defer plain arithmetic to V8's own LICM.
+  const wat = jz.compile(
+    `export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`,
+    { wat: true, optimize: 'speed' })
+  ok(/local \$__li/.test(wat), 'expected a hoisted snap local')
+  is((wat.match(/f64\.mul/g) || []).length, 1, '(a-b)*3.5 computed once, not per inner iteration')
+  // Bit-exact: hoisting must not change the result.
+  const { f } = run(`export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`)
+  const js = (a, b, n, mm) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<mm;j++) s = s + (a-b)*3.5 + j; return s }
+  is(f(2, 0.5, 4, 5), js(2, 0.5, 4, 5))
+  is(f(-1.5, 2.5, 7, 3), js(-1.5, 2.5, 7, 3))
+})
