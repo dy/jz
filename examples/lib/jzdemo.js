@@ -9,64 +9,59 @@
 // hud({ kind, onSwitch, note })           FPS + ms readout + JS/jz toggle
 
 import { instantiate } from '../../interop.js'
+import { EXAMPLES, byName } from '../examples.js'
 
-// Gallery order — drives the edge chevrons (wraps around). Visual examples only;
-// audio is handled separately in the floatbeat playground.
-export const EXAMPLES = [
-  'game-of-life', 'wireworld', 'maze', 'sand', 'lenia', 'slime', 'dla',
-  'diffusion', 'watercolor', 'marble', 'interference', 'waves', 'erosion', 'plasma', 'chladni',
-  'mandelbrot', 'julia', 'attractors', 'voronoi', 'raymarcher',
-  'metaballs', 'nbody', 'swarm', 'cloth', 'cradle', 'sph', 'lbm', 'raytrace',
-]
+// Gallery order + nicer labels come from the shared descriptor (examples/examples.js).
+// Re-exported so existing importers keep working.
+export { EXAMPLES }
+const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 
-// Jost (libre Futura) — bundled so weights render predictably (macOS "Futura" has no
-// true regular and renders heavy at every weight). Used Jost-first in the masthead.
-const JOST_URL = new URL('./jost.woff2', import.meta.url).href
+// Embed mode (?embed) — strip ALL chrome (masthead, edge chevrons, palette, hint),
+// leaving just the demo canvas + the FPS/toggle HUD. The landing-page hero hosts an
+// example this way in an <iframe>; the parent owns prev/next + the "open" label.
+// `?embed` strips chrome. `?embed=N` additionally tells us the host upscales the iframe by
+// N× (the landing renders the example at a fraction of native pixels, then CSS-scales it up
+// to stay fast full-screen). We counter-scale the HUD by 1/N so it renders at its true size
+// instead of being blown up with the canvas.
+const embedParam = new URLSearchParams(location.search).get('embed')
+const EMBED = embedParam !== null
+if (EMBED) {
+  const inv = 1 / (parseFloat(embedParam) || 1)
+  document.documentElement.classList.add('jz-embed')
+  const s = document.createElement('style')
+  s.textContent = 'html.jz-embed, html.jz-embed body { border: 0 !important; overflow: hidden !important; }'
+    + ` html.jz-embed .jz-hud { top: 12px; left: 12px; right: auto; bottom: auto; align-items: flex-start; transform: scale(${inv}); transform-origin: top left; }`
+    + ' html.jz-embed #hint, html.jz-embed .hint { display: none !important; }'   // example-local hint divs
+  document.head.appendChild(s)
+}
 
-// Inject the shared top navigation bar for every example page.
-// Matches examples/index.html: dark band, geometric wordmark, nav links.
+// Inject the shared masthead for every example page. The LOOK comes from the shared
+// site.css (.masthead) — one source of truth across all pages; here we add only the
+// markup, the `.fixed` overlay (example pages are full-screen canvases), and the link.
+const SITE_CSS = new URL('../../site.css', import.meta.url).href
 const addMasthead = (name) => {
-  if (document.querySelector('.jz-masthead')) return
+  if (document.querySelector('.masthead')) return
+  if (!document.querySelector('link[data-jz-site]')) {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'; link.href = SITE_CSS; link.dataset.jzSite = ''
+    document.head.appendChild(link)
+  }
   const header = document.createElement('header')
-  header.className = 'jz-masthead'
+  header.className = 'masthead fixed'
+  // critical inline so the band never flashes unstyled before site.css resolves
+  header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#0a0a0a'
   header.innerHTML = `
-    <a class="wordmark" href="../" aria-label="back to all examples">
-      <span class="mark">JZ</span><span class="sub">examples</span><span class="sep" aria-hidden="true">›</span><span class="page">${name}</span>
-    </a>
+    <div class="wordmark">
+      <a class="mark" href="../../" aria-label="jz — home">JZ</a><a class="sub" href="../">examples</a><span class="sep" aria-hidden="true">›</span><span class="page">${name}</span>
+    </div>
     <nav>
       <a href="../../repl/">repl</a>
+      <a href="../../floatbeat/">floatbeat</a>
       <a href="../../bench/">bench</a>
       <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
         <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
-    </nav>
-    <style>
-      @font-face { font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap; src: url("${JOST_URL}") format('woff2'); }
-      .jz-masthead {
-        position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-        background: #0a0a0a; color: #fff;
-        display: flex; align-items: center; gap: 16px;
-        min-height: 44px;
-        padding: 0 16px;
-        font-family: Jost, 'Helvetica Neue', Arial, sans-serif;
-      }
-      .jz-masthead .wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
-      .jz-masthead .wordmark .mark { font-weight: 700; color: #fff; }
-      .jz-masthead .wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
-      .jz-masthead .wordmark .sep { font-weight: 400; color: #5a5a5a; margin: 0 .42em; }
-      .jz-masthead .wordmark .page { font-weight: 400; color: #fff; }
-      .jz-masthead .wordmark:hover .sub { color: #fff; }
-      .jz-masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
-      .jz-masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
-      .jz-masthead nav a:hover { opacity: 1; }
-      .jz-masthead .gh { display: flex; }
-      @media (max-width: 520px) {
-        .jz-masthead { gap: 10px; padding: 0 12px; }
-        .jz-masthead .wordmark { font-size: 15px; }
-        .jz-masthead nav { gap: 12px; }
-        .jz-masthead nav a { font-size: 11px; }
-      }
-    </style>`
+    </nav>`
   document.body.insertBefore(header, document.body.firstChild)
 }
 
@@ -77,7 +72,7 @@ const addEdgeNav = (name) => {
   if (at < 0) return
   const prev = at > 0 ? EXAMPLES[at - 1] : EXAMPLES[EXAMPLES.length - 1]
   const next = at < EXAMPLES.length - 1 ? EXAMPLES[at + 1] : EXAMPLES[0]
-  const label = (n) => n.replace(/-/g, ' ')
+  const label = titleOf
   const chev = (d) => `<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`
   const wrap = document.createElement('div')
   wrap.className = 'jz-edge'
@@ -157,8 +152,6 @@ export const loadEngine = async (kind, { js, wasm }) => {
     : instantiate(new Uint8Array(await (await fetch(url(wasm))).arrayBuffer())).exports
 }
 
-const SPARK = 48   // FPS history length for the sparkline
-
 // ── palette: any grayscale example can be colorized by mapping luminance through a
 // colormap. Default is grayscale (the B&W look); the palette icon picks a random map. ──
 const hsl = (h, s, l) => {
@@ -205,8 +198,8 @@ const buildLUT = (stops) => {
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
 // `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
 export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true, onPalette }) => {
-  if (nav) { addMasthead(nav); addEdgeNav(nav) }
-  if (hint && !document.querySelector('.jz-hint')) {
+  if (nav && !EMBED) { addMasthead(nav); addEdgeNav(nav) }
+  if (hint && !EMBED && !document.querySelector('.jz-hint')) {
     const hel = document.createElement('div')
     hel.className = 'jz-hint'
     hel.textContent = hint
@@ -222,51 +215,43 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      .jz-hud { position: fixed; bottom: 12px; left: 12px; z-index: 100;
-        font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        color: #eee; background: rgba(10,10,10,.92);
-        border: 1px solid rgba(255,255,255,.12); padding: 9px 12px;
-        box-shadow: 0 4px 16px rgba(0,0,0,.3); user-select: none; width: 168px; }
-      .jz-hud .spark { display: block; width: 100%; height: 34px; margin: 0 0 5px; }
-      .jz-hud .readout { display: flex; justify-content: space-between; align-items: baseline;
-        font-size: 12px; color: #888; }
-      .jz-hud .readout .metric { display: inline-flex; align-items: baseline; gap: .35em; }
-      .jz-hud .readout b { font-weight: 700; font-size: 13px; color: #fff; }
-      .jz-hud .seg { display: flex; margin-top: 9px;
-        border: 1px solid rgba(255,255,255,.18); overflow: hidden; }
-      .jz-hud .seg button { flex: 1; border: 0; background: transparent;
-        font: inherit; padding: 5px 12px; cursor: pointer; color: #888; }
-      .jz-hud .seg button.on { background: #eee; color: #111; }
-      .jz-hud .cv { position: absolute; top: 8px; right: 10px; color: #888; opacity: .8; display: inline-flex; cursor: pointer; }
-      .jz-hud .cv:hover, .jz-hud .cv.on { opacity: 1; color: #fff; }
-      .jz-code { position: fixed; left: 12px; top: 56px; bottom: 12px; z-index: 99; display: none;
-        max-width: min(560px, 46vw); background: rgba(7,7,12,.93); border: 1px solid #ffffff1f;
-        box-shadow: 0 8px 28px #0007; }
-      .jz-code.show { display: block; }
-      .jz-code-pre { margin: 0; padding: 12px 14px; height: 100%; box-sizing: border-box; overflow: auto;
-        color: #ddd; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
-      .jz-code-pre::-webkit-scrollbar { width: 9px; height: 9px; }
-      .jz-code-pre::-webkit-scrollbar-track { background: transparent; }
-      .jz-code-pre::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16);
-        border: 2px solid transparent; background-clip: padding-box; }
-      .jz-code-pre::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.3); background-clip: padding-box; }
-      .jz-code-x { position: absolute; top: 6px; right: 7px; z-index: 1; width: 22px; height: 22px;
-        border: 0; background: transparent; color: #aaa; font: 18px/22px ui-monospace, Menlo, monospace;
-        cursor: pointer; padding: 0; }
-      .jz-code-x:hover { color: #fff; background: rgba(255,255,255,.12); }
+      /* floating chart + readout + skeuomorphic switch — no box, bottom-right over the demo */
+      .jz-hud { position: fixed; bottom: 14px; right: 16px; z-index: 100;
+        font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #fff; user-select: none;
+        display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+        text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.6); }
+      .jz-hud .spark { display: block; width: 150px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.85)); }
+      .jz-hud .readout { display: flex; align-items: baseline; gap: 9px; font-size: 12px; color: rgba(255,255,255,.72); }
+      .jz-hud .readout .metric { display: inline-flex; align-items: baseline; gap: .34em; }
+      .jz-hud .readout b { font-weight: 700; font-size: 19px; line-height: 1; color: #fff; letter-spacing: -.02em; }
+      /* skeuomorphic JS↔JZ slider: dark inset track (JS) → light track + knob right (JZ) */
+      .jz-sw { display: flex; align-items: center; gap: 9px; }
+      .jz-sw .lbl { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: rgba(255,255,255,.48);
+        cursor: pointer; transition: color .15s; display: inline-flex; align-items: center; gap: 4px; }
+      .jz-sw .lbl.on { color: #fff; }
+      .jz-sw .lbl .bolt { width: 10px; height: 10px; }
+      .jz-toggle { position: relative; width: 46px; height: 26px; flex: none; border: 0; padding: 0; cursor: pointer;
+        border-radius: 13px; -webkit-appearance: none; appearance: none; transition: background .25s, box-shadow .25s;
+        background: linear-gradient(180deg, #242424, #0d0d0d);
+        box-shadow: inset 0 2px 4px rgba(0,0,0,.75), inset 0 -1px 0 rgba(255,255,255,.06), 0 1px 0 rgba(255,255,255,.07); }
+      .jz-toggle.jz { background: linear-gradient(180deg, #fdfdfd, #d2d2d2);
+        box-shadow: inset 0 2px 4px rgba(0,0,0,.28), 0 1px 0 rgba(255,255,255,.14); }
+      .jz-toggle .knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+        background: radial-gradient(120% 120% at 50% 26%, #5c5c5c, #1a1a1a 72%);
+        box-shadow: 0 2px 4px rgba(0,0,0,.65), inset 0 1px 1px rgba(255,255,255,.3), inset 0 -2px 3px rgba(0,0,0,.55);
+        transition: transform .28s cubic-bezier(.34,.72,.28,1.3); }
+      .jz-toggle.jz .knob { transform: translateX(20px); }
+      @media (prefers-reduced-motion: reduce) { .jz-toggle .knob { transition: none; } }
     </style>
     <div class="jz-hud">
-      ${code ? `<span class="cv" id="jz-cv" title="view source" aria-label="view source"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="2" y="5" width="14" height="2" rx="1"/><rect x="6" y="10" width="14" height="2" rx="1"/><rect x="2" y="15" width="9" height="2" rx="1"/></svg></span>` : ''}
       ${meter ? `<canvas class="spark" id="jz-spark"></canvas>
-      <div class="readout"><span class="metric"><b id="jz-fps">··</b> fps</span><span class="metric" id="jz-ms" hidden><b id="jz-ms-v">·</b> ms/frame</span></div>` : ''}
-      <div class="seg">
-        <button data-k="js">JS</button>
-        <button data-k="jz">JZ</button>
+      <div class="readout"><span class="metric"><b id="jz-fps">··</b> fps</span><span class="metric" id="jz-ms" hidden><b id="jz-ms-v">·</b> ms</span></div>` : ''}
+      <div class="jz-sw">
+        <span class="lbl js" id="jz-lbl-js">JS</span>
+        <button class="jz-toggle" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="knob"></span></button>
+        <span class="lbl jz" id="jz-lbl-jz"><svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>JZ</span>
       </div>
-    </div>
-    ${code ? `<div class="jz-code" id="jz-code"><button class="jz-code-x" id="jz-code-x" title="close source" aria-label="close source">×</button><pre class="jz-code-pre" id="jz-code-pre"></pre></div>` : ''}`
+    </div>`
   document.body.appendChild(el)
 
   // The HUD is an overlay — swallow pointer/click so they don't fall through to a
@@ -275,6 +260,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     el.addEventListener(ev, (e) => e.stopPropagation())
 
   const fpsEl = el.querySelector('#jz-fps')
+  const msRow = el.querySelector('#jz-ms'), msEl = el.querySelector('#jz-ms-v')
   const sparkEl = el.querySelector('#jz-spark')
   const sctx = sparkEl && sparkEl.getContext('2d')
   let sw = 0, sh = 0
@@ -285,9 +271,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     sparkEl.width = sw * dpr; sparkEl.height = sh * dpr
     sctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }
-  // FPS area chart: a filled gradient under the line shows the headroom (line near the
-  // top = the engine is keeping up; a dip = a stall eating into the available power).
+  // FPS area chart: filled gradient under the line shows headroom; a stall visibly dips it.
   const drawSpark = () => {
+    if (!sctx) return
     if (!sw) sizeSpark()
     const n = hist.length, w = sw, h = sh
     const xs = (i) => i / (n - 1) * w
@@ -297,49 +283,36 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     for (let i = 0; i < n; i++) sctx.lineTo(xs(i), ys(hist[i]))
     sctx.lineTo(w, h); sctx.closePath()
     const grad = sctx.createLinearGradient(0, 0, 0, h)
-    grad.addColorStop(0, 'rgba(255,255,255,.40)')
-    grad.addColorStop(1, 'rgba(255,255,255,.03)')
+    grad.addColorStop(0, 'rgba(255,255,255,.42)')
+    grad.addColorStop(1, 'rgba(255,255,255,.04)')
     sctx.fillStyle = grad; sctx.fill()
     sctx.beginPath()
     for (let i = 0; i < n; i++) { const x = xs(i), y = ys(hist[i]); if (i) sctx.lineTo(x, y); else sctx.moveTo(x, y) }
-    sctx.strokeStyle = 'rgba(255,255,255,.92)'; sctx.lineWidth = 1.25; sctx.stroke()
+    sctx.strokeStyle = 'rgba(255,255,255,.95)'; sctx.lineWidth = 1.25; sctx.stroke()
   }
-  const msRow = el.querySelector('#jz-ms'), msEl = el.querySelector('#jz-ms-v')
-  const btns = [...el.querySelectorAll('button')]
-  const paint = () => btns.forEach(b => b.classList.toggle('on', b.dataset.k === kind))
+  const toggle = el.querySelector('#jz-toggle')
+  const lblJs = el.querySelector('#jz-lbl-js'), lblJz = el.querySelector('#jz-lbl-jz')
+  const paint = () => {
+    toggle.classList.toggle('jz', kind === 'jz')
+    toggle.setAttribute('aria-checked', kind === 'jz')
+    lblJs.classList.toggle('on', kind === 'js')
+    lblJz.classList.toggle('on', kind === 'jz')
+  }
   paint()
-  btns.forEach(b => b.onclick = () => {
-    if (b.dataset.k === kind) return
-    kind = b.dataset.k; paint(); ms = 0; onSwitch?.(kind)
-  })
-
-  // Source overlay: lazy-load `code` (a URL to fetch, or literal text) on first open.
-  const cvBtn = el.querySelector('#jz-cv'), codeBox = el.querySelector('#jz-code')
-  const codePre = el.querySelector('#jz-code-pre'), codeX = el.querySelector('#jz-code-x')
-  if (cvBtn) {
-    let loaded = false
-    const close = () => { codeBox.classList.remove('show'); cvBtn.classList.remove('on') }
-    cvBtn.onclick = async () => {
-      const showing = codeBox.classList.toggle('show')
-      cvBtn.classList.toggle('on', showing)
-      if (showing && !loaded) {
-        loaded = true
-        codePre.textContent = code.includes('\n') ? code
-          : await fetch(new URL(code, document.baseURI).href).then(r => r.text()).catch(() => '// source unavailable')
-      }
-    }
-    codeX.onclick = close
-  }
+  const setKind = (k) => { if (k === kind) return; kind = k; paint(); ms = 0; onSwitch?.(kind) }
+  toggle.onclick = () => setKind(kind === 'js' ? 'jz' : 'js')
+  lblJs.onclick = () => setKind('js')
+  lblJz.onclick = () => setKind('jz')
 
   // Palette icon: a bare square color-wheel, bottom-right. Click randomizes a colormap
   // (rotating the wheel); `paint(src,dst)` then maps grayscale luminance through it. Until
   // first click the LUT is null, so paint() is a plain copy and the example stays B&W.
   let lut = null
-  if (palette) {
+  if (palette && !EMBED) {
     const pal = document.createElement('button')
     pal.id = 'jz-pal'; pal.title = 'randomize palette'; pal.setAttribute('aria-label', 'randomize palette')
     pal.innerHTML = `<span class="sw"></span><style>
-      #jz-pal { position: fixed; right: 18px; bottom: 18px; z-index: 100; width: 30px; height: 30px;
+      #jz-pal { position: fixed; left: 18px; bottom: 18px; z-index: 100; width: 30px; height: 30px;
         padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
       #jz-pal .sw { display: block; width: 100%; height: 100%;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
@@ -365,6 +338,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   // EMA-smoothed over a ~0.4s window. The sparkline plots FPS on an absolute scale
   // (full height = `ref`, which rises to the display's refresh rate), so the line sits
   // at the true level and swapping to a slower engine visibly steps it down.
+  const SPARK = 48   // FPS history length for the sparkline
   let last = performance.now(), fps = 0, ms = 0, ref = 120
   const hist = new Array(SPARK).fill(0)
   return {

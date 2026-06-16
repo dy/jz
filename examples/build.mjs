@@ -24,11 +24,23 @@ export function buildKernel(exampleDir, kernel) {
   console.log(`Compiled ${exampleDir}/${kernel}`)
 }
 
+/** Compile every example in the descriptor (plus any extra `kernels`, e.g. SIMD siblings). */
+export async function buildAll() {
+  const { examples } = await import('./examples.js')
+  for (const e of examples) {
+    buildExample(e.name)
+    for (const k of e.kernels || []) buildKernel(e.name, k)
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const name = process.argv[2]
-  if (!name) {
-    console.error('usage: node examples/build.mjs <example-name>')
+  if (name === 'all' || name === '--all') {
+    await buildAll()
+  } else if (name) {
+    buildExample(name)
+  } else {
+    console.error('usage: node examples/build.mjs <example-name|all>')
     process.exit(1)
   }
-  buildExample(name)
 }

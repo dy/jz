@@ -33,6 +33,7 @@ if (name === 'sand' && exports.paint) {
   for (let i = 0; i < 80; i++) exports.paint((0.58 + Math.random() * 0.24) * W, (0.5 + Math.random() * 0.2) * H, 9, 2)
 }
 if (name === 'slime' && exports.seed) exports.seed()
+if (name === 'rule30' && exports.seed) exports.seed()    // single-1 center row → the light-cone triangle
 if (name === 'dla' && exports.seed) exports.seed()
 if (name === 'wireworld' && exports.seed) exports.seed()
 if (name === 'marble' && exports.drop) {
@@ -52,10 +53,44 @@ if (name === 'watercolor' && exports.paint) {
   for (let i = 0; i <= 30; i++) exports.paint((0.18 + i * 0.021) * W, (0.36 + Math.sin(i * 0.32) * 0.12) * H, 12, 1.4, 0.2)
   for (let i = 0; i <= 24; i++) exports.paint((0.8 - i * 0.024) * W, (0.62 + Math.cos(i * 0.32) * 0.12) * H, 12, -1.2, 0.3)
 }
+// Per-example frame() args for a representative still (most math demos take interactive
+// params; the bare frame(f/60) default would pass `undefined`). fn receives (f, warmup).
+const GOLDEN = 2.3999632297286535
+const FRAME_ARGS = {
+  newton:        () => [0, 1.0, 0.0],
+  'times-table': () => [0, 2.0, 280],
+  boids:         (f) => [f / 60, -1, -1, 0],
+  burningship:   () => [0, -0.45, -0.5, 1.35],
+  lyapunov:      () => [0, 0, 0],
+  buddhabrot:    (f) => [f / 60],
+  bifurcation:   () => [0, 2.5, 4.0],
+  lorenz:        (f) => [f / 60, -0.4],
+  pendulum:      (f) => [f / 60],
+  ulam:          () => [130, 3000],
+  'pascal-sierpinski': () => [0],
+  'gauss-primes': () => [0, 0, 0],
+  'domain-color': () => [0, 0.3, 0.2, 0, 0],
+  phyllotaxis:   () => [0, GOLDEN],
+  harmonograph:  () => [0, 0.06, 0.5],
+  truchet:       () => [0, 30],
+  fern:          (f) => [f / 60, 0],
+  lsystem:       () => [0, 1, 1.0],   // dragon curve — boldest, distinct from pascal/fern
+  epicycles:     (f, w) => [f / 60, (f / w) * 6.2831853],
+  apollonian:    () => [0, 0, 0, 1],
+  hyperbolic:    () => [0, 0],
+  ising:         (f) => [f / 60, 2.2],
+  rule30:        (f) => [f / 60, 30],
+  penrose:       () => [0, 0.0, 1.0],
+  percolation:   (f) => [f / 60, 0.62],
+  schrodinger:   (f) => [f / 60],
+}
+
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, lenia: 120, attractors: 200,
-                 plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 160, voronoi: 50,
+                 plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
                  dla: 600, wireworld: 26, waves: 90, cloth: 130, maze: 700, sph: 500,
-                 erosion: 80, lbm: 150, watercolor: 200, cradle: 36 }[name] ?? 1
+                 erosion: 80, lbm: 150, watercolor: 200, cradle: 36,
+                 buddhabrot: 60, lorenz: 320, pendulum: 70, fern: 150, ising: 140,
+                 rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the
 // trio fills the frame. Roll many initial conditions and keep the most balanced triangle with
@@ -106,6 +141,7 @@ if (name === 'nbody') {
       exports.setTarget(0.5 + Math.cos(f * 0.08) * 0.18, 0.5 + Math.sin(f * 0.08) * 0.18)
     if (name === 'raytrace') exports.frame(1.4, 0.85, -2.4)  // camera eye is a frame arg now
     else if (name === 'julia') exports.frame(0, -0.8, 0.156) // dendrite-region constant
+    else if (FRAME_ARGS[name]) exports.frame(...FRAME_ARGS[name](f, WARMUP))  // math demos
     else exports.frame(f / 60)
   }
 }
