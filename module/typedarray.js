@@ -1142,10 +1142,12 @@ export default (ctx) => {
   // must NOT route through the plain-array string comparator). With a comparator, an
   // insertion sort is emitted inline, calling the closure per neighbor compare; a
   // positive return shifts (same convention as Array.prototype.sort).
-  ctx.core.emit['.typed:sort'] = (arr, fn) => {
+  // Sort the typed array VALUE `arrValIR` in place and return it. Factored out so
+  // .typed:sort sorts the receiver and .typed:toSorted sorts a fresh copy with one body.
+  const emitTypedSort = (arrValIR, fn) => {
     if (fn == null) {
       inc('__typed_sort')
-      return typed(['call', '$__typed_sort', asI64(emit(arr))], 'f64')
+      return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
     }
     inc('__len', '__typed_get_idx', '__typed_set_idx')
     const arrL = temp('tsa'), cbL = temp('tsf')
@@ -1156,7 +1158,7 @@ export default (ctx) => {
     const ptr = () => ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]
     const jp1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${arrL}`, asF64(emit(arr))],
+      ['local.set', `$${arrL}`, asF64(arrValIR)],
       ['local.set', `$${cbL}`, asF64(emit(fn))],
       ['local.set', `$${len}`, ['call', '$__len', ptr()]],
       ['local.set', `$${i}`, ['i32.const', 1]],
@@ -1180,6 +1182,7 @@ export default (ctx) => {
         ['br', oL]]],
       ['local.get', `$${arrL}`]], 'f64')
   }
+  ctx.core.emit['.typed:sort'] = (arr, fn) => emitTypedSort(emit(arr), fn)
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, i) => {
@@ -1757,4 +1760,49 @@ export default (ctx) => {
         ['i32.shl', ['local.get', `$${n}`], ['i32.const', SHIFT[et]]]],
       dst.ptr], 'f64')
   }
+
+  // .toReversed() — a reversed COPY (receiver unchanged): full slice-copy, then reverse
+  // the copy in place. (slice bails on BigInt, so BigInt receivers fall back to a throw.)
+  ctx.core.emit['.typed:toReversed'] = (arr) => {
+    const copy = ctx.core.emit['.typed:slice'](arr)
+    if (!copy) return null
+    inc('__typed_reverse')
+    const c = temp('ttv')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${c}`, asF64(copy)],
+      ['call', '$__typed_reverse', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]], 'f64')
+  }
+
+  // .toSorted(fn?) — a sorted COPY (receiver unchanged): slice-copy, then sort in place.
+  ctx.core.emit['.typed:toSorted'] = (arr, fn) => {
+    const copy = ctx.core.emit['.typed:slice'](arr)
+    return copy ? emitTypedSort(copy, fn) : null
+  }
+
+  // .with(index, value) — a COPY with one element replaced (receiver unchanged). Negative
+  // index counts from the end; out of range throws RangeError ($__jz_err), per spec.
+  ctx.core.emit['.typed:with'] = (arr, index, value) => {
+    const copy = ctx.core.emit['.typed:slice'](arr)
+    if (!copy) return null
+    ctx.runtime.throws = true
+    inc('__len', '__typed_set_idx')
+    const c = temp('twc'), idx = tempI32('twi'), len = tempI32('twl')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${c}`, asF64(copy)],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
+      ['local.set', `$${idx}`, asI32(emit(index))],
+      ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
+      ['if', ['i32.or',
+          ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+          ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+      ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${c}`]],
+        ['local.get', `$${idx}`], asF64(emit(value))]],
+      ['local.get', `$${c}`]], 'f64')
+  }
+
+  // .subarray(begin, end) — a zero-copy VIEW sharing the receiver's buffer (writes alias,
+  // NOT a copy). Builds the 16-byte descriptor [byteLen][dataOff][parentOff] and tags the
+  // TYPED ptr with aux|view, exactly like new TypedArray(buffer, byteOffset, length).
 }

@@ -94,6 +94,9 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType
     return null
   }
+  // .toReversed / .toSorted / .with all return a typed array of the same kind.
+  if (method === 'toReversed' || method === 'toSorted' || method === 'with')
+    return objType === VAL.TYPED ? VAL.TYPED : null
   return null
 }
 

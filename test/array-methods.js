@@ -805,3 +805,28 @@ test('.indexOf / .includes: typed honor fromIndex (was ignored)', () => {
   is(ioNeg(), 3)   // -1 → start at index 3
   is(inc(), 0)     // 3 is at index 0, excluded by fromIndex 1
 })
+
+// === TypedArray ES2023 immutable methods: toReversed / toSorted / with ===
+// All return a fresh typed array (receiver unchanged); were unimplemented (threw).
+
+test('.toReversed: reversed copy, original untouched', () => {
+  const r = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; let b = a.toReversed(); return b[0]*100 + b[2]*10 + a[0] }`).f
+  is(r(), 311)   // b=[3,2,1] → 3*100+1*10; a[0] still 1
+})
+
+test('.toSorted: sorted copy (numeric default + comparator), original untouched', () => {
+  const num = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; let b = a.toSorted(); return b[0]*1000+b[3]*100 + a[0] }`).f
+  const u8 = runHost(`export let f = () => { let a = new Uint8Array(3); a[0]=10; a[1]=9; a[2]=100; return a.toSorted()[0]*1000 + a.toSorted()[2] }`).f
+  const cb = runHost(`export let f = () => { let a = new Int32Array(3); a[0]=1; a[1]=3; a[2]=2; return a.toSorted((x,y)=>y-x)[0] }`).f
+  is(num(), 1403)   // b=[1,1,3,4] → 1*1000+4*100; a[0] still 3
+  is(u8(), 9100)    // numeric (not lexicographic): [9,10,100]
+  is(cb(), 3)       // descending comparator
+})
+
+test('.with: copy with one element replaced; negative index; OOB throws', () => {
+  const w = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; let b = a.with(1, 9); return b[1]*10 + a[1] }`).f
+  const neg = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; return a.with(-1, 9)[2] }`).f
+  is(w(), 92)    // b[1]=9; a[1] still 2
+  is(neg(), 9)   // -1 → last index
+  throws(() => runHost(`export let f = () => { let a = new Float64Array(3); return a.with(5, 9)[0] }`).f(), /.*/)
+})
