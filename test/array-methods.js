@@ -699,3 +699,56 @@ test('.fill: returns the array (chainable) + plain arrays still work', () => {
   is(runHost(`export let f = () => { let a = new Float64Array(3); return a.fill(4)[1] }`).f(), 4)
   is(run(`export let f = () => { let a = [1, 2, 3, 4]; a.fill(9); return a[0] + a[3] }`).f(), 18)
 })
+
+// === TypedArray .reverse / .copyWithin / .sort — same silent-no-op bug class ===
+// `.reverse`/`.sort` routed through the PTR.ARRAY-gated plain-array helpers and
+// returned the typed receiver UNCHANGED; `.copyWithin` was unimplemented. Each now
+// has a `.typed:*` emitter going through the element-kind-aware get/set helpers.
+
+test('.reverse: typed array reverses (was a silent no-op), all widths', () => {
+  const f64 = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; a.reverse(); return a[0]*100+a[1]*10+a[2] }`).f
+  const u8 = runHost(`export let f = () => { let a = new Uint8Array(4); a[0]=10; a[1]=20; a[2]=30; a[3]=40; a.reverse(); return a[0]*1000+a[3] }`).f
+  const i16 = runHost(`export let f = () => { let a = new Int16Array(2); a[0]=-5; a[1]=7; a.reverse(); return a[0]*100+a[1] }`).f
+  is(f64(), 321)
+  is(u8(), 40010)
+  is(i16(), 695)   // [-5,7] → [7,-5]: 7*100 + -5
+})
+
+test('.reverse: returns the array (chainable)', () => {
+  is(runHost(`export let f = () => { let a = new Int32Array(3); a[0]=1; a[1]=2; a[2]=3; return a.reverse()[0] }`).f(), 3)
+})
+
+test('.copyWithin: typed array (was unimplemented), overlap + negatives like JS', () => {
+  const basic = runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; a.copyWithin(0,3); let s=0; for (let i=0;i<5;i++) s=s*10+a[i]; return s }`).f
+  const overlap = runHost(`export let f = () => { let a = new Int32Array(5); for (let i=0;i<5;i++) a[i]=i+1; a.copyWithin(1,0,3); let s=0; for (let i=0;i<5;i++) s=s*10+a[i]; return s }`).f
+  const neg = runHost(`export let f = () => { let a = new Uint8Array(5); for (let i=0;i<5;i++) a[i]=i+1; a.copyWithin(-2,-4,-1); let s=0; for (let i=0;i<5;i++) s=s*10+a[i]; return s }`).f
+  is(basic(), 45345)     // [4,5,3,4,5]
+  is(overlap(), 11235)   // [1,1,2,3,5]
+  is(neg(), 12323)       // [1,2,3,2,3]
+})
+
+test('.sort: typed default is NUMERIC, not lexicographic (the key distinction)', () => {
+  // Array.prototype.sort default is string order: [10,9,100] → [10,100,9].
+  // TypedArray default is numeric: → [9,10,100]. Must not route through __arr_sort.
+  const f = runHost(`export let f = () => { let a = new Uint8Array(3); a[0]=10; a[1]=9; a[2]=100; a.sort(); return a[0]*10000+a[1]*100+a[2] }`).f
+  is(f(), 91100)   // [9,10,100]
+})
+
+test('.sort: floats, negatives, NaN-to-end, -0 before +0', () => {
+  const mixed = runHost(`export let f = () => { let a = new Float64Array(5); a[0]=-1.5; a[1]=2; a[2]=-3; a[3]=0.5; a[4]=-3; a.sort(); let s=''; for (let i=0;i<5;i++) s+=a[i]+','; return s }`).f
+  const nan = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3; a[1]=NaN; a[2]=1; a[3]=2; a.sort(); return (a[3]!==a[3])?(a[0]*100+a[1]*10+a[2]):-1 }`).f
+  const negzero = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=0; a[1]=-0; a[2]=0; a.sort(); return 1/a[0] }`).f
+  is(mixed(), '-3,-3,-1.5,0.5,2,')
+  is(nan(), 123)            // NaN sorted to a[3]; [1,2,3,NaN]
+  is(negzero(), -Infinity)  // -0 sorted first → 1/-0 = -Infinity
+})
+
+test('.sort: with a comparator (insertion sort, closure per compare)', () => {
+  const desc = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=1; a[1]=3; a[2]=2; a[3]=4; a.sort((x,y)=>y-x); return a[0]*1000+a[1]*100+a[2]*10+a[3] }`).f
+  is(desc(), 4321)
+})
+
+test('.sort: BigInt64 numeric compare on exact bits', () => {
+  const f = runHost(`export let f = () => { let a = new BigInt64Array(3); a[0]=30n; a[1]=10n; a[2]=20n; a.sort(); return Number(a[0])*100+Number(a[2]) }`).f
+  is(f(), 1030)   // [10n,20n,30n]
+})

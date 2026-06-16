@@ -201,7 +201,11 @@ export default (ctx) => {
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
+    __typed_get_idx: ['__ptr_aux', '__ptr_offset'],
     __typed_fill: ['__len', '__typed_set_idx'],
+    __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     // __str_join uses __typed_idx when typedarray is loaded (plain arrays promoted to
     // Int32Array by promoteIntArrayLiterals can produce PTR.TYPED results via .map()).
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
@@ -989,6 +993,124 @@ export default (ctx) => {
       (br $fill)))
     (f64.reinterpret_i64 (local.get $ptr)))`
 
+  // Element-width/-kind-aware read: arr[i] → f64, the read mirror of __typed_set_idx.
+  // Integers convert by signedness (et&1 ⇒ unsigned); BigInt returns the raw i64 bits
+  // reinterpreted as f64 so a get→set roundtrip is bit-exact (set_idx stores the bits
+  // back unchanged). Used by the in-place algorithms below for random-access reads.
+  ctx.core.stdlib['__typed_get_idx'] = `(func $__typed_get_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const 8))
+      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
+    (local.set $et (i32.and (local.get $aux) (i32.const 7)))
+    (if (result f64) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
+      (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+      (else (if (result f64) (i32.eq (local.get $et) (i32.const 7))
+        (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+        (else (if (result f64) (i32.eq (local.get $et) (i32.const 6))
+          (then (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+          (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
+            (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+              (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+              (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+            (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
+              (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
+              (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
+                (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))))))`
+
+  // .reverse() — in-place, element-kind-agnostic via get/set (bit-exact for BigInt).
+  ctx.core.stdlib['__typed_reverse'] = `(func $__typed_reverse (param $ptr i64) (result f64)
+    (local $len i32) (local $i i32) (local $j i32) (local $t f64)
+    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $i (i32.const 0))
+    (local.set $j (i32.sub (local.get $len) (i32.const 1)))
+    (block $done (loop $rev
+      (br_if $done (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $t (call $__typed_get_idx (local.get $ptr) (local.get $i)))
+      (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (call $__typed_get_idx (local.get $ptr) (local.get $j))))
+      (drop (call $__typed_set_idx (local.get $ptr) (local.get $j) (local.get $t)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rev)))
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  // .copyWithin(target, start, end) — in-place overlap-safe move. Indices accept
+  // negatives (from end) and clamp to [0, len]; count = min(end-start, len-target).
+  // Direction picked so overlapping ranges don't clobber unread source elements.
+  ctx.core.stdlib['__typed_copyWithin'] = `(func $__typed_copyWithin (param $ptr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
+    (local $len i32) (local $count i32) (local $k i32)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (i32.lt_s (local.get $target) (i32.const 0)) (then (local.set $target (i32.add (local.get $len) (local.get $target)))))
+    (if (i32.lt_s (local.get $target) (i32.const 0)) (then (local.set $target (i32.const 0))))
+    (if (i32.gt_s (local.get $target) (local.get $len)) (then (local.set $target (local.get $len))))
+    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
+    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))
+    (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
+    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
+    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.const 0))))
+    (if (i32.gt_s (local.get $end) (local.get $len)) (then (local.set $end (local.get $len))))
+    (local.set $count (i32.sub (local.get $end) (local.get $start)))
+    (if (i32.gt_s (local.get $count) (i32.sub (local.get $len) (local.get $target)))
+      (then (local.set $count (i32.sub (local.get $len) (local.get $target)))))
+    (if (i32.lt_s (local.get $target) (local.get $start))
+      (then
+        (local.set $k (i32.const 0))
+        (block $fd (loop $fl
+          (br_if $fd (i32.ge_s (local.get $k) (local.get $count)))
+          (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $target) (local.get $k))
+            (call $__typed_get_idx (local.get $ptr) (i32.add (local.get $start) (local.get $k)))))
+          (local.set $k (i32.add (local.get $k) (i32.const 1)))
+          (br $fl))))
+      (else
+        (local.set $k (local.get $count))
+        (block $bd (loop $bl
+          (br_if $bd (i32.le_s (local.get $k) (i32.const 0)))
+          (local.set $k (i32.sub (local.get $k) (i32.const 1)))
+          (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $target) (local.get $k))
+            (call $__typed_get_idx (local.get $ptr) (i32.add (local.get $start) (local.get $k)))))
+          (br $bl)))))
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  // .sort() — default numeric order (insertion sort, stable). NaN sorts to the end,
+  // -0 before +0 (the equal-value tiebreak via signed-bit compare). BigInt arrays are
+  // compared as signed i64 on their exact bits. A user comparator is handled inline by
+  // the .typed:sort emitter (this helper is the no-argument numeric path).
+  ctx.core.stdlib['__typed_sort'] = `(func $__typed_sort (param $ptr i64) (result f64)
+    (local $isbig i32) (local $len i32) (local $i i32) (local $j i32) (local $saved f64) (local $nb f64)
+    (local.set $isbig (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})))
+    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $i (i32.const 1))
+    (block $od (loop $ol
+      (br_if $od (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $saved (call $__typed_get_idx (local.get $ptr) (local.get $i)))
+      (local.set $j (i32.sub (local.get $i) (i32.const 1)))
+      (block $id (loop $il
+        (br_if $id (i32.lt_s (local.get $j) (i32.const 0)))
+        (local.set $nb (call $__typed_get_idx (local.get $ptr) (local.get $j)))
+        (br_if $id (i32.eqz
+          (if (result i32) (local.get $isbig)
+            (then (i64.gt_s (i64.reinterpret_f64 (local.get $nb)) (i64.reinterpret_f64 (local.get $saved))))
+            (else (if (result i32) (f64.ne (local.get $nb) (local.get $nb))
+              (then (i32.eqz (f64.ne (local.get $saved) (local.get $saved))))
+              (else (if (result i32) (f64.ne (local.get $saved) (local.get $saved))
+                (then (i32.const 0))
+                (else (if (result i32) (f64.gt (local.get $nb) (local.get $saved))
+                  (then (i32.const 1))
+                  (else (if (result i32) (f64.lt (local.get $nb) (local.get $saved))
+                    (then (i32.const 0))
+                    (else (i64.gt_s (i64.reinterpret_f64 (local.get $nb)) (i64.reinterpret_f64 (local.get $saved)))))))))))))))
+        (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $j) (i32.const 1)) (local.get $nb)))
+        (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+        (br $il)))
+      (drop (call $__typed_set_idx (local.get $ptr) (i32.add (local.get $j) (i32.const 1)) (local.get $saved)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $ol)))
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
   ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
     inc('__typed_fill')
     return typed(['call', '$__typed_fill',
@@ -996,6 +1118,67 @@ export default (ctx) => {
       val == null ? undefExpr() : asF64(emit(val)),
       start == null ? ['i32.const', 0] : asI32(emit(start)),
       end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+  }
+
+  // .reverse() / .copyWithin(...) for typed arrays. The plain-array helpers gate on
+  // PTR.ARRAY and silently no-op a typed receiver; these go through the element-kind-
+  // aware get/set helpers so every width and signedness reverses/moves correctly.
+  ctx.core.emit['.typed:reverse'] = (arr) => {
+    inc('__typed_reverse')
+    return typed(['call', '$__typed_reverse', asI64(emit(arr))], 'f64')
+  }
+
+  ctx.core.emit['.typed:copyWithin'] = (arr, target, start, end) => {
+    inc('__typed_copyWithin')
+    return typed(['call', '$__typed_copyWithin',
+      asI64(emit(arr)),
+      target == null ? ['i32.const', 0] : asI32(emit(target)),
+      start == null ? ['i32.const', 0] : asI32(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+  }
+
+  // .sort(compareFn?) for typed arrays. No argument → the numeric __typed_sort helper
+  // (typed-array default is NUMERIC, unlike Array.sort's lexicographic default — so it
+  // must NOT route through the plain-array string comparator). With a comparator, an
+  // insertion sort is emitted inline, calling the closure per neighbor compare; a
+  // positive return shifts (same convention as Array.prototype.sort).
+  ctx.core.emit['.typed:sort'] = (arr, fn) => {
+    if (fn == null) {
+      inc('__typed_sort')
+      return typed(['call', '$__typed_sort', asI64(emit(arr))], 'f64')
+    }
+    inc('__len', '__typed_get_idx', '__typed_set_idx')
+    const arrL = temp('tsa'), cbL = temp('tsf')
+    const len = tempI32('tsn'), i = tempI32('tsi'), j = tempI32('tsj')
+    const cur = temp('tsc'), nb = temp('tsb')
+    const id = ctx.func.uniq++
+    const oE = `$tsoe${id}`, oL = `$tsol${id}`, iE = `$tsie${id}`, iL = `$tsil${id}`
+    const ptr = () => ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]
+    const jp1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${arrL}`, asF64(emit(arr))],
+      ['local.set', `$${cbL}`, asF64(emit(fn))],
+      ['local.set', `$${len}`, ['call', '$__len', ptr()]],
+      ['local.set', `$${i}`, ['i32.const', 1]],
+      ['block', oE, ['loop', oL,
+        ['br_if', oE, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${cur}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${i}`]]],
+        ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['block', iE, ['loop', iL,
+          ['br_if', iE, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
+          ['local.set', `$${nb}`, ['call', '$__typed_get_idx', ptr(), ['local.get', `$${j}`]]],
+          // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN (spec NaN-as-0).
+          ['br_if', iE, ['i32.eqz', ['f64.gt',
+            asF64(ctx.closure.call(typed(['local.get', `$${cbL}`], 'f64'),
+              [typed(['local.get', `$${nb}`], 'f64'), typed(['local.get', `$${cur}`], 'f64')])),
+            ['f64.const', 0]]]],
+          ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${nb}`]]],
+          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
+          ['br', iL]]],
+        ['drop', ['call', '$__typed_set_idx', ptr(), jp1, ['local.get', `$${cur}`]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', oL]]],
+      ['local.get', `$${arrL}`]], 'f64')
   }
 
   // Type-aware TypedArray read: arr[i]
