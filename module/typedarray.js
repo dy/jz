@@ -201,6 +201,7 @@ export default (ctx) => {
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
+    __typed_fill: ['__len', '__typed_set_idx'],
     // __str_join uses __typed_idx when typedarray is loaded (plain arrays promoted to
     // Int32Array by promoteIntArrayLiterals can produce PTR.TYPED results via .map()).
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
@@ -965,6 +966,37 @@ export default (ctx) => {
                     (then (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $bits)))
                     (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))))
     (local.get $v))`
+
+  // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
+  // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
+  // element width differ); this loops the element-width-aware __typed_set_idx
+  // over the clamped range so every element kind (u8…f64, BigInt) fills correctly.
+  // start/end default 0/length, accept negatives, and clamp to [0, length].
+  ctx.core.stdlib['__typed_fill'] = `(func $__typed_fill (param $ptr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
+    (local $len i32) (local $i i32)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
+    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))
+    (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
+    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
+    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.const 0))))
+    (if (i32.gt_s (local.get $end) (local.get $len)) (then (local.set $end (local.get $len))))
+    (local.set $i (local.get $start))
+    (block $done (loop $fill
+      (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
+      (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $fill)))
+    (f64.reinterpret_i64 (local.get $ptr)))`
+
+  ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
+    inc('__typed_fill')
+    return typed(['call', '$__typed_fill',
+      asI64(emit(arr)),
+      val == null ? undefExpr() : asF64(emit(val)),
+      start == null ? ['i32.const', 0] : asI32(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+  }
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, i) => {

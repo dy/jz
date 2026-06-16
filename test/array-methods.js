@@ -668,3 +668,34 @@ test('.length =: typed array rejects with a clear fixed-size error', () => {
   throws(() => compile('export let f = (i) => { let a = new Float64Array(2); a[i] = 1; a.length = 5; return a.length }'), fixedSize)
   throws(() => compile('export let f = () => { let a = new Float64Array(2); a.length++; return a.length }'), fixedSize)
 })
+
+// === TypedArray .fill — regression for the silent-no-op bug ===
+// The plain-array `__arr_fill` gates on PTR.ARRAY and silently returned a typed
+// array UNCHANGED (a wrong result, no error). `.typed:fill` now loops the
+// element-width-aware `__typed_set_idx` over the clamped range.
+
+test('.fill: typed array fills (was a silent no-op)', () => {
+  const { f } = runHost(`export let f = (n) => { let a = new Float64Array(n); a.fill(5); return a[0] + a[n - 1] }`)
+  is(f(4), 10)
+})
+
+test('.fill: typed widths truncate like JS (Uint8 wraps, Int32 exact)', () => {
+  const u8 = runHost(`export let f = () => { let a = new Uint8Array(4); a.fill(300); return a[0] }`).f
+  const i32 = runHost(`export let f = () => { let a = new Int32Array(4); a.fill(-7); let s = 0; for (let i = 0; i < 4; i++) s += a[i]; return s }`).f
+  is(u8(), 44)      // 300 & 255
+  is(i32(), -28)
+})
+
+test('.fill: start/end and negatives clamp like JS', () => {
+  const r = runHost(`export let f = () => {
+    let a = new Float64Array(5); a.fill(9, 1, 3); a.fill(2, -1)
+    let s = 0; for (let i = 0; i < 5; i++) s = s * 10 + a[i]
+    return s
+  }`).f
+  is(r(), 9900 + 2)   // [0,9,9,0,2]
+})
+
+test('.fill: returns the array (chainable) + plain arrays still work', () => {
+  is(runHost(`export let f = () => { let a = new Float64Array(3); return a.fill(4)[1] }`).f(), 4)
+  is(run(`export let f = () => { let a = [1, 2, 3, 4]; a.fill(9); return a[0] + a[3] }`).f(), 18)
+})
