@@ -124,6 +124,15 @@ const makeTypedTracker = (get, set, del) => {
     }
     const ctor = typedElemCtor(rhs)
     if (ctor) return setOrInvalidate(ctor)
+    // `recv.subarray(...)` is a zero-copy VIEW aliasing the receiver's buffer — its elem
+    // ctor is the receiver's type with the `.view` flag, so the binding unboxes to a typed
+    // pointer and element writes take the descriptor-indirected path (not desc-as-data).
+    if (Array.isArray(rhs) && rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.'
+        && rhs[1][2] === 'subarray' && typeof rhs[1][1] === 'string') {
+      const recvCtor = resolveName(rhs[1][1])
+      if (recvCtor) return setOrInvalidate((recvCtor.endsWith('.view') ? recvCtor.slice(0, -5) : recvCtor) + '.view')
+      return
+    }
     // TYPED-narrowed call result carries its elem aux on f.sig.ptrAux — reverse-map
     // to a canonical ctor so the unboxed local's rep restores the same aux.
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {

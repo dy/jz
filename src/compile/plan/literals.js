@@ -200,6 +200,19 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
   return true
 }
+
+// `name.subarray(...)` returns a zero-copy VIEW that aliases `name`'s backing memory and
+// outlives the statement. Mirrored scalarization syncs scalars↔memory only AROUND each
+// unsafe statement, so a later write through the view never reaches `name`'s scalar slots
+// (and vice-versa) — the array must stay purely memory-backed. Detect the alias so the
+// scalarizer disqualifies the array entirely rather than mirroring it.
+const createsTypedArrayAlias = (node, name) => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.'
+      && node[1][1] === name && node[1][2] === 'subarray') return true
+  for (let i = 1; i < node.length; i++) if (createsTypedArrayAlias(node[i], name)) return true
+  return false
+}
 const rewriteScalarTypedArrayUses = (node, arrays) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
@@ -286,14 +299,16 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     const fixed = fixedScalarTypedArray(decl[2])
     if (fixed == null) continue
     const { len, coerce } = fixed
-    let hasSafeUse = false, hasUnsafeUse = false
+    let hasSafeUse = false, hasUnsafeUse = false, hasAliasUse = false
     for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
       if (!refsName(stmts[j], decl[1])) continue
       const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce)
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
+      hasAliasUse ||= createsTypedArrayAlias(stmts[j], decl[1])
     }
+    if (hasAliasUse) continue   // persistent aliasing view (subarray) — keep memory-backed
     if (hasUnsafeUse && (!hasSafeUse || coerce)) continue
     if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, coerce, mirrored: false })
     else mirrored.set(decl[1], { index: i, len, coerce, mirrored: true })

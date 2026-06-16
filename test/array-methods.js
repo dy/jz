@@ -830,3 +830,29 @@ test('.with: copy with one element replaced; negative index; OOB throws', () => 
   is(neg(), 9)   // -1 → last index
   throws(() => runHost(`export let f = () => { let a = new Float64Array(3); return a.with(5, 9)[0] }`).f(), /.*/)
 })
+
+// === TypedArray .subarray — a zero-copy aliasing VIEW (not a copy) ===
+// Was unimplemented (threw). Subtlety: small typed arrays are scalarized/mirrored, which
+// desyncs a persistent view from the array's storage — so a `subarray` receiver must be
+// kept memory-backed (createsTypedArrayAlias in plan/literals.js). f64 element writes
+// through the view were the canary for that bug.
+
+test('.subarray: zero-copy view — writes alias the parent both ways (all sizes)', () => {
+  const small = runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let v = a.subarray(1,4); v[1]=77; a[3]=88; return v[0]*1+v[1]*10+v[2]*100 + a[2]*1000 }`).f
+  const large = runHost(`export let f = () => { let a = new Float64Array(100); for (let i=0;i<100;i++) a[i]=i+1; let v = a.subarray(1,4); v[1]=77; return a[2] }`).f
+  is(small(), 88*100 + 77*10 + 2 + 77*1000)  // v=[2,77,88]; a[2]=77 (v[1] wrote it)
+  is(large(), 77)
+})
+
+test('.subarray: read, negative indices, one/zero args, length+byteOffset', () => {
+  is(runHost(`export let f = () => { let a = new Int32Array(5); for (let i=0;i<5;i++) a[i]=i*2; return a.subarray(1,4).join("-") }`).f(), '2-4-6')
+  is(runHost(`export let f = () => { let a = new Float64Array(6); for (let i=0;i<6;i++) a[i]=i+1; return a.subarray(-4,-1).join("-") }`).f(), '3-4-5')
+  is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; return a.subarray(2).join("-") }`).f(), '3-4-5')
+  is(runHost(`export let f = () => { let a = new Float64Array(5); let v = a.subarray(1,4); return v.length*100 + v.byteOffset }`).f(), 308)
+})
+
+test('.subarray: chained methods + sub-of-sub + Uint8 kind-aware', () => {
+  is(runHost(`export let f = () => { let a = new Uint8Array(5); for (let i=0;i<5;i++) a[i]=i+1; return a.subarray(1,4).map(x=>x*10).join("-") }`).f(), '20-30-40')
+  is(runHost(`export let f = () => { let a = new Float64Array(6); for (let i=0;i<6;i++) a[i]=i+1; let v = a.subarray(1,5); let w = v.subarray(1,3); w[0]=88; return a[2] }`).f(), 88)
+  is(runHost(`export let f = () => { let a = new Int16Array(5); for (let i=0;i<5;i++) a[i]=i*3; let v = a.subarray(2); v[0]=-9; return a[2] }`).f(), -9)
+})

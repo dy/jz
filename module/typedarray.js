@@ -847,18 +847,21 @@ export default (ctx) => {
    *      at the chain output (the result is always an owned typed array). */
   const TYPED_CHAIN_METHODS = new Set(['map', 'filter', 'slice'])
   const resolveElem = (arr) => {
-    let receiver = arr, chainOutput = false
+    let receiver = arr, chainOutput = false, viewOutput = false
     // Walk method-call chain inward. `arr.method(...)` parses as
-    // ['()', ['.', recv, 'method'], ...args] — peel until we hit a name.
+    // ['()', ['.', recv, 'method'], ...args] — peel until we hit a name. The OUTERMOST
+    // op decides view-ness: `.subarray(...)` yields a zero-copy VIEW (reads must indirect
+    // through the descriptor), whereas `.map`/`.slice`/… yield a fresh non-view copy.
     while (Array.isArray(receiver) && receiver[0] === '()' &&
         Array.isArray(receiver[1]) && receiver[1][0] === '.' &&
-        TYPED_CHAIN_METHODS.has(receiver[1][2])) {
+        (TYPED_CHAIN_METHODS.has(receiver[1][2]) || receiver[1][2] === 'subarray')) {
+      if (!chainOutput) viewOutput = receiver[1][2] === 'subarray'
       receiver = receiver[1][1]
       chainOutput = true
     }
     const ctor = typeof receiver === 'string' && ctx.types.typedElem?.get(receiver)
     if (!ctor) return null
-    const isView = !chainOutput && ctor.endsWith('.view')
+    const isView = viewOutput || (!chainOutput && ctor.endsWith('.view'))
     const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
     const et = TYPED_ELEM_CODE[name]
     return et == null ? null : { et, isView, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array' }
@@ -1805,4 +1808,45 @@ export default (ctx) => {
   // .subarray(begin, end) — a zero-copy VIEW sharing the receiver's buffer (writes alias,
   // NOT a copy). Builds the 16-byte descriptor [byteLen][dataOff][parentOff] and tags the
   // TYPED ptr with aux|view, exactly like new TypedArray(buffer, byteOffset, length).
+  ctx.core.emit['.typed:subarray'] = (arr, begin, end) => {
+    const r = resolveElem(arr)
+    if (!r) return null
+    const { et, isView, isBigInt } = r
+    const shift = SHIFT[et]
+    const viewAux = et | 8 | (isBigInt ? 16 : 0)
+    const arrL = temp('tua'), srcOff = tempI32('tuo'), data = tempI32('tud'), root = tempI32('tur')
+    const len = tempI32('tul'), lo = tempI32('tulo'), hi = tempI32('tuhi'), n = tempI32('tun'), desc = tempI32('tude')
+    inc('__len')
+    const off4 = (o) => ['i32.load', ['i32.add', ['local.get', `$${srcOff}`], ['i32.const', o]]]
+    const clamp = (boundExpr, dflt, name) => {
+      if (boundExpr == null) return dflt
+      const v = tempI32(name)
+      return ['block', ['result', 'i32'],
+        ['local.set', `$${v}`, asI32(emit(boundExpr))],
+        ['if', ['i32.lt_s', ['local.get', `$${v}`], ['i32.const', 0]],
+          ['then', ['local.set', `$${v}`, ['i32.add', ['local.get', `$${v}`], ['local.get', `$${len}`]]]]],
+        ['if', ['i32.lt_s', ['local.get', `$${v}`], ['i32.const', 0]],
+          ['then', ['local.set', `$${v}`, ['i32.const', 0]]]],
+        ['if', ['i32.gt_s', ['local.get', `$${v}`], ['local.get', `$${len}`]],
+          ['then', ['local.set', `$${v}`, ['local.get', `$${len}`]]]],
+        ['local.get', `$${v}`]]
+    }
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${arrL}`, asF64(emit(arr))],
+      ['local.set', `$${srcOff}`, typedBase(typed(['local.get', `$${arrL}`], 'f64'))],
+      ['local.set', `$${data}`, isView ? off4(4) : ['local.get', `$${srcOff}`]],
+      ['local.set', `$${root}`, isView ? off4(8) : ['local.get', `$${srcOff}`]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
+      ['local.set', `$${lo}`, clamp(begin, ['i32.const', 0], 'tub')],
+      ['local.set', `$${hi}`, clamp(end, ['local.get', `$${len}`], 'tue')],
+      ['local.set', `$${n}`, ['select',
+        ['i32.sub', ['local.get', `$${hi}`], ['local.get', `$${lo}`]], ['i32.const', 0],
+        ['i32.gt_s', ['local.get', `$${hi}`], ['local.get', `$${lo}`]]]],
+      ['local.set', `$${desc}`, ['call', '$__alloc', ['i32.const', 16]]],
+      ['i32.store', ['local.get', `$${desc}`], ['i32.shl', ['local.get', `$${n}`], ['i32.const', shift]]],
+      ['i32.store', ['i32.add', ['local.get', `$${desc}`], ['i32.const', 4]],
+        ['i32.add', ['local.get', `$${data}`], ['i32.shl', ['local.get', `$${lo}`], ['i32.const', shift]]]],
+      ['i32.store', ['i32.add', ['local.get', `$${desc}`], ['i32.const', 8]], ['local.get', `$${root}`]],
+      mkPtrIR(PTR.TYPED, viewAux, ['local.get', `$${desc}`])], 'f64')
+  }
 }
