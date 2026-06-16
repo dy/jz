@@ -2286,6 +2286,229 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
+/**
+ * Divergent escape-time vectorizer — 2-wide f64x2, bit-exact with scalar f64.
+ *
+ * Recognizes the canonical fractal escape-time nest (mandelbrot / julia / …):
+ *
+ *   for (px = 0; px < W; px++) {            // outer pixel loop (i32 IV)
+ *     cx = <expr in px>                     // per-pixel coordinate
+ *     zx = 0; zy = 0; it = 0
+ *     while (it < MAXIT) {                  // inner escape loop
+ *       x2 = zx*zx; y2 = zy*zy
+ *       if (x2 + y2 > T) break              // data-dependent escape (before update)
+ *       zy = <f(zx,zy,cy)>; zx = <g(x2,y2,cx)>
+ *       it++
+ *     }
+ *     out[..px..] = it                      // integer iteration count
+ *   }
+ *
+ * Two adjacent pixels run in f64x2 lockstep with a per-lane active mask. A lane
+ * is frozen (v128.bitselect) the instant it would escape or reach MAXIT, so its
+ * it/zx/zy stay bit-identical to the scalar loop — f64x2 arithmetic is IEEE-
+ * identical to scalar f64 (no FMA fusion). The mask order mirrors scalar control
+ * flow exactly: limit then escape are tested BEFORE the update; iter += active
+ * (active lane = all-ones = -1 ⇒ +1, frozen = 0 ⇒ +0). Odd widths fall through
+ * to the original scalar pixel loop (the tail), so coverage is exact.
+ *
+ * Only the integer-iteration-count shape is matched here (store value is exactly
+ * `it`); smooth-coloured variants that read the post-loop z keep their scalar
+ * path. f64x2 keeps full f64 precision so the differential checksum is identical.
+ */
+const ESC_KEEP = { 'f64.gt': 'f64x2.le', 'f64.ge': 'f64x2.lt', 'f64.lt': 'f64x2.ge', 'f64.le': 'f64x2.gt' }
+
+function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  const oLabel = (typeof blockNode[1] === 'string' && blockNode[1].startsWith('$')) ? blockNode[1] : null
+  if (!oLabel) return null
+  // Block may carry LICM-hoisted invariants (`local.set …`) before the loop; they
+  // feed both the SIMD path and the scalar tail, so capture them as a preamble.
+  let loopNode = null, loopPos = -1
+  for (let i = 2; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (!isArr(c)) return null
+    if (c[0] === 'loop') { if (loopNode) return null; loopNode = c; loopPos = i }
+    else if (loopNode) return null              // statement after the loop → bail
+    else if (c[0] !== 'local.set') return null  // preamble must be pure local.set
+  }
+  if (!loopNode) return null
+  const preamble = blockNode.slice(2, loopPos)
+  const llabel = (typeof loopNode[1] === 'string' && loopNode[1].startsWith('$')) ? loopNode[1] : null
+  if (!llabel) return null
+  const oEnd = loopNode.length - 1
+  if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
+  const pxVar = matchInc1(loopNode[oEnd - 1])
+  if (!pxVar || fnLocals.get(pxVar) !== 'i32') return null
+  const oExit = matchExitBrIf(loopNode[2], oLabel)
+  if (!oExit || oExit.ind !== pxVar) return null
+  const widthBound = oExit.bound
+  // widthBound is re-evaluated for the SIMD guard; require it pure (local/const).
+  if (!(isLocalGet(widthBound) || isI32Const(widthBound))) return null
+
+  // Outer body = statements between the exit guard [2] and px++ [oEnd-1].
+  const obody = loopNode.slice(3, oEnd - 1)
+  let innerIdx = -1, innerBlock = null
+  for (let i = 0; i < obody.length; i++) {
+    const s = obody[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) {
+      if (innerBlock) return null
+      innerBlock = s; innerIdx = i
+    }
+  }
+  if (!innerBlock) return null
+  const iLabel = (typeof innerBlock[1] === 'string' && innerBlock[1].startsWith('$')) ? innerBlock[1] : null
+  if (!iLabel) return null
+  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
+  const ilLabel = (typeof innerLoop[1] === 'string' && innerLoop[1].startsWith('$')) ? innerLoop[1] : null
+  if (!ilLabel) return null
+
+  // ---- match the inner escape loop: [sq, sq, escape br_if, upd, upd] + it++ ----
+  const iEnd = innerLoop.length - 1
+  if (!(isArr(innerLoop[iEnd]) && innerLoop[iEnd][0] === 'br' && innerLoop[iEnd][1] === ilLabel)) return null
+  const itVar = matchInc1(innerLoop[iEnd - 1])
+  if (!itVar || fnLocals.get(itVar) !== 'i32') return null
+  const iExit = matchExitBrIf(innerLoop[2], iLabel)
+  if (!iExit || iExit.ind !== itVar) return null
+  const maxitExpr = iExit.bound
+
+  const ibody = innerLoop.slice(3, iEnd - 1)
+  if (ibody.length !== 5) return null
+  // squares: x2 = base*base
+  const sqStmt = (st) => {
+    if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3) return null
+    const v = st[2]
+    if (!isArr(v) || v[0] !== 'f64.mul' || !isLocalGet(v[1]) || !isLocalGet(v[2]) || v[1][1] !== v[2][1]) return null
+    return { sq: st[1], base: v[1][1] }
+  }
+  const sq0 = sqStmt(ibody[0]), sq1 = sqStmt(ibody[1])
+  if (!sq0 || !sq1 || sq0.base === sq1.base || sq0.sq === sq1.sq) return null
+  const sqOf = new Map([[sq0.sq, sq0.base], [sq1.sq, sq1.base]])
+  const baseSet = new Set([sq0.base, sq1.base])
+  // escape br_if (CMP (f64.add s_a s_b) THRESH) targeting the inner block
+  const esc = ibody[2]
+  if (!(isArr(esc) && esc[0] === 'br_if' && esc[1] === iLabel)) return null
+  const escCond = esc[2]
+  if (!isArr(escCond) || !ESC_KEEP[escCond[0]]) return null
+  const sumNode = escCond[1], threshNode = escCond[2]
+  if (!isArr(sumNode) || sumNode[0] !== 'f64.add' || !isLocalGet(sumNode[1]) || !isLocalGet(sumNode[2])) return null
+  if (!(sqOf.has(sumNode[1][1]) && sqOf.has(sumNode[2][1]) && sumNode[1][1] !== sumNode[2][1])) return null
+  if (!(isArr(threshNode) && (threshNode[0] === 'f64.const' ||
+        (threshNode[0] === 'local.get' && !baseSet.has(threshNode[1]) && !sqOf.has(threshNode[1]))))) return null
+  // updates: the last two stmts set the two base vars
+  const upd = new Map()
+  for (const st of [ibody[3], ibody[4]]) {
+    if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3 || !baseSet.has(st[1]) || upd.has(st[1])) return null
+    upd.set(st[1], st[2])
+  }
+  if (upd.size !== 2) return null
+
+  // ---- c-vars: free local.gets in the update exprs (minus bases, squares, it) ----
+  const known = new Set([...baseSet, ...sqOf.keys(), itVar])
+  const cVars = new Set()
+  const liftable = (n) => {
+    if (!isArr(n)) return false
+    if (n[0] === 'local.get') { if (!known.has(n[1])) cVars.add(n[1]); return true }
+    if (n[0] === 'f64.const') return true
+    if (LANE_PURE.f64.has(n[0])) { for (let i = 1; i < n.length; i++) if (!liftable(n[i])) return false; return true }
+    return false
+  }
+  if (!liftable(upd.get(sq0.base)) || !liftable(upd.get(sq1.base))) return null
+
+  // ---- outer body: inits + innerBlock + single store(it); reject anything else ----
+  const refs = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => refs(c, name)))
+  let storeStmt = null
+  const perPxInit = new Map()
+  for (let i = 0; i < obody.length; i++) {
+    if (i === innerIdx) continue
+    const s = obody[i]
+    if (!isArr(s)) return null
+    if (s[0] === 'local.set' && s.length === 3) {
+      const tgt = s[1]
+      if (baseSet.has(tgt) || sqOf.has(tgt)) {
+        if (!(isArr(s[2]) && s[2][0] === 'f64.const' && Number(s[2][1]) === 0)) return null
+      } else if (tgt === itVar) {
+        if (constNum(s[2]) !== 0) return null
+      } else if (cVars.has(tgt)) {
+        perPxInit.set(tgt, s[2])
+      } else return null
+      continue
+    }
+    if ((s[0] === 'i32.store' || s[0] === 'i32.store16' || s[0] === 'i32.store8') && s.length === 3) {
+      if (i < innerIdx || storeStmt || !isLocalGet(s[2], itVar) || !refs(s[1], pxVar)) return null
+      storeStmt = s
+      continue
+    }
+    return null
+  }
+  if (!storeStmt) return null
+
+  // ============================ emit ============================
+  const id = freshIdRef.next++
+  const nm = (s) => `$__esc${id}_${s}`
+  const shadow = new Map()                    // source f64 var → v128 shadow
+  for (const b of baseSet) shadow.set(b, nm('z' + b.replace(/\W/g, '')))
+  for (const s of sqOf.keys()) shadow.set(s, nm('q' + s.replace(/\W/g, '')))
+  const cLane = new Map()                      // c-var → v128 lane
+  for (const cv of cVars) cLane.set(cv, nm('c' + cv.replace(/\W/g, '')))
+  const nz = new Map()                         // base → new-value temp (commit after)
+  for (const b of baseSet) nz.set(b, nm('n' + b.replace(/\W/g, '')))
+  const iterV = nm('iter'), activeV = nm('act')
+
+  const newLocalDecls = []
+  for (const n of [...shadow.values(), ...cLane.values(), ...nz.values(), iterV, activeV]) newLocalDecls.push(['local', n, 'v128'])
+
+  const lift = (n) => {
+    if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
+    if (n[0] === 'f64.const') return ['f64x2.splat', n]
+    return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
+  }
+  const pxPlus1 = (n) => isLocalGet(n, pxVar) ? ['i32.add', ['local.get', pxVar], ['i32.const', 1]] : (isArr(n) ? n.map(pxPlus1) : n)
+
+  // preamble: c lanes + shadow/iter/active inits (per pixel-pair)
+  const pre = []
+  for (const cv of cVars) {
+    if (perPxInit.has(cv)) {
+      const e0 = perPxInit.get(cv)
+      pre.push(['local.set', cLane.get(cv), ['f64x2.replace_lane', 1, ['f64x2.splat', e0], pxPlus1(e0)]])
+    } else pre.push(['local.set', cLane.get(cv), ['f64x2.splat', ['local.get', cv]]])
+  }
+  for (const b of baseSet) pre.push(['local.set', shadow.get(b), ['f64x2.splat', ['f64.const', 0]]])
+  pre.push(['local.set', iterV, ['v128.const', 'i32x4', '0', '0', '0', '0']])
+  pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
+
+  // SIMD inner loop
+  const sIn = nm('ib'), sIl = nm('il')
+  const maxitV = ['i64x2.splat', ['i64.extend_i32_s', maxitExpr]]
+  const sumV = ['f64x2.add', ['local.get', shadow.get(sumNode[1][1])], ['local.get', shadow.get(sumNode[2][1])]]
+  const sbody = []
+  for (const [s, b] of sqOf) sbody.push(['local.set', shadow.get(s), ['f64x2.mul', ['local.get', shadow.get(b)], ['local.get', shadow.get(b)]]])
+  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], ['i64x2.lt_s', ['local.get', iterV], maxitV]]])
+  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], [ESC_KEEP[escCond[0]], sumV, ['f64x2.splat', threshNode]]]])
+  sbody.push(['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]])
+  for (const b of baseSet) sbody.push(['local.set', nz.get(b), ['v128.bitselect', lift(upd.get(b)), ['local.get', shadow.get(b)], ['local.get', activeV]]])
+  for (const b of baseSet) sbody.push(['local.set', shadow.get(b), ['local.get', nz.get(b)]])
+  sbody.push(['local.set', iterV, ['i64x2.sub', ['local.get', iterV], ['local.get', activeV]]])
+  const simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
+
+  // extract + 2 stores (lane 1 address = addr[px+1])
+  const store0 = [storeStmt[0], storeStmt[1], ['i32.wrap_i64', ['i64x2.extract_lane', 0, ['local.get', iterV]]]]
+  const store1 = [storeStmt[0], pxPlus1(storeStmt[1]), ['i32.wrap_i64', ['i64x2.extract_lane', 1, ['local.get', iterV]]]]
+
+  // SIMD outer loop: px in [0, W & ~1) by 2
+  const sOut = nm('ob'), sOl = nm('ol')
+  const simdOuter = ['block', sOut, ['loop', sOl,
+    ['br_if', sOut, ['i32.eqz', ['i32.lt_s', ['local.get', pxVar], ['i32.and', widthBound, ['i32.const', -2]]]]],
+    ...pre, simdInner, store0, store1,
+    ['local.set', pxVar, ['i32.add', ['local.get', pxVar], ['i32.const', 2]]],
+    ['br', sOl]]]
+
+  // wrapper: run the hoisted preamble once, then the SIMD even-pixel loop, then the
+  // scalar tail loop (preamble-free — the invariants are already set) for the odd pixel.
+  const tailBlock = ['block', oLabel, loopNode]
+  const wrapper = ['block', nm('w'), ...preamble, simdOuter, tailBlock]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Pass entry ------------------------------------------------------------
 
 /**
@@ -2322,7 +2545,8 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
       if (isArr(node[i])) walk(node, i)
     }
     if (node[0] === 'block') {
-      const r = tryMemCopyFill(node, fnLocals, freshIdRef)
+      const r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
+        ?? tryMemCopyFill(node, fnLocals, freshIdRef)
         ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
         ?? tryRampMap(node, fnLocals, freshIdRef)

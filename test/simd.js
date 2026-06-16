@@ -1492,3 +1492,83 @@ test('widen minmax: zero-iteration SIMD range cannot clamp the accumulator', () 
   is(runVec(src, SIMD_OPT).go(3), 3)
   is(runVec(src, SIMD_OPT).go(32), 32)
 })
+
+// === Divergent escape-time vectorizer (f64x2 masked lockstep, bit-exact) ===
+// Two adjacent pixels run in f64x2 lockstep; a lane is frozen via v128.bitselect
+// the instant it escapes or hits MAXIT, so it/zx/zy stay bit-identical to scalar.
+// The differential fuzzer never generates escape-time loops, so these hand-written
+// oracle checks (SIMD == NOVEC scalar, every regime) are the correctness gate.
+
+// Build an escape-time kernel over a parametric grid + iteration map.
+const escKern = (W, H, MAXIT, x0, dx, y0, dy, map) => `
+  const W=${W}, H=${H}, MAXIT=${MAXIT}, X0=${x0}, DX=${dx}, Y0=${y0}, DY=${dy}
+  let out = new Uint32Array(W*H)
+  export let render = () => {
+    for (let py=0; py<H; py++) {
+      let cy = Y0 + py*DY
+      for (let px=0; px<W; px++) {
+        let cx = X0 + px*DX
+        let zx=0.0, zy=0.0, i=0
+        while (i < MAXIT) {
+          let x2=zx*zx, y2=zy*zy
+          if (x2+y2 > 4.0) break
+          ${map}
+          i++
+        }
+        out[py*W+px] = i
+      }
+    }
+  }
+  export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }
+`
+const MANDEL = `zy = 2.0*zx*zy + cy; zx = x2 - y2 + cx`
+const JULIA  = `zy = 2.0*zx*zy + 0.27015; zx = x2 - y2 + (-0.8)`
+// The divergent-escape recognizer needs the full speed pipeline (LICM preamble +
+// i32-narrowed pixel IV), so compare at 'speed' with vectorization the only delta.
+const ESC_VEC = { optimize: 'speed' }
+const ESC_SCALAR = { optimize: { level: 'speed', vectorizeLaneLocal: false } }
+// Run both pipelines, return [scalarChecksum, simdChecksum, vectorized?].
+const escRun = (src) => {
+  const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
+  s.render(); d.render()
+  return [s.cs() >>> 0, d.cs() >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+}
+
+test('escape-time f64x2 - mandelbrot bit-exact + vectorized', () => {
+  const [sc, dc, vec] = escRun(escKern(64,64,256,-2.0,2.5/64,-1.25,2.5/64, MANDEL))
+  is(dc, sc); ok(vec, 'SIMD lockstep fired')
+})
+
+test('escape-time f64x2 - odd width falls to scalar tail (bit-exact)', () => {
+  const [sc, dc, vec] = escRun(escKern(63,64,256,-2.0,2.5/63,-1.25,2.5/64, MANDEL))
+  is(dc, sc); ok(vec, 'even pixels still vectorized')
+})
+
+test('escape-time f64x2 - all-escape@0 (far field)', () => {
+  const [sc, dc] = escRun(escKern(32,32,64,10.0,1.0,10.0,1.0, MANDEL))
+  is(dc, sc)
+})
+
+test('escape-time f64x2 - never-escape interior (it=MAXIT)', () => {
+  const [sc, dc] = escRun(escKern(32,32,128,-0.5,0.001,0.0,0.001, MANDEL))
+  is(dc, sc)
+})
+
+test('escape-time f64x2 - MAXIT edges (1, 2, 3)', () => {
+  for (const m of [1, 2, 3]) {
+    const [sc, dc] = escRun(escKern(32,16,m,-2.0,2.5/32,-1.25,2.5/16, MANDEL))
+    is(dc, sc, `MAXIT=${m}`)
+  }
+})
+
+test('escape-time f64x2 - high MAXIT=1000', () => {
+  const [sc, dc] = escRun(escKern(48,48,1000,-2.0,2.5/48,-1.25,2.5/48, MANDEL))
+  is(dc, sc)
+})
+
+test('escape-time f64x2 - julia (fixed c, invariant lanes) + odd width', () => {
+  const [sc1, dc1, vec1] = escRun(escKern(64,64,256,-1.5,3.0/64,-1.5,3.0/64, JULIA))
+  is(dc1, sc1); ok(vec1, 'julia vectorized')
+  const [sc2, dc2] = escRun(escKern(65,40,256,-1.5,3.0/65,-1.5,3.0/40, JULIA))
+  is(dc2, sc2)
+})
