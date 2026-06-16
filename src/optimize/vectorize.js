@@ -2550,11 +2550,9 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   for (const v of [...carried, ...temp]) shadow.set(v, nm('z' + v.replace(/\W/g, '')))
   const cLane = new Map()
   for (const cv of cVars) cLane.set(cv, nm('c' + cv.replace(/\W/g, '')))
-  const nzv = new Map()                          // carried → committed-new temp (avoid intra-iter aliasing)
-  for (const v of carried) nzv.set(v, nm('n' + v.replace(/\W/g, '')))
   const iterV = nm('iter'), activeV = nm('act'), maxitLane = nm('lim')
   const newLocalDecls = []
-  for (const n of [...shadow.values(), ...cLane.values(), ...nzv.values(), iterV, activeV, maxitLane]) newLocalDecls.push(['local', n, 'v128'])
+  for (const n of [...shadow.values(), ...cLane.values(), iterV, activeV, maxitLane]) newLocalDecls.push(['local', n, 'v128'])
 
   const lift = (n) => {
     if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
@@ -2633,10 +2631,10 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]])
     } else {
       const v = ibody[i][1]
-      if (carried.has(v)) {
-        sbody.push(['local.set', nzv.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
-        sbody.push(['local.set', shadow.get(v), ['local.get', nzv.get(v)]])
-      } else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])   // temp: raw recompute
+      // Carried: freeze frozen lanes via bitselect, committing into the shadow immediately so a
+      // later update in the same iteration reads the new value — sequential, exactly like scalar.
+      if (carried.has(v)) sbody.push(['local.set', shadow.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
+      else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])   // temp: raw recompute
     }
   }
   sbody.push(['local.set', iterV, ['v128.bitselect', ['f64x2.add', ['local.get', iterV], ['f64x2.splat', ['f64.const', 1]]], ['local.get', iterV], ['local.get', activeV]]])
