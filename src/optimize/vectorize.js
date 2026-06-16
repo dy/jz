@@ -2316,13 +2316,38 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
  * extracted x/y/it, with the pixel IVs advanced by +0/+1. Odd widths and extra
  * lanes fall through to the original scalar pixel loop (the exact tail).
  */
-const ESC_NEG = {  // comparison → its logical negation (NaN-free domain: active lanes are finite)
+const CMP_NEG = {  // comparison → its logical negation (active lanes are finite → NaN-free)
   'f64.gt': 'f64.le', 'f64.ge': 'f64.lt', 'f64.lt': 'f64.ge', 'f64.le': 'f64.gt', 'f64.eq': 'f64.ne', 'f64.ne': 'f64.eq',
+  'i32.lt_s': 'i32.ge_s', 'i32.ge_s': 'i32.lt_s', 'i32.gt_s': 'i32.le_s', 'i32.le_s': 'i32.gt_s',
+  'i32.lt_u': 'i32.ge_u', 'i32.ge_u': 'i32.lt_u', 'i32.gt_u': 'i32.le_u', 'i32.le_u': 'i32.gt_u',
 }
-const ESC_LANE = {  // f64 scalar compare → f64x2 lane compare
+const CMP_LANE = {  // f64/i32 scalar compare → f64x2 lane compare (iter is f64x2; z-compares are f64)
   'f64.gt': 'f64x2.gt', 'f64.ge': 'f64x2.ge', 'f64.lt': 'f64x2.lt', 'f64.le': 'f64x2.le', 'f64.eq': 'f64x2.eq', 'f64.ne': 'f64x2.ne',
+  'i32.lt_s': 'f64x2.lt', 'i32.le_s': 'f64x2.le', 'i32.ge_s': 'f64x2.ge', 'i32.gt_s': 'f64x2.gt',
+  'i32.lt_u': 'f64x2.lt', 'i32.le_u': 'f64x2.le', 'i32.ge_u': 'f64x2.ge', 'i32.gt_u': 'f64x2.gt',
 }
 const readsVar = (n, v) => isArr(n) && ((n[0] === 'local.get' && n[1] === v) || n.some(c => readsVar(c, v)))
+const writesName = (n, name) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee' || n[0] === 'global.set') && n[1] === name) || n.some(c => writesName(c, name)))
+// Pixel induction variables may be i32 (const-bound loops) or f64 (param-bound loops,
+// e.g. `for (x=0; x<width; ++x)` with f64 `width`). Match `v += 1` and `v < bound` for both.
+const matchPixelInc = (stmt) => {
+  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+  const x = stmt[1], v = stmt[2]
+  if (!isArr(v) || v.length !== 3 || !isLocalGet(v[1], x)) return null
+  if (v[0] === 'i32.add' && constNum(v[2]) === 1) return { name: x, type: 'i32' }
+  if (v[0] === 'f64.add' && isArr(v[2]) && v[2][0] === 'f64.const' && Number(v[2][1]) === 1) return { name: x, type: 'f64' }
+  return null
+}
+const matchPixelExit = (stmt, label) => {
+  if (!isArr(stmt) || stmt[0] !== 'br_if' || stmt[1] !== label) return null
+  const cond = stmt[2]
+  if (!isArr(cond) || cond[0] !== 'i32.eqz') return null
+  const cmp = cond[1]
+  if (!isArr(cmp) || !isLocalGet(cmp[1])) return null
+  if (cmp[0] === 'i32.lt_s' || cmp[0] === 'i32.lt_u') return { ind: cmp[1][1], bound: cmp[2], cmpOp: cmp[0], type: 'i32' }
+  if (cmp[0] === 'f64.lt') return { ind: cmp[1][1], bound: cmp[2], cmpOp: cmp[0], type: 'f64' }
+  return null
+}
 
 function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
@@ -2345,18 +2370,20 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const oEnd = loopNode.length - 1
   if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
   // Trailing `v += 1` statements are the pixel IVs (loop IV + parallel counters like `j`).
-  const pixelIVs = []
+  const pixelIVs = []   // [{ name, type }]
   let pivStart = oEnd
   for (let i = oEnd - 1; i >= 3; i--) {
-    const v = matchInc1(loopNode[i])
-    if (!v || fnLocals.get(v) !== 'i32') break
-    pixelIVs.unshift(v); pivStart = i
+    const m = matchPixelInc(loopNode[i])
+    if (!m) break
+    pixelIVs.unshift(m); pivStart = i
   }
   if (!pixelIVs.length) return null
-  const oExit = matchExitBrIf(loopNode[2], oLabel)
-  if (!oExit || !pixelIVs.includes(oExit.ind)) return null
+  const oExit = matchPixelExit(loopNode[2], oLabel)
+  const pxIV = oExit && pixelIVs.find(p => p.name === oExit.ind && p.type === oExit.type)
+  if (!pxIV) return null
   const pxVar = oExit.ind                       // the loop-bound pixel IV
   const widthBound = oExit.bound
+  const pivType = new Map(pixelIVs.map(p => [p.name, p.type]))
   // The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
   // a constant, or a local/global that the loop nest never writes.
   if (isI32Const(widthBound)) { /* ok */ }
@@ -2377,50 +2404,92 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   }
   if (!innerBlock) return null
   const iLabel = (typeof innerBlock[1] === 'string' && innerBlock[1].startsWith('$')) ? innerBlock[1] : null
-  if (!iLabel || innerBlock.length !== 3) return null
-  const innerLoop = innerBlock[2]
+  if (!iLabel || innerBlock.length < 3) return null
+  const innerLoop = innerBlock[innerBlock.length - 1]
   if (!isArr(innerLoop) || innerLoop[0] !== 'loop') return null
   const ilLabel = (typeof innerLoop[1] === 'string' && innerLoop[1].startsWith('$')) ? innerLoop[1] : null
   if (!ilLabel) return null
+  // The inner block may also carry LICM-hoisted invariants (e.g. BAILOUT) before the loop.
+  // They must be pixel-pair-invariant (read only outer-invariants) so one copy feeds both
+  // lanes; hoist them ahead of the SIMD loop.
+  const innerPre = innerBlock.slice(2, innerBlock.length - 1)
+  for (const s of innerPre) {
+    if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3) return null
+    const inv = (n) => !isArr(n) || ((n[0] === 'local.get' || n[0] === 'global.get') ? !writesName(loopNode, n[1]) : n.every((c, i) => i === 0 || inv(c)))
+    if (!inv(s[2])) return null
+  }
 
-  // ---- inner escape loop: it-limited while-cond, body (f64 updates + 1 escape break), it++ ----
+  // ---- inner escape loop: a top while-cond + body (f64 updates + one mid-break) + it++.
+  // The two continue/break conditions are an `it < MAXIT` limit and a `|z|² vs T` escape,
+  // in EITHER order (mandelbrot/ship: limit at top; example-mandelbrot: escape at top). ----
   const iEnd = innerLoop.length - 1
   if (!(isArr(innerLoop[iEnd]) && innerLoop[iEnd][0] === 'br' && innerLoop[iEnd][1] === ilLabel)) return null
   const itVar = matchInc1(innerLoop[iEnd - 1])
   if (!itVar || fnLocals.get(itVar) !== 'i32') return null
-  const iExit = matchExitBrIf(innerLoop[2], iLabel)   // (i32.eqz (i32.lt_{s,u} it MAXIT))
-  if (!iExit || iExit.ind !== itVar) return null
-  const maxitExpr = iExit.bound
 
-  // body = updates (f64 local.set) + exactly one escape `br_if iLabel (f64-cmp z-expr T)`
+  // A break statement (br_if, or `if BC (then (br iLabel))`) → its break-when condition.
+  const breakCond = (s) => {
+    if (!isArr(s)) return null
+    if (s[0] === 'br_if' && s[1] === iLabel) return s[2]
+    if (s[0] === 'if' && s.length === 3 && isArr(s[2]) && s[2][0] === 'then' && s[2].length === 2 &&
+        isArr(s[2][1]) && s[2][1][0] === 'br' && s[2][1][1] === iLabel) return s[1]
+    return null
+  }
+  // keep (continue) condition = ¬(break cond); a while-guard arrives pre-negated as (i32.eqz …).
+  const keepOf = (bc) => {
+    if (!isArr(bc)) return null
+    if (bc[0] === 'i32.eqz' && isArr(bc[1])) return bc[1]
+    return CMP_NEG[bc[0]] ? [CMP_NEG[bc[0]], bc[1], bc[2]] : null
+  }
+  const topBc = breakCond(innerLoop[2])
+  const keepTop = topBc && keepOf(topBc)
+  if (!keepTop) return null
   const ibody = innerLoop.slice(3, iEnd - 1)
-  let escIdx = -1
+  let midIdx = -1, keepMid = null
   for (let i = 0; i < ibody.length; i++) {
-    const s = ibody[i]
-    if (isArr(s) && s[0] === 'br_if' && s[1] === iLabel) { if (escIdx >= 0) return null; escIdx = i }
-    else if (!(isArr(s) && s[0] === 'local.set' && s.length === 3 && fnLocals.get(s[1]) === 'f64')) return null
+    const bc = breakCond(ibody[i])
+    if (bc) { if (midIdx >= 0) return null; midIdx = i; keepMid = keepOf(bc); if (!keepMid) return null }
+    else if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
   }
-  if (escIdx < 0) return null
-  const escapeCond = ibody[escIdx][2]
-  if (!isArr(escapeCond) || !ESC_NEG[escapeCond[0]]) return null      // escape must be an f64 compare
-  const escKeepOp = ESC_LANE[ESC_NEG[escapeCond[0]]]                  // keep = ¬escape
+  if (midIdx < 0) return null
 
-  // classify f64 vars written in the body: loop-carried (first access is a READ) vs temp (WRITE)
-  const carried = new Set(), temp = new Set()
-  for (const s of ibody) {
-    if (s[0] !== 'local.set') continue
-    const v = s[1]
-    if (carried.has(v) || temp.has(v)) continue
-    let decided = false
-    for (const t of ibody) {
-      const val = t[0] === 'local.set' ? t[2] : t[2]
-      if (readsVar(val, v)) { carried.add(v); decided = true; break }
-      if (t[0] === 'local.set' && t[1] === v) { temp.add(v); decided = true; break }
-    }
-    if (!decided) temp.add(v)
+  // classify f64 vars written across [top-guard, …body…]: loop-carried (first access a READ)
+  // vs within-iteration temp (first access a WRITE — including squares tee'd in the guard).
+  const seq = [innerLoop[2], ...ibody]
+  const written = new Set()
+  const collectW = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && fnLocals.get(n[1]) === 'f64') written.add(n[1]); for (let i = 1; i < n.length; i++) collectW(n[i]) }
+  seq.forEach(collectW)
+  const carried = new Set(), temp = new Set(), seen = new Set()
+  const classify = (n) => {
+    if (!isArr(n)) return
+    if (n[0] === 'local.get') { const v = n[1]; if (written.has(v) && !seen.has(v)) { seen.add(v); carried.add(v) }; return }
+    if (n[0] === 'local.set' || n[0] === 'local.tee') { classify(n[2]); const v = n[1]; if (written.has(v) && !seen.has(v)) { seen.add(v); temp.add(v) }; return }
+    for (let i = 1; i < n.length; i++) classify(n[i])
   }
+  seq.forEach(classify)
 
-  // c-vars: f64 locals read in the body but never written there (the per-pixel/invariant inputs)
+  // hoist tees out of the keep conditions into explicit temp computations
+  const tees = []
+  const detee = (n) => isArr(n) ? (n[0] === 'local.tee' ? (tees.push({ tgt: n[1], expr: detee(n[2]) }), ['local.get', n[1]]) : n.map(detee)) : n
+  const keepTopC = [keepTop[0], detee(keepTop[1]), detee(keepTop[2])]
+  const teeTop = tees.length
+  const keepMidC = [keepMid[0], detee(keepMid[1]), detee(keepMid[2])]
+
+  // each keep is an it-limit (mentions `it` directly or via convert) or a z-escape; need one of each
+  const isIt = (n) => isLocalGet(n, itVar) || (isArr(n) && n[0] === 'f64.convert_i32_s' && isLocalGet(n[1], itVar))
+  const kindOf = (k) => (isIt(k[1]) || isIt(k[2])) ? 'limit' : 'escape'
+  const kTop = kindOf(keepTopC), kMid = kindOf(keepMidC)
+  if (kTop === kMid) return null
+  const limitKeep = kTop === 'limit' ? keepTopC : keepMidC
+  const itLeft = isIt(limitKeep[1])
+  const boundExpr = itLeft ? limitKeep[2] : limitKeep[1]
+  const boundI32 = limitKeep[0].startsWith('i32.')
+  // limit bound must be loop-invariant (splatted once per pair): no carried/temp ref, not written
+  for (const v of [...carried, ...temp]) if (readsVar(boundExpr, v)) return null
+  const boundInvariant = (n) => !isArr(n) || ((n[0] !== 'local.get' && n[0] !== 'global.get') || !writesName(loopNode, n[1])) && n.every((c, i) => i === 0 || boundInvariant(c))
+  if (!boundInvariant(boundExpr)) return null
+
+  // c-vars: f64 locals read in the lifted exprs but never written there (per-pixel/invariant inputs)
   const cVars = new Set()
   const liftable = (n) => {
     if (!isArr(n)) return false
@@ -2433,8 +2502,10 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     if (LANE_PURE.f64.has(n[0])) { for (let i = 1; i < n.length; i++) if (!liftable(n[i])) return false; return true }
     return false
   }
-  for (const s of ibody) if (s[0] === 'local.set' && !liftable(s[2])) return null
-  if (!liftable(escapeCond[1]) || !liftable(escapeCond[2])) return null
+  for (const t of tees) if (!liftable(t.expr)) return null
+  for (let i = 0; i < ibody.length; i++) if (i !== midIdx && !liftable(ibody[i][2])) return null
+  const escapeKeep = kTop === 'escape' ? keepTopC : keepMidC
+  if (!liftable(escapeKeep[1]) || !liftable(escapeKeep[2])) return null
 
   // ---- pre-inner inits + epilogue ----
   const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
@@ -2475,18 +2546,18 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   for (const cv of cVars) cLane.set(cv, nm('c' + cv.replace(/\W/g, '')))
   const nzv = new Map()                          // carried → committed-new temp (avoid intra-iter aliasing)
   for (const v of carried) nzv.set(v, nm('n' + v.replace(/\W/g, '')))
-  const iterV = nm('iter'), activeV = nm('act')
+  const iterV = nm('iter'), activeV = nm('act'), maxitLane = nm('lim')
   const newLocalDecls = []
-  for (const n of [...shadow.values(), ...cLane.values(), ...nzv.values(), iterV, activeV]) newLocalDecls.push(['local', n, 'v128'])
+  for (const n of [...shadow.values(), ...cLane.values(), ...nzv.values(), iterV, activeV, maxitLane]) newLocalDecls.push(['local', n, 'v128'])
 
   const lift = (n) => {
     if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
     if (n[0] === 'f64.const') return ['f64x2.splat', n]
     return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
   }
-  const bump = (n, k) => k === 0 ? n           // substitute every pixel-IV with (IV + k)
-    : (isArr(n) && n[0] === 'local.get' && pixelIVs.includes(n[1]))
-      ? ['i32.add', n, ['i32.const', k]]
+  const bump = (n, k) => k === 0 ? n           // substitute every pixel-IV with (IV + k), in its type
+    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1]))
+      ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
       : (isArr(n) ? n.map(c => bump(c, k)) : n)
 
   // preamble (per pixel-pair): c-lanes, carried seeds, iter=0, active=all-ones
@@ -2500,16 +2571,28 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   for (const v of carried) pre.push(['local.set', shadow.get(v), ['f64x2.splat', carriedInit.get(v)]])
   pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
   pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
+  pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
 
-  // SIMD inner loop — masking mirrors scalar control flow in source order
+  // AND a keep condition into the active mask: limit compares iter (f64x2) to the bound;
+  // escape lifts its z-comparison to lanes. Both reduce to a finite-domain f64x2 compare.
+  const keepMask = (keep, isLimit) => isLimit
+    ? [CMP_LANE[limitKeep[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
+    : [CMP_LANE[keep[0]], lift(keep[1]), lift(keep[2])]
+  const teeStmts = (range) => range.map(t => ['local.set', shadow.get(t.tgt), lift(t.expr)])
+
+  // SIMD inner loop — masking mirrors scalar control flow in source order. The tees of
+  // the top guard are computed first; the top keep masks; then the body runs in order
+  // with the mid-break keep applied at its position; then iter increments active lanes.
   const sIn = nm('ib'), sIl = nm('il')
-  const maxitF = ['f64x2.splat', ['f64.convert_i32_s', maxitExpr]]
-  const sbody = []
-  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], ['f64x2.lt', ['local.get', iterV], maxitF]]])
-  sbody.push(['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]])
+  const sbody = [
+    ...teeStmts(tees.slice(0, teeTop)),
+    ['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepTopC, kTop === 'limit')]],
+    ['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]],
+  ]
   for (let i = 0; i < ibody.length; i++) {
-    if (i === escIdx) {
-      sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], [escKeepOp, lift(escapeCond[1]), lift(escapeCond[2])]]])
+    if (i === midIdx) {
+      sbody.push(...teeStmts(tees.slice(teeTop)))
+      sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]])
     } else {
       const v = ibody[i][1]
       if (carried.has(v)) {
@@ -2532,18 +2615,19 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     return out
   }
 
-  // SIMD outer loop: pixel IVs in [0, W & ~1) by 2
+  // SIMD outer loop: process a pair while x+1 is still a valid pixel (x+1 < bound), then
+  // advance every pixel IV by 2 (in its own type). The scalar tail finishes any last pixel.
   const sOut = nm('ob'), sOl = nm('ol')
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', ['i32.lt_s', ['local.get', pxVar], ['i32.and', widthBound, ['i32.const', -2]]]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
     ...pre, simdInner, ...epiLane(0), ...epiLane(1),
-    ...pixelIVs.map(v => ['local.set', v, ['i32.add', ['local.get', v], ['i32.const', 2]]]),
+    ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
 
-  // wrapper: hoisted preamble once, then the SIMD even-pixel loop, then the original
-  // scalar block (preamble-free) handles the odd-pixel tail from where the IVs stopped.
+  // wrapper: hoisted preambles once (outer + inner-block invariants like BAILOUT), then the
+  // SIMD even-pixel loop, then the original scalar block handles the odd-pixel tail.
   const tailBlock = ['block', oLabel, loopNode]
-  const wrapper = ['block', nm('w'), ...preamble, simdOuter, tailBlock]
+  const wrapper = ['block', nm('w'), ...preamble, ...innerPre, simdOuter, tailBlock]
   return { wrapper, newLocalDecls }
 }
 

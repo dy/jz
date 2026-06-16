@@ -1645,3 +1645,61 @@ test('escape-time f64x2 - burning-ship tiny widths (1,2,3 → tail)', () => {
     is(b, a, `ship width=${w}`)
   }
 })
+
+// Dual-exit structure (example-mandelbrot): the ESCAPE is the while-condition (with
+// squares tee'd in the guard and reused in the body), the it-LIMIT is a mid-break, the
+// pixel IV is f64 (param-bound `while (x < width)`), and the colour reads post-loop z.
+// Exercises: symmetric top/mid keep matching (escape-at-top), tee extraction, the
+// f64-converted limit compare (iter kept as f64x2), and f64 pixel-IV stepping.
+const DUAL = (limit, colour) => `
+  let mem = new Uint32Array(1<<18)
+  const BAILOUT = 4.0, MAXIT = ${limit}
+  export let render = (width, height, scale, cx, cy) => {
+    let y = 0
+    while (y < height) {
+      let imag = y*scale + cy
+      let x = 0
+      while (x < width) {
+        let real = x*scale + cx
+        let ix = 0.0, iy = 0.0, ixSq = 0.0, iySq = 0.0, it = 0
+        while ((ixSq = ix*ix) + (iySq = iy*iy) <= BAILOUT) {
+          iy = 2.0*ix*iy + imag
+          ix = ixSq - iySq + real
+          if (it >= MAXIT) break
+          it++
+        }
+        ${colour}
+        x++
+      }
+      y++
+    }
+  }
+  export let cs = (n) => { let h=0x811c9dc5|0; for(let i=0;i<n;i++) h=((h^mem[i])*0x01000193)|0; return h>>>0 }
+`
+const DUAL_SMOOTH = `
+  let col = 0
+  let sqd = ix*ix + iy*iy
+  if (sqd > BAILOUT) {
+    let v = (it + 1.0 - Math.log2(0.5*Math.log(sqd))) / MAXIT
+    if (v < 0.0) v = 0.0
+    if (v > 1.0) v = 1.0
+    col = (v*255.0)|0
+  }
+  mem[(y*width + x)|0] = col`
+const DUAL_INT = `mem[(y*width + x)|0] = it`
+const dualRun = (src, ...a) => {
+  const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
+  s.render(...a); d.render(...a)
+  return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+}
+
+test('escape-time f64x2 - dual-exit smooth colour (escape=while-cond, f64 IV)', () => {
+  const [sc, dc, vec] = dualRun(DUAL(256, DUAL_SMOOTH), 64, 48, 0.05, -2.0, -1.2)
+  is(dc, sc); ok(vec, 'dual-exit vectorized')
+})
+
+test('escape-time f64x2 - dual-exit integer + odd width + low limit', () => {
+  let r = dualRun(DUAL(256, DUAL_INT), 64, 48, 0.05, -2.0, -1.2); is(r[1], r[0]); ok(r[2])
+  r = dualRun(DUAL(256, DUAL_SMOOTH), 63, 40, 0.06, -2.0, -1.2); is(r[1], r[0])
+  r = dualRun(DUAL(3, DUAL_SMOOTH), 48, 32, 0.08, -2.0, -1.2); is(r[1], r[0])
+})
