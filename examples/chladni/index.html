@@ -3,49 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Chladni plate - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: move; }
-  /* frequency readout: top-center, bare white text with a soft dark outline (no box) */
-  #freq { position: fixed; left: 50%; top: 56px; transform: translateX(-50%); z-index: 40;
-    font: 600 15px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
-    color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7);
-    pointer-events: none; }
-  #freq small { opacity: .7; font-weight: 500; margin-left: .15em; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="freq">— <small>Hz</small></div>
+<!-- frequency readout: top-center, bare white text with a soft dark outline (no box) -->
+<div id="freq" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 15px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.04em;color:#fff;text-shadow:0 0 3px rgba(0,0,0,.9),0 0 1px rgba(0,0,0,.9),0 1px 2px rgba(0,0,0,.7);pointer-events:none">— <small style="opacity:.7;font-weight:500;margin-left:.15em">Hz</small></div>
 
 <script type="module">
-import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
-
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let img, out32, px
-
-// Full-screen at device-pixel res; the kernel maps to the plate with one uniform scale,
-// so the nodal figure stays square at any aspect (the long side just shows more of it).
-const sizeTo = (engine) => {
-  const dpr = Math.min(2, window.devicePixelRatio || 1)
-  const W = Math.round(innerWidth * dpr) >> 1 << 1, H = Math.round(innerHeight * dpr) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0, t = 0
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./chladni.js", wasm: "./chladni.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-addEventListener("resize", () => engine && sizeTo(engine))
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // A Chladni plate only resonates at DISCRETE eigenmodes, so the engine snaps the frequency to
 // the nearest (n,m) pair — a band of frequencies legitimately shares one figure. 1 ≤ n < m ≤ 12
@@ -59,38 +24,23 @@ const setPos = (p) => {
   pos = p < 0 ? 0 : p > 1 ? 1 : p; dirty = true
   freqEl.innerHTML = fmtHz(posToFreq(pos))
 }
-const setSharp = (p) => { if (engine?.setSharpness) engine.setSharpness(5 + p * 55) }
+const setSharp = (p) => { if (demo.engine?.setSharpness) demo.engine.setSharpness(5 + p * 55) }
 
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  if (dirty) {
-    const t0 = performance.now()
-    engine.frame(posToFreq(pos))
-    const ms = performance.now() - t0
-    ui.paint(px, out32); g.putImageData(img, 0, 0); dirty = false
-    ui.frame(ms)
-  } else ui.frame()
-}
+const demo = runDemo({
+  name: "chladni",
+  hint: "Chladni plate — nodal figures of a vibrating plate",
+  size: { dpr: 2, budget: null },
+  cursor: "move",
+  load: (e) => { setPos(0.35) },
+  frame: (e) => {
+    if (dirty) { e.frame(posToFreq(pos)); dirty = false }
+  },
+})
 
 // Drag to sweep eigenmodes (horizontal) and line sharpness (vertical). No effect on hover.
-const ptr = trackPointer(cv)
-cv.addEventListener("pointermove", () => { if (ptr.down) { setPos(ptr.x); setSharp(ptr.y) } })
-cv.addEventListener("pointerdown", (e) => { try { cv.setPointerCapture(e.pointerId) } catch {}; setPos(ptr.x); setSharp(ptr.y) })
-cv.addEventListener("pointerup", (e) => { try { cv.releasePointerCapture(e.pointerId) } catch {} })
-
-const ui = hud({
-  kind: "jz", hint: "Chladni plate — nodal figures of a vibrating plate",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/chladni",
-  code: "./chladni.js",
-  nav: "chladni",
-  onSwitch: setEngine,
-  onPalette: () => { dirty = true },   // re-blit through the new LUT (chladni only paints when dirty)
-})
-await setEngine(ui.kind)
-setPos(0.35)          // start on a clear mid-range mode and show its frequency
-loop()
+const ptr = trackPointer(demo.cv)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) { setPos(ptr.x); setSharp(ptr.y) } })
+demo.cv.addEventListener("pointerdown", () => { setPos(ptr.x); setSharp(ptr.y) })
 </script>
 </body>
 </html>

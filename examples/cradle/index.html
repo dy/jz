@@ -3,76 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Newton's cradle - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #f2f0ea; color: #222;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
-  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
-    font-size: 13px; color: #fff; opacity: .95; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); pointer-events: none; transition: opacity .5s; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hint">Newton's cradle — kinetic energy passing through</div>
-
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-const sizeTo = (engine) => {
-  const budget = 1800000
-  let scale = Math.min(2, window.devicePixelRatio || 1)
-  const want = innerWidth * innerHeight * scale * scale
-  if (want > budget) scale *= Math.sqrt(budget / want)
-  W = Math.round(innerWidth * scale) >> 1 << 1
-  H = Math.round(innerHeight * scale) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./cradle.js", wasm: "./cradle.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-addEventListener("resize", () => engine && sizeTo(engine))
-// drag any ball to pull it aside; release to let it swing
-const sx = () => W / cv.clientWidth, sy = () => H / cv.clientHeight
+// Drag any ball to pull it aside; release to let it swing. Double-click resets.
+const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
 let dragging = false
-cv.addEventListener("pointerdown", (e) => { if (!engine) return; dragging = true; try { cv.setPointerCapture(e.pointerId) } catch {}; engine.grab(e.offsetX * sx(), e.offsetY * sy()) })
-cv.addEventListener("pointermove", (e) => { if (dragging && engine) engine.dragTo(e.offsetX * sx()) })
-cv.addEventListener("pointerup", (e) => { dragging = false; engine?.release(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener("pointerleave", () => { dragging = false; engine?.release() })
-cv.addEventListener("dblclick", () => engine && engine.init())
 
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  const t0 = performance.now()
-  engine.frame(0)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/cradle",
-  code: "./cradle.js",
-  nav: "cradle",
-  onSwitch: setEngine,
+const demo = runDemo({
+  name: "cradle",
+  hint: "Newton's cradle — kinetic energy passing through",
+  size: { budget: 1800000, dpr: 2 },
+  bg: "#f2f0ea",
+  cursor: "pointer",
+  frame: (e) => e.frame(0),
 })
-await setEngine(ui.kind)
-loop()
+
+const cv = demo.cv
+cv.addEventListener("pointerdown", (e) => { if (!demo.engine) return; dragging = true; try { cv.setPointerCapture(e.pointerId) } catch {}; demo.engine.grab(e.offsetX * sx(demo), e.offsetY * sy(demo)) })
+cv.addEventListener("pointermove", (e) => { if (dragging && demo.engine) demo.engine.dragTo(e.offsetX * sx(demo)) })
+cv.addEventListener("pointerup", (e) => { dragging = false; demo.engine?.release(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { dragging = false; demo.engine?.release() })
+cv.addEventListener("dblclick", () => demo.engine && demo.engine.init())
 </script>
 </body>
 </html>

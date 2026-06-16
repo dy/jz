@@ -3,73 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Reaction-Diffusion - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
-  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
-    font-size: 13px; color: #fff; opacity: .95; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); pointer-events: none; transition: opacity .5s; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hint">Gray–Scott reaction–diffusion</div>
-
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
-
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-// internal resolution: capped so Gray-Scott runs at ~60fps
-const sizeTo = (engine) => {
-  const dpr = Math.min(1, window.devicePixelRatio || 1)   // Gray-Scott is heavy — full screen at CSS-pixel res
-  W = Math.round(innerWidth  * dpr) >> 1 << 1
-  H = Math.round(innerHeight * dpr) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0
+import { runDemo } from "../lib/jzdemo.js"
 
 // Seeds are stored NORMALISED ([0,1] rects) so they survive a resize / engine swap; the host
 // converts to pixels and drives the engine, so js and jz get identical seeds → identical fields.
-let seeds = []
-const applySeeds = () => {
-  if (!engine) return
+let seeds = [], seeded = false
+const applySeeds = (engine, demo) => {
   engine.clear()
-  for (const [x0, y0, x1, y1] of seeds) engine.seedRect(x0 * W | 0, y0 * H | 0, x1 * W | 0, y1 * H | 0)
+  for (const [x0, y0, x1, y1] of seeds) engine.seedRect(x0 * demo.W | 0, y0 * demo.H | 0, x1 * demo.W | 0, y1 * demo.H | 0)
 }
 const randRect = () => {
   const cx = 0.12 + Math.random() * 0.76, cy = 0.12 + Math.random() * 0.76
   const sx = 0.03 + Math.random() * 0.09, sy = 0.03 + Math.random() * 0.09
   return [cx - sx, cy - sy, cx + sx, cy + sy]
 }
-const scatter = () => { seeds = [randRect(), randRect()]; if (Math.random() < 0.6) seeds.push(randRect()); applySeeds() }
+const scatter = (engine, demo) => { seeds = [randRect(), randRect()]; if (Math.random() < 0.6) seeds.push(randRect()); applySeeds(engine, demo) }
 
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./diffusion.js", wasm: "./diffusion.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine); setParams(); applySeeds()   // re-seed the same field on the new engine
-}
-
-addEventListener("resize", () => { if (engine) { sizeTo(engine); applySeeds() } })
+const demo = runDemo({
+  name: "diffusion",
+  hint: "Gray–Scott reaction–diffusion",
+  size: { dpr: 1, budget: null },
+  frame: (e) => e.frame(),
+  load: (e, d) => {
+    e.setParams?.(0.054, 0.062)
+    if (!seeded) { seeded = true; scatter(e, d) }   // first load: randomise the field
+    else applySeeds(e, d)                            // resize/swap: re-apply same seeds
+  },
+})
 
 // Pointer interaction: drag to paint, right-drag to erase. Stamps are interpolated
 // between successive points so a fast drag paints a continuous line, not dots.
-const hint = document.getElementById("hint")
-let drawing = false, erasing = false, lastX = 0, lastY = 0
 const R = 8
+let drawing = false, erasing = false, lastX = 0, lastY = 0
 const stampAt = (px, py, erase) => {
-  if (!engine) return
-  const cx = px * W / cv.clientWidth, cy = py * H / cv.clientHeight
-  if (erase) engine.eraseBrush(cx, cy, R)
-  else engine.seedBrush(cx, cy, R)
+  if (!demo.engine) return
+  const cx = px * demo.W / demo.cv.clientWidth, cy = py * demo.H / demo.cv.clientHeight
+  if (erase) demo.engine.eraseBrush(cx, cy, R)
+  else demo.engine.seedBrush(cx, cy, R)
 }
 const strokeTo = (px, py, erase) => {
   const dx = px - lastX, dy = py - lastY
@@ -79,43 +53,19 @@ const strokeTo = (px, py, erase) => {
   for (let i = 1; i <= n; i++) stampAt(lastX + dx * i / n, lastY + dy * i / n, erase)
   lastX = px; lastY = py
 }
-cv.addEventListener("pointerdown", (e) => {
+demo.cv.addEventListener("pointerdown", (e) => {
   drawing = true
   erasing = e.button === 2
-  try { cv.setPointerCapture(e.pointerId) } catch {}
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
   lastX = e.offsetX; lastY = e.offsetY
-  stampAt(e.offsetX, e.offsetY, erasing)})
-cv.addEventListener("pointermove", (e) => {
+  stampAt(e.offsetX, e.offsetY, erasing)
+})
+demo.cv.addEventListener("pointermove", (e) => {
   if (drawing) strokeTo(e.offsetX, e.offsetY, erasing)
 })
-cv.addEventListener("pointerup", (e) => { drawing = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener("pointerleave", () => { drawing = false })
-cv.addEventListener("contextmenu", e => e.preventDefault())
-
-// Fixed Gray–Scott params tuned for coral/labyrinth growth (no hover control).
-const setParams = () => engine?.setParams?.(0.054, 0.062)
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  const t0 = performance.now()
-  engine.frame()
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/diffusion",
-  code: "./diffusion.js",
-  nav: "diffusion",
-  onSwitch: setEngine,
-})
-await setEngine(ui.kind)
-scatter()                     // start on random squares, not the fixed pair
-loop()
+demo.cv.addEventListener("pointerup", (e) => { drawing = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { drawing = false })
+demo.cv.addEventListener("contextmenu", e => e.preventDefault())
 </script>
 </body>
 </html>

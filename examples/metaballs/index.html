@@ -3,78 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Metaballs - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-
 <script type="module">
-import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
-
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-const sizeTo = (engine) => {
-  // Per-pixel field sum over every blob is heavy — cap to ~1 MP, CSS upscales the
-  // smooth gradient with no visible loss.
-  const budget = 1000000
-  let scale = Math.min(2, window.devicePixelRatio || 1)
-  const want = innerWidth * innerHeight * scale * scale
-  if (want > budget) scale *= Math.sqrt(budget / want)
-  W = Math.round(innerWidth * scale) >> 1 << 1
-  H = Math.round(innerHeight * scale) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0, t = 0
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./metaballs.js", wasm: "./metaballs.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine); engine.init()
-}
-addEventListener("resize", () => engine && sizeTo(engine))
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // Press and hold to grow a new blob under the cursor; release to let it drift.
-const ptr = trackPointer(cv)
 let holding = false
-cv.addEventListener('pointerdown', (e) => {
+const demo = runDemo({
+  name: "metaballs",
+  hint: "metaballs — a 2D implicit surface · hold to grow one",
+  size: { budget: 1000000, dpr: 2 },
+  load: (e) => { e.init() },
+  frame: (e, t) => {
+    if (holding && e.grow) e.grow(ptr.x, ptr.y)
+    e.frame(t)
+  },
+})
+
+const ptr = trackPointer(demo.cv)
+demo.cv.addEventListener("pointerdown", (e) => {
   holding = true
-  try { cv.setPointerCapture(e.pointerId) } catch {}
-  engine?.spawn?.(ptr.x, ptr.y)
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+  demo.engine?.spawn?.(ptr.x, ptr.y)
 })
-cv.addEventListener('pointerup', (e) => { holding = false; engine?.release?.(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener('pointerleave', () => { if (holding) { holding = false; engine?.release?.() } })
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  t += 1 / 60
-  if (holding && engine.grow) engine.grow(ptr.x, ptr.y)
-  const t0 = performance.now()
-  engine.frame(t)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz", hint: "metaballs — a 2D implicit surface · hold to grow one",
-  code: "./metaballs.js",
-  nav: "metaballs",
-  onSwitch: setEngine,
+demo.cv.addEventListener("pointerup", (e) => {
+  holding = false; demo.engine?.release?.()
+  try { demo.cv.releasePointerCapture(e.pointerId) } catch {}
 })
-await setEngine(ui.kind)
-loop()
+demo.cv.addEventListener("pointerleave", () => { if (holding) { holding = false; demo.engine?.release?.() } })
 </script>
 </body>
 </html>

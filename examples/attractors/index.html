@@ -3,72 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Strange attractor - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; image-rendering: pixelated; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
-
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px, engine = null, gen = 0, t = 0
-
-const sizeTo = (e) => {
-  const dpr = Math.min(1.5, window.devicePixelRatio || 1)   // density splat — resolution is ~free, fill the screen
-  W = Math.round(innerWidth * dpr) >> 1 << 1
-  H = Math.round(innerHeight * dpr) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = e.resize(W, H)
-}
+import { runDemo } from "../lib/jzdemo.js"
 
 // a base point in de-Jong parameter space; slow LFOs drift all four params (no hover).
 // Click anywhere to jump to a fresh random attractor.
 let base = [1.9, -2.5, 1.7, -0.3]
 const ITERS = 1_200_000
-cv.addEventListener("pointerdown", () => { base = base.map(() => Math.random() * 6 - 3) })
 
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./attractors.js", wasm: "./attractors.simd.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-addEventListener("resize", () => engine && sizeTo(engine))
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  t += 1 / 60
-  const a = base[0] + Math.sin(t * 0.05) * 0.22
-  const b = base[1] + Math.cos(t * 0.08) * 0.22
-  const c = base[2] + Math.sin(t * 0.07) * 0.22
-  const d = base[3] + Math.cos(t * 0.13) * 0.22
-  const t0 = performance.now()
-  engine.frame(a, b, c, d, ITERS)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz", hint: "a de Jong strange attractor · click to morph it",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/attractors",
-  code: "./attractors.js",
-  nav: "attractors",
-  onSwitch: setEngine,
+const demo = runDemo({
+  name: "attractors",
+  hint: "a de Jong strange attractor · click to morph it",
+  size: { dpr: 1.5, budget: null },
+  wasm: "attractors.simd",
+  cursor: "pointer",
+  frame: (e, t) => {
+    const a = base[0] + Math.sin(t * 0.05) * 0.22
+    const b = base[1] + Math.cos(t * 0.08) * 0.22
+    const c = base[2] + Math.sin(t * 0.07) * 0.22
+    const d = base[3] + Math.cos(t * 0.13) * 0.22
+    e.frame(a, b, c, d, ITERS)
+  },
 })
-await setEngine(ui.kind)
-loop()
+demo.cv.addEventListener("pointerdown", () => { base = base.map(() => Math.random() * 6 - 3) })
 </script>
 </body>
 </html>

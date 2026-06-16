@@ -3,81 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Cloth - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #f3f1ec; color: #222;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
-  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
-    font-size: 13px; color: #fff; opacity: .95; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); pointer-events: none; transition: opacity .5s; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hint">a spring-mass cloth — grab and swing it</div>
-
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-const sizeTo = (engine) => {
-  const budget = 600000
-  let scale = Math.min(1.5, window.devicePixelRatio || 1)
-  const want = innerWidth * innerHeight * scale * scale
-  if (want > budget) scale *= Math.sqrt(budget / want)
-  W = Math.round(innerWidth * scale) >> 1 << 1
-  H = Math.round(innerHeight * scale) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./cloth.js", wasm: "./cloth.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-addEventListener("resize", () => engine && sizeTo(engine))
-
-const hint = document.getElementById("hint")
-const sx = () => W / cv.clientWidth, sy = () => H / cv.clientHeight
-let dragging = false
-cv.addEventListener("pointerdown", (e) => {
-  if (!engine) return
-  dragging = true; cv.style.cursor = "grabbing"
-  try { cv.setPointerCapture(e.pointerId) } catch {}
-  engine.grab(e.offsetX * sx(), e.offsetY * sy());})
-cv.addEventListener("pointermove", (e) => { if (dragging && engine) engine.drag(e.offsetX * sx(), e.offsetY * sy()) })
-cv.addEventListener("pointerup", (e) => { dragging = false; cv.style.cursor = "grab"; engine?.release(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener("pointerleave", () => { dragging = false; cv.style.cursor = "grab"; engine?.release() })
-cv.addEventListener("dblclick", () => engine && engine.init())
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  const t0 = performance.now()
-  engine.frame(0)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/cloth",
-  code: "./cloth.js",
-  nav: "cloth",
-  onSwitch: setEngine,
+const demo = runDemo({
+  name: "cloth",
+  hint: "a spring-mass cloth — grab and swing it",
+  size: { dpr: 1.5, budget: 600000 },
+  bg: "#f3f1ec",
+  cursor: "grab",
+  frame: (e) => e.frame(0),
 })
-await setEngine(ui.kind)
-loop()
+
+const sx = () => demo.W / demo.cv.clientWidth, sy = () => demo.H / demo.cv.clientHeight
+let dragging = false
+demo.cv.addEventListener("pointerdown", (e) => {
+  if (!demo.engine) return
+  dragging = true; demo.cv.style.cursor = "grabbing"
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+  demo.engine.grab(e.offsetX * sx(), e.offsetY * sy())
+})
+demo.cv.addEventListener("pointermove", (e) => { if (dragging && demo.engine) demo.engine.drag(e.offsetX * sx(), e.offsetY * sy()) })
+demo.cv.addEventListener("pointerup", (e) => { dragging = false; demo.cv.style.cursor = "grab"; demo.engine?.release(); try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { dragging = false; demo.cv.style.cursor = "grab"; demo.engine?.release() })
+demo.cv.addEventListener("dblclick", () => demo.engine && demo.engine.init())
 </script>
 </body>
 </html>

@@ -3,84 +3,80 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Conway's Game of Life - jz</title>
-<link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #100707; cursor: cell; user-select: none; }
-</style>
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
-<canvas></canvas>
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js";
+import { loadEngine, hud } from "../lib/jzdemo.js"
 
-const urls = { js: "./game-of-life.js", wasm: "./game-of-life.wasm" };
+const RGB_ALIVE = 0xffffff
+const RGB_DEAD  = 0x000000
+const BIT_ROT   = 10
+const rgb2bgr = (rgb) => ((rgb >>> 16) & 0xff) | (rgb & 0xff00) | (rgb & 0xff) << 16
+const aliveVal = ((rgb2bgr(RGB_ALIVE) | 1) | 0xff000000) >>> 0
+const deadVal  = ((rgb2bgr(RGB_DEAD) & ~1) | 0xff000000) >>> 0
 
-// Configuration
-const RGB_ALIVE = 0xffffff;
-const RGB_DEAD  = 0x000000;
-const BIT_ROT   = 10;
+// Create canvas manually (game-of-life uses init() not resize(), so runDemo can't be used)
+const s = document.createElement('style')
+s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:#100707;color:#eee;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}`
+  + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:cell}`
+document.head.appendChild(s)
+const cv = document.createElement('canvas')
+document.body.insertBefore(cv, document.body.firstChild)
+const ctx = cv.getContext('2d')
 
-// see assembly/index.ts on why this swap is useful
-const rgb2bgr = (rgb) => ((rgb >>> 16) & 0xff) | (rgb & 0xff00) | (rgb & 0xff) << 16;
+const dpr = Math.min(1, window.devicePixelRatio || 1)
+let W = Math.round(innerWidth * dpr) >> 1 << 1
+let H = Math.round(innerHeight * dpr) >> 1 << 1
+cv.width = W; cv.height = H
+let imageData = ctx.createImageData(W, H)
+let argb = new Uint32Array(imageData.data.buffer)
 
-// Set up the canvas with a 2D rendering context
-const canvas = document.getElementsByTagName("canvas")[0];
-const ctx = canvas.getContext("2d");
-const bcr = canvas.getBoundingClientRect();
+let engine, mem, gen = 0
+const size = () => W * H
 
-// Universe size — one cell per CSS pixel (crisp, fills the screen; was 2px/cell)
-const dpr = Math.min(1, window.devicePixelRatio || 1);
-const width  = bcr.width  * dpr | 0;
-const height = bcr.height * dpr | 0;
-const size   = width * height;
-
-canvas.width  = width;
-canvas.height = height;
-canvas.style = `image-rendering: pixelated; image-rendering: crisp-edges;`;
-ctx.imageSmoothingEnabled = false;
-
-const imageData = ctx.createImageData(width, height);
-const argb = new Uint32Array(imageData.data.buffer);
-
-const h = hud({ kind: "jz", hint: "Conway's Game of Life — right-drag to erase", code: "./game-of-life.js", nav: "game-of-life", onSwitch: start });
-
-let engine; // current engine
-let mem;    // shared buffer (input + output halves)
-const aliveVal = ((rgb2bgr(RGB_ALIVE) | 1) | 0xff000000) >>> 0;
-let gen = 0;
 async function start(kind) {
-  const my = ++gen;
-  engine = await loadEngine(kind, urls);
-  mem = engine.init(width, height, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT);
-
-  (function loop() {
-    if (my !== gen) return;
-    requestAnimationFrame(loop);
-    mem.copyWithin(0, size, 2 * size);       // output → input
-    const t0 = performance.now();
-    engine.step();                           // next generation
-    const work = performance.now() - t0;
-    if (drawing) spray(curX, curY, erasing); // continuous spray while held
-    h.paint(mem.subarray(size, 2 * size), argb);  // output → image
-    ctx.putImageData(imageData, 0, 0);
-    h.frame(work);
-  })();
+  const my = ++gen
+  engine = await loadEngine(kind, { js: './game-of-life.js', wasm: './game-of-life.wasm' })
+  if (my !== gen) return
+  W = Math.round(innerWidth * dpr) >> 1 << 1
+  H = Math.round(innerHeight * dpr) >> 1 << 1
+  cv.width = W; cv.height = H
+  imageData = ctx.createImageData(W, H); argb = new Uint32Array(imageData.data.buffer)
+  mem = engine.init(W, H, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT)
+  loop()
 }
-start(h.kind);
 
-// Spray can: hold to scatter live cells under the cursor (denser the longer you hold),
-// move to spray a trail; right-button erases solid. Wheel changes brush radius.
-const deadVal = ((rgb2bgr(RGB_DEAD) & ~1) | 0xff000000) >>> 0
+const loop = () => {
+  requestAnimationFrame(() => { if (engine) loop() })
+  const sz = size()
+  mem.copyWithin(0, sz, 2 * sz)
+  if (drawing) spray(curX, curY, erasing)
+  engine.step()
+  ui.paint(mem.subarray(sz, 2 * sz), argb)
+  ctx.putImageData(imageData, 0, 0)
+  ui.frame()
+}
+
+const ui = hud({
+  kind: 'jz',
+  hint: "Conway's Game of Life — right-drag to erase",
+  meter: new URLSearchParams(location.search).get('fps') !== '0',
+  src: 'https://github.com/dy/jz/tree/main/examples/game-of-life',
+  code: './game-of-life.js',
+  nav: 'game-of-life',
+  onSwitch: start,
+})
+start(ui.kind)
+
+let brushR = 9, drawing = false, erasing = false, curX = 0, curY = 0
+
 const setCell = (x, y, v) => {
-  if (x < 0 || x >= width || y < 0 || y >= height) return
-  mem[size + y * width + x] = v
+  if (!mem) return
+  const sz = size()
+  if (x < 0 || x >= W || y < 0 || y >= H) return
+  mem[sz + y * W + x] = v
 }
-let brushR = 9
-let drawing = false, erasing = false, curX = 0, curY = 0
-// Scatter ~density·area random live cells in the brush disc (erase = solid clear).
 const spray = (cx, cy, erase) => {
   const r = brushR
   if (erase) {
@@ -95,27 +91,26 @@ const spray = (cx, cy, erase) => {
   }
 }
 const posFromEvent = (e) => {
-  const rect = canvas.getBoundingClientRect()
+  const rect = cv.getBoundingClientRect()
   return {
-    x: ((e.clientX - rect.left) * width / rect.width) | 0,
-    y: ((e.clientY - rect.top) * height / rect.height) | 0,
+    x: ((e.clientX - rect.left) * W / rect.width) | 0,
+    y: ((e.clientY - rect.top) * H / rect.height) | 0,
   }
 }
-canvas.addEventListener('pointerdown', e => {
-  drawing = true
-  erasing = e.button === 2
-  try { canvas.setPointerCapture(e.pointerId) } catch {}
+cv.addEventListener('pointerdown', e => {
+  drawing = true; erasing = e.button === 2
+  try { cv.setPointerCapture(e.pointerId) } catch {}
   const p = posFromEvent(e); curX = p.x; curY = p.y
   spray(curX, curY, erasing)
 })
-canvas.addEventListener('pointermove', e => {
+cv.addEventListener('pointermove', e => {
   const p = posFromEvent(e); curX = p.x; curY = p.y
   if (drawing) e.preventDefault()
 })
-canvas.addEventListener('pointerup', e => { drawing = false; try { canvas.releasePointerCapture(e.pointerId) } catch {} })
-canvas.addEventListener('pointerleave', () => { drawing = false })
-canvas.addEventListener('contextmenu', e => e.preventDefault())
-canvas.addEventListener('wheel', e => {
+cv.addEventListener('pointerup', e => { drawing = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener('pointerleave', () => { drawing = false })
+cv.addEventListener('contextmenu', e => e.preventDefault())
+cv.addEventListener('wheel', e => {
   e.preventDefault()
   brushR += e.deltaY > 0 ? -1 : 1
   if (brushR < 1) brushR = 1

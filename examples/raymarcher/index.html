@@ -3,57 +3,38 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Raymarcher - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #07070c; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js"
-
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-// Per-pixel SDF march is expensive — render at 0.7× the screen and let CSS upscale,
-// so it fills the display far sharper than before while staying ~real-time.
-const sizeTo = (engine) => {
-  const k = 0.55   // SDF march is the fps ceiling; CSS upscales to fill the screen
-  W = Math.round(innerWidth  * k) >> 1 << 1
-  H = Math.round(innerHeight * k) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0, t = 0
-
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./raymarcher.js", wasm: "./raymarcher.simd.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-
-addEventListener("resize", () => engine && sizeTo(engine))
+import { runDemo } from "../lib/jzdemo.js"
 
 // Camera: auto-orbits continuously; drag pivots azimuth/elevation, release resumes the
 // orbit from wherever you left it; wheel dollies. cursor signals grab affordance.
 let az = 0, el = 0.35, dist = 3.7, camActive = false, lastPX = 0, lastPY = 0
-cv.style.cursor = 'grab'
-cv.addEventListener('pointerdown', e => {
+
+const demo = runDemo({
+  name: "raymarcher",
+  hint: "a raymarched SDF sphere field",
+  wasm: "raymarcher.simd",
+  size: { scale: 0.55 },
+  cursor: "grab",
+  frame: (e, t) => {
+    if (!camActive) az += 0.0035          // gentle auto-orbit when not being dragged
+    const eyeX = Math.sin(az) * Math.cos(el) * dist
+    const eyeY = Math.sin(el) * dist
+    const eyeZ = Math.cos(az) * Math.cos(el) * dist
+    e.frame(t, eyeX, eyeY, eyeZ)
+  },
+})
+
+demo.cv.addEventListener('pointerdown', e => {
   camActive = true
   lastPX = e.clientX; lastPY = e.clientY
-  cv.style.cursor = 'grabbing'
-  try { cv.setPointerCapture(e.pointerId) } catch {}
+  demo.cv.style.cursor = 'grabbing'
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
 })
-cv.addEventListener('pointermove', e => {
+demo.cv.addEventListener('pointermove', e => {
   if (!camActive) return
   az += (e.clientX - lastPX) * 0.01
   el += (e.clientY - lastPY) * 0.01
@@ -61,42 +42,15 @@ cv.addEventListener('pointermove', e => {
   if (el < 0.08) el = 0.08      // stay above the ground plane (never dip below the floor)
   lastPX = e.clientX; lastPY = e.clientY
 })
-const endDrag = () => { camActive = false; cv.style.cursor = 'grab' }
-cv.addEventListener('pointerup', e => { endDrag(); try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener('pointerleave', endDrag)
-cv.addEventListener('wheel', e => {
+const endDrag = () => { camActive = false; demo.cv.style.cursor = 'grab' }
+demo.cv.addEventListener('pointerup', e => { endDrag(); try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener('pointerleave', endDrag)
+demo.cv.addEventListener('wheel', e => {
   e.preventDefault()
   dist *= Math.exp(e.deltaY * 0.001)
   if (dist < 1.5) dist = 1.5
   if (dist > 12) dist = 12
 }, { passive: false })
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  t += 1 / 60
-  if (!camActive) az += 0.0035          // gentle auto-orbit when not being dragged
-  const eyeX = Math.sin(az) * Math.cos(el) * dist
-  const eyeY = Math.sin(el) * dist
-  const eyeZ = Math.cos(az) * Math.cos(el) * dist
-  const t0 = performance.now()
-  engine.frame(t, eyeX, eyeY, eyeZ)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz", hint: "a raymarched SDF sphere field",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/raymarcher",
-  code: "./raymarcher.js",
-  nav: "raymarcher",
-  onSwitch: setEngine,
-})
-
-await setEngine(ui.kind)
-loop()
 </script>
 </body>
 </html>

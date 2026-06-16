@@ -26,11 +26,10 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 const embedParam = new URLSearchParams(location.search).get('embed')
 const EMBED = embedParam !== null
 if (EMBED) {
-  const inv = 1 / (parseFloat(embedParam) || 1)
   document.documentElement.classList.add('jz-embed')
   const s = document.createElement('style')
   s.textContent = 'html.jz-embed, html.jz-embed body { border: 0 !important; overflow: hidden !important; }'
-    + ` html.jz-embed .jz-hud { right: 14px; bottom: 12px; left: auto; top: auto; align-items: flex-end; transform: scale(${inv}); transform-origin: bottom right; }`
+    + ' html.jz-embed .jz-bar { display: none !important; }'   // the host (landing) renders FPS in its own footer
     + ' html.jz-embed #hint, html.jz-embed .hint { display: none !important; }'   // example-local hint divs
   document.head.appendChild(s)
 }
@@ -40,6 +39,7 @@ if (EMBED) {
 // markup, the `.fixed` overlay (example pages are full-screen canvases), and the link.
 const SITE_CSS = new URL('../../site.css', import.meta.url).href
 const addMasthead = (name) => {
+  if (name) document.title = `${titleOf(name)} - jz`   // tab title (covers hud-only examples too)
   if (document.querySelector('.masthead')) return
   if (!document.querySelector('link[data-jz-site]')) {
     const link = document.createElement('link')
@@ -63,13 +63,13 @@ const addMasthead = (name) => {
       </a>
     </nav>`
   document.body.insertBefore(header, document.body.firstChild)
-  // Shared rule for every example: drop the full-screen demo canvas below the fixed
-  // masthead so the header never overlaps the content. The HUD's own <canvas> lives
-  // inside .jz-hud (body > div > canvas), so `body > canvas` targets only the demo.
+  // Frame the demo between the two bands: the fixed 44px masthead on top and the 52px
+  // bottom bar below. The canvas object-fits into the gap (centered, undistorted). The HUD's
+  // own <canvas> lives inside .jz-bar (body > div > canvas), so `body > canvas` = the demo.
   if (!document.getElementById('jz-canvas-fit')) {
     const fit = document.createElement('style')
     fit.id = 'jz-canvas-fit'
-    fit.textContent = 'body > canvas { position: fixed !important; top: 44px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 44px) !important; object-fit: contain !important; }'
+    fit.textContent = 'body > canvas:not(.gradient) { position: fixed !important; top: 44px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 96px) !important; object-fit: contain !important; }'
     document.head.appendChild(fit)
   }
 }
@@ -208,74 +208,68 @@ const buildLUT = (stops) => {
 // `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
 export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true, onPalette }) => {
   if (nav && !EMBED) { addMasthead(nav); addEdgeNav(nav) }
-  if (hint && !EMBED && !document.querySelector('.jz-hint')) {
-    const hel = document.createElement('div')
-    hel.className = 'jz-hint'
-    hel.textContent = hint
-    hel.innerHTML += `<style>
-      /* white text + soft dark outline → legible on dark, light AND mid-gray backgrounds */
-      .jz-hint { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 90; text-align: center;
-        pointer-events: none; transition: opacity .6s; opacity: .95;
-        font: 500 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .02em;
-        color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); }
-      .jz-hint .jz-wiki { color: inherit; pointer-events: auto; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
-    </style>`
-    document.body.appendChild(hel)
-  }
-  // Append a "(wiki)" link to the description hint — same style, points at the math behind it.
-  if (nav && !EMBED && WIKI[nav]) {
-    const hintEl = document.querySelector('#hint, .hint, .jz-hint')
-    if (hintEl && !hintEl.querySelector('.jz-wiki')) {
-      const a = document.createElement('a')
-      a.className = 'jz-wiki'
-      a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '(wiki)'
-      a.style.cssText = 'color:inherit;pointer-events:auto;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;margin-left:.45em'
-      hintEl.appendChild(document.createTextNode(' '))
-      hintEl.appendChild(a)
-    }
-  }
+  // Bottom bar — a full-width band (matching the masthead + the landing's footer) that frames
+  // the demo from below: description + (wiki) on the left, palette · JS/jz switch · FPS on the
+  // right. One source of truth for the example chrome; the canvas sits between the two bands.
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      /* floating chart + readout + skeuomorphic switch — no box, bottom-right over the demo */
-      .jz-hud { position: fixed; bottom: 14px; right: 16px; z-index: 100;
-        font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #fff; user-select: none;
-        display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
-        text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.6); }
-      .jz-hud .spark { display: block; width: 116px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.85)); }
-      .jz-hud .readout { display: flex; align-items: baseline; gap: 9px; font-size: 11.5px; color: rgba(255,255,255,.7); }
-      .jz-hud .readout .metric { display: inline-flex; align-items: baseline; gap: .34em; }
-      .jz-hud .readout b { font-weight: 700; font-size: 17px; line-height: 1; color: #fff; letter-spacing: -.02em; }
-      /* skeuomorphic segmented JS|JZ slider — both labels INSIDE the track; the knob slides over the active one */
-      .jz-sw { display: flex; }
-      .jz-toggle { position: relative; width: 86px; height: 34px; flex: none; border: 0; padding: 0; cursor: pointer;
-        border-radius: 17px; -webkit-appearance: none; appearance: none;
+      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 52px; box-sizing: border-box;
+        display: flex; align-items: center; gap: 18px; padding: 0 28px; background: #0a0a0a;
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; user-select: none; }
+      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: #8a8a93; letter-spacing: .01em;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .jz-bar .jz-wiki { color: #e8e8ea; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+      .jz-bar .jz-wiki:hover { color: #fff; }
+      .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
+      .jz-pal .sw { display: block; width: 100%; height: 100%; border-radius: 50%;
+        background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
+        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
+      .jz-pal:hover .sw { transform: rotate(120deg); }
+      .jz-pal.on .sw { transform: rotate(360deg); }
+      /* segmented JS|JZ switch — labels inside the track, knob slides over the active one */
+      .jz-engine { position: relative; flex: none; width: 74px; height: 30px; border: 0; padding: 0; cursor: pointer;
+        border-radius: 15px; -webkit-appearance: none; appearance: none;
         background: linear-gradient(180deg, #232323, #0c0c0c);
-        box-shadow: inset 0 2px 5px rgba(0,0,0,.8), inset 0 -1px 0 rgba(255,255,255,.06), 0 1px 0 rgba(255,255,255,.06); }
-      .jz-toggle .knob { position: absolute; top: 3px; left: 3px; width: 40px; height: 28px; border-radius: 14px; z-index: 1;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,.8), inset 0 -1px 0 rgba(255,255,255,.05); }
+      .jz-engine .knob { position: absolute; top: 3px; left: 3px; width: 35px; height: 24px; border-radius: 12px; z-index: 1;
         background: linear-gradient(180deg, #fcfcfc, #d0d0d0);
-        box-shadow: 0 2px 5px rgba(0,0,0,.6), inset 0 1px 1px rgba(255,255,255,.85), inset 0 -2px 3px rgba(0,0,0,.16);
-        transition: transform .26s cubic-bezier(.34,.72,.28,1.3); }
-      .jz-toggle.jz .knob { transform: translateX(40px); }
-      .jz-toggle .lbl-js, .jz-toggle .lbl-jz { position: absolute; top: 0; height: 100%; width: 43px; z-index: 2;
-        display: inline-flex; align-items: center; justify-content: center; gap: 3px;
-        font: 700 12px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+        box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 1px rgba(255,255,255,.85);
+        transition: transform .24s cubic-bezier(.34,.72,.28,1.3); }
+      .jz-engine.jz .knob { transform: translateX(33px); }
+      .jz-engine .lbl-js, .jz-engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 37px; z-index: 2;
+        display: inline-flex; align-items: center; justify-content: center;
+        font: 700 11.5px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
         color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
-      .jz-toggle .lbl-js { left: 0; }
-      .jz-toggle .lbl-jz { right: 0; }
-      .jz-toggle.js .lbl-js { color: #141414; }
-      .jz-toggle.jz .lbl-jz { color: #141414; }
-      .jz-toggle .bolt { width: 11px; height: 11px; }
-      @media (prefers-reduced-motion: reduce) { .jz-toggle .knob { transition: none; } }
+      .jz-engine .lbl-js { left: 0; }
+      .jz-engine .lbl-jz { right: 0; }
+      .jz-engine.js .lbl-js { color: #141414; }
+      .jz-engine.jz .lbl-jz { color: #141414; }
+      @media (prefers-reduced-motion: reduce) { .jz-engine .knob { transition: none; } }
+      .jz-fps { flex: none; display: inline-flex; align-items: center; gap: 12px; color: #f0f0f2; }
+      .jz-fps .spark { width: 56px; height: 24px; display: block; }
+      .jz-fps .metric { display: inline-flex; align-items: baseline; gap: 3px; }
+      .jz-fps .metric b { font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; display: inline-block; min-width: 2.8ch; text-align: right; }
+      .jz-fps .metric.ms b { min-width: 3.4ch; }
+      .jz-fps .unit { font-size: 12px; color: #8a8a93; }
     </style>
-    <div class="jz-hud">
-      ${meter ? `<canvas class="spark" id="jz-spark"></canvas>
-      <div class="readout"><span class="metric"><b id="jz-fps">··</b> fps</span><span class="metric" id="jz-ms" hidden><b id="jz-ms-v">·</b> ms</span></div>` : ''}
-      <div class="jz-sw">
-        <button class="jz-toggle" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz"><svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>JZ</span><span class="knob"></span></button>
-      </div>
+    <div class="jz-bar">
+      <div class="jz-desc"></div>
+      ${palette ? `<button class="jz-pal" id="jz-pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>` : ''}
+      <button class="jz-engine" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
+      ${meter ? `<div class="jz-fps"><canvas class="spark" id="jz-spark"></canvas><span class="metric"><b id="jz-fps">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="jz-ms-v">··</b><span class="unit">ms</span></span></div>` : ''}
     </div>`
   document.body.appendChild(el)
+
+  // description (left) + the educational (wiki) link
+  const descEl = el.querySelector('.jz-desc')
+  if (hint) descEl.textContent = hint
+  if (nav && WIKI[nav]) {
+    const a = document.createElement('a')
+    a.className = 'jz-wiki'; a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '(wiki)'
+    if (hint) descEl.appendChild(document.createTextNode(' '))
+    descEl.appendChild(a)
+  }
 
   // The HUD is an overlay — swallow pointer/click so they don't fall through to a
   // window-level canvas handler (e.g. clicking the FPS area must not re-seed/shuffle).
@@ -283,7 +277,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     el.addEventListener(ev, (e) => e.stopPropagation())
 
   const fpsEl = el.querySelector('#jz-fps')
-  const msRow = el.querySelector('#jz-ms'), msEl = el.querySelector('#jz-ms-v')
+  const msEl = el.querySelector('#jz-ms-v')
   const sparkEl = el.querySelector('#jz-spark')
   const sctx = sparkEl && sparkEl.getContext('2d')
   let sw = 0, sh = 0
@@ -322,26 +316,17 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   paint()
   const setKind = (k) => { if (k === kind) return; kind = k; paint(); ms = 0; onSwitch?.(kind) }
   toggle.onclick = () => setKind(kind === 'js' ? 'jz' : 'js')
+  // embedded in the landing: the host's JS/JZ switch drives the engine via postMessage
+  if (EMBED) addEventListener('message', (e) => {
+    const d = e.data; if (d && d.type === 'jz:engine' && (d.kind === 'js' || d.kind === 'jz')) setKind(d.kind)
+  })
 
-  // Palette icon: a bare square color-wheel, bottom-right. Click randomizes a colormap
-  // (rotating the wheel); `paint(src,dst)` then maps grayscale luminance through it. Until
-  // first click the LUT is null, so paint() is a plain copy and the example stays B&W.
+  // Palette wheel (in the bar): click randomizes a colormap; `paint(src,dst)` then maps
+  // grayscale luminance through it. Until first click the LUT is null, so paint() is a plain
+  // copy and the example stays B&W.
   let lut = null
-  if (palette && !EMBED) {
-    const pal = document.createElement('button')
-    pal.id = 'jz-pal'; pal.title = 'randomize palette'; pal.setAttribute('aria-label', 'randomize palette')
-    pal.innerHTML = `<span class="sw"></span><style>
-      #jz-pal { position: fixed; left: 18px; bottom: 18px; z-index: 100; width: 30px; height: 30px;
-        padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
-      #jz-pal .sw { display: block; width: 100%; height: 100%;
-        background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
-      #jz-pal:hover .sw { transform: rotate(120deg); }
-      #jz-pal.on .sw { transform: rotate(360deg); }</style>`
-    document.body.appendChild(pal)
-    for (const ev of ['pointerdown', 'mousedown', 'click', 'touchstart']) pal.addEventListener(ev, (e) => e.stopPropagation())
-    pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on'); onPalette?.() }
-  }
+  const pal = el.querySelector('#jz-pal')
+  if (pal) pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on'); onPalette?.() }
   // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
   // Indexes the LUT by luminance, so it works on colored kernels too (false-color remap),
   // not just grayscale ones. Default (lut null) is a plain copy → original colors intact.
@@ -358,7 +343,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   // (full height = `ref`, which rises to the display's refresh rate), so the line sits
   // at the true level and swapping to a slower engine visibly steps it down.
   const SPARK = 48   // FPS history length for the sparkline
-  let last = performance.now(), fps = 0, ms = 0, ref = 120
+  let last = performance.now(), fps = 0, ms = 0, ref = 120, lastPost = 0
   const hist = new Array(SPARK).fill(0)
   return {
     get kind() { return kind },
@@ -370,15 +355,105 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       // spike can't poison the EMA or latch `ref` to a blip.
       const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps
       fps += (inst - fps) * 0.1
+      if (workMs != null) ms = ms ? ms * 0.9 + workMs * 0.1 : workMs
+      if (EMBED) {   // embedded in the landing: report perf to the host's footer, draw no HUD
+        if (now - lastPost > 90) { lastPost = now; try { parent.postMessage({ type: 'jz:perf', fps, ms }, '*') } catch {} }
+        return
+      }
       fpsEl.textContent = fps >= 1 ? fps.toFixed(0) : '··'
       if (fps > ref) ref = fps
       hist.push(Math.min(100, fps / ref * 100)); hist.shift()
       drawSpark()
-      if (workMs != null) {
-        ms = ms ? ms * 0.9 + workMs * 0.1 : workMs
-        msEl.textContent = ms.toFixed(ms < 10 ? 2 : 1)
-        msRow.hidden = false
-      }
+      if (workMs != null) msEl.textContent = ms.toFixed(ms < 10 ? 2 : 1)
     },
   }
+}
+
+// ── runDemo: the unified example harness ────────────────────────────────────────────────
+// Absorbs the boilerplate every demo repeats — page/canvas styling, resolution sizing, the
+// JS↔jz engine load & swap, the rAF loop, the HUD, and the resize handler — so an example
+// file is just its kernel + a `frame` callback (plus optional pointer/DOM wiring via the
+// returned handles). One source of truth for look & lifecycle across every example.
+//
+//   const demo = runDemo({ name, hint, frame })   // demo = { cv, engine, W, H } (live getters)
+//
+// opts:
+//   name     example name → kernel ./<name>.js + ./<name>.wasm, nav, <title>, source link
+//   frame    (engine, t, demo) => {}   REQUIRED — compute params, then call engine.frame(...)
+//   hint     caption shown bottom-center (the shared "(wiki)" link is appended automatically)
+//   load     (engine, demo) => {}      runs after every (re)size / engine-swap: init/clear/seed
+//   size     { budget?, dpr?, scale? } resolution policy (default { budget: 600000, dpr: 1 })
+//   wasm     kernel basename override (e.g. 'raymarcher.simd' for a SIMD sibling)
+//   bg       page background behind the canvas (default '#000'; light demos pass e.g. '#eee')
+//   cursor   canvas cursor (default 'crosshair')
+//   palette  show the colormap button (default true)
+export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = '#000', cursor = 'crosshair', palette = true }) => {
+  document.title = `${titleOf(name)} - jz`
+
+  // Shared page + canvas styling — one rule for every demo, no per-example <style>. In embed
+  // mode the canvas is full-screen (inset:0); on a standalone page addMasthead's jz-canvas-fit
+  // rule (with !important) drops it below the header and object-fits it.
+  if (!document.getElementById('jz-demo-css')) {
+    const s = document.createElement('style')
+    s.id = 'jz-demo-css'
+    s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:${bg};color:#eee;`
+      + `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}`
+      + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:${cursor}}`
+    document.head.appendChild(s)
+  }
+
+  const cv = document.querySelector('body > canvas')
+    || document.body.insertBefore(document.createElement('canvas'), document.body.firstChild)
+  const g = cv.getContext('2d')
+  let W = 0, H = 0, img, out32, px, engine = null, gen = 0, t = 0
+  const demo = { cv, get engine() { return engine }, get W() { return W }, get H() { return H } }
+
+  const sizeTo = () => {
+    let scale = size.scale
+    if (size.cap != null) scale = size.cap / Math.max(innerWidth, innerHeight)   // cap the long side, aspect kept
+    else if (scale == null) {
+      scale = Math.min(size.dpr ?? 1, window.devicePixelRatio || 1)
+      const budget = size.budget === undefined ? 600000 : size.budget
+      if (budget) {
+        const want = innerWidth * innerHeight * scale * scale
+        if (want > budget) scale *= Math.sqrt(budget / want)
+      }
+    }
+    W = size.odd ? (Math.round(innerWidth * scale) | 1) : (Math.round(innerWidth * scale) >> 1 << 1)
+    H = size.odd ? (Math.round(innerHeight * scale) | 1) : (Math.round(innerHeight * scale) >> 1 << 1)
+    cv.width = W; cv.height = H
+    img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
+    px = engine.resize(W, H)
+  }
+
+  const setEngine = async (kind) => {
+    const my = ++gen
+    const e = await loadEngine(kind, { js: `./${name}.js`, wasm: `./${wasm || name}.wasm` })
+    if (my !== gen) return
+    engine = e; sizeTo(); load?.(engine, demo)
+  }
+  addEventListener('resize', () => { if (engine) { sizeTo(); load?.(engine, demo) } })
+
+  const ui = hud({
+    kind: 'jz', hint, palette, nav: name,
+    meter: new URLSearchParams(location.search).get('fps') !== '0',
+    code: `./${name}.js`,
+    src: `https://github.com/dy/jz/tree/main/examples/${name}`,
+    onSwitch: setEngine,
+  })
+
+  const loop = () => {
+    requestAnimationFrame(loop)
+    if (!engine) return
+    t += 1 / 60
+    const t0 = performance.now()
+    frame(engine, t, demo)
+    const ms = performance.now() - t0
+    ui.paint(px, out32); g.putImageData(img, 0, 0)
+    overlay?.(g, demo)            // optional 2D overlay drawn on top of the frame (e.g. a rubber-band)
+    ui.frame(ms)
+  }
+  setEngine(ui.kind)
+  loop()
+  return demo
 }

@@ -3,85 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="user-scalable=0" />
-<title>Poincaré disk - jz</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
-<style>
-  html, body { height: 100%; margin: 0; overflow: hidden; background: #000; color: #eee;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  body { border-top: 2px solid #ddd; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
-  #hint { position: fixed; left: 0; right: 0; bottom: 20px; text-align: center; z-index: 20;
-    font-size: 13px; color: #fff; opacity: .95; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); pointer-events: none; transition: opacity .5s; }
-</style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hint">Poincaré disk tessellation — drag to rotate the hyperbolic plane</div>
-
 <script type="module">
-import { loadEngine, hud, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-const cv = document.getElementById("c"), g = cv.getContext("2d")
-let W = 0, H = 0, img, out32, px
-
-const sizeTo = (engine) => {
-  const budget = 600000
-  let scale = Math.min(1, window.devicePixelRatio || 1)
-  const want = innerWidth * innerHeight * scale * scale
-  if (want > budget) scale *= Math.sqrt(budget / want)
-  W = Math.round(innerWidth * scale) >> 1 << 1
-  H = Math.round(innerHeight * scale) >> 1 << 1
-  cv.width = W; cv.height = H
-  img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  px = engine.resize(W, H)
-}
-
-let engine = null, gen = 0, t = 0
-const setEngine = async (kind) => {
-  const my = ++gen
-  const e = await loadEngine(kind, { js: "./hyperbolic.js", wasm: "./hyperbolic.wasm" })
-  if (my !== gen) return
-  engine = e; sizeTo(engine)
-}
-addEventListener("resize", () => engine && sizeTo(engine))
-
-const ptr = trackPointer(cv)
-const hint = document.getElementById("hint")
 let baseAngle = 0.0, userSet = false
-
-const loop = () => {
-  requestAnimationFrame(loop)
-  if (!engine) return
-  t += 1 / 60
-  let rot
-  if (ptr.down) {
-    // Map horizontal drag to rotation angle: full width = full rotation
-    rot = (ptr.x * 2 - 1) * Math.PI
-    baseAngle = rot
-    userSet = true
-    hint.style.opacity = 0
-  } else {
-    // Slow autonomous rotation when not dragging
-    const drift = userSet ? 0.0 : 0.12
-    rot = baseAngle + t * drift
-  }
-  const t0 = performance.now()
-  engine.frame(t, rot)
-  const ms = performance.now() - t0
-  ui.paint(px, out32); g.putImageData(img, 0, 0)
-  ui.frame(ms)
-}
-
-const ui = hud({
-  kind: "jz",
-  meter: new URLSearchParams(location.search).get("fps") !== "0",
-  src: "https://github.com/dy/jz/tree/main/examples/hyperbolic",
-  code: "./hyperbolic.js",
-  nav: "hyperbolic",
-  onSwitch: setEngine,
+const demo = runDemo({
+  name: "hyperbolic",
+  hint: "Poincaré disk tessellation — drag to rotate the hyperbolic plane",
+  frame: (e, t) => {
+    let rot
+    if (ptr.down) {
+      // Map horizontal drag to rotation angle: full width = full rotation
+      rot = (ptr.x * 2 - 1) * Math.PI
+      baseAngle = rot
+      userSet = true
+    } else {
+      // Slow autonomous rotation when not dragging
+      const drift = userSet ? 0.0 : 0.12
+      rot = baseAngle + t * drift
+    }
+    e.frame(t, rot)
+  },
 })
-await setEngine(ui.kind)
-loop()
+const ptr = trackPointer(demo.cv)
 </script>
 </body>
 </html>
