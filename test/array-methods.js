@@ -785,3 +785,23 @@ test('.lastIndexOf: typed (was unimplemented), incl. fromIndex + negative', () =
   is(fromIdx(), 2)   // last 1 at index ≤ 3
   is(negIdx(), 2)    // -2 → index 3; last 1 at index ≤ 3
 })
+
+test('.findLast / .findLastIndex: typed (was reading f64 garbage)', () => {
+  const fl = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; return a.findLast(x => x < 4) }`).f
+  const fli = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; return a.findLastIndex(x => x < 4) }`).f
+  const u8 = runHost(`export let f = () => { let a = new Uint8Array(4); a[0]=10;a[1]=5;a[2]=20;a[3]=5; return a.findLast(x => x < 15) }`).f
+  const miss = runHost(`export let f = () => { let a = new Int32Array(3); a[0]=1;a[1]=2;a[2]=3; return a.findLastIndex(x => x > 9) }`).f
+  is(fl(), 1)    // last element < 4 is a[3]=1
+  is(fli(), 3)   // its index
+  is(u8(), 5)    // last u8 < 15 is a[3]=5 (kind-aware, not f64 garbage)
+  is(miss(), -1)
+})
+
+test('.indexOf / .includes: typed honor fromIndex (was ignored)', () => {
+  const io = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; return a.indexOf(1, 2) }`).f
+  const ioNeg = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; return a.indexOf(1, -1) }`).f
+  const inc = runHost(`export let f = () => { let a = new Float64Array(4); a[0]=3;a[1]=1;a[2]=4;a[3]=1; return a.includes(3, 1) ? 1 : 0 }`).f
+  is(io(), 3)      // first 1 at index ≥ 2
+  is(ioNeg(), 3)   // -1 → start at index 3
+  is(inc(), 0)     // 3 is at index 0, excluded by fromIndex 1
+})

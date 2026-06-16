@@ -1482,18 +1482,27 @@ export default (ctx) => {
 
   // .indexOf: scalar value-equality search. Returns -1 on miss. Compare on f64
   // — Array.prototype.indexOf uses strict equality (NaN ≠ NaN).
-  ctx.core.emit['.typed:indexOf'] = (arr, val) => {
-    const found = tempI32('tif'), needle = temp('tin')
-    const loop = typedLoop(arr, (load, i, _len, _ptr, exit) => [
-      ['if', ['f64.eq', load(), ['local.get', `$${needle}`]],
-        ['then',
-          ['local.set', `$${found}`, ['local.get', `$${i}`]],
-          ['br', exit]]]
-    ])
+  // Effective start index for a fromIndex arg: negative counts from the end. The match
+  // guard is `i >= start` and i ≥ 0, so a start below 0 needs no clamp (always passes).
+  const fromStart = (fiL, len) => ['if', ['result', 'i32'],
+    ['i32.lt_s', ['local.get', `$${fiL}`], ['i32.const', 0]],
+    ['then', ['i32.add', ['local.get', `$${fiL}`], ['local.get', `$${len}`]]],
+    ['else', ['local.get', `$${fiL}`]]]
+
+  ctx.core.emit['.typed:indexOf'] = (arr, val, fromIndex) => {
+    const found = tempI32('tif'), needle = temp('tin'), fiL = tempI32('tifx')
+    const loop = typedLoop(arr, (load, i, len, _ptr, exit) => {
+      const matched = ['f64.eq', load(), ['local.get', `$${needle}`]]
+      const cond = fromIndex == null ? matched
+        : ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched]
+      return [['if', cond, ['then',
+        ['local.set', `$${found}`, ['local.get', `$${i}`]], ['br', exit]]]]
+    })
     if (!loop) return null
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${needle}`, asF64(emit(val))],
       ['local.set', `$${found}`, ['i32.const', -1]],
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
       ...loop.setup,
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
@@ -1528,21 +1537,23 @@ export default (ctx) => {
   // .includes: like indexOf but NaN-equal-NaN (JS spec). Stash needle bits as
   // i64 and compare via i64.eq so two NaNs with matching bit patterns match
   // (f64.eq would say false).
-  ctx.core.emit['.typed:includes'] = (arr, val) => {
-    const found = tempI32('thf'), needle = temp('thn')
-    const loop = typedLoop(arr, (load, _i, _len, _ptr, exit) => [
-      ['if',
-        ['i32.or',
-          ['f64.eq', load(), ['local.get', `$${needle}`]],
-          ['i64.eq',
-            ['i64.reinterpret_f64', load()],
-            ['i64.reinterpret_f64', ['local.get', `$${needle}`]]]],
-        ['then', ['local.set', `$${found}`, ['i32.const', 1]], ['br', exit]]]
-    ])
+  ctx.core.emit['.typed:includes'] = (arr, val, fromIndex) => {
+    const found = tempI32('thf'), needle = temp('thn'), fiL = tempI32('thx')
+    const loop = typedLoop(arr, (load, i, len, _ptr, exit) => {
+      const matched = ['i32.or',
+        ['f64.eq', load(), ['local.get', `$${needle}`]],
+        ['i64.eq',
+          ['i64.reinterpret_f64', load()],
+          ['i64.reinterpret_f64', ['local.get', `$${needle}`]]]]
+      const cond = fromIndex == null ? matched
+        : ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched]
+      return [['if', cond, ['then', ['local.set', `$${found}`, ['i32.const', 1]], ['br', exit]]]]
+    })
     if (!loop) return null
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${needle}`, asF64(emit(val))],
       ['local.set', `$${found}`, ['i32.const', 0]],
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
       ...loop.setup,
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
@@ -1579,6 +1590,40 @@ export default (ctx) => {
   }
   ctx.core.emit['.typed:find'] = (arr, fn) => findCommon(arr, fn, false)
   ctx.core.emit['.typed:findIndex'] = (arr, fn) => findCommon(arr, fn, true)
+
+  // .findLast / .findLastIndex — like find/findIndex but keep the LAST match instead of
+  // the first, so no early break (a forward scan that overwrites on each hit). Without a
+  // typed handler these routed through the plain-array versions, which read elements as
+  // raw f64 and returned garbage for non-f64 typed arrays.
+  const findLastCommon = (arr, fn, returnIndex) => {
+    const cbLoc = temp('tLc'), result = temp('tLr'), foundIdx = tempI32('tLi')
+    const loop = typedLoop(arr, (load, i) => {
+      const itemLoc = temp('tLit')
+      return [
+        ['local.set', `$${itemLoc}`, load()],
+        ['if', truthyIR(ctx.closure.call(
+          typed(['local.get', `$${cbLoc}`], 'f64'),
+          [typed(['local.get', `$${itemLoc}`], 'f64'),
+           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+          ['then',
+            returnIndex
+              ? ['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]
+              : ['local.set', `$${result}`, typed(['local.get', `$${itemLoc}`], 'f64')]]]
+      ]
+    })
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      returnIndex
+        ? ['local.set', `$${foundIdx}`, ['i32.const', -1]]
+        : ['local.set', `$${result}`, undefExpr()],
+      ...loop.setup,
+      returnIndex
+        ? typed(['f64.convert_i32_s', ['local.get', `$${foundIdx}`]], 'f64')
+        : typed(['local.get', `$${result}`], 'f64')], 'f64')
+  }
+  ctx.core.emit['.typed:findLast'] = (arr, fn) => findLastCommon(arr, fn, false)
+  ctx.core.emit['.typed:findLastIndex'] = (arr, fn) => findLastCommon(arr, fn, true)
 
   // .some / .every: short-circuit boolean reduction. some=∃, every=∀.
   const anyAllCommon = (arr, fn, isEvery) => {
