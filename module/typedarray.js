@@ -1498,6 +1498,33 @@ export default (ctx) => {
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
 
+  // .lastIndexOf(val): the last index whose element strictly-equals val, else -1.
+  // Was unimplemented for typed arrays (threw). A forward scan that keeps the latest
+  // match needs no reverse iteration — equivalent for the no-fromIndex form, which is
+  // the common case. With a fromIndex the matcher additionally bounds i ≤ fromIndex
+  // (negative counts from the end, resolved against the typedLoop len). NaN never
+  // strict-equals (f64.eq), matching JS.
+  ctx.core.emit['.typed:lastIndexOf'] = (arr, val, fromIndex) => {
+    const found = tempI32('tlf'), needle = temp('tln'), fiL = tempI32('tlfi')
+    const loop = typedLoop(arr, (load, i, len) => {
+      const matched = ['f64.eq', load(), ['local.get', `$${needle}`]]
+      if (fromIndex == null)
+        return [['if', matched, ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
+      const lim = ['if', ['result', 'i32'], ['i32.lt_s', ['local.get', `$${fiL}`], ['i32.const', 0]],
+        ['then', ['i32.add', ['local.get', `$${fiL}`], ['local.get', `$${len}`]]],
+        ['else', ['local.get', `$${fiL}`]]]
+      return [['if', ['i32.and', ['i32.le_s', ['local.get', `$${i}`], lim], matched],
+        ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
+    })
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${needle}`, asF64(emit(val))],
+      ['local.set', `$${found}`, ['i32.const', -1]],
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
+      ...loop.setup,
+      ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
+  }
+
   // .includes: like indexOf but NaN-equal-NaN (JS spec). Stash needle bits as
   // i64 and compare via i64.eq so two NaNs with matching bit patterns match
   // (f64.eq would say false).

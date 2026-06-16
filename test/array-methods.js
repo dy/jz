@@ -752,3 +752,36 @@ test('.sort: BigInt64 numeric compare on exact bits', () => {
   const f = runHost(`export let f = () => { let a = new BigInt64Array(3); a[0]=30n; a[1]=10n; a[2]=20n; a.sort(); return Number(a[0])*100+Number(a[2]) }`).f
   is(f(), 1030)   // [10n,20n,30n]
 })
+
+// === TypedArray .keys / .entries / .lastIndexOf ===
+// .keys/.entries fell through collViewDyn's else (return the receiver), so .keys
+// yielded VALUES and .entries yielded scalars; .lastIndexOf was unimplemented.
+
+test('.keys: typed yields INDICES, not values (was returning values)', () => {
+  const f = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=5; a[1]=6; a[2]=7; let s=0; for (let k of a.keys()) s = s*10 + k; return s }`).f
+  is(f(), 12)   // indices 0,1,2 → 012 (not values 5,6,7)
+})
+
+test('.entries: typed yields [index, element] pairs, kind-aware', () => {
+  const f = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=8; a[1]=9; a[2]=10; let s=0; for (let e of a.entries()) s += e[0]*1000 + e[1]; return s }`).f
+  const i16 = runHost(`export let f = () => { let a = new Int16Array(2); a[0]=-3; a[1]=7; let s=0; for (let e of a.entries()) s += e[0]*100 + e[1]; return s }`).f
+  is(f(), 3027)    // (0,8)+(1,9)+(2,10) = 8 + 1009 + 2010
+  is(i16(), 104)   // (0,-3)+(1,7) = -3 + 107
+})
+
+test('.values: typed still yields values (unchanged); plain keys/entries unregressed', () => {
+  is(runHost(`export let f = () => { let a = new Float64Array(3); a[0]=2; a[1]=3; a[2]=4; let s=0; for (let v of a.values()) s+=v; return s }`).f(), 9)
+  is(run(`export let f = () => { let a = [5,6,7]; let s=0; for (let k of a.keys()) s+=k; return s }`).f(), 3)
+  is(run(`export let f = () => { let a = [5,6]; let s=0; for (let e of a.entries()) s+=e[0]*10+e[1]; return s }`).f(), 21)
+})
+
+test('.lastIndexOf: typed (was unimplemented), incl. fromIndex + negative', () => {
+  const hit = runHost(`export let f = () => { let a = new Float64Array(5); a[0]=1;a[1]=2;a[2]=1;a[3]=3;a[4]=1; return a.lastIndexOf(1) }`).f
+  const miss = runHost(`export let f = () => { let a = new Int32Array(4); a[0]=1;a[1]=2;a[2]=3;a[3]=4; return a.lastIndexOf(9) }`).f
+  const fromIdx = runHost(`export let f = () => { let a = new Float64Array(5); a[0]=1;a[1]=2;a[2]=1;a[3]=3;a[4]=1; return a.lastIndexOf(1, 3) }`).f
+  const negIdx = runHost(`export let f = () => { let a = new Float64Array(5); a[0]=1;a[1]=2;a[2]=1;a[3]=3;a[4]=1; return a.lastIndexOf(1, -2) }`).f
+  is(hit(), 4)
+  is(miss(), -1)
+  is(fromIdx(), 2)   // last 1 at index ≤ 3
+  is(negIdx(), 2)    // -2 → index 3; last 1 at index ≤ 3
+})

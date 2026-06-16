@@ -752,22 +752,30 @@ export default (ctx) => {
   // statically proven (e.g. a Map read off an object field): resolve MAP vs SET
   // vs ARRAY once at runtime. ARRAY.values() is the array itself; .keys() yields
   // indices; .entries() yields [i, el]. Any other receiver passes through.
-  const collViewDyn = (mapWalk, setWalk, arrWalk) => (expr) => {
+  // A typed array (PTR.TYPED) is NOT PTR.ARRAY, so without an explicit branch it fell
+  // through to `local.get $t` (return the receiver). For .values that is correct (the
+  // receiver iterates its values), but .keys then yielded values instead of indices and
+  // .entries yielded scalars instead of [i, value] pairs. The typedWalk arg restores the
+  // right behavior for typed receivers (keys → index array, entries → typed-aware pairs).
+  const collViewDyn = (mapWalk, setWalk, arrWalk, typedWalk) => (expr) => {
     inc('__ptr_type')
     const t = temp('cd')
     const pt = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     const branch = (tag, walk, rest) =>
       ['if', ['result', 'f64'], ['i32.eq', pt(), ['i32.const', tag]], ['then', walk(t)], ['else', rest]]
     const tree = branch(PTR.MAP, mapWalk, branch(PTR.SET, setWalk,
-      branch(PTR.ARRAY, arrWalk, ['local.get', `$${t}`])))
+      branch(PTR.ARRAY, arrWalk, branch(PTR.TYPED, typedWalk, ['local.get', `$${t}`]))))
     return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(expr))], tree], 'f64')
   }
+  // keys: index array [0..len-1] for both plain and typed (length-based, no element reads).
   ctx.core.emit['.keys'] = collViewDyn(
-    t => collKeysFromTemp(t, MAP_ENTRY, 8), t => collKeysFromTemp(t, SET_ENTRY, 8), arrIdxFromTemp)
+    t => collKeysFromTemp(t, MAP_ENTRY, 8), t => collKeysFromTemp(t, SET_ENTRY, 8), arrIdxFromTemp, arrIdxFromTemp)
+  // values: the receiver iterates its own elements (correct for plain and typed alike).
   ctx.core.emit['.values'] = collViewDyn(
-    t => collKeysFromTemp(t, MAP_ENTRY, 16), t => collKeysFromTemp(t, SET_ENTRY, 8), t => ['local.get', `$${t}`])
+    t => collKeysFromTemp(t, MAP_ENTRY, 16), t => collKeysFromTemp(t, SET_ENTRY, 8), t => ['local.get', `$${t}`], t => ['local.get', `$${t}`])
+  // entries: [i, element] pairs; the typed variant reads elements width/kind-aware.
   ctx.core.emit['.entries'] = collViewDyn(
-    t => collEntriesFromTemp(t, MAP_ENTRY, 8, 16), t => collEntriesFromTemp(t, SET_ENTRY, 8, 8), arrEntriesFromTemp)
+    t => collEntriesFromTemp(t, MAP_ENTRY, 8, 16), t => collEntriesFromTemp(t, SET_ENTRY, 8, 8), arrEntriesFromTemp, arrEntriesFromTempTyped)
 
   // Map/Set forEach(cb): invoke cb(value, key) per live entry in insertion order.
   // Map yields (value=val@16, key=key@8); Set yields (value=key@8, key@8) — the
@@ -1752,5 +1760,33 @@ function arrEntriesFromTemp(t) {
       elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$aeloop${id}`]]],
+    out.ptr]
+}
+
+// TypedArray.prototype.entries() → dense Array of [index, element] pairs, reading each
+// element width/kind-aware via __typed_get_idx (the plain arrEntriesFromTemp uses a raw
+// f64.load, wrong for non-f64 typed arrays). Guarded on __typed_get_idx being registered:
+// it only is when the typedarray module is loaded, which is exactly when a PTR.TYPED
+// value can exist — so when absent, this branch is dead and falls back to the receiver.
+function arrEntriesFromTempTyped(t) {
+  if (!ctx.core.stdlib['__typed_get_idx']) return ['local.get', `$${t}`]
+  inc('__len', '__typed_get_idx', '__alloc_hdr')
+  const n = tempI32('aetn'), i = tempI32('aeti'), pair = tempI32('aetp')
+  const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aet' })
+  const id = ctx.func.uniq++
+  const P = () => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+  return ['block', ['result', 'f64'],
+    ['local.set', `$${n}`, ['call', '$__len', P()]],
+    out.init,
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['block', `$aetbrk${id}`, ['loop', `$aetloop${id}`,
+      ['br_if', `$aetbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+      ['f64.store', ['local.get', `$${pair}`], ['f64.convert_i32_s', ['local.get', `$${i}`]]],
+      ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+        ['call', '$__typed_get_idx', P(), ['local.get', `$${i}`]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$aetloop${id}`]]],
     out.ptr]
 }
