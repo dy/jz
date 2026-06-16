@@ -861,7 +861,7 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → { laneName, simdType }
   const extraLocals = []  // canon temps allocated during lift
-  const ctx = { laneType, incVar, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -1122,7 +1122,7 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
   for (const name of addrLocals.keys()) localKind.set(name, 'addr')
   for (const name of offsetTees.keys()) localKind.set(name, 'addr')
 
-  const ctx = { laneType, incVar, localKind, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)
   if (ctx.fail) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
@@ -2093,7 +2093,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   const newLanedLocals = new Map()
   const extraLocals = []
   const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
-  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false }
+  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
 
   // A byte store fed by one value expression (inline, or via a single lane-local
   // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can

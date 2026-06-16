@@ -1867,7 +1867,11 @@ const handlers = {
     // alone wrongly folds `-5n`, and negating the bigint here yields garbage (-2^63+5).
     // `typeof !== 'bigint'` excludes it in both engines (real JS: 'bigint'; jz: matches
     // 'bigint'). Bigint negation then flows to emit's i64.sub(0,·) path correctly.
-    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' ? [, -na[1]] : ['u-', na] }
+    // `-0` is NOT folded: the self-host kernel evaluates the constant `-na[1]` with
+    // i32 negation (i32 has no signed zero), collapsing -0→+0 — observable via sort's
+    // -0<+0 tiebreak, Object.is, and 1/x. Leaving it as a runtime `u-` emits f64.neg,
+    // which preserves the sign in both engines; V8 re-folds it, so no native cost.
+    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' && na[1] !== 0 ? [, -na[1]] : ['u-', na] }
     return ['-', prep(a), prep(b)]
   },
 
