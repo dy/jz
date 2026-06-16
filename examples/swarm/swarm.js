@@ -82,12 +82,12 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
 }
 
 export let frame = (t) => {
-  let bg = 0xffffffff
+  let bg = 0xff000000                                   // black field (inverted to match boids)
   let i = 0, n = W * H
   while (i < n) { px[i] = bg; i++ }
 
   let kick = (W < H ? W : H) * WKICK
-  let col = (255 << 24) | (24 << 16) | (20 << 8) | 22
+  let col = (255 << 24) | (235 << 16) | (235 << 8) | 235  // light-gray flies on black
   i = 0
   while (i < count) {
     tmr[i] -= 1.0

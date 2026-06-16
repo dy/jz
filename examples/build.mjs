@@ -3,15 +3,11 @@ import fs from 'fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Compile examples/<name>/<name>.js → wasm artifacts. */
+/** Compile examples/<name>/<name>.js → examples/<name>/<name>.wasm (a single artifact). */
 export function buildExample(name) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), name)
   const src = fs.readFileSync(join(dir, `${name}.js`), 'utf8')
-  const wasm = compile(src)
-  fs.mkdirSync(join(dir, 'build'), { recursive: true })
-  for (const out of ['build/optimized.wasm', 'build/release.wasm', `${name}.wasm`]) {
-    fs.writeFileSync(join(dir, out), wasm)
-  }
+  fs.writeFileSync(join(dir, `${name}.wasm`), compile(src))
   console.log(`Compiled ${name}`)
 }
 
@@ -24,13 +20,19 @@ export function buildKernel(exampleDir, kernel) {
   console.log(`Compiled ${exampleDir}/${kernel}`)
 }
 
-/** Compile every example in the descriptor (plus any extra `kernels`, e.g. SIMD siblings). */
+/** Compile every gallery example in the descriptor (plus any extra `kernels`, e.g. SIMD
+ *  siblings) and the standalone demos. This is the single shared build — no per-example
+ *  build scripts, no duplicate one-liners. */
 export async function buildAll() {
   const { examples } = await import('./examples.js')
   for (const e of examples) {
     buildExample(e.name)
     for (const k of e.kernels || []) buildKernel(e.name, k)
   }
+  // Standalone demos not in the gallery descriptor:
+  buildExample('rfft')
+  buildExample('zzfx')
+  await import('./jukebox/build.mjs')   // custom: compiles beat-*.wasm from floatbeats.js
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

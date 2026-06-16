@@ -53,7 +53,7 @@
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
     "build": "node scripts/build-dist.mjs",
-    "build:examples": "for dir in examples/*/; do [ -f \"$dir/build.mjs\" ] && node \"$dir/build.mjs\"; done",
+    "build:examples": "node examples/build.mjs all",
     "prepublishOnly": "npm test && npm run test:self",
     "prepare": "npm run build"
   },

@@ -43,6 +43,11 @@ export let clear = () => {
 }
 
 export let frame = (t, sway) => {
+  // Redraw fresh every frame: zero the density first so the fern never accumulates a
+  // ghost trail as the wind sway bends it (and so JS and jz render identically).
+  let nc = W * H, c0 = 0
+  while (c0 < nc) { dens[c0] = 0; c0++ }
+
   let x = st[0], y = st[1]
 
   // f2 coefficients with wind sway
@@ -52,7 +57,7 @@ export let frame = (t, sway) => {
   let f2d = 0.85
 
   let iter = 0
-  while (iter < 40000) {
+  while (iter < 220000) {                 // enough points for a full fern in a single frame
     let r = Math.random()
     let nx = 0.0, ny = 0.0
     if (r < 0.01) {

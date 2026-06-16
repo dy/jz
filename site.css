@@ -1,0 +1,61 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Shared site chrome. One source of truth for the masthead, reused on every
+   page (repl, bench, floatbeat, examples grid, and the injected example
+   mastheads). Link it as <link rel="stylesheet" href="<rel>/site.css">.
+
+   This file owns the LOOK (band, brand, nav, font, paddings). Page LAYOUT —
+   whether the header is in-flow, sticky, or a fixed overlay — stays per-page;
+   add `.fixed` for the full-screen example pages that overlay a canvas.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Jost (libre Futura) — bundled fallback; URL resolves relative to this file (site root).
+   On machines with real Futura installed the stack below renders it; Jost matches elsewhere. */
+@font-face {
+  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url(examples/lib/jost.woff2) format('woff2');
+}
+
+/* ── Shared design tokens. The invariants every page reuses (fonts, band, spacing).
+   Per-page palettes (light docs vs dark playgrounds) still set their own ink/paper. ── */
+:root {
+  --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --band: #0a0a0a;
+  --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
+}
+
+/* Futura (the brand face) for every title, site-wide. */
+h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
+
+.masthead {
+  background: var(--band); color: #fff; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 16px;
+  min-height: 44px; padding: 0 var(--mast-px);
+  font-family: var(--font);
+}
+.masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; }
+
+.masthead .wordmark { margin: 0; font-size: 19px; font-weight: 400; letter-spacing: -.02em;
+  line-height: 1; color: #fff; text-decoration: none; }
+.masthead .wordmark .mark { font-weight: 700; color: #fff; text-decoration: none; }
+.masthead .wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; text-decoration: none; transition: color .18s; }
+.masthead .wordmark .sep  { font-weight: 400; color: #5a5a5a; margin: 0 .42em; }
+.masthead .wordmark .page { font-weight: 400; color: #fff; }
+/* Only the standalone breadcrumb LINKS (example pages: <a class="mark"/"sub">) brighten on
+   hover. A single "JZ <page>" home link must NOT highlight its page label (e.g. JZ repl). */
+.masthead .wordmark a.mark:hover,
+.masthead .wordmark a.sub:hover { color: #fff; }
+.masthead .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
+
+.masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+.masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
+.masthead nav a:hover { opacity: 1; }
+.masthead .gh { display: flex; }
+
+@media (max-width: 520px) {
+  .masthead { gap: 10px; padding: 0 18px; }
+  .masthead .wordmark { font-size: 15px; }
+  .masthead nav { gap: 14px; }
+  .masthead nav a { font-size: 11px; }
+}

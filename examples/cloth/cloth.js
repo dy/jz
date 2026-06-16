@@ -6,7 +6,7 @@
 // resize(w,h) → Uint32Array; frame() steps; grab/drag/release to interact.
 
 let W = 0, H = 0, px
-let GX = 96, GY = 64       // cloth resolution — finer mesh, ~6k nodes
+let GX = 120, GY = 48      // grid resolution — recomputed responsively from the screen in resize()
 let N = GX * GY
 let nx, ny, ox, oy         // node pos + previous pos (Verlet)
 let pin                    // 1 = pinned
@@ -18,6 +18,18 @@ let ITER = 4
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
+  // Responsive grid: a wide, shallow drape. Square cells sized to the screen; column/row
+  // counts follow the screen so the sheet spans ~88% of the width but only the upper ~36%
+  // of the height — wide and short, so it never hangs off the bottom. Cells are kept on the
+  // coarse side (min/82) so the node count stays light (a few thousand) and it runs smooth.
+  L = (w < h ? w : h) / 82
+  GX = (Math.round(w * 0.88 / L) + 1) | 0
+  GY = (Math.round(h * 0.36 / L) + 1) | 0
+  if (GX > 240) GX = 240
+  if (GX < 12) GX = 12
+  if (GY > 80) GY = 80
+  if (GY < 8) GY = 8
+  N = GX * GY
   nx = new Float64Array(N); ny = new Float64Array(N)
   ox = new Float64Array(N); oy = new Float64Array(N)
   pin = new Int32Array(N)
@@ -26,10 +38,10 @@ export let resize = (w, h) => {
 }
 
 export let init = () => {
-  L = (W < H ? W : H) * 0.85 / GX
-  R = (W < H ? W : H) * 0.1                                       // ~6 cells at 52-wide; fixed in px so finer grids stay grabbable
-  let pinStep = Math.round(GX / 8.7)                              // hold the swag spacing (~9 anchors) as the grid scales
-  let x0 = (W - (GX - 1) * L) * 0.5, y0 = H * 0.12
+  R = (W < H ? W : H) * 0.1                                       // grab radius in px so finer grids stay grabbable
+  let pinStep = Math.round(GX / 8.7)                              // ~9 pin anchors across the top, however wide the grid
+  if (pinStep < 1) pinStep = 1
+  let x0 = (W - (GX - 1) * L) * 0.5, y0 = H * 0.10
   let j = 0
   while (j < GY) {
     let i = 0

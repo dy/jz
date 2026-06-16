@@ -25,8 +25,8 @@ const cv = document.getElementById("c"), g = cv.getContext("2d")
 let W = 0, H = 0, img, out32, px
 
 const sizeTo = (engine) => {
-  const budget = 600000
-  let scale = Math.min(1, window.devicePixelRatio || 1)
+  const budget = 2600000                       // L-systems are cheap to draw → render near screen-res
+  let scale = Math.min(2, window.devicePixelRatio || 1)
   const want = innerWidth * innerHeight * scale * scale
   if (want > budget) scale *= Math.sqrt(budget / want)
   W = Math.round(innerWidth * scale) >> 1 << 1
@@ -51,9 +51,10 @@ const loop = () => {
   requestAnimationFrame(loop)
   if (!engine) return
   t += 1 / 60
-  const sysIdx = Math.floor(t / 8) % 4
-  const cycleT = (t % 8) / 8
-  const progress = Math.min(1, cycleT * 2)
+  const period = 16                            // slower: longer to watch each fractal grow
+  const sysIdx = Math.floor(t / period) % 4
+  const cycleT = (t % period) / period
+  const progress = Math.min(1, cycleT * 1.5)   // draw over the first ~2/3 of the period, then hold
   const t0 = performance.now()
   engine.frame(t, sysIdx, progress)
   const ms = performance.now() - t0

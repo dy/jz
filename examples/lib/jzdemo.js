@@ -9,7 +9,7 @@
 // hud({ kind, onSwitch, note })           FPS + ms readout + JS/jz toggle
 
 import { instantiate } from '../../interop.js'
-import { EXAMPLES, byName } from '../examples.js'
+import { EXAMPLES, byName, WIKI } from '../examples.js'
 
 // Gallery order + nicer labels come from the shared descriptor (examples/examples.js).
 // Re-exported so existing importers keep working.
@@ -30,7 +30,7 @@ if (EMBED) {
   document.documentElement.classList.add('jz-embed')
   const s = document.createElement('style')
   s.textContent = 'html.jz-embed, html.jz-embed body { border: 0 !important; overflow: hidden !important; }'
-    + ` html.jz-embed .jz-hud { top: 12px; left: 12px; right: auto; bottom: auto; align-items: flex-start; transform: scale(${inv}); transform-origin: top left; }`
+    + ` html.jz-embed .jz-hud { right: 14px; bottom: 12px; left: auto; top: auto; align-items: flex-end; transform: scale(${inv}); transform-origin: bottom right; }`
     + ' html.jz-embed #hint, html.jz-embed .hint { display: none !important; }'   // example-local hint divs
   document.head.appendChild(s)
 }
@@ -63,6 +63,15 @@ const addMasthead = (name) => {
       </a>
     </nav>`
   document.body.insertBefore(header, document.body.firstChild)
+  // Shared rule for every example: drop the full-screen demo canvas below the fixed
+  // masthead so the header never overlaps the content. The HUD's own <canvas> lives
+  // inside .jz-hud (body > div > canvas), so `body > canvas` targets only the demo.
+  if (!document.getElementById('jz-canvas-fit')) {
+    const fit = document.createElement('style')
+    fit.id = 'jz-canvas-fit'
+    fit.textContent = 'body > canvas { position: fixed !important; top: 44px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 44px) !important; object-fit: contain !important; }'
+    document.head.appendChild(fit)
+  }
 }
 
 // Big left/right chevrons for switching examples without leaving the demo area.
@@ -209,8 +218,21 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         pointer-events: none; transition: opacity .6s; opacity: .95;
         font: 500 13px 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .02em;
         color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 1px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7); }
+      .jz-hint .jz-wiki { color: inherit; pointer-events: auto; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
     </style>`
     document.body.appendChild(hel)
+  }
+  // Append a "(wiki)" link to the description hint — same style, points at the math behind it.
+  if (nav && !EMBED && WIKI[nav]) {
+    const hintEl = document.querySelector('#hint, .hint, .jz-hint')
+    if (hintEl && !hintEl.querySelector('.jz-wiki')) {
+      const a = document.createElement('a')
+      a.className = 'jz-wiki'
+      a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '(wiki)'
+      a.style.cssText = 'color:inherit;pointer-events:auto;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;margin-left:.45em'
+      hintEl.appendChild(document.createTextNode(' '))
+      hintEl.appendChild(a)
+    }
   }
   const el = document.createElement('div')
   el.innerHTML = `
@@ -220,36 +242,37 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         font: 600 13px/1.1 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #fff; user-select: none;
         display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
         text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.6); }
-      .jz-hud .spark { display: block; width: 150px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.85)); }
-      .jz-hud .readout { display: flex; align-items: baseline; gap: 9px; font-size: 12px; color: rgba(255,255,255,.72); }
+      .jz-hud .spark { display: block; width: 116px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.85)); }
+      .jz-hud .readout { display: flex; align-items: baseline; gap: 9px; font-size: 11.5px; color: rgba(255,255,255,.7); }
       .jz-hud .readout .metric { display: inline-flex; align-items: baseline; gap: .34em; }
-      .jz-hud .readout b { font-weight: 700; font-size: 19px; line-height: 1; color: #fff; letter-spacing: -.02em; }
-      /* skeuomorphic JS↔JZ slider: dark inset track (JS) → light track + knob right (JZ) */
-      .jz-sw { display: flex; align-items: center; gap: 9px; }
-      .jz-sw .lbl { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: rgba(255,255,255,.48);
-        cursor: pointer; transition: color .15s; display: inline-flex; align-items: center; gap: 4px; }
-      .jz-sw .lbl.on { color: #fff; }
-      .jz-sw .lbl .bolt { width: 10px; height: 10px; }
-      .jz-toggle { position: relative; width: 46px; height: 26px; flex: none; border: 0; padding: 0; cursor: pointer;
-        border-radius: 13px; -webkit-appearance: none; appearance: none; transition: background .25s, box-shadow .25s;
-        background: linear-gradient(180deg, #242424, #0d0d0d);
-        box-shadow: inset 0 2px 4px rgba(0,0,0,.75), inset 0 -1px 0 rgba(255,255,255,.06), 0 1px 0 rgba(255,255,255,.07); }
-      .jz-toggle.jz { background: linear-gradient(180deg, #fdfdfd, #d2d2d2);
-        box-shadow: inset 0 2px 4px rgba(0,0,0,.28), 0 1px 0 rgba(255,255,255,.14); }
-      .jz-toggle .knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
-        background: radial-gradient(120% 120% at 50% 26%, #5c5c5c, #1a1a1a 72%);
-        box-shadow: 0 2px 4px rgba(0,0,0,.65), inset 0 1px 1px rgba(255,255,255,.3), inset 0 -2px 3px rgba(0,0,0,.55);
-        transition: transform .28s cubic-bezier(.34,.72,.28,1.3); }
-      .jz-toggle.jz .knob { transform: translateX(20px); }
+      .jz-hud .readout b { font-weight: 700; font-size: 17px; line-height: 1; color: #fff; letter-spacing: -.02em; }
+      /* skeuomorphic segmented JS|JZ slider — both labels INSIDE the track; the knob slides over the active one */
+      .jz-sw { display: flex; }
+      .jz-toggle { position: relative; width: 86px; height: 34px; flex: none; border: 0; padding: 0; cursor: pointer;
+        border-radius: 17px; -webkit-appearance: none; appearance: none;
+        background: linear-gradient(180deg, #232323, #0c0c0c);
+        box-shadow: inset 0 2px 5px rgba(0,0,0,.8), inset 0 -1px 0 rgba(255,255,255,.06), 0 1px 0 rgba(255,255,255,.06); }
+      .jz-toggle .knob { position: absolute; top: 3px; left: 3px; width: 40px; height: 28px; border-radius: 14px; z-index: 1;
+        background: linear-gradient(180deg, #fcfcfc, #d0d0d0);
+        box-shadow: 0 2px 5px rgba(0,0,0,.6), inset 0 1px 1px rgba(255,255,255,.85), inset 0 -2px 3px rgba(0,0,0,.16);
+        transition: transform .26s cubic-bezier(.34,.72,.28,1.3); }
+      .jz-toggle.jz .knob { transform: translateX(40px); }
+      .jz-toggle .lbl-js, .jz-toggle .lbl-jz { position: absolute; top: 0; height: 100%; width: 43px; z-index: 2;
+        display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+        font: 700 12px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+        color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
+      .jz-toggle .lbl-js { left: 0; }
+      .jz-toggle .lbl-jz { right: 0; }
+      .jz-toggle.js .lbl-js { color: #141414; }
+      .jz-toggle.jz .lbl-jz { color: #141414; }
+      .jz-toggle .bolt { width: 11px; height: 11px; }
       @media (prefers-reduced-motion: reduce) { .jz-toggle .knob { transition: none; } }
     </style>
     <div class="jz-hud">
       ${meter ? `<canvas class="spark" id="jz-spark"></canvas>
       <div class="readout"><span class="metric"><b id="jz-fps">··</b> fps</span><span class="metric" id="jz-ms" hidden><b id="jz-ms-v">·</b> ms</span></div>` : ''}
       <div class="jz-sw">
-        <span class="lbl js" id="jz-lbl-js">JS</span>
-        <button class="jz-toggle" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="knob"></span></button>
-        <span class="lbl jz" id="jz-lbl-jz"><svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>JZ</span>
+        <button class="jz-toggle" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz"><svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>JZ</span><span class="knob"></span></button>
       </div>
     </div>`
   document.body.appendChild(el)
@@ -291,18 +314,14 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     sctx.strokeStyle = 'rgba(255,255,255,.95)'; sctx.lineWidth = 1.25; sctx.stroke()
   }
   const toggle = el.querySelector('#jz-toggle')
-  const lblJs = el.querySelector('#jz-lbl-js'), lblJz = el.querySelector('#jz-lbl-jz')
   const paint = () => {
     toggle.classList.toggle('jz', kind === 'jz')
+    toggle.classList.toggle('js', kind === 'js')   // both: drives which inside-label is dark
     toggle.setAttribute('aria-checked', kind === 'jz')
-    lblJs.classList.toggle('on', kind === 'js')
-    lblJz.classList.toggle('on', kind === 'jz')
   }
   paint()
   const setKind = (k) => { if (k === kind) return; kind = k; paint(); ms = 0; onSwitch?.(kind) }
   toggle.onclick = () => setKind(kind === 'js' ? 'jz' : 'js')
-  lblJs.onclick = () => setKind('js')
-  lblJz.onclick = () => setKind('jz')
 
   // Palette icon: a bare square color-wheel, bottom-right. Click randomizes a colormap
   // (rotating the wheel); `paint(src,dst)` then maps grayscale luminance through it. Until

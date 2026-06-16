@@ -33,7 +33,6 @@ const sizeTo = (engine) => {
   H = Math.round(innerHeight * scale) >> 1 << 1
   cv.width = W; cv.height = H
   img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
-  engine.clear()
   px = engine.resize(W, H)
 }
 
