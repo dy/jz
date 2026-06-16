@@ -110,16 +110,8 @@ export let frame = (t, panX, panY) => {
       if (isGaussPrime(a, b)) {
         let px2 = (cx + a * step) | 0
         let py2 = (cy + b * step) | 0
-        // color by norm — warm for small norm, cooler for large
-        let norm = a * a + b * b
-        let hue = (norm * 23) & 255
-        let rr = 150 + ((hue * 2) & 105)
-        let gg = 80 + ((hue * 3) & 120)
-        let bb = 200 + ((hue) & 55)
-        if (rr > 255) rr = 255
-        if (gg > 255) gg = 255
-        if (bb > 255) bb = 255
-        let color = (255 << 24) | (bb << 16) | (gg << 8) | rr
+        // solid white dot on black
+        let color = (255 << 24) | (255 << 16) | (255 << 8) | 255
         disk(px2, py2, diskR, color)
       }
       b++

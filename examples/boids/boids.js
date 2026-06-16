@@ -152,16 +152,8 @@ export let frame = (t, mx, my, mdown) => {
     bvx[i] = vx; bvy[i] = vy
     bx[i] = xp + vx; by[i] = yp + vy
 
-    // color by heading — the flock reads as a rainbow that swirls as one
     let ux = vx / (sp + 0.0001), uy = vy / (sp + 0.0001)
-    let h6 = (Math.atan2(uy, ux) * 0.1591549 + 0.5) * 6.0     // atan2/2π + .5, in [0,6)
-    let rr = Math.abs(h6 - 3.0) - 1.0
-    let gg = 2.0 - Math.abs(h6 - 2.0)
-    let bb = 2.0 - Math.abs(h6 - 4.0)
-    if (rr < 0.0) rr = 0.0; if (rr > 1.0) rr = 1.0
-    if (gg < 0.0) gg = 0.0; if (gg > 1.0) gg = 1.0
-    if (bb < 0.0) bb = 0.0; if (bb > 1.0) bb = 1.0
-    let col = (255 << 24) | (((40.0 + bb * 215.0) | 0) << 16) | (((40.0 + gg * 215.0) | 0) << 8) | ((40.0 + rr * 215.0) | 0)
+    let col = (255 << 24) | (235 << 16) | (235 << 8) | 235
     tri(bx[i], by[i], ux, uy, size, col)
     i++
   }

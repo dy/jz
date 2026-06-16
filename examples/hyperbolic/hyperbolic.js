@@ -151,10 +151,7 @@ export let frame = (t, rotAngle) => {
     k++
   }
 
-  // Color table by depth: bright at depth 0, dimmer deeper, with hue shift
-  // We'll use 8 depth levels. Each is (r,g,b).
-  // Stored in Float64Array to avoid i32 narrowing of fractional RGB floats —
-  // but since these are integers 0-255, plain const is fine.
+  // Color table by depth: bright at depth 0, dimmer deeper (grayscale)
   let result = f64   // reuse f64 scratch for inversion results [0],[1]
 
   // Three initial ideal vertices of the seed triangle, rotated by rotAngle
@@ -185,19 +182,9 @@ export let frame = (t, rotAngle) => {
     let u2x = st[top + 4], u2y = st[top + 5]
     let depth = st[top + 6] | 0
 
-    // Color by depth: 8 slots cycling
-    let phase = depth % 8
-    let cr = 0, cg = 0, cb = 0
-    let bright = 255 - depth * 28
-    if (bright < 40) bright = 40
-    if (phase == 0) { cr = bright; cg = bright; cb = bright }
-    else if (phase == 1) { cr = bright; cg = (bright * 0.4) | 0; cb = (bright * 0.2) | 0 }
-    else if (phase == 2) { cr = (bright * 0.2) | 0; cg = bright; cb = (bright * 0.5) | 0 }
-    else if (phase == 3) { cr = (bright * 0.3) | 0; cg = (bright * 0.6) | 0; cb = bright }
-    else if (phase == 4) { cr = bright; cg = (bright * 0.85) | 0; cb = 0 }
-    else if (phase == 5) { cr = (bright * 0.8) | 0; cg = 0; cb = bright }
-    else if (phase == 6) { cr = 0; cg = bright; cb = bright }
-    else             { cr = bright; cg = bright; cb = (bright * 0.4) | 0 }
+    // Color by depth: gray level spread across 80..255
+    let gv = (80 + (depth * 45) % 175) | 0
+    let cr = gv, cg = gv, cb = gv
 
     // Draw 3 geodesic edges
     drawGeodesic(u0x, u0y, u1x, u1y, R_scr, cx_scr, cy_scr, depth, cr, cg, cb)

@@ -105,28 +105,14 @@ export let frame = (t, p) => {
     } else {
       let root = find(i)
       if (rnk[root] === 2) {
-        // spanning cluster = bright red/pink highlight
-        px[i] = (255 << 24) | (100 << 16) | (100 << 8) | 255
+        // spanning cluster = white (255, R==G==B)
+        px[i] = (255 << 24) | (255 << 16) | (255 << 8) | 255
       } else {
-        // color by root hash → hue using integer segment arithmetic
-        let h6 = (root * 2654435761 | 0)
-        if (h6 < 0) h6 = -h6
-        h6 = h6 % 1536       // 0..1535, 6 segments of 256
-        let seg = h6 >> 8     // integer segment 0..5
-        let f = (h6 & 255) * (1.0 / 255.0)  // fraction within segment [0..1)
-        let cr = 0, cg = 0, cb = 0
-        if (seg === 0) { cr = 255; cg = (f * 255) | 0; cb = 0 }
-        else if (seg === 1) { cr = ((1.0 - f) * 255) | 0; cg = 255; cb = 0 }
-        else if (seg === 2) { cr = 0; cg = 255; cb = (f * 255) | 0 }
-        else if (seg === 3) { cr = 0; cg = ((1.0 - f) * 255) | 0; cb = 255 }
-        else if (seg === 4) { cr = (f * 255) | 0; cg = 0; cb = 255 }
-        else { cr = 255; cg = 0; cb = ((1.0 - f) * 255) | 0 }
-        // dim non-spanning clusters slightly so spanning pops
-        cr = (cr * 180 / 255) | 0
-        cg = (cg * 180 / 255) | 0
-        cb = (cb * 180 / 255) | 0
-        // pixel format: (255<<24)|(b<<16)|(g<<8)|r  (little-endian RGBA)
-        px[i] = (255 << 24) | (cb << 16) | (cg << 8) | cr
+        // hash root id → pseudo-random gray in 60..229
+        let gh = (root * 2654435761 | 0)
+        if (gh < 0) gh = -gh
+        let g = 60 + (gh >>> 24) % 170
+        px[i] = (255 << 24) | (g << 16) | (g << 8) | g
       }
     }
     i++

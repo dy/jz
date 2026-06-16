@@ -54,21 +54,15 @@ export let frame = (t, ox, oy) => {
       }
       let lam = L / 160.0
 
-      let rv = 0, gv = 0, bv = 0
+      let gv = 0
       if (lam < 0.0) {
-        // order: bright gold/green palette
+        // order: gray rising with |λ| (more ordered = brighter)
         let tv = Math.min(1.0, -lam / 1.5)
-        rv = (200.0 + 55.0 * Math.sqrt(tv)) | 0   // warm yellow-white
-        gv = (160.0 * tv * tv + 80.0 * Math.sqrt(tv)) | 0  // gold-green midtones
-        bv = (30.0 * tv * tv) | 0                 // minimal blue, warm
-      } else {
-        // chaos: near-black with faint cool tint
-        let v = Math.min(1.0, lam / 2.0)
-        rv = 0
-        gv = (20.0 * Math.max(0.0, 1.0 - v)) | 0
-        bv = (40.0 * Math.max(0.0, 1.0 - v)) | 0
+        gv = (55.0 + 200.0 * Math.sqrt(tv)) | 0
+        if (gv > 255) gv = 255
       }
-      px[j] = (255 << 24) | (bv << 16) | (gv << 8) | rv
+      // chaos (lam >= 0): black
+      px[j] = (255 << 24) | (gv << 16) | (gv << 8) | gv
       j++; qx++
     }
     py++

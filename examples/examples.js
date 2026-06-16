@@ -38,11 +38,11 @@ export const examples = [
   { name: 'burningship',  title: 'Burning Ship',      blurb: 'escape-time on |Re|,|Im| — a galleon ablaze below the Mandelbrot set' },
   { name: 'lyapunov',     title: 'Lyapunov',          blurb: 'Markus–Lyapunov “zircon” — order in gold, chaos in dark' },
   { name: 'buddhabrot',   title: 'Buddhabrot',        blurb: 'density of Mandelbrot escape orbits — a luminous nebula accumulates' },
-  { name: 'domain-color', title: 'Domain Coloring',   blurb: 'a complex function as color — hue is phase, brightness is magnitude' },
+  { name: 'domain-color', title: 'Domain Coloring',   blurb: 'a complex function as an analytic landscape — zeros sink dark, poles flare bright' },
   { name: 'attractors',   title: 'Attractors',        blurb: 'de Jong map — millions of iters into luminous curves' },
   { name: 'lorenz',       title: 'Lorenz',            blurb: 'the butterfly that launched chaos theory — a strange attractor in 3D', show: true },
   { name: 'bifurcation',  title: 'Bifurcation',       blurb: "the logistic map's period-doubling cascade into chaos" },
-  { name: 'pendulum',     title: 'Double Pendulum',   blurb: 'every pixel an initial angle, colored by time-to-flip — sensitive chaos' },
+  { name: 'pendulum',     title: 'Double Pendulum',   blurb: 'every pixel an initial angle, shaded by time-to-flip — sensitive chaos' },
   { name: 'times-table',  title: 'Times Tables',      blurb: 'chords i→i·k mod N draw cardioids, nephroids and beyond', show: true },
   { name: 'ulam',         title: 'Ulam Spiral',       blurb: 'primes on a square spiral — diagonals of prime-rich quadratics' },
   { name: 'pascal-sierpinski', title: 'Pascal mod p', blurb: "Pascal's triangle mod p — mod 2 is Sierpiński, primes remix it" },
@@ -76,4 +76,4 @@ export const byName = Object.fromEntries(examples.map(e => [e.name, e]))
 // Curated hero-showcase order — fast (60fps+ full-screen at half-res), dark-background.
 // Excludes light-bg examples (swarm/marble) and compute-bound ones the downscale can't help
 // (attractors iterates millions of points/frame regardless of resolution). Default = plasma.
-export const SHOWCASE = ['plasma', 'raymarcher', 'julia', 'lorenz', 'voronoi', 'boids', 'metaballs', 'phyllotaxis', 'chladni', 'times-table', 'nbody']
+export const SHOWCASE = ['nbody', 'plasma', 'raymarcher', 'julia', 'lorenz', 'voronoi', 'boids', 'metaballs', 'phyllotaxis', 'chladni', 'times-table']

@@ -87,7 +87,7 @@ export let frame = (t, sway) => {
 
   st[0] = x; st[1] = y
 
-  // log tone-map: green channel drives the image; blue and dim red for color
+  // log tone-map: density → gray (white fern on black)
   let n = W * H, i = 0
   while (i < n) {
     let d = dens[i]
@@ -96,9 +96,7 @@ export let frame = (t, sway) => {
     } else {
       let g = (Math.log(d + 1.0) * 44.0) | 0
       if (g > 255) g = 255
-      let b = (g * 0.6) | 0
-      let red = g >> 3
-      px[i] = (255 << 24) | (b << 16) | (g << 8) | red
+      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     }
     i++
   }

@@ -81,20 +81,10 @@ export let frame = (t, detune, phaseShift) => {
     let nx = cx + R * (Math.sin(f1 * tau + p1) * e1 + Math.sin(f2 * tau + p2) * e2)
     let ny = cy + R * (Math.sin(f3 * tau + p3) * e3 + Math.sin(f4 * tau + p4) * e4)
 
-    // Color: hue shifts along curve, glows cyan→magenta→gold
-    let fi = i / STEPS
-    let h6 = fi * 6.0
-    let rr = Math.abs(h6 - 3.0) - 1.0
-    let gg = 2.0 - Math.abs(h6 - 2.0)
-    let bb = 2.0 - Math.abs(h6 - 4.0)
-    if (rr < 0.0) rr = 0.0; if (rr > 1.0) rr = 1.0
-    if (gg < 0.0) gg = 0.0; if (gg > 1.0) gg = 1.0
-    if (bb < 0.0) bb = 0.0; if (bb > 1.0) bb = 1.0
-
-    // Fade out as pendulum damps
+    // Fade out as pendulum damps — single gray, overlaps glow
     let amp = Math.exp(-d1 * tau)
-    let INT = 60.0 * amp + 14.0
-    line(px0, py0, nx, ny, (rr * INT) | 0, (gg * INT) | 0, (bb * INT) | 0)
+    let gv = (60.0 * amp + 14.0) | 0
+    line(px0, py0, nx, ny, gv, gv, gv)
 
     px0 = nx; py0 = ny
     i++

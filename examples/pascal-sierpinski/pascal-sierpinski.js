@@ -21,19 +21,13 @@ let palB = new Int32Array(8)
 let primes4 = new Int32Array([2, 3, 5, 7])
 
 let fillPalette = (p) => {
-  // index 1..(p-1) → vivid hues distributed around the wheel
+  // index 1..(p-1) → distinct gray levels spread across ~60..255
   let i = 1
   while (i < p) {
-    let h6 = (i / p) * 6.0
-    let rr = Math.abs(h6 - 3.0) - 1.0
-    let gg = 2.0 - Math.abs(h6 - 2.0)
-    let bb = 2.0 - Math.abs(h6 - 4.0)
-    if (rr < 0.0) rr = 0.0; if (rr > 1.0) rr = 1.0
-    if (gg < 0.0) gg = 0.0; if (gg > 1.0) gg = 1.0
-    if (bb < 0.0) bb = 0.0; if (bb > 1.0) bb = 1.0
-    palR[i] = (rr * 220.0) | 0
-    palG[i] = (gg * 220.0) | 0
-    palB[i] = (bb * 220.0) | 0
+    let gv = (60 + (i / p) * 195.0) | 0
+    palR[i] = gv
+    palG[i] = gv
+    palB[i] = gv
     i++
   }
 }

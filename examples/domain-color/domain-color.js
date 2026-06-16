@@ -79,25 +79,21 @@ export let frame = (t, cx, cy, panX, panY) => {
         fy = (numi * dr - numr * di) / denom
       }
 
-      // Color by arg → hue, mag → brightness with log rings
+      // Grayscale analytic landscape: zeros=black, poles=white, phase contours visible
       let mag = Math.hypot(fx, fy)
       let arg = Math.atan2(fy, fx)
-      let h = arg < 0.0 ? arg + TWO_PI : arg
-      h = h / TWO_PI
 
-      // Brightness: 0 at zeros (mag=0) → white at poles (mag→∞), 0.5 at |f|=1
+      // v: 0 at zeros (mag=0) → 1 at poles (mag→∞)
       let v = mag / (mag + 1.0)
 
-      // Faint log-magnitude contour rings
-      let lm = mag > 1e-12 ? Math.log(mag) : -28.0
-      let band = 0.7 + 0.3 * (lm - Math.floor(lm))
+      // Phase contour shading: light/dark lobes around each zero/pole
+      let shade = 0.55 + 0.45 * Math.abs(Math.sin(2.0 * arg))
 
-      let bright = v * band
-      if (bright < 0.0) bright = 0.0
-      if (bright > 1.0) bright = 1.0
-
-      hsv2rgb(h, 0.9, bright)
-      px[j] = (255 << 24) | (hsv_buf[2] << 16) | (hsv_buf[1] << 8) | hsv_buf[0]
+      let gv = v * shade
+      if (gv < 0.0) gv = 0.0
+      if (gv > 1.0) gv = 1.0
+      let g = (gv * 255.0) | 0
+      px[j] = (255 << 24) | (g << 16) | (g << 8) | g
       j++; qx++
     }
     py++

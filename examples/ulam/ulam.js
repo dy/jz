@@ -67,15 +67,8 @@ export let frame = (t, speed) => {
     if (ax >= 0 && ax < W && ay >= 0 && ay < H) {
       let idx = ay * W + ax
       if (n >= 2 && !isComp[n]) {
-        // prime — color faintly by n value for depth, white-hot at core
-        let hue = (n * 7) & 255
-        let r = 180 + ((hue * 3) & 75)
-        let g = 180 + ((hue * 5) & 75)
-        let b = 200 + ((hue * 2) & 55)
-        if (r > 255) r = 255
-        if (g > 255) g = 255
-        if (b > 255) b = 255
-        px[idx] = (255 << 24) | (b << 16) | (g << 8) | r
+        // prime — pure white
+        px[idx] = (255 << 24) | (255 << 16) | (255 << 8) | 255
       } else {
         px[idx] = (255 << 24)  // opaque black (composite)
       }

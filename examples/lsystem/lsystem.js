@@ -205,12 +205,8 @@ export let frame = (t, systemIdx, progress) => {
   if (si == 2) ang = 1.0471975511965976  // 60°
   if (si == 3) ang = 0.4363323129985824  // 25° = PI/180*25
 
-  // Color per system
-  let cr = 0, cg = 0, cb = 0
-  if (si == 0) { cr = 0;   cg = 180; cb = 255 }  // cyan
-  if (si == 1) { cr = 220; cg = 0;   cb = 255 }  // magenta
-  if (si == 2) { cr = 0;   cg = 255; cb = 80  }  // green
-  if (si == 3) { cr = 50;  cg = 220; cb = 50  }  // plant green
+  // Single gray for all systems — palette button recolors
+  let cr = 200, cg = 200, cb = 200
 
   let slen = llen[0]
 

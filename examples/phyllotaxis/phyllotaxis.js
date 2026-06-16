@@ -64,16 +64,10 @@ export let frame = (t, ang) => {
     let px2 = cx + rr * Math.cos(theta)
     let py2 = cy + rr * Math.sin(theta)
 
-    // Rainbow by index
-    let h6 = (fi / N) * 6.0
-    let cr = Math.abs(h6 - 3.0) - 1.0
-    let cg = 2.0 - Math.abs(h6 - 2.0)
-    let cb = 2.0 - Math.abs(h6 - 4.0)
-    if (cr < 0.0) cr = 0.0; if (cr > 1.0) cr = 1.0
-    if (cg < 0.0) cg = 0.0; if (cg > 1.0) cg = 1.0
-    if (cb < 0.0) cb = 0.0; if (cb > 1.0) cb = 1.0
+    // Gray ramp by index — spiral arms read as gradient; palette button recolors
+    let cg = (40 + (fi / N) * 215) | 0
 
-    disc(px2, py2, dotR, (cr * 200.0) | 0, (cg * 200.0) | 0, (cb * 200.0) | 0)
+    disc(px2, py2, dotR, cg, cg, cg)
     i++
   }
 }

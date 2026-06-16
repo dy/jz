@@ -76,14 +76,11 @@ export let frame = (t, theta) => {
     let ix = sx | 0, iy = sy | 0
     if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
       let idx = iy * W + ix
-      // cyan→white: r ramps up with brightness, g and b stay high
-      // trail: existing pixel already faded; add a bright point
+      // white/gray trail: add equal R=G=B so the fade gives a gray glow
       let p = px[idx]
-      let er = (p & 0xff), eg = ((p >> 8) & 0xff), eb = ((p >> 16) & 0xff)
-      let nr = er + 80; if (nr > 255) nr = 255
-      let ng = eg + 200; if (ng > 255) ng = 255
-      let nb = eb + 230; if (nb > 255) nb = 255
-      px[idx] = (255 << 24) | (nb << 16) | (ng << 8) | nr
+      let ec = (p & 0xff)
+      let nc = ec + 200; if (nc > 255) nc = 255
+      px[idx] = (255 << 24) | (nc << 16) | (nc << 8) | nc
     }
     k++
   }

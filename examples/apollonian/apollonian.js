@@ -56,26 +56,12 @@ let addpix = (x, y, r, g, b) => {
   px[idx] = (255 << 24) | (bb << 16) | (gg << 8) | rr
 }
 
-// HSV rainbow by depth: depth=0 → red, deeper → blue→violet
+// Gray level by depth: spread 80..255
 let depthColor = (d, buf) => {
-  let h = (d * 0.18) % 1.0   // full rainbow cycle over ~5-6 depth levels
-  let h6 = h * 6.0
-  let s = 1.0, v = 1.0
-  let i = h6 | 0
-  let f = h6 - i
-  let p2 = v * (1.0 - s)
-  let q2 = v * (1.0 - s * f)
-  let t2 = v * (1.0 - s * (1.0 - f))
-  let rr = 0.0, gg = 0.0, bb = 0.0
-  if (i == 0) { rr = v; gg = t2; bb = p2 }
-  else if (i == 1) { rr = q2; gg = v; bb = p2 }
-  else if (i == 2) { rr = p2; gg = v; bb = t2 }
-  else if (i == 3) { rr = p2; gg = q2; bb = v }
-  else if (i == 4) { rr = t2; gg = p2; bb = v }
-  else { rr = v; gg = p2; bb = q2 }
-  buf[0] = (rr * 120.0) | 0
-  buf[1] = (gg * 120.0) | 0
-  buf[2] = (bb * 120.0) | 0
+  let g = (80 + (d * 45) % 175) | 0
+  buf[0] = g
+  buf[1] = g
+  buf[2] = g
 }
 
 let color_buf = new Float64Array(3)
@@ -259,7 +245,7 @@ export let frame = (t, panX, panY, zoom) => {
     let cb = color_buf[2] | 0
 
     if (ci == 0) {
-      // outer circle: faint white ring
+      // outer circle: faint gray ring
       cr = 40; cg = 40; cb = 40
     }
 

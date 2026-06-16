@@ -71,22 +71,17 @@ export let frame = (t) => {
     s++
   }
 
-  // tone-map density → pixels (warm nebula palette)
+  // tone-map density → grayscale
   let i = 0, n = W * H
   while (i < n) {
     let d = dens[i]
-    let r = 0, g = 0, b = 0
+    let gv = 0
     if (d > 0) {
       let v = Math.log(d + 1.0) * 45.0
       if (v > 255.0) v = 255.0
-      r = (v * 1.0) | 0
-      g = (Math.max(0.0, v - 80.0) * 1.5) | 0
-      b = (Math.max(0.0, v - 150.0) * 3.0) | 0
-      if (r > 255) r = 255
-      if (g > 255) g = 255
-      if (b > 255) b = 255
+      gv = v | 0
     }
-    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+    px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
     i++
   }
 }

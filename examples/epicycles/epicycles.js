@@ -191,7 +191,7 @@ export let frame = (t, phi) => {
   while (ti < tl - 1) {
     let tx0 = tracePts[ti * 2], ty0 = tracePts[ti * 2 + 1]
     let tx1 = tracePts[(ti + 1) * 2], ty1 = tracePts[(ti + 1) * 2 + 1]
-    line(tx0, ty0, tx1, ty1, 255, 50, 50)
+    line(tx0, ty0, tx1, ty1, 255, 255, 255)
     ti++
   }
 

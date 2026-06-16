@@ -83,9 +83,9 @@ export let frame = (t, tileSize) => {
   let ts = tileSize | 0
   if (ts < 8) ts = TILE
 
-  // Clear to deep dark blue-black
+  // Clear to black
   let total = W * H, i = 0
-  while (i < total) { px[i] = (255 << 24) | (2 << 16) | (0 << 8) | 5; i++ }
+  while (i < total) { px[i] = (255 << 24); i++ }
 
   let arcR = ts * 0.5
 
@@ -99,30 +99,22 @@ export let frame = (t, tileSize) => {
       // Cell origin in screen pixels
       let ox = gx * ts, oy = gy * ts
 
-      // Smooth hue field flows with t
-      let hue = ((gx + gy) * 0.08 + t * 0.2)
-      // wrap hue to [0,6)
-      hue = hue - Math.floor(hue / 6.0) * 6.0
-      let rr = Math.abs(hue - 3.0) - 1.0
-      let gg = 2.0 - Math.abs(hue - 2.0)
-      let bb = 2.0 - Math.abs(hue - 4.0)
-      if (rr < 0.0) rr = 0.0; if (rr > 1.0) rr = 1.0
-      if (gg < 0.0) gg = 0.0; if (gg > 1.0) gg = 1.0
-      if (bb < 0.0) bb = 0.0; if (bb > 1.0) bb = 1.0
-      let INT = 180.0
-      let ir = (rr * INT) | 0, ig = (gg * INT) | 0, ib = (bb * INT) | 0
+      // Flowing gray gradient along arcs: flow value → gray level
+      let flow = (gx + gy) * 0.08 + t * 0.2
+      let gv = 60.0 + 0.5 * (1.0 + Math.sin(flow)) * 180.0
+      let ig = gv | 0
 
       if (ori == 0) {
         // Arc 1: centered at top-left corner (ox, oy), quarter circle from right to down
         // connecting midpoint of top edge to midpoint of left edge
-        drawArc(ox, oy, arcR, 0.0, HALF_PI, ir, ig, ib)
+        drawArc(ox, oy, arcR, 0.0, HALF_PI, ig, ig, ig)
         // Arc 2: centered at bottom-right corner (ox+ts, oy+ts), left half to up
-        drawArc(ox + ts, oy + ts, arcR, PI, PI + HALF_PI, ir, ig, ib)
+        drawArc(ox + ts, oy + ts, arcR, PI, PI + HALF_PI, ig, ig, ig)
       } else {
         // Arc 1: centered at top-right corner (ox+ts, oy), quarter from left to down
-        drawArc(ox + ts, oy, arcR, HALF_PI, PI, ir, ig, ib)
+        drawArc(ox + ts, oy, arcR, HALF_PI, PI, ig, ig, ig)
         // Arc 2: centered at bottom-left corner (ox, oy+ts), right to up
-        drawArc(ox, oy + ts, arcR, PI + HALF_PI, 2.0 * PI, ir, ig, ib)
+        drawArc(ox, oy + ts, arcR, PI + HALF_PI, 2.0 * PI, ig, ig, ig)
       }
 
       gx++

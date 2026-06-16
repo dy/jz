@@ -34,26 +34,12 @@ let accel2 = (th1, th2, w1, w2) => {
   return (2.0 * sd * (2.0 * w1 * w1 + 2.0 * Math.cos(th1) + w2 * w2 * cd)) / den
 }
 
-// log flip-time → color (blue→red→yellow ramp over log(1)..log(MAX_STEPS))
+// log flip-time → grayscale (short flip=dark, long flip=bright)
 let flipColor = (steps) => {
-  // t in [0,1] over log scale
   let logMax = Math.log(MAX_STEPS + 1.0)
   let tv = Math.log(steps + 1.0) / logMax  // 0..1
-  // blue(0) → red(0.5) → yellow(1)
-  let r = 0, gg = 0, b = 0
-  if (tv < 0.5) {
-    let s = tv * 2.0  // 0..1
-    r = (s * 220.0) | 0
-    gg = 0
-    b = ((1.0 - s) * 255.0) | 0
-  } else {
-    let s = (tv - 0.5) * 2.0  // 0..1
-    r = 220 + ((s * 35.0) | 0)
-    gg = (s * 220.0) | 0
-    b = 0
-  }
-  if (r > 255) r = 255
-  return (255 << 24) | (b << 16) | (gg << 8) | r
+  let gv = (tv * 255.0) | 0
+  return (255 << 24) | (gv << 16) | (gv << 8) | gv
 }
 
 export let resize = (w, h) => {

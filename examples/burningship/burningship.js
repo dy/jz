@@ -34,8 +34,8 @@ export let frame = (t, cx, cy, halfH) => {
         if (x * x + y * y > 256.0) break
         it++
       }
-      // smooth coloring + fire palette
-      let r = 0, g = 0, b = 0
+      // smooth coloring → grayscale
+      let gv = 0
       if (it < MAXIT) {
         let sqd = x * x + y * y
         let frac = Math.log2(0.5 * Math.log(sqd))
@@ -43,12 +43,9 @@ export let frame = (t, cx, cy, halfH) => {
         let v = smi / MAXIT
         if (v < 0.0) v = 0.0
         if (v > 1.0) v = 1.0
-        // fire palette: black → red → orange → yellow → white
-        r = (255.0 * Math.min(1.0, v * 4.0)) | 0
-        g = (255.0 * Math.min(1.0, Math.max(0.0, v * 4.0 - 1.5))) | 0
-        b = (255.0 * Math.min(1.0, Math.max(0.0, v * 4.0 - 3.0))) | 0
+        gv = (Math.sqrt(v) * 255.0) | 0
       }
-      px[j] = (255 << 24) | (b << 16) | (g << 8) | r
+      px[j] = (255 << 24) | (gv << 16) | (gv << 8) | gv
       j++; qx++
     }
     py++

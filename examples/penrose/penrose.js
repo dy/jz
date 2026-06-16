@@ -168,12 +168,13 @@ export let frame = (t, rot, zoom) => {
     if (maxX >= W) maxX = W - 1
     if (maxY >= H) maxY = H - 1
 
-    // Color: fat=gold (R=255,G=215,B=0), thin=steel blue (R=120,G=160,B=255)
+    // Two rhombi as two distinct gray levels (fat lighter, thin darker) — the palette
+    // button maps the two shades to two colors. R==G==B keeps it pure grayscale.
     let color = 0
     if (type === 0) {
-      color = (255 << 24) | (0 << 16) | (215 << 8) | 255
+      color = (255 << 24) | (210 << 16) | (210 << 8) | 210   // fat rhomb
     } else {
-      color = (255 << 24) | (255 << 16) | (160 << 8) | 120
+      color = (255 << 24) | (120 << 16) | (120 << 8) | 120   // thin rhomb
     }
 
     // Point-in-triangle via sign function: sign(P, V0, V1) = (px-v1x)*(v0y-v1y) - (v0x-v1x)*(py-v1y)

@@ -67,16 +67,16 @@ export let frame = (t, T) => {
   sweep(T)
   sweep(T)
 
-  // Render: +1 spin → warm white, -1 spin → dark cool
+  // Render: +1 spin → near-white gray, -1 spin → near-black gray
   let n = W * H, i = 0
   while (i < n) {
     let s = spin[i]
     if (s > 0) {
-      // warm white: slightly warm tint
-      px[i] = (255 << 24) | (230 << 16) | (240 << 8) | 255
+      // spin up → 235 (R==G==B)
+      px[i] = (255 << 24) | (235 << 16) | (235 << 8) | 235
     } else {
-      // dark cool: deep blue-black
-      px[i] = (255 << 24) | (40 << 16) | (20 << 8) | 10
+      // spin down → 20 (R==G==B)
+      px[i] = (255 << 24) | (20 << 16) | (20 << 8) | 20
     }
     i++
   }

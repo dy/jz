@@ -175,25 +175,9 @@ export let frame = (t) => {
       let ri = R[i], ii = I[i]
       let prob = (ri * ri + ii * ii) * scale
       if (prob > 1.0) prob = 1.0
-      let bright = (prob * 255.0) | 0
-      // hue from phase angle
-      let phase = Math.atan2(ii, ri)  // -pi..pi
-      let h01 = (phase + 3.14159265) / 6.28318530  // 0..1
-      let h6 = h01 * 6.0
-      let hi = h6 | 0
-      let f = h6 - hi
-      let q = 1.0 - f
-      let pr = 0.0, pg = 0.0, pb = 0.0
-      if (hi === 0) { pr = 1.0; pg = f;   pb = 0.0 }
-      else if (hi === 1) { pr = q;   pg = 1.0; pb = 0.0 }
-      else if (hi === 2) { pr = 0.0; pg = 1.0; pb = f   }
-      else if (hi === 3) { pr = 0.0; pg = q;   pb = 1.0 }
-      else if (hi === 4) { pr = f;   pg = 0.0; pb = 1.0 }
-      else               { pr = 1.0; pg = 0.0; pb = q   }
-      let r = (pr * bright) | 0
-      let g = (pg * bright) | 0
-      let b = (pb * bright) | 0
-      px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+      // gray = |ψ|² probability density (drop phase hue)
+      let g = (prob * 255.0) | 0
+      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     }
     i++
   }

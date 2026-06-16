@@ -63,15 +63,15 @@ export let frame = (t, are, aim) => {
         if (d2x * d2x + d2y * d2y < EPS) { root = 3; break }
         it++
       }
-      // shade by speed of convergence (fewer iters → brighter); hue by basin
+      // shade by speed of convergence (fewer iters → brighter); gray level by basin
       let s = 1.0 - it / MAXIT
       s = s * s                            // gamma — deepen the boundary filigree
-      let r = 0, g = 0, b = 0
       let lo = 0.18 + 0.82 * s
-      if (root == 1) { r = (235.0 * lo) | 0; g = (88.0 * lo) | 0; b = (74.0 * lo) | 0 }
-      else if (root == 2) { r = (86.0 * lo) | 0; g = (200.0 * lo) | 0; b = (120.0 * lo) | 0 }
-      else if (root == 3) { r = (86.0 * lo) | 0; g = (132.0 * lo) | 0; b = (232.0 * lo) | 0 }
-      px[j] = (255 << 24) | (b << 16) | (g << 8) | r
+      let gg = 0
+      if (root == 1) { gg = (95.0 * lo) | 0 }
+      else if (root == 2) { gg = (165.0 * lo) | 0 }
+      else if (root == 3) { gg = (235.0 * lo) | 0 }
+      px[j] = (255 << 24) | (gg << 16) | (gg << 8) | gg
       j++; qx++
     }
     py++

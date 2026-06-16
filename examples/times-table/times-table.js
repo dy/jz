@@ -60,15 +60,7 @@ export let frame = (t, k, n) => {
     let ax = cx + Math.cos(a) * R, ay = cy + Math.sin(a) * R
     let b = i * k * inv
     let bx = cx + Math.cos(b) * R, by = cy + Math.sin(b) * R
-    // rainbow by position around the circle
-    let h6 = (i / N) * 6.0
-    let rr = Math.abs(h6 - 3.0) - 1.0
-    let gg = 2.0 - Math.abs(h6 - 2.0)
-    let bb = 2.0 - Math.abs(h6 - 4.0)
-    if (rr < 0.0) rr = 0.0; if (rr > 1.0) rr = 1.0
-    if (gg < 0.0) gg = 0.0; if (gg > 1.0) gg = 1.0
-    if (bb < 0.0) bb = 0.0; if (bb > 1.0) bb = 1.0
-    line(ax, ay, bx, by, (rr * INT) | 0, (gg * INT) | 0, (bb * INT) | 0)
+    line(ax, ay, bx, by, INT | 0, INT | 0, INT | 0)
     i++
   }
 }

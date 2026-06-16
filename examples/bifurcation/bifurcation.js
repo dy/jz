@@ -48,19 +48,15 @@ export let frame = (t, r0, r1) => {
     col++
   }
 
-  // log-tonemap density → amber/grayscale
-  // amber: r=255, g≈180, b=0 at full brightness; dark → black
+  // log-tonemap density → grayscale
   i = 0
   while (i < n) {
     let v = dens[i]
     if (v > 0) {
       let L = Math.log(v + 1.0) * 90.0
       if (L > 255.0) L = 255.0
-      let li = L | 0
-      // amber ramp: r=li, g=li*0.7, b=li*0.15
-      let gr = (li * 180) >> 8    // ~0.70 * li
-      let bl = (li * 38) >> 8     // ~0.15 * li
-      px[i] = (255 << 24) | (bl << 16) | (gr << 8) | li
+      let gv = L | 0
+      px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
     } else {
       px[i] = (255 << 24)
     }
