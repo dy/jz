@@ -1703,3 +1703,54 @@ test('escape-time f64x2 - dual-exit integer + odd width + low limit', () => {
   r = dualRun(DUAL(256, DUAL_SMOOTH), 63, 40, 0.06, -2.0, -1.2); is(r[1], r[0])
   r = dualRun(DUAL(3, DUAL_SMOOTH), 48, 32, 0.08, -2.0, -1.2); is(r[1], r[0])
 })
+
+// --- Regression: two miscompiles found by adversarial verification ---
+
+// CLASS A — NaN masking. A single-component escape (`zx > 2`) lets the orbit overflow to
+// Inf→NaN WITHOUT escaping; scalar `NOT(NaN > 2)` is true (keeps iterating to MAXIT), so the
+// SIMD keep must also be true on NaN. Lowering ¬(a>b) as `a<=b` is false on NaN and would
+// wrongly deactivate the lane — the keep must be v128.not(direct compare).
+test('escape-time f64x2 - NaN keep: single-component escape (zx>2 / zy>2)', () => {
+  const mk = (comp) => `
+    const W=64, H=64, MAXIT=64, X0=-2.0, DX=4.0/64, Y0=-2.0, DY=4.0/64
+    let out = new Uint32Array(W*H)
+    export let render = () => {
+      for (let py=0; py<H; py++) { let cy=Y0+py*DY
+        for (let px=0; px<W; px++) { let cx=X0+px*DX
+          let zx=0.0, zy=0.0, i=0
+          while (i<MAXIT) { let x2=zx*zx, y2=zy*zy; zy=2.0*zx*zy+cy; if (${comp})break; zx=x2-y2+cx; i++ }
+          out[py*W+px]=i } } }
+    export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }`
+  for (const comp of ['zx>2.0', 'zy>2.0']) {
+    const src = mk(comp)
+    const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
+    s.render(); d.render()
+    is(d.cs() >>> 0, s.cs() >>> 0, `escape ${comp}`)
+    ok(/v128\.bitselect/.test(wat(src, ESC_VEC)), `${comp} vectorized`)
+  }
+})
+
+// CLASS B — per-pixel c-var derived from another per-pixel c-var. `bail = 4 + cx*cx` (cx
+// itself derived from the pixel IV) must give lane 1 the cx(px+1)-based threshold; a px-only
+// substitution can't follow the cx chain, so lanes are built by lifting the init through each
+// dependency's already-built lane.
+test('escape-time f64x2 - per-pixel threshold derived from a c-var', () => {
+  const mk = (bail) => `
+    const W=64, H=64, MAXIT=64, X0=-2.0, DX=4.0/64, Y0=-2.0, DY=4.0/64
+    let out = new Uint32Array(W*H)
+    export let render = () => {
+      for (let py=0; py<H; py++) { let cy=Y0+py*DY
+        for (let px=0; px<W; px++) { let cx=X0+px*DX
+          let zx=0.0, zy=0.0, i=0
+          let bail = ${bail}
+          while (i<MAXIT) { let x2=zx*zx, y2=zy*zy; if (x2+y2>bail)break; zy=2.0*zx*zy+cy; zx=x2-y2+cx; i++ }
+          out[py*W+px]=i } } }
+    export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }`
+  for (const bail of ['4.0+cx*cx', '4.0+cx*cy', '4.0+cx*cx+cy*cy']) {
+    const src = mk(bail)
+    const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
+    s.render(); d.render()
+    is(d.cs() >>> 0, s.cs() >>> 0, `bail=${bail}`)
+    ok(/v128\.bitselect/.test(wat(src, ESC_VEC)), `bail=${bail} vectorized`)
+  }
+})

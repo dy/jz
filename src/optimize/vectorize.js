@@ -2435,11 +2435,17 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
         isArr(s[2][1]) && s[2][1][0] === 'br' && s[2][1][1] === iLabel) return s[1]
     return null
   }
-  // keep (continue) condition = ¬(break cond); a while-guard arrives pre-negated as (i32.eqz …).
+  // keep (continue) condition vs the break-when condition. A while-guard `(i32.eqz CONT)`
+  // keeps on CONT directly; a mid-break `if (X) break` keeps on ¬X. We must NOT lower ¬X by
+  // flipping the comparison (f64.gt→f64.le): for NaN, scalar `NOT(NaN>T)` is TRUE but
+  // `NaN<=T` is FALSE — they disagree, so an orbit that reaches NaN without escaping would
+  // wrongly deactivate. Instead keep the DIRECT comparison and negate the lane mask with
+  // v128.not (NaN-exact: gt is false on NaN, ¬false = keep, matching scalar).
   const keepOf = (bc) => {
     if (!isArr(bc)) return null
-    if (bc[0] === 'i32.eqz' && isArr(bc[1])) return bc[1]
-    return CMP_NEG[bc[0]] ? [CMP_NEG[bc[0]], bc[1], bc[2]] : null
+    if (bc[0] === 'i32.eqz' && isArr(bc[1]) && CMP_LANE[bc[1][0]]) return { cmp: bc[1], negate: false }
+    if (CMP_NEG[bc[0]]) return { cmp: bc, negate: true }
+    return null
   }
   const topBc = breakCond(innerLoop[2])
   const keepTop = topBc && keepOf(topBc)
@@ -2471,19 +2477,19 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   // hoist tees out of the keep conditions into explicit temp computations
   const tees = []
   const detee = (n) => isArr(n) ? (n[0] === 'local.tee' ? (tees.push({ tgt: n[1], expr: detee(n[2]) }), ['local.get', n[1]]) : n.map(detee)) : n
-  const keepTopC = [keepTop[0], detee(keepTop[1]), detee(keepTop[2])]
+  const keepTopC = { cmp: [keepTop.cmp[0], detee(keepTop.cmp[1]), detee(keepTop.cmp[2])], negate: keepTop.negate }
   const teeTop = tees.length
-  const keepMidC = [keepMid[0], detee(keepMid[1]), detee(keepMid[2])]
+  const keepMidC = { cmp: [keepMid.cmp[0], detee(keepMid.cmp[1]), detee(keepMid.cmp[2])], negate: keepMid.negate }
 
   // each keep is an it-limit (mentions `it` directly or via convert) or a z-escape; need one of each
   const isIt = (n) => isLocalGet(n, itVar) || (isArr(n) && n[0] === 'f64.convert_i32_s' && isLocalGet(n[1], itVar))
-  const kindOf = (k) => (isIt(k[1]) || isIt(k[2])) ? 'limit' : 'escape'
+  const kindOf = (k) => (isIt(k.cmp[1]) || isIt(k.cmp[2])) ? 'limit' : 'escape'
   const kTop = kindOf(keepTopC), kMid = kindOf(keepMidC)
   if (kTop === kMid) return null
   const limitKeep = kTop === 'limit' ? keepTopC : keepMidC
-  const itLeft = isIt(limitKeep[1])
-  const boundExpr = itLeft ? limitKeep[2] : limitKeep[1]
-  const boundI32 = limitKeep[0].startsWith('i32.')
+  const itLeft = isIt(limitKeep.cmp[1])
+  const boundExpr = itLeft ? limitKeep.cmp[2] : limitKeep.cmp[1]
+  const boundI32 = limitKeep.cmp[0].startsWith('i32.')
   // limit bound must be loop-invariant (splatted once per pair): no carried/temp ref, not written
   for (const v of [...carried, ...temp]) if (readsVar(boundExpr, v)) return null
   const boundInvariant = (n) => !isArr(n) || ((n[0] !== 'local.get' && n[0] !== 'global.get') || !writesName(loopNode, n[1])) && n.every((c, i) => i === 0 || boundInvariant(c))
@@ -2505,7 +2511,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   for (const t of tees) if (!liftable(t.expr)) return null
   for (let i = 0; i < ibody.length; i++) if (i !== midIdx && !liftable(ibody[i][2])) return null
   const escapeKeep = kTop === 'escape' ? keepTopC : keepMidC
-  if (!liftable(escapeKeep[1]) || !liftable(escapeKeep[2])) return null
+  if (!liftable(escapeKeep.cmp[1]) || !liftable(escapeKeep.cmp[2])) return null
 
   // ---- pre-inner inits + epilogue ----
   const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
@@ -2560,12 +2566,40 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
       : (isArr(n) ? n.map(c => bump(c, k)) : n)
 
-  // preamble (per pixel-pair): c-lanes, carried seeds, iter=0, active=all-ones
+  // Build a per-pixel c-var's two lanes by lifting its init to f64x2: the pixel IV becomes the
+  // ramp [v, v+1], a dependency on another c-var resolves to that c-var's already-built lane
+  // (so chains like `bail = 4 + cx*cx` get the right per-lane value — NOT the px=0 value from a
+  // bump that can't follow `cx`), and everything else (grid constants) splats. Returns null if
+  // the init reads inner-loop state or an op we can't lift, in which case we decline.
+  const liftCLane = (n) => {
+    if (!isArr(n)) return null
+    if (n[0] === 'local.get' || n[0] === 'global.get') {
+      const v = n[1]
+      if (n[0] === 'local.get') {
+        if (cLane.has(v)) return ['local.get', cLane.get(v)]                 // another c-var's lane
+        if (carried.has(v) || temp.has(v)) return null                       // inner-loop state — must not appear
+        if (pivType.get(v) === 'f64') return ['f64x2.replace_lane', 1, ['f64x2.splat', n], ['f64.add', n, ['f64.const', 1]]]
+      }
+      if (writesName(loopNode, v)) return null                               // a per-pixel value we can't ramp → decline
+      return ['f64x2.splat', n]                                              // loop-invariant local/global
+    }
+    if (n[0] === 'f64.const') return ['f64x2.splat', n]
+    if (n[0] === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') {
+      const piv = n[1]
+      return ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', piv]], ['f64.convert_i32_s', ['i32.add', piv, ['i32.const', 1]]]]
+    }
+    if (LANE_PURE.f64.has(n[0])) { const ks = n.slice(1).map(liftCLane); return ks.some(k => k === null) ? null : [LANE_PURE.f64.get(n[0]).simd, ...ks] }
+    return null
+  }
+  // c-lanes in dependency order: invariants splat first, then per-pixel inits in source (obody) order
+  const cOrder = [...cVars].filter(cv => !perPxInit.has(cv))
+  for (let i = 0; i < innerIdx; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && perPxInit.has(s[1])) cOrder.push(s[1]) }
   const pre = []
-  for (const cv of cVars) {
+  for (const cv of cOrder) {
     if (perPxInit.has(cv)) {
-      const e0 = perPxInit.get(cv)
-      pre.push(['local.set', cLane.get(cv), ['f64x2.replace_lane', 1, ['f64x2.splat', e0], bump(e0, 1)]])
+      const lane = liftCLane(perPxInit.get(cv))
+      if (!lane) return null
+      pre.push(['local.set', cLane.get(cv), lane])
     } else pre.push(['local.set', cLane.get(cv), ['f64x2.splat', ['local.get', cv]]])
   }
   for (const v of carried) pre.push(['local.set', shadow.get(v), ['f64x2.splat', carriedInit.get(v)]])
@@ -2574,10 +2608,14 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
 
   // AND a keep condition into the active mask: limit compares iter (f64x2) to the bound;
-  // escape lifts its z-comparison to lanes. Both reduce to a finite-domain f64x2 compare.
-  const keepMask = (keep, isLimit) => isLimit
-    ? [CMP_LANE[limitKeep[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
-    : [CMP_LANE[keep[0]], lift(keep[1]), lift(keep[2])]
+  // escape lifts its z-comparison to lanes. A mid-break's ¬X is the DIRECT compare negated by
+  // v128.not (NaN-exact), never the flipped comparison.
+  const keepMask = (keep, isLimit) => {
+    const m = isLimit
+      ? [CMP_LANE[keep.cmp[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
+      : [CMP_LANE[keep.cmp[0]], lift(keep.cmp[1]), lift(keep.cmp[2])]
+    return keep.negate ? ['v128.not', m] : m
+  }
   const teeStmts = (range) => range.map(t => ['local.set', shadow.get(t.tgt), lift(t.expr)])
 
   // SIMD inner loop — masking mirrors scalar control flow in source order. The tees of
