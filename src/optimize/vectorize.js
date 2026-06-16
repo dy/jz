@@ -2289,33 +2289,40 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
 /**
  * Divergent escape-time vectorizer — 2-wide f64x2, bit-exact with scalar f64.
  *
- * Recognizes the canonical fractal escape-time nest (mandelbrot / julia / …):
+ * Recognizes the fractal escape-time nest (mandelbrot / julia / burning-ship / …):
  *
- *   for (px = 0; px < W; px++) {            // outer pixel loop (i32 IV)
- *     cx = <expr in px>                     // per-pixel coordinate
- *     zx = 0; zy = 0; it = 0
- *     while (it < MAXIT) {                  // inner escape loop
- *       x2 = zx*zx; y2 = zy*zy
- *       if (x2 + y2 > T) break              // data-dependent escape (before update)
- *       zy = <f(zx,zy,cy)>; zx = <g(x2,y2,cx)>
+ *   for (qx = 0; qx < W; qx++) {              // outer pixel loop; ≥1 i32 pixel IVs
+ *     cx = <expr in qx>                       // per-pixel coordinate(s)
+ *     x = 0; y = 0; it = 0                     // loop-carried f64 + i32 counter
+ *     while (it < MAXIT) {                     // inner escape loop (it-limited)
+ *       <f64 updates to x,y (+ temps); one `if (|z|² > T) break`, ANY position>
  *       it++
  *     }
- *     out[..px..] = it                      // integer iteration count
+ *     <epilogue: store(it)  OR  smooth-colour(x,y,it) → store>
  *   }
  *
- * Two adjacent pixels run in f64x2 lockstep with a per-lane active mask. A lane
- * is frozen (v128.bitselect) the instant it would escape or reach MAXIT, so its
- * it/zx/zy stay bit-identical to the scalar loop — f64x2 arithmetic is IEEE-
- * identical to scalar f64 (no FMA fusion). The mask order mirrors scalar control
- * flow exactly: limit then escape are tested BEFORE the update; iter += active
- * (active lane = all-ones = -1 ⇒ +1, frozen = 0 ⇒ +0). Odd widths fall through
- * to the original scalar pixel loop (the tail), so coverage is exact.
+ * Two adjacent pixels run in f64x2 lockstep with a per-lane active mask. A lane is
+ * frozen (v128.bitselect) the instant it would escape or reach MAXIT, so its
+ * it/x/y stay bit-identical to the scalar loop — f64x2 add/sub/mul/abs are IEEE-
+ * identical to scalar f64 (no FMA fusion). The body is emitted statement-by-
+ * statement in source order, so the escape mask lands exactly where the scalar
+ * `break` is (before OR after the z-update), and the per-lane state freezes at the
+ * matching point. iter is kept as f64x2 (an i32 `it` is exact in f64), so the
+ * limit compare and the (possibly fractional) colour math both stay bitwise-exact.
  *
- * Only the integer-iteration-count shape is matched here (store value is exactly
- * `it`); smooth-coloured variants that read the post-loop z keep their scalar
- * path. f64x2 keeps full f64 precision so the differential checksum is identical.
+ * Loop-carried vars (first body access is a READ) freeze via bitselect; within-
+ * iteration temps (first access a WRITE — inlined squares, `xt`) recompute raw.
+ * The colour epilogue runs scalar, twice — once per lane — reading each lane's
+ * extracted x/y/it, with the pixel IVs advanced by +0/+1. Odd widths and extra
+ * lanes fall through to the original scalar pixel loop (the exact tail).
  */
-const ESC_KEEP = { 'f64.gt': 'f64x2.le', 'f64.ge': 'f64x2.lt', 'f64.lt': 'f64x2.ge', 'f64.le': 'f64x2.gt' }
+const ESC_NEG = {  // comparison → its logical negation (NaN-free domain: active lanes are finite)
+  'f64.gt': 'f64.le', 'f64.ge': 'f64.lt', 'f64.lt': 'f64.ge', 'f64.le': 'f64.gt', 'f64.eq': 'f64.ne', 'f64.ne': 'f64.eq',
+}
+const ESC_LANE = {  // f64 scalar compare → f64x2 lane compare
+  'f64.gt': 'f64x2.gt', 'f64.ge': 'f64x2.ge', 'f64.lt': 'f64x2.lt', 'f64.le': 'f64x2.le', 'f64.eq': 'f64x2.eq', 'f64.ne': 'f64x2.ne',
+}
+const readsVar = (n, v) => isArr(n) && ((n[0] === 'local.get' && n[1] === v) || n.some(c => readsVar(c, v)))
 
 function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
@@ -2337,16 +2344,29 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   if (!llabel) return null
   const oEnd = loopNode.length - 1
   if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
-  const pxVar = matchInc1(loopNode[oEnd - 1])
-  if (!pxVar || fnLocals.get(pxVar) !== 'i32') return null
+  // Trailing `v += 1` statements are the pixel IVs (loop IV + parallel counters like `j`).
+  const pixelIVs = []
+  let pivStart = oEnd
+  for (let i = oEnd - 1; i >= 3; i--) {
+    const v = matchInc1(loopNode[i])
+    if (!v || fnLocals.get(v) !== 'i32') break
+    pixelIVs.unshift(v); pivStart = i
+  }
+  if (!pixelIVs.length) return null
   const oExit = matchExitBrIf(loopNode[2], oLabel)
-  if (!oExit || oExit.ind !== pxVar) return null
+  if (!oExit || !pixelIVs.includes(oExit.ind)) return null
+  const pxVar = oExit.ind                       // the loop-bound pixel IV
   const widthBound = oExit.bound
-  // widthBound is re-evaluated for the SIMD guard; require it pure (local/const).
-  if (!(isLocalGet(widthBound) || isI32Const(widthBound))) return null
+  // The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
+  // a constant, or a local/global that the loop nest never writes.
+  if (isI32Const(widthBound)) { /* ok */ }
+  else if (isArr(widthBound) && (widthBound[0] === 'local.get' || widthBound[0] === 'global.get')) {
+    const setOp = widthBound[0] === 'local.get' ? 'local.set' : 'global.set'
+    const writes = (n) => isArr(n) && (((n[0] === setOp || (setOp === 'local.set' && n[0] === 'local.tee')) && n[1] === widthBound[1]) || n.some(writes))
+    if (writes(loopNode)) return null
+  } else return null
 
-  // Outer body = statements between the exit guard [2] and px++ [oEnd-1].
-  const obody = loopNode.slice(3, oEnd - 1)
+  const obody = loopNode.slice(3, pivStart)     // between exit guard and the pixel-IV bumps
   let innerIdx = -1, innerBlock = null
   for (let i = 0; i < obody.length; i++) {
     const s = obody[i]
@@ -2357,153 +2377,171 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   }
   if (!innerBlock) return null
   const iLabel = (typeof innerBlock[1] === 'string' && innerBlock[1].startsWith('$')) ? innerBlock[1] : null
-  if (!iLabel) return null
-  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
+  if (!iLabel || innerBlock.length !== 3) return null
+  const innerLoop = innerBlock[2]
+  if (!isArr(innerLoop) || innerLoop[0] !== 'loop') return null
   const ilLabel = (typeof innerLoop[1] === 'string' && innerLoop[1].startsWith('$')) ? innerLoop[1] : null
   if (!ilLabel) return null
 
-  // ---- match the inner escape loop: [sq, sq, escape br_if, upd, upd] + it++ ----
+  // ---- inner escape loop: it-limited while-cond, body (f64 updates + 1 escape break), it++ ----
   const iEnd = innerLoop.length - 1
   if (!(isArr(innerLoop[iEnd]) && innerLoop[iEnd][0] === 'br' && innerLoop[iEnd][1] === ilLabel)) return null
   const itVar = matchInc1(innerLoop[iEnd - 1])
   if (!itVar || fnLocals.get(itVar) !== 'i32') return null
-  const iExit = matchExitBrIf(innerLoop[2], iLabel)
+  const iExit = matchExitBrIf(innerLoop[2], iLabel)   // (i32.eqz (i32.lt_{s,u} it MAXIT))
   if (!iExit || iExit.ind !== itVar) return null
   const maxitExpr = iExit.bound
 
+  // body = updates (f64 local.set) + exactly one escape `br_if iLabel (f64-cmp z-expr T)`
   const ibody = innerLoop.slice(3, iEnd - 1)
-  if (ibody.length !== 5) return null
-  // squares: x2 = base*base
-  const sqStmt = (st) => {
-    if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3) return null
-    const v = st[2]
-    if (!isArr(v) || v[0] !== 'f64.mul' || !isLocalGet(v[1]) || !isLocalGet(v[2]) || v[1][1] !== v[2][1]) return null
-    return { sq: st[1], base: v[1][1] }
+  let escIdx = -1
+  for (let i = 0; i < ibody.length; i++) {
+    const s = ibody[i]
+    if (isArr(s) && s[0] === 'br_if' && s[1] === iLabel) { if (escIdx >= 0) return null; escIdx = i }
+    else if (!(isArr(s) && s[0] === 'local.set' && s.length === 3 && fnLocals.get(s[1]) === 'f64')) return null
   }
-  const sq0 = sqStmt(ibody[0]), sq1 = sqStmt(ibody[1])
-  if (!sq0 || !sq1 || sq0.base === sq1.base || sq0.sq === sq1.sq) return null
-  const sqOf = new Map([[sq0.sq, sq0.base], [sq1.sq, sq1.base]])
-  const baseSet = new Set([sq0.base, sq1.base])
-  // escape br_if (CMP (f64.add s_a s_b) THRESH) targeting the inner block
-  const esc = ibody[2]
-  if (!(isArr(esc) && esc[0] === 'br_if' && esc[1] === iLabel)) return null
-  const escCond = esc[2]
-  if (!isArr(escCond) || !ESC_KEEP[escCond[0]]) return null
-  const sumNode = escCond[1], threshNode = escCond[2]
-  if (!isArr(sumNode) || sumNode[0] !== 'f64.add' || !isLocalGet(sumNode[1]) || !isLocalGet(sumNode[2])) return null
-  if (!(sqOf.has(sumNode[1][1]) && sqOf.has(sumNode[2][1]) && sumNode[1][1] !== sumNode[2][1])) return null
-  if (!(isArr(threshNode) && (threshNode[0] === 'f64.const' ||
-        (threshNode[0] === 'local.get' && !baseSet.has(threshNode[1]) && !sqOf.has(threshNode[1]))))) return null
-  // updates: the last two stmts set the two base vars
-  const upd = new Map()
-  for (const st of [ibody[3], ibody[4]]) {
-    if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3 || !baseSet.has(st[1]) || upd.has(st[1])) return null
-    upd.set(st[1], st[2])
-  }
-  if (upd.size !== 2) return null
+  if (escIdx < 0) return null
+  const escapeCond = ibody[escIdx][2]
+  if (!isArr(escapeCond) || !ESC_NEG[escapeCond[0]]) return null      // escape must be an f64 compare
+  const escKeepOp = ESC_LANE[ESC_NEG[escapeCond[0]]]                  // keep = ¬escape
 
-  // ---- c-vars: free local.gets in the update exprs (minus bases, squares, it) ----
-  const known = new Set([...baseSet, ...sqOf.keys(), itVar])
+  // classify f64 vars written in the body: loop-carried (first access is a READ) vs temp (WRITE)
+  const carried = new Set(), temp = new Set()
+  for (const s of ibody) {
+    if (s[0] !== 'local.set') continue
+    const v = s[1]
+    if (carried.has(v) || temp.has(v)) continue
+    let decided = false
+    for (const t of ibody) {
+      const val = t[0] === 'local.set' ? t[2] : t[2]
+      if (readsVar(val, v)) { carried.add(v); decided = true; break }
+      if (t[0] === 'local.set' && t[1] === v) { temp.add(v); decided = true; break }
+    }
+    if (!decided) temp.add(v)
+  }
+
+  // c-vars: f64 locals read in the body but never written there (the per-pixel/invariant inputs)
   const cVars = new Set()
   const liftable = (n) => {
     if (!isArr(n)) return false
-    if (n[0] === 'local.get') { if (!known.has(n[1])) cVars.add(n[1]); return true }
+    if (n[0] === 'local.get') {
+      const v = n[1]
+      if (v !== itVar && !carried.has(v) && !temp.has(v)) { if (fnLocals.get(v) !== 'f64') return false; cVars.add(v) }
+      return true
+    }
     if (n[0] === 'f64.const') return true
     if (LANE_PURE.f64.has(n[0])) { for (let i = 1; i < n.length; i++) if (!liftable(n[i])) return false; return true }
     return false
   }
-  if (!liftable(upd.get(sq0.base)) || !liftable(upd.get(sq1.base))) return null
+  for (const s of ibody) if (s[0] === 'local.set' && !liftable(s[2])) return null
+  if (!liftable(escapeCond[1]) || !liftable(escapeCond[2])) return null
 
-  // ---- outer body: inits + innerBlock + single store(it); reject anything else ----
-  const refs = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => refs(c, name)))
-  let storeStmt = null
-  const perPxInit = new Map()
-  for (let i = 0; i < obody.length; i++) {
-    if (i === innerIdx) continue
+  // ---- pre-inner inits + epilogue ----
+  const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
+  const perPxInit = new Map()     // c-var → its per-pixel init expr
+  for (let i = 0; i < innerIdx; i++) {
     const s = obody[i]
-    if (!isArr(s)) return null
-    if (s[0] === 'local.set' && s.length === 3) {
-      const tgt = s[1]
-      if (baseSet.has(tgt) || sqOf.has(tgt)) {
-        if (!(isArr(s[2]) && s[2][0] === 'f64.const' && Number(s[2][1]) === 0)) return null
-      } else if (tgt === itVar) {
-        if (constNum(s[2]) !== 0) return null
-      } else if (cVars.has(tgt)) {
-        perPxInit.set(tgt, s[2])
-      } else return null
-      continue
-    }
-    if ((s[0] === 'i32.store' || s[0] === 'i32.store16' || s[0] === 'i32.store8') && s.length === 3) {
-      if (i < innerIdx || storeStmt || !isLocalGet(s[2], itVar) || !refs(s[1], pxVar)) return null
-      storeStmt = s
-      continue
-    }
-    return null
+    if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3) return null
+    const tgt = s[1]
+    if (carried.has(tgt)) {
+      if (!(isArr(s[2]) && s[2][0] === 'f64.const')) return null
+      carriedInit.set(tgt, s[2])
+    } else if (temp.has(tgt)) { /* recomputed each iteration — init ignored */ }
+    else if (tgt === itVar) { if (constNum(s[2]) !== 0) return null }
+    else if (cVars.has(tgt)) perPxInit.set(tgt, s[2])
+    else return null
   }
-  if (!storeStmt) return null
+  for (const c of carried) if (!carriedInit.has(c)) return null
+  const epilogue = obody.slice(innerIdx + 1)
+  // The epilogue runs scalar per lane; it may only read carried/it/pixel-IV/invariant
+  // values (each statement's reads, before that statement's writes). A read of an
+  // inner-loop temp or a per-pixel c-var has no post-loop per-lane value → bail.
+  {
+    const written = new Set()
+    for (const s of epilogue) {
+      const r = new Set(); (function rd(n){ if(!isArr(n)) return; if(n[0]==='local.get') r.add(n[1]); else for(const c of n) rd(c) })(s)
+      for (const v of r) if (!written.has(v) && (temp.has(v) || perPxInit.has(v))) return null
+      ;(function wr(n){ if(!isArr(n)) return; if((n[0]==='local.set'||n[0]==='local.tee')&&typeof n[1]==='string') written.add(n[1]); for(const c of n.slice(2)) wr(c) })(s)
+    }
+    if (!epilogue.length) return null
+  }
 
   // ============================ emit ============================
   const id = freshIdRef.next++
   const nm = (s) => `$__esc${id}_${s}`
-  const shadow = new Map()                    // source f64 var → v128 shadow
-  for (const b of baseSet) shadow.set(b, nm('z' + b.replace(/\W/g, '')))
-  for (const s of sqOf.keys()) shadow.set(s, nm('q' + s.replace(/\W/g, '')))
-  const cLane = new Map()                      // c-var → v128 lane
+  const shadow = new Map()                       // carried/temp f64 var → v128 shadow
+  for (const v of [...carried, ...temp]) shadow.set(v, nm('z' + v.replace(/\W/g, '')))
+  const cLane = new Map()
   for (const cv of cVars) cLane.set(cv, nm('c' + cv.replace(/\W/g, '')))
-  const nz = new Map()                         // base → new-value temp (commit after)
-  for (const b of baseSet) nz.set(b, nm('n' + b.replace(/\W/g, '')))
+  const nzv = new Map()                          // carried → committed-new temp (avoid intra-iter aliasing)
+  for (const v of carried) nzv.set(v, nm('n' + v.replace(/\W/g, '')))
   const iterV = nm('iter'), activeV = nm('act')
-
   const newLocalDecls = []
-  for (const n of [...shadow.values(), ...cLane.values(), ...nz.values(), iterV, activeV]) newLocalDecls.push(['local', n, 'v128'])
+  for (const n of [...shadow.values(), ...cLane.values(), ...nzv.values(), iterV, activeV]) newLocalDecls.push(['local', n, 'v128'])
 
   const lift = (n) => {
     if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
     if (n[0] === 'f64.const') return ['f64x2.splat', n]
     return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
   }
-  const pxPlus1 = (n) => isLocalGet(n, pxVar) ? ['i32.add', ['local.get', pxVar], ['i32.const', 1]] : (isArr(n) ? n.map(pxPlus1) : n)
+  const bump = (n, k) => k === 0 ? n           // substitute every pixel-IV with (IV + k)
+    : (isArr(n) && n[0] === 'local.get' && pixelIVs.includes(n[1]))
+      ? ['i32.add', n, ['i32.const', k]]
+      : (isArr(n) ? n.map(c => bump(c, k)) : n)
 
-  // preamble: c lanes + shadow/iter/active inits (per pixel-pair)
+  // preamble (per pixel-pair): c-lanes, carried seeds, iter=0, active=all-ones
   const pre = []
   for (const cv of cVars) {
     if (perPxInit.has(cv)) {
       const e0 = perPxInit.get(cv)
-      pre.push(['local.set', cLane.get(cv), ['f64x2.replace_lane', 1, ['f64x2.splat', e0], pxPlus1(e0)]])
+      pre.push(['local.set', cLane.get(cv), ['f64x2.replace_lane', 1, ['f64x2.splat', e0], bump(e0, 1)]])
     } else pre.push(['local.set', cLane.get(cv), ['f64x2.splat', ['local.get', cv]]])
   }
-  for (const b of baseSet) pre.push(['local.set', shadow.get(b), ['f64x2.splat', ['f64.const', 0]]])
-  pre.push(['local.set', iterV, ['v128.const', 'i32x4', '0', '0', '0', '0']])
+  for (const v of carried) pre.push(['local.set', shadow.get(v), ['f64x2.splat', carriedInit.get(v)]])
+  pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
   pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
 
-  // SIMD inner loop
+  // SIMD inner loop — masking mirrors scalar control flow in source order
   const sIn = nm('ib'), sIl = nm('il')
-  const maxitV = ['i64x2.splat', ['i64.extend_i32_s', maxitExpr]]
-  const sumV = ['f64x2.add', ['local.get', shadow.get(sumNode[1][1])], ['local.get', shadow.get(sumNode[2][1])]]
+  const maxitF = ['f64x2.splat', ['f64.convert_i32_s', maxitExpr]]
   const sbody = []
-  for (const [s, b] of sqOf) sbody.push(['local.set', shadow.get(s), ['f64x2.mul', ['local.get', shadow.get(b)], ['local.get', shadow.get(b)]]])
-  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], ['i64x2.lt_s', ['local.get', iterV], maxitV]]])
-  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], [ESC_KEEP[escCond[0]], sumV, ['f64x2.splat', threshNode]]]])
+  sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], ['f64x2.lt', ['local.get', iterV], maxitF]]])
   sbody.push(['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]])
-  for (const b of baseSet) sbody.push(['local.set', nz.get(b), ['v128.bitselect', lift(upd.get(b)), ['local.get', shadow.get(b)], ['local.get', activeV]]])
-  for (const b of baseSet) sbody.push(['local.set', shadow.get(b), ['local.get', nz.get(b)]])
-  sbody.push(['local.set', iterV, ['i64x2.sub', ['local.get', iterV], ['local.get', activeV]]])
+  for (let i = 0; i < ibody.length; i++) {
+    if (i === escIdx) {
+      sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], [escKeepOp, lift(escapeCond[1]), lift(escapeCond[2])]]])
+    } else {
+      const v = ibody[i][1]
+      if (carried.has(v)) {
+        sbody.push(['local.set', nzv.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
+        sbody.push(['local.set', shadow.get(v), ['local.get', nzv.get(v)]])
+      } else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])   // temp: raw recompute
+    }
+  }
+  sbody.push(['local.set', iterV, ['v128.bitselect', ['f64x2.add', ['local.get', iterV], ['f64x2.splat', ['f64.const', 1]]], ['local.get', iterV], ['local.get', activeV]]])
   const simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
 
-  // extract + 2 stores (lane 1 address = addr[px+1])
-  const store0 = [storeStmt[0], storeStmt[1], ['i32.wrap_i64', ['i64x2.extract_lane', 0, ['local.get', iterV]]]]
-  const store1 = [storeStmt[0], pxPlus1(storeStmt[1]), ['i32.wrap_i64', ['i64x2.extract_lane', 1, ['local.get', iterV]]]]
+  // epilogue ×2 — extract each lane's carried+it into the scalar locals, run the scalar
+  // colour/store code with pixel IVs advanced by the lane offset.
+  const carriedInEpi = [...carried].filter(v => epilogue.some(s => readsVar(s, v)))
+  const epiLane = (k) => {
+    const out = []
+    for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
+    out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
+    for (const s of epilogue) out.push(bump(s, k))
+    return out
+  }
 
-  // SIMD outer loop: px in [0, W & ~1) by 2
+  // SIMD outer loop: pixel IVs in [0, W & ~1) by 2
   const sOut = nm('ob'), sOl = nm('ol')
   const simdOuter = ['block', sOut, ['loop', sOl,
     ['br_if', sOut, ['i32.eqz', ['i32.lt_s', ['local.get', pxVar], ['i32.and', widthBound, ['i32.const', -2]]]]],
-    ...pre, simdInner, store0, store1,
-    ['local.set', pxVar, ['i32.add', ['local.get', pxVar], ['i32.const', 2]]],
+    ...pre, simdInner, ...epiLane(0), ...epiLane(1),
+    ...pixelIVs.map(v => ['local.set', v, ['i32.add', ['local.get', v], ['i32.const', 2]]]),
     ['br', sOl]]]
 
-  // wrapper: run the hoisted preamble once, then the SIMD even-pixel loop, then the
-  // scalar tail loop (preamble-free — the invariants are already set) for the odd pixel.
+  // wrapper: hoisted preamble once, then the SIMD even-pixel loop, then the original
+  // scalar block (preamble-free) handles the odd-pixel tail from where the IVs stopped.
   const tailBlock = ['block', oLabel, loopNode]
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, tailBlock]
   return { wrapper, newLocalDecls }

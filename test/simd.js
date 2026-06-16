@@ -1572,3 +1572,76 @@ test('escape-time f64x2 - julia (fixed c, invariant lanes) + odd width', () => {
   const [sc2, dc2] = escRun(escKern(65,40,256,-1.5,3.0/65,-1.5,3.0/40, JULIA))
   is(dc2, sc2)
 })
+
+// Burning-ship structure: escape break is AFTER the z-update (not before), the
+// squares are inlined (no x2/y2 temps), the update uses Math.abs, the output is a
+// smooth colour read from the post-loop z, and the store uses a parallel `j`
+// counter (j++ alongside qx++). Exercises the general masking (escape mid-break at
+// any position), carried-vs-temp classification, the colour epilogue (extract
+// per-lane x/y/it → run scalar colour ×2), and parallel pixel IVs.
+const SHIP = (W, H, MAXIT, colour) => `
+  let W=${W}, H=${H}, MAXIT=${MAXIT}
+  let out = new Uint32Array(W*H)
+  export let render = (cx, cy, scale) => {
+    let j = 0, py = 0
+    while (py < H) {
+      let ry = py*scale + cy
+      let qx = 0
+      while (qx < W) {
+        let rx = qx*scale + cx
+        let x=0.0, y=0.0, it=0
+        while (it < MAXIT) {
+          let xt = x*x - y*y + rx
+          y = 2.0*Math.abs(x*y) + ry
+          x = xt
+          if (x*x + y*y > 256.0) break
+          it++
+        }
+        ${colour}
+        j++; qx++
+      }
+      py++
+    }
+  }
+  export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }
+`
+const SHIP_SMOOTH = `
+  let gv = 0
+  if (it < MAXIT) {
+    let sqd = x*x + y*y
+    let v = (it + 1.0 - Math.log2(0.5*Math.log(sqd))) / MAXIT
+    if (v < 0.0) v = 0.0
+    if (v > 1.0) v = 1.0
+    gv = (Math.sqrt(v)*255.0)|0
+  }
+  out[j] = (255<<24)|(gv<<16)|(gv<<8)|gv`
+const SHIP_INT = `out[j] = it`   // integer output through the parallel-counter store
+const shipRun = (src, ...a) => {
+  const sx = runVec(src, ESC_SCALAR), dx = runVec(src, ESC_VEC)
+  sx.render(...a); dx.render(...a)
+  return [sx.cs() >>> 0, dx.cs() >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+}
+
+test('escape-time f64x2 - burning-ship (escape-after-update, abs, colour epilogue)', () => {
+  const [sc, dc, vec] = shipRun(SHIP(96, 96, 200, SHIP_SMOOTH), -0.5, -0.5, 0.02)
+  is(dc, sc); ok(vec, 'ship vectorized')
+})
+
+test('escape-time f64x2 - burning-ship odd width + zoom regimes', () => {
+  for (const [w, h, cx, cy, sc] of [[97,64,-0.5,-0.5,0.03],[80,80,-1.75,-0.03,0.001],[128,72,0.0,0.0,0.05]]) {
+    const [a, b] = shipRun(SHIP(w, h, 200, SHIP_SMOOTH), cx, cy, sc)
+    is(b, a, `ship ${w}x${h}`)
+  }
+})
+
+test('escape-time f64x2 - parallel-counter store (j++) integer output', () => {
+  const [sc, dc, vec] = shipRun(SHIP(64, 48, 256, SHIP_INT), -1.8, -0.08, 0.04)
+  is(dc, sc); ok(vec, 'parallel-counter store vectorized')
+})
+
+test('escape-time f64x2 - burning-ship tiny widths (1,2,3 → tail)', () => {
+  for (const w of [1, 2, 3]) {
+    const [a, b] = shipRun(SHIP(w, 32, 200, SHIP_SMOOTH), -1.0, -0.5, 0.05)
+    is(b, a, `ship width=${w}`)
+  }
+})
