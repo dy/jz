@@ -18,7 +18,8 @@
 //        and read-only heap-memory calls (__typed_idx/__str_idx) as hoistable.
 //
 //   D3 — `arr[<const idx>]()` stays call_indirect (devirt miss).
-//        PINNED: devirtIndirect doesn't constant-fold the array-element load.
+//        FIXED: array scalarization lowers `arr[0]` to a scalar closure copy, and
+//        direct-closure copy propagation (emit.js) makes that copy directly callable.
 //
 // Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts)
 // are documented in .work/FINDINGS.md so future fuzzing doesn't re-flag them.
@@ -174,24 +175,29 @@ test('deopt D2: inner j-loop contains no outer-counter $i reference', () => {
 })
 
 // ════════════════════════════════════════════════════════════════════════════
-// D3 — `arr[<const idx>]()` stays call_indirect (devirt miss)
+// D3 — `arr[<const idx>]()` devirtualizes to a direct call   *(FIXED)*
 // ════════════════════════════════════════════════════════════════════════════
 //
-// PINNED (not yet fixed): a constant-index read of an array-literal-of-functions
-// (`arr[0]`) produces a value devirtIndirect doesn't recognize as a known function
-// ref, so the call stays `call_indirect`. The callee is statically known.
-// Fix lever: constant-fold `arr[<i32.const>]` over a literal array of functions to
-// the function ref before devirtIndirect runs.
+// FIXED: array scalarization rewrites `let arr=[add]; arr[0](…)` to `let g=add; g(…)`
+// before emit, and direct-closure copy propagation (emit.js) then carries `add`'s
+// directly-callable body to `g` — so the call lowers to a direct `call`, not
+// `call_indirect`. The same copy propagation covers the explicit `let g = arr[0]` form.
 
 test('deopt D3: arr[0](...) stays correct (diff vs JS)', () => {
   diff('export let run=(a)=>{let add=(x,y)=>x+y;let arr=[add];return arr[0](a,a)}', 3, 'arr[0](a,a)')
 })
 
-test('deopt D3: arr[0](...) with constant index stays call_indirect', () => {
+test('deopt D3: arr[0](...) with constant index devirtualizes (no call_indirect)', () => {
   if (belowOpt(1)) return
   const wat = compile('export let f=(a,b)=>{let add=(x,y)=>x+y;let arr=[add];return arr[0](a,b)}', { wat: true })
-  // CURRENT: call_indirect=1. GOAL: 0 (folds to a direct call $add).
-  ok(count(wat, /call_indirect/g) <= 1, 'call_indirect ceiling (GOAL: 0 — arr[0] is statically add)')
+  // GOAL met: arr[0] is statically `add` → direct call, zero call_indirect.
+  is(count(wat, /call_indirect/g), 0, 'arr[0](…) folds to a direct call')
+})
+
+test('deopt D3: copy propagation devirtualizes `let g = closure`', () => {
+  if (belowOpt(1)) return
+  const wat = compile('export let f=(a,b)=>{let add=(x,y)=>x+y;let g=add;return g(a,b)}', { wat: true })
+  is(count(wat, /call_indirect/g), 0, 'let g = add → g(…) is a direct call')
 })
 
 test('deopt D3: NEGATIVE — direct call is already clean', () => {

@@ -914,6 +914,17 @@ export function emitDecl(...inits) {
       if (!ctx.func.directClosures) ctx.func.directClosures = new Map()
       ctx.func.directClosures.set(name, val.closureBodyName)
     }
+    // Copy propagation of a direct closure: `let g = add`, where `add` is a non-escaping
+    // directly-callable closure, makes `g` directly callable too — `g` holds the same
+    // closure value, so `g(…)` calls add's body with g's value as env. This is what
+    // devirtualizes `let arr = [add]; arr[0](…)`: array scalarization rewrites it to
+    // `let g = add; g(…)` before emit (D3), and also covers the explicit `let g = arr[0]`.
+    // Same soundness gate as the direct-closure case: stable binding (not reassigned),
+    // not boxed, not global.
+    if (typeof init === 'string' && ctx.func.directClosures?.has(init) && !ctx.func.boxed.has(name)
+        && !isGlobal(name) && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+      ctx.func.directClosures.set(name, ctx.func.directClosures.get(init))
+    }
     if (ctx.func.boxed.has(name)) {
       const cell = ctx.func.boxed.get(name)
       ctx.func.locals.set(cell, 'i32')
