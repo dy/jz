@@ -1996,3 +1996,33 @@ test('dropEffects: dropped ternary-in-condition compiles (seed 192 regression)',
     is(main(), 2, `opt ${opt}`)
   }
 })
+
+test('range-check fusion: x>=LO && x<=HI on an i32 → single unsigned compare', () => {
+  // The classic scanner/bounds optimization (what native compilers + V8 emit):
+  // `d >= 48 && d <= 57` collapses to `(d - 48) <=u 9` — one subtract + one unsigned
+  // compare instead of two signed compares, an AND, and a short-circuit branch. Fires
+  // only for an i32 operand (`d` via `|0`; a `charCodeAt` byte in real scanners) — a
+  // fractional f64 would mis-fuse, so untyped operands keep the ordered-compare form.
+  const wat = jz.compile(`export let f = (c) => { let d = c | 0; return (d >= 48 && d <= 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
+  ok(/i32\.le_u/.test(wat), 'expected fused unsigned compare')
+  const watOr = jz.compile(`export let f = (c) => { let d = c | 0; return (d < 48 || d > 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
+  ok(/i32\.gt_u/.test(watOr), 'expected fused unsigned outside-range compare')
+  // Untyped f64 operand must NOT fuse (fractional values would be mis-classified).
+  const watF64 = jz.compile(`export let f = (c) => (c >= 48 && c <= 57) ? 1 : 0`, { wat: true, optimize: 'speed' })
+  ok(!/i32\.le_u/.test(watF64), 'untyped f64 keeps the ordered compare (no unsigned fuse)')
+})
+
+test('range-check fusion: fused-path correctness across boundaries (i32 operand)', () => {
+  const cases = [
+    'd>=48 && d<=57', 'd>97 && d<122', '48<=d && d<=57', 'd<=57 && d>=48',
+    'd>=-3 && d<=3', '(d>=65 && d<=90) || (d>=97 && d<=122)',
+    'd<48 || d>57', 'd<=47 || d>=58',
+    'd>=100 && d<=50',   // empty range — must stay false
+    'd<48 || d<57',      // non-fusable (both upper) — must stay correct
+  ]
+  for (const expr of cases) {
+    const { f } = run(`export let f = (c) => { let d = c | 0; return ${expr} ? 1 : 0 }`)
+    const js = new Function('c', `const d = c | 0; return (${expr}) ? 1 : 0`)
+    for (let c = -10; c <= 200; c++) is(f(c), js(c), `${expr} @ c=${c}`)
+  }
+})

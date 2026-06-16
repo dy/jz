@@ -26,7 +26,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
-import { nonNegIntLiteral, staticPropertyKey } from '../static.js'
+import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
@@ -496,6 +496,55 @@ function emitSubstringEqCmp(a, b, negate = false) {
     ['local.set', `$${o}`, asF64(emit(other))],
     finish(['call', `$${helper}`, asI64(emit(recv)), startIR, endIR,
       ['i64.reinterpret_f64', ['local.get', `$${o}`]]])], 'i32')
+}
+
+// One half of a two-sided range test against a compile-time constant, normalized to
+// an inclusive bound on a *local* `x`: `{ x, lo }` (x ≥ lo) or `{ x, hi }` (x ≤ hi).
+// `>`/`<` fold to the inclusive neighbor; a const on either side is accepted. Returns
+// null for anything else (so the caller leaves the expression untouched).
+function rangeBound(n) {
+  if (!Array.isArray(n) || n.length !== 3) return null
+  const lc = intLiteralValue(n[1]), rc = intLiteralValue(n[2])
+  if (rc != null && typeof n[1] === 'string') {        // x  op  CONST
+    if (n[0] === '>=') return { x: n[1], lo: rc }
+    if (n[0] === '>') return { x: n[1], lo: rc + 1 }
+    if (n[0] === '<=') return { x: n[1], hi: rc }
+    if (n[0] === '<') return { x: n[1], hi: rc - 1 }
+  }
+  if (lc != null && typeof n[2] === 'string') {        // CONST  op  x
+    if (n[0] === '<=') return { x: n[2], lo: lc }
+    if (n[0] === '<') return { x: n[2], lo: lc + 1 }
+    if (n[0] === '>=') return { x: n[2], hi: lc }
+    if (n[0] === '>') return { x: n[2], hi: lc - 1 }
+  }
+  return null
+}
+
+// `x >= LO && x <= HI` (x a pure i32 local, LO ≤ HI constants) → `(x - LO) <=u (HI - LO)`.
+// One subtract + one unsigned compare replaces two signed compares, an AND, and the
+// short-circuit branch — the classic range-check trick (valid for any integers via
+// wrapping subtraction). Returns the fused IR, or null to leave `&&` lowering unchanged.
+function fuseRangeCheck(a, b) {
+  const ba = rangeBound(a), bb = rangeBound(b)
+  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) return null
+  const lo = ba.lo ?? bb.lo, hi = ba.hi ?? bb.hi
+  if (lo > hi) return null
+  const xv = emit(ba.x)
+  if (xv.type !== 'i32') return null                   // f64 (fractional) would mis-fuse
+  return typed(['i32.le_u', ['i32.sub', xv, ['i32.const', lo]], ['i32.const', hi - lo]], 'i32')
+}
+
+// The complement: `x < LO || x > HI` (the two outside half-checks — one upper-bounded,
+// one lower-bounded, with a gap between) → `(x - LO) >u (HI - LO)`, where [LO, HI] is the
+// inside range. Same trick, negated; returns null to leave `||` lowering unchanged.
+function fuseRangeCheckOr(a, b) {
+  const ba = rangeBound(a), bb = rangeBound(b)
+  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) return null
+  const insideLo = (ba.hi ?? bb.hi) + 1, insideHi = (ba.lo ?? bb.lo) - 1
+  if (insideLo > insideHi) return null
+  const xv = emit(ba.x)
+  if (xv.type !== 'i32') return null
+  return typed(['i32.gt_u', ['i32.sub', xv, ['i32.const', insideLo]], ['i32.const', insideHi - insideLo]], 'i32')
 }
 
 // Flow-sensitive type refinement moved to ./flow-types.js (extractRefinements,
@@ -2785,6 +2834,14 @@ export const emitter = {
   },
 
   '&&': (a, b) => {
+    // Range-check fusion: `x >= LO && x <= HI` (x a pure i32 local, LO ≤ HI compile-time
+    // constants) collapses to one unsigned compare `(x - LO) <=u (HI - LO)` — a subtract
+    // plus a branch instead of two compares, an AND, and a short-circuit branch. This is
+    // the per-char cost in scanners/parsers (digit/alpha classification) and in any
+    // two-sided bounds check. Restricted to a local `x` so evaluating it once (the fused
+    // form) matches the original's twice-read, side-effect-free semantics.
+    const fused = fuseRangeCheck(a, b)
+    if (fused) return fused
     const va = emit(a)
     // Constant-folded literal: pre-bind under truthy refinements (b runs only when a was truthy).
     if (isLit(va)) {
@@ -2830,6 +2887,10 @@ export const emitter = {
   },
 
   '||': (a, b) => {
+    // Outside-range fusion (the complement of `&&`): `x < LO || x > HI` → one unsigned
+    // compare `(x - LO) >u (HI - LO)`. Common in validation (`if (c < 'a' || c > 'z') …`).
+    const fusedOr = fuseRangeCheckOr(a, b)
+    if (fusedOr) return fusedOr
     const va = emit(a)
     // Constant-folded literal: pre-bind under falsy refinements (b runs only when a was falsy).
     if (isLit(va)) {
