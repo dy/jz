@@ -2115,3 +2115,46 @@ test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / IN
     for (const v of [0, 1, -1, 2, -2, 9, 256, IM, IX, -7])
       is(f(x, v), (x / v) | 0, `(${x}/${v})|0`)
 })
+
+test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
+  // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
+  // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /
+  // bound / radius, asymmetric tap range) must bail rather than miscompile.
+  const lex = (s, opt) => run(s, opt).f
+  const ON = { optimize: 'speed' }, OFF = { optimize: { level: 'speed', clampPeel: false } }
+  const fires = (s) => /pks/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
+  const A = 'let A=new Int32Array(4096);'
+  const blur = `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`
+  ok(fires(blur), 'legit stencil peels')
+  for (const w of [1, 2, 3, 7, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8])
+    is(lex(blur, ON)(w, r), lex(blur, OFF)(w, r), `blur w=${w} r=${r}`)
+
+  // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric tap
+  const danger = {
+    ivJump: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&3)===0)x=x+2;x++}return s|0}`,
+    boundMut: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if(s>9000000)w=w-1;x++}return s|0}`,
+    asym: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=1-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
+    closBound: `${A}export let f=(w,r)=>{let s=0,x=0;let dec=()=>{w=w-1};while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&7)===0)dec();x++}return s|0}`,
+  }
+  for (const [name, s] of Object.entries(danger)) {
+    ok(!fires(s), `${name} must bail`)
+    for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(lex(s, ON)(w, r), lex(s, OFF)(w, r), `${name} w=${w} r=${r}`)
+  }
+})
+
+test('clamp-peel: for-loop stencils (the bench shape) peel + bit-exact + guards bail', () => {
+  // The bench blur uses `for` loops (prepare keeps them as ['for',...]); the peel
+  // must normalize them (init + 3 while-loops with the step re-appended), with the
+  // same guards. A non-unit step must bail.
+  const A = 'let A=new Int32Array(4096);'
+  const fires = (s) => /__pke/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
+  const on = (s) => run(s, { optimize: 'speed' }).f, off = (s) => run(s, { optimize: { level: 'speed', clampPeel: false } }).f
+  const forBlur = `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x++){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0}return s|0}`
+  ok(fires(forBlur), 'for-loop stencil peels')
+  for (const w of [0, 1, 2, 3, 7, 8, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8]) is(on(forBlur)(w, r), off(forBlur)(w, r), `forBlur w=${w} r=${r}`)
+  const danger = {
+    forStep2: `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x=x+2){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0}return s|0}`,
+    forBoundMut: `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x++){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0;if(s>9000000)w=w-1}return s|0}`,
+  }
+  for (const [n, s] of Object.entries(danger)) { ok(!fires(s), `${n} bails`); for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(on(s)(w, r), off(s)(w, r), `${n} w=${w} r=${r}`) }
+})

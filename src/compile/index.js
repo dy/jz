@@ -38,6 +38,7 @@ import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
+import { peelClampedStencil } from './peel-stencil.js'
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -386,6 +387,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // counters are typed/narrowed like any i32 local. Off at L0 / `loopIVDivMod:false`.
   const _o = ctx.transform.optimize
   if (_o && _o.loopIVDivMod !== false && isBlockBody(func.body)) func.body = strengthReduceLoopDivMod(func.body)
+  // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
+  // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
+  if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
 
   const { name, body, sig } = func
   enterFunc(sig, body)
