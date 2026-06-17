@@ -18,34 +18,16 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
   permalink. The demo *is* the marketing. Greenfield (no playground/ yet).
 - [x] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
   cross-AI optimizer passes; **release 0.6.0**.
+- [ ] Main page
+  - [ ] Demo slider
+  - [ ] JZ/JS switch with fps
+  - [ ] Minirepl
+  - [ ] Sponsor call CTA
+- [ ] Examples
+  - [ ] Instead of myriads better have a few powerful boosted examples
+  - [ ] Nice settings-panel side-menu
+  - [ ] All math examples: educative, entertaining
 
-## Compiler
-
-- [x] Find all unlucky deopt cases and compare perf against JS: should not be 18x slower
-  — Probed every generic-dispatch shape vs V8 (`.work/deopt-probe.mjs`). Ranked: **for-in
-  was the cliff** (8–9×, scaling with key count = the "18×" class) — it lowered to a
-  per-iteration `Object.keys` ALLOCATION + dynamic `o[k]` get, and leaked unboundedly
-  (OOM). Now: (1) for-in over a static schema **unrolls** with key-literal substitution so
-  `o[k]` folds to a schema slot (`unrollForIn`, recognized via the for-in-exclusive
-  `__keys_ro` intrinsic, `src/compile/emit.js`) → **0.40× (2.5× faster than V8)**; (2) when
-  it can't unroll (break/continue, closure capturing key, computed-write object) the key
-  array is a **pooled static constant** (`__keys_ro`, `module/object.js`) — never a
-  per-iteration alloc. Gated on a new precise `dynWriteVars` fact (computed-key WRITES add
-  enumerable keys; reads/dot-adds don't — `program-facts.js`). Remaining dynamic shapes:
-  `obj[k]` read 1.7× / write 1.9× (genuine dynamic keys — use a Map), plain-`[]` index 3.4×
-  (use a typed array). Detector: `test/forin-deopt.js` (differential sweep + codegen pins +
-  alloc-free behavioral pin). Also fixed a real bug: `memory.reset()` clobbered module-global
-  heap objects (rewound below them) — now rewinds to the post-init mark (`interop.js`).
-- [x] Verbose flag? Or at least - deopt warnings
-  — Emit-site `deopt-*` advisories (truthful: fire only when a slow path is actually
-  emitted, so an unrolled for-in / vectorized loop never false-warns). `warnDeopt`
-  (`src/ctx.js`) with source loc + fn name: `deopt-dyn-read` (`o[k]`→`__dyn_get`),
-  `deopt-dyn-write` (`o[k]=v`→`__dyn_set`), `deopt-method` (unknown receiver→`__ext_call`
-  host round-trip). Joins the existing `deopt-generic`. Tests in `test/warnings.js`.
-- [x] bench: remove interpreters; replace -> with arrow unicode; add 4 more MOST STANDARD bench cases across langs: fft, zzfx (some minisynth - audio pipeline), stdlib.io something, standard not-small bytebeat, some image pipeline, some codec maybe like wav or aiff?; hide watr, jessie, jz cases; beat everyone by speed and size, esp audio
-  — Removed CPython/QuickJS/Hermes/Javy (bench.mjs + index.html + README + bench.yml); kept NumPy + Static Hermes as native refs. `JS -> WASM` → `JS → WASM`. Hid watr/jessie/jz from page + SVG geomean (`HIDDEN_FROM_GEOMEAN`; still runnable + gated). Added 4 cross-language bit-exact cases (js/c/rs/zig/go/as each): **fft** (radix-2, transcendental-free Taylor twiddles — jz ties native, 1.26× V8), **synth** (poly-osc+ADSR+biquad — jz FASTEST of all incl native, 1.42× V8), **bytebeat** (integer 8-bit PCM — jz 1.48× V8), **blur** (RGBA box blur — jz 2.78× V8). zzfx-as-is can't be cross-lang bit-exact (Math.sin differs per libm) → in-source poly minisynth substitutes. SVG geomean: jz beats every engine incl native (Rust 1.13× Zig 1.29× Go 1.79× Bun 1.70× V8 2.42× AS 2.34×). Fixed a real jz vectorizer bug en-route: sibling loops lifting the same source local emitted duplicate `$name__v` decls → "Duplicate local" crash on fft (`src/optimize/vectorize.js`, dedupe at splice; regression-pinned in `test/simd.js`). Codec deferred (4 cases delivered). Native auto-vectorizes the two stateless integer kernels (bytebeat/blur) — honest floor; jz still doubles the JS field there.
-- [x] performance svg image should not confuse: we need a line that it's geomean from N examples or something. JZ should have underline O3, not -> wasm.
-  — footer caption "geometric mean across N benchmark cases · lower is faster, jz = 1.00× baseline"; N drives BOTH the caption and the Porffor "runs k / N" denominator so they can't disagree (live run: `geoCases.length`; offline snapshot: `SNAPSHOT_N`). jz sub-label `→ wasm` → `-O3` (parallel to clang/rustc/asc -O3 — jz compiles at its L3 `level:'speed'` tier). CI already regenerates bench.svg on push-to-main (`bench.yml` full `--json` run → `git add bench/bench.svg`). `scripts/bench-svg.mjs` + `bench/bench.mjs` SVG_TARGETS; pinned by `test/bench-svg.js`.
 
 ## Reach — perception/proof (highest external leverage)
 - [ ] **AudioWorklet + live in-browser REPL** — single highest-leverage move. Demos ship
@@ -115,24 +97,10 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 
 ## Compiler backlog — deferred-on-no-workload (YAGNI: build when a real bench surfaces the shape)
-All ranked-ROI optimizer items shipped (Archive). What remains is speculative — adds
+All ranked-ROI optimizer items shipped (Archive); since then extending-add (`f5213cb`),
+scalarization cap 32→64 (`087dc56`), and the dead-code/interop hygiene tail also landed —
+moved to the 2026-06-16 drain entry in Archive. What remains is speculative — adds
 correctness risk for zero measured benefit:
-- [ ] **extending-add i8/i16→i32** [M] — byte/short sum reductions need `i16x8.extadd_pairwise_*`
-  into an i32 accumulator. No kernel uses one today; trigger = histogram / checksum /
-  image-brightness (color-space dogfood is the likely one).
-- [x] **AoS→SoA layout transform / f64x2 deinterleave** — WON'T BUILD, measured net-negative
-  (2026-06-14). The `aos` bench IS the workload, and both SIMD forms are *slower* than the
-  current optimal scalar on wasm's 128-bit SIMD (hand-WAT, N=16384×64, arm64/V8):
-  AoS deinterleave (3×`v128.load` + 3×`i8x16.shuffle` per 2 rows) = **0.78×**; SoA contiguous
-  (no shuffle, the layout-transform best case) = **0.92×**. The kernel is memory-bandwidth-bound
-  — 2-wide SIMD moves the same bytes, so halving the instruction count doesn't help and the
-  deinterleave shuffles only add cost. V8 lowers wasm `v128` to 128-bit SSE/NEON (2 f64 lanes),
-  never 256-bit AVX2, so native's AVX2 4-lane deinterleave is structurally unreachable in
-  portable wasm. jz scalar already beats Rust on `aos` on arm64 (0.97 vs 1.23 ms); the x86-EPYC
-  gap is the AVX2 width ceiling, not a missing pass. The `simd-aos-stride` advisory stays as the
-  only "answer"; don't build the transform.
-- [ ] **scalarization cap 32→64** (`plan/common.js:114`) — perf-only, no workload; raising
-  risks the 128-local LEB128 cliff. Left at 32.
 - [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
   wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
   builtin actually appearing in a kernel. Owner: module/math.js (+ siblings), test/math.js.
@@ -141,9 +109,6 @@ correctness risk for zero measured benefit:
   f64-tag); typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32
   cell, not nanbox). Each blocked on a converging carrier fact + no current workload;
   regression risk > theoretical win.
-- [ ] **Dead-code / interop hygiene tail** — objectLiteralEntries shadow (jzify/classes.js,
-  import dead); vestigial opts.extMap write (interop.js); cli.js deprecated profileNames;
-  document opts nativeTimers/noTailCall/modules.
 - [ ] **form-normalization folds** (lint) — `parseInt(intLit)` fold; `x=x` drop; `s+""` drop
   (only when statically STRING); `no-useless-return`. DCE-adjacent; defer until one is hot.
 - DON'T chase (refuted/calibrated): PS-3 wasm-opt slack gate (matches measured); OPT-B/C
@@ -175,6 +140,89 @@ correctness risk for zero measured benefit:
 ---
 
 ## Archive
+
+- [x] **AoS→SoA layout transform / f64x2 deinterleave** — WON'T BUILD, measured net-negative
+  (2026-06-14). The `aos` bench IS the workload, and both SIMD forms are *slower* than the
+  current optimal scalar on wasm's 128-bit SIMD (hand-WAT, N=16384×64, arm64/V8):
+  AoS deinterleave (3×`v128.load` + 3×`i8x16.shuffle` per 2 rows) = **0.78×**; SoA contiguous
+  (no shuffle, the layout-transform best case) = **0.92×**. The kernel is memory-bandwidth-bound
+  — 2-wide SIMD moves the same bytes, so halving the instruction count doesn't help and the
+  deinterleave shuffles only add cost. V8 lowers wasm `v128` to 128-bit SSE/NEON (2 f64 lanes),
+  never 256-bit AVX2, so native's AVX2 4-lane deinterleave is structurally unreachable in
+  portable wasm. jz scalar already beats Rust on `aos` on arm64 (0.97 vs 1.23 ms); the x86-EPYC
+  gap is the AVX2 width ceiling, not a missing pass. The `simd-aos-stride` advisory stays as the
+  only "answer"; don't build the transform.
+- [x] Find all unlucky deopt cases and compare perf against JS: should not be 18x slower
+  — Probed every generic-dispatch shape vs V8 (`.work/deopt-probe.mjs`). Ranked: **for-in
+  was the cliff** (8–9×, scaling with key count = the "18×" class) — it lowered to a
+  per-iteration `Object.keys` ALLOCATION + dynamic `o[k]` get, and leaked unboundedly
+  (OOM). Now: (1) for-in over a static schema **unrolls** with key-literal substitution so
+  `o[k]` folds to a schema slot (`unrollForIn`, recognized via the for-in-exclusive
+  `__keys_ro` intrinsic, `src/compile/emit.js`) → **0.40× (2.5× faster than V8)**; (2) when
+  it can't unroll (break/continue, closure capturing key, computed-write object) the key
+  array is a **pooled static constant** (`__keys_ro`, `module/object.js`) — never a
+  per-iteration alloc. Gated on a new precise `dynWriteVars` fact (computed-key WRITES add
+  enumerable keys; reads/dot-adds don't — `program-facts.js`). Remaining dynamic shapes:
+  `obj[k]` read 1.7× / write 1.9× (genuine dynamic keys — use a Map), plain-`[]` index 3.4×
+  (use a typed array). Detector: `test/forin-deopt.js` (differential sweep + codegen pins +
+  alloc-free behavioral pin). Also fixed a real bug: `memory.reset()` clobbered module-global
+  heap objects (rewound below them) — now rewinds to the post-init mark (`interop.js`).
+- [x] Verbose flag? Or at least - deopt warnings
+  — Emit-site `deopt-*` advisories (truthful: fire only when a slow path is actually
+  emitted, so an unrolled for-in / vectorized loop never false-warns). `warnDeopt`
+  (`src/ctx.js`) with source loc + fn name: `deopt-dyn-read` (`o[k]`→`__dyn_get`),
+  `deopt-dyn-write` (`o[k]=v`→`__dyn_set`), `deopt-method` (unknown receiver→`__ext_call`
+  host round-trip). Joins the existing `deopt-generic`. Tests in `test/warnings.js`.
+- [x] bench: remove interpreters; replace -> with arrow unicode; add 4 more MOST STANDARD bench cases across langs: fft, zzfx (some minisynth - audio pipeline), stdlib.io something, standard not-small bytebeat, some image pipeline, some codec maybe like wav or aiff?; hide watr, jessie, jz cases; beat everyone by speed and size, esp audio
+  — Removed CPython/QuickJS/Hermes/Javy (bench.mjs + index.html + README + bench.yml); kept NumPy + Static Hermes as native refs. `JS -> WASM` → `JS → WASM`. Hid watr/jessie/jz from page + SVG geomean (`HIDDEN_FROM_GEOMEAN`; still runnable + gated). Added 4 cross-language bit-exact cases (js/c/rs/zig/go/as each): **fft** (radix-2, transcendental-free Taylor twiddles — jz ties native, 1.26× V8), **synth** (poly-osc+ADSR+biquad — jz FASTEST of all incl native, 1.42× V8), **bytebeat** (integer 8-bit PCM — jz 1.48× V8), **blur** (RGBA box blur — jz 2.78× V8). zzfx-as-is can't be cross-lang bit-exact (Math.sin differs per libm) → in-source poly minisynth substitutes. SVG geomean: jz beats every engine incl native (Rust 1.13× Zig 1.29× Go 1.79× Bun 1.70× V8 2.42× AS 2.34×). Fixed a real jz vectorizer bug en-route: sibling loops lifting the same source local emitted duplicate `$name__v` decls → "Duplicate local" crash on fft (`src/optimize/vectorize.js`, dedupe at splice; regression-pinned in `test/simd.js`). Codec deferred (4 cases delivered). Native auto-vectorizes the two stateless integer kernels (bytebeat/blur) — honest floor; jz still doubles the JS field there.
+- [x] performance svg image should not confuse: we need a line that it's geomean from N examples or something. JZ should have underline O3, not -> wasm.
+  — footer caption "geometric mean across N benchmark cases · lower is faster, jz = 1.00× baseline"; N drives BOTH the caption and the Porffor "runs k / N" denominator so they can't disagree (live run: `geoCases.length`; offline snapshot: `SNAPSHOT_N`). jz sub-label `→ wasm` → `-O3` (parallel to clang/rustc/asc -O3 — jz compiles at its L3 `level:'speed'` tier). CI already regenerates bench.svg on push-to-main (`bench.yml` full `--json` run → `git add bench/bench.svg`). `scripts/bench-svg.mjs` + `bench/bench.mjs` SVG_TARGETS; pinned by `test/bench-svg.js`.
+
+### Module-level numeric tables drop the string runtime (2026-06-16)
+
+The synth bench was 4.2× larger than AssemblyScript (7.7 KB vs 1.8 KB) — the worst size gap
+in the corpus, and the audio flagship. Root cause: a module-level numeric `const` table
+(`const FREQS = […]`, `const CHORDS = [[…],…]`) had untyped ("any") element reads, so
+`T[i] * x` emitted the generic `__to_num`, dragging the full ~5 KB string-parse battery
+(`__to_str`/`__skipws`/`__char_at`/`__pow10`/…) into a string-free kernel. Element typing
+existed for function-local arrays; module globals were invisible to the using function's walk.
+
+* [x] **Flat `const T = [n, …]`** (`45396e7`) — `recordGlobalRep` records `arrayElemValType`
+  on the global rep; `VT['[]']` reads it (dynWriteVars-guarded). synth **7.7 KB → 2.0 KB**
+  (3.85×); render 1260 → 373 WAT lines; the string stdlib drops out entirely.
+* [x] **Nested `const C = [[n, …], …]`** (`c899064`) — the floatbeat chord/pattern-table
+  shape, one level down: `arrayElemElemValType` rep field + recording; `C[i][j]` and
+  `ch = C[i]; ch[j]` read sites typed; `program-facts` flags the ROOT var on a nested write
+  `C[i][j]=…` (receiver-chain walk) for soundness. Nested tables **6 KB → 0.6 KB** (10.6×).
+  Single-level (mirrors the local `arrElemElemValTypes` convention); deeper nesting falls
+  back. Pinned in `test/minimal-output.js` (no-string + value + soundness; the flat fix was
+  previously untested). Full matrix opt0/2/3 green (2329/0); null-write→0 confirms ToNumber
+  routing, not the NaN-box coincidence.
+* DON'T chase yet (no workload): a module **object** with an array field (`const O =
+  { freqs: […] }; O.freqs[i]`) still pulls the string runtime — different mechanism
+  (schema-slot → array-elem); no current example/bench uses the shape.
+
+### Deferred-backlog drain — extending-add · scalar-cap 64 · interop hygiene (2026-06-16)
+
+Three "deferred-on-no-workload" items had already shipped (or gone moot) without the live
+backlog being ticked. Verified against code + git + suite, moved here.
+
+* [x] **extending-add i8/i16→i32** (`f5213cb`) — `s += u8[i]` / `s += u16[i]` into an i32
+  accumulator lifts via the `extadd_pairwise` chain to i32x4 partials (`WIDEN_LOADS`,
+  `src/optimize/vectorize.js`); widening min/max over a bare narrow load also lands
+  (`MINMAX_WIDEN`). Value-exact mod 2³² (pairwise intermediates can't overflow; restricted to
+  a BARE load — lane arithmetic before widening would wrap at lane width). 5 pins in
+  `test/simd.js` (u8/s8/u16/s16 sums + the "must NOT widen on lane arithmetic" boundary);
+  simd suite 110/110.
+* [x] **scalarization cap 32→64** (`087dc56`) — `maxScalarTypedArrayLen` defaults to 64
+  (`src/compile/plan/common.js`), covering 8×8 block kernels (DCT/JPEG). The feared 128-local
+  LEB128 cliff doesn't materialize: at 64 elements the scalarized form is ~2.2× smaller and
+  2.5× faster than the memory form.
+* [x] **Dead-code / interop hygiene tail** — all resolved: `objectLiteralEntries` is a live
+  import used by `lowerObjectLiteralThis` (jzify/classes.js:159, wired via jzify/index.js +
+  transform.js) — no shadow, no dead import; `opts.extMap` is no longer written anywhere;
+  `cli.js` `profileNames` is gone; `opts.modules`/`noTailCall`/`nativeTimers` are documented
+  (index.js:242-247).
 
 ### CI perf-gate robustification + exp2 fast-path (2026-06-10)
 
