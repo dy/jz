@@ -1835,3 +1835,41 @@ test('SIMD multi-pixel - vertical box blur (outer-loop peel + 4-pixel SIMD)', ()
     is(runVec(vblur(w, h, r), ON).main(), runVec(vblur(w, h, r), OFF).main(), `vblur ${w}x${h} r=${r}`)
   ok(/i16x8\.extend_high/.test(wat(vblur(64, 8, 4), ON)), '4-pixel SIMD must fire on the vertical pass')
 })
+
+test('SIMD channel order - permuted RGBA channels stay positionally correct', () => {
+  // Both channel-SIMD lifts (1-pixel tryChannelReduce and 4-pixel tryBlurMultiPixel)
+  // map v128 lane c to the accumulator that summed SOURCE byte-offset c. The recognizer
+  // ties that to read-offset order, but the lane→accumulator extract must use that same
+  // order — not the zero-init order. They coincide for an identity-order blur, so a
+  // permutation-insensitive SUM checksum can't see a mis-map. This program permutes which
+  // channel each accumulator reads/stores and checks a POSITION-SENSITIVE rolling hash, so
+  // a lane mis-map diverges. Oracle = the unoptimized (no-SIMD) compile.
+  // rp[off] = accumulator (0..3) fed by source offset `off`; sp[m] = accumulator stored at
+  // output offset m. acc names a0..a3.
+  const rd = (acc, off) => `${acc}+=src[${off === 0 ? 'p' : 'p+' + off}]`
+  const wr = (off, acc) => `dst[${off === 0 ? 'o' : 'o+' + off}]=(${acc}/win)|0`
+  const blur = (w, r, rp, sp) => `export let main = () => {
+    const W=${w}|0, R=${r}|0, N=W*4, src=new Uint8Array(N), dst=new Uint8Array(N)
+    let s = 0x1234abcd|0
+    for (let i=0;i<N;i++){ s^=s<<13; s^=s>>>17; s^=s<<5; src[i]=(s>>>0)&255 }
+    const win=2*R+1
+    for (let x=0;x<W;x++){ let a0=0,a1=0,a2=0,a3=0
+      for (let k=-R;k<=R;k++){ let xi=x+k; if(xi<0)xi=0; else if(xi>=W)xi=W-1; const p=xi<<2
+        ${[0, 1, 2, 3].map(off => rd('a' + rp[off], off)).join('; ')} }
+      const o=x<<2; ${[0, 1, 2, 3].map(m => wr(m, 'a' + sp[m])).join('; ')} }
+    let h=0; for (let i=0;i<N;i++) h=(h*31+dst[i])|0; return h
+  }`
+  const ON = { optimize: 'speed' }, NO = { optimize: { vectorizeLaneLocal: false } }   // SIMD vs scalar oracle
+  const id = [0, 1, 2, 3]
+  // identity store (sp=id) lets the 4-pixel lift fire; varied read perms exercise the map.
+  const perms = [[0, 1, 2, 3], [3, 0, 2, 1], [1, 0, 3, 2], [2, 3, 0, 1], [3, 2, 1, 0]]
+  let firedB = false
+  for (const w of [20, 67]) for (const r of [2, 4]) for (const rp of perms) {
+    const src = blur(w, r, rp, id)
+    is(runVec(src, ON).main(), runVec(src, NO).main(), `chan-perm w=${w} r=${r} rp=${rp}`)
+    if (/i16x8\.extend_high/.test(wat(src, ON))) firedB = true
+  }
+  ok(firedB, '4-pixel SIMD must fire on a permuted-channel blur (else the test is hollow)')
+  // a non-identity read perm with the channel-reduce path (narrow width → no 4-pixel lift)
+  is(runVec(blur(6, 1, [3, 0, 2, 1], id), ON).main(), runVec(blur(6, 1, [3, 0, 2, 1], id), NO).main(), 'chan-reduce permuted')
+})

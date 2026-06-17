@@ -2307,7 +2307,9 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   const epilogue = [...preStore, ['local.set', ab1, dstExpr]]
   for (let j = 0; j < 4; j++) {
     const vec = j < 2 ? accLo : accHi, base = (j % 2) * 4
-    for (let c = 0; c < 4; c++) epilogue.push(['local.set', accInits[c], ['i16x8.extract_lane_u', String(base + c), ['local.get', vec]]])
+    // lane base+c summed source byte at offset c → grp.accs[c] (the accumulator
+    // tied to read-offset c), NOT accInits[c] (zero-init order); see tryChannelReduce.
+    for (let c = 0; c < 4; c++) epilogue.push(['local.set', grp.accs[c], ['i16x8.extract_lane_u', String(base + c), ['local.get', vec]]])
     for (let c = 0; c < 4; c++) epilogue.push(['i32.store8', `offset=${j * 4 + c}`, ['local.get', ab1], storeVals[c]])
   }
   // 4-pixel loop body: splat inits, the tap-IV init, the lifted inner loop, the
@@ -2423,8 +2425,13 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
   const newInnerLoop = [...innerLoop.slice(0, 3), ...newInner, ...innerLoop.slice(ilEnd - 1)]
   const newInnerBlock = innerBlock.map(c => c === innerLoop ? newInnerLoop : c)
   // After the inner loop, extract the four lane sums back to the scalar
-  // accumulators the divide+store code reads.
-  const extracts = accInits.map((acc, c) => ['local.set', acc, ['i32x4.extract_lane', c, ['local.get', accv]]])
+  // accumulators the divide+store code reads. Lane c summed source byte
+  // `base+c`, so it must land in grp.accs[c] — the accumulator matchChannelGroup
+  // tied to read-offset c — NOT accInits[c] (zero-init order). They coincide only
+  // when the program inits/sums in offset order (every real blur); a channel-
+  // permuted program (sums offset 0 into a var stored at a later offset) needs the
+  // offset-order mapping or the lanes mis-map.
+  const extracts = grp.accs.map((acc, c) => ['local.set', acc, ['i32x4.extract_lane', c, ['local.get', accv]]])
 
   // Reassemble the pixel-loop body: replace the 4 inits with the splat, the inner
   // block with the lifted one, and insert the extracts right after it.
