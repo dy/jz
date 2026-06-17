@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jz — Computational JavaScript, compiled to WASM</title>
+<meta name="description" content="jz (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid jz is valid JS: it runs in any engine, then compiles to portable WASM. Within 6% of native C; 2.4× faster than the same code in V8.">
+<link rel="icon" href="jz.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a;
+  --band: #0a0a0a; --padx: 28px;
+}
+html, body { height: 100%; overflow-x: clip; }
+body { background: #000; color: var(--ink); font-family: var(--font);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+a { color: inherit; }
+::selection { background: #fff; color: #000; }
+
+/* ─────────────────────────── HERO — a single live N-body sim runs full-bleed behind
+   a centred pitch; the engine switch + FPS at the foot drive & measure that very sim. ─────────────────────────── */
+.hero { position: relative; min-height: 100svh; display: flex; flex-direction: column;
+  align-items: center; background: #000; overflow: hidden; }
+
+/* the demo runs as the background layer — white bodies on black, full strength, unfaded */
+.show-stage { position: absolute; inset: 0; z-index: 0; --show-scale: 0.5; background: #000; }
+.show-stage iframe { position: absolute; top: 0; left: 0; border: 0; display: block;
+  width: calc(100% * var(--show-scale)); height: calc(100% * var(--show-scale));
+  transform: scale(calc(1 / var(--show-scale))); transform-origin: 0 0; }
+
+/* hash-like blueprint rules framing the centred content (hyperstudio-style): two verticals
+   at the content-column edges, full height; faint horizontals crossing them */
+.gridlines { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.gridlines .col { position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+  width: min(calc(100% - 2 * var(--padx)), 1140px);
+  border-left: 1px solid rgba(255,255,255,.07); border-right: 1px solid rgba(255,255,255,.07); }
+.gridlines::before, .gridlines::after { content: ''; position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px solid rgba(255,255,255,.07); }
+.gridlines::before { top: 86px; }
+.gridlines::after { bottom: 0; }
+
+/* top bar — nav flush to the start (left) of the shared content column */
+.hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%;
+  max-width: calc(1140px + 2 * var(--padx)); margin: 0 auto;
+  display: flex; justify-content: flex-start; align-items: center; gap: 24px; padding: 20px var(--padx) 0; }
+.hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
+  letter-spacing: .14em; transition: opacity .18s; }
+.hero-nav a:hover { opacity: 1; }
+.hero-nav .gh { display: flex; }
+
+/* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
+   Logo above the title, then slogan, CTA, and honestly-banded metrics.
+   Two metric bands, never mixed: "native" is the ceiling we trail; "vs JS" is the same source run faster. */
+.pitch { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; width: 100%;
+  max-width: calc(1140px + 2 * var(--padx));   /* inner content = 1140, the footer width → shared left edge */
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left;
+  padding: 16px var(--padx) 8px;
+  pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
+.pitch a, .pitch button { pointer-events: auto; }
+/* logo — a faint sharp border whose edge REFLECTS the live sim: a masked ring brightens the
+   n-body bodies showing through the band around the mark, so they glint the edge as they fly past
+   (no animation of its own — the motion is the sim's, never competing with it) */
+.logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: clamp(22px,2.6vw,34px); }
+.logo img { display: block; width: clamp(78px,9vw,108px); height: auto; position: relative; z-index: 1; }
+/* the constant border — sharp corners, just-visible */
+.logo::before { content: ''; position: absolute; inset: -5px; z-index: 0; pointer-events: none;
+  border: 1px solid rgba(255,255,255,.18); }
+/* the reflective edge band — a ring that amplifies whatever the sim paints behind it */
+.logo::after { content: ''; position: absolute; inset: -5px; z-index: 0; pointer-events: none; padding: 5px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+  -webkit-backdrop-filter: brightness(2.8) saturate(1.15);
+          backdrop-filter: brightness(2.8) saturate(1.15); }
+.pitch h1 { font-size: clamp(28px,4.6vw,54px); font-weight: 400; line-height: 1.03; letter-spacing: -.015em;
+  overflow-wrap: break-word; text-shadow: 0 1px 12px rgba(0,0,0,.45); }   /* no max-width → the <br> is the only break: 2 lines */
+.pitch h1 b { font-weight: 700; }
+.pitch .sub { margin-top: 16px; max-width: 54ch; font-size: clamp(14px,1.15vw,16.5px); line-height: 1.55; color: var(--soft); }
+.pitch .sub b { color: var(--ink); font-weight: 700; }
+
+/* main CTA — the sole hero action: FPS readout then the JS↔JZ switch on one line.
+   The FPS area is a fixed width so changing digit counts can't shift the switch. */
+.cta-live { display: flex; flex-direction: row; align-items: center; gap: 22px; margin-top: clamp(26px,3.2vw,38px); flex-wrap: wrap; }
+/* footer install chip reuses .install */
+.install { display: inline-flex; align-items: baseline; gap: 9px; font-family: var(--mono); font-size: 13.5px;
+  color: var(--ink); background: none; border: 0; padding: 0; cursor: copy; }
+.install .dollar { color: var(--mute); }
+.install .ci { font-family: var(--font); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--soft); transition: color .18s; }
+.install:hover .ci, .install.copied .ci { color: var(--ink); }
+
+/* stats — number over a small identifying label, in a flat row */
+.metrics { display: flex; align-items: flex-start; gap: clamp(20px,2.6vw,34px); margin-top: clamp(42px,5.4vw,68px); flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
+.stat b { font-size: clamp(26px,2.7vw,36px); font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.stat:hover b { color: #fff; }
+.metrics .more { align-self: center; font-family: var(--font); font-size: 13.5px; letter-spacing: normal;
+  color: var(--mute); text-decoration: none; transition: color .16s; }
+.metrics .more:hover { color: var(--ink); }
+
+.fps { flex: 0 0 auto; width: 222px; display: inline-flex; align-items: center; gap: 13px; color: var(--ink); font-family: var(--font); }
+.fps-spark { width: 76px; height: 34px; display: block; }
+.fps .metric { display: inline-flex; align-items: baseline; gap: 4px; }   /* tight number↔unit */
+.fps .metric b { font-weight: 400; font-size: 20px; font-variant-numeric: tabular-nums;
+  display: inline-block; min-width: 2.8ch; text-align: right; }            /* fixed width → no shifting */
+.fps .metric.ms b { min-width: 3.4ch; }
+.fps .unit { font-size: 12px; color: var(--dim); }
+
+/* JS↔JZ engine switch — the main CTA: big, skeuomorphic (deep-milled track, raised metal knob), barely rounded */
+.engine { position: relative; flex: 0 0 auto; width: 152px; height: 56px; border: 0; padding: 0; cursor: pointer;
+  border-radius: 6px; -webkit-appearance: none; appearance: none;
+  background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
+  box-shadow: inset 0 3px 7px rgba(0,0,0,.9), inset 0 -2px 3px rgba(255,255,255,.05),
+    inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06), 0 6px 22px rgba(0,0,0,.5); }
+.engine .knob { position: absolute; top: 4px; left: 4px; width: 72px; height: 48px; border-radius: 4px; z-index: 1;
+  background: linear-gradient(180deg, #fff 0%, #ededed 45%, #c4c4c8 100%);
+  box-shadow: 0 4px 7px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5),
+    inset 0 1px 1px rgba(255,255,255,.95), inset 0 -2px 2px rgba(0,0,0,.18);
+  transition: transform .24s cubic-bezier(.34,.72,.28,1.3); }
+.engine.jz .knob { transform: translateX(72px); }
+.engine .lbl-js, .engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 76px; z-index: 2;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 700 19px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+  color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
+.engine .lbl-js { left: 0; }
+.engine .lbl-jz { right: 0; }
+.engine.js .lbl-js { color: #141414; }
+.engine.jz .lbl-jz { color: #141414; }
+@media (prefers-reduced-motion: reduce) { .engine .knob { transition: none; } }
+
+@media (max-width: 720px) {
+  .pitch h1 { font-size: clamp(26px,7.4vw,40px); }
+  .pitch h1 .hb { display: none; }
+  .hero-nav { gap: 14px; padding: 12px var(--padx); }
+  .hero-nav a.opt { display: none; }
+  .metrics { gap: 28px; }
+}
+
+/* ─────────────────────────── EXAMPLES — full-bleed strip of square previews, two rows, no gaps, no labels ─────────────────────────── */
+.examples { background: #000; }
+.exrow { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 0;
+  overflow-x: auto; scrollbar-width: none; }
+.exrow::-webkit-scrollbar { display: none; }
+.exrow a { display: block; width: clamp(92px,11vw,150px); height: clamp(92px,11vw,150px); overflow: hidden; }
+.exrow img { width: 100%; height: 100%; object-fit: cover; display: block;
+  filter: grayscale(1) brightness(.72) contrast(1.05); transition: filter .35s, transform .5s cubic-bezier(.22,.6,.36,1); }
+.exrow a:hover img { filter: grayscale(0) brightness(1) contrast(1.04); transform: scale(1.06); }
+
+/* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
+.faq { background: #000; padding: clamp(48px,7vw,96px) var(--padx); }
+.faq-wrap { max-width: 1140px; margin: 0 auto; }   /* shared column → same left edge as hero & cards */
+.faq h2, .faq details { max-width: 820px; }   /* narrow reading width, flush-left within */
+.faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
+.faq details { border-top: 1px solid #1c1c25; }
+.faq details:last-of-type { border-bottom: 1px solid #1c1c25; }
+.faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+  gap: 24px; padding: clamp(16px,1.8vw,22px) 0; font-size: clamp(15px,1.5vw,18px); font-weight: 600; color: var(--ink);
+  -webkit-tap-highlight-color: transparent; transition: color .16s; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary:hover { color: #fff; }
+.faq summary .chev { flex: 0 0 auto; width: 17px; height: 17px; color: var(--dim);
+  transition: transform .24s cubic-bezier(.34,.72,.28,1.3), color .16s; }
+.faq details[open] summary .chev { transform: rotate(180deg); color: var(--ink); }
+.faq .ans { padding: 0 8px clamp(20px,2.2vw,26px) 0; font-size: 14.5px; line-height: 1.66; color: var(--soft); }
+.faq details[open] .ans { animation: faq-reveal .3s cubic-bezier(.22,.6,.36,1); }
+@keyframes faq-reveal { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+/* smooth height expand/collapse where supported (Chrome 129+); elsewhere native + the fade above */
+@supports (interpolate-size: allow-keywords) {
+  html { interpolate-size: allow-keywords; }
+  .faq details::details-content { block-size: 0; overflow: hidden;
+    transition: block-size .32s cubic-bezier(.22,.6,.36,1), content-visibility .32s; transition-behavior: allow-discrete; }
+  .faq details[open]::details-content { block-size: auto; }
+}
+.faq .ans a { color: var(--ink); text-underline-offset: 2px; }
+.faq .ans code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
+
+/* ─────────────────────────── FOOTER ─────────────────────────── */
+footer { padding: clamp(48px, 7vw, 80px) var(--padx) 56px; background: #000; }
+.fwrap { max-width: 1140px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px 28px; }
+.wordmark { font-size: 22px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
+.wordmark .mark { font-weight: 700; }
+.wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
+.wordmark:hover .sub { color: #fff; }
+footer .brand-col p { margin-top: 14px; font-size: 13px; color: var(--dim); max-width: 34ch; line-height: 1.6; }
+footer .brand-col .install { margin-top: 20px; }
+footer .fcol h4 { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--mute); margin-bottom: 14px; font-weight: 400; }
+footer .fcol a { display: block; text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 5px 0; transition: color .16s; }
+footer .fcol a:hover { color: #fff; }
+footer .legal { grid-column: 1 / -1; margin-top: 36px; padding-top: 22px; border-top: 1px solid #1c1c25;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  font-size: 12.5px; color: var(--dim); }
+footer .legal a { color: var(--soft); text-decoration: none; }
+footer .legal a:hover { color: #fff; }
+footer .legal .om { font-size: 15px; }
+@media (max-width: 760px) { .fwrap { grid-template-columns: 1fr 1fr; } footer .brand-col { grid-column: 1 / -1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+
+<main class="hero">
+  <!-- a single live N-body sim, full-bleed behind the pitch; the in-pitch JS/JZ switch drives it -->
+  <div class="show-stage" id="show-stage">
+    <iframe id="show" title="live jz example — N-body gravity, compiled to WASM" loading="lazy"></iframe>
+  </div>
+  <div class="gridlines" aria-hidden="true"><span class="col"></span></div>
+
+  <nav class="hero-nav">
+    <a href="repl/">repl</a>
+    <a href="examples/">examples</a>
+    <a href="bench/">bench</a>
+    <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
+      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </nav>
+
+  <section class="pitch">
+    <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="108" height="108" alt="jz"></a>
+    <h1>Computational <b>JavaScript</b>, <br class="hb">compiled to <b>WASM</b>.</h1>
+    <p class="sub">Minimal, modern, distilled functional <b>plain JavaScript</b> — the Crockford “Good Parts”,
+      compiled ahead-of-time to WASM that runs the same source <b>faster</b>. No runtime, no GC,
+      no type annotations, unlocked SIMD.</p>
+    <div class="cta-live">
+      <div class="fps" aria-label="performance">
+        <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
+      </div>
+      <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="JS / JZ engine — flip to drive the live sim"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
+    </div>
+    <div class="metrics">
+      <a class="stat" href="bench/"><b>2.4×</b><span>Node V8</span></a>
+      <a class="stat" href="bench/"><b>2.3×</b><span>AssemblyScript</span></a>
+      <a class="stat" href="bench/"><b>3.1×</b><span>Porffor</span></a>
+      <a class="stat" href="bench/"><b>0.94×</b><span>native C</span></a>
+      <a class="stat" href="bench/"><b>13.5×</b><span>SIMD peak</span></a>
+      <a class="stat" href="bench/"><b>1.1×</b><span>AS size</span></a>
+      <a class="more" href="bench/" title="Full benchmark — 16 kernels, Apple M4 Max, reproducible">bench →</a>
+    </div>
+  </section>
+</main>
+
+<section class="examples" aria-label="examples">
+  <div class="exrow">
+    <a href="examples/nbody/"><img src="examples/thumbs/nbody.webp" alt="" loading="lazy"></a>
+    <a href="examples/plasma/"><img src="examples/thumbs/plasma.webp" alt="" loading="lazy"></a>
+    <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="" loading="lazy"></a>
+    <a href="examples/julia/"><img src="examples/thumbs/julia.webp" alt="" loading="lazy"></a>
+    <a href="examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" alt="" loading="lazy"></a>
+    <a href="examples/boids/"><img src="examples/thumbs/boids.webp" alt="" loading="lazy"></a>
+    <a href="examples/metaballs/"><img src="examples/thumbs/metaballs.webp" alt="" loading="lazy"></a>
+    <a href="examples/phyllotaxis/"><img src="examples/thumbs/phyllotaxis.webp" alt="" loading="lazy"></a>
+    <a href="examples/voronoi/"><img src="examples/thumbs/voronoi.webp" alt="" loading="lazy"></a>
+    <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="" loading="lazy"></a>
+    <a href="examples/chladni/"><img src="examples/thumbs/chladni.webp" alt="" loading="lazy"></a>
+    <a href="examples/times-table/"><img src="examples/thumbs/times-table.webp" alt="" loading="lazy"></a>
+    <a href="examples/attractors/"><img src="examples/thumbs/attractors.webp" alt="" loading="lazy"></a>
+    <a href="examples/lenia/"><img src="examples/thumbs/lenia.webp" alt="" loading="lazy"></a>
+    <a href="examples/diffusion/"><img src="examples/thumbs/diffusion.webp" alt="" loading="lazy"></a>
+    <a href="examples/slime/"><img src="examples/thumbs/slime.webp" alt="" loading="lazy"></a>
+    <a href="examples/dla/"><img src="examples/thumbs/dla.webp" alt="" loading="lazy"></a>
+    <a href="examples/waves/"><img src="examples/thumbs/waves.webp" alt="" loading="lazy"></a>
+    <a href="examples/schrodinger/"><img src="examples/thumbs/schrodinger.webp" alt="" loading="lazy"></a>
+    <a href="examples/newton/"><img src="examples/thumbs/newton.webp" alt="" loading="lazy"></a>
+    <a href="examples/buddhabrot/"><img src="examples/thumbs/buddhabrot.webp" alt="" loading="lazy"></a>
+    <a href="examples/penrose/"><img src="examples/thumbs/penrose.webp" alt="" loading="lazy"></a>
+    <a href="examples/harmonograph/"><img src="examples/thumbs/harmonograph.webp" alt="" loading="lazy"></a>
+    <a href="examples/lyapunov/"><img src="examples/thumbs/lyapunov.webp" alt="" loading="lazy"></a>
+  </div>
+</section>
+
+<section class="faq">
+  <div class="faq-wrap">
+    <h2>FAQ</h2>
+
+    <details open>
+      <summary>What is jz?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">jz (“javascript zero”) is a compiler that turns the numeric core of JavaScript — math, DSP, parsers, tight loops — into compact, GC-free WebAssembly, ahead of time. Nothing ships at runtime: the output is plain WASM you can run in any engine or standalone.</div>
+    </details>
+
+    <details>
+      <summary>Is it really just JavaScript?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Valid jz is valid JS — every jz program runs and tests in any JavaScript engine unchanged, then compiles to WASM. jz is a focused subset (“the good parts” for compute), not a new language or a TypeScript-like dialect. You don’t port your code into it; you write JavaScript and compile the hot parts.</div>
+    </details>
+
+    <details>
+      <summary>How is it different from AssemblyScript?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">AssemblyScript is a TypeScript-like dialect you rewrite your code into, with its own types and a managed-memory runtime. jz compiles the JavaScript you already write, ships no runtime or GC, and on our 16-kernel suite produces WASM that runs ~2.3× faster than AssemblyScript at roughly the same binary size.</div>
+    </details>
+
+    <details>
+      <summary>How fast is it, really?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">On a 16-kernel benchmark (Apple M4 Max), jz averages 2.4× faster than the same source in V8, and lands within ~6% of hand-written native C — native is the floor, not something we claim to beat. Auto-vectorized reductions go further: a dot-product peaks at 13.5× over V8. Every number is reproducible — <a href="bench/">run the bench yourself</a>.</div>
+    </details>
+
+    <details>
+      <summary>What is jz good for — and not?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Good for numeric and math compute, DSP/audio, parsing and transforms, and standalone WASM utilities. Not for UI/frontend, backends/APIs, or async- and I/O-heavy logic — keep regular JavaScript there. jz is a sharp tool for the compute core, not a whole-app framework.</div>
+    </details>
+
+    <details>
+      <summary>Does it use SIMD?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Yes. jz auto-vectorizes fixed-count loops and reductions to WASM <code>v128</code> — something a JIT won’t do from plain JS. Pass <code>noSimd</code> for engines without the SIMD proposal, or drop to explicit <code>f32x4</code>/<code>i32x4</code> intrinsics when you want full control.</div>
+    </details>
+
+    <details>
+      <summary>What JavaScript features are supported?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">The compute subset: numbers, typed arrays, arrow functions and closures, control flow, and math/bitwise ops. Broader JS (<code>var</code>/<code>function</code>/<code>class</code>/<code>==</code>) is lowered automatically; <code>strict</code> mode enforces the pure canonical subset. Async, the DOM, and dynamic <code>eval</code> are out of scope by design.</div>
+    </details>
+
+    <details>
+      <summary>How do I get started?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or paste a hot function into the <a href="repl/">REPL</a> to see the generated WAT and run it instantly — no install. jz is experimental and pre-1.0, so pin a version.</div>
+    </details>
+  </div>
+</section>
+
+<footer>
+  <div class="fwrap">
+    <div class="brand-col">
+      <a class="wordmark" href="./"><span class="mark">JZ</span><span class="sub">javascript zero</span></a>
+      <p>Minimal functional JS that compiles ahead-of-time to performant WASM. Experimental — pin a version.</p>
+      <button class="install" id="install2" title="click to copy"><span class="dollar">$</span><span>npm&nbsp;install&nbsp;jz</span><span class="ci">copy</span></button>
+    </div>
+    <div class="fcol">
+      <h4>Explore</h4>
+      <a href="repl/">repl</a>
+      <a href="examples/">examples</a>
+      <a href="bench/">bench</a>
+    </div>
+    <div class="fcol">
+      <h4>Project</h4>
+      <a href="https://github.com/dy/jz">github</a>
+      <a href="https://www.npmjs.com/package/jz">npm</a>
+      <a href="https://github.com/dy/jz/issues">issues</a>
+    </div>
+    <div class="legal">
+      <span>MIT · experimental (pre-1.0)</span>
+      <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a>
+    </div>
+  </div>
+</footer>
+
+<script type="module">
+// One screen: a live N-body sim runs full-bleed in an <iframe> (?embed strips its chrome and
+// posts {fps, ms} to us) behind the centred pitch. The foot carries the JS↔JZ switch — it
+// drives that same sim — and our FPS graph reporting it.
+const $ = id => document.getElementById(id)
+
+// npm-install copy button (footer)
+for (const id of ['install2']) {
+  const btn = $(id); if (!btn) continue
+  btn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText('npm install jz') } catch {}
+    const ci = btn.querySelector('.ci'); const was = ci.textContent
+    btn.classList.add('copied'); ci.textContent = 'copied'
+    setTimeout(() => { btn.classList.remove('copied'); ci.textContent = was }, 1400)
+  })
+}
+
+// the sim renders at --show-scale of native pixels then CSS-upscales (stays fast full-bleed).
+const stage = $('show-stage'), frame = $('show')
+const UP = Math.round(1 / (parseFloat(getComputedStyle(stage).getPropertyValue('--show-scale')) || 0.5))
+
+// ── FPS readout (footer, right): the embedded example posts {fps, ms}; we draw the graph and
+//    show both fps + ms inline (fps is vsync-pinned; ms/frame is where the engine gap shows). ──
+const fpsNum = $('fps-num'), msNum = $('ms-num'), fpsSpark = $('fps-spark')
+const fctx = fpsSpark.getContext('2d')
+let fpsHist = new Array(44).fill(0), fpsRef = 120, curFps = 0, curMs = 0, fpsW = 0, fpsH = 0
+const sizeFps = () => {
+  const r = fpsSpark.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1)
+  fpsW = Math.max(1, Math.round(r.width)); fpsH = Math.max(1, Math.round(r.height))
+  fpsSpark.width = fpsW * dpr; fpsSpark.height = fpsH * dpr; fctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+}
+const drawFps = () => {
+  if (!fpsW) sizeFps()
+  const n = fpsHist.length, xs = i => i / (n - 1) * fpsW, ys = v => fpsH - (v / 100) * (fpsH - 2) - 1
+  fctx.clearRect(0, 0, fpsW, fpsH)
+  // filled gradient under the line (the headroom area)
+  fctx.beginPath(); fctx.moveTo(0, fpsH)
+  for (let i = 0; i < n; i++) fctx.lineTo(xs(i), ys(fpsHist[i]))
+  fctx.lineTo(fpsW, fpsH); fctx.closePath()
+  const grad = fctx.createLinearGradient(0, 0, 0, fpsH)
+  grad.addColorStop(0, 'rgba(255,255,255,.4)'); grad.addColorStop(1, 'rgba(255,255,255,.03)')
+  fctx.fillStyle = grad; fctx.fill()
+  // the line on top
+  fctx.beginPath()
+  for (let i = 0; i < n; i++) { const x = xs(i), y = ys(fpsHist[i]); i ? fctx.lineTo(x, y) : fctx.moveTo(x, y) }
+  fctx.strokeStyle = 'rgba(255,255,255,.95)'; fctx.lineWidth = 1.5; fctx.lineJoin = 'round'; fctx.stroke()
+}
+const renderFps = () => {
+  fpsNum.textContent = curFps >= 1 ? Math.round(curFps) : '··'
+  msNum.textContent = curMs > 0 ? (curMs < 10 ? curMs.toFixed(2) : curMs.toFixed(1)) : '··'
+}
+const resetFps = () => { fpsHist = new Array(44).fill(0); fpsRef = 120; drawFps() }
+addEventListener('message', (e) => {
+  const d = e.data; if (!d || d.type !== 'jz:perf') return
+  curFps = d.fps; curMs = d.ms
+  if (curFps > fpsRef) fpsRef = curFps
+  fpsHist.push(Math.min(100, curFps / fpsRef * 100)); fpsHist.shift()
+  drawFps(); renderFps()
+})
+addEventListener('resize', () => { sizeFps(); drawFps() })
+sizeFps()
+
+// ── JS↔JZ engine switch — post the chosen engine to the embedded example ──
+const engineEl = $('engine')
+let engine = 'jz'
+const setEngineUI = (k) => {
+  engine = k
+  engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js')
+  engineEl.setAttribute('aria-checked', k === 'jz')
+}
+engineEl.onclick = () => {
+  setEngineUI(engine === 'jz' ? 'js' : 'jz')
+  try { frame.contentWindow.postMessage({ type: 'jz:engine', kind: engine }, '*') } catch {}
+  // keep the chart history — switching engines should visibly step the line, not wipe it
+}
+
+// boot — load the single N-body sim full-bleed behind the pitch (on the jz engine)
+const boot = () => { setEngineUI('jz'); resetFps(); frame.src = `examples/nbody/?embed=${UP}` }
+'requestIdleCallback' in window ? requestIdleCallback(boot, { timeout: 600 }) : setTimeout(boot, 200)
+</script>
+</body>
+</html>
