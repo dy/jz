@@ -20,8 +20,9 @@
 :root {
   --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --band: #0a0a0a;
+  --band: #000;          /* pure black chrome, site-wide */
   --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
+  color-scheme: dark;    /* native scrollbars + form controls render dark (matches the black UI; keeps code/wat bars identical) */
 }
 
 /* Futura (the brand face) for every title, site-wide. */

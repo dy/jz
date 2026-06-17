@@ -13,7 +13,7 @@
   --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a;
-  --band: #0a0a0a; --padx: 28px;
+  --band: #0a0a0a; --padx: 28px; --cw: 1000px;   /* shared content column width (hyperstudio-ish) */
 }
 html, body { height: 100%; overflow-x: clip; }
 body { background: #000; color: var(--ink); font-family: var(--font);
@@ -23,8 +23,8 @@ a { color: inherit; }
 
 /* ─────────────────────────── HERO — a single live N-body sim runs full-bleed behind
    a centred pitch; the engine switch + FPS at the foot drive & measure that very sim. ─────────────────────────── */
-.hero { position: relative; min-height: 100svh; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; }
+.hero { position: relative; min-height: max(600px, 80svh); display: flex; flex-direction: column;
+  align-items: center; background: #000; overflow: hidden; }   /* < full height so the REPL top peeks below */
 
 /* the demo runs as the background layer — white bodies on black, full strength, unfaded */
 .show-stage { position: absolute; inset: 0; z-index: 0; --show-scale: 0.5; background: #000; }
@@ -32,21 +32,11 @@ a { color: inherit; }
   width: calc(100% * var(--show-scale)); height: calc(100% * var(--show-scale));
   transform: scale(calc(1 / var(--show-scale))); transform-origin: 0 0; }
 
-/* hash-like blueprint rules framing the centred content (hyperstudio-style): two verticals
-   at the content-column edges, full height; faint horizontals crossing them */
-.gridlines { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
-.gridlines .col { position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
-  width: min(calc(100% - 2 * var(--padx)), 1140px);
-  border-left: 1px solid rgba(255,255,255,.07); border-right: 1px solid rgba(255,255,255,.07); }
-.gridlines::before, .gridlines::after { content: ''; position: absolute; left: 0; right: 0; height: 0;
-  border-top: 1px solid rgba(255,255,255,.07); }
-.gridlines::before { top: 86px; }
-.gridlines::after { bottom: 0; }
 
-/* top bar — nav flush to the start (left) of the shared content column */
+/* top bar — nav aligned to the right edge of the shared content column */
 .hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%;
-  max-width: calc(1140px + 2 * var(--padx)); margin: 0 auto;
-  display: flex; justify-content: flex-start; align-items: center; gap: 24px; padding: 20px var(--padx) 0; }
+  max-width: calc(var(--cw) + 2 * var(--padx)); margin: 0 auto;
+  display: flex; justify-content: flex-end; align-items: center; gap: 24px; padding: 20px var(--padx) 0; }
 .hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
@@ -56,27 +46,31 @@ a { color: inherit; }
    Logo above the title, then slogan, CTA, and honestly-banded metrics.
    Two metric bands, never mixed: "native" is the ceiling we trail; "vs JS" is the same source run faster. */
 .pitch { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; width: 100%;
-  max-width: calc(1140px + 2 * var(--padx));   /* inner content = 1140, the footer width → shared left edge */
-  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left;
-  padding: 16px var(--padx) 8px;
+  max-width: calc(var(--cw) + 2 * var(--padx));   /* shared content column */
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; text-align: left;
+  padding: clamp(56px,14vh,170px) var(--padx) clamp(36px,5vw,60px);   /* top pad lowers the logo toward centre */
   pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
 .pitch a, .pitch button { pointer-events: auto; }
-/* logo — a faint sharp border whose edge REFLECTS the live sim: a masked ring brightens the
-   n-body bodies showing through the band around the mark, so they glint the edge as they fly past
-   (no animation of its own — the motion is the sim's, never competing with it) */
+/* logo — a faint sharp border whose four edges REFLECT the live sim: JS samples the n-body bodies
+   in the band just outside each edge and lights that edge as they fly past (the per-edge --r* vars
+   are driven per frame). No animation of its own — the motion is the sim's, never competing. */
 .logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: clamp(22px,2.6vw,34px); }
 .logo img { display: block; width: clamp(78px,9vw,108px); height: auto; position: relative; z-index: 1; }
-/* the constant border — sharp corners, just-visible */
-.logo::before { content: ''; position: absolute; inset: -5px; z-index: 0; pointer-events: none;
-  border: 1px solid rgba(255,255,255,.18); }
-/* the reflective edge band — a ring that amplifies whatever the sim paints behind it */
-.logo::after { content: ''; position: absolute; inset: -5px; z-index: 0; pointer-events: none; padding: 5px;
+/* faint constant 1px border so the mark always has a thin outline */
+.logo::before { content: ''; position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
+  background: rgba(255,255,255,.14);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude; }
+/* reflection — a 1px ring whose conic-gradient is rebuilt each frame: each body adds a smooth bump on the
+   ring at its ball→centre angle, brightness ∝ closeness (inverse-square). JS sets .background. */
+.logo-refl { position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
           mask-composite: exclude;
-  -webkit-backdrop-filter: brightness(2.8) saturate(1.15);
-          backdrop-filter: brightness(2.8) saturate(1.15); }
+  mix-blend-mode: screen; filter: drop-shadow(0 0 7px rgba(150,185,255,.55)) drop-shadow(0 0 15px rgba(120,150,255,.3)); }   /* softer, blurrier glow */
 .pitch h1 { font-size: clamp(28px,4.6vw,54px); font-weight: 400; line-height: 1.03; letter-spacing: -.015em;
   overflow-wrap: break-word; text-shadow: 0 1px 12px rgba(0,0,0,.45); }   /* no max-width → the <br> is the only break: 2 lines */
 .pitch h1 b { font-weight: 700; }
@@ -95,14 +89,14 @@ a { color: inherit; }
 .install:hover .ci, .install.copied .ci { color: var(--ink); }
 
 /* stats — number over a small identifying label, in a flat row */
-.metrics { display: flex; align-items: flex-start; gap: clamp(20px,2.6vw,34px); margin-top: clamp(42px,5.4vw,68px); flex-wrap: wrap; }
+.metrics { display: flex; align-items: flex-start; gap: clamp(20px,2.6vw,34px); margin-top: clamp(40px,6vh,84px); flex-wrap: wrap; }   /* moderate gap from the switch — but still nearer the fps than the REPL */
 .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
 .stat b { font-size: clamp(26px,2.7vw,36px); font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 .stat:hover b { color: #fff; }
-.metrics .more { align-self: center; font-family: var(--font); font-size: 13.5px; letter-spacing: normal;
-  color: var(--mute); text-decoration: none; transition: color .16s; }
-.metrics .more:hover { color: var(--ink); }
+.metrics .more { align-self: center; font-family: var(--font); font-size: clamp(26px,2.8vw,36px); line-height: 1;
+  color: var(--ink); text-decoration: none; transition: opacity .16s, transform .18s; }
+.metrics .more:hover { opacity: .7; transform: translateX(4px); }
 
 .fps { flex: 0 0 auto; width: 222px; display: inline-flex; align-items: center; gap: 13px; color: var(--ink); font-family: var(--font); }
 .fps-spark { width: 76px; height: 34px; display: block; }
@@ -113,20 +107,21 @@ a { color: inherit; }
 .fps .unit { font-size: 12px; color: var(--dim); }
 
 /* JS↔JZ engine switch — the main CTA: big, skeuomorphic (deep-milled track, raised metal knob), barely rounded */
-.engine { position: relative; flex: 0 0 auto; width: 152px; height: 56px; border: 0; padding: 0; cursor: pointer;
-  border-radius: 6px; -webkit-appearance: none; appearance: none;
+.engine { position: relative; flex: 0 0 auto; width: 98px; height: 46px; border: 0; padding: 0; cursor: pointer;
+  border-radius: 999px; -webkit-appearance: none; appearance: none;
   background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
-  box-shadow: inset 0 3px 7px rgba(0,0,0,.9), inset 0 -2px 3px rgba(255,255,255,.05),
-    inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06), 0 6px 22px rgba(0,0,0,.5); }
-.engine .knob { position: absolute; top: 4px; left: 4px; width: 72px; height: 48px; border-radius: 4px; z-index: 1;
+  box-shadow: inset 0 3px 6px rgba(0,0,0,.9), inset 0 -2px 3px rgba(255,255,255,.05),
+    inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06), 0 5px 18px rgba(0,0,0,.5),
+    0 0 0 1px rgba(255,255,255,.16); }   /* light outline so the switch reads on black */
+.engine .knob { position: absolute; top: 4px; left: 4px; width: 44px; height: 38px; border-radius: 999px; z-index: 1;
   background: linear-gradient(180deg, #fff 0%, #ededed 45%, #c4c4c8 100%);
-  box-shadow: 0 4px 7px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5),
+  box-shadow: 0 3px 6px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5),
     inset 0 1px 1px rgba(255,255,255,.95), inset 0 -2px 2px rgba(0,0,0,.18);
   transition: transform .24s cubic-bezier(.34,.72,.28,1.3); }
-.engine.jz .knob { transform: translateX(72px); }
-.engine .lbl-js, .engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 76px; z-index: 2;
+.engine.jz .knob { transform: translateX(46px); }   /* travel = knob width + 2px → the two states sit side-by-side with a small gap (never overlap) */
+.engine .lbl-js, .engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 52px; z-index: 2;
   display: inline-flex; align-items: center; justify-content: center;
-  font: 700 19px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+  font: 700 14px/1 var(--font); letter-spacing: .02em;
   color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
 .engine .lbl-js { left: 0; }
 .engine .lbl-jz { right: 0; }
@@ -142,22 +137,30 @@ a { color: inherit; }
   .metrics { gap: 28px; }
 }
 
-/* ─────────────────────────── EXAMPLES — full-bleed strip of square previews, two rows, no gaps, no labels ─────────────────────────── */
-.examples { background: #000; }
-.exrow { display: grid; grid-auto-flow: column; grid-template-rows: auto auto; gap: 0;
-  overflow-x: auto; scrollbar-width: none; }
-.exrow::-webkit-scrollbar { display: none; }
-.exrow a { display: block; width: clamp(92px,11vw,150px); height: clamp(92px,11vw,150px); overflow: hidden; }
+/* ─────────────────────────── TRY — the REPL inline (paste JS → WAT → run), embedded on the content column ─────────────────────────── */
+.try { background: #000; padding: clamp(36px,5vw,60px) var(--padx); }   /* symmetric → equal gap above (from stats) and below (to FAQ) */
+.try-wrap { max-width: calc(var(--cw) + 56px); margin: 0 auto; }   /* a touch wider so the code lines up with the column past the REPL's own padding */
+.try-frame { width: 100%; height: clamp(440px, 62vh, 600px); border: 1px solid #1c1c25; border-radius: 8px; overflow: hidden; background: #000; }
+.try-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+/* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
+.examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
+.ex-wrap { max-width: var(--cw); margin: 0 auto; }
+.examples h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(18px,2.4vw,28px); }
+.exrow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
+.exrow a { display: block; aspect-ratio: 1; overflow: hidden; }
 .exrow img { width: 100%; height: 100%; object-fit: cover; display: block;
-  filter: grayscale(1) brightness(.72) contrast(1.05); transition: filter .35s, transform .5s cubic-bezier(.22,.6,.36,1); }
-.exrow a:hover img { filter: grayscale(0) brightness(1) contrast(1.04); transform: scale(1.06); }
+  filter: grayscale(1) brightness(.66) contrast(1.04); transition: filter .5s cubic-bezier(.22,.6,.36,1); }
+.exrow a:hover img { filter: grayscale(.35) brightness(1.05) contrast(1.03); }
+@media (max-width: 720px) { .exrow { grid-template-columns: repeat(4, 1fr); } }
 
 /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
-.faq { background: #000; padding: clamp(48px,7vw,96px) var(--padx); }
-.faq-wrap { max-width: 1140px; margin: 0 auto; }   /* shared column → same left edge as hero & cards */
-.faq h2, .faq details { max-width: 820px; }   /* narrow reading width, flush-left within */
+.faq { background: #000; padding: clamp(36px,5vw,60px) var(--padx) clamp(48px,7vw,96px); }   /* top = pitch bottom gap → stats↔REPL == REPL↔FAQ */
+.faq-wrap { max-width: var(--cw); margin: 0 auto; }   /* shared content column */
+.faq summary .fq, .faq .ans { max-width: 720px; }   /* rows + dividers span the full container; only the text is capped to a readable width */
 .faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
 .faq details { border-top: 1px solid #1c1c25; }
+.faq details:first-of-type { border-top: 0; }
 .faq details:last-of-type { border-bottom: 1px solid #1c1c25; }
 .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
   gap: 24px; padding: clamp(16px,1.8vw,22px) 0; font-size: clamp(15px,1.5vw,18px); font-weight: 600; color: var(--ink);
@@ -182,7 +185,7 @@ a { color: inherit; }
 
 /* ─────────────────────────── FOOTER ─────────────────────────── */
 footer { padding: clamp(48px, 7vw, 80px) var(--padx) 56px; background: #000; }
-.fwrap { max-width: 1140px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px 28px; }
+.fwrap { max-width: var(--cw); margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px 28px; }
 .wordmark { font-size: 22px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
 .wordmark .mark { font-weight: 700; }
 .wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
@@ -193,8 +196,8 @@ footer .fcol h4 { font-family: var(--mono); font-size: 11px; letter-spacing: .16
   color: var(--mute); margin-bottom: 14px; font-weight: 400; }
 footer .fcol a { display: block; text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 5px 0; transition: color .16s; }
 footer .fcol a:hover { color: #fff; }
-footer .legal { grid-column: 1 / -1; margin-top: 36px; padding-top: 22px; border-top: 1px solid #1c1c25;
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+footer .legal { grid-column: 1 / -1; margin-top: 28px;
+  display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 10px;
   font-size: 12.5px; color: var(--dim); }
 footer .legal a { color: var(--soft); text-decoration: none; }
 footer .legal a:hover { color: #fff; }
@@ -213,7 +216,6 @@ footer .legal .om { font-size: 15px; }
   <div class="show-stage" id="show-stage">
     <iframe id="show" title="live jz example — N-body gravity, compiled to WASM" loading="lazy"></iframe>
   </div>
-  <div class="gridlines" aria-hidden="true"><span class="col"></span></div>
 
   <nav class="hero-nav">
     <a href="repl/">repl</a>
@@ -225,11 +227,11 @@ footer .legal .om { font-size: 15px; }
   </nav>
 
   <section class="pitch">
-    <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="108" height="108" alt="jz"></a>
-    <h1>Computational <b>JavaScript</b>, <br class="hb">compiled to <b>WASM</b>.</h1>
+    <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="108" height="108" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
+    <h1>Computational <b>JavaScript</b>, <br class="hb">compiled <b>to WASM</b>.</h1>
     <p class="sub">Minimal, modern, distilled functional <b>plain JavaScript</b> — the Crockford “Good Parts”,
-      compiled ahead-of-time to WASM that runs the same source <b>faster</b>. No runtime, no GC,
-      no type annotations, unlocked SIMD.</p>
+      compiled ahead-of-time to WASM that runs the same source <b>2.4× faster</b> on average. No runtime,
+      no GC, no type annotations, unlocked SIMD.</p>
     <div class="cta-live">
       <div class="fps" aria-label="performance">
         <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
@@ -240,86 +242,86 @@ footer .legal .om { font-size: 15px; }
       <a class="stat" href="bench/"><b>2.4×</b><span>Node V8</span></a>
       <a class="stat" href="bench/"><b>2.3×</b><span>AssemblyScript</span></a>
       <a class="stat" href="bench/"><b>3.1×</b><span>Porffor</span></a>
-      <a class="stat" href="bench/"><b>0.94×</b><span>native C</span></a>
+      <a class="stat" href="bench/"><b>0.94×</b><span>native</span></a>
       <a class="stat" href="bench/"><b>13.5×</b><span>SIMD peak</span></a>
       <a class="stat" href="bench/"><b>1.1×</b><span>AS size</span></a>
-      <a class="more" href="bench/" title="Full benchmark — 16 kernels, Apple M4 Max, reproducible">bench →</a>
     </div>
   </section>
 </main>
 
-<section class="examples" aria-label="examples">
-  <div class="exrow">
-    <a href="examples/nbody/"><img src="examples/thumbs/nbody.webp" alt="" loading="lazy"></a>
-    <a href="examples/plasma/"><img src="examples/thumbs/plasma.webp" alt="" loading="lazy"></a>
-    <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="" loading="lazy"></a>
-    <a href="examples/julia/"><img src="examples/thumbs/julia.webp" alt="" loading="lazy"></a>
-    <a href="examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" alt="" loading="lazy"></a>
-    <a href="examples/boids/"><img src="examples/thumbs/boids.webp" alt="" loading="lazy"></a>
-    <a href="examples/metaballs/"><img src="examples/thumbs/metaballs.webp" alt="" loading="lazy"></a>
-    <a href="examples/phyllotaxis/"><img src="examples/thumbs/phyllotaxis.webp" alt="" loading="lazy"></a>
-    <a href="examples/voronoi/"><img src="examples/thumbs/voronoi.webp" alt="" loading="lazy"></a>
-    <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="" loading="lazy"></a>
-    <a href="examples/chladni/"><img src="examples/thumbs/chladni.webp" alt="" loading="lazy"></a>
-    <a href="examples/times-table/"><img src="examples/thumbs/times-table.webp" alt="" loading="lazy"></a>
-    <a href="examples/attractors/"><img src="examples/thumbs/attractors.webp" alt="" loading="lazy"></a>
-    <a href="examples/lenia/"><img src="examples/thumbs/lenia.webp" alt="" loading="lazy"></a>
-    <a href="examples/diffusion/"><img src="examples/thumbs/diffusion.webp" alt="" loading="lazy"></a>
-    <a href="examples/slime/"><img src="examples/thumbs/slime.webp" alt="" loading="lazy"></a>
-    <a href="examples/dla/"><img src="examples/thumbs/dla.webp" alt="" loading="lazy"></a>
-    <a href="examples/waves/"><img src="examples/thumbs/waves.webp" alt="" loading="lazy"></a>
-    <a href="examples/schrodinger/"><img src="examples/thumbs/schrodinger.webp" alt="" loading="lazy"></a>
-    <a href="examples/newton/"><img src="examples/thumbs/newton.webp" alt="" loading="lazy"></a>
-    <a href="examples/buddhabrot/"><img src="examples/thumbs/buddhabrot.webp" alt="" loading="lazy"></a>
-    <a href="examples/penrose/"><img src="examples/thumbs/penrose.webp" alt="" loading="lazy"></a>
-    <a href="examples/harmonograph/"><img src="examples/thumbs/harmonograph.webp" alt="" loading="lazy"></a>
-    <a href="examples/lyapunov/"><img src="examples/thumbs/lyapunov.webp" alt="" loading="lazy"></a>
+<section class="try">
+  <div class="try-wrap">
+    <div class="try-frame">
+      <iframe src="repl/?embed" title="jz REPL — paste JavaScript, compile to WASM, see the WAT, run it" loading="lazy"></iframe>
+    </div>
   </div>
 </section>
 
 <section class="faq">
   <div class="faq-wrap">
-    <h2>FAQ</h2>
 
     <details open>
-      <summary>What is jz?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">What is jz?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">jz (“javascript zero”) is a compiler that turns the numeric core of JavaScript — math, DSP, parsers, tight loops — into compact, GC-free WebAssembly, ahead of time. Nothing ships at runtime: the output is plain WASM you can run in any engine or standalone.</div>
     </details>
 
     <details>
-      <summary>Is it really just JavaScript?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">Is it really just JavaScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Valid jz is valid JS — every jz program runs and tests in any JavaScript engine unchanged, then compiles to WASM. jz is a focused subset (“the good parts” for compute), not a new language or a TypeScript-like dialect. You don’t port your code into it; you write JavaScript and compile the hot parts.</div>
     </details>
 
     <details>
-      <summary>How is it different from AssemblyScript?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">How is it different from AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">AssemblyScript is a TypeScript-like dialect you rewrite your code into, with its own types and a managed-memory runtime. jz compiles the JavaScript you already write, ships no runtime or GC, and on our 16-kernel suite produces WASM that runs ~2.3× faster than AssemblyScript at roughly the same binary size.</div>
     </details>
 
     <details>
-      <summary>How fast is it, really?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">How fast is it, really?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">On a 16-kernel benchmark (Apple M4 Max), jz averages 2.4× faster than the same source in V8, and lands within ~6% of hand-written native C — native is the floor, not something we claim to beat. Auto-vectorized reductions go further: a dot-product peaks at 13.5× over V8. Every number is reproducible — <a href="bench/">run the bench yourself</a>.</div>
     </details>
 
     <details>
-      <summary>What is jz good for — and not?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">What is jz good for — and not?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Good for numeric and math compute, DSP/audio, parsing and transforms, and standalone WASM utilities. Not for UI/frontend, backends/APIs, or async- and I/O-heavy logic — keep regular JavaScript there. jz is a sharp tool for the compute core, not a whole-app framework.</div>
     </details>
 
     <details>
-      <summary>Does it use SIMD?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">Does it use SIMD?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Yes. jz auto-vectorizes fixed-count loops and reductions to WASM <code>v128</code> — something a JIT won’t do from plain JS. Pass <code>noSimd</code> for engines without the SIMD proposal, or drop to explicit <code>f32x4</code>/<code>i32x4</code> intrinsics when you want full control.</div>
     </details>
 
     <details>
-      <summary>What JavaScript features are supported?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">What JavaScript features are supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">The compute subset: numbers, typed arrays, arrow functions and closures, control flow, and math/bitwise ops. Broader JS (<code>var</code>/<code>function</code>/<code>class</code>/<code>==</code>) is lowered automatically; <code>strict</code> mode enforces the pure canonical subset. Async, the DOM, and dynamic <code>eval</code> are out of scope by design.</div>
     </details>
 
     <details>
-      <summary>How do I get started?<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <summary><span class="fq">How do I get started?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or paste a hot function into the <a href="repl/">REPL</a> to see the generated WAT and run it instantly — no install. jz is experimental and pre-1.0, so pin a version.</div>
     </details>
+  </div>
+</section>
+
+<section class="examples">
+  <div class="ex-wrap">
+    <div class="exrow">
+      <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="Raymarcher" loading="lazy"></a>
+      <a href="examples/mandelbrot/"><img src="examples/thumbs/mandelbrot.webp" alt="Mandelbrot" loading="lazy"></a>
+      <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="Lorenz" loading="lazy"></a>
+      <a href="examples/boids/"><img src="examples/thumbs/boids.webp" alt="Boids" loading="lazy"></a>
+      <a href="examples/nbody/"><img src="examples/thumbs/nbody.webp" alt="N-body" loading="lazy"></a>
+      <a href="examples/metaballs/"><img src="examples/thumbs/metaballs.webp" alt="Metaballs" loading="lazy"></a>
+      <a href="examples/julia/"><img src="examples/thumbs/julia.webp" alt="Julia" loading="lazy"></a>
+      <a href="examples/buddhabrot/"><img src="examples/thumbs/buddhabrot.webp" alt="Buddhabrot" loading="lazy"></a>
+      <a href="examples/plasma/"><img src="examples/thumbs/plasma.webp" alt="Plasma" loading="lazy"></a>
+      <a href="examples/voronoi/"><img src="examples/thumbs/voronoi.webp" alt="Voronoi" loading="lazy"></a>
+      <a href="examples/chladni/"><img src="examples/thumbs/chladni.webp" alt="Chladni" loading="lazy"></a>
+      <a href="examples/phyllotaxis/"><img src="examples/thumbs/phyllotaxis.webp" alt="Phyllotaxis" loading="lazy"></a>
+      <a href="examples/attractors/"><img src="examples/thumbs/attractors.webp" alt="Attractors" loading="lazy"></a>
+      <a href="examples/newton/"><img src="examples/thumbs/newton.webp" alt="Newton" loading="lazy"></a>
+      <a href="examples/penrose/"><img src="examples/thumbs/penrose.webp" alt="Penrose" loading="lazy"></a>
+      <a href="examples/lenia/"><img src="examples/thumbs/lenia.webp" alt="Lenia" loading="lazy"></a>
+    </div>
   </div>
 </section>
 
@@ -428,6 +430,64 @@ engineEl.onclick = () => {
 // boot — load the single N-body sim full-bleed behind the pitch (on the jz engine)
 const boot = () => { setEngineUI('jz'); resetFps(); frame.src = `examples/nbody/?embed=${UP}` }
 'requestIdleCallback' in window ? requestIdleCallback(boot, { timeout: 600 }) : setTimeout(boot, 200)
+
+// ── Logo reflection ── the 1px ring reflects the moving bodies like light. Each frame: downscale
+//    the whole sim, and for every lit pixel add a smooth bump to the ring at the body→centre angle,
+//    weighted by CLOSENESS (inverse-square → nearer bodies are much brighter). N fine angular samples
+//    + temporal easing keep it smooth (no jitter); the conic-gradient is rebuilt and set per frame.
+const logoEl = document.querySelector('.logo')
+const reflEl = logoEl && logoEl.querySelector('.logo-refl')
+let simCv = null
+const off = document.createElement('canvas'); off.width = 120; off.height = 80
+const octx = off.getContext('2d', { willReadFrequently: true })
+const N = 72, STEP = 360 / N
+const bins = new Float32Array(N), smooth = new Float32Array(N)
+const grabSimCanvas = () => {
+  try {
+    const cs = [...(frame.contentDocument?.querySelectorAll('canvas') || [])].filter(c => c.width > 32)
+    return cs.sort((a, b) => b.width * b.height - a.width * a.height)[0] || null
+  } catch { return null }   // not ready / unreachable
+}
+const reflect = () => {
+  requestAnimationFrame(reflect)
+  if (!reflEl) return
+  const lr = logoEl.getBoundingClientRect()
+  if (lr.bottom < 0 || lr.top > innerHeight) return   // hero scrolled away — idle
+  if (!simCv || !simCv.width) simCv = grabSimCanvas()
+  if (!simCv) return
+  bins.fill(0)
+  try {
+    octx.drawImage(simCv, 0, 0, off.width, off.height)       // GPU downscale the whole sim
+    const d = octx.getImageData(0, 0, off.width, off.height).data
+    const fr = frame.getBoundingClientRect()
+    const lw = lr.width                                       // distances in LOGO-WIDTHS (aspect-correct, real screen space)
+    const lcxS = lr.left + lr.width / 2, lcyS = lr.top + lr.height / 2
+    const gx2sx = fr.width / off.width, gy2sy = fr.height / off.height
+    for (let y = 0; y < off.height; y++) for (let x = 0; x < off.width; x++) {
+      const i = (y * off.width + x) * 4
+      const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255
+      if (lum < 0.12) continue
+      const dxS = fr.left + x * gx2sx - lcxS, dyS = fr.top + y * gy2sy - lcyS
+      const ls = Math.hypot(dxS, dyS) / lw                    // distance in logo-widths
+      if (ls < 0.15) continue
+      const f = Math.max(0, 1 - ls / 6), w = lum * f * f      // squared, full falloff at ~6 logo-widths; bright up close, fading out with distance
+      const sp = ls < 0.6 ? 1 : ls < 1.4 ? 2 : 3              // very close → tight/sharp; farther → softer, wider
+      let a = Math.atan2(dxS, -dyS) * N / (2 * Math.PI)
+      a = (a % N + N) % N
+      const b0 = Math.round(a)
+      for (let k = -sp; k <= sp; k++) bins[(b0 + k + N) % N] += w * (1 - Math.abs(k) / (sp + 1))
+    }
+  } catch { simCv = null; return }   // canvas swapped out — re-grab next frame
+  const stops = []
+  for (let i = 0; i < N; i++) {
+    const target = Math.min(0.85, bins[i] * 0.85)
+    smooth[i] += (target - smooth[i]) * 0.045                // lower ease = more inertia: glides smoothly between body moves
+    stops.push(`rgba(216,230,255,${smooth[i].toFixed(3)}) ${(i * STEP).toFixed(1)}deg`)
+  }
+  stops.push(`rgba(216,230,255,${smooth[0].toFixed(3)}) 360deg`)
+  reflEl.style.background = `conic-gradient(${stops.join(',')})`
+}
+requestAnimationFrame(reflect)
 </script>
 </body>
 </html>
