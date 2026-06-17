@@ -2199,6 +2199,152 @@ function buildRampStore(storeOp, addr, vval, ctx) {
 
 // Vectorize the inner accumulation of an RGBA box-filter pixel loop. See the
 // matchChannelGroup header. Returns { wrapper, newLocalDecls } or null.
+// Multi-pixel SIMD lift of a clamp-free RGBA box-filter interior (produced by the
+// clamp-peel pass). Processes 4 output pixels per iteration: at tap k the 4 outputs
+// read 4 CONSECUTIVE source pixels — one 16-byte v128.load whose lanes map DIRECTLY
+// to the 4 accumulators (no shuffle). Sums (≤ win·255 < 2^16) accumulate in two
+// i16x8 vectors; the divide+store reuses the scalar store templates per pixel.
+// Validated bit-exact + 4.34× vs scalar. Bails (→ tryChannelReduce 1-pixel lift)
+// unless the body is exactly: clamp-free `xi=x+k; p=(row+xi)<<2; acc_c += u8[base+c]`
+// over a unit-stride x, then a 4-byte RGBA store `dst[ab1+c] = f(acc_c)`. r≥127 →
+// i16 overflow → bail. Leaves a scalar remainder loop for the ≤3 trailing pixels.
+function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  let blockLabel = null, loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  // exit guard: br_if $brk (i32.eqz (i32.lt_s x BOUND))
+  const exit = loopNode[2]
+  if (!(isArr(exit) && exit[0] === 'br_if' && isArr(exit[2]) && exit[2][0] === 'i32.eqz'
+    && isArr(exit[2][1]) && exit[2][1][0] === 'i32.lt_s' && isLocalGet(exit[2][1][1]))) return null
+  const pivot = exit[2][1][1][1]          // pixel IV $x
+  const bound = exit[2][1][2]              // interior bound (expr)
+  const bodyEnd = endIdx - 1
+  // increment must be `x = x + 1`
+  const inc = loopNode[bodyEnd]
+  if (!(isArr(inc) && inc[0] === 'local.set' && inc[1] === pivot && isArr(inc[2]) && inc[2][0] === 'i32.add'
+    && isLocalGet(inc[2][1], pivot) && isI32Const(inc[2][2]) && constNum(inc[2][2]) === 1)) return null
+
+  // four `acc_c = 0` inits
+  let initIdx = -1, accInits = null
+  for (let i = 3; i + 3 <= bodyEnd; i++) {
+    const z = []
+    for (let c = 0; c < 4; c++) { const s = loopNode[i + c]; if (isArr(s) && s[0] === 'local.set' && s.length === 3 && isI32Const(s[2]) && constNum(s[2]) === 0) z.push(s[1]); else break }
+    if (z.length === 4 && new Set(z).size === 4) { initIdx = i; accInits = z; break }
+  }
+  if (initIdx < 0) return null
+  // the tap accumulation loop
+  let innerIdx = -1, innerBlock = null
+  for (let i = initIdx + 4; i <= bodyEnd; i++) {
+    const s = loopNode[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) { innerIdx = i; innerBlock = s; break }
+    if (isArr(s) && s[0] === 'loop') { innerIdx = i; innerBlock = ['block', s]; break }
+  }
+  if (!innerBlock) return null
+  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
+  if (!innerLoop) return null
+  const ilEnd = innerLoop.length - 1
+  if (!(isArr(innerLoop[ilEnd]) && innerLoop[ilEnd][0] === 'br')) return null
+  const innerBody = innerLoop.slice(3, ilEnd - 1)
+  const grp = matchChannelGroup(innerBody)
+  if (!grp) return null
+  if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+  // CLAMP-FREE: nothing before the channel group may be an `if` (the edge clamp).
+  for (let i = 0; i < grp.idx; i++) if (isArr(innerBody[i]) && innerBody[i][0] === 'if') return null
+  // The tap loop must be the i32 form `k <= r`; extract the radius r (reused in the
+  // runtime overflow guard below). f64-typed tap loops (f64 dims) bail to scalar.
+  const ic = innerLoop[2]
+  if (!(isArr(ic) && ic[0] === 'br_if' && isArr(ic[2]) && ic[2][0] === 'i32.eqz'
+    && isArr(ic[2][1]) && ic[2][1][0] === 'i32.le_s' && isLocalGet(ic[2][1][1]))) return null
+  const rBound = ic[2][1][2]
+  if (!(isLocalGet(rBound) || isI32Const(rBound))) return null
+
+  // the RGBA store: 4 consecutive i32.store8 at `ab1 + c`, ab1 tee'd in the first.
+  let storeIdx = -1
+  for (let i = innerIdx + 1; i + 3 <= bodyEnd; i++) {
+    const s0 = loopNode[i]
+    if (isArr(s0) && s0[0] === 'i32.store8' && s0.length === 3 && isArr(s0[1]) && s0[1][0] === 'local.tee') { storeIdx = i; break }
+  }
+  if (storeIdx < 0) return null
+  const s0 = loopNode[storeIdx]
+  const ab1 = s0[1][1], dstExpr = s0[1][2]      // ab1 local, its address expr
+  const storeVals = [s0[2]]
+  for (let c = 1; c < 4; c++) {
+    const s = loopNode[storeIdx + c]
+    if (!(isArr(s) && s[0] === 'i32.store8' && s[1] === `offset=${c}` && isLocalGet(s[2], ab1))) return null
+    storeVals.push(s[3])
+  }
+  // each store value must read its accumulator (the divided sum)
+  for (let c = 0; c < 4; c++) if (!readsVar(storeVals[c], accInits[c])) return null
+
+  // ── Lift ───────────────────────────────────────────────────────────────────
+  const id = freshIdRef.next++
+  const accLo = `$__bmplo${id}`, accHi = `$__bmphi${id}`, b4 = `$__bmpb${id}`
+  const newLocalDecls = [['local', accLo, 'v128'], ['local', accHi, 'v128'], ['local', b4, 'i32']]
+  const Z = ['v128.const', 'i64x2', '0', '0']
+  // inner body: 4 channel adds → 2 i16 widening adds off the same tee'd base.
+  const newInner = []
+  for (let i = 0; i < innerBody.length; i++) {
+    if (i === grp.idx) {
+      newInner.push(['local.set', accLo, ['i16x8.add', ['local.get', accLo], ['i16x8.extend_low_i8x16_u', ['v128.load', ['local.tee', grp.baseLocal, grp.teeExpr]]]]])
+      newInner.push(['local.set', accHi, ['i16x8.add', ['local.get', accHi], ['i16x8.extend_high_i8x16_u', ['v128.load', ['local.get', grp.baseLocal]]]]])
+    } else if (i > grp.idx && i <= grp.idx + 3) continue
+    else newInner.push(innerBody[i])
+  }
+  const newInnerLoop = [...innerLoop.slice(0, 3), ...newInner, ...innerLoop.slice(ilEnd - 1)]
+  const newInnerBlock = innerBlock.map(c => c === innerLoop ? newInnerLoop : c)
+  // store epilogue: the o=(row+x)<<2 setup, then ab1, then per pixel j set acc_c to
+  // its lane and reuse the scalar store template at byte offset j*4+c.
+  const preStore = loopNode.slice(innerIdx + 1, storeIdx)   // `o = (row+x)<<2` etc.
+  const epilogue = [...preStore, ['local.set', ab1, dstExpr]]
+  for (let j = 0; j < 4; j++) {
+    const vec = j < 2 ? accLo : accHi, base = (j % 2) * 4
+    for (let c = 0; c < 4; c++) epilogue.push(['local.set', accInits[c], ['i16x8.extract_lane_u', String(base + c), ['local.get', vec]]])
+    for (let c = 0; c < 4; c++) epilogue.push(['i32.store8', `offset=${j * 4 + c}`, ['local.get', ab1], storeVals[c]])
+  }
+  // 4-pixel loop body: splat inits, the tap-IV init, the lifted inner loop, the
+  // lifted store, x += 4.
+  const v4label = `$__bmpx${id}`, v4brk = `$__bmpe${id}`
+  const fourBody = [
+    ['br_if', v4brk, ['i32.eqz', ['i32.lt_s', ['local.get', pivot], ['local.get', b4]]]],
+    ['local.set', accLo, Z], ['local.set', accHi, Z],
+    ...loopNode.slice(initIdx + 4, innerIdx),
+    newInnerBlock,
+    ...epilogue,
+    ['local.set', pivot, ['i32.add', ['local.get', pivot], ['i32.const', 4]]],
+    ['br', v4label],
+  ]
+  // Deep-clone the 4-pixel loop: it reuses sub-trees (inner body, store templates,
+  // dst expr) that also live in the scalar remainder below — sharing would let a
+  // later pass mutating one corrupt the other.
+  const dc = (n) => isArr(n) ? n.map(dc) : n
+  const fourLoop = dc(['block', v4brk, ['loop', v4label, ...fourBody]])
+  // b4 = x + (r<128 ? ((bound-x) & ~3) : 0): the 4-aligned end of the interior from
+  // the entry x. The r<128 guard is the i16-overflow check (win·255 < 2^16 ⇔ r<128);
+  // when r≥128 the 4-pixel loop runs zero iterations and the scalar remainder covers
+  // the whole interior — sound for any runtime r, no duplicated loop body.
+  const b4set = ['local.set', b4, ['i32.add', ['local.get', pivot],
+    ['select', ['i32.and', ['i32.sub', dc(bound), ['local.get', pivot]], ['i32.const', -4]], ['i32.const', 0],
+      ['i32.lt_s', dc(rBound), ['i32.const', 128]]]]]
+  // The interior block may carry a LICM-hoisted invariant preamble (e.g. `k=-r`'s
+  // value) that the lifted body reads but which the original sets only on block
+  // entry — run a clone of it first so the 4-pixel loop sees it. Then b4 setup, the
+  // 4-pixel loop, then the ORIGINAL block unchanged (the ≤3-pixel scalar remainder;
+  // x continues from b4).
+  const loopPos = blockNode.indexOf(loopNode)
+  const preamble = blockNode.slice(2, loopPos).map(dc)
+  const wrapper = ['block', ...preamble, b4set, fourLoop, blockNode]
+  return { wrapper, newLocalDecls }
+}
+
 function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
   // Outer pixel loop: (block $brk [invariant preamble…] (loop $L …)). When the
@@ -2676,7 +2822,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -2711,6 +2857,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false) {
         ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
         ?? tryRampMap(node, fnLocals, freshIdRef)
+        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
         ?? tryByteScan(node, fnLocals, freshIdRef)
         ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)

@@ -1785,3 +1785,29 @@ test('escape-time f64x2 - per-pixel threshold derived from a c-var', () => {
     ok(/v128\.bitselect/.test(wat(src, ESC_VEC)), `bail=${bail} vectorized`)
   }
 })
+
+test('SIMD multi-pixel - 4-pixel RGBA box blur (the Zig-matcher)', () => {
+  // tryBlurMultiPixel: 4 output pixels per iteration, 16-byte v128.load → two i16x8
+  // accumulators (AoS aligns, no shuffle), divide+store per pixel, scalar ≤3 remainder.
+  // Fires only on the clamp-free interior the peel produced; must be bit-exact vs the
+  // 1-pixel channel-reduce fallback across dims, radii, odd widths, and the remainder seam.
+  const blur = (w, h, r) => `export let main = () => {
+    const src = new Uint8Array(${w * h * 4}), dst = new Uint8Array(${w * h * 4})
+    let s = 0x1234abcd|0
+    for (let i = 0; i < ${w * h * 4}; i++) { s ^= s<<13; s ^= s>>>17; s ^= s<<5; src[i] = (s>>>0)&255 }
+    const ww = ${w}|0, hh = ${h}|0, rr = ${r}|0, win = 2*rr+1
+    for (let y = 0; y < hh; y++) { const row = y*ww
+      for (let x = 0; x < ww; x++) {
+        let sr=0,sg=0,sb=0,sa=0
+        for (let k=-rr; k<=rr; k++) { let xi=x+k; if(xi<0)xi=0; else if(xi>=ww)xi=ww-1; const p=(row+xi)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }
+        const o=(row+x)<<2; dst[o]=(sr/win)|0; dst[o+1]=(sg/win)|0; dst[o+2]=(sb/win)|0; dst[o+3]=(sa/win)|0
+      } }
+    let acc = 0; for (let i = 0; i < ${w * h * 4}; i++) acc = (acc + dst[i])|0
+    return acc
+  }`
+  const ON = { optimize: 'speed' }, OFF = { optimize: { level: 'speed', blurMultiPixel: false } }
+  for (const [w, h, r] of [[64, 8, 4], [63, 5, 4], [17, 3, 2], [15, 4, 1], [14, 4, 2], [8, 8, 3], [7, 7, 2], [6, 3, 1], [5, 5, 1], [4, 4, 0], [3, 3, 1], [9, 9, 3]])
+    is(runVec(blur(w, h, r), ON).main(), runVec(blur(w, h, r), OFF).main(), `blur ${w}x${h} r=${r}`)
+  ok(/i16x8\.extend_high/.test(wat(blur(64, 8, 4), ON)), '4-pixel SIMD must fire')
+  ok(!/i16x8\.extend_high/.test(wat(blur(64, 8, 4), OFF)), 'disabled by blurMultiPixel:false')
+})
