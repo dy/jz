@@ -150,7 +150,10 @@ function tryPeel(stmt) {
     iv = cond[1]; bound = cond[2]
     if (!stepIsPosInc(step, iv)) return null
   } else return null
-  if (!isVar(bound) || !Array.isArray(body) || body[0] !== ';') return null
+  if (!isVar(bound) || !Array.isArray(body)) return null
+  // A loop whose body is a single statement (e.g. an outer row loop wrapping one
+  // inner loop — the vertical blur pass) isn't a `;` sequence; normalize it.
+  if (body[0] !== ';') body = [';', body]
 
   const clamp = findClamp(body)
   if (!clamp || clamp.bound !== bound) return null   // clamp bound must be this loop's bound

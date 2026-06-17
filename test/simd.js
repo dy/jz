@@ -1811,3 +1811,27 @@ test('SIMD multi-pixel - 4-pixel RGBA box blur (the Zig-matcher)', () => {
   ok(/i16x8\.extend_high/.test(wat(blur(64, 8, 4), ON)), '4-pixel SIMD must fire')
   ok(!/i16x8\.extend_high/.test(wat(blur(64, 8, 4), OFF)), 'disabled by blurMultiPixel:false')
 })
+
+test('SIMD multi-pixel - vertical box blur (outer-loop peel + 4-pixel SIMD)', () => {
+  // The vertical pass taps the OUTER y-loop (yi=y+k, index (yi*w+x)<<2). clamp-peel
+  // must peel that outer loop (its body is a single inner loop, not a `;` sequence),
+  // after which the 4-pixel SIMD fires on the inner x-loop. Bit-exact vs the fallback.
+  const vblur = (w, h, r) => `export let main = () => {
+    const src = new Uint8Array(${w * h * 4}), dst = new Uint8Array(${w * h * 4})
+    let s = 0x1234abcd|0
+    for (let i = 0; i < ${w * h * 4}; i++) { s ^= s<<13; s ^= s>>>17; s ^= s<<5; src[i] = (s>>>0)&255 }
+    const ww = ${w}|0, hh = ${h}|0, rr = ${r}|0, win = 2*rr+1
+    for (let y = 0; y < hh; y++)
+      for (let x = 0; x < ww; x++) {
+        let sr=0,sg=0,sb=0,sa=0
+        for (let k=-rr; k<=rr; k++) { let yi=y+k; if(yi<0)yi=0; else if(yi>=hh)yi=hh-1; const p=(yi*ww+x)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }
+        const o=(y*ww+x)<<2; dst[o]=(sr/win)|0; dst[o+1]=(sg/win)|0; dst[o+2]=(sb/win)|0; dst[o+3]=(sa/win)|0
+      }
+    let acc = 0; for (let i = 0; i < ${w * h * 4}; i++) acc = (acc + dst[i])|0
+    return acc
+  }`
+  const ON = { optimize: 'speed' }, OFF = { optimize: { level: 'speed', blurMultiPixel: false } }
+  for (const [w, h, r] of [[64, 8, 4], [63, 7, 3], [17, 9, 2], [15, 5, 1], [8, 8, 3], [7, 7, 2], [5, 5, 1], [9, 9, 4], [4, 4, 1]])
+    is(runVec(vblur(w, h, r), ON).main(), runVec(vblur(w, h, r), OFF).main(), `vblur ${w}x${h} r=${r}`)
+  ok(/i16x8\.extend_high/.test(wat(vblur(64, 8, 4), ON)), '4-pixel SIMD must fire on the vertical pass')
+})
