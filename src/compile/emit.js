@@ -754,6 +754,40 @@ export function toBool(node) {
   return toBoolFromEmitted(emit(node))
 }
 
+// `(a / b) | 0` (the JS integer-division idiom) → i32.div_s. jz otherwise lowers `/`
+// to f64.div + ToInt32, paying two i32→f64 converts and the trunc; i32.div_s is
+// direct and lets the wasm backend magic-multiply a constant divisor. Bit-exact for
+// all i32 a,b: |a|<2³³≪2⁵³ so the f64 quotient never rounds across the truncation
+// boundary — EXCEPT b=0 (`(a/0)|0` is ToInt32(±Inf)=0, but i32.div_s traps) and
+// INT_MIN/-1 (ToInt32 wraps to INT_MIN, i32.div_s traps); both guarded. A constant
+// divisor folds the guards away. `exprType==='i32'` excludes unsigned operands
+// (those return 'f64'), where div_s would misread the sign. Returns IR or null.
+const INT_MIN_I32 = -2147483648
+function tryIntDivTrunc(aNode, bNode) {
+  const o = ctx.transform.optimize
+  if (!o || o.intDivLower === false) return null
+  const L = ctx.func.locals
+  if (exprType(aNode, L) !== 'i32' || exprType(bNode, L) !== 'i32') return null
+  const dv = intLiteralValue(bNode)
+  if (dv != null) {                         // constant divisor — no runtime guard
+    const va = asI32(emit(aNode))
+    if (dv === 0) return typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', 0]], 'i32')
+    if (dv === -1) return typed(['i32.sub', ['i32.const', 0], va], 'i32')  // -a, wraps at INT_MIN
+    return typed(['i32.div_s', va, ['i32.const', dv | 0]], 'i32')
+  }
+  // Runtime divisor needs a,b repeated across the guard; only intercept when both are
+  // simple re-emittable operands (var / literal) so re-emit is pure and side-effect-free.
+  const simple = (n) => typeof n === 'string' || intLiteralValue(n) != null
+  if (!simple(aNode) || !simple(bNode)) return null
+  const A = () => asI32(emit(aNode)), B = () => asI32(emit(bNode))
+  return typed(['if', ['result', 'i32'], ['i32.eqz', B()],
+    ['then', ['i32.const', 0]],
+    ['else', ['if', ['result', 'i32'],
+      ['i32.and', ['i32.eq', A(), ['i32.const', INT_MIN_I32]], ['i32.eq', B(), ['i32.const', -1]]],
+      ['then', A()],
+      ['else', ['i32.div_s', A(), B()]]]]], 'i32')
+}
+
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
  *  i32 offset), else falls back to numeric WASM type coercion. */
 function coerceArg(ir, param) {
@@ -2986,6 +3020,10 @@ export const emitter = {
   ].map(([op, fn]) => [op, (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64([`i64.${fn}`, asI64(emit(a)), asI64(emit(b))])
+    if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s
+      const divN = intLiteralValue(b) === 0 ? a : intLiteralValue(a) === 0 ? b : null
+      if (Array.isArray(divN) && divN[0] === '/') { const r = tryIntDivTrunc(divN[1], divN[2]); if (r) return r }
+    }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {
       const la = litVal(va), lb = litVal(vb)

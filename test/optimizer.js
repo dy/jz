@@ -2096,3 +2096,22 @@ test('loop-SR: workflow-found — negative IV start / negative non-multiple star
     `export let f=(w,h)=>{ let n=w*h,i=0,a=0; let mutW=null; mutW=()=>{w=w-1}; while(i<n){ let x=i%w; a=(a*31+x)|0; mutW(); i++ } return a|0 }`,
   ]) for (const w of [2, 3, 5, 7, 16, 0, -2, -3]) for (const h of [1, 3, 8]) is(lsrOn(src)(w, h), lsrOff(src)(w, h), `w=${w} h=${h}`)
 })
+
+test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / INT_MIN÷-1', () => {
+  // The JS integer-division idiom. Lowering to i32.div_s avoids the f64 round-trip;
+  // sound for all i32 a,b (the f64 quotient never rounds across the trunc boundary)
+  // except b=0 (→0, div_s traps) and INT_MIN/-1 (→INT_MIN wrap, div_s traps) — guarded.
+  const constSrc = `export let f = (x0) => { let x = x0|0; return (x/9)|0 }`
+  const runSrc = `export let f = (x0, v0) => { let x = x0|0, v = v0|0; return (x/v)|0 }`
+  ok(/i32\.div_s/.test(jz.compile(constSrc, { wat: true, optimize: 'speed' })), 'constant divisor → i32.div_s')
+  ok(/i32\.div_s/.test(jz.compile(runSrc, { wat: true, optimize: 'speed' })), 'runtime divisor → guarded i32.div_s')
+  ok(!/i32\.div_s/.test(jz.compile(runSrc, { wat: true, optimize: { level: 'speed', intDivLower: false } })), 'off when disabled')
+  // f64 dividend must NOT lower (could be fractional) — stays f64.div
+  ok(!/i32\.div_s/.test(jz.compile(`export let f = (x) => (x/9)|0`, { wat: true, optimize: 'speed' })), 'f64 operand not lowered')
+
+  const { f } = run(runSrc, { optimize: 'speed' })
+  const IM = -2147483648, IX = 2147483647
+  for (const x of [0, 1, -1, 2, -2, 9, 256, IM, IX, -7, 12345, -99999])
+    for (const v of [0, 1, -1, 2, -2, 9, 256, IM, IX, -7])
+      is(f(x, v), (x / v) | 0, `(${x}/${v})|0`)
+})
