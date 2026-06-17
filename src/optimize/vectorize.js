@@ -2197,6 +2197,61 @@ function buildRampStore(storeOp, addr, vval, ctx) {
   return ['block', ['local.set', tmp, vval], ['i32.store', addr, ['i32x4.extract_lane', 0, packed]]]
 }
 
+// Pivot-stride analysis for the multi-pixel lift. The lift reads 16 source bytes
+// (4 RGBA pixels) with ONE v128.load at the address for output pixel `pivot`, so the
+// 4 outputs are correct ONLY if consecutive output pixels read consecutive source
+// pixels — the load address must advance by EXACTLY 4 bytes per pivot step. Build, in
+// program order, each local's value-delta per unit-pivot increment (`pivot` → 1, every
+// other local → its assigned expr's delta, unknown/outer locals → 0 = pivot-invariant).
+// `delta(e)` returns that constant byte-delta, or null when the dependence is non-
+// constant (e.g. x*k) or uses an op we don't model — both of which must bail.
+// Index arithmetic is often f64-lowered (JS number `*`): `(yi*ww + x)` becomes
+// `(f64(yi)*ww + f64(x)) |0` = trunc_sat with a NaN-guard `select`. We model those
+// passthrough/arith ops too, so a runtime-dimension vblur (x carried through f64)
+// analyses the same as a literal-dimension one (x in plain i32). The select is the
+// `|0` coercion (value branch when the index is finite — always so for an integer
+// array index); we take the value branch's delta. Multiplies need a compile-time
+// constant factor on the pivot-bearing side (else the stride isn't constant).
+function buildPivotCoeff(loopNode, pivot) {
+  const coeff = new Map([[pivot, 1]])
+  const cval = (n) => isI32Const(n) ? constNum(n) : (isArr(n) && n[0] === 'f64.const' && n[1] != null ? Number(n[1]) : null)
+  const delta = (e) => {
+    if (isI32Const(e)) return 0
+    if (isLocalGet(e)) return coeff.has(e[1]) ? coeff.get(e[1]) : 0
+    if (!isArr(e)) return null
+    const [op, a, b] = e
+    switch (op) {
+      case 'i32.add': case 'f64.add': { const x = delta(a), y = delta(b); return x == null || y == null ? null : x + y }
+      case 'i32.sub': case 'f64.sub': { const x = delta(a), y = delta(b); return x == null || y == null ? null : x - y }
+      case 'i32.shl': { const c = cval(b), x = delta(a); return c == null || x == null ? null : x << c }
+      case 'i32.mul': case 'f64.mul': {
+        const ca = cval(a), cb = cval(b), x = delta(a), y = delta(b)
+        if (x == null || y == null) return null
+        if (ca != null) return ca * y          // const × expr
+        if (cb != null) return cb * x          // expr × const
+        return x === 0 && y === 0 ? 0 : null    // var × var: pivot-dependent ⇒ non-constant
+      }
+      // value-preserving conversions: passthrough. `local.tee $v EXPR` yields EXPR.
+      case 'f64.convert_i32_s': case 'f64.convert_i32_u': case 'i64.trunc_sat_f64_s':
+      case 'i64.trunc_sat_f64_u': case 'i32.wrap_i64': case 'i64.extend_i32_s':
+        return delta(a)
+      case 'local.tee': return delta(b)
+      // the `(expr)|0` NaN/Inf-guard `select(value, 0, finite?)`: take the value branch
+      // (the index is a finite integer in any real blur). Only when the else-branch is
+      // the const-0 guard — a general ternary index whose arms differ in stride bails.
+      case 'select': return isI32Const(e[2]) && constNum(e[2]) === 0 ? delta(a) : null
+      default: return null                     // any other op (and/or/div/…) ⇒ unanalyzable
+    }
+  }
+  const visit = (n) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { coeff.set(n[1], delta(n[2])); visit(n[2]); return }
+    n.forEach(visit)
+  }
+  visit(loopNode)
+  return delta
+}
+
 // Vectorize the inner accumulation of an RGBA box-filter pixel loop. See the
 // matchChannelGroup header. Returns { wrapper, newLocalDecls } or null.
 // Multi-pixel SIMD lift of a clamp-free RGBA box-filter interior (produced by the
@@ -2284,6 +2339,38 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   }
   // each store value must read its accumulator (the divided sum)
   for (let c = 0; c < 4; c++) if (!readsVar(storeVals[c], accInits[c])) return null
+
+  // ── Soundness guards for the 4-pixels-per-load lift ──────────────────────────
+  // Scope the stride analysis to THIS pixel loop. A peeled interior is one segment ⇒
+  // one inner tap loop, so there is no sibling same-named-`p` ambiguity, and the scope
+  // still captures the LICM preamble where the x-dependent index term is hoisted out of
+  // the tap loop (e.g. `__li = f64(x)` — x is invariant w.r.t. the tap IV k).
+  const pivotDelta = buildPivotCoeff(loopNode, pivot)
+  // (a) Source unit-stride: the v128.load address (array base + byte index) must
+  // advance by exactly 4 bytes (one RGBA pixel) per output-pixel step, else the
+  // 16-byte load spans the wrong source pixels. Bails on strided indices
+  // ((xi*2+row)<<2) and non-constant ones ((yi*W + x + k*x)<<2 → x*(1+k)).
+  if (pivotDelta(grp.teeExpr) !== 4) return null
+  // (b) No dropped pivot-dependent setup: statements before the inits (loopNode[3..
+  // initIdx)) are NOT carried into the 4-pixel loop, so a per-pixel value computed
+  // there (e.g. `x2 = x*2`) would go stale. Bail if any such statement is pivot-
+  // dependent. (Statements between the inits and the inner loop ARE carried.)
+  for (let i = 3; i < initIdx; i++) {
+    let bad = false
+    const chk = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && pivotDelta(n[2]) !== 0) bad = true; n.forEach(chk) }
+    chk(loopNode[i])
+    if (bad) return null
+  }
+  // (c) Store values must read only the accumulators (set per-pixel by the epilogue)
+  // and pivot-invariants — never a per-pixel local like the pivot itself, since the
+  // store template is reused verbatim for all 4 pixels (`dst[o]=(sr+x)&255` would use
+  // the group-base x for pixels 1-3).
+  const perPixel = new Set()
+  const collectSet = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') perPixel.add(n[1]); n.forEach(collectSet) }
+  collectSet(loopNode)
+  for (const a of grp.accs) perPixel.delete(a)   // accumulators are repopulated per pixel
+  const readsPerPixel = (n) => isArr(n) ? ((n[0] === 'local.get' && perPixel.has(n[1])) || n.some(readsPerPixel)) : false
+  for (let c = 0; c < 4; c++) if (readsPerPixel(storeVals[c])) return null
 
   // ── Lift ───────────────────────────────────────────────────────────────────
   const id = freshIdRef.next++

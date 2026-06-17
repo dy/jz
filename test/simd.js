@@ -1873,3 +1873,41 @@ test('SIMD channel order - permuted RGBA channels stay positionally correct', ()
   // a non-identity read perm with the channel-reduce path (narrow width → no 4-pixel lift)
   is(runVec(blur(6, 1, [3, 0, 2, 1], id), ON).main(), runVec(blur(6, 1, [3, 0, 2, 1], id), NO).main(), 'chan-reduce permuted')
 })
+
+test('SIMD multi-pixel - soundness guards bail on non-canonical blurs', () => {
+  // The 4-pixel lift reads 16 source bytes (4 pixels) with ONE v128.load and reuses the
+  // scalar store template per pixel. That is sound ONLY when (a) consecutive output
+  // pixels read CONSECUTIVE source pixels — the source address advances exactly 4 bytes
+  // per pivot step — and (b) the store value does not depend on the pivot. These shapes
+  // violate one or the other; B must bail (→ 1-pixel chan-reduce) and stay bit-exact.
+  // Position-sensitive rolling hash so any lane mis-map shows. Oracle = no-SIMD compile.
+  const ON = { optimize: 'speed' }, NO = { optimize: { vectorizeLaneLocal: false } }
+  const wrap = (w, body) => `export let main = () => {
+    const W=${w}|0, H=8|0, R=4|0, N=W*H*4, src=new Uint8Array(N*4), dst=new Uint8Array(N)
+    let s = 0x1234abcd|0
+    for (let i=0;i<N*4;i++){ s^=s<<13; s^=s>>>17; s^=s<<5; src[i]=(s>>>0)&255 }
+    const win=2*R+1
+    for (let y=0;y<H;y++){ const row=y*W
+      for (let x=0;x<W;x++){ let sr=0,sg=0,sb=0,sa=0
+        ${body}
+        const o=(row+x)<<2; dst[o]=(sr/win)|0; dst[o+1]=(sg/win)|0; dst[o+2]=(sb/win)|0; dst[o+3]=(sa/win)|0 } }
+    let h=0; for (let i=0;i<N;i++) h=(h*31+dst[i])|0; return h
+  }`
+  // (a) stride-2 source: 4 outputs read source columns x*2 — not consecutive.
+  const stride2 = wrap(64, `for (let k=-R;k<=R;k++){ const xi=x+k, p=(xi*2+row)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }`)
+  // (a) non-constant stride: column x*(1+k) varies per tap.
+  const varstride = wrap(64, `for (let k=-R;k<=R;k++){ const p=(row + x + k*x)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }`)
+  // (b) pivot in the store value: (sr+x) reused for all 4 pixels would use the wrong x.
+  const pivotStore = `export let main = () => {
+    const W=64|0,H=8|0,R=4|0,N=W*H*4,src=new Uint8Array(N),dst=new Uint8Array(N)
+    let s=0x1234abcd|0; for (let i=0;i<N;i++){ s^=s<<13; s^=s>>>17; s^=s<<5; src[i]=(s>>>0)&255 }
+    for (let y=0;y<H;y++){ const row=y*W
+      for (let x=0;x<W;x++){ let sr=0,sg=0,sb=0,sa=0
+        for (let k=-R;k<=R;k++){ let xi=x+k; if(xi<0)xi=0; else if(xi>=W)xi=W-1; const p=(row+xi)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }
+        const o=(row+x)<<2; dst[o]=(sr+x)&255; dst[o+1]=(sg+x)&255; dst[o+2]=(sb+x)&255; dst[o+3]=(sa+x)&255 } }
+    let h=0; for (let i=0;i<N;i++) h=(h*31+dst[i])|0; return h }`
+  for (const [name, src] of [['stride-2 source', stride2], ['non-constant stride', varstride], ['pivot in store value', pivotStore]]) {
+    is(runVec(src, ON).main(), runVec(src, NO).main(), `${name}: bit-exact`)
+    ok(!/i16x8\.extend_high/.test(wat(src, ON)), `${name}: 4-pixel lift must bail`)
+  }
+})
