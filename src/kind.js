@@ -197,6 +197,17 @@ VT['[]'] = (args) => {
       if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
     }
   }
+  // Direct double-index on a module-level nested numeric table — `C[i][j]` where
+  // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
+  // array whose nested element kind was recorded at decl time. Same dynWriteVars
+  // guard (now root-aware, so a `C[i][j]=…` write anywhere disables it).
+  if (Array.isArray(args[0]) && args[0][0] === '[]' && args[0].length === 3 && typeof args[0][1] === 'string') {
+    const base = args[0][1]
+    if (!ctx.func.localReps?.has(base)) {
+      const gNested = ctx.scope.globalReps?.get(base)?.arrayElemElemValType
+      if (gNested && !ctx.types?.dynWriteVars?.has(base)) return gNested
+    }
+  }
   // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
   // chord/pattern tables; literal op is `[`, elements inline). Every element is a
   // Number, so the load is a Number; this lets toNumF64 skip __to_num on the result

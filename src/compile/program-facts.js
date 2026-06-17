@@ -31,7 +31,15 @@ export function observeNodeFacts(node, f) {
   // string keys, which place in fixed schema slots.)
   if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]') {
     const [, wobj, widx] = args[0]
-    if (!isLiteralStr(widx) && typeof wobj === 'string') f.dynWriteVars?.add(wobj)
+    // Flag the ROOT array var. `o[k]=v` → o; a NESTED write `o[i][j]=v` mutates an
+    // element of o, so walk the receiver chain to its root identifier and flag that
+    // too — else o's recorded (nested) element types would be wrongly trusted at a
+    // later `o[i][j]` read. Strictly more conservative for every dynWriteVars consumer.
+    if (!isLiteralStr(widx)) {
+      let root = wobj
+      while (Array.isArray(root) && root[0] === '[]') root = root[1]
+      if (typeof root === 'string') f.dynWriteVars?.add(root)
+    }
   }
   if (op === '[]') {
     const [obj, idx] = args

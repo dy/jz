@@ -328,8 +328,12 @@ export function analyzeBody(body) {
       }
       // `x = arr[i]` where `arr` is a known array-of-arrays → `x`'s elements take
       // `arr`'s nested element kind (the missing index-step in observeArrValType).
+      // `arr` may be a function-local (arrElemElemValTypes) or a module-level const
+      // table (global rep, recorded by recordGlobalRep) — the latter dynWrite-guarded.
       if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
         const nested = arrElemElemValTypes.get(rhs[1])
+          ?? (!ctx.func.localReps?.has(rhs[1]) && !ctx.types?.dynWriteVars?.has(rhs[1])
+                ? ctx.scope.globalReps?.get(rhs[1])?.arrayElemElemValType : null)
         if (nested) observeArrValType(name, nested)
       }
     }

@@ -392,6 +392,46 @@ test('minimal: numeric Array(n) narrowing stays sound under non-numeric use', ()
   is(jz('export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=i; a[0]="hi"; return a[0]+a[1]}').exports.f(3), 'hi1', 'mixed string write disqualifies narrowing')
 })
 
+// === Module-level numeric const tables shed the ToNumber/string subsystem ===
+// A top-level `const T = [n, …]` (flat) or `[[n,…], …]` (nested) is provably numeric, so
+// `T[i]` / `T[i][j]` reads skip __to_num — the synth/floatbeat lookup-table shape. Without
+// it a module table drags the full string battery (~5 KB) into a string-free kernel (synth
+// 7.7 KB → 2 KB; a chord table 6 KB → 0.6 KB). Flat = recordGlobalRep's arrayElemValType;
+// nested adds arrayElemElemValType + the `C[i][j]` / `ch=C[i];ch[j]` read sites.
+const NUMERIC_TABLE = {
+  'flat *':          'const T=[1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++)s+=T[i&7]*2;return s}',
+  'flat -':          'const T=[1.5,2.5,3.5,4.5]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++)s-=T[i&3];return s|0}',
+  'nested direct':   'const C=[[0,4,7],[2,5,9],[5,9,0],[7,11,2]]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++)s+=C[i&3][i&1]*2;return s}',
+  'nested via bind': 'const C=[[0,4,7],[2,5,9],[5,9,0],[7,11,2]]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++){let ch=C[i&3];s+=ch[i&1]*2}return s}',
+}
+for (const [name, src] of Object.entries(NUMERIC_TABLE)) {
+  test(`minimal: module numeric const table (${name}) skips ToNumber/string`, () => {
+    if (skip) return
+    for (const O of [0, 2]) {
+      const w = wat(src, O)
+      for (const h of STRINGY) ok(!w.includes(`$${h} `) && !w.includes(`$${h})`),
+        `${name} @O${O}: a module numeric table must not pull ${h}`)
+    }
+  })
+}
+// Value-correct: the read yields the stored Number (flat and one level down).
+test('minimal: module numeric const table reads are value-correct', () => {
+  if (skip) return
+  is(jz('const T=[10,20,30]\nexport let f=()=>T[1]+T[2]').exports.f(), 50, 'flat read')
+  is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>C[1][2]*2').exports.f(), 18, 'nested direct read')
+  is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>{let ch=C[1];return ch[0]*2}').exports.f(), 4, 'nested via binding')
+})
+// SOUNDNESS (default-deny): a non-numeric element write — including a NESTED `C[i][j]=str`,
+// which the dynWriteVars root-walk now flags — must disable narrowing, else `*` would
+// f64.mul a NaN-boxed pointer. The null case proves it routes through ToNumber (null→0),
+// not the NaN-box coincidence (which would give NaN).
+test('minimal: module numeric table narrowing stays sound under non-numeric write', () => {
+  if (skip) return
+  ok(Number.isNaN(jz('const T=[1.5,2.5,3.5]\nexport let f=()=>{T[0]="hi";return T[0]*2}').exports.f()), 'flat string write → NaN')
+  ok(Number.isNaN(jz('const C=[[1,2],[3,4]]\nexport let f=()=>{C[0][0]="hi";return C[0][0]*2}').exports.f()), 'nested string write → NaN')
+  is(jz('const C=[[1,2],[3,4]]\nexport let f=()=>{C[0][0]=null;return C[0][0]*2}').exports.f(), 0, 'nested null write → 0 (ToNumber, not NaN-box)')
+})
+
 // === KNOWN REDUNDANCY (targets, not yet minimal) ===
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —

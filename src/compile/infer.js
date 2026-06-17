@@ -356,6 +356,24 @@ export function recordGlobalRep(name, expr) {
       for (let k = 1; k < elems.length && common != null; k++)
         if (valTypeOf(elems[k]) !== common) common = null
       if (common != null) updateGlobalRep(name, { arrayElemValType: common })
+      // Array-of-arrays numeric table (`const C = [[0,4,7], …]`): also record the
+      // nested element kind so `C[i][j]` (and `ch = C[i]; ch[j]`) reads stay typed —
+      // the same string-runtime drop as the flat case, one level down. Single-level
+      // (mirrors analyzeValTypes' local arrElemElemValTypes); deeper nesting falls back.
+      if (common === VAL.ARRAY) {
+        let nested = null, seen = false, ok = true
+        for (const el of elems) {
+          const inner = staticArrayElems(el)
+          if (!inner || !inner.length || !inner.every(e => e != null)) { ok = false; break }
+          for (const ie of inner) {
+            const ivt = valTypeOf(ie)
+            if (!seen) { nested = ivt; seen = true }
+            else if (ivt !== nested) { ok = false; break }
+          }
+          if (!ok) break
+        }
+        if (ok && nested != null) updateGlobalRep(name, { arrayElemElemValType: nested })
+      }
     }
   }
   // Static-shape capture for module-level object literals — lets `{ ...G.path }`
