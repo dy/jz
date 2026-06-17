@@ -217,6 +217,37 @@ test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
   ok(/v128\.load32_zero/.test(w) && /i32x4\.add/.test(w), 'expected widening channel accumulation')
 })
 
+test('SIMD channel-reduce - real 2D box blur (row loop nesting)', () => {
+  // The actual separable-blur shape: an outer row loop wraps the pixel loop, so
+  // LICM hoists the invariant edge bound (w-1) into the pixel-loop block ahead of
+  // the loop. The channel recognizer must tolerate that preamble (it previously
+  // bailed, so the vectorizer never fired on a real 2D blur — only the 1D test).
+  const src = `export let main = () => {
+    const src = new Uint8Array(64 * 48 * 4), dst = new Uint8Array(64 * 48 * 4)
+    for (let i = 0; i < 64 * 48 * 4; i++) src[i] = (i * 7) & 255
+    const w = 64, h = 48, r = 2, win = 2 * r + 1
+    for (let y = 0; y < h; y++) {
+      const row = y * w
+      for (let x = 0; x < w; x++) {
+        let sr = 0, sg = 0, sb = 0, sa = 0
+        for (let k = -r; k <= r; k++) {
+          let xi = x + k
+          if (xi < 0) xi = 0; else if (xi >= w) xi = w - 1
+          const p = (row + xi) << 2
+          sr += src[p]; sg += src[p + 1]; sb += src[p + 2]; sa += src[p + 3]
+        }
+        const o = (row + x) << 2
+        dst[o] = (sr / win) | 0; dst[o + 1] = (sg / win) | 0; dst[o + 2] = (sb / win) | 0; dst[o + 3] = (sa / win) | 0
+      }
+    }
+    let acc = 0
+    for (let i = 0; i < 64 * 48 * 4; i++) acc = (acc + dst[i]) | 0
+    return acc
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  ok(/v128\.load32_zero/.test(wat(src, SIMD_OPT)), 'channel-reduce must fire through the hoisted preamble')
+})
+
 test('SIMD widening byte-map - store8 truncation matches (value > 255)', () => {
   // i32 product reaches 76500; the store8 keeps the low byte. The narrow pack
   // must truncate identically, not saturate.

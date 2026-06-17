@@ -2201,13 +2201,16 @@ function buildRampStore(storeOp, addr, vval, ctx) {
 // matchChannelGroup header. Returns { wrapper, newLocalDecls } or null.
 function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  // Outer pixel loop: (block $brk (loop $L …)).
+  // Outer pixel loop: (block $brk [invariant preamble…] (loop $L …)). When the
+  // pixel loop is nested in an outer row loop, LICM hoists the invariant edge-clamp
+  // bound (`w-1`) into this block ahead of the loop; allow any such non-loop
+  // preamble — it is preserved verbatim by the wrapper rebuild, which rewrites only
+  // the loop. Exactly one loop is still required (a second → bail).
   let blockLabel = null, loopNode = null
   for (let i = 1; i < blockNode.length; i++) {
     const c = blockNode[i]
     if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
     if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
   }
   if (!loopNode || !blockLabel) return null
   const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
