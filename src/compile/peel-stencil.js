@@ -115,6 +115,50 @@ function tapRadius(loopBody, tap) {
   return boundR != null && boundR === initR ? boundR : null
 }
 
+// Count every write (=, compound-assign, ++/--) to variable `v` in `node`.
+function countWrites(node, v) {
+  let n = 0
+  const visit = (x) => {
+    if (!Array.isArray(x)) return
+    if ((x[0] === '++' || x[0] === '--') && x[1] === v) n++
+    else if (ASSIGN.has(x[0]) && x[1] === v) n++
+    x.forEach(visit)
+  }
+  visit(node)
+  return n
+}
+
+// Count tap-shaped seeds (`tap = -r`) and bounds (`tap <= r`) in `body`. The peel is
+// sound only for a SINGLE tap loop; two loops sharing the tap var make tapRadius pick
+// the wrong (last-seen) radius, so xs=r/xe=bound-r no longer match the clamped loop.
+function tapStructures(body, tap) {
+  let seeds = 0, bounds = 0
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    const cond = n[0] === 'while' ? n[1] : n[0] === 'for' ? n[2] : null
+    if (Array.isArray(cond) && cond[0] === '<=' && cond[1] === tap && isVar(cond[2])) bounds++
+    if (n[0] === '=' && n[1] === tap && isVar(negOf(n[2]))) seeds++
+    n.forEach(visit)
+  }
+  visit(body)
+  return { seeds, bounds }
+}
+
+// True if `iv` is written anywhere INSIDE a nested loop within `body`. Then iv is not
+// constant across the tap accumulation (e.g. an `iv++` living inside the tap loop, so
+// the real outer step is 2r+1), and the per-outer-iteration peel is unsound.
+function ivWrittenInNestedLoop(body, iv) {
+  let found = false
+  const visit = (n, inLoop) => {
+    if (!Array.isArray(n)) return
+    if (inLoop && (((n[0] === '++' || n[0] === '--') && n[1] === iv) || (ASSIGN.has(n[0]) && n[1] === iv))) found = true
+    const deeper = inLoop || n[0] === 'while' || n[0] === 'for'
+    n.forEach(c => visit(c, deeper))
+  }
+  visit(body, false)
+  return found
+}
+
 let _uniq = 0
 
 // Drop the clamp `if` node from a (cloned) body, leaving the bare `ci = iv + k`.
@@ -164,6 +208,19 @@ function tryPeel(stmt) {
   if (!tap) return null
   const r = tapRadius(body, tap)
   if (r == null) return null
+
+  // The clamp var must be written EXACTLY three times: its `ci = iv+k` source and the
+  // two clamp branches (`ci=0`, `ci=bound-1`). Any extra write — `ci = ci-1`, `ci = -ci`
+  // between the source and the clamp — changes what value the clamp actually guards, so
+  // dropping the clamp in the interior (which assumes the guarded value is iv+k) is
+  // unsound. Three is the exact count for a well-formed clamp; more ⇒ a mutation.
+  if (countWrites(body, clamp.ci) !== 3) return null
+  // Exactly one tap loop (one seed, one bound): two loops sharing the tap var would let
+  // tapRadius pick the wrong radius.
+  const ts = tapStructures(body, tap)
+  if (ts.seeds !== 1 || ts.bounds !== 1) return null
+  // iv must be constant across the tap accumulation — not bumped inside the tap loop.
+  if (ivWrittenInNestedLoop(body, iv)) return null
 
   // Soundness: iv advances monotonically (else the interior re-runs at an edge index),
   // and bound/r are loop-invariant (else the once-computed xs/xe go stale mid-loop).

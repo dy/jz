@@ -2129,12 +2129,20 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
   for (const w of [1, 2, 3, 7, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8])
     is(lex(blur, ON)(w, r), lex(blur, OFF)(w, r), `blur w=${w} r=${r}`)
 
-  // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric tap
+  // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric
+  // tap, closure-mutated bound, plus — found by the adversarial panel — a clamp var
+  // mutated between its `xi=x+k` source and the clamp (so the clamp guards a DIFFERENT
+  // value than the peel assumes), two tap loops sharing the tap var (tapRadius would pick
+  // the wrong radius), and an `x++` living inside the tap loop (real outer step ≠ 1).
   const danger = {
     ivJump: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&3)===0)x=x+2;x++}return s|0}`,
     boundMut: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if(s>9000000)w=w-1;x++}return s|0}`,
     asym: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=1-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
     closBound: `${A}export let f=(w,r)=>{let s=0,x=0;let dec=()=>{w=w-1};while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&7)===0)dec();x++}return s|0}`,
+    ciDec: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;xi=xi-1;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
+    ciNeg: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;xi=0-xi;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
+    twoTaps: `${A}export let f=(w,r)=>{let s=0,x=0,r2=r-1;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}k=-r2;while(k<=r2){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;x++}return s|0}`,
+    ivInTap: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=0-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++;x++}s=(s+a)|0}return s|0}`,
   }
   for (const [name, s] of Object.entries(danger)) {
     ok(!fires(s), `${name} must bail`)
