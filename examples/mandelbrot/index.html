@@ -23,20 +23,19 @@ const urls = { js: "./mandelbrot.js", wasm: "./mandelbrot.simd.wasm" };
 // Set up the canvas with a 2D rendering context
 const cnv = document.getElementsByTagName("canvas")[0];
 const ctx = cnv.getContext("2d");
-const bcr = cnv.getBoundingClientRect();
+// Build the masthead + bottom bar first so the canvas-fit framing is applied before we
+// measure — the backing then matches the framed box (fills edge-to-edge, no letterbox).
+const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
-// Viewport size — full screen at CSS-pixel res (every frame recomputes the whole set,
-// so we don't multiply by DPR: retina would 4× the per-frame cost).
+// Viewport size — the framed canvas box at CSS-pixel res (every frame recomputes the whole
+// set, so we don't multiply by DPR: retina would 4× the per-frame cost).
+const bcr = cnv.getBoundingClientRect();
 const width  = bcr.width  | 0;
 const height = bcr.height | 0;
-
 cnv.width  = width;
 cnv.height = height;
-
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
-
-const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
 let gen = 0, engine, mem;
 

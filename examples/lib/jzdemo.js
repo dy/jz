@@ -51,25 +51,26 @@ const addMasthead = (name) => {
   // critical inline so the band never flashes unstyled before site.css resolves
   header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#0a0a0a'
   header.innerHTML = `
-    <div class="wordmark">
-      <a class="mark" href="../../" aria-label="jz — home">JZ</a><a class="sub" href="../">examples</a><span class="sep" aria-hidden="true">›</span><span class="page">${name}</span>
-    </div>
+    <a class="logo" href="../../" aria-label="jz — home"><img src="../../jz.svg" width="40" height="40" alt="jz"></a>
     <nav>
       <a href="../../repl/">repl</a>
       <a href="../../floatbeat/">floatbeat</a>
+      <a href="../">examples</a>
       <a href="../../bench/">bench</a>
+      <a href="https://github.com/dy/jz#readme">docs</a>
       <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
         <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
     </nav>`
   document.body.insertBefore(header, document.body.firstChild)
-  // Frame the demo between the two bands: the fixed 44px masthead on top and the 52px
-  // bottom bar below. The canvas object-fits into the gap (centered, undistorted). The HUD's
-  // own <canvas> lives inside .jz-bar (body > div > canvas), so `body > canvas` = the demo.
+  // Frame the demo between the two bands: the fixed 64px masthead on top and the 64px
+  // bottom bar below. The canvas fills that gap (runDemo sizes the backing to this box, so it
+  // fills edge-to-edge — no letterbox). The HUD's own <canvas> lives inside .jz-bar
+  // (body > div > canvas), so `body > canvas` = the demo.
   if (!document.getElementById('jz-canvas-fit')) {
     const fit = document.createElement('style')
     fit.id = 'jz-canvas-fit'
-    fit.textContent = 'body > canvas:not(.gradient) { position: fixed !important; top: 44px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 96px) !important; object-fit: contain !important; }'
+    fit.textContent = 'body > canvas:not(.gradient) { position: fixed !important; top: 64px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 128px) !important; object-fit: contain !important; }'
     document.head.appendChild(fit)
   }
 }
@@ -214,9 +215,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 52px; box-sizing: border-box;
+      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 64px; box-sizing: border-box;
         display: flex; align-items: center; gap: 18px; padding: 0 28px; background: #0a0a0a;
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; user-select: none; }
+        font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
       .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: #8a8a93; letter-spacing: .01em;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .jz-bar .jz-wiki { color: #e8e8ea; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
@@ -239,7 +240,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-engine.jz .knob { transform: translateX(33px); }
       .jz-engine .lbl-js, .jz-engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 37px; z-index: 2;
         display: inline-flex; align-items: center; justify-content: center;
-        font: 700 11.5px/1 'Helvetica Neue', Helvetica, Arial, sans-serif; letter-spacing: .04em;
+        font-weight: 700; font-size: 11.5px; line-height: 1; letter-spacing: .04em;
         color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
       .jz-engine .lbl-js { left: 0; }
       .jz-engine .lbl-jz { right: 0; }
@@ -409,18 +410,21 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
   const demo = { cv, get engine() { return engine }, get W() { return W }, get H() { return H } }
 
   const sizeTo = () => {
+    // Size the backing to the canvas's actual box (the gap framed between masthead + bar) so
+    // the demo fills it edge-to-edge — no letterbox. Fall back to the window before layout.
+    const bw = cv.clientWidth || innerWidth, bh = cv.clientHeight || innerHeight
     let scale = size.scale
-    if (size.cap != null) scale = size.cap / Math.max(innerWidth, innerHeight)   // cap the long side, aspect kept
+    if (size.cap != null) scale = size.cap / Math.max(bw, bh)   // cap the long side, aspect kept
     else if (scale == null) {
       scale = Math.min(size.dpr ?? 1, window.devicePixelRatio || 1)
       const budget = size.budget === undefined ? 600000 : size.budget
       if (budget) {
-        const want = innerWidth * innerHeight * scale * scale
+        const want = bw * bh * scale * scale
         if (want > budget) scale *= Math.sqrt(budget / want)
       }
     }
-    W = size.odd ? (Math.round(innerWidth * scale) | 1) : (Math.round(innerWidth * scale) >> 1 << 1)
-    H = size.odd ? (Math.round(innerHeight * scale) | 1) : (Math.round(innerHeight * scale) >> 1 << 1)
+    W = size.odd ? (Math.round(bw * scale) | 1) : (Math.round(bw * scale) >> 1 << 1)
+    H = size.odd ? (Math.round(bh * scale) | 1) : (Math.round(bh * scale) >> 1 << 1)
     cv.width = W; cv.height = H
     img = g.createImageData(W, H); out32 = new Uint32Array(img.data.buffer)
     px = engine.resize(W, H)

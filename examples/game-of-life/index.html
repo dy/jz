@@ -39,8 +39,9 @@ async function start(kind) {
   const my = ++gen
   engine = await loadEngine(kind, { js: './game-of-life.js', wasm: './game-of-life.wasm' })
   if (my !== gen) return
-  W = Math.round(innerWidth * dpr) >> 1 << 1
-  H = Math.round(innerHeight * dpr) >> 1 << 1
+  // size to the framed canvas box (between masthead + bar) so it fills edge-to-edge
+  W = Math.round((cv.clientWidth || innerWidth) * dpr) >> 1 << 1
+  H = Math.round((cv.clientHeight || innerHeight) * dpr) >> 1 << 1
   cv.width = W; cv.height = H
   imageData = ctx.createImageData(W, H); argb = new Uint32Array(imageData.data.buffer)
   mem = engine.init(W, H, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT)

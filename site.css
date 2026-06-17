@@ -30,10 +30,12 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .masthead {
   background: var(--band); color: #fff; flex: 0 0 auto;
   display: flex; align-items: center; gap: 16px;
-  min-height: 44px; padding: 0 var(--mast-px);
+  min-height: 64px; padding: 0 var(--mast-px);
   font-family: var(--font);
 }
 .masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; }
+.masthead .logo { display: flex; align-items: center; line-height: 0; flex: 0 0 auto; }
+.masthead .logo img { display: block; width: 40px; height: 40px; }
 
 .masthead .wordmark { margin: 0; font-size: 19px; font-weight: 400; letter-spacing: -.02em;
   line-height: 1; color: #fff; text-decoration: none; }
