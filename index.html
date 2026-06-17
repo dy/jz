@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz — Computational JavaScript, compiled to WASM</title>
-<meta name="description" content="jz (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid jz is valid JS: it runs in any engine, then compiles to portable WASM. Within 6% of native C; 2.4× faster than the same code in V8.">
+<meta name="description" content="jz (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid jz is valid JS: it runs in any engine, then compiles to portable WASM. 2.4× faster than the same code in V8; beats Rust and Zig → wasm on numeric kernels.">
 <link rel="icon" href="jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="site.css">
 <style>
@@ -27,10 +27,10 @@ a { color: inherit; }
   align-items: center; background: #000; overflow: hidden; }   /* < full height so the REPL top peeks below */
 
 /* the demo runs as the background layer — white bodies on black, full strength, unfaded */
-.show-stage { position: absolute; inset: 0; z-index: 0; --show-scale: 0.5; background: #000; }
-.show-stage iframe { position: absolute; top: 0; left: 0; border: 0; display: block;
-  width: calc(100% * var(--show-scale)); height: calc(100% * var(--show-scale));
-  transform: scale(calc(1 / var(--show-scale))); transform-origin: 0 0; }
+.show-stage { position: absolute; inset: 0; z-index: 0; background: #000; display: block;
+  width: 100%; height: 100%; image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+
+/* (the live editor dock has been removed — the REPL section below is the one editor) */
 
 
 /* top bar — nav aligned to the right edge of the shared content column */
@@ -74,8 +74,10 @@ a { color: inherit; }
 .pitch h1 { font-size: clamp(28px,4.6vw,54px); font-weight: 400; line-height: 1.03; letter-spacing: -.015em;
   overflow-wrap: break-word; text-shadow: 0 1px 12px rgba(0,0,0,.45); }   /* no max-width → the <br> is the only break: 2 lines */
 .pitch h1 b { font-weight: 700; }
-.pitch .sub { margin-top: 16px; max-width: 54ch; font-size: clamp(14px,1.15vw,16.5px); line-height: 1.55; color: var(--soft); }
-.pitch .sub b { color: var(--ink); font-weight: 700; }
+.pitch .sub { margin-top: 16px; max-width: 54ch; font-size: clamp(14px,1.15vw,16.5px); line-height: 1.55; color: var(--soft); text-wrap: pretty; }   /* pretty: balanced rag, no orphan last word */
+.pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.4× faster" unbroken */
+.pitch .sub .ref { font-size: .7em; vertical-align: super; line-height: 0; color: var(--dim); text-decoration: none; padding: 0 1px; transition: color .16s; }
+.pitch .sub .ref:hover { color: var(--ink); }
 
 /* main CTA — the sole hero action: FPS readout then the JS↔JZ switch on one line.
    The FPS area is a fixed width so changing digit counts can't shift the switch. */
@@ -92,7 +94,7 @@ a { color: inherit; }
 .metrics { display: flex; align-items: flex-start; gap: clamp(20px,2.6vw,34px); margin-top: clamp(40px,6vh,84px); flex-wrap: wrap; }   /* moderate gap from the switch — but still nearer the fps than the REPL */
 .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
 .stat b { font-size: clamp(26px,2.7vw,36px); font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
-.stat span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
 .stat:hover b { color: #fff; }
 .metrics .more { align-self: center; font-family: var(--font); font-size: clamp(26px,2.8vw,36px); line-height: 1;
   color: var(--ink); text-decoration: none; transition: opacity .16s, transform .18s; }
@@ -137,9 +139,11 @@ a { color: inherit; }
   .metrics { gap: 28px; }
 }
 
-/* ─────────────────────────── TRY — the REPL inline (paste JS → WAT → run), embedded on the content column ─────────────────────────── */
+/* ─────────────────────── TRY — the REPL inline (a full playground: write JS → WAT → run → bench) ─────────────────────── */
 .try { background: #000; padding: clamp(36px,5vw,60px) var(--padx); }   /* symmetric → equal gap above (from stats) and below (to FAQ) */
-.try-wrap { max-width: calc(var(--cw) + 56px); margin: 0 auto; }   /* a touch wider so the code lines up with the column past the REPL's own padding */
+.try-wrap { max-width: calc(var(--cw) + 66px); margin: 0 auto; }   /* = cw + 2×(REPL padding) → the code's left edge lands exactly on the content column */
+.try-head { max-width: var(--cw); margin: 0 auto clamp(18px,2.4vw,28px); }
+.try-head h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; }
 .try-frame { width: 100%; height: clamp(440px, 62vh, 600px); border: 1px solid #1c1c25; border-radius: 8px; overflow: hidden; background: #000; }
 .try-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
 
@@ -213,14 +217,11 @@ footer .legal .om { font-size: 15px; }
 
 <main class="hero">
   <!-- a single live N-body sim, full-bleed behind the pitch; the in-pitch JS/JZ switch drives it -->
-  <div class="show-stage" id="show-stage">
-    <iframe id="show" title="live jz example — N-body gravity, compiled to WASM" loading="lazy"></iframe>
-  </div>
+  <canvas class="show-stage" id="stage"></canvas>
 
   <nav class="hero-nav">
-    <a href="repl/">repl</a>
     <a href="examples/">examples</a>
-    <a href="bench/">bench</a>
+    <a href="repl/">repl</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -228,31 +229,32 @@ footer .legal .om { font-size: 15px; }
 
   <section class="pitch">
     <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="108" height="108" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
-    <h1>Computational <b>JavaScript</b>, <br class="hb">compiled <b>to WASM</b>.</h1>
-    <p class="sub">Minimal, modern, distilled functional <b>plain JavaScript</b> — the Crockford “Good Parts”,
-      compiled ahead-of-time to WASM that runs the same source <b>2.4× faster</b> on average. No runtime,
-      no GC, no type annotations, unlocked SIMD.</p>
+    <h1>Computational JavaScript, <br class="hb">compiled to WASM.</h1>
+    <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled
+      ahead-of-time to WASM that runs the same source <b><span id="sub-x">2.4×</span> faster</b><a class="ref" href="bench/" aria-label="how this is measured — see the benchmark">*</a>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
     <div class="cta-live">
       <div class="fps" aria-label="performance">
         <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
       </div>
       <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="JS / JZ engine — flip to drive the live sim"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
     </div>
-    <div class="metrics">
-      <a class="stat" href="bench/"><b>2.4×</b><span>Node V8</span></a>
-      <a class="stat" href="bench/"><b>2.3×</b><span>AssemblyScript</span></a>
-      <a class="stat" href="bench/"><b>3.1×</b><span>Porffor</span></a>
-      <a class="stat" href="bench/"><b>0.94×</b><span>native</span></a>
-      <a class="stat" href="bench/"><b>13.5×</b><span>SIMD peak</span></a>
-      <a class="stat" href="bench/"><b>1.1×</b><span>AS size</span></a>
+    <div class="metrics" id="metrics">
+      <a class="stat" data-key="v8" href="bench/"><b>2.4×</b><span>Node V8</span></a>
+      <a class="stat" data-key="as" href="bench/"><b>2.3×</b><span>AssemblyScript</span></a>
+      <a class="stat" data-key="rust" href="bench/"><b>1.1×</b><span>Rust</span></a>
+      <a class="stat" data-key="peak" href="bench/"><b>13.5×</b><span>SIMD peak</span></a>
+      <a class="stat" data-key="size" href="bench/"><b>1–10 kB</b><span>wasm · no runtime</span></a>
     </div>
   </section>
 </main>
 
 <section class="try">
   <div class="try-wrap">
+    <div class="try-head">
+      <h2>Or write your own.</h2>
+    </div>
     <div class="try-frame">
-      <iframe src="repl/?embed" title="jz REPL — paste JavaScript, compile to WASM, see the WAT, run it" loading="lazy"></iframe>
+      <iframe src="repl/?embed" title="jz REPL — compile JavaScript to WASM in your browser" loading="lazy"></iframe>
     </div>
   </div>
 </section>
@@ -262,7 +264,7 @@ footer .legal .om { font-size: 15px; }
 
     <details open>
       <summary><span class="fq">What is jz?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">jz (“javascript zero”) is a compiler that turns the numeric core of JavaScript — math, DSP, parsers, tight loops — into compact, GC-free WebAssembly, ahead of time. Nothing ships at runtime: the output is plain WASM you can run in any engine or standalone.</div>
+      <div class="ans">jz (“javascript zero”) compiles the numeric core of JavaScript — math, DSP, parsers, tight loops — ahead-of-time to lean, GC-free WebAssembly. Nothing ships at runtime: the output is plain WASM that runs in any engine or standalone. The same source you’d run in Node, ~2.4× faster.</div>
     </details>
 
     <details>
@@ -271,18 +273,38 @@ footer .legal .om { font-size: 15px; }
     </details>
 
     <details>
+      <summary><span class="fq">Why no type annotations?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Because <code>let x: i32</code> isn’t valid JavaScript — annotations would break the promise that jz runs and tests unchanged in any engine. So jz infers types from what you already write: <code>let bits = (a, b) =&gt; a | b</code> pins <code>i32</code> (a bitwise op); <code>let half = (n) =&gt; n * 0.5</code> pins <code>f64</code> (a non-integer literal). You never annotate, never leave JS — and that’s the sharp edge over AssemblyScript, which needs TypeScript-style types.</div>
+    </details>
+
+    <details>
+      <summary><span class="fq">Can jz compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Yes — fully. jz’s whole pipeline (parse → infer → emit → encode) is itself compiled to WASM: <code>dist/jz.wasm</code> is jz compiled by jz. The CI gate <code>test:self</code> round-trips real programs through the wasm-hosted compiler and runs their output. The artifact that builds your code was built by jz.</div>
+    </details>
+
+    <details>
       <summary><span class="fq">How is it different from AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">AssemblyScript is a TypeScript-like dialect you rewrite your code into, with its own types and a managed-memory runtime. jz compiles the JavaScript you already write, ships no runtime or GC, and on our 16-kernel suite produces WASM that runs ~2.3× faster than AssemblyScript at roughly the same binary size.</div>
+      <div class="ans">AssemblyScript is a TypeScript-like dialect — you rewrite into it with explicit type annotations and a managed-memory runtime. jz compiles the JavaScript you already wrote, needs <b>no annotations</b> (it reads types off your literals and operators), ships no runtime or GC, and on our 16-kernel suite produces WASM ~2.3× faster than AssemblyScript at roughly the same size.</div>
     </details>
 
     <details>
       <summary><span class="fq">How fast is it, really?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">On a 16-kernel benchmark (Apple M4 Max), jz averages 2.4× faster than the same source in V8, and lands within ~6% of hand-written native C — native is the floor, not something we claim to beat. Auto-vectorized reductions go further: a dot-product peaks at 13.5× over V8. Every number is reproducible — <a href="bench/">run the bench yourself</a>.</div>
+      <div class="ans">On a 16-kernel bench (Apple M4 Max), jz averages 2.4× faster than the same source in V8, 1.1× faster than Rust → wasm, and 1.3× faster than Zig → wasm on numeric kernels — native is the peer, not the ceiling. Auto-vectorized reductions go further: a dot-product peaks at 13.5× over V8. Every number is reproducible — <a href="bench/">run the bench yourself</a>.</div>
     </details>
 
     <details>
       <summary><span class="fq">What is jz good for — and not?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Good for numeric and math compute, DSP/audio, parsing and transforms, and standalone WASM utilities. Not for UI/frontend, backends/APIs, or async- and I/O-heavy logic — keep regular JavaScript there. jz is a sharp tool for the compute core, not a whole-app framework.</div>
+    </details>
+
+    <details>
+      <summary><span class="fq">Can I use existing npm packages?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Only the ones that fit the subset. There’s no runtime, so packages touching the DOM, async/Promise, the network, or Node APIs won’t compile — but pure numeric, algorithmic, parser, or transform source does. Relative imports (<code>./dep.js</code>) bundle at compile time; bare specifiers resolve with <code>--resolve</code> (CLI) or <code>{ modules }</code> (API). jz is for compiling <i>your</i> compute core, not the npm ecosystem.</div>
+    </details>
+
+    <details>
+      <summary><span class="fq">How is jz different from plain JavaScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Small, documented divergences, all in service of no-runtime/no-GC: numbers are <code>f64</code> (integer-proven values become <code>i32</code> and wrap at ±2³¹); strings are UTF-8 bytes (<code>"中".length</code> is 3); objects are fixed-shape structs (a dot-key added after the literal is readable but doesn’t enumerate — use <code>Map</code> for dynamic keys); there’s no GC (call <code>memory.reset()</code> between batches). Run the same source under Node to catch any that touch your code.</div>
     </details>
 
     <details>
@@ -297,7 +319,7 @@ footer .legal .om { font-size: 15px; }
 
     <details>
       <summary><span class="fq">How do I get started?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or paste a hot function into the <a href="repl/">REPL</a> to see the generated WAT and run it instantly — no install. jz is experimental and pre-1.0, so pin a version.</div>
+      <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or edit the N-body sim above — it’s a jz program, recompiling on every keystroke. jz is experimental and pre-1.0, so pin a version.</div>
     </details>
   </div>
 </section>
@@ -352,10 +374,37 @@ footer .legal .om { font-size: 15px; }
 </footer>
 
 <script type="module">
-// One screen: a live N-body sim runs full-bleed in an <iframe> (?embed strips its chrome and
-// posts {fps, ms} to us) behind the centred pitch. The foot carries the JS↔JZ switch — it
-// drives that same sim — and our FPS graph reporting it.
+// One screen: the N-body sim runs full-bleed on the hero canvas, compiled HERE from the
+// real examples/nbody/nbody.js. The JS/JZ switch flips between jz-compiled wasm and the
+// same source run as plain JS. The REPL section below is the editor.
+import jz from './dist/jz.js'
 const $ = id => document.getElementById(id)
+
+// live metrics — computed from the committed bench/results.json (the row above is pre-filled so
+// there's no flash; these values update in-place when the fetch succeeds, so the row always
+// reflects the latest bench run rather than a hand-typed snapshot)
+;(async () => {
+  try {
+    const r = await (await fetch('bench/results.json')).json()
+    const cases = Object.values(r.cases)
+    const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
+    const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt]) a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+    let peak = 0; for (const c of cases) { const t = c.targets; if (t.jz && t.v8) peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
+    const sizes = []; for (const c of cases) if (c.targets.jz) sizes.push(c.targets.jz.bytes)
+    const f = (x, d = 1) => { const s = x.toFixed(d); return s.replace(/\.0$/, '') }
+    const set = (k, v) => { const el = document.querySelector(`.stat[data-key="${k}"] b`); if (el && v != null) el.textContent = v }
+    const v8x = f(ratio('v8')) + '×'
+    set('v8', v8x)
+    const sx = $('sub-x'); if (sx) sx.textContent = v8x   // keep the hero sentence's figure in sync with the bench too
+    set('as', f(ratio('as')) + '×')
+    set('rust', f(ratio('rust')) + '×')
+    set('peak', f(peak) + '×')
+    const mins = Math.min(...sizes), maxs = Math.max(...sizes)
+    const kb = b => b < 1000 ? null : (b / 1000).toFixed(b < 10000 ? 1 : 0).replace(/\.0$/, '')
+    const minK = kb(mins), maxK = kb(maxs)
+    set('size', minK && maxK ? minK + '–' + maxK + ' kB' : mins + '–' + maxs + ' B')
+  } catch {}
+})()
 
 // npm-install copy button (footer)
 for (const id of ['install2']) {
@@ -368,12 +417,36 @@ for (const id of ['install2']) {
   })
 }
 
-// the sim renders at --show-scale of native pixels then CSS-upscales (stays fast full-bleed).
-const stage = $('show-stage'), frame = $('show')
-const UP = Math.round(1 / (parseFloat(getComputedStyle(stage).getPropertyValue('--show-scale')) || 0.5))
+// ── the hero sim: the real n-body source, compiled in-page, full-bleed on <canvas id=stage> ──
+const stage = $('stage'), g = stage.getContext('2d', { alpha: false })
+let W = 0, H = 0, img = null, out32 = null, px = null
+let jzEx = null, jsMod = null, kind = 'jz', gen = 0, t = 0, src = ''
+const cur = () => (kind === 'jz' ? jzEx : jsMod)
+const buildJz = (s) => jz(s, { optimize: 'speed' }).exports
+const buildJs = async (s) => { const u = URL.createObjectURL(new Blob([s], { type: 'text/javascript' })); try { return await import(u) } finally { URL.revokeObjectURL(u) } }
+// resolution: dpr-capped, with a pixel budget — the same policy jzdemo's runDemo uses,
+// tuned higher (1.3 MP) so the sim renders crisp at full-bleed instead of the old 0.5× blur.
+const fit = () => {
+  const r = stage.getBoundingClientRect()
+  let scale = Math.min(devicePixelRatio || 1, 1.5)
+  const BUDGET = 1300000
+  const want = r.width * r.height * scale * scale
+  if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
+  const w = Math.max(8, Math.round(r.width * scale) >> 1 << 1)
+  const h = Math.max(8, Math.round(r.height * scale) >> 1 << 1)
+  W = w; H = h; stage.width = w; stage.height = h
+  img = g.createImageData(w, h); out32 = new Uint32Array(img.data.buffer)
+  const e = cur(); if (e) { px = e.resize(w, h); try { e.init?.() } catch {} }
+}
+const rebuild = async (s) => {
+  const my = ++gen
+  try { if (kind === 'jz') jzEx = buildJz(s); else jsMod = await buildJs(s) }
+  catch { return }
+  if (my !== gen) return
+  if (!img) fit(); else { const e = cur(); px = e.resize(W, H); try { e.init?.() } catch {} }
+}
 
-// ── FPS readout (footer, right): the embedded example posts {fps, ms}; we draw the graph and
-//    show both fps + ms inline (fps is vsync-pinned; ms/frame is where the engine gap shows). ──
+// ── FPS sparkline — now fed from the in-page loop, not an iframe ──
 const fpsNum = $('fps-num'), msNum = $('ms-num'), fpsSpark = $('fps-spark')
 const fctx = fpsSpark.getContext('2d')
 let fpsHist = new Array(44).fill(0), fpsRef = 120, curFps = 0, curMs = 0, fpsW = 0, fpsH = 0
@@ -386,14 +459,12 @@ const drawFps = () => {
   if (!fpsW) sizeFps()
   const n = fpsHist.length, xs = i => i / (n - 1) * fpsW, ys = v => fpsH - (v / 100) * (fpsH - 2) - 1
   fctx.clearRect(0, 0, fpsW, fpsH)
-  // filled gradient under the line (the headroom area)
   fctx.beginPath(); fctx.moveTo(0, fpsH)
   for (let i = 0; i < n; i++) fctx.lineTo(xs(i), ys(fpsHist[i]))
   fctx.lineTo(fpsW, fpsH); fctx.closePath()
   const grad = fctx.createLinearGradient(0, 0, 0, fpsH)
   grad.addColorStop(0, 'rgba(255,255,255,.4)'); grad.addColorStop(1, 'rgba(255,255,255,.03)')
   fctx.fillStyle = grad; fctx.fill()
-  // the line on top
   fctx.beginPath()
   for (let i = 0; i < n; i++) { const x = xs(i), y = ys(fpsHist[i]); i ? fctx.lineTo(x, y) : fctx.moveTo(x, y) }
   fctx.strokeStyle = 'rgba(255,255,255,.95)'; fctx.lineWidth = 1.5; fctx.lineJoin = 'round'; fctx.stroke()
@@ -402,86 +473,90 @@ const renderFps = () => {
   fpsNum.textContent = curFps >= 1 ? Math.round(curFps) : '··'
   msNum.textContent = curMs > 0 ? (curMs < 10 ? curMs.toFixed(2) : curMs.toFixed(1)) : '··'
 }
-const resetFps = () => { fpsHist = new Array(44).fill(0); fpsRef = 120; drawFps() }
-addEventListener('message', (e) => {
-  const d = e.data; if (!d || d.type !== 'jz:perf') return
-  curFps = d.fps; curMs = d.ms
+sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); fit() })
+
+// ── the loop: step the engine, blit its buffer, measure fps + ms ──
+let last = performance.now(), fps = 0, msEMA = 0, sparkTick = 0
+const loop = () => {
+  requestAnimationFrame(loop)
+  const e = cur()
+  const now = performance.now(), dt = now - last; last = now
+  const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps; fps += (inst - fps) * 0.1
+  if (!e || !px) return
+  const t0 = performance.now()
+  try {
+    if (holding) e.grow?.(ptrX, ptrY)   // inflate the held body every frame (radius ∝ √mass → slows as it grows)
+    e.frame(t); t += 1 / 60; out32.set(px); g.putImageData(img, 0, 0)
+  } catch (err) { return }
+  const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
+  curFps = fps; curMs = msEMA
   if (curFps > fpsRef) fpsRef = curFps
-  fpsHist.push(Math.min(100, curFps / fpsRef * 100)); fpsHist.shift()
-  drawFps(); renderFps()
-})
-addEventListener('resize', () => { sizeFps(); drawFps() })
-sizeFps()
+  if (++sparkTick % 2 === 0) {   // ~30 Hz sparkline update is plenty
+    fpsHist.push(Math.min(100, curFps / fpsRef * 100)); fpsHist.shift(); drawFps()
+  }
+  renderFps()
+}
 
-// ── JS↔JZ engine switch — post the chosen engine to the embedded example ──
+// ── pointer on the sim: click-hold spawns a body, then GROW runs every frame while held
+//    (radius ∝ √mass, so a held body inflates fast then slows — the “log” feel). dblclick re-seeds. ──
+const norm = (ev) => { const r = stage.getBoundingClientRect(); return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height] }
+let holding = false, ptrX = 0.5, ptrY = 0.5
+stage.addEventListener('pointerdown', (e) => { e.preventDefault(); holding = true; [ptrX, ptrY] = norm(e); try { cur()?.spawn?.(ptrX, ptrY) } catch {} })
+stage.addEventListener('pointermove', (e) => { [ptrX, ptrY] = norm(e) })   // always track — grow reads it in the loop
+const rel = () => { if (holding) { holding = false; try { cur()?.release?.() } catch {} } }
+stage.addEventListener('pointerup', rel); stage.addEventListener('pointerleave', rel); stage.addEventListener('pointercancel', rel)
+stage.addEventListener('dblclick', () => { try { cur()?.init?.() } catch {} })
+
+// ── JS↔JZ switch: rebuild the chosen engine from the fetched n-body source ──
 const engineEl = $('engine')
-let engine = 'jz'
-const setEngineUI = (k) => {
-  engine = k
-  engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js')
-  engineEl.setAttribute('aria-checked', k === 'jz')
-}
-engineEl.onclick = () => {
-  setEngineUI(engine === 'jz' ? 'js' : 'jz')
-  try { frame.contentWindow.postMessage({ type: 'jz:engine', kind: engine }, '*') } catch {}
-  // keep the chart history — switching engines should visibly step the line, not wipe it
-}
+const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
+engineEl.onclick = async () => { const k = kind === 'jz' ? 'js' : 'jz'; setEngineUI(k); await rebuild(src) }
 
-// boot — load the single N-body sim full-bleed behind the pitch (on the jz engine)
-const boot = () => { setEngineUI('jz'); resetFps(); frame.src = `examples/nbody/?embed=${UP}` }
-'requestIdleCallback' in window ? requestIdleCallback(boot, { timeout: 600 }) : setTimeout(boot, 200)
+// ── boot: fetch the real n-body source, compile it, run. Same file the example page runs. ──
+;(async () => {
+  try { src = await (await fetch('examples/nbody/nbody.js')).text() } catch (e) { return }
+  setEngineUI('jz')
+  await rebuild(src)
+  fit(); loop()
+})()
 
-// ── Logo reflection ── the 1px ring reflects the moving bodies like light. Each frame: downscale
-//    the whole sim, and for every lit pixel add a smooth bump to the ring at the body→centre angle,
-//    weighted by CLOSENESS (inverse-square → nearer bodies are much brighter). N fine angular samples
-//    + temporal easing keep it smooth (no jitter); the conic-gradient is rebuilt and set per frame.
+// ── Logo reflection: the 1px ring lights where bodies fly past, read straight off the hero canvas. ──
 const logoEl = document.querySelector('.logo')
 const reflEl = logoEl && logoEl.querySelector('.logo-refl')
-let simCv = null
 const off = document.createElement('canvas'); off.width = 120; off.height = 80
 const octx = off.getContext('2d', { willReadFrequently: true })
 const N = 72, STEP = 360 / N
 const bins = new Float32Array(N), smooth = new Float32Array(N)
-const grabSimCanvas = () => {
-  try {
-    const cs = [...(frame.contentDocument?.querySelectorAll('canvas') || [])].filter(c => c.width > 32)
-    return cs.sort((a, b) => b.width * b.height - a.width * a.height)[0] || null
-  } catch { return null }   // not ready / unreachable
-}
 const reflect = () => {
   requestAnimationFrame(reflect)
-  if (!reflEl) return
+  if (!reflEl || !stage.width) return
   const lr = logoEl.getBoundingClientRect()
-  if (lr.bottom < 0 || lr.top > innerHeight) return   // hero scrolled away — idle
-  if (!simCv || !simCv.width) simCv = grabSimCanvas()
-  if (!simCv) return
+  if (lr.bottom < 0 || lr.top > innerHeight) return
   bins.fill(0)
   try {
-    octx.drawImage(simCv, 0, 0, off.width, off.height)       // GPU downscale the whole sim
+    octx.drawImage(stage, 0, 0, off.width, off.height)
     const d = octx.getImageData(0, 0, off.width, off.height).data
-    const fr = frame.getBoundingClientRect()
-    const lw = lr.width                                       // distances in LOGO-WIDTHS (aspect-correct, real screen space)
-    const lcxS = lr.left + lr.width / 2, lcyS = lr.top + lr.height / 2
+    const fr = stage.getBoundingClientRect()
+    const lw = lr.width, lcxS = lr.left + lr.width / 2, lcyS = lr.top + lr.height / 2
     const gx2sx = fr.width / off.width, gy2sy = fr.height / off.height
     for (let y = 0; y < off.height; y++) for (let x = 0; x < off.width; x++) {
       const i = (y * off.width + x) * 4
       const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255
       if (lum < 0.12) continue
       const dxS = fr.left + x * gx2sx - lcxS, dyS = fr.top + y * gy2sy - lcyS
-      const ls = Math.hypot(dxS, dyS) / lw                    // distance in logo-widths
+      const ls = Math.hypot(dxS, dyS) / lw
       if (ls < 0.15) continue
-      const f = Math.max(0, 1 - ls / 6), w = lum * f * f      // squared, full falloff at ~6 logo-widths; bright up close, fading out with distance
-      const sp = ls < 0.6 ? 1 : ls < 1.4 ? 2 : 3              // very close → tight/sharp; farther → softer, wider
-      let a = Math.atan2(dxS, -dyS) * N / (2 * Math.PI)
-      a = (a % N + N) % N
+      const f = Math.max(0, 1 - ls / 6), w = lum * f * f
+      const sp = ls < 0.6 ? 1 : ls < 1.4 ? 2 : 3
+      let a = Math.atan2(dxS, -dyS) * N / (2 * Math.PI); a = (a % N + N) % N
       const b0 = Math.round(a)
       for (let k = -sp; k <= sp; k++) bins[(b0 + k + N) % N] += w * (1 - Math.abs(k) / (sp + 1))
     }
-  } catch { simCv = null; return }   // canvas swapped out — re-grab next frame
+  } catch {}
   const stops = []
   for (let i = 0; i < N; i++) {
     const target = Math.min(0.85, bins[i] * 0.85)
-    smooth[i] += (target - smooth[i]) * 0.045                // lower ease = more inertia: glides smoothly between body moves
+    smooth[i] += (target - smooth[i]) * 0.045
     stops.push(`rgba(216,230,255,${smooth[i].toFixed(3)}) ${(i * STEP).toFixed(1)}deg`)
   }
   stops.push(`rgba(216,230,255,${smooth[0].toFixed(3)}) 360deg`)

@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz repl — JS → WASM, compiled in your browser</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<!-- ?embed (the landing iframes this) → full-black, chrome-stripped. Set before paint, no white flash. -->
+<script>new URLSearchParams(location.search).has('embed') && document.documentElement.classList.add('embed')</script>
 <style>
 /* ── Swiss / International Typographic Style: paper-white, black ink, geometric sans ── */
 /* Jost (libre Futura) self-hosted — geometric fallback where Futura isn't installed */
@@ -193,6 +195,34 @@ main { flex: 1; display: flex; min-height: 0; }
   .prompt input { font-size: 16px; }
   .check input { width: 18px; height: 18px; }
 }
+
+/* ── ?embed: the landing docks this in a black section. Strip the masthead and flip the
+   editor (light) pane to the same ink the terminal already uses — one black REPL, no seams.
+   The standalone /repl/ keeps its paper-white Swiss design (this only applies under .embed). ── */
+html.embed header { display: none; }
+html.embed {
+  --paper: #0b0b0b;   /* editor pane bg = the terminal's --bg → both halves match */
+  --ink:   #e6e6e6;   /* was #000 — now the light foreground */
+  --mid:   #8a8a8a;
+  --soft:  #b3b3b3;
+  --faint: #242424;
+}
+html.embed .right { border-left-color: var(--faint); }          /* quiet seam, not a bright rule */
+html.embed #hl .n { color: #c8c8c8; }                            /* number: light on dark (was #3a3a3a) */
+html.embed #editor::selection { background: rgba(255,255,255,.16); }
+html.embed #editor { scrollbar-color: #3a3a3a transparent; }
+html.embed #editor::-webkit-scrollbar-thumb { background: #333; }
+html.embed #editor::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* embed = a taste, not the full tool: drop opt · settings · bench, and the per-keystroke WAT
+   speaks for itself. The preset reads as the editor's file-tab — no border, an active underline. */
+html.embed .controls, html.embed #bench { display: none; }
+html.embed #preset {
+  -webkit-appearance: none; appearance: none;
+  border: 0; border-radius: 0; background: transparent; color: var(--ink);
+  padding: 6px 0; cursor: pointer; border-bottom: 2px solid currentColor;
+}
+html.embed #preset:hover { color: #fff; }
 </style>
 </head>
 <body>
