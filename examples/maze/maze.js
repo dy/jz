@@ -1,12 +1,19 @@
-// Maze — generate then solve, animated. Generation is a randomized depth-first
-// "recursive backtracker" carving passages on a cell grid (explicit stack); solving is a
-// breadth-first flood from the top-left to the bottom-right that then backtraces the
-// shortest path. Branchy integer bookkeeping over grids + queues/stacks — a control-flow
-// stress for jz. resize(w,h) → Uint32Array; frame() advances; restart() begins anew.
+// Maze — generate then solve, animated. Generation is a randomized depth-first "recursive
+// backtracker" carving passages on a cell grid (explicit stack); solving is a breadth-first
+// flood from the top-left to the bottom-right that then backtraces the shortest path. Branchy
+// integer bookkeeping over grids + queues/stacks — a control-flow stress for jz.
+//
+// Rendered classic-style: a coarse cell-grid bitmap (BW×BH) is stretched to the canvas with
+// CORRIDORS WIDE and WALLS 1px, and a wall only lights up where it borders a carved cell — so
+// the background is always black and the maze grows out of the dark as it carves.
+// resize(w,h) → Uint32Array; frame() advances; restart() begins anew.
 
 let W = 0, H = 0, px
-let bit                 // 1 = wall, 0 = passage (the rendered bitmap)
-let GX = 0, GY = 0      // cell grid dims
+let BW = 0, BH = 0      // bitmap (cell-grid) dims — coarser than the canvas
+let bit                 // 1 = wall, 0 = passage, 2 = solution path
+let GX = 0, GY = 0      // logical cell grid dims
+let colMap, rowMap      // output pixel → bitmap col/row (corridors wide, walls thin)
+let shade               // per-cell gray value (computed each frame)
 let vis                 // generation visited per cell
 let stack, sp           // DFS stack of cell indices
 let dist, prev          // BFS distance + parent (bitmap indices)
@@ -18,26 +25,60 @@ let cur = 0             // backtrace cursor
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  bit = new Int32Array(w * h)
-  GX = (w - 1) >> 1; GY = (h - 1) >> 1
+  // coarse cell grid sized for a ~10px pitch → a classic maze: wide black corridors, thin 1px
+  // walls (a fine 1px-corridor grid reads as a busy gray mesh, not a black-bg maze).
+  let PITCH = 10
+  GX = (w / PITCH) | 0; if (GX < 10) GX = 10
+  GY = (h / PITCH) | 0; if (GY < 8) GY = 8
+  BW = 2 * GX + 1; BH = 2 * GY + 1
+  bit = new Int32Array(BW * BH)
+  shade = new Int32Array(BW * BH)
   vis = new Int32Array(GX * GY)
   stack = new Int32Array(GX * GY)
-  dist = new Int32Array(w * h)
-  prev = new Int32Array(w * h)
-  q = new Int32Array(w * h)
+  dist = new Int32Array(BW * BH)
+  prev = new Int32Array(BW * BH)
+  q = new Int32Array(BW * BH)
+  colMap = new Int32Array(w)
+  rowMap = new Int32Array(h)
+  buildMaps()
   restart()
   return px
 }
 
-let cellBit = (cx, cy) => (2 * cy + 1) * W + (2 * cx + 1)
+// output pixel → bitmap cell index, with corridor cells (odd) wide and wall cells (even) 1px.
+// The walls take GX+1 px (1 each); the rest is split across the GX corridors, the leftover
+// spread one-px-each across the first few so the maze fills the canvas exactly (no edge strip).
+let buildMaps = () => {
+  let corrW = W - (GX + 1), cw = (corrW / GX) | 0, exW = corrW - cw * GX
+  let x = 0, bc = 0, ci = 0
+  while (bc < BW && x < W) {
+    let wpx = 1
+    if ((bc & 1) === 1) { wpx = cw + (ci < exW ? 1 : 0); ci++ }
+    let k = 0
+    while (k < wpx && x < W) { colMap[x] = bc; x++; k++ }
+    bc++
+  }
+  while (x < W) { colMap[x] = BW - 1; x++ }
+  let corrH = H - (GY + 1), ch = (corrH / GY) | 0, exH = corrH - ch * GY
+  let y = 0, br = 0, ri = 0
+  while (br < BH && y < H) {
+    let hpx = 1
+    if ((br & 1) === 1) { hpx = ch + (ri < exH ? 1 : 0); ri++ }
+    let k = 0
+    while (k < hpx && y < H) { rowMap[y] = br; y++; k++ }
+    br++
+  }
+  while (y < H) { rowMap[y] = BH - 1; y++ }
+}
+
+let cellBit = (cx, cy) => (2 * cy + 1) * BW + (2 * cx + 1)
 
 export let restart = () => {
-  let n = W * H, i = 0
+  let n = BW * BH, i = 0
   while (i < n) { bit[i] = 1; dist[i] = -1; i++ }     // all walls
   i = 0
   while (i < GX * GY) { vis[i] = 0; i++ }
-  // start cell (0,0)
-  vis[0] = 1; bit[cellBit(0, 0)] = 0
+  vis[0] = 1; bit[cellBit(0, 0)] = 0                  // start cell (0,0)
   stack[0] = 0; sp = 1
   phase = 0; waitc = 0
 }
@@ -46,13 +87,13 @@ let genStep = () => {
   if (sp === 0) { phase = 1; startSolve(); return }
   let c = stack[sp - 1]
   let cx = c % GX, cy = (c / GX) | 0
-  // collect unvisited neighbours (2 cells away)
+  // collect unvisited neighbours (one cell away on the cell grid)
   let dirs = 0, n0 = -1, n1 = -1, n2 = -1, n3 = -1
   if (cy > 0 && vis[c - GX] === 0) { n0 = c - GX; dirs++ }
   if (cy < GY - 1 && vis[c + GX] === 0) { n1 = c + GX; dirs++ }
   if (cx > 0 && vis[c - 1] === 0) { n2 = c - 1; dirs++ }
   if (cx < GX - 1 && vis[c + 1] === 0) { n3 = c + 1; dirs++ }
-  if (dirs === 0) { sp-- ; return }
+  if (dirs === 0) { sp--; return }
   let pick = (Math.random() * dirs) | 0
   let nb = -1
   if (n0 >= 0) { if (pick === 0) nb = n0; else pick-- }
@@ -62,7 +103,7 @@ let genStep = () => {
   let nx = nb % GX, ny = (nb / GX) | 0
   // carve the wall between cell c and nb, and the neighbour cell
   let wallx = (2 * cx + 1) + (nx - cx), wally = (2 * cy + 1) + (ny - cy)
-  bit[wally * W + wallx] = 0
+  bit[wally * BW + wallx] = 0
   bit[cellBit(nx, ny)] = 0
   vis[nb] = 1
   stack[sp] = nb; sp++
@@ -79,10 +120,40 @@ let solveStep = () => {
   let goal = cellBit(GX - 1, GY - 1)
   if (c === goal) { phase = 2; cur = c; return }
   // 4-neighbours through passages
-  let nb = c - W; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
-  nb = c + W; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
+  let nb = c - BW; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
+  nb = c + BW; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
   nb = c - 1; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
   nb = c + 1; if (bit[nb] === 0 && dist[nb] < 0) { dist[nb] = dist[c] + 1; prev[nb] = c; q[qt] = nb; qt++ }
+}
+
+// per-cell gray: corridors black (faint where flood-explored), bright solution, and a wall
+// only lights up (thin) where one of its 8 neighbours is carved — so unused bulk stays black.
+let shadeCells = () => {
+  let cy = 0
+  while (cy < BH) {
+    let cx = 0
+    while (cx < BW) {
+      let bi = cy * BW + cx
+      let b = bit[bi], g = 0
+      if (b === 2) g = 255
+      else if (b === 0) { if (dist[bi] >= 0) g = 20 }   // explored flood: near-black so the bg stays black
+      else {
+        let seen = 0, yy = cy - 1
+        while (yy <= cy + 1) {
+          let xx = cx - 1
+          while (xx <= cx + 1) {
+            if (yy >= 0 && yy < BH && xx >= 0 && xx < BW) { if (bit[yy * BW + xx] !== 1) seen = 1 }
+            xx++
+          }
+          yy++
+        }
+        if (seen === 1) g = 90
+      }
+      shade[bi] = g
+      cx++
+    }
+    cy++
+  }
 }
 
 export let frame = (t) => {
@@ -97,14 +168,17 @@ export let frame = (t) => {
     }
   } else { waitc++; if (waitc > 150) restart() }
 
-  // render — wall dark, passage light, BFS-explored mid-gray, solution path black
-  let n = W * H, i = 0
-  while (i < n) {
-    let g = 235
-    if (bit[i] === 1) g = 55                           // wall
-    else if (bit[i] === 2) g = 15                      // solution path
-    else if (dist[i] >= 0) g = 150                     // explored
-    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
-    i++
+  // render: stretch the cell grid to the canvas — wide black corridors, thin light walls
+  shadeCells()
+  let y = 0
+  while (y < H) {
+    let brow = rowMap[y] * BW
+    let x = 0
+    while (x < W) {
+      let g = shade[brow + colMap[x]]
+      px[y * W + x] = (255 << 24) | (g << 16) | (g << 8) | g
+      x++
+    }
+    y++
   }
 }

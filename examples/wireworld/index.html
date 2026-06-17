@@ -18,10 +18,10 @@ const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
 
 const demo = runDemo({
   name: "wireworld",
-  hint: "Wireworld — electrons race along wire loops · drag a rectangle to add one",
-  size: { budget: 300000 },
+  hint: "Wireworld — diodes pass electrons one way (→ through, ← blocked); loops below are clocks · drag to add a loop",
+  size: { budget: 30000 },
   load: (e) => { e.seed(); e.frame(0) },
-  frame: (e, t) => { if (t - lastStep >= 1 / 12) { lastStep = t; e.frame(0) } },
+  frame: (e, t) => { if (t - lastStep >= 1 / 14) { lastStep = t; e.frame(0) } },
   overlay: (g, d) => {
     if (!dragging) return
     g.strokeStyle = "rgba(170,170,170,.85)"; g.lineWidth = 1

@@ -18,8 +18,8 @@ const deadVal  = ((rgb2bgr(RGB_DEAD) & ~1) | 0xff000000) >>> 0
 
 // Create canvas manually (game-of-life uses init() not resize(), so runDemo can't be used)
 const s = document.createElement('style')
-s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:#100707;color:#eee;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}`
-  + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:cell}`
+s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:#000;color:#eee;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}`
+  + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:cell;background:#000}`
 document.head.appendChild(s)
 const cv = document.createElement('canvas')
 document.body.insertBefore(cv, document.body.firstChild)
@@ -53,10 +53,12 @@ const loop = () => {
   const sz = size()
   mem.copyWithin(0, sz, 2 * sz)
   if (drawing) spray(curX, curY, erasing)
+  const t0 = performance.now()
   engine.step()
+  const ms = performance.now() - t0
   ui.paint(mem.subarray(sz, 2 * sz), argb)
   ctx.putImageData(imageData, 0, 0)
-  ui.frame()
+  ui.frame(ms)
 }
 
 const ui = hud({

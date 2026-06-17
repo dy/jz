@@ -11,7 +11,7 @@ let W = 0, H = 0, px
 // [x, y, z, θ, scX, scY, offX, offY]
 let st = new Float64Array(8)
 const SIG = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
-const DT = 0.005, STEPS = 300
+const DT = 0.005, STEPS = 340
 
 // Lorenz derivatives
 let dx = (x, y, z) => SIG * (y - x)
@@ -36,6 +36,14 @@ export let init = () => {
   st[3] = 0.0                               // θ
 }
 
+// add a gray dot (R=G=B) at (ix,iy), saturating — the fade later turns it into a glow
+let plot = (ix, iy, add) => {
+  if (ix < 0 || ix >= W || iy < 0 || iy >= H) return
+  let idx = iy * W + ix
+  let nc = (px[idx] & 0xff) + add; if (nc > 255) nc = 255
+  px[idx] = (255 << 24) | (nc << 16) | (nc << 8) | nc
+}
+
 export let frame = (t, theta) => {
   let x = st[0], y = st[1], z = st[2]
   let cosT = Math.cos(theta), sinT = Math.sin(theta)
@@ -46,9 +54,9 @@ export let frame = (t, theta) => {
   while (i < n) {
     let p = px[i]
     if (p & 0xffffff) {
-      let r = ((p & 0xff) * 243) >> 8          // fade ≈ ×0.95 (243/256) → long trails
-      let g = (((p >> 8) & 0xff) * 243) >> 8
-      let b = (((p >> 16) & 0xff) * 243) >> 8
+      let r = ((p & 0xff) * 249) >> 8          // slow fade ≈ ×0.973 → trails persist ~4× longer = denser
+      let g = (((p >> 8) & 0xff) * 249) >> 8
+      let b = (((p >> 16) & 0xff) * 249) >> 8
       px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     }
     i++
@@ -73,15 +81,13 @@ export let frame = (t, theta) => {
     let sx = (x * cosT - y * sinT) * scX + offX
     let sy = offY - z * scY
 
+    // 2×2 splat (bright centre, dimmer neighbours) → a 2px ribbon instead of a 1px thread,
+    // so the wings read as a dense surface rather than a sparse wire.
     let ix = sx | 0, iy = sy | 0
-    if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
-      let idx = iy * W + ix
-      // white/gray trail: add equal R=G=B so the fade gives a gray glow
-      let p = px[idx]
-      let ec = (p & 0xff)
-      let nc = ec + 200; if (nc > 255) nc = 255
-      px[idx] = (255 << 24) | (nc << 16) | (nc << 8) | nc
-    }
+    plot(ix, iy, 170)
+    plot(ix + 1, iy, 95)
+    plot(ix, iy + 1, 95)
+    plot(ix + 1, iy + 1, 55)
     k++
   }
 

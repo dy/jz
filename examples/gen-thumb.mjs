@@ -12,7 +12,10 @@ const dir = fileURLToPath(new URL('.', import.meta.url))
 const wasm = fs.readFileSync(`${dir}/${name}/${name}.wasm`)
 const { exports } = await instantiate(wasm)
 
-const W = 760, H = 468
+// Most examples render at the standard thumb size; a few want a coarser grid so their cells
+// stay chunky/legible at thumbnail scale (the gallery upscales the webp).
+const SIZE = { wireworld: [264, 162] }[name]
+const W = SIZE ? SIZE[0] : 760, H = SIZE ? SIZE[1] : 468
 let px = exports.resize(W, H)
 if (exports.init) exports.init()
 
@@ -87,9 +90,9 @@ const FRAME_ARGS = {
 
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, lenia: 120, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
-                 dla: 600, wireworld: 26, waves: 90, cloth: 130, maze: 700, sph: 500,
+                 dla: 600, wireworld: 200, waves: 90, cloth: 130, maze: 200, sph: 500,
                  erosion: 80, lbm: 150, watercolor: 200, cradle: 36,
-                 buddhabrot: 60, lorenz: 320, pendulum: 70, fern: 150, ising: 140,
+                 buddhabrot: 120, lorenz: 320, pendulum: 175, fern: 150, ising: 140,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the

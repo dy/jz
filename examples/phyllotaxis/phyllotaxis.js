@@ -49,12 +49,12 @@ export let frame = (t, ang) => {
   let total = W * H, i = 0
   while (i < total) { px[i] = (255 << 24); i++ }
 
-  let N = 3200
+  let N = 3600
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
-  let scale = minDim * 0.46 / Math.sqrt(N)
-  let dotR = scale * 0.75
-  if (dotR < 1.0) dotR = 1.0
+  let scale = minDim * 0.47 / Math.sqrt(N)
+  let dotR = scale * 0.44              // smaller than half the seed spacing → crisp, separated dots
+  if (dotR < 0.85) dotR = 0.85
 
   i = 0
   while (i < N) {

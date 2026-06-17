@@ -4,8 +4,8 @@
 // (the Gaussian units ±1,±i act as symmetry group). The constellation is simultaneously
 // sparse and rich — a visual proof that primality extends into 2D.
 //
-// The origin slowly breathes (step oscillates) to hint at scale. Drag to pan.
-// resize(w,h) → Uint32Array; frame(t, panX, panY) renders.
+// Drag to pan, scroll to zoom (the lattice spacing scales).
+// resize(w,h) → Uint32Array; frame(t, panX, panY, zoom) renders.
 
 let W = 0, H = 0, px
 let isComp          // Uint8Array — rational prime sieve
@@ -78,13 +78,13 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (t, panX, panY) => {
+export let frame = (t, panX, panY, zoom) => {
   // store pan in Float64Array so it stays fractional
   st[0] = panX; st[1] = panY
 
-  // step breathes gently
-  let baseStep = 6.0
-  let step = baseStep + Math.sin(t * 0.4) * 1.2
+  // lattice spacing in px; scroll scales the zoom (≈6px at zoom 1)
+  let z = zoom > 0.0 ? zoom : 1.0
+  let step = 6.0 * z
 
   // clear black
   let total = W * H
@@ -93,7 +93,7 @@ export let frame = (t, panX, panY) => {
 
   let cx = W * 0.5 + st[0]
   let cy = H * 0.5 + st[1]
-  let diskR = 1.6
+  let diskR = step * 0.26; if (diskR < 1.2) diskR = 1.2   // dots scale with the spacing
 
   // range of lattice points visible
   let aMin = ((-cx) / step) | 0

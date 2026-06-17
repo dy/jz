@@ -9,17 +9,47 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-runDemo({
+// Forcing sequence A=0/B=1, packed LSB-first in `bits`. Start with the classic AABAB.
+let bits = 0b10100, len = 5
+const seqStr = () => { let s = ""; for (let i = 0; i < len; i++) s += ((bits >> i) & 1) ? "B" : "A"; return s }
+
+let ox = 0, oy = 0, lastX = 0, lastY = 0, dragging = false, userSet = false
+
+const demo = runDemo({
   name: "lyapunov",
-  hint: "Markus–Lyapunov fractal — order vs chaos · auto-drifts",
+  hint: "Markus–Lyapunov fractal — drag to pan · double-click to randomize the A/B sequence",
   size: { budget: 220000 },
-  // no ptr/drag needed — gentle autonomous drift
+  load: (e) => e.setSeq?.(bits, len),
   frame: (e, t) => {
-    // slow drift of the [2.5,4.0] window via pan offsets
-    const ox = Math.sin(t * 0.04) * 0.3
-    const oy = Math.cos(t * 0.03) * 0.3
+    if (!userSet) { ox = Math.sin(t * 0.04) * 0.3; oy = Math.cos(t * 0.03) * 0.3 }   // gentle drift until grabbed
     e.frame(t, ox, oy)
   },
+  overlay: (g) => {
+    g.font = "600 14px Futura, 'Futura PT', 'Helvetica Neue', Arial, sans-serif"
+    g.fillStyle = "rgba(255,255,255,.85)"
+    g.fillText("sequence  " + seqStr(), 14, 26)
+  },
+})
+
+const cv = demo.cv
+cv.addEventListener("pointerdown", e => {
+  dragging = true; userSet = true; lastX = e.clientX; lastY = e.clientY
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+})
+cv.addEventListener("pointermove", e => {
+  if (!dragging) return
+  ox -= (e.clientX - lastX) / innerWidth * 1.5    // window spans 1.5 across the screen
+  oy -= (e.clientY - lastY) / innerHeight * 1.5
+  lastX = e.clientX; lastY = e.clientY
+})
+cv.addEventListener("pointerup", e => { dragging = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { dragging = false })
+// double-click → a fresh random sequence (always with at least one A and one B)
+cv.addEventListener("dblclick", () => {
+  len = 3 + (Math.random() * 4 | 0)                // 3..6 cells
+  const max = (1 << len) - 1
+  do { bits = 1 + (Math.random() * (max - 1) | 0) } while (bits === 0 || bits === max)
+  if (demo.engine && demo.engine.setSeq) demo.engine.setSeq(bits, len)
 })
 </script>
 </body>

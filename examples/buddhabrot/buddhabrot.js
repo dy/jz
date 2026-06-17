@@ -71,15 +71,22 @@ export let frame = (t) => {
     s++
   }
 
-  // tone-map density → grayscale
+  // tone-map → grayscale, NORMALIZED by the current max so it never blows out to white as
+  // samples accumulate (it sharpens over time). LINEAR ratio with γ>1 — the diffuse background
+  // (~10% of peak) is crushed toward black so only the bright nebula filaments stand out. A log
+  // curve here lifts that background to gray and washes the whole image out.
   let i = 0, n = W * H
+  let maxD = 1
+  while (i < n) { if (dens[i] > maxD) maxD = dens[i]; i++ }
+  let inv = 1.0 / maxD
+  i = 0
   while (i < n) {
     let d = dens[i]
     let gv = 0
     if (d > 0) {
-      let v = Math.log(d + 1.0) * 45.0
-      if (v > 255.0) v = 255.0
-      gv = v | 0
+      let v = d * inv                          // 0..1 relative to the densest pixel
+      gv = (Math.pow(v, 1.2) * 255.0) | 0      // γ>1: bg (~0.1 of peak) → ~16 (dark); filaments bright
+      if (gv > 255) gv = 255
     }
     px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
     i++

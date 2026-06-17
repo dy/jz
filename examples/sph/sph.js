@@ -111,9 +111,9 @@ export let frame = (t) => {
     i++
   }
 
-  // render: additive white blobs on deep blue-black → a fluid body
+  // render: additive white blobs on black → a fluid body
   let n = W * H, k = 0
-  while (k < n) { px[k] = 0xff100a06; k++ }
+  while (k < n) { px[k] = (255 << 24); k++ }
   let rad = (W < H ? W : H) * 0.026
   i = 0
   while (i < N) { splat(x[i] * W, y[i] * H, rad, 205.0); i++ }

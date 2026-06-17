@@ -113,16 +113,15 @@ export let frame = (t) => {
     s++
   }
 
-  // render: light background, support bar, strings, dark balls
+  // render: black background, light support bar + strings, bright balls (inverted look)
   let n = W * H, k = 0
-  while (k < n) { px[k] = 0xfff2f0ea; k++ }
-  let barY = (pvy - L * 0.0) | 0
-  line((pvx[0] - R) | 0, pvy | 0, (pvx[N - 1] + R) | 0, pvy | 0, 60)   // support bar
+  while (k < n) { px[k] = (255 << 24); k++ }                           // black bg
+  line((pvx[0] - R) | 0, pvy | 0, (pvx[N - 1] + R) | 0, pvy | 0, 130)  // support bar
   let i = 0
   while (i < N) {
     let bx = ballX(i), by = pvy + Math.cos(th[i]) * L
-    line(pvx[i] | 0, pvy | 0, bx | 0, by | 0, 110)                     // string
-    disc(bx, by, R, 36)                                                // ball (touches its neighbours)
+    line(pvx[i] | 0, pvy | 0, bx | 0, by | 0, 80)                      // string — dim
+    disc(bx, by, R, 225)                                               // ball — bright
     i++
   }
 }

@@ -9,12 +9,12 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-let panX = 0, panY = 0, lastX = 0, lastY = 0, dragging = false
+let panX = 0, panY = 0, zoom = 1, lastX = 0, lastY = 0, dragging = false
 const demo = runDemo({
   name: "gauss-primes",
-  hint: "Gaussian primes — primes in ℤ[i]; drag to pan. 8-fold symmetry from the Gaussian units ±1, ±i",
+  hint: "Gaussian primes — primes in ℤ[i]; drag to pan, scroll to zoom. 8-fold symmetry from the units ±1, ±i",
   frame: (e, t) => {
-    e.frame(t, panX, panY)
+    e.frame(t, panX, panY, zoom)
   },
 })
 
@@ -28,6 +28,21 @@ demo.cv.addEventListener("pointermove", e => {
   lastX = e.clientX; lastY = e.clientY
 })
 demo.cv.addEventListener("pointerup", () => { dragging = false })
+// scroll to zoom, anchored on the cursor (the lattice point under it stays put)
+demo.cv.addEventListener("wheel", e => {
+  e.preventDefault()
+  const sx = demo.W / demo.cv.clientWidth, sy = demo.H / demo.cv.clientHeight
+  const mx = e.offsetX * sx, my = e.offsetY * sy
+  const stepOld = 6 * zoom
+  const a = (mx - (demo.W * 0.5 + panX)) / stepOld
+  const b = (my - (demo.H * 0.5 + panY)) / stepOld
+  zoom *= Math.exp(-e.deltaY * 0.0015)
+  if (zoom < 0.3) zoom = 0.3
+  if (zoom > 10) zoom = 10
+  const stepNew = 6 * zoom
+  panX = mx - a * stepNew - demo.W * 0.5
+  panY = my - b * stepNew - demo.H * 0.5
+}, { passive: false })
 </script>
 </body>
 </html>

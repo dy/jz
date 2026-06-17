@@ -2,7 +2,7 @@
 // with Verlet (position-only) and relaxed by several constraint passes per frame. The top
 // row is pinned; gravity pulls the rest into a hanging sheet you can grab and swing. The
 // constraint relaxation is pointer-chasing over the node grid — a memory-layout stress for
-// jz, unlike the flat pixel kernels. Drawn as a wire mesh, dark on light.
+// jz, unlike the flat pixel kernels. Drawn as a wire mesh, light on black.
 // resize(w,h) → Uint32Array; frame() steps; grab/drag/release to interact.
 
 let W = 0, H = 0, px
@@ -18,16 +18,16 @@ let ITER = 4
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  // Responsive grid: a wide, shallow drape. Square cells sized to the screen; column/row
-  // counts follow the screen so the sheet spans ~88% of the width but only the upper ~36%
-  // of the height — wide and short, so it never hangs off the bottom. Cells are kept on the
-  // coarse side (min/82) so the node count stays light (a few thousand) and it runs smooth.
-  L = (w < h ? w : h) / 82
+  // Responsive grid: a wide drape that hangs to ~half the height. Square cells sized to the
+  // screen; column/row counts follow the screen so the sheet spans ~88% of the width and ~52%
+  // of the height — long, but not off the bottom. Cells kept coarse (min/74) so the node count
+  // stays light (a few thousand) even with the longer drape, and it runs smooth.
+  L = (w < h ? w : h) / 74
   GX = (Math.round(w * 0.88 / L) + 1) | 0
-  GY = (Math.round(h * 0.36 / L) + 1) | 0
+  GY = (Math.round(h * 0.52 / L) + 1) | 0
   if (GX > 240) GX = 240
   if (GX < 12) GX = 12
-  if (GY > 80) GY = 80
+  if (GY > 100) GY = 100
   if (GY < 8) GY = 8
   N = GX * GY
   nx = new Float64Array(N); ny = new Float64Array(N)
@@ -126,10 +126,10 @@ export let frame = (t) => {
     k++
   }
 
-  // render: light paper, dark mesh
+  // render: black ground, light mesh (inverted)
   let n = W * H, p = 0
-  while (p < n) { px[p] = 0xfff3f1ec; p++ }
-  let col = (255 << 24) | (40 << 16) | (36 << 8) | 34
+  while (p < n) { px[p] = (255 << 24); p++ }
+  let col = (255 << 24) | (205 << 16) | (205 << 8) | 205
   let j2 = 0
   while (j2 < GY) {
     let ii = 0

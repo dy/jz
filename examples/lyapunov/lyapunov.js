@@ -14,9 +14,19 @@ let seq
 export let resize = (w, h) => {
   W = w; H = h; invW = 1.0 / w; invH = 1.0 / h
   px = new Uint32Array(w * h)
-  seq = new Int32Array(5)
+  seq = new Int32Array(8)
   seq[0] = 0; seq[1] = 0; seq[2] = 1; seq[3] = 0; seq[4] = 1  // AABAB
   return px
+}
+
+// Replace the forcing sequence — A=0, B=1 packed LSB-first into `bits`, `len` cells long.
+// Different sequences give wholly different fractals; the host rolls the dice (keeping JS≡jz).
+export let setSeq = (bits, len) => {
+  if (len < 2) len = 2
+  if (len > 6) len = 6
+  SEQLEN = len
+  let i = 0
+  while (i < len) { seq[i] = (bits >> i) & 1; i++ }
 }
 
 export let frame = (t, ox, oy) => {

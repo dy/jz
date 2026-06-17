@@ -18,31 +18,22 @@ let cr_ = new Float64Array(MAX)
 let dep_ = new Float64Array(MAX)  // depth for coloring
 let ncircles = 0
 
-// stack for the recursion: each entry = 9 f64 (k1,cx1,cy1, k2,cx2,cy2, k3,cx3,cy3) + 1 f64 depth
-// 8000 entries × 10 f64 = 80000 slots
-let SMAX = 80000
+// stack for the recursion: each entry = a tangent QUADRUPLE (a,b,c,d) = 12 f64 (k,x,y per
+// circle) + 1 f64 depth = 13 f64 per entry.
+let SMAX = 260000
 let stk = new Float64Array(SMAX)
-let stk_sp = 0  // stack pointer (counts slots, each entry = 10)
+let stk_sp = 0  // stack pointer (counts slots, each entry = 13)
 
-// push a triple onto the stack
-let spush = (k1, x1, y1, k2, x2, y2, k3, x3, y3, d) => {
-  if (stk_sp + 10 > SMAX) return
-  stk[stk_sp]   = k1; stk[stk_sp+1] = x1; stk[stk_sp+2] = y1
-  stk[stk_sp+3] = k2; stk[stk_sp+4] = x2; stk[stk_sp+5] = y2
-  stk[stk_sp+6] = k3; stk[stk_sp+7] = x3; stk[stk_sp+8] = y3
-  stk[stk_sp+9] = d
-  stk_sp = stk_sp + 10
-}
-
-// complex square root of (a + b*i) → [re, im]
-// We store result in two module-level Float64Array slots to avoid returning objects
-let csqrt_buf = new Float64Array(2)
-let csqrt = (a, b) => {
-  let m = Math.sqrt(a * a + b * b)
-  let re = Math.sqrt((m + a) * 0.5)
-  let im = b < 0.0 ? -Math.sqrt((m - a) * 0.5) : Math.sqrt((m - a) * 0.5)
-  csqrt_buf[0] = re
-  csqrt_buf[1] = im
+// push a tangent quadruple (a,b,c,d). d is the circle "across" the gap among a,b,c — the
+// next circle to drop in is the OTHER one tangent to a,b,c, namely  e = 2(a+b+c) − d.
+let spush = (ka, xa, ya, kb, xb, yb, kc, xc, yc, kd, xd, yd, d) => {
+  if (stk_sp + 13 > SMAX) return
+  stk[stk_sp]    = ka; stk[stk_sp+1]  = xa; stk[stk_sp+2]  = ya
+  stk[stk_sp+3]  = kb; stk[stk_sp+4]  = xb; stk[stk_sp+5]  = yb
+  stk[stk_sp+6]  = kc; stk[stk_sp+7]  = xc; stk[stk_sp+8]  = yc
+  stk[stk_sp+9]  = kd; stk[stk_sp+10] = xd; stk[stk_sp+11] = yd
+  stk[stk_sp+12] = d
+  stk_sp = stk_sp + 13
 }
 
 // additive saturating pixel write — overlaps bloom toward white
@@ -107,86 +98,47 @@ let buildGasket = (R) => {
   cx_[4] = 0.0; cy_[4] = 0.0; cr_[4] = rc; dep_[4] = 1.0
   ncircles = 5
 
-  // seed the stack with initial tangent triples (each gap)
-  // gaps: (outer, c0, c1), (outer, c1, c2), (outer, c2, c0)
-  // and inner: (c0, c1, center), (c1, c2, center), (c2, c0, center)
-  spush(k0, 0.0, 0.0, k1, x0, y0, k1, x1, y1, 2.0)
-  spush(k0, 0.0, 0.0, k1, x1, y1, k1, x2, y2, 2.0)
-  spush(k0, 0.0, 0.0, k1, x2, y2, k1, x0, y0, 2.0)
-  spush(k1, x0, y0, k1, x1, y1, kc, 0.0, 0.0, 2.0)
-  spush(k1, x1, y1, k1, x2, y2, kc, 0.0, 0.0, 2.0)
-  spush(k1, x2, y2, k1, x0, y0, kc, 0.0, 0.0, 2.0)
+  // Seed the 6 curvilinear gaps of the {outer, c0, c1, c2} + central configuration as tangent
+  // quadruples (a,b,c,d): 3 lunes against the outer circle, 3 around the central circle. Each
+  // gap will be filled by  e = 2(a+b+c) − d.
+  spush(k0,0.0,0.0, k1,x0,y0, k1,x1,y1, k1,x2,y2, 2.0)   // outer ∪ c0,c1   (away from c2)
+  spush(k0,0.0,0.0, k1,x1,y1, k1,x2,y2, k1,x0,y0, 2.0)   // outer ∪ c1,c2   (away from c0)
+  spush(k0,0.0,0.0, k1,x0,y0, k1,x2,y2, k1,x1,y1, 2.0)   // outer ∪ c0,c2   (away from c1)
+  spush(kc,0.0,0.0, k1,x0,y0, k1,x1,y1, k1,x2,y2, 2.0)   // center ∪ c0,c1  (away from c2)
+  spush(kc,0.0,0.0, k1,x1,y1, k1,x2,y2, k1,x0,y0, 2.0)   // center ∪ c1,c2  (away from c0)
+  spush(kc,0.0,0.0, k1,x0,y0, k1,x2,y2, k1,x1,y1, 2.0)   // center ∪ c0,c2  (away from c1)
 
-  // Cutoff in NORMALIZED gasket units (the gasket is built with outer radius R=1, then
-  // scaled to the screen at draw time). 0.0022 keeps circles down to ~0.3–0.9 px across the
-  // thumbnail→full-screen range — deep enough that the gap-filling recursion really descends.
-  let minPxR = 0.0022
+  // Cutoff radius in NORMALIZED gasket units (outer radius = 1, scaled to screen at draw time).
+  // The gasket's circle count to radius ε grows like ε^-1.3, so 0.0016 yields a few thousand
+  // circles — sub-pixel at the thumbnail, crisp at full-screen — and the recursion ends on its own.
+  let minR = 0.0016
 
   while (stk_sp > 0 && ncircles < MAX) {
-    // pop
-    stk_sp = stk_sp - 10
-    let ka = stk[stk_sp],   xa = stk[stk_sp+1], ya = stk[stk_sp+2]
-    let kb = stk[stk_sp+3], xb = stk[stk_sp+4], yb = stk[stk_sp+5]
-    let kc2 = stk[stk_sp+6], xc = stk[stk_sp+7], yc = stk[stk_sp+8]
-    let dep = stk[stk_sp+9]
+    stk_sp = stk_sp - 13
+    let ka = stk[stk_sp],    xa = stk[stk_sp+1],  ya = stk[stk_sp+2]
+    let kb = stk[stk_sp+3],  xb = stk[stk_sp+4],  yb = stk[stk_sp+5]
+    let kc2 = stk[stk_sp+6], xc = stk[stk_sp+7],  yc = stk[stk_sp+8]
+    let kd = stk[stk_sp+9],  xd = stk[stk_sp+10], yd = stk[stk_sp+11]
+    let dep = stk[stk_sp+12]
 
-    // Descartes: k4 = ka+kb+kc2 ± 2*sqrt(ka*kb + kb*kc2 + kc2*ka)
-    let ksum = ka + kb + kc2
-    let disc = ka * kb + kb * kc2 + kc2 * ka
-    if (disc < 0.0) disc = 0.0
-    let sqd = Math.sqrt(disc)
-    let k4a = ksum + 2.0 * sqd
-    let k4b = ksum - 2.0 * sqd
+    // The OTHER circle tangent to a,b,c (the one that isn't d). Linear Descartes — exact,
+    // no square root and no inner/outer sign ambiguity (that ambiguity is what broke the gasket).
+    let ke = 2.0 * (ka + kb + kc2) - kd
+    if (ke <= 0.0) continue              // keep only positive-curvature (gap-filling) circles
+    let re = 1.0 / ke
+    if (re < minR) continue              // sub-pixel — stop descending this branch
+    let ex = (2.0 * (ka*xa + kb*xb + kc2*xc) - kd*xd) * re
+    let ey = (2.0 * (ka*ya + kb*yb + kc2*yc) - kd*yd) * re
 
-    // pick the positive branch (the new circle, not the parent)
-    // We want k4 > 0 and r4 not huge
-    let k4 = k4a > k4b ? k4a : k4b
-    if (k4 <= 0.0) continue
-    let r4 = 1.0 / k4
-    // skip if too small (less than ~1px)
-    if (r4 < minPxR) continue
-
-    // center: k4*z4 = ka*za + kb*zb + kc2*zc ± 2*sqrt(ka*kb*za*zb + kb*kc2*zb*zc + kc2*ka*zc*za)
-    // complex products: za*zb = (xa+ya*i)*(xb+yb*i) = (xa*xb-ya*yb) + (xa*yb+ya*xb)*i
-    let s_re = ka*kb*(xa*xb - ya*yb) + kb*kc2*(xb*xc - yb*yc) + kc2*ka*(xc*xa - yc*ya)
-    let s_im = ka*kb*(xa*yb + ya*xb) + kb*kc2*(xb*yc + yb*xc) + kc2*ka*(xc*ya + yc*xa)
-    csqrt(s_re, s_im)
-    let sq_re = csqrt_buf[0], sq_im = csqrt_buf[1]
-
-    let base_re = ka*xa + kb*xb + kc2*xc
-    let base_im = ka*ya + kb*yb + kc2*yc
-
-    // two candidates for z4
-    let z4a_re = (base_re + 2.0 * sq_re) / k4
-    let z4a_im = (base_im + 2.0 * sq_im) / k4
-    let z4b_re = (base_re - 2.0 * sq_re) / k4
-    let z4b_im = (base_im - 2.0 * sq_im) / k4
-
-    // pick the one inside the outer circle: distance from origin + r4 < R + eps
-    let da = Math.sqrt(z4a_re * z4a_re + z4a_im * z4a_im)
-    let db = Math.sqrt(z4b_re * z4b_re + z4b_im * z4b_im)
-    let eps = r4 * 0.01 + 1e-6
-    let z4_re, z4_im, chosen_da
-    if (da + r4 < R + eps && (!(db + r4 < R + eps) || da < db)) {
-      z4_re = z4a_re; z4_im = z4a_im; chosen_da = da
-    } else if (db + r4 < R + eps) {
-      z4_re = z4b_re; z4_im = z4b_im; chosen_da = db
-    } else {
-      // neither fits cleanly — pick closer to origin
-      if (da < db) { z4_re = z4a_re; z4_im = z4a_im; chosen_da = da }
-      else { z4_re = z4b_re; z4_im = z4b_im; chosen_da = db }
-    }
-
-    // store circle
     let ci = ncircles
-    cx_[ci] = z4_re; cy_[ci] = z4_im; cr_[ci] = r4; dep_[ci] = dep
+    cx_[ci] = ex; cy_[ci] = ey; cr_[ci] = re; dep_[ci] = dep
     ncircles = ci + 1
 
-    // push 3 new triples (each neighbor replaced by the new circle)
-    let newdep = dep + 1.0
-    spush(kb, xb, yb, kc2, xc, yc, k4, z4_re, z4_im, newdep)
-    spush(ka, xa, ya, kc2, xc, yc, k4, z4_re, z4_im, newdep)
-    spush(ka, xa, ya, kb, xb, yb, k4, z4_re, z4_im, newdep)
+    // recurse into the 3 fresh sub-gaps formed by e with each pair of {a,b,c}
+    let nd = dep + 1.0
+    spush(ka,xa,ya, kb,xb,yb,  ke,ex,ey, kc2,xc,yc, nd)   // (a,b,e) away from c
+    spush(kb,xb,yb, kc2,xc,yc, ke,ex,ey, ka,xa,ya, nd)    // (b,c,e) away from a
+    spush(ka,xa,ya, kc2,xc,yc, ke,ex,ey, kb,xb,yb, nd)    // (a,c,e) away from b
   }
 }
 

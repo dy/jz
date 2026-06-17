@@ -9,20 +9,18 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
+let rule = 30                              // the iconic chaotic rule — the default
 const demo = runDemo({
   name: "rule30",
-  hint: "Wolfram Rule 30 — drag ↔ to change rule (0–255), click to reseed",
+  hint: "Wolfram Rule 30 — drag ↔ to change the rule (0–255), double-click to reseed",
   size: { budget: 160000 },
   load: (e) => e.init?.(),
-  frame: (e, t) => {
-    let rule = Math.floor(ptr.x * 256)
-    if (rule > 255) rule = 255
-    if (rule < 0) rule = 0
-    e.frame(t, rule)
-  },
+  frame: (e, t) => e.frame(t, rule),
 })
 const ptr = trackPointer(demo.cv)
-demo.cv.addEventListener("pointerdown", () => { if (demo.engine && demo.engine.seed) demo.engine.seed() })
+// rule changes only on a drag (a plain click/double-click leaves it alone)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) rule = Math.max(0, Math.min(255, Math.floor(ptr.x * 256))) })
+demo.cv.addEventListener("dblclick", () => { if (demo.engine && demo.engine.seed) demo.engine.seed() })
 </script>
 </body>
 </html>
