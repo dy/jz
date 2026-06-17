@@ -188,6 +188,14 @@ VT['[]'] = (args) => {
   if (typeof args[0] === 'string') {
     const elemVt = ctx.func.localReps?.get(args[0])?.arrayElemValType
     if (elemVt) return elemVt
+    // Module-level const array (a numeric/uniform table): its element val-type was
+    // recorded on the global rep at decl time. Trust it only when no function element-
+    // writes the array — dynWriteVars holds every var written via a non-named-property
+    // index, so a `X[i]=str` anywhere disables this and falls back to the untyped read.
+    if (!ctx.func.localReps?.has(args[0])) {
+      const gElem = ctx.scope.globalReps?.get(args[0])?.arrayElemValType
+      if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
+    }
   }
   // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
   // chord/pattern tables; literal op is `[`, elements inline). Every element is a

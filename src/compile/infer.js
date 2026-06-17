@@ -46,7 +46,7 @@
 import { ctx } from '../ctx.js'
 import { collectParamNames, ASSIGN_OPS } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
-import { staticObjectProps } from '../static.js'
+import { staticObjectProps, staticArrayElems } from '../static.js'
 import { typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
@@ -341,6 +341,23 @@ export function recordGlobalRep(name, expr) {
   }
   const ctor = typedElemCtor(expr)
   if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+  // Module-level const array literal with a uniform element val-type (e.g. a numeric
+  // table `const FREQS = [261.63, …]`): record it so `FREQS[i]` reads in any using
+  // function are typed (NUMBER) rather than untyped. Without this an untyped element
+  // read makes `s += FREQS[i]` take the polymorphic +/ToString path — dragging the
+  // entire string runtime (~5 kB) into a kernel that uses no strings. A function-local
+  // array gets this from analyzeValTypes; a module-level one is invisible to the using
+  // function's body walk, so capture it here. Soundness for a later `FREQS[i]=…` is the
+  // read-site dynWriteVars guard in valTypeOf (kind.js) — this is just the literal fact.
+  if (vt === VAL.ARRAY) {
+    const elems = staticArrayElems(expr)
+    if (elems && elems.length && elems.every(e => e != null)) {
+      let common = valTypeOf(elems[0])
+      for (let k = 1; k < elems.length && common != null; k++)
+        if (valTypeOf(elems[k]) !== common) common = null
+      if (common != null) updateGlobalRep(name, { arrayElemValType: common })
+    }
+  }
   // Static-shape capture for module-level object literals — lets `{ ...G.path }`
   // resolve its source schema by walking the global rep's shape tree at the
   // spread site (see shape walk in analyze.js / resolveSchema in object.js).
