@@ -2042,3 +2042,57 @@ test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it
   is(f(2, 0.5, 4, 5), js(2, 0.5, 4, 5))
   is(f(-1.5, 2.5, 7, 3), js(-1.5, 2.5, 7, 3))
 })
+
+// ── Loop induction strength-reduction (i%w / (i/w)|0 → i32 counters) ──
+// src/compile/loop-divmod.js. The pass must be bit-exact vs disabled, for ALL
+// w including 0 and negative (the `w>0` guard falls back to the original loop).
+const lsrOn = (src) => run(src, { optimize: 'speed' }).f
+const lsrOff = (src) => run(src, { optimize: { level: 'speed', loopIVDivMod: false } }).f
+const lsrDims = (on, off) => {
+  for (const w of [1, 2, 3, 7, 16, 160, 0, -2, -3]) for (const h of [0, 1, 3, 8, -3]) is(on(w, h), off(w, h), `w=${w} h=${h}`)
+}
+
+test('loop-SR: grid kernel (both i%w and (i/w)|0) is bit-exact ON vs OFF across dims', () => {
+  const src = `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a*31 + x*7 + y*13)|0; i++ } return a|0 }`
+  lsrDims(lsrOn(src), lsrOff(src))
+})
+
+test('loop-SR: fires (counter local emitted at speed, absent when disabled)', () => {
+  const src = `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a+x+y)|0; i++ } return a|0 }`
+  ok(/lsrx/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'counter present')
+  ok(!/lsrx/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', loopIVDivMod: false } })), 'absent when off')
+})
+
+test('loop-SR: w==0 with a w-independent bound (exposes i%0=NaN) falls back, stays exact', () => {
+  const src = `export let f=(w,h)=>{ let n=h,i=0,a=0; while(i<n){ let x=i%w; a=(a*31 + x*7)|0; i++ } return a|0 }`
+  lsrDims(lsrOn(src), lsrOff(src))
+})
+
+test('loop-SR: only-mod, only-div, and non-zero start i0 each bit-exact', () => {
+  for (const src of [
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; a=(a+x)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let y=(i/w)|0; a=(a+y)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=3,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a*31 + x + y)|0; i++ } return a|0 }`,
+  ]) lsrDims(lsrOn(src), lsrOff(src))
+})
+
+test('loop-SR: bails safely (ON==OFF) on continue / w-mutation / non-unit step', () => {
+  for (const src of [
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ if((i&7)===0){i++;continue} let x=i%w; a=(a+x)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; a=(a+x)|0; w=w+1; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; a=(a+x)|0; i=i+2 } return a|0 }`,
+  ]) for (const w of [3, 7, 16, 0, -2]) for (const h of [3, 8]) is(lsrOn(src)(w, h), lsrOff(src)(w, h))
+})
+
+test('loop-SR: workflow-found — negative IV start / negative non-multiple start / closure-mutated divisor stay exact', () => {
+  // Adversarial cases the 8-family verification surfaced: a negative starting IV makes
+  // i%w negative (JS modulo takes the dividend sign) — caught by the `i>=0` guard; a
+  // closure mutating w from outside the loop — caught by the closure-mutation bail.
+  for (const src of [
+    `export let f=(w,h)=>{ let n=w*h,i=-3,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a*31+x*7+y)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=-w,a=0; while(i<n){ let x=i%w; a=(a*31+x)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=-w*2,a=0; while(i<n){ let x=i%w; a=(a*31+x)|0; i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; let dec=()=>{w=w-1}; while(i<n){ let x=i%w; a=(a*31+x)|0; if((i&3)===0)dec(); i++ } return a|0 }`,
+    `export let f=(w,h)=>{ let n=w*h,i=0,a=0; let mutW=null; mutW=()=>{w=w-1}; while(i<n){ let x=i%w; a=(a*31+x)|0; mutW(); i++ } return a|0 }`,
+  ]) for (const w of [2, 3, 5, 7, 16, 0, -2, -3]) for (const h of [1, 3, 8]) is(lsrOn(src)(w, h), lsrOff(src)(w, h), `w=${w} h=${h}`)
+})

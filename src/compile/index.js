@@ -37,6 +37,7 @@ import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
+import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -379,6 +380,12 @@ function emitPreboxedLocalInits(isSeeded) {
 function analyzeFuncForEmit(func, programFacts) {
   const { paramReps } = programFacts
   if (func.raw) return null
+
+  // Strength-reduce per-iteration `i % w` / `(i/w)|0` to incremental i32 counters
+  // (idempotent: a reduced loop has no modulo left to match). Before analyze so the
+  // counters are typed/narrowed like any i32 local. Off at L0 / `loopIVDivMod:false`.
+  const _o = ctx.transform.optimize
+  if (_o && _o.loopIVDivMod !== false && isBlockBody(func.body)) func.body = strengthReduceLoopDivMod(func.body)
 
   const { name, body, sig } = func
   enterFunc(sig, body)
