@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>jz — Computational JavaScript, compiled to WASM</title>
+<title>jz — Computational JS, compiled to WASM</title>
 <meta name="description" content="jz (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid jz is valid JS: it runs in any engine, then compiles to portable WASM. 2.4× faster than the same code in V8; beats Rust and Zig → wasm on numeric kernels.">
 <link rel="icon" href="jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
@@ -16,6 +16,17 @@
   --band: #0a0a0a; --padx: 28px; --cw: 1040px;   /* content column — a whole 13 big units wide, so the grid coincides */
   --u: 8px; --u2: 40px; --U: 80px;   /* blueprint grid: 8px minor · 40px mid · 80px major (= the logo, nested) */
   --colw: calc(var(--cw) + 2 * var(--padx));   /* hero/pitch column box */
+  --gx-pad: var(--padx);   /* grid-aligned side inset (pre-round() fallback; refined below) */
+}
+/* THE one side inset every full-bleed section shares: content-left snapped to the 80px MAJOR grid,
+   so the column occupies whole big cells (cw = 13 big units) and its edges land on the same 40/80
+   lines the grid + grid-current pulses use. Built on 100vw, which does NOT change when a vertical
+   scrollbar appears (unlike clientWidth) — so with the grid anchored at the page origin (0,0) below,
+   content never shifts on load.
+   NB: round() must be the 2-arg form `round(value, interval)` — Chrome parses the explicit
+   `to-nearest` keyword form as invalid (a quirk), though both are spec-valid. */
+@supports (padding: round(1px, 1px)) {
+  :root { --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--U))); }
 }
 html, body { height: 100%; overflow-x: clip; }
 body { background: #000; color: var(--ink); font-family: var(--font);
@@ -26,15 +37,21 @@ a { color: inherit; }
 /* ─────────────────────────── HERO — the demo + blueprint grid occupy a fixed 6-unit (480px) band
    at the top; the logo/title/sub sit on that grid, and the engine switch + FPS + metrics follow below it. */
 .hero { position: relative; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; --band-h: calc(6 * var(--U)); }   /* grid/demo band = 6 big units */
+  align-items: center; background: #000; overflow: hidden; --band-h: calc(8 * var(--U)); }   /* grid/demo band = 8 big units (640px) */
 
 /* the demo (white bodies on black) and the grid share the top band, exactly the same box */
 .show-stage { position: absolute; top: 0; left: 0; z-index: 0; background: #000; display: block;
   width: 100%; height: var(--band-h); image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+.grid-current { position: absolute; top: 0; left: 0; z-index: 1; display: block;
+  width: 100%; height: var(--band-h); pointer-events: none; opacity: .9; contain: paint; }
+  /* NOTE: plain alpha, not mix-blend-mode: screen. Screen blends each pulse against the bright
+     n-body bodies/grid lines below → where they cross, screen→white and the blue pulse vanishes;
+     on sparse travelling pulses that drops whole frames to nothing (the effect looked "missing").
+     Normal alpha composites the blue predictably over the dark sim → visible on every frame. */
 
 /* blueprint grid — three nested levels (8 minor · 40 mid · 80 major) sharing ONE origin so they nest.
-   Origin pinned to the content column's left, which (column width = 13 units) makes it viewport-symmetric
-   and coincident with the content. Hard-edged at the 6-unit band bottom — no fade. */
+   Origin = the page corner (0,0): stable (never shifts with scrollbar/viewport), and content aligns
+   TO it via --gx-pad, not the reverse. Hard-edged at the band bottom — no fade. */
 .hero::before {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: var(--band-h); z-index: 1; pointer-events: none;
   border-bottom: 1px solid rgba(255,255,255,.17);   /* closes the band: a clean bottom rule (clearer than the subtler interior lines) where the grid is cut — box-sizing:border-box keeps the band 6 units */
@@ -46,14 +63,12 @@ a { color: inherit; }
     linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
-  /* origin = the content-left, snapped to a whole pixel. At odd viewport widths the centered column
-     lands on a half-pixel, which renders every 1px rule as two faint pixels (the "doubled/crooked"
-     subgrid). --grid-x is set by JS to the rounded content-left; the calc is the pre-JS fallback.
-     The fallback uses 100vw (a LENGTH), not 100%: a percentage in background-position resolves
-     per layer against (area − image size), so the 8/40/80 tiles would each phase to a different
-     origin and the subgrids drift out of alignment (the stray vertical lines / wrong divisions).
-     A length is absolute → one origin for all layers → they nest even before JS runs. */
-  background-position: var(--grid-x, calc((100vw - var(--colw)) / 2 + var(--padx))) 0;
+  /* origin = the page corner (0,0). A length, not a percentage: % in background-position resolves per
+     layer against (area − image size), so the 8/40/80 tiles would each phase to a different origin (the
+     stray vertical lines / wrong divisions). Anchoring at 0,0 also makes the grid independent of viewport
+     width — it CANNOT shift when a scrollbar appears post-load (the old clientWidth-derived origin did).
+     Content aligns TO this grid via --gx-pad; the grid-pulse overlay passes gridX=0 (canvas origin = page). */
+  background-position: 0 0;
 }
 
 /* the editable dock below the hero (see .dock) holds this demo's source — edit + Run recompiles it */
@@ -61,8 +76,7 @@ a { color: inherit; }
 
 /* top bar — nav aligned to the right edge of the shared content column */
 .hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%;
-  max-width: calc(var(--cw) + 2 * var(--padx)); margin: 0 auto;
-  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 56px; padding: 0 var(--padx); }   /* fixed: nav + pitch top = 192 = 2 units → logo lands on a major line */
+  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 56px; padding: 0 var(--gx-pad); }   /* nav right-aligned to the grid column */
 .hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
@@ -72,9 +86,8 @@ a { color: inherit; }
    Logo above the title, then slogan, CTA, and honestly-banded metrics.
    Two metric bands, never mixed: "native" is the ceiling we trail; "vs JS" is the same source run faster. */
 .pitch { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; width: 100%;
-  max-width: calc(var(--cw) + 2 * var(--padx));   /* shared content column */
   display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; text-align: left;
-  padding: 0 var(--padx) clamp(36px,5vw,60px);
+  padding: 0 var(--gx-pad) clamp(36px,5vw,60px);   /* gx-pad = content-left snapped to the 80px major grid, stable across scrollbar show/hide */
   pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
 .pitch a, .pitch button { pointer-events: auto; }
 /* the logo/title/sub sit ON the grid band: this block fills the band's height below the nav, so the
@@ -83,15 +96,11 @@ a { color: inherit; }
 /* logo — a faint sharp border whose four edges REFLECT the live sim: JS samples the n-body bodies
    in the band just outside each edge and lights that edge as they fly past (the per-edge --r* vars
    are driven per frame). No animation of its own — the motion is the sim's, never competing. */
-.logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: var(--u2); }   /* one unit tall, one mid-unit gap */
-.logo img { display: block; width: var(--U); height: var(--U); position: relative; z-index: 1; }   /* exactly one major unit */
-/* faint constant 1px border so the mark always has a thin outline */
-.logo::before { content: ''; position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
-  background: rgba(255,255,255,.14);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-          mask-composite: exclude; }
+.logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: var(--U); }   /* 2 units tall; one major-unit gap below → the title lands on the next major grid line */
+.logo img { display: block; width: calc(var(--U) * 2); height: calc(var(--U) * 2); position: relative; z-index: 1; }   /* 160px = 2 major units: all four edges coincide with major grid lines (the grid frames it) */
+/* No static border ring: at 2 units the logo's box edges sit exactly on the major grid lines (left/top/right/bottom = 202/80/362/240), so the grid itself outlines the mark. A separate ::before ring would
+   extend 1px outside (inset:-1px) and sit half a pixel off the grid line — the "1px shift". The dynamic
+   reflection ring (.logo-refl) stays; a glow extending past the edge is correct, a hard border isn't. */
 /* reflection — a 1px ring whose conic-gradient is rebuilt each frame: each body adds a smooth bump on the
    ring at its ball→centre angle, brightness ∝ closeness (inverse-square). JS sets .background. */
 .logo-refl { position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
@@ -167,7 +176,7 @@ a { color: inherit; }
 @media (max-width: 720px) {
   .pitch h1 { font-size: clamp(26px,7.4vw,40px); }
   .pitch h1 .hb { display: none; }
-  .hero-nav { gap: 14px; padding: 12px var(--padx); }
+  .hero-nav { gap: 14px; padding: 12px var(--gx-pad); }
   .hero-nav a.opt { display: none; }
   .metrics { gap: 28px; }
 }
@@ -175,7 +184,7 @@ a { color: inherit; }
 /* ─────────── TRY — an editable dock for the demo running in the hero: pick or edit a source,
    hit Run, the hero recompiles from it. The full REPL (WAT · console · bench) lives at /repl/. ─────────── */
 .try { background: #000; padding: clamp(12px,1.8vw,22px) var(--padx) clamp(40px,5vw,64px); }   /* tight top → the dock sits close under the stats */
-.try-wrap { max-width: calc(var(--cw) + 2 * var(--padx)); margin: 0 auto; }   /* same column box as the hero/FAQ; content padded to the column line */
+.try-wrap { max-width: calc(var(--cw) + 2 * var(--padx)); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* left edge on the same grid column as the hero (content-left = gx-pad) */
 /* header — one line above the editor: file · opt (left), size · download · run (right), all on the page bg */
 .dock-head { display: flex; align-items: center; gap: 18px; padding: 0 var(--padx) 12px; }
 .dock-file { -webkit-appearance: none; appearance: none; border: 0; color: var(--ink);
@@ -210,7 +219,7 @@ a { color: inherit; }
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 .examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
-.ex-wrap { max-width: var(--cw); margin: 0 auto; }
+.ex-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* on the grid column (content-left = gx-pad) */
 .examples h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(18px,2.4vw,28px); }
 .exrow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
 .exrow a { display: block; aspect-ratio: 1; overflow: hidden; }
@@ -221,7 +230,7 @@ a { color: inherit; }
 
 /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
 .faq { background: #000; padding: clamp(36px,5vw,60px) var(--padx) clamp(48px,7vw,96px); }   /* top = pitch bottom gap → stats↔REPL == REPL↔FAQ */
-.faq-wrap { max-width: var(--cw); margin: 0 auto; }   /* shared content column */
+.faq-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* shared content column, on the grid (content-left = gx-pad) */
 .faq summary .fq, .faq .ans { max-width: 720px; }   /* rows + dividers span the full container; only the text is capped to a readable width */
 .faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
 .faq details { border-top: 1px solid #1c1c25; }
@@ -250,7 +259,7 @@ a { color: inherit; }
 
 /* ─────────────────────────── FOOTER ─────────────────────────── */
 footer { padding: clamp(48px, 7vw, 80px) var(--padx) 56px; background: #000; }
-.fwrap { max-width: var(--cw); margin: 0 auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px 28px; }
+.fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px 28px; }   /* on the grid column (content-left = gx-pad) */
 .wordmark { font-size: 22px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
 .wordmark .mark { font-weight: 700; }
 .wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
@@ -269,6 +278,10 @@ footer .legal a:hover { color: #fff; }
 footer .legal .om { font-size: 15px; }
 @media (max-width: 760px) { .fwrap { grid-template-columns: 1fr 1fr; } footer .brand-col { grid-column: 1 / -1; } }
 
+/* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
+   The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
+   no parallax) — the low-risk kind — and the hero's n-body sim already runs regardless, so gating
+   only these would be inconsistent. JS-side guards dropped too (loadCurrent/fitCurrent/drawCurrent). */
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
@@ -279,9 +292,11 @@ footer .legal .om { font-size: 15px; }
 <main class="hero">
   <!-- a single live N-body sim, full-bleed behind the pitch; the in-pitch JS/JZ switch drives it -->
   <canvas class="show-stage" id="stage"></canvas>
+  <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
 
   <nav class="hero-nav">
     <a href="examples/">examples</a>
+    <a href="bench/">bench</a>
     <a href="repl/">repl</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -290,10 +305,11 @@ footer .legal .om { font-size: 15px; }
 
   <section class="pitch">
     <div class="intro">
-      <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="80" height="80" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
-      <h1>Computational JavaScript, <br class="hb">compiled to WASM</h1>
+      <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="160" height="160" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
+      <h1>Computational JS, <br class="hb">compiled to WASM</h1>
       <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
     </div>
+    <!-- FIXME: What's in it for me, how my life will change? - the question to answer -->
     <div class="cta-live">
       <div class="fps" aria-label="performance">
         <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
@@ -469,18 +485,10 @@ footer .legal .om { font-size: 15px; }
 // switch flips between jz-compiled wasm and the same source run as plain JS. The editable dock
 // below holds that demo's source — edit it, hit Run, and the hero recompiles from your edit.
 import jz, { compile } from './dist/jz.js'
-import sprae from './dist/sprae.js'
+import sprae from './assets/sprae.js'
 const $ = id => document.getElementById(id)
 
-// Blueprint grid origin — snap the centered column's left edge to a whole pixel so the 1px rules
-// render crisp (a half-pixel origin, on odd-width viewports, doubles every line). Matches where the
-// logo element actually paints, keeping logo + grid aligned.
-{
-  const hero = document.querySelector('.hero')
-  const cw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cw')) || 1040
-  const setGridX = () => hero.style.setProperty('--grid-x', Math.round((hero.clientWidth - cw) / 2) + 'px')
-  setGridX(); addEventListener('resize', setGridX)
-}
+// Blueprint grid: anchored at the page origin (0,0) in pure CSS — stable, no JS origin to set.
 
 // live metrics — a sprae binding over the committed bench/results.json. The markup is pre-filled
 // (no flash); the `:text` directives on the stat <b>s and the sub figure read this reactive state,
@@ -531,6 +539,53 @@ const dopt = $('dopt')
 const optsObj = () => ({ optimize: dopt.value === 'size' ? 'size' : +dopt.value })
 const buildJz = (s) => jz(s, optsObj()).exports
 const buildJs = async (s) => { const u = URL.createObjectURL(new Blob([s], { type: 'text/javascript' })); try { return await import(u) } finally { URL.revokeObjectURL(u) } }
+
+// ── compiled grid current: a second jz module paints transparent pulses on the blueprint grid ──
+const currentCv = $('grid-current')
+const currentCtx = currentCv.getContext('2d', { alpha: true })
+let currentEx = null, currentImg = null, currentOut32 = null, currentPx = null, currentW = 0, currentH = 0
+const configureCurrent = () => {
+  if (!currentEx || !currentW) return
+  const r = currentCv.getBoundingClientRect()
+  const scale = r.width ? currentW / r.width : 1
+  try { currentEx.configure(0, scale) } catch {}   // grid anchored at page origin (0,0) = canvas origin
+}
+const fitCurrent = () => {
+  if (!currentEx) return
+  // Pin the canvas to a FIXED width — the widest the band can ever be (the window can't exceed the
+  // screen) — and anchor it left:0, so a window resize NEVER re-fits or re-stretches it: the pulses
+  // keep their absolute positions (no reshuffle) and the grid stays tied to the static one (both
+  // drawn at k·80 from x=0). A narrower window just clips the right edge (hero is overflow:hidden).
+  const refW = Math.max(innerWidth, (window.screen && screen.width) || 0)
+  currentCv.style.width = refW + 'px'
+  const r = currentCv.getBoundingClientRect()   // width = refW (fixed), height = the 8-unit band
+  // Render near device resolution so the pulses are crisp 1px rules that sit ON the static hash grid
+  // (the old 0.42 MP budget upscaled them to fuzzy ~1.6px blobs that read as "off the grid").
+  let scale = Math.min(devicePixelRatio || 1, 2)
+  const BUDGET = 2400000
+  const want = r.width * r.height * scale * scale
+  if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
+  currentW = Math.max(8, Math.round(r.width * scale) >> 1 << 1)
+  // Tie H to W's exact ratio so x- and y-scale match — one `scale` then maps 80px → 80px on BOTH
+  // axes (independent W/H rounding previously drifted the vertical rules ~1.5px across the band).
+  currentH = Math.max(8, Math.round(currentW * r.height / r.width))   // exact W:H ratio (no even-forcing) so the single scale maps 80→80 on both axes
+  currentCv.width = currentW; currentCv.height = currentH
+  currentImg = currentCtx.createImageData(currentW, currentH)
+  currentOut32 = new Uint32Array(currentImg.data.buffer)
+  currentPx = currentEx.resize(currentW, currentH)
+  configureCurrent()
+}
+const loadCurrent = async () => {
+  try {
+    const s = await (await fetch('assets/grid-current.js')).text()
+    currentEx = jz(s, { optimize: 3 }).exports
+    fitCurrent()
+  } catch {}
+}
+const drawCurrent = (now) => {
+  if (!currentEx || !currentPx) return
+  try { currentEx.frame(now * 0.001); currentOut32.set(currentPx); currentCtx.putImageData(currentImg, 0, 0) } catch {}
+}
 // resolution: dpr-capped, with a pixel budget — the same policy jzdemo's runDemo uses,
 // tuned higher (1.3 MP) so the sim renders crisp at full-bleed instead of the old 0.5× blur.
 const fit = () => {
@@ -580,7 +635,7 @@ const renderFps = () => {
   fpsNum.textContent = curFps >= 1 ? Math.round(curFps) : '··'
   msNum.textContent = curMs > 0 ? (curMs < 10 ? curMs.toFixed(2) : curMs.toFixed(1)) : '··'
 }
-sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); fit() })
+sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); fit(); if (innerWidth > currentCv.clientWidth) fitCurrent() })   /* grid-current is pinned to screen width — only re-fit if the window somehow grows past it (e.g. moved to a wider screen), never on ordinary resize */
 
 // ── the loop: step the engine, blit its buffer, measure fps + ms ──
 let last = performance.now(), fps = 0, msEMA = 0, sparkTick = 0
@@ -596,6 +651,7 @@ const loop = () => {
     e.frame(...frameArgs(t)); t += 1 / 60; out32.set(px); g.putImageData(img, 0, 0)
   } catch (err) { return }
   const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
+  drawCurrent(now)
   curFps = fps; curMs = msEMA
   if (curFps > fpsRef) fpsRef = curFps
   if (++sparkTick % 2 === 0) {   // ~30 Hz sparkline update is plenty
@@ -673,51 +729,43 @@ dfile.addEventListener('change', () => loadExample(+dfile.value))
 // ── boot: load the first demo into the dock + hero, then start the loop ──
 ;(async () => {
   setEngineUI('jz')
+  await loadCurrent()
   await loadExample(0)
   fit(); loop()
 })()
 
-// ── Logo reflection: the 1px ring lights where bodies fly past, read straight off the hero canvas. ──
+// ── Logo reflection: the 1px bevel ring catches the cursor like a light source — a bright spot on
+// the edge facing the pointer, sharper + brighter the nearer it is, softer + dimmer far away, with a
+// gentle continuous drift so it stays alive when the pointer is still. No sim sampling — pure pointer. ──
 const logoEl = document.querySelector('.logo')
 const reflEl = logoEl && logoEl.querySelector('.logo-refl')
-const off = document.createElement('canvas'); off.width = 120; off.height = 80
-const octx = off.getContext('2d', { willReadFrequently: true })
 const N = 72, STEP = 360 / N
-const bins = new Float32Array(N), smooth = new Float32Array(N)
-const reflect = () => {
+const smooth = new Float32Array(N)
+let pmx = innerWidth * 0.5, pmy = -200   // start above the page → an initial top-edge glow
+addEventListener('pointermove', e => { pmx = e.clientX; pmy = e.clientY }, { passive: true })
+const reflect = (now) => {
   requestAnimationFrame(reflect)
-  if (!reflEl || !stage.width) return
+  if (!reflEl) return
   const lr = logoEl.getBoundingClientRect()
   if (lr.bottom < 0 || lr.top > innerHeight) return
-  bins.fill(0)
-  try {
-    octx.drawImage(stage, 0, 0, off.width, off.height)
-    const d = octx.getImageData(0, 0, off.width, off.height).data
-    const fr = stage.getBoundingClientRect()
-    const lw = lr.width, lcxS = lr.left + lr.width / 2, lcyS = lr.top + lr.height / 2
-    const gx2sx = fr.width / off.width, gy2sy = fr.height / off.height
-    for (let y = 0; y < off.height; y++) for (let x = 0; x < off.width; x++) {
-      const i = (y * off.width + x) * 4
-      const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255
-      if (lum < 0.12) continue
-      const dxS = fr.left + x * gx2sx - lcxS, dyS = fr.top + y * gy2sy - lcyS
-      const ls = Math.hypot(dxS, dyS) / lw
-      if (ls < 0.15) continue
-      const f = Math.max(0, 1 - ls / 6), w = lum * f * f
-      const sp = ls < 0.6 ? 1 : ls < 1.4 ? 2 : 3
-      let a = Math.atan2(dxS, -dyS) * N / (2 * Math.PI); a = (a % N + N) % N
-      const b0 = Math.round(a)
-      for (let k = -sp; k <= sp; k++) bins[(b0 + k + N) % N] += w * (1 - Math.abs(k) / (sp + 1))
-    }
-  } catch {}
+  const lw = lr.width, lcx = lr.left + lw / 2, lcy = lr.top + lr.height / 2
+  const dx = pmx - lcx, dy = pmy - lcy
+  const dist = Math.hypot(dx, dy) / lw                 // pointer distance in logo-widths
+  const ang = Math.atan2(dx, -dy) + now * 0.00012      // facing the pointer + a slow drift (~7°/s)
+  const bright = Math.max(0.06, 0.9 * Math.exp(-dist * 0.5))   // near → bright, far → ambient floor
+  const sigma = 1.4 + Math.min(11, dist * 2)           // near → tight highlight, far → wide/diffuse
+  const center = ((ang / (2 * Math.PI)) * N % N + N) % N
   const stops = []
   for (let i = 0; i < N; i++) {
-    const target = Math.min(0.85, bins[i] * 0.85)
-    smooth[i] += (target - smooth[i]) * 0.045
+    let dd = Math.abs(i - center); dd = Math.min(dd, N - dd)    // shortest wrapped bin distance
+    const target = bright * Math.exp(-(dd * dd) / (2 * sigma * sigma))
+    smooth[i] += (target - smooth[i]) * 0.14
     stops.push(`rgba(216,230,255,${smooth[i].toFixed(3)}) ${(i * STEP).toFixed(1)}deg`)
   }
   stops.push(`rgba(216,230,255,${smooth[0].toFixed(3)}) 360deg`)
   reflEl.style.background = `conic-gradient(${stops.join(',')})`
+  const blur = 4 + Math.min(15, dist * 2.5)            // near → tight glow, far → soft/blurred
+  reflEl.style.filter = `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(150,185,255,.5)) drop-shadow(0 0 ${(blur * 2).toFixed(1)}px rgba(120,150,255,.28))`
 }
 requestAnimationFrame(reflect)
 </script>

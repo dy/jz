@@ -93,6 +93,10 @@ out
 # hook for local/npm use and by pages.yml for the deployed repl. See AGENTS.md.
 dist/*
 
+# assets/ holds web assets: site.css + fonts are committed; sprae.js is a build
+# artifact (bundled by build-dist.mjs from the sprae package), so it's ignored.
+assets/sprae.js
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
