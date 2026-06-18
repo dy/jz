@@ -1650,10 +1650,12 @@ const SHIP_INT = `out[j] = it`   // integer output through the parallel-counter 
 const shipRun = (src, ...a) => {
   const sx = runVec(src, ESC_SCALAR), dx = runVec(src, ESC_VEC)
   sx.render(...a); dx.render(...a)
-  // "vectorized" = emits f64x2 lanes. The escape-after-update (ship) shape takes the
-  // break-on-first-escape FAST path (no per-iteration freeze), so it has no v128.bitselect —
-  // the masked escape-at-top path still does. f64x2 presence is the mechanism-agnostic marker.
-  return [sx.cs() >>> 0, dx.cs() >>> 0, /f64x2\./.test(wat(src, ESC_VEC))]
+  // Achievement pin: the escape-after-update (ship) shape must take the break-on-first-escape
+  // FAST path — vectorized (f64x2) AND free of the per-iteration v128.bitselect freeze that left
+  // the old masked SIMD ~parity-or-slower than V8. Both together are what beat V8 (burning-ship
+  // 1.46×). Regressing to the masked path re-adds bitselect; to scalar drops f64x2 — either trips it.
+  const w = wat(src, ESC_VEC)
+  return [sx.cs() >>> 0, dx.cs() >>> 0, /f64x2\./.test(w) && !/v128\.bitselect/.test(w)]
 }
 
 test('escape-time f64x2 - burning-ship (escape-after-update, abs, colour epilogue)', () => {
@@ -1724,9 +1726,10 @@ const DUAL_INT = `mem[(y*width + x)|0] = it`
 const dualRun = (src, ...a) => {
   const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
   s.render(...a); d.render(...a)
-  // escape-at-top (escape = while-cond) takes the break-on-first FAST path → no v128.bitselect;
-  // f64x2 presence is the mechanism-agnostic "is it vectorized" marker (bit-exactness is `is` above).
-  return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /f64x2\./.test(wat(src, ESC_VEC))]
+  // escape-at-top (escape = while-cond) must also take the break-on-first FAST path: vectorized
+  // (f64x2) AND no per-iteration freeze (v128.bitselect). That's the speedup cause (Julia 1.19×).
+  const w = wat(src, ESC_VEC)
+  return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /f64x2\./.test(w) && !/v128\.bitselect/.test(w)]
 }
 
 test('escape-time f64x2 - dual-exit smooth colour (escape=while-cond, f64 IV)', () => {
