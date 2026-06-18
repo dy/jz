@@ -3,11 +3,16 @@ import fs from 'fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Examples are perf demos (JS ⇄ jz toggle), so the artifact MUST be speed-optimized — that's what
+// turns on auto-SIMD (the escape-time / lane vectorizers). Default `compile(src)` skips it, which is
+// why burningship shipped a scalar .wasm and ran slower than JS.
+export const OPT = { optimize: 'speed' }
+
 /** Compile examples/<name>/<name>.js → examples/<name>/<name>.wasm (a single artifact). */
 export function buildExample(name) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), name)
   const src = fs.readFileSync(join(dir, `${name}.js`), 'utf8')
-  fs.writeFileSync(join(dir, `${name}.wasm`), compile(src))
+  fs.writeFileSync(join(dir, `${name}.wasm`), compile(src, OPT))
   console.log(`Compiled ${name}`)
 }
 
@@ -15,7 +20,7 @@ export function buildExample(name) {
  *  (for variants like a SIMD sibling alongside the scalar example). */
 export function buildKernel(exampleDir, kernel) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), exampleDir)
-  const wasm = compile(fs.readFileSync(join(dir, `${kernel}.js`), 'utf8'))
+  const wasm = compile(fs.readFileSync(join(dir, `${kernel}.js`), 'utf8'), OPT)
   fs.writeFileSync(join(dir, `${kernel}.wasm`), wasm)
   console.log(`Compiled ${exampleDir}/${kernel}`)
 }

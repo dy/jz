@@ -3,8 +3,19 @@ import { is, ok } from 'tst/assert.js';
 import jz from '../index.js';
 import fs from 'fs';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
+import { OPT } from '../examples/build.mjs';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
+
+// Regression: examples/build.mjs once compiled with the DEFAULT options (no optimize), so the
+// auto-SIMD vectorizers never ran and every demo shipped a scalar .wasm that lost to plain JS.
+// The examples are perf demos, so the build MUST stay speed-optimized — assert a known-vectorizable
+// kernel still emits SIMD under the exact options the build uses (so dropping `speed` fails here).
+test('example: build options keep kernels vectorized (SIMD)', () => {
+    let src = fs.readFileSync(new URL('../examples/burningship/burningship.js', import.meta.url), 'utf8');
+    let wat = jz.compile(src, { ...OPT, wat: true });
+    ok(/f64x2\./.test(wat), `burningship must vectorize under the examples build options (OPT=${JSON.stringify(OPT)})`);
+});
 
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
