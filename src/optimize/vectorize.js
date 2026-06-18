@@ -2126,8 +2126,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // overhead the way clang/zig's 16-wide NEON does. wideValueExpr is the
   // expression to lift per offset; null (i32 stores, multi-stmt bodies, or
   // widening loads — whose addresses would need per-offset advancing) → 4-wide.
-  const wideValueExpr = (() => {
-    if (storeOp !== 'i32.store8' || hasLoads) return null
+  // The single byte-value expression feeding the store — inline, or via one lane-local
+  // temp `tw = EXPR; store(addr, tw)`. Shared by both 16-wide paths below.
+  const byteValueExpr = (() => {
+    if (storeOp !== 'i32.store8') return null
     if (body.length === 1 && storeIdx === 0) return storeStmt[2]
     if (body.length === 2 && storeIdx === 1) {
       const set = body[0], sv = storeStmt[2]
@@ -2136,13 +2138,67 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
     }
     return null
   })()
+  // With u8 loads, the byte map can go 16-wide in i16x8 (the alpha-blend shape: out[i] =
+  // (src[i]*A + dst[i]*B + bias) >> s) — load 16, extend_low/high, the affine arithmetic
+  // in i16x8, narrow_u, store 16 — exactly clang's NEON. Sound ONLY when every
+  // intermediate provably fits u16 ([0,65535], so i16x8 mod-2^16 never wraps and shr_u ==
+  // the scalar shr_s on a non-negative value) and the result fits a byte ([0,255], so
+  // narrow_u never saturates). `byteValueRange` returns [min,max] or null when any node
+  // is unanalyzable, can go negative, or exceeds u16. An invariant local of unknown
+  // magnitude (local.get) → null → falls back to the bit-exact 4-wide path.
+  const byteValueRange = (e) => {
+    if (!isArr(e)) return null
+    const op = e[0]
+    let r
+    if (op === 'i32.const') { const v = constNum(e); r = [v, v] }
+    else if (op === 'i32.load8_u') r = [0, 255]
+    else if (op === 'i32.add') { const a = byteValueRange(e[1]), b = byteValueRange(e[2]); if (!a || !b) return null; r = [a[0] + b[0], a[1] + b[1]] }
+    else if (op === 'i32.sub') { const a = byteValueRange(e[1]), b = byteValueRange(e[2]); if (!a || !b) return null; r = [a[0] - b[1], a[1] - b[0]] }
+    else if (op === 'i32.mul') { const a = byteValueRange(e[1]), b = byteValueRange(e[2]); if (!a || !b) return null; const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; r = [Math.min(...p), Math.max(...p)] }
+    else if ((op === 'i32.shr_u' || op === 'i32.shr_s') && isI32Const(e[2])) { const a = byteValueRange(e[1]); if (!a || a[0] < 0) return null; const s = constNum(e[2]); if (s < 0 || s > 16) return null; r = [a[0] >> s, a[1] >> s] }
+    else if (op === 'i32.and' && isI32Const(e[2])) { const a = byteValueRange(e[1]); if (!a) return null; const m = constNum(e[2]); if (m < 0) return null; r = [0, Math.min(a[1], m)] }
+    else return null
+    return (r[0] < 0 || r[1] > 65535) ? null : r
+  }
+  const wideValueExpr = (!hasLoads && byteValueExpr) ? byteValueExpr : null   // pure ramp → 16-wide pack
+  const widenRange = (hasLoads && byteValueExpr) ? byteValueRange(byteValueExpr) : null
+  const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ narrow_u exact
   const WIDE16 = wideValueExpr != null
-  const LANES = WIDE16 ? 16 : 4
+  const LANES = (WIDE16 || WIDEN16) ? 16 : 4
   const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
     ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
 
   let lifted
-  if (WIDE16) {
+  if (WIDEN16) {
+    // 16-wide widening byte-map: load each u8 input once (v128.load of 16 bytes),
+    // extend_low/high to two i16x8 halves, run the affine map in i16x8 on each half,
+    // narrow_u the two result halves to one i8x16, store 16. Each load is hoisted to a
+    // temp (so extend_low + extend_high share one load); the loads run in source order,
+    // so the offset `local.tee` in the first one is set before later loads read it.
+    const loadTemps = new Map()
+    const loadSets = []
+    const collectLoads = (e) => {
+      if (!isArr(e)) return
+      if (e[0] === 'i32.load8_u') {
+        const k = JSON.stringify(e[1])
+        if (!loadTemps.has(k)) { const t = freshV128('win'); loadTemps.set(k, t); loadSets.push(['local.set', t, ['v128.load', e[1]]]) }
+      } else for (let i = 1; i < e.length; i++) collectLoads(e[i])
+    }
+    collectLoads(byteValueExpr)
+    const liftW = (e, half) => {
+      const op = e[0]
+      if (op === 'i32.const') return ['i16x8.splat', e]
+      if (op === 'i32.load8_u') return [`i16x8.extend_${half}_i8x16_u`, ['local.get', loadTemps.get(JSON.stringify(e[1]))]]
+      if (op === 'i32.add') return ['i16x8.add', liftW(e[1], half), liftW(e[2], half)]
+      if (op === 'i32.sub') return ['i16x8.sub', liftW(e[1], half), liftW(e[2], half)]
+      if (op === 'i32.mul') return ['i16x8.mul', liftW(e[1], half), liftW(e[2], half)]
+      if (op === 'i32.shr_u' || op === 'i32.shr_s') return ['i16x8.shr_u', liftW(e[1], half), e[2]]
+      if (op === 'i32.and') return ['v128.and', liftW(e[1], half), ['i16x8.splat', e[2]]]
+      return null   // byteValueRange already proved every op is one of the above
+    }
+    lifted = [...loadSets,
+      ['v128.store', storeAddr, ['i8x16.narrow_i16x8_u', liftW(byteValueExpr, 'low'), liftW(byteValueExpr, 'high')]]]
+  } else if (WIDE16) {
     lifted = []
     const vv = []
     for (let j = 0; j < 4; j++) {

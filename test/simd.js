@@ -188,7 +188,22 @@ test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
   const w = wat(src, SIMD_OPT)
-  ok(/load32_zero/.test(w) && /extend_low/.test(w), 'expected widening u8 loads')
+  // Goes 16-wide in i16x8 (the alpha-blend shape: every intermediate fits u16 —
+  // 255*160+255*95+127 = 65152 < 65536 — and the result fits a byte): v128.load 16,
+  // extend_low/high, i16x8 arithmetic, narrow_u, v128.store. (clang's NEON, bit-exact.)
+  ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w) && /v128\.load\b/.test(w), 'expected 16-wide i16x8 widening map')
+
+  // When an intermediate would exceed u16, the 16-wide path is unsound — it must fall
+  // back to the bit-exact 4-wide (i32x4) widening map. `*200 + *200` peaks at
+  // 255*200+255*200 = 102000 > 65535, so i16x8 would wrap.
+  const wide = `export let main = () => {
+    const a = new Uint8Array(2048), b = new Uint8Array(2048), out = new Uint8Array(2048)
+    for (let i = 0; i < 2048; i++) { a[i] = (i * 7) & 255; b[i] = (i * 13) & 255 }
+    for (let i = 0; i < 2048; i++) out[i] = (Math.imul(a[i], 200) + Math.imul(b[i], 200)) >> 8 & 255
+    let h = 0; for (let i = 0; i < 2048; i++) h = (h + out[i]) | 0; return h
+  }`
+  is(runVec(wide, SIMD_OPT).main(), runVec(wide, NOVEC).main(), 'u16-overflow map stays bit-exact')
+  ok(!/i16x8\.mul/.test(wat(wide, SIMD_OPT)), 'u16-overflow map must NOT take the i16x8 path')
 })
 
 test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
