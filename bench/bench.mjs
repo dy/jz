@@ -34,6 +34,8 @@ const CASE_NAMES = {
   json: 'JSON parse+walk (single literal source)',
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
+  matmul: 'matrix multiply (A·Bᵀ)',
+  heat: '2-D heat diffusion (5-point stencil)',
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-host)',

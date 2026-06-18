@@ -1428,6 +1428,136 @@
     }
    },
    "compileMs": 73231.8
+  },
+  "matmul": {
+   "name": "matrix multiply (A·Bᵀ)",
+   "samples": 16777216,
+   "stages": 2,
+   "runs": 21,
+   "ref": 1299645893,
+   "targets": {
+    "nat": {
+     "medianUs": 5283,
+     "bytes": 33720,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 5319,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 9248,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7518,
+     "bytes": 396392,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 9755,
+     "bytes": 1984,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 9692,
+     "bytes": 1984,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 10818,
+     "bytes": 1984,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 7935,
+     "bytes": 1504,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8416,
+     "bytes": 1348,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 8585,
+     "bytes": 6278,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 10109,
+     "bytes": 70184,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 67.3
+  },
+  "heat": {
+   "name": "2-D heat diffusion (5-point stencil)",
+   "samples": 6553600,
+   "stages": 6,
+   "runs": 21,
+   "ref": 2564029013,
+   "targets": {
+    "nat": {
+     "medianUs": 1615,
+     "bytes": 33720,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1633,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 4818,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3509,
+     "bytes": 396376,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 9015,
+     "bytes": 2739,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7688,
+     "bytes": 2739,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 5882,
+     "bytes": 2739,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 4526,
+     "bytes": 1620,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8070,
+     "bytes": 1658,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 4792,
+     "bytes": 6398,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 7865,
+     "bytes": 70168,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 51.6
   }
  }
 }
