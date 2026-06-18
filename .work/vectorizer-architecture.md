@@ -248,7 +248,101 @@ The outer-pixel/special recognizers (`tryDivergentEscapeVectorize`, `tryRampMap`
   classify/emit split today. The chain already gives "add a primitive = add one `bl`-consuming
   lifter."*
 
-**Step 3 — Stencil-offset (3–4 d, NEW coverage).** `matchStencilDelta` + `liftStencil` +
+### Step 3 investigation findings (before implementation)
+
+Inspected how jz lowers a 3-point stencil (`b[i] = a[i-1]+a[i]+a[i+1]`) to WAT:
+- `a[i-1]` → `(i32.add base (i32.shl (i32.sub i 1) 3))` — IV-minus-constant **inside** the shift.
+- `a[i]`   → `(i32.add base (i32.shl i 3))` — the clean form `matchLaneAddr` already accepts.
+- `a[i+1]` → `(f64.load offset=8 (local.get $teedAddr))` — jz already folds the +1 neighbour onto
+  `a[i]`'s address tee via a wasm **memarg `offset`**.
+
+**The lift is bit-exact by construction.** A scalar `f64.load` at address `base+(i+δ)·8` becomes
+`v128.load` at the *same* address; for f64x2 lanes (i, i+1) that load naturally covers the δ-shifted
+pair `(a[i+δ], a[i+δ+1])` — exactly the bytes scalar iterations i and i+1 read. No extra memory is
+touched, so **no new OOB and no boundary special-casing** is needed beyond the existing scalar
+tail (the `i=LANES` head-skip in the original plan is unnecessary — the addresses already encode δ).
+The only real work is **address recognition**: extend `matchLaneAddr` to accept `(i±δ)<<K` and the
+`offset=N` tee-reuse form, classifying them as (offset) lane data rather than bailing.
+
+**The genuine hazard is aliasing, not boundaries.** Two cases:
+1. *In-place stencil* (`a[i] = f(a[i-1], …)`) — reading the **written** array at a nonzero offset is
+   loop-carried; vectorized reads see old values where scalar sees just-written ones → **miscompile**.
+   The scan MUST bail when the written base also appears as a nonzero-δ load. (Offset-0 read of the
+   written array, e.g. `b[i] = b[i] + …`, is safe.)
+2. *Swapped double-buffers* (the real `waves`/likely `schrodinger`): `a`/`b` are globals swapped each
+   frame (`tmp=a;a=b;b=tmp`), so the compiler can't statically prove `a ≠ b` — the current
+   distinct-base-⇒-no-alias assumption is unsound here. `waves` needs alias disproof (or a
+   conservative bail) before it's safe; perf-map already flags this.
+
+**Recommended first target:** a stencil over **distinct, non-swapped** arrays with no wrap
+conditional (a clean `dst[i] = f(src[i±δ])`, `dst≠src`) — NOT `diffusion` (toroidal-wrap
+conditional index is a separate blocker). Implement gated behind `cfg.experimentalStencil`, with
+the in-place-alias bail as a hard correctness gate, and bit-exact `test/simd.js` cases (incl.
+odd-width tail) before enabling by default.
+
+### Refined plan — `waves` needs NO new alias analysis (corrects the perf-map note)
+
+Verified against the codebase:
+- `--why-not-simd` on `waves` reports the fallback reason for `$frame`'s loops → they **are
+  recognized** by `matchBlockLoop` but bail in the **address scan** (`matchLaneAddr` rejects the
+  shapes). So the work is bounded to the matcher + lift; recognition already works.
+- The existing vectorizer **already assumes distinct base subtrees don't alias** — a 2-array map
+  `b[i]=a[i]*2` over two module globals vectorizes today (2 f64x2). `waves` reads global `$a`,
+  writes global `$b` (distinct subtrees); the buffer **swap is outside the inner loop**, so the
+  base subtrees in the loop are fixed `(global.get $a)` / `(global.get $b)`. Under the same model
+  this is safe — **no runtime alias guard / loop versioning / swap-group analysis needed.** (jz
+  does compile `.subarray`; buffer-sharing views are the one unsound case, but that's the *same*
+  pre-existing assumption maps already rely on — not a new regression. Note it; don't block on it.)
+
+**Exact `$loop2` address shapes (IV = `$x`; `c = rc + x` is a per-iteration derived IV; `rn`,`rs`,
+`rc` loop-invariant):**
+| source | WAT offset | form needed |
+|---|---|---|
+| `a[rn+x]` | `(i32.shl (i32.add rn x) 3)` | `(INV + x) << K` |
+| `a[rs+x]` | `(i32.shl (i32.add rs x) 3)` | `(INV + x) << K` |
+| `a[c-1]`  | `(i32.shl (i32.sub c 1) 3)` | `(derivedIV − δ) << K` |
+| `a[c]`    | `(i32.shl c 3)` tee `$__pe0`/`$__ab0` | `derivedIV << K` |
+| `a[c+1]`  | `(f64.load offset=8 $__ab0)` | tee + memarg `offset` |
+| `b[c]` (store + offset-0 read) | `base_b + $__pe0` | `derivedIV << K`, distinct base |
+
+**Bounded work (no alias subsystem):**
+1. **Affine-IV derivation:** recognize a body-local `c = (i32.add INV (local.get x))` (INV
+   loop-invariant) as stride-1 in the IV; treat `(local.get c)` like the IV in `matchLaneOffset`.
+   Also accept the inline `(i32.add INV x)` sub-expression form (a[rn+x]).
+2. **Offset matching:** extend `matchLaneOffset`/`matchLaneAddr` to accept `(IV±δ)<<K`,
+   `(derivedIV±δ)<<K`, and the existing tee + memarg `offset=N` reuse (already emitted by jz).
+3. **Lift:** unchanged — each `f64.load` at addr A → `v128.load` at A (address-preserving ⇒
+   bit-exact, no boundary special-casing; scalar tail handles the remainder). Store likewise.
+4. **In-place bail (hard gate):** if the written base subtree also appears as a base of a
+   **nonzero-offset** load → loop-carried → return null. (Offset-0 read of the written array, e.g.
+   `b[c]` here, is safe.)
+5. **Bit-exact gate:** stencils that SUM neighbours reorder f64 adds across lanes → ulp; gate at
+   `optimize≥2` like float reductions. Integer stencils are value-exact.
+
+Gate behind `cfg.experimentalStencil` (default off → ratchet stays +0). Verify: bit-exact
+`test/simd.js` cases (3-/5-point, odd-width tail, in-place-bail negative) + the real `waves`
+example vs scalar. Feature-sized but mechanical now that recognition + (non-)aliasing are settled —
+best executed as a focused pass on a clear repo (commits are currently blocked by other active
+agent sessions).
+
+**Step 3 — Stencil-offset (✅ DONE, NEW coverage, gated `experimentalStencil`).** Added
+`tryStencil` (a `bl`-consuming lifter in the dispatch) handling neighbour loads — `b[i] =
+f(a[i-1], a[i], a[i+1])` and the 2-D 5-point form `b[c] = f(a[c±1], a[rn+x], …)` with a derived IV
+`c = rc + x`. Approach as planned: address-preserving lift (each `f64.load` at A → `v128.load` at
+A; the `a[i+1]` neighbour → `v128.load offset=8`), so **bit-exact by construction**; type-based
+localKind (i32 = index/address kept scalar, f64 = lane data); `ivCoeff` affine-in-IV check
+(coeff-1 incl. derived IVs); pure-invariant bound (`w-1`); overshoot-safe SIMD bound `bound-(lanes
+-1)` (handles the `x=1` start); in-place-alias hard bail (written base read at a different element).
+A small additive `liftExprV` fix lifts the memarg `offset=N` load. **No alias analysis needed** —
+confirmed: the buffer swap is outside the loop, in-loop bases stay distinct (the same assumption the
+plain map path relies on). *Verified:* waves vectorizes 2→16 f64x2 and is **bit-exact end-to-end**
+(1200 px, 25 frames); synthetic 3-point (odd-width tail), 5-point derived-IV, and in-place-bail tests
+in test/simd.js; waves regression in test/examples.js; **default builds byte-identical (ratchet +0,
+flag off)**. CLI `--experimental-stencil` / `opts.experimentalStencil`; off by default until proven
+across the rest of the corpus (schrodinger/diffusion/slime are next — diffusion needs the toroidal
+wrap handled separately).
+
+  *Superseded original plan (kept for reference):* `matchStencilDelta` + `liftStencil` +
 `classifyBody` branch, behind `cfg.experimentalStencil`. *Unlocks:* waves, schrodinger, diffusion,
 slime. *Guard:* reassoc-ulp, gate `optimize≥2`; SIMD starts at i=LANES. *Verify:* `test/simd.js`
 per-element vs scalar; boundary cases `bound ∈ {LANES-1, LANES, 2·LANES}`; ratchet waves ≥1.5×.

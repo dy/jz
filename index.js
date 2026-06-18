@@ -531,6 +531,10 @@ const jzCompileInner = (code, opts = {}) => {
   // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
   if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
 
+  // opts.experimentalStencil: enable the (opt-in, unstable) neighbour-load stencil
+  // vectorizer (a[i±1] / 2-D 5-point). Off by default until proven across the corpus.
+  if (opts.experimentalStencil && ctx.transform.optimize) ctx.transform.optimize.experimentalStencil = true
+
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')
 

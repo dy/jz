@@ -1985,6 +1985,75 @@ test('SIMD map-reduce - bit-exact f64 reduction (the n-body force loop)', () => 
   ok(/f64x2\.sqrt/.test(wat(nb(64), ON)), 'f64x2 map-reduce must fire on the n-body force loop')
 })
 
+// ── Stencil vectorizer (tryStencil, experimental) ─────────────────────────────
+// Neighbour loads `a[i±1]` / 2-D `a[c±1]`, a[rn+x] (c = rc+x derived IV). The lift is
+// address-preserving (each f64.load → v128.load at the SAME address ⇒ the δ-shifted
+// pair), so it's BIT-EXACT vs the scalar oracle (a lane-parallel map reorders nothing
+// within a lane — unlike a horizontal reduction). Opt-in behind experimentalStencil.
+const STENCIL = { optimize: 'speed', experimentalStencil: true }
+// Oracle: SAME pipeline with the stencil pass OFF (its loop stays scalar) — so the
+// shared checksum-reduction vectorizes identically in both and cancels; only the
+// stencil loop differs. (vs optimize:false the checksum would reassociate ⇒ ulp noise.)
+const SCALAR = { optimize: 'speed' }
+
+test('SIMD stencil - 3-point bit-exact + vectorized (incl. odd-width tail)', () => {
+  if (belowOpt(2)) return
+  const src = (k) => `
+    let a = new Float64Array(320), b = new Float64Array(320)
+    export let main = () => {
+      let i = 0; while (i < 320) { a[i] = Math.sin(i*0.1)*1.3 + i*0.001; i++ }
+      for (let j = 1; j < ${k}; j++) b[j] = a[j-1] + a[j] + a[j+1]
+      let s = 0.0, t = 0; while (t < ${k}) { s += b[t]; t++ }
+      return s
+    }`
+  for (const k of [301, 300, 200, 17, 16, 3])
+    is(runVec(src(k), STENCIL).main(), runVec(src(k), SCALAR).main(), `3-point k=${k} bit-exact`)
+  const w = wat(src(301), STENCIL)
+  ok(hasV128(w), 'stencil vectorized')
+  ok(/v128\.load offset/.test(w), 'a[j+1] folds onto a[j] tee via memarg offset')
+})
+
+test('SIMD stencil - 5-point with derived IV (c = rc + x) bit-exact', () => {
+  if (belowOpt(2)) return
+  // 2-D laplacian-ish sweep over distinct read/write buffers — the waves shape.
+  const src = (n) => `
+    let a = new Float64Array(${n*n}), b = new Float64Array(${n*n})
+    export let main = () => {
+      let i = 0; while (i < ${n*n}) { a[i] = Math.sin(i*0.07)*2.0 + (i&15)*0.01; i++ }
+      let w = ${n}, y = 1
+      while (y < ${n-1}) {
+        let rc = y * w, rn = rc - w, rs = rc + w, x = 1
+        while (x < w - 1) {
+          let c = rc + x
+          b[c] = a[rn+x] + a[rs+x] + a[c-1] + a[c+1] - 4.0 * a[c]
+          x++
+        }
+        y++
+      }
+      let s = 0.0, t = 0; while (t < ${n*n}) { s += b[t]; t++ }
+      return s
+    }`
+  for (const n of [24, 25, 16])
+    is(runVec(src(n), STENCIL).main(), runVec(src(n), SCALAR).main(), `5-point n=${n} bit-exact`)
+  ok(hasV128(wat(src(24), STENCIL)), '5-point stencil with derived IV vectorized')
+})
+
+test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays correct', () => {
+  if (belowOpt(2)) return
+  // Reading the WRITTEN array at a shifted index is loop-carried — SIMD would read
+  // stale data. tryStencil must bail; the result must equal the scalar oracle.
+  const src = `
+    let a = new Float64Array(128)
+    export let main = () => {
+      let i = 0; while (i < 128) { a[i] = (i % 7) * 0.5 + 1.0; i++ }
+      for (let j = 1; j < 120; j++) a[j] = a[j-1] + a[j]
+      let s = 0.0, t = 0; while (t < 128) { s += a[t]; t++ }
+      return s
+    }`
+  is(runVec(src, STENCIL).main(), runVec(src, SCALAR).main(), 'in-place stays bit-exact (bailed)')
+  ok(!/v128\.load offset/.test(wat(src, STENCIL)), 'in-place stencil not vectorized')
+})
+
 // ── Per-pixel-color vectorizer (tryPerPixelColor) ─────────────────────────────
 // Achievement pin: a pixel loop that computes an f64 value from the index (cos/sin/sqrt…), packs
 // it to a u32 colour and stores it — no inner loop — lifts two adjacent pixels into f64x2 lanes

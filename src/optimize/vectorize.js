@@ -955,6 +955,221 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- Stencil recognizer (neighbour loads: a[i±δ], a[c±δ], a[rn+x]) --------
+//
+// Vectorizes a map whose loads read NEIGHBOURING elements — `b[i] = f(a[i-1],
+// a[i], a[i+1])` and the 2-D form `b[c] = f(a[c-1], a[c+1], a[rn+x], …)` where
+// `c = rc + x` is a derived induction var (rc loop-invariant, x the IV).
+//
+// The lift is bit-exact BY CONSTRUCTION: a scalar `f64.load` at `base+(idx<<K)`
+// becomes `v128.load` at the SAME address; for f64x2 lanes (x, x+1) that covers
+// `(elem[idx], elem[idx+1])` — exactly the bytes the two scalar iterations read.
+// No new memory is touched (scalar tail handles the remainder) ⇒ no boundary
+// special-casing, no new OOB. The neighbour `a[i+1]` arrives as
+// `(f64.load offset=8 …)` → `v128.load offset=8` (the +1-shifted pair). Stride-1
+// in the IV is required (consecutive lanes ⇒ consecutive elements): every index
+// must be affine in the IV with coefficient exactly 1 (`ivCoeff`).
+//
+// Correctness gates:
+//   • f64/f32 lanes only — float data locals vs i32 index/address locals are
+//     type-distinct, so localKind is by type. An i32-used-as-data case bails in
+//     the lifter (never miscompiles). Integer-lane stencils (types collide) decline.
+//   • In-place bail: if the WRITTEN base is also accessed at a DIFFERENT element,
+//     SIMD reads the old value where scalar reads the just-written one (loop-
+//     carried) ⇒ null. Offset-0 read of the written array is safe.
+//   • Distinct base subtrees ⇒ assumed non-aliasing — the SAME assumption the
+//     plain map path already relies on. A ping-pong buffer swap (waves) is OUTSIDE
+//     the loop, so in-loop bases stay distinct globals — safe without a runtime guard.
+//   • Reassociation: summing neighbours reorders f64 adds across lanes (ulp, like
+//     float reductions) — gated behind cfg.experimentalStencil until proven.
+function tryStencil(bl, fnLocals, freshIdRef, enabled) {
+  if (!enabled || !bl) return null
+  const { incVar, bound, body, preamble } = bl   // preamble: LICM-hoisted $__li invariants
+  if (body.some(hasGlobalSet)) return null
+
+  const writes = new Set()
+  for (const s of body) collectWrites(s, writes)
+
+  // Bound is re-evaluated for the SIMD guard, so it must be a PURE loop-invariant
+  // i32 expression (const / unwritten local / global / +,-,* thereof). Unlike the
+  // plain-map path (bare local-or-const only), stencils commonly bound by `w-1`.
+  const boundPureInv = (n) =>
+    isI32Const(n) ? true
+    : isLocalGet(n) ? !writes.has(n[1])
+    : (isArr(n) && n[0] === 'global.get') ? true
+    : (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub' || n[0] === 'i32.mul') && n.length === 3)
+      ? boundPureInv(n[1]) && boundPureInv(n[2])
+    : false
+  if (!boundPureInv(bound)) return null
+
+  // Element-index coefficient in the IV: 0 (loop-invariant), 1 (stride-1 affine —
+  // IV, a derived IV, or either ± invariant), or null (anything else).
+  const derived = new Set()
+  const ivCoeff = (n) => {
+    if (isLocalGet(n)) {
+      const nm = n[1]
+      if (nm === incVar || derived.has(nm)) return 1
+      return writes.has(nm) ? null : 0          // unwritten ⇒ loop-invariant
+    }
+    if (isI32Const(n)) return 0
+    if (isArr(n) && n[0] === 'global.get') return 0
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
+      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'i32.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    return null
+  }
+  const countSets = (name) => {
+    let k = 0
+    const w = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++; for (let i = 1; i < x.length; i++) w(x[i]) }
+    for (const s of body) w(s)
+    return k
+  }
+  // Derived IVs: `c = INV + x` (coeff 1), set exactly once, first access a write.
+  for (let pass = 0; pass < 4; pass++) {
+    let added = false
+    for (const s of body) {
+      if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3
+          && !derived.has(s[1]) && fnLocals.get(s[1]) === 'i32' && countSets(s[1]) === 1
+          && ivCoeff(s[2]) === 1) {
+        let fk = null; for (const t of body) { const k = firstAccess(t, s[1]); if (k) { fk = k; break } }
+        if (fk === 'write') { derived.add(s[1]); added = true }
+      }
+    }
+    if (!added) break
+  }
+
+  // Scan loads/stores: address `base + (IDX<<K)`, ivCoeff(IDX)=1, base invariant.
+  let laneType = null, stride = -1
+  const offTees = new Map()    // $pe → IDX expr  (from $pe = IDX<<K)
+  const addrTees = new Map()   // $ab → { base, idx }
+  const sites = []             // { kind, base, idx, memBytes }
+  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
+  const matchAddr = (addr) => {
+    let teeName = null, n = addr
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
+    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
+    const tryOff = (off) => {
+      let ot = null, o = off
+      if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
+      if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
+      if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === stride && ivCoeff(o[1]) === 1) {
+        if (ot) offTees.set(ot, o[1])
+        return { idx: o[1] }
+      }
+      return null
+    }
+    for (const [bi, oi] of [[1, 2], [2, 1]]) {
+      if (!isInvBase(n[bi])) continue
+      const om = tryOff(n[oi])
+      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
+    }
+    return null
+  }
+  const scan = (node, parent, pi) => {
+    if (!isArr(node)) return true
+    const op = node[0]
+    if (LOAD_OPS[op]) {
+      let addr = node[1], memBytes = 0
+      if (typeof addr === 'string' && addr.startsWith('offset=')) { memBytes = +addr.slice(7); addr = node[2] }
+      const lt = LOAD_OPS[op]
+      if (laneType == null) { if (lt !== 'f64' && lt !== 'f32') return false; laneType = lt; stride = LANE_INFO[lt].stride }
+      else if (lt !== laneType) return false
+      const m = matchAddr(addr)
+      if (!m) return false
+      sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes })
+      return true
+    }
+    if (STORE_OPS[op]) {
+      if (node.length !== 3) return false                 // memarg store — decline
+      const st = STORE_OPS[op]
+      if (laneType == null) { if (st !== 'f64' && st !== 'f32') return false; laneType = st; stride = LANE_INFO[st].stride }
+      else if (st !== laneType) return false
+      const m = matchAddr(node[1])
+      if (!m) return false
+      sites.push({ kind: 'store', base: m.base, idx: m.idx, memBytes: 0 })
+      return scan(node[2], node, 2)                        // value child only
+    }
+    if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string' && node.length === 3) {
+      const v = node[2]
+      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3 && isI32Const(v[2]) && stride > 0 && (1 << v[2][1]) === stride && ivCoeff(v[1]) === 1) offTees.set(node[1], v[1])
+      else matchAddr(['local.tee', node[1], v])
+    }
+    for (let i = 1; i < node.length; i++) if (!scan(node[i], node, i)) return false
+    return true
+  }
+  for (const s of body) if (!scan(s, null, -1)) return null
+  if (!laneType || !sites.some(s => s.kind === "store") || !sites.some(s => s.kind === "load")) return null
+
+  // In-place / loop-carried gate: every access to a WRITTEN base must touch the
+  // SAME element (idx + memarg). Else SIMD reads stale data vs scalar.
+  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
+  for (const st of sites) {
+    if (st.kind !== 'store') continue
+    for (const s of sites) if (exprEq(normTee(s.base), normTee(st.base)) && elemKey(s) !== elemKey(st)) return null
+  }
+  // A pure offset-0 map (every access the same element, no memarg) is tryVectorize's
+  // job — it ran first. Nothing stencil-specific here. (Defensive; ?? order ensures it.)
+  const k0 = elemKey(sites[0])
+  if (sites.every(s => elemKey(s) === k0)) return null
+
+  // Classify locals by TYPE: i32 → addr (index/address, kept scalar), laneType
+  // written → lane (first access must be a write), laneType unwritten → invariant.
+  const referenced = new Set()
+  const collectRefs = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') referenced.add(n[1]); for (let i = 1; i < n.length; i++) collectRefs(n[i]) }
+  for (const s of body) collectRefs(s)
+  const localKind = new Map()
+  for (const name of referenced) {
+    if (name === incVar) continue
+    const ty = fnLocals.get(name)
+    if (ty === 'i32') { localKind.set(name, 'addr'); continue }
+    if (ty === laneType) {
+      if (writes.has(name)) {
+        let fk = null; for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
+        if (fk === 'read') return null                    // loop-carried float local
+        localKind.set(name, 'lane')
+      } else localKind.set(name, 'invariant')
+      continue
+    }
+    if (!writes.has(name)) { localKind.set(name, 'invariant'); continue }
+    return null                                            // written non-i32 non-lane local
+  }
+
+  // Lift through the shared lifter (addresses kept verbatim; loads → v128.load).
+  const newLanedLocals = new Map(), extraLocals = []
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const lifted = []
+  for (const s of body) {
+    const r = liftStmt(s, ctx)
+    if (ctx.fail) return null
+    if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+  }
+  if (!lifted.length) return null
+
+  const id = freshIdRef.next++
+  const simdBoundName = `$__simd_bound${id}`, simdBrkLabel = `$__simd_brk${id}`, simdLoopLabel = `$__simd_loop${id}`
+  const info = LANE_INFO[laneType], lanes = info.lanes
+  const boundExpr = cloneNode(bound)   // cloned: also lives in the scalar-tail exit guard
+  // Overshoot-safe bound: a full lanes-wide chunk [x,x+lanes) must stay < bound for
+  // ANY start x (stencils start at 1). `bound-(lanes-1)` — NOT `& ~(lanes-1)`, which
+  // overshoots for a non-multiple start. SIMD reads ⊆ scalar reads ⇒ no new OOB.
+  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes - 1]]]
+  const simdBlock = ['block', simdBrkLabel,
+    ['loop', simdLoopLabel,
+      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
+      ...lifted,
+      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
+      ['br', simdLoopLabel]]]
+  // LICM-hoisted $__li invariants run ahead of the SIMD block (the scalar tail's
+  // copy inside bl.blockNode re-runs them harmlessly — pure & loop-invariant).
+  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
+  const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']), ...extraLocals]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Reduction recognizer -------------------------------------------------
 //
 // Matches inner loops of shape:
@@ -1526,6 +1741,10 @@ function liftExprV(expr, ctx) {
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
     if (LOAD_OPS[op] !== ctx.laneType) return liftFail(ctx, `${op}: load type ≠ lane type ${ctx.laneType}`)
+    // memarg form `(T.load offset=N addr)` — the stencil neighbour `a[i+1]` jz folds
+    // onto `a[i]`'s address tee. `v128.load offset=N` reads the N-byte-shifted vector,
+    // i.e. the (a[i+1], a[i+2]) pair — exactly the δ-shifted lane data. Preserve it.
+    if (typeof expr[1] === 'string' && expr[1].startsWith('offset=')) return ['v128.load', expr[1], expr[2]]
     return ['v128.load', expr[1]]
   }
 
@@ -3371,7 +3590,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -3416,6 +3635,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryVectorize(bl, fnLocals, freshIdRef)
         ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
+        ?? tryStencil(bl, fnLocals, freshIdRef, stencil)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)

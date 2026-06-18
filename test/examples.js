@@ -51,6 +51,28 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
     ok(/call \$math\.sin2/.test(it) && /call \$math\.pow2/.test(it), 'interference: sin → $math.sin2, a**γ → $math.pow2');
 });
 
+// Stencil vectorizer (experimental): waves is a 2-D 5-point sweep over two height
+// buffers swapped each frame. With experimentalStencil the inner x-loop lifts to f64x2
+// (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). It must be BIT-EXACT to the
+// scalar pipeline end-to-end — the swap is outside the loop so the in-loop read/write
+// bases stay distinct (no aliasing); a lane-parallel stencil reorders nothing per lane.
+test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
+    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const sten = (jz.compile(src, { ...OPT, experimentalStencil: true, wat: true }).match(/f64x2\./g) || []).length;
+    ok(sten > base, `waves frame vectorizes under the stencil flag (${base} → ${sten} f64x2)`);
+    const run = (opts) => {
+        const { exports } = jz(src, opts);
+        const px = exports.resize(40, 30);
+        exports.drop(20, 15, 9, 6.0); exports.drop(10, 8, 5, 3.0);
+        for (let f = 0; f < 25; f++) exports.frame(f);
+        return Array.from(px);
+    };
+    const simd = run({ ...OPT, experimentalStencil: true }), scal = run({ ...OPT });
+    is(simd.length, scal.length);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (1200 px, 25 frames)');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;
