@@ -235,6 +235,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.whyNotSimd] - Diagnostic: emit a `simd-why-not` warning (via
  *   opts.warnings) for each canonical loop the auto-vectorizer declined, naming the
  *   first blocking op. Finds loops one op away from SIMD. Noisy — off by default.
+ * @param {boolean} [opts.experimentalStencil] - Opt-in: vectorize neighbour-load
+ *   stencils (`b[i]=f(a[i-1],a[i],a[i+1])`, 2-D 5-point) to f64x2. Bit-exact vs scalar.
+ *   Unstable — off by default until proven across the corpus.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
