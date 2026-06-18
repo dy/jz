@@ -34,20 +34,16 @@ body { background: #000; color: var(--ink); font-family: var(--font);
 a { color: inherit; }
 ::selection { background: #fff; color: #000; }
 
-/* ─────────────────────────── HERO — the demo + blueprint grid occupy a fixed 6-unit (480px) band
-   at the top; the logo/title/sub sit on that grid, and the engine switch + FPS + metrics follow below it. */
+/* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
+   occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
 .hero { position: relative; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; --band-h: calc(8 * var(--U)); }   /* grid/demo band = 8 big units (640px) */
+  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(9 * var(--U)); }   /* grid/demo band = 9 big units (720px) — tall enough that logo+title+desc+FPS+metrics all land on the grid */
 
-/* the demo (white bodies on black) and the grid share the top band, exactly the same box */
-.show-stage { position: absolute; top: 0; left: 0; z-index: 0; background: #000; display: block;
-  width: 100%; height: var(--band-h); image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+/* the live demo (grid-current.js's electron pulses) paints onto the grid band — exactly the grid's box */
 .grid-current { position: absolute; top: 0; left: 0; z-index: 1; display: block;
-  width: 100%; height: var(--band-h); pointer-events: none; opacity: .9; contain: paint; }
-  /* NOTE: plain alpha, not mix-blend-mode: screen. Screen blends each pulse against the bright
-     n-body bodies/grid lines below → where they cross, screen→white and the blue pulse vanishes;
-     on sparse travelling pulses that drops whole frames to nothing (the effect looked "missing").
-     Normal alpha composites the blue predictably over the dark sim → visible on every frame. */
+  width: 100%; height: var(--band-h); pointer-events: none; opacity: 1; contain: paint; }
+  /* plain alpha (not mix-blend-mode: screen): the pulses composite predictably over the black band +
+     blueprint lines, so they're visible on every frame. */
 
 /* blueprint grid — three nested levels (8 minor · 40 mid · 80 major) sharing ONE origin so they nest.
    Origin = the page corner (0,0): stable (never shifts with scrollbar/viewport), and content aligns
@@ -71,9 +67,6 @@ a { color: inherit; }
   background-position: 0 0;
 }
 
-/* the editable dock below the hero (see .dock) holds this demo's source — edit + Run recompiles it */
-
-
 /* top bar — nav aligned to the right edge of the shared content column */
 .hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%;
   display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 56px; padding: 0 var(--gx-pad); }   /* nav right-aligned to the grid column */
@@ -90,20 +83,18 @@ a { color: inherit; }
   padding: 0 var(--gx-pad) clamp(36px,5vw,60px);   /* gx-pad = content-left snapped to the 80px major grid, stable across scrollbar show/hide */
   pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
 .pitch a, .pitch button { pointer-events: auto; }
-/* the logo/title/sub sit ON the grid band: this block fills the band's height below the nav, so the
-   CTA + metrics begin right after the 6-unit grid. padding-top puts the logo 1 big unit from the top. */
-.intro { width: 100%; box-sizing: border-box; min-height: calc(var(--band-h) - 56px); padding-top: 24px; }
-/* logo — a faint sharp border whose four edges REFLECT the live sim: JS samples the n-body bodies
-   in the band just outside each edge and lights that edge as they fly past (the per-edge --r* vars
-   are driven per frame). No animation of its own — the motion is the sim's, never competing. */
+/* logo + title sit ON the grid band; padding-top + the 56px nav put the logo exactly 1 big unit from
+   the band top. Description, FPS/switch and metrics flow underneath — all still within the band. */
+.intro { width: 100%; box-sizing: border-box; padding-top: 24px; }
+/* logo — the opaque jz mark in the 2×2 major cell, rendered 1px smaller than the cell (a hairline gap
+   all round) so the major grid lines stay visible framing it. At full 2-unit size its opaque black
+   covered the top/left lines (a grid line sits at the cell's start edge, under the mark). */
 .logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: var(--U); }   /* 2 units tall; one major-unit gap below → the title lands on the next major grid line */
-.logo img { display: block; width: calc(var(--U) * 2); height: calc(var(--U) * 2); position: relative; z-index: 1; }   /* 160px = 2 major units: all four edges coincide with major grid lines (the grid frames it) */
-/* No static border ring: at 2 units the logo's box edges sit exactly on the major grid lines (left/top/right/bottom = 202/80/362/240), so the grid itself outlines the mark. A separate ::before ring would
-   extend 1px outside (inset:-1px) and sit half a pixel off the grid line — the "1px shift". The dynamic
-   reflection ring (.logo-refl) stays; a glow extending past the edge is correct, a hard border isn't. */
-/* reflection — a 1px ring whose conic-gradient is rebuilt each frame: each body adds a smooth bump on the
-   ring at its ball→centre angle, brightness ∝ closeness (inverse-square). JS sets .background. */
-.logo-refl { position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
+.logo img { display: block; width: calc(var(--U) * 2 - 2px); height: calc(var(--U) * 2 - 2px); margin: 1px; position: relative; z-index: 1; }   /* 158px, centred in the 160px cell → the 4 major grid lines frame it with a 1px gap */
+/* reflection — a 1px ring (conic-gradient rebuilt each frame; JS sets .background). It sits at the CELL
+   edge (inset:0) — i.e. in the 1px gap between the smaller mark and the grid lines — so it reads as a
+   bevel glint on all four sides and the opaque mark no longer hides it; the drop-shadow glow spills past. */
+.logo-refl { position: absolute; inset: 0; z-index: 0; pointer-events: none; padding: 1px;
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -118,9 +109,12 @@ a { color: inherit; }
 .pitch .sub .ref:hover { color: var(--ink); }
 .pitch .sub .nb { white-space: nowrap; }   /* "runs the same source 2.4× faster" stays one line */
 
-/* main CTA — the sole hero action: FPS readout then the JS↔JZ switch on one line.
-   The FPS area is a fixed width so changing digit counts can't shift the switch. */
-.cta-live { display: flex; flex-direction: row; align-items: center; gap: 22px; margin-top: var(--u2); flex-wrap: wrap; }   /* one mid-unit below the grid band */
+/* description + live FPS/switch share one row, both ON the grid band; metrics follow directly under. */
+.lede { display: flex; align-items: flex-start; justify-content: space-between; gap: clamp(28px,4vw,72px); margin-top: 16px; flex-wrap: wrap; }
+.lede .sub { margin-top: 0; }
+/* the FPS readout + JS↔JZ switch, set to the right of the description. Fixed FPS width so a changing
+   digit count can't shift the switch. */
+.cta-live { display: flex; flex-direction: row; align-items: center; gap: 22px; flex: 0 0 auto; }
 /* footer install chip reuses .install */
 .install { display: inline-flex; align-items: baseline; gap: 9px; font-family: var(--mono); font-size: 13.5px;
   color: var(--ink); background: none; border: 0; padding: 0; cursor: copy; }
@@ -130,7 +124,7 @@ a { color: inherit; }
 .install:hover .ci, .install.copied .ci { color: var(--ink); }
 
 /* stats — number over a small identifying label, in a flat row */
-.metrics { display: flex; align-items: flex-start; gap: clamp(36px,5vw,64px); margin-top: clamp(40px,6vh,84px); flex-wrap: wrap; }   /* the wide gap separates the Speed group from the Size group */
+.metrics { display: flex; align-items: flex-start; gap: clamp(36px,5vw,64px); margin-top: clamp(20px,2.6vh,34px); flex-wrap: wrap; }   /* directly under the description, still on the band; wide gap splits Speed from Size */
 .mgroup { display: flex; flex-direction: column; gap: 12px; }
 .mlabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .2em; color: var(--mute); }
 .mstats { display: flex; align-items: flex-start; gap: clamp(18px,2.4vw,32px); flex-wrap: wrap; }
@@ -181,41 +175,11 @@ a { color: inherit; }
   .metrics { gap: 28px; }
 }
 
-/* ─────────── TRY — an editable dock for the demo running in the hero: pick or edit a source,
-   hit Run, the hero recompiles from it. The full REPL (WAT · console · bench) lives at /repl/. ─────────── */
-.try { background: #000; padding: clamp(12px,1.8vw,22px) var(--padx) clamp(40px,5vw,64px); }   /* tight top → the dock sits close under the stats */
+/* ─────────── TRY — the real REPL embedded (chrome-stripped via ?embed): edit or paste source, hit
+   Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
+.try { background: #000; padding: clamp(12px,1.8vw,22px) var(--padx) clamp(40px,5vw,64px); }
 .try-wrap { max-width: calc(var(--cw) + 2 * var(--padx)); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* left edge on the same grid column as the hero (content-left = gx-pad) */
-/* header — one line above the editor: file · opt (left), size · download · run (right), all on the page bg */
-.dock-head { display: flex; align-items: center; gap: 18px; padding: 0 var(--padx) 12px; }
-.dock-file { -webkit-appearance: none; appearance: none; border: 0; color: var(--ink);
-  font: 700 17px var(--font); letter-spacing: -.01em; cursor: pointer; padding: 2px 24px 2px 0;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f0f0f2' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right center / 14px; }
-.dock-opt { -webkit-appearance: none; appearance: none; border: 0; color: var(--soft);
-  font: 13px/1 var(--mono); cursor: pointer; padding: 2px 15px 2px 0;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b7b7c1' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right center / 9px;
-  margin-left: auto; }   /* starts the right-hand group: speed · size · wasm · run */
-#derr { color: #ff6b6b; font: 12px/1.3 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#dsize { font: 12.5px/1 var(--mono); color: var(--dim); }
-.dock-ico { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent;
-  color: var(--soft); font: 11px var(--font); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
-.dock-ico:hover { color: var(--ink); }
-/* Run — the bench page's button: sharp, uppercase, ▶, inverts on hover (white → outline) */
-#drun { background: #fff; color: #000; border: 1px solid #fff; border-radius: 0; padding: 6px 16px;
-  font: 12px var(--font); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
-#drun:hover { background: transparent; color: #fff; }
-.dock-box { border: 1px solid #1c1c25; border-radius: 8px; overflow: hidden; background: #0b0b0b; }
-.dock-code { position: relative; height: clamp(360px,52vh,500px); }
-#dhl, #dedit { position: absolute; inset: 0; margin: 0; padding: 20px var(--padx);
-  font: 13px/1.6 var(--mono); tab-size: 2; white-space: pre; border: 0; background: transparent; }
-#dedit { resize: none; overflow: auto; color: transparent; caret-color: #fff; z-index: 1;
-  scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
-#dedit:focus, #dedit:focus-visible { outline: none; }              /* the caret shows focus — no ring */
-#dedit::selection { background: rgba(255,255,255,.22); color: #fff; }   /* selected text reads white, not the syntax grey */
-#dhl { overflow: hidden; pointer-events: none; color: var(--ink); }
-#dhl .k { font-weight: 700; } #dhl .t { font-weight: 600; }
-#dhl .n { font-weight: 600; color: #c8c8c8; } #dhl .s { color: var(--soft); } #dhl .c { color: var(--dim); }
-/* focus — soft, never white */
-.dock select:focus-visible, .dock button:focus-visible { outline: 2px solid var(--dim); outline-offset: 3px; }
+.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid #1c1c25; border-radius: 8px; background: #000; }
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 .examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
@@ -280,8 +244,8 @@ footer .legal .om { font-size: 15px; }
 
 /* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
    The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
-   no parallax) — the low-risk kind — and the hero's n-body sim already runs regardless, so gating
-   only these would be inconsistent. JS-side guards dropped too (loadCurrent/fitCurrent/drawCurrent). */
+   no parallax) — the low-risk kind — and they're the page's one live demo, so gating them would be
+   inconsistent with showing the FPS/JS-vs-JZ readout at all. */
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
@@ -468,6 +432,7 @@ footer .legal .om { font-size: 15px; }
 // as plain JS; the FPS/ms readout times its frame. The real REPL (wat · console) is embedded below.
 import jz from './dist/jz.js'
 import sprae from './assets/sprae.js'
+import { headlineStats } from './assets/headline.js'
 const $ = id => document.getElementById(id)
 
 // Blueprint grid: anchored at the page origin (0,0) in pure CSS — stable, no JS origin to set.
@@ -480,24 +445,13 @@ const $ = id => document.getElementById(id)
     { v8: '2.4×', peak: '13.5×', porf: '3.1×', rust: '1.1×', assize: '1.1×', porfsize: '0.5×', subx: '2.4×' })
   try {
     const r = await (await fetch('bench/results.json')).json()
-    const cases = Object.values(r.cases)
-    const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
-    // exclude parity-DIFF runs (a target that produced the WRONG answer) — speed on a wrong result
-    // isn't a fair comparison. Matters for Porffor, which miscompiles several kernels.
-    const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt] && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
-    let peak = 0; for (const c of cases) { const t = c.targets; if (t.jz && t.v8 && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
-    const f = (x, d = 1) => x.toFixed(d).replace(/\.0$/, '')
-    const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
-    const v8x = f(ratio('v8')) + '×'
-    m.v8 = v8x; m.subx = v8x                 // sub sentence's figure stays in sync with the V8 stat
-    m.peak = f(peak) + '×'
-    m.porf = f(ratio('porf')) + '×'          // Porffor — only the few kernels it compiles (see bench)
-    m.rust = f(ratio('rust')) + '×'
-    // size vs AssemblyScript's .wasm (apples-to-apples, binary↔binary). MEDIAN, not geomean: the
-    // `synth` outlier (jz ~4× AS there) skews the mean; the typical kernel is ≈1.1× AS.
-    const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
-    const asMed = sizeRatio('as'); if (asMed != null) m.assize = f(asMed) + '×'
-    const pfMed = sizeRatio('porf'); if (pfMed != null) m.porfsize = f(pfMed) + '×'   // jz is ~half Porffor's .wasm
+    const s = headlineStats(r)               // shared with the bench page → identical figures
+    if (s.v8) { m.v8 = s.v8; m.subx = s.v8 }  // sub sentence's figure stays in sync with the V8 stat
+    if (s.peak) m.peak = s.peak
+    if (s.porf) m.porf = s.porf              // Porffor — only the few kernels it compiles (see bench)
+    if (s.rust) m.rust = s.rust
+    if (s.assize) m.assize = s.assize        // jz's .wasm vs AssemblyScript's, median over shared cases
+    if (s.porfsize) m.porfsize = s.porfsize  // jz is ~half Porffor's .wasm
   } catch {}
 })()
 
@@ -522,14 +476,21 @@ const currentCtx = currentCv.getContext('2d', { alpha: true })
 let currentJz = null, currentJs = null, kind = 'jz', src = ''
 const cur = () => (kind === 'jz' ? currentJz : currentJs)
 let currentImg = null, currentOut32 = null, currentPx = null, currentW = 0, currentH = 0
-const bindEngine = () => {                          // (re)bind the active engine to the canvas size
-  const e = cur(); if (!e || !currentW) return
-  currentPx = e.resize(currentW, currentH)
+let pxJz = null, pxJs = null                        // each engine keeps its own pixel buffer + sim state
+// Size BOTH engines to the canvas once (on load / resize), caching each one's buffer. The JS/JZ switch
+// then just re-points the loop at the live buffer — it never re-resizes, so flipping is seamless: the
+// pulses keep flowing (and keep their state) while only the *timed* engine — and the ms readout — change.
+const sizeBoth = () => {
+  if (!currentW) return
   const r = currentCv.getBoundingClientRect()
-  try { e.configure(0, r.width ? currentW / r.width : 1) } catch {}   // grid at page origin (0,0) = canvas origin
+  const scale = r.width ? currentW / r.width : 1     // grid at page origin (0,0) = canvas origin
+  if (currentJz) { pxJz = currentJz.resize(currentW, currentH); try { currentJz.configure(0, scale) } catch {} }
+  if (currentJs) { pxJs = currentJs.resize(currentW, currentH); try { currentJs.configure(0, scale) } catch {} }
+  currentPx = kind === 'jz' ? pxJz : pxJs
 }
+const bindEngine = () => { currentPx = kind === 'jz' ? pxJz : pxJs }   // switch → re-point at the live buffer
 const fitCurrent = () => {
-  if (!cur()) return
+  if (!currentJz && !currentJs) return
   // Pin the canvas to a FIXED width — the widest the band can ever be (the window can't exceed the
   // screen) — anchored left:0, so a window resize NEVER re-fits or re-stretches it: the pulses keep
   // their absolute positions (no reshuffle) and the grid stays tied to the static one (both drawn at
@@ -549,7 +510,7 @@ const fitCurrent = () => {
   currentCv.width = currentW; currentCv.height = currentH
   currentImg = currentCtx.createImageData(currentW, currentH)
   currentOut32 = new Uint32Array(currentImg.data.buffer)
-  bindEngine()
+  sizeBoth()
 }
 const loadCurrent = async () => {
   try {
@@ -610,10 +571,18 @@ const loop = (now) => {
 }
 
 // ── JS↔JZ switch: flip the sparkle engine between jz-compiled wasm and the SAME source run as plain
-//    JS; bindEngine re-points the loop at the newly-active engine's pixel buffer + grid config ──
+//    JS; both stay sized, so bindEngine just re-points the loop — the pulses flow on, only the ms changes ──
 const engineEl = $('engine')
 const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
 engineEl.onclick = () => { setEngineUI(kind === 'jz' ? 'js' : 'jz'); bindEngine() }
+
+// ── click anywhere on the band → spark a fresh pulse burst at that grid junction ──
+document.querySelector('.hero').addEventListener('pointerdown', (e) => {
+  if (e.target.closest('a, button, iframe')) return        // let the nav / switch handle their own clicks
+  const r = currentCv.getBoundingClientRect()
+  const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height
+  if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) { try { cur()?.spawn?.(nx, ny) } catch {} }
+})
 
 // ── boot: compile the sparkles both ways, fit to the band, start the loop ──
 ;(async () => {
@@ -622,13 +591,14 @@ engineEl.onclick = () => { setEngineUI(kind === 'jz' ? 'js' : 'jz'); bindEngine(
   requestAnimationFrame(loop)
 })()
 
-// ── Logo reflection: the 1px bevel ring catches the cursor like a light source — a bright spot on
-// the edge facing the pointer, sharper + brighter the nearer it is, softer + dimmer far away, with a
-// gentle continuous drift so it stays alive when the pointer is still. No sim sampling — pure pointer. ──
+// ── Logo reflection: the 1px bevel ring catches light. On a mouse the glare FACES the cursor and
+// sharpens/brightens as it nears — no autonomous spin; on touch / no pointer it's a gentle rotating
+// sheen. A smaller back-light always sits opposite the highlight. Pure pointer math, no sim. ──
 const logoEl = document.querySelector('.logo')
 const reflEl = logoEl && logoEl.querySelector('.logo-refl')
 const N = 72, STEP = 360 / N
 const smooth = new Float32Array(N)
+const hasMouse = matchMedia('(hover: hover) and (pointer: fine)').matches   // drive by cursor, else animate
 let pmx = innerWidth * 0.5, pmy = -200   // start above the page → an initial top-edge glow
 addEventListener('pointermove', e => { pmx = e.clientX; pmy = e.clientY }, { passive: true })
 const reflect = (now) => {
@@ -636,23 +606,30 @@ const reflect = (now) => {
   if (!reflEl) return
   const lr = logoEl.getBoundingClientRect()
   if (lr.bottom < 0 || lr.top > innerHeight) return
-  const lw = lr.width, lcx = lr.left + lw / 2, lcy = lr.top + lr.height / 2
-  const dx = pmx - lcx, dy = pmy - lcy
-  const dist = Math.hypot(dx, dy) / lw                 // pointer distance in logo-widths
-  const ang = Math.atan2(dx, -dy) + now * 0.00012      // facing the pointer + a slow drift (~7°/s)
-  const bright = Math.max(0.06, 0.9 * Math.exp(-dist * 0.5))   // near → bright, far → ambient floor
-  const sigma = 1.4 + Math.min(11, dist * 2)           // near → tight highlight, far → wide/diffuse
-  const center = ((ang / (2 * Math.PI)) * N % N + N) % N
+  let ang, prox
+  if (hasMouse) {                            // face the cursor; intensity falls off with distance, no spin
+    const lw = lr.width, dx = pmx - (lr.left + lw / 2), dy = pmy - (lr.top + lr.height / 2)
+    prox = Math.exp(-Math.hypot(dx, dy) / lw * 0.7)
+    ang = Math.atan2(dx, -dy)
+  } else {                                   // touch / no pointer: a gentle rotating sheen
+    prox = 0.55
+    ang = now * 0.00018
+  }
+  const bright = 0.16 + 0.74 * prox                           // ambient sheen far, bright spot near
+  const sigma = 5.4 - 3.5 * prox                              // wide/diffuse far, tight near (in bins)
+  const center = ((ang / (2 * Math.PI)) * N % N + N) % N, opp = (center + N / 2) % N
   const stops = []
   for (let i = 0; i < N; i++) {
-    let dd = Math.abs(i - center); dd = Math.min(dd, N - dd)    // shortest wrapped bin distance
-    const target = bright * Math.exp(-(dd * dd) / (2 * sigma * sigma))
-    smooth[i] += (target - smooth[i]) * 0.14
+    let d1 = Math.abs(i - center); d1 = Math.min(d1, N - d1)
+    let d2 = Math.abs(i - opp);    d2 = Math.min(d2, N - d2)
+    const target = bright * Math.exp(-(d1 * d1) / (2 * sigma * sigma))               // primary highlight
+                 + bright * 0.4 * Math.exp(-(d2 * d2) / (2 * (sigma * 1.3) ** 2))    // smaller back-light
+    smooth[i] += (target - smooth[i]) * 0.16
     stops.push(`rgba(216,230,255,${smooth[i].toFixed(3)}) ${(i * STEP).toFixed(1)}deg`)
   }
   stops.push(`rgba(216,230,255,${smooth[0].toFixed(3)}) 360deg`)
   reflEl.style.background = `conic-gradient(${stops.join(',')})`
-  const blur = 4 + Math.min(15, dist * 2.5)            // near → tight glow, far → soft/blurred
+  const blur = 5 + 11 * (1 - prox)                            // tight glow near, soft far
   reflEl.style.filter = `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(150,185,255,.5)) drop-shadow(0 0 ${(blur * 2).toFixed(1)}px rgba(120,150,255,.28))`
 }
 requestAnimationFrame(reflect)
