@@ -290,8 +290,8 @@ footer .legal .om { font-size: 15px; }
 <body>
 
 <main class="hero">
-  <!-- a single live N-body sim, full-bleed behind the pitch; the in-pitch JS/JZ switch drives it -->
-  <canvas class="show-stage" id="stage"></canvas>
+  <!-- the live demo IS the blueprint grid's electron pulses (grid-current.js), compiled in-page; the
+       in-pitch JS/JZ switch flips its engine and the FPS/ms readout times the frame -->
   <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
 
   <nav class="hero-nav">
@@ -307,14 +307,16 @@ footer .legal .om { font-size: 15px; }
     <div class="intro">
       <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="160" height="160" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
       <h1>Computational JS, <br class="hb">compiled to WASM</h1>
-      <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
     </div>
     <!-- FIXME: What's in it for me, how my life will change? - the question to answer -->
-    <div class="cta-live">
-      <div class="fps" aria-label="performance">
-        <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
+    <div class="lede">
+      <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
+      <div class="cta-live">
+        <div class="fps" aria-label="performance">
+          <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
+        </div>
+        <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="JS / JZ engine — flip to recompile the sparkles"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
       </div>
-      <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="JS / JZ engine — flip to drive the live sim"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
     </div>
     <!-- FIXME: these metrics can be actually in the second FAQ question "Is that fast?" -->
     <div class="metrics" id="metrics">
@@ -343,29 +345,9 @@ footer .legal .om { font-size: 15px; }
 
 <section class="try">
   <div class="try-wrap">
-    <div class="dock">
-      <div class="dock-head">
-        <select id="dfile" class="dock-file" aria-label="example to edit and render"></select>
-        <span id="derr" role="status" aria-live="polite"></span>
-        <select id="dopt" class="dock-opt" aria-label="optimization target">
-          <option value="0">none</option>
-          <option value="3" selected>speed</option>
-          <option value="size">size</option>
-        </select>
-        <span id="dsize">—</span>
-        <button id="ddl" class="dock-ico" title="download .wasm" aria-label="download wasm">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-          wasm
-        </button>
-        <button id="drun" aria-label="run — recompile and update the sim above">▶ run</button>
-      </div>
-      <div class="dock-box">
-        <div class="dock-code">
-          <pre id="dhl" aria-hidden="true"></pre>
-          <textarea id="dedit" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source — edit, then Run to update the sim above"></textarea>
-        </div>
-      </div>
-    </div>
+    <!-- the real REPL, embedded (chrome-stripped via ?embed): edit or paste source, Run, read the WAT
+         and console. It opens on a runnable preset — hit “js vs wasm” to race the same source. -->
+    <iframe class="repl-embed" src="repl/?embed" title="jz REPL — edit, compile, run" loading="lazy"></iframe>
   </div>
 </section>
 
@@ -424,7 +406,7 @@ footer .legal .om { font-size: 15px; }
 
     <details>
       <summary><span class="fq">How do I get started?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or edit the N-body sim above — it’s a jz program, recompiling on every keystroke. jz is experimental and pre-1.0, so pin a version.</div>
+      <div class="ans"><code>npm install jz</code>, then <code>jz`export let f = x =&gt; x*x`</code> hands you an instantiated WASM module. Or try the REPL above — paste a function, hit Run, read the WAT and race it “js vs wasm”. jz is experimental and pre-1.0, so pin a version.</div>
     </details>
   </div>
 </section>
@@ -481,10 +463,10 @@ footer .legal .om { font-size: 15px; }
 </footer>
 
 <script type="module">
-// One screen: a demo runs full-bleed on the hero canvas, compiled HERE in the page. The JS/JZ
-// switch flips between jz-compiled wasm and the same source run as plain JS. The editable dock
-// below holds that demo's source — edit it, hit Run, and the hero recompiles from your edit.
-import jz, { compile } from './dist/jz.js'
+// One screen: the blueprint grid's electron pulses are a real jz program (assets/grid-current.js),
+// compiled HERE in the page. The JS/JZ switch flips between jz-compiled wasm and the same source run
+// as plain JS; the FPS/ms readout times its frame. The real REPL (wat · console) is embedded below.
+import jz from './dist/jz.js'
 import sprae from './assets/sprae.js'
 const $ = id => document.getElementById(id)
 
@@ -530,82 +512,53 @@ for (const id of ['install2']) {
   })
 }
 
-// ── the hero sim: the real n-body source, compiled in-page, full-bleed on <canvas id=stage> ──
-const stage = $('stage'), g = stage.getContext('2d', { alpha: false })
-let W = 0, H = 0, img = null, out32 = null, px = null
-let jzEx = null, jsMod = null, kind = 'jz', gen = 0, t = 0, src = '', frameArgs = (t) => [t]
-const cur = () => (kind === 'jz' ? jzEx : jsMod)
-const dopt = $('dopt')
-const optsObj = () => ({ optimize: dopt.value === 'size' ? 'size' : +dopt.value })
-const buildJz = (s) => jz(s, optsObj()).exports
-const buildJs = async (s) => { const u = URL.createObjectURL(new Blob([s], { type: 'text/javascript' })); try { return await import(u) } finally { URL.revokeObjectURL(u) } }
-
-// ── compiled grid current: a second jz module paints transparent pulses on the blueprint grid ──
+// ── The hero sparkles ARE the live demo: grid-current.js, compiled in-page, painting electron-like
+//    pulses along the blueprint grid. The JS/JZ switch flips between jz-compiled wasm and the SAME
+//    source run as plain JS; the FPS/ms readout times that frame. The real REPL (wat · console) is
+//    embedded below. The grid is anchored at the page origin (0,0) and the canvas is pinned to a fixed
+//    width, so a resize never reshuffles the pulses or drifts them off the static hash grid. ──
 const currentCv = $('grid-current')
 const currentCtx = currentCv.getContext('2d', { alpha: true })
-let currentEx = null, currentImg = null, currentOut32 = null, currentPx = null, currentW = 0, currentH = 0
-const configureCurrent = () => {
-  if (!currentEx || !currentW) return
+let currentJz = null, currentJs = null, kind = 'jz', src = ''
+const cur = () => (kind === 'jz' ? currentJz : currentJs)
+let currentImg = null, currentOut32 = null, currentPx = null, currentW = 0, currentH = 0
+const bindEngine = () => {                          // (re)bind the active engine to the canvas size
+  const e = cur(); if (!e || !currentW) return
+  currentPx = e.resize(currentW, currentH)
   const r = currentCv.getBoundingClientRect()
-  const scale = r.width ? currentW / r.width : 1
-  try { currentEx.configure(0, scale) } catch {}   // grid anchored at page origin (0,0) = canvas origin
+  try { e.configure(0, r.width ? currentW / r.width : 1) } catch {}   // grid at page origin (0,0) = canvas origin
 }
 const fitCurrent = () => {
-  if (!currentEx) return
+  if (!cur()) return
   // Pin the canvas to a FIXED width — the widest the band can ever be (the window can't exceed the
-  // screen) — and anchor it left:0, so a window resize NEVER re-fits or re-stretches it: the pulses
-  // keep their absolute positions (no reshuffle) and the grid stays tied to the static one (both
-  // drawn at k·80 from x=0). A narrower window just clips the right edge (hero is overflow:hidden).
+  // screen) — anchored left:0, so a window resize NEVER re-fits or re-stretches it: the pulses keep
+  // their absolute positions (no reshuffle) and the grid stays tied to the static one (both drawn at
+  // k·80 from x=0). A narrower window just clips the right edge (hero is overflow:hidden).
   const refW = Math.max(innerWidth, (window.screen && screen.width) || 0)
   currentCv.style.width = refW + 'px'
-  const r = currentCv.getBoundingClientRect()   // width = refW (fixed), height = the 8-unit band
-  // Render near device resolution so the pulses are crisp 1px rules that sit ON the static hash grid
-  // (the old 0.42 MP budget upscaled them to fuzzy ~1.6px blobs that read as "off the grid").
+  const r = currentCv.getBoundingClientRect()       // width = refW (fixed), height = the 8-unit band
+  // Render near device resolution so the pulses are crisp 1px rules sitting ON the static hash grid.
   let scale = Math.min(devicePixelRatio || 1, 2)
   const BUDGET = 2400000
   const want = r.width * r.height * scale * scale
   if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
   currentW = Math.max(8, Math.round(r.width * scale) >> 1 << 1)
-  // Tie H to W's exact ratio so x- and y-scale match — one `scale` then maps 80px → 80px on BOTH
-  // axes (independent W/H rounding previously drifted the vertical rules ~1.5px across the band).
-  currentH = Math.max(8, Math.round(currentW * r.height / r.width))   // exact W:H ratio (no even-forcing) so the single scale maps 80→80 on both axes
+  // Tie H to W's exact ratio so one `scale` maps 80px → 80px on BOTH axes (independent rounding drifted
+  // the vertical rules ~1.5px across the band).
+  currentH = Math.max(8, Math.round(currentW * r.height / r.width))
   currentCv.width = currentW; currentCv.height = currentH
   currentImg = currentCtx.createImageData(currentW, currentH)
   currentOut32 = new Uint32Array(currentImg.data.buffer)
-  currentPx = currentEx.resize(currentW, currentH)
-  configureCurrent()
+  bindEngine()
 }
 const loadCurrent = async () => {
   try {
-    const s = await (await fetch('assets/grid-current.js')).text()
-    currentEx = jz(s, { optimize: 3 }).exports
+    src = await (await fetch('assets/grid-current.js')).text()
+    currentJz = jz(src, { optimize: 3 }).exports                          // jz → wasm
+    const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+    try { currentJs = await import(u) } finally { URL.revokeObjectURL(u) } // same source, plain JS
     fitCurrent()
   } catch {}
-}
-const drawCurrent = (now) => {
-  if (!currentEx || !currentPx) return
-  try { currentEx.frame(now * 0.001); currentOut32.set(currentPx); currentCtx.putImageData(currentImg, 0, 0) } catch {}
-}
-// resolution: dpr-capped, with a pixel budget — the same policy jzdemo's runDemo uses,
-// tuned higher (1.3 MP) so the sim renders crisp at full-bleed instead of the old 0.5× blur.
-const fit = () => {
-  const r = stage.getBoundingClientRect()
-  let scale = Math.min(devicePixelRatio || 1, 1.5)
-  const BUDGET = 1300000
-  const want = r.width * r.height * scale * scale
-  if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
-  const w = Math.max(8, Math.round(r.width * scale) >> 1 << 1)
-  const h = Math.max(8, Math.round(r.height * scale) >> 1 << 1)
-  W = w; H = h; stage.width = w; stage.height = h
-  img = g.createImageData(w, h); out32 = new Uint32Array(img.data.buffer)
-  const e = cur(); if (e) { px = e.resize(w, h); try { e.init?.() } catch {} }
-}
-const rebuild = async (s) => {
-  const my = ++gen
-  try { if (kind === 'jz') jzEx = buildJz(s); else jsMod = await buildJs(s) }
-  catch { return }
-  if (my !== gen) return
-  if (!img) fit(); else { const e = cur(); px = e.resize(W, H); try { e.init?.() } catch {} }
 }
 
 // ── FPS sparkline — now fed from the in-page loop, not an iframe ──
@@ -635,103 +588,38 @@ const renderFps = () => {
   fpsNum.textContent = curFps >= 1 ? Math.round(curFps) : '··'
   msNum.textContent = curMs > 0 ? (curMs < 10 ? curMs.toFixed(2) : curMs.toFixed(1)) : '··'
 }
-sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); fit(); if (innerWidth > currentCv.clientWidth) fitCurrent() })   /* grid-current is pinned to screen width — only re-fit if the window somehow grows past it (e.g. moved to a wider screen), never on ordinary resize */
+sizeFps(); addEventListener('resize', () => { sizeFps(); drawFps(); if (innerWidth > currentCv.clientWidth) fitCurrent() })   /* grid-current is pinned to screen width — only re-fit if the window grows past it (e.g. moved to a wider screen), never on ordinary resize */
 
-// ── the loop: step the engine, blit its buffer, measure fps + ms ──
+// ── the loop: step the active engine, time JUST its frame() (the compute that differs between JS and
+//    JZ — the blit is identical), blit to the grid-current canvas, update fps + ms ──
 let last = performance.now(), fps = 0, msEMA = 0, sparkTick = 0
-const loop = () => {
+const loop = (now) => {
   requestAnimationFrame(loop)
   const e = cur()
-  const now = performance.now(), dt = now - last; last = now
+  const dt = now - last; last = now
   const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps; fps += (inst - fps) * 0.1
-  if (!e || !px) return
+  if (!e || !currentPx) return
   const t0 = performance.now()
-  try {
-    if (holding) e.grow?.(ptrX, ptrY)   // nbody: inflate the held body every frame (other demos ignore it)
-    e.frame(...frameArgs(t)); t += 1 / 60; out32.set(px); g.putImageData(img, 0, 0)
-  } catch (err) { return }
+  try { e.frame(now * 0.001) } catch { return }
   const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
-  drawCurrent(now)
+  currentOut32.set(currentPx); currentCtx.putImageData(currentImg, 0, 0)
   curFps = fps; curMs = msEMA
   if (curFps > fpsRef) fpsRef = curFps
-  if (++sparkTick % 2 === 0) {   // ~30 Hz sparkline update is plenty
-    fpsHist.push(Math.min(100, curFps / fpsRef * 100)); fpsHist.shift(); drawFps()
-  }
+  if (++sparkTick % 2 === 0) { fpsHist.push(Math.min(100, curFps / fpsRef * 100)); fpsHist.shift(); drawFps() }   // ~30 Hz sparkline
   renderFps()
 }
 
-// ── pointer on the sim: click-hold spawns a body, then GROW runs every frame while held
-//    (radius ∝ √mass, so a held body inflates fast then slows — the “log” feel). dblclick re-seeds. ──
-const norm = (ev) => { const r = stage.getBoundingClientRect(); return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height] }
-let holding = false, ptrX = 0.5, ptrY = 0.5
-stage.addEventListener('pointerdown', (e) => { e.preventDefault(); holding = true; [ptrX, ptrY] = norm(e); try { cur()?.spawn?.(ptrX, ptrY) } catch {} })
-stage.addEventListener('pointermove', (e) => { [ptrX, ptrY] = norm(e) })   // always track — grow reads it in the loop
-const rel = () => { if (holding) { holding = false; try { cur()?.release?.() } catch {} } }
-stage.addEventListener('pointerup', rel); stage.addEventListener('pointerleave', rel); stage.addEventListener('pointercancel', rel)
-stage.addEventListener('dblclick', () => { try { cur()?.init?.() } catch {} })
-
-// ── JS↔JZ switch: rebuild the chosen engine from the fetched n-body source ──
+// ── JS↔JZ switch: flip the sparkle engine between jz-compiled wasm and the SAME source run as plain
+//    JS; bindEngine re-points the loop at the newly-active engine's pixel buffer + grid config ──
 const engineEl = $('engine')
 const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
-engineEl.onclick = async () => { const k = kind === 'jz' ? 'js' : 'jz'; setEngineUI(k); await rebuild(src) }
+engineEl.onclick = () => { setEngineUI(kind === 'jz' ? 'js' : 'jz'); bindEngine() }
 
-// ── the dock: a live editor for the demo running in the hero. Pick or edit a source, hit Run,
-//    and the hero recompiles from it. The full REPL (WAT · console · bench) lives at /repl/. ──
-const dedit = $('dedit'), dhl = $('dhl'), dfile = $('dfile'), dsize = $('dsize'), derr = $('derr')
-
-// renderable demos: each exports resize(w,h)→px + frame(…); `args` maps the loop clock to that
-// demo's frame signature (nbody/plasma take just t; lorenz spins; julia sweeps its c-constant)
-const EXAMPLES = [
-  { file: 'nbody.js',  path: 'examples/nbody/nbody.js',   args: t => [t] },
-  { file: 'plasma.js', path: 'examples/plasma/plasma.js', args: t => [t] },
-  { file: 'lorenz.js', path: 'examples/lorenz/lorenz.js', args: t => [t, t * 0.3] },
-  { file: 'julia.js',  path: 'examples/julia/julia.js',   args: t => [t, Math.sin(t * 0.1) * 0.7, Math.cos(t * 0.13) * 0.7] },
-]
-for (const [i, ex] of EXAMPLES.entries()) { const o = document.createElement('option'); o.value = i; o.textContent = ex.file; dfile.appendChild(o) }
-
-// editor = textarea (transparent ink) over a <pre> that paints the syntax — one regex, mono greys
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
-const CLS = ['c', 's', 'n', 'k', 't']
-const hil = (s) => { let h = '', last = 0, m; TOKEN.lastIndex = 0; while ((m = TOKEN.exec(s))) { h += esc(s.slice(last, m.index)); const i = m.slice(1).findIndex(g => g !== undefined); h += `<span class="${CLS[i]}">${esc(m[0])}</span>`; last = TOKEN.lastIndex } return h + esc(s.slice(last)) }
-const paint = () => { dhl.innerHTML = hil(dedit.value) + '\n' }
-dedit.addEventListener('input', paint)
-dedit.addEventListener('scroll', () => { dhl.scrollTop = dedit.scrollTop; dhl.scrollLeft = dedit.scrollLeft })
-dedit.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '  '); paint() }
-  else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run() }
-})
-
-// size + download come from a real compile of whatever's in the editor; a compile error shows inline
-const fmtB = n => n < 1000 ? n + ' B' : +(n / 1000).toFixed(2) + ' kB'
-let bytes = null
-const sizeIt = (s) => {
-  try { bytes = compile(s, optsObj()); dsize.textContent = fmtB(bytes.length); derr.textContent = ''; return true }
-  catch (e) { bytes = null; dsize.textContent = ''; derr.textContent = '✗ ' + String(e.message || e).split('\n')[0]; return false }
-}
-const run = async () => { src = dedit.value; if (sizeIt(src)) await rebuild(src) }   // Run → the hero recompiles
-$('drun').addEventListener('click', run)
-dopt.addEventListener('change', run)
-$('ddl').addEventListener('click', () => {
-  if (!bytes) return
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }))
-  a.download = (EXAMPLES[+dfile.value]?.file || 'module').replace(/\.js$/, '') + '.wasm'; a.click(); URL.revokeObjectURL(a.href)
-})
-
-const loadExample = async (i) => {
-  const ex = EXAMPLES[i]; if (!ex) return
-  frameArgs = ex.args
-  try { dedit.value = await (await fetch(ex.path)).text() } catch { return }
-  paint(); src = dedit.value; sizeIt(src); await rebuild(src)
-}
-dfile.addEventListener('change', () => loadExample(+dfile.value))
-
-// ── boot: load the first demo into the dock + hero, then start the loop ──
+// ── boot: compile the sparkles both ways, fit to the band, start the loop ──
 ;(async () => {
   setEngineUI('jz')
   await loadCurrent()
-  await loadExample(0)
-  fit(); loop()
+  requestAnimationFrame(loop)
 })()
 
 // ── Logo reflection: the 1px bevel ring catches the cursor like a light source — a bright spot on

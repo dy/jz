@@ -48,9 +48,11 @@ jobs:
           # node_modules, no .git, no gitignored junk.
           git archive HEAD --prefix=_site/ | tar -x
           # overlay the just-built artifacts (gitignored, so absent from the archive).
-          # dist/sprae.js is bundled from the `sprae` devDep at build time; the landing binds its
-          # live bench figures with it, so it ships with the other dist bundles.
-          mkdir -p _site/dist && cp dist/jz.js dist/interop.js dist/sprae.js _site/dist/
+          mkdir -p _site/dist && cp dist/jz.js dist/interop.js _site/dist/
+          # assets/sprae.js is bundled from the `sprae` devDep at build time (a WEB asset, not compiler
+          # dist): the landing binds its live bench figures with it. site.css + the font in assets/ are
+          # tracked, so they're already in the archive — only the built sprae.js needs the overlay.
+          mkdir -p _site/assets && cp assets/sprae.js _site/assets/
           find examples -name '*.wasm' -not -path '*/build/*' | while read -r f; do
             mkdir -p "_site/$(dirname "$f")" && cp "$f" "_site/$f"
           done
