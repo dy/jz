@@ -42,8 +42,10 @@ const TESTS = [
   'differential',
   'fuzz',
   'determinism',
+  'grid-current',
   'perf-ratchet',
   'parser-bugs',
+  'selfhost-source',
   'jsstring',
   'booleans',
   'warnings',
@@ -76,7 +78,10 @@ const argFilters = process.argv.slice(2)
 //     loop-body ops vs a committed baseline. The kernel runs optimize:false (ignores
 //     the level), so its op counts don't match the baseline — and it's not a value
 //     test anyway. Excluded; the in-process leg owns it.
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'abi'])
+//   - selfhost-source: a host-side scan of the self-host kernel's own source for
+//     labeled-statement misparses. Reads src via parse/jzify directly, never the
+//     compiler-under-test, so the kernel leg would only re-run it identically.
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'selfhost-source', 'abi'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length
