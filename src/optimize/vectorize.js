@@ -738,8 +738,12 @@ function matchBlockLoop(blockNode, opts = {}) {
       loopNode = c
     } else if (isArr(c)) {
       // `loopNode` truthy ⇒ this content is AFTER the loop ⇒ bail (even for a $__li set).
-      if (!allowPreamble || loopNode || c[0] !== 'local.set' || typeof c[1] !== 'string'
-        || !c[1].startsWith('$__li') || hasSideEffect(c[2])) return null
+      // A LICM-hoisted invariant is `$__liN`; INLINING renames it (e.g. `$__inl7___li0`). Default
+      // accepts only un-inlined `$__li*` (keeps the existing recognizers byte-identical);
+      // `allowInlinedLi` (gated callers only) also accepts the `__liN` marker anywhere — both are
+      // pure & loop-invariant by construction (belt-and-suspenders: hasSideEffect guard).
+      const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? /__li\d/.test(c[1]) : c[1].startsWith('$__li'))
+      if (!allowPreamble || loopNode || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2])) return null
       preamble.push(c)
     }
   }
@@ -982,8 +986,12 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
 //     the loop, so in-loop bases stay distinct globals — safe without a runtime guard.
 //   • Reassociation: summing neighbours reorders f64 adds across lanes (ulp, like
 //     float reductions) — gated behind cfg.experimentalStencil until proven.
-function tryStencil(bl, fnLocals, freshIdRef, enabled) {
-  if (!enabled || !bl) return null
+function tryStencil(node, fnLocals, freshIdRef, enabled) {
+  if (!enabled) return null
+  // Gated, so match here with allowInlinedLi (accepts inlined LICM preambles `$__inl7___li*` —
+  // grid loops like schrodinger's stepR carry the row-base `y*w` as such a hoisted invariant).
+  const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
+  if (!bl) return null
   const { incVar, bound, body, preamble } = bl   // preamble: LICM-hoisted $__li invariants
   if (body.some(hasGlobalSet)) return null
 
@@ -1023,6 +1031,23 @@ function tryStencil(bl, fnLocals, freshIdRef, enabled) {
     // Any IV-dependent factor would be non-unit-stride (stride-w) ⇒ reject.
     if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
       return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
+    // Float-derived index (grid loops compute the row base `y*w` in f64): the index arrives as
+    // `idx = select(wrap(trunc_sat(INV + convert(x))), 0, ≠Inf)`. For an integer counter x,
+    // trunc(C + x) = trunc(C) + x ⇒ stride-1 (the i32 lane offset is added before the trunc); the
+    // Infinity-canon select takes the trunc branch for finite coords (grid indices are finite).
+    // f64.add/sub mirror i32.add/sub; convert/wrap/trunc_sat/tee are coeff-transparent.
+    if (isArr(n) && (n[0] === 'f64.add' || n[0] === 'f64.sub') && n.length === 3) {
+      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'f64.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    if (isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'i32.wrap_i64' || n[0] === 'i64.trunc_sat_f64_s') && n.length === 2)
+      return ivCoeff(n[1])
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
+    if (isArr(n) && n[0] === 'select' && n.length === 4 && isI32Const(n[2])
+        && isArr(n[3]) && n[3][0] === 'f64.ne' && isArr(n[3][2]) && n[3][2][0] === 'f64.const' && /inf/i.test(String(n[3][2][1])))
+      return ivCoeff(n[1])   // jz overflow-canon: finite (always, for grids) ⇒ the trunc branch
     return null
   }
   const countSets = (name) => {
@@ -1051,7 +1076,7 @@ function tryStencil(bl, fnLocals, freshIdRef, enabled) {
   const addrTees = new Map()   // $ab → { base, idx }
   const sites = []             // { kind, base, idx, memBytes }
   const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
-  const matchAddr = (addr) => {
+  const matchAddr = (addr, expectStride = stride) => {
     let teeName = null, n = addr
     if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
     if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
@@ -1060,7 +1085,7 @@ function tryStencil(bl, fnLocals, freshIdRef, enabled) {
       let ot = null, o = off
       if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
       if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
-      if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === stride && ivCoeff(o[1]) === 1) {
+      if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
         if (ot) offTees.set(ot, o[1])
         return { idx: o[1] }
       }
@@ -1081,14 +1106,16 @@ function tryStencil(bl, fnLocals, freshIdRef, enabled) {
       if (typeof addr === 'string' && addr.startsWith('offset=')) { memBytes = +addr.slice(7); addr = node[2] }
       const lt = LOAD_OPS[op]
       if (laneType == null) { if (lt !== 'f64' && lt !== 'f32') return false; laneType = lt; stride = LANE_INFO[lt].stride }
-      else if (lt !== laneType) return false
-      const m = matchAddr(addr)
+      else if (lt !== laneType && !(lt === 'f32' && laneType === 'f64')) return false   // f32→f64 widening OK
+      // Validate the address at the LOAD's own element stride (f64=8, widening f32=4); the index
+      // must still be stride-1 in elements (ivCoeff===1). The f32 load is promoted in liftExprV.
+      const m = matchAddr(addr, LANE_INFO[lt].stride)
       if (!m) return false
       sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes })
       return true
     }
     if (STORE_OPS[op]) {
-      if (node.length !== 3) return false                 // memarg store — decline
+      if (node.length !== 3) return false
       const st = STORE_OPS[op]
       if (laneType == null) { if (st !== 'f64' && st !== 'f32') return false; laneType = st; stride = LANE_INFO[st].stride }
       else if (st !== laneType) return false
@@ -1740,6 +1767,16 @@ function liftExprV(expr, ctx) {
       return ['i32x4.extend_low_i16x8_u', ['i16x8.extend_low_i8x16_u', ['v128.load32_zero', expr[1]]]]
     if (op === 'i32.load16_u')
       return ['i32x4.extend_low_i16x8_u', ['v128.load64_zero', expr[1]]]
+  }
+
+  // Widening f32→f64 load: a Float32Array read promoted to f64 (`f64.promote_f32(f32.load …)`,
+  // e.g. schrodinger's f32 potential `V[idx]` inside an f64 stencil). Load the 2 f32 lanes
+  // (load64_zero = 8 bytes = V[idx],V[idx+1]) and promote to f64x2 — the consecutive pair the
+  // two f64 lanes need. Only in f64-lane context; bit-exact (same promote the scalar does).
+  if (op === 'f64.promote_f32' && ctx.laneType === 'f64' && isArr(expr[1]) && expr[1][0] === 'f32.load') {
+    const ld = expr[1]
+    const addr = typeof ld[1] === 'string' && ld[1].startsWith('offset=') ? ['v128.load64_zero', ld[1], ld[2]] : ['v128.load64_zero', ld[1]]
+    return ['f64x2.promote_low_f32x4', addr]
   }
 
   // Loads → v128.load (preserving address, including any local.tee).
@@ -3840,7 +3877,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryVectorize(bl, fnLocals, freshIdRef)
         ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
-        ?? tryStencil(bl, fnLocals, freshIdRef, stencil)
+        ?? tryStencil(node, fnLocals, freshIdRef, stencil)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)

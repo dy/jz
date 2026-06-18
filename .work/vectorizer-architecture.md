@@ -344,24 +344,46 @@ across the rest of the corpus.
   *Corpus status (measured):* `waves` ✓ (vectorizes + bit-exact). `ivCoeff` also handles inline row
   bases `idx = y*w + x` (invariant×invariant ⇒ coeff 0; tested bit-exact).
 
-  **`schrodinger`/`slime`/`diffusion` are blocked UPSTREAM, in type inference — not the vectorizer
-  (investigated in depth).** Root cause: their grid-dimension globals `W`/`H` are inferred **f64**
-  (assigned from the untyped `resize(w,h)` params), so the derived `w`/`h`/`idx` are f64 too. That
-  cascades into TWO scaffold-level rejections, which is why `--why-not-simd` is *silent* (not even a
-  candidate — `matchBlockLoop` bails before any stencil scan):
-  1. The loop bound `x < w-1` becomes a **float compare** `f64.lt(convert(x), w-1)` — `matchExitBrIf`
-     only accepts `i32.lt_s/u`, so the loop is rejected.
-  2. The index `y*w+x` is computed in float and converted back via `select(wrap(trunc_sat(…)))` — not
-     an i32-affine expression, so even past the bound, the stencil address scan can't match it.
-  Forcing the dims i32 in-source (`let w = W|0`) did NOT unblock it (W is read as f64 elsewhere /
-  the float idx persists), confirming the fix belongs in inference (narrow `0`-init globals that are
-  only ever assigned numeric params used in integer/index contexts → i32), NOT in a vectorizer hack
-  (recognizing float bounds + `trunc_sat`-derived indices would paper over the inference gap and is
-  fragile). The vectorizer itself is **ready** — proven by the i32 inline-row synthetic that
-  vectorizes bit-exactly. `diffusion` additionally needs the toroidal-wrap conditional index.
+  **`schrodinger` ✅ DONE (float-index + f32-widening stencil); `slime`/`diffusion` still open.**
+  schrodinger now vectorizes **0→28 f64x2** (+2 `promote_low_f32x4`), **bit-exact** end-to-end
+  (1536 px × 12 frames; test/examples.js). It needed three sound, gated (`experimentalStencil`)
+  extensions, none of them the inference narrowing originally proposed:
+  1. `matchBlockLoop` accepts inlined-LICM preambles (`$__inl7___li*`) via a gated `allowInlinedLi`
+     (default off → existing recognizers byte-identical); the row base `y*w` is such a hoisted invariant.
+  2. `ivCoeff` recognizes the float-derived index `idx = select(wrap(trunc_sat(INV + convert(x))), 0,
+     ≠Inf)` as stride-1 (`trunc(C+x)=trunc(C)+x`; the Infinity-canon select takes the trunc branch
+     for finite grid coords) — plus `f64.add/sub`, `convert/wrap/trunc_sat`, `local.tee`.
+  3. `liftExprV` widens an f32 Float32Array load promoted to f64 (`f64.promote_f32(f32.load)` →
+     `f64x2.promote_low_f32x4(v128.load64_zero)`); tryStencil's scan validates each load at its own
+     element stride (f64=8, f32=4). schrodinger's potential `V` is a Float32Array.
+  `slime`/`diffusion` remain open (slime's box-blur shape; diffusion's toroidal-wrap conditional
+  index). The original (now-archived) diagnosis follows:
 
-  → **Next vectorizer-side gap (not inference-blocked):** outer-loop strip-mining over an inner
-  reduction (Step 7 — metaballs/voronoi/lyapunov), the genuinely-next *vectorizer* primitive.
+  **`schrodinger`/`slime`/`diffusion` — corrected diagnosis (the earlier "fix it in inference" call
+  was WRONG on soundness; see below).** Their grid-dim globals `W`/`H` are inferred **f64**, so the
+  derived `w`/`h`/`idx` are f64. Two scaffold-level rejections (why `--why-not-simd` is silent):
+  1. The inner loop bound `x < w-1` is a **float compare** `f64.lt(convert(x), w-1)` — `matchExitBrIf`
+     only accepts `i32.lt_s/u`, so `matchBlockLoop` rejects the loop.
+  2. The index `y*w+x` is float, converted back via `select(wrap(trunc_sat(…)))` — not i32-affine to
+     the address scan.
+
+  **Why inference-narrowing (the original "Step A") is UNSOUND, not just hard:** `W` is *genuinely*
+  f64 — barrier/seed use it as `(w*0.55)|0`, `w/12.0`, `i%w`. Narrowing `W` (or a local copy
+  `let w = W`) to i32 would change those results if `W` is ever non-integral. The compiler can't
+  prove integrality. So "narrow the grid dims to i32" is off the table.
+
+  **The SOUND fix is a vectorizer recognition (the corrected "A"):** for an integer counter `x`,
+  `trunc(y*w + x) = trunc(y*w) + x` — adding the integer `x` *before* the truncation means the index
+  is **i32-affine in x with stride 1** (`base = trunc(y*w)`, an f64-invariant), even when `w` is f64.
+  Likewise `idx±1`, `idx±w` are stride-1 over their own invariant bases, and the float loop bound
+  `x < w-1` runs an integer trip count (trunc for the SIMD guard; scalar tail cleans the boundary).
+  So the *vectorizer* can handle this soundly — it is NOT a fragile hack (the earlier note was
+  mistaken). Implementation = (a) `matchExitBrIf` accepts `f64.lt(convert_i32(x), BOUND)` behind an
+  opt flag (must stay default-off to keep the existing recognizers byte-identical — this is the main
+  risk, it feeds the shared `matchBlockLoop`), and (b) the stencil/outer-strip address scan
+  recognizes `(select (wrap (trunc_sat (f64.add INV (convert x)))) …)` as `trunc(INV) + x`. Both are
+  intricate; this is a B-sized feature, best as its own focused session. `diffusion` additionally
+  needs the toroidal-wrap conditional index.
 
   *Superseded original plan (kept for reference):* `matchStencilDelta` + `liftStencil` +
 `classifyBody` branch, behind `cfg.experimentalStencil`. *Unlocks:* waves, schrodinger, diffusion,

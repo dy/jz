@@ -96,6 +96,31 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
 });
 
+// Stencil with float-derived index + f32 widening: schrodinger's stepR/stepI are 2-D 5-point
+// Laplacians where the row base `y*w` is computed in f64 (so idx = trunc(y*w + x), recognized as
+// i32-affine since trunc(C+x)=trunc(C)+x), and the potential V is a Float32Array (f32 load promoted
+// to f64). With experimentalStencil both lift to f64x2 (f64 loads → v128.load, V → promote_low_f32x4
+// of load64_zero). BIT-EXACT — lane-parallel stencil, no reassociation; the float→int index is
+// stride-1 by construction.
+test('example: schrodinger float-index + f32-widening stencil vectorizes and stays bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/schrodinger/schrodinger.js', import.meta.url), 'utf8');
+    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const wat = jz.compile(src, { ...OPT, experimentalStencil: true, wat: true });
+    const sten = (wat.match(/f64x2\./g) || []).length;
+    ok(sten > base, `schrodinger stepR/stepI vectorize under the stencil flag (${base} → ${sten} f64x2)`);
+    ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
+    const run = (opts) => {
+        const { exports } = jz(src, opts);
+        const px = exports.resize(48, 32);
+        if (exports.init) exports.init();
+        for (let f = 0; f < 12; f++) exports.frame(f);
+        return Array.from(px);
+    };
+    const simd = run({ ...OPT, experimentalStencil: true }), scal = run({ ...OPT });
+    is(simd.length, scal.length);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'schrodinger float-index stencil bit-exact vs scalar (1536 px, 12 frames)');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;
