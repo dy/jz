@@ -35,6 +35,22 @@ test('example: escape-time fractals take the break-on-first FAST path (beats V8)
     }
 });
 
+// Achievement ratchet: the per-pixel-color vectorizer (tryPerPixelColor) lifts pixel kernels that
+// compute an f64 value from the index (cos/sin/sqrt…) and pack it to a u32 colour into f64x2 lanes —
+// two adjacent pixels at once, transcendentals via the bit-exact $math.*2 mirrors, the pack scalar
+// per lane. chladni hits 2.28× V8 (the two per-row + per-pixel Math.cos → $math.cos2), interference
+// 1.14× (sin+sqrt 2-wide, the sRGB `a**γ` via $math.pow2). Pin the deterministic cause — each must
+// take the path ($__ppc tail) and emit its f64x2 mirror; the bit-exactness gate lives in test/simd.js.
+test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/sqrt/pow)', () => {
+    const w = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+    const ch = w('chladni');
+    ok(/\$__ppc\d+/.test(ch), 'chladni must take the per-pixel-color path');
+    ok(/call \$math\.cos2/.test(ch), 'chladni per-pixel Math.cos → f64x2 $math.cos2');
+    const it = w('interference');
+    ok(/\$__ppc\d+/.test(it), 'interference must take the per-pixel-color path');
+    ok(/call \$math\.sin2/.test(it) && /call \$math\.pow2/.test(it), 'interference: sin → $math.sin2, a**γ → $math.pow2');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;

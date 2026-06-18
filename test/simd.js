@@ -1660,7 +1660,7 @@ const shipRun = (src, ...a) => {
 
 test('escape-time f64x2 - burning-ship (escape-after-update, abs, colour epilogue)', () => {
   const [sc, dc, vec] = shipRun(SHIP(96, 96, 200, SHIP_SMOOTH), -0.5, -0.5, 0.02)
-  is(dc, sc); ok(vec, 'ship vectorized')
+  is(dc, sc); if (!onKernel()) ok(vec, 'ship vectorized')   // self-host kernel doesn't vectorize — bit-exactness is the portable gate
 })
 
 test('escape-time f64x2 - burning-ship odd width + zoom regimes', () => {
@@ -1672,7 +1672,7 @@ test('escape-time f64x2 - burning-ship odd width + zoom regimes', () => {
 
 test('escape-time f64x2 - parallel-counter store (j++) integer output', () => {
   const [sc, dc, vec] = shipRun(SHIP(64, 48, 256, SHIP_INT), -1.8, -0.08, 0.04)
-  is(dc, sc); ok(vec, 'parallel-counter store vectorized')
+  is(dc, sc); if (!onKernel()) ok(vec, 'parallel-counter store vectorized')
 })
 
 test('escape-time f64x2 - burning-ship tiny widths (1,2,3 → tail)', () => {
@@ -1734,11 +1734,11 @@ const dualRun = (src, ...a) => {
 
 test('escape-time f64x2 - dual-exit smooth colour (escape=while-cond, f64 IV)', () => {
   const [sc, dc, vec] = dualRun(DUAL(256, DUAL_SMOOTH), 64, 48, 0.05, -2.0, -1.2)
-  is(dc, sc); ok(vec, 'dual-exit vectorized')
+  is(dc, sc); if (!onKernel()) ok(vec, 'dual-exit vectorized')
 })
 
 test('escape-time f64x2 - dual-exit integer + odd width + low limit', () => {
-  let r = dualRun(DUAL(256, DUAL_INT), 64, 48, 0.05, -2.0, -1.2); is(r[1], r[0]); ok(r[2])
+  let r = dualRun(DUAL(256, DUAL_INT), 64, 48, 0.05, -2.0, -1.2); is(r[1], r[0]); if (!onKernel()) ok(r[2])
   r = dualRun(DUAL(256, DUAL_SMOOTH), 63, 40, 0.06, -2.0, -1.2); is(r[1], r[0])
   r = dualRun(DUAL(3, DUAL_SMOOTH), 48, 32, 0.08, -2.0, -1.2); is(r[1], r[0])
 })
@@ -1918,4 +1918,114 @@ test('SIMD multi-pixel - soundness guards bail on non-canonical blurs', () => {
     is(runVec(src, ON).main(), runVec(src, NO).main(), `${name}: bit-exact`)
     ok(!/i16x8\.extend_high/.test(wat(src, ON)), `${name}: 4-pixel lift must bail`)
   }
+})
+
+test('SIMD vectorize - LICM preamble before the loop: pure lifts, impure bails', () => {
+  // tryVectorize accepts a PURE LICM-hoisted invariant `(local.set $__liN …)` ahead of
+  // the inner loop (the particle integrator's G*DT) — cloning it before the SIMD block —
+  // and f64x2-lifts the SoA update, bit-exact. It must NOT be lured into vectorizing a
+  // loop whose block preamble carries a SIDE EFFECT (a for-in's `$__inl_ptr = (call
+  // $__alloc …)`): cloning that would allocate twice and miscompile.
+  const ON = { optimize: 'speed' }, NO = { optimize: { level: 'speed', vectorizeLaneLocal: false } }
+  const integ = `export let main = () => {
+    const N=1024, vx=new Float64Array(N), x=new Float64Array(N)
+    let s=0x1234abcd|0
+    for (let i=0;i<N;i++){ s^=s<<13; s^=s>>>17; s^=s<<5; vx[i]=(s>>>0)/4294967296-0.5; x[i]=i*0.25 }
+    const step = (vx, x, n, dvy) => { for (let i=0;i<n;i++){ vx[i]=vx[i]+dvy; x[i]=x[i]+vx[i]*0.5 } }
+    for (let f=0;f<128;f++) step(vx, x, N, -0.153125)
+    let acc=0; for (let i=0;i<N;i++) acc+=x[i]; return (acc*1000)|0
+  }`
+  is(runVec(integ, ON).main(), runVec(integ, NO).main(), 'SoA f64 integrator bit-exact')
+  ok(/f64x2/.test(wat(integ, ON)), 'SoA f64 integrator must f64x2-vectorize')
+  // a for-in over an object literal compiles the object to an alloc'd buffer, so its
+  // block preamble is the impure `$__inl_ptr = (call $__alloc …)`. The cover-paren LHS
+  // assigns the key into a scalar `x` each step — must stay scalar (no v128) and correct.
+  const forin = `export let main = () => { let x=0; let n=0; for ((x) in {a:1,b:2,c:3}) n=n+1; return n }`
+  is(runVec(forin, ON).main(), runVec(forin, NO).main(), 'impure-setup for-in bit-exact')
+  ok(!/v128|f64x2|i32x4\./.test(wat(forin, ON)), 'impure-setup for-in must NOT vectorize')
+})
+
+// ── Per-pixel-color vectorizer (tryPerPixelColor) ─────────────────────────────
+// Achievement pin: a pixel loop that computes an f64 value from the index (cos/sin/sqrt…), packs
+// it to a u32 colour and stores it — no inner loop — lifts two adjacent pixels into f64x2 lanes
+// (transcendentals → the bit-exact $math.*2 mirrors, the pack runs scalar per lane). This made
+// chladni 2.28× and interference 1.14× vs V8. Wall-clock is machine-dependent, so pin the cause:
+// the kernel takes the per-pixel-color path AND is BIT-EXACT to the scalar build (SIMD vs the
+// vectorizer disabled — the strongest correctness gate; odd widths exercise the scalar tail).
+const PPC_ON = { optimize: 'speed' }, PPC_NO = { optimize: { level: 'speed', vectorizeLaneLocal: false } }
+const PPC_TRIG = (W, H) => `
+  let W=${W}, H=${H}
+  let out = new Uint32Array(W*H)
+  export let render = (t) => {
+    let j=0, py=0
+    while (py < H) {
+      let cyn = Math.cos(py*0.05 + t)            // hoisted per row
+      let qx = 0
+      while (qx < W) {
+        let x = qx*0.05
+        let f = Math.cos(x*3.0)*cyn - Math.cos(x*2.0)
+        let g = (Math.abs(f)*127.0)|0
+        if (g > 255) g = 255
+        out[j] = (255<<24)|(g<<16)|(g<<8)|g
+        j++; qx++
+      }
+      py++
+    }
+  }
+  export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }`
+
+test('per-pixel-color f64x2 - trig kernel (chladni shape: cos→u32, bit-exact + vectorized)', () => {
+  const src = PPC_TRIG(64, 48)
+  const on = runVec(src, PPC_ON), no = runVec(src, PPC_NO)
+  on.render(0.7); no.render(0.7)
+  is(on.cs() >>> 0, no.cs() >>> 0, 'trig per-pixel-color bit-exact vs scalar')
+  if (onKernel()) return  // the self-host jz.wasm kernel doesn't run the lane vectorizer; bit-exactness above is the portable gate
+  const w = wat(src, PPC_ON)
+  ok(/__ppc/.test(w), 'trig kernel takes the per-pixel-color path')
+  ok(/call \$math\.cos2/.test(w), 'per-pixel Math.cos vectorized to the f64x2 $math.cos2 mirror')
+})
+
+test('per-pixel-color f64x2 - odd widths exercise the scalar tail (bit-exact)', () => {
+  for (const W of [1, 2, 3, 7, 31, 65]) {
+    const src = PPC_TRIG(W, 5)
+    const on = runVec(src, PPC_ON), no = runVec(src, PPC_NO)
+    on.render(0.3); no.render(0.3)
+    is(on.cs() >>> 0, no.cs() >>> 0, `trig per-pixel-color width=${W} bit-exact`)
+  }
+})
+
+// Phase 2: a sin+sqrt heavy pixel with an `a ** γ` sRGB pack. sin/sqrt go 2-wide; pow rides along
+// via the $math.pow2 mirror (bit-exact per-lane scalar) so the surrounding f64x2 arithmetic stays
+// vectorized. Both the conditional (→ v128.bitselect) and the |0 pack must stay bit-exact.
+const PPC_POW = `
+  let W=64, H=48
+  let mem = new Uint32Array(W*H)
+  export let render = (t) => {
+    let py=0
+    while (py < H) {
+      let qx=0
+      while (qx < W) {
+        let off = py*W + qx
+        let x = qx*0.04, y = py*0.04
+        let a = Math.abs(Math.sin(Math.sqrt(x*x + y*y)*4.0 - t)) * 0.5
+        let s = a <= 0.0031308 ? a*12.92 : 1.055*(a**(1.0/2.4)) - 0.055
+        let vi = (s*255.0)|0
+        if (vi > 255) vi = 255
+        mem[off] = (255<<24)|(vi<<16)|(vi<<8)|vi
+        qx++
+      }
+      py++
+    }
+  }
+  export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^mem[i])*0x01000193)|0; return h>>>0 }`
+
+test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact + pow2)', () => {
+  const on = runVec(PPC_POW, PPC_ON), no = runVec(PPC_POW, PPC_NO)
+  on.render(0.5); no.render(0.5)
+  is(on.cs() >>> 0, no.cs() >>> 0, 'sin+sqrt+pow per-pixel-color bit-exact vs scalar')
+  if (onKernel()) return  // self-host kernel doesn't vectorize; bit-exactness above is the portable gate
+  const w = wat(PPC_POW, PPC_ON)
+  ok(/__ppc/.test(w), 'pow kernel takes the per-pixel-color path')
+  ok(/call \$math\.sin2/.test(w) && /f64x2\.sqrt/.test(w), 'sin + sqrt vectorized 2-wide')
+  ok(/call \$math\.pow2/.test(w), 'a**γ pow vectorized via the f64x2 $math.pow2 mirror (Phase 2)')
 })

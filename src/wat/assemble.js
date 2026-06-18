@@ -516,6 +516,38 @@ function reachableStdlib(sec) {
   return reach
 }
 
+// The f64x2 stdlib mirrors the lane vectorizer (optimize/vectorize.js) injects in the LATE 'post'
+// pass — after the stdlib was pulled + treeshaken. Keep in sync with that pass's call-rewrite map
+// (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
+// touching helpers that live in other module sections (ext-stdlib, imports) where a blind
+// referenced-but-absent scan would wrongly re-append and duplicate them.
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2'])
+
+// A late pass can reference one of the f64x2 mirrors that wasn't present when the stdlib was first
+// assembled. Append any referenced-but-missing mirror body (fixpoint over their own calls, though
+// the trig mirrors call nothing). moduleArr is mutated in place; non-mirror references are left for
+// watr to resolve (a genuine missing helper is the kernel's own pull, already satisfied).
+export function appendLateStdlib(moduleArr) {
+  const stdlib = ctx.core.stdlib
+  const have = new Set()
+  for (const n of moduleArr) if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string') have.add(n[1])
+  let added = true
+  while (added) {
+    added = false
+    const refs = new Set()
+    const scan = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string' && n[1][0] === '$') refs.add(n[1]); for (const c of n) scan(c) }
+    for (const n of moduleArr) scan(n)
+    for (const ref of refs) {
+      const name = ref.slice(1)
+      if (have.has(ref) || !LATE_VEC_HELPERS.has(name) || stdlib[name] == null) continue
+      const node = parseTemplate(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
+      moduleArr.push(node[0] === 'module' ? node[1] : node)
+      have.add(ref)
+      added = true
+    }
+  }
+}
+
 /**
  * Phase: pull stdlib + memory.
  */

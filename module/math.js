@@ -546,6 +546,15 @@ export default (ctx) => {
   wat('math.cos2', `(func $math.cos2 (param $x v128) (result v128)
     (local $q v128) (local $q2 v128) (local $r v128) (local $r2 v128)${reduce2}
     (local.set $r ${horner2(COS_C)})${signClamp})`)
+  // pow has no cheap 2-lane polynomial (it is exp(y·ln x) with cancellation-sensitive reductions),
+  // so the f64x2 mirror computes each lane with the scalar $math.pow and repacks — BIT-EXACT by
+  // construction. No transcendental speedup, but it keeps a pow-bearing pixel kernel's surrounding
+  // f64x2 arithmetic vectorized (the per-pixel-color pass only emits this when a truly-2-wide op —
+  // sin2/cos2/sqrt — already justifies the pair, so the extract/repack never makes a kernel slower).
+  wat('math.pow2', `(func $math.pow2 (param $x v128) (param $y v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.pow (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
+      (call $math.pow (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.pow'])
 
   // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
   // exp2's NaN/overflow/underflow guards cover exp's). Accurate to exp2's ~6e-9, better

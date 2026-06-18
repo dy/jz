@@ -44,6 +44,7 @@ import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
 import watOptimize from "./src/wat/optimize.js";
+import { appendLateStdlib } from './src/wat/assemble.js'
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
@@ -580,6 +581,9 @@ const jzCompileInner = (code, opts = {}) => {
       const reach = collectReachableGlobalWrites(funcs)
       for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post', reach)
     })
+    // The 'post' lane vectorizer can inject stdlib calls (e.g. the f64x2 trig mirror $math.cos2)
+    // absent from the already-pulled+treeshaken module — append any now-referenced helper body.
+    appendLateStdlib(optimized)
   }
   try {
     if (opts.wat) {
