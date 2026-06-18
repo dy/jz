@@ -2764,7 +2764,8 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3) return null
     const tgt = s[1]
     if (carried.has(tgt)) {
-      if (!(isArr(s[2]) && s[2][0] === 'f64.const')) return null
+      // z₀ seed: a constant (mandelbrot/burning-ship z₀=0) OR a per-pixel expr (Julia set, where
+      // z₀ = the pixel and c is constant — the dual of mandelbrot). liftCLane handles both at emit.
       carriedInit.set(tgt, s[2])
     } else if (temp.has(tgt)) { /* recomputed each iteration — init ignored */ }
     else if (tgt === itVar) { if (constNum(s[2]) !== 0) return null }
@@ -2795,7 +2796,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   for (const cv of cVars) cLane.set(cv, nm('c' + cv.replace(/\W/g, '')))
   const iterV = nm('iter'), activeV = nm('act'), maxitLane = nm('lim')
   const newLocalDecls = []
-  for (const n of [...shadow.values(), ...cLane.values(), iterV, activeV, maxitLane]) newLocalDecls.push(['local', n, 'v128'])
+  for (const n of [...shadow.values(), ...cLane.values()]) newLocalDecls.push(['local', n, 'v128'])
 
   const lift = (n) => {
     if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
@@ -2843,63 +2844,115 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       pre.push(['local.set', cLane.get(cv), lane])
     } else pre.push(['local.set', cLane.get(cv), ['f64x2.splat', ['local.get', cv]]])
   }
-  for (const v of carried) pre.push(['local.set', shadow.get(v), ['f64x2.splat', carriedInit.get(v)]])
-  pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
-  pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
-  pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
-
-  // AND a keep condition into the active mask: limit compares iter (f64x2) to the bound;
-  // escape lifts its z-comparison to lanes. A mid-break's ¬X is the DIRECT compare negated by
-  // v128.not (NaN-exact), never the flipped comparison.
-  const keepMask = (keep, isLimit) => {
-    const m = isLimit
-      ? [CMP_LANE[keep.cmp[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
-      : [CMP_LANE[keep.cmp[0]], lift(keep.cmp[1]), lift(keep.cmp[2])]
-    return keep.negate ? ['v128.not', m] : m
+  // Seed each carried lane: a constant splats; a per-pixel z₀ (Julia) builds its [v, v+1] ramp
+  // exactly like a c-var. Decline (return null) if the seed reads inner state we can't lift.
+  for (const v of carried) {
+    const lane = liftCLane(carriedInit.get(v))
+    if (!lane) return null
+    pre.push(['local.set', shadow.get(v), lane])
   }
   const teeStmts = (range) => range.map(t => ['local.set', shadow.get(t.tgt), lift(t.expr)])
+  const sIn = nm('ib'), sIl = nm('il'), sOut = nm('ob'), sOl = nm('ol')
 
-  // SIMD inner loop — masking mirrors scalar control flow in source order. The tees of
-  // the top guard are computed first; the top keep masks; then the body runs in order
-  // with the mid-break keep applied at its position; then iter increments active lanes.
-  const sIn = nm('ib'), sIl = nm('il')
-  const sbody = [
-    ...teeStmts(tees.slice(0, teeTop)),
-    ['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepTopC, kTop === 'limit')]],
-    ['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]],
-  ]
-  for (let i = 0; i < ibody.length; i++) {
-    if (i === midIdx) {
-      sbody.push(...teeStmts(tees.slice(teeTop)))
-      sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]])
-    } else {
-      const v = ibody[i][1]
-      // Carried: freeze frozen lanes via bitselect, committing into the shadow immediately so a
-      // later update in the same iteration reads the new value — sequential, exactly like scalar.
-      if (carried.has(v)) sbody.push(['local.set', shadow.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
-      else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])   // temp: raw recompute
+  // FAST PATH — the common escape-time shape `while (it<MAX){ …updates…; if (|z|²>T) break }`:
+  // break the pair the instant the FIRST lane escapes (no per-iteration freeze/mask), keep `it`
+  // a scalar i32, raw f64x2 updates. A short scalar tail then finishes whichever lane lagged (≈0
+  // iterations when the pair is coherent, which adjacent pixels overwhelmingly are). Inside-set
+  // pixels (both lanes to MAX) run clean 2× with zero mask overhead — exactly where the masked
+  // loop bled its speedup. Other shapes (escape-at-top, body after the break) take the masked path.
+  const fastPath = kTop === 'limit' && kMid === 'escape' && midIdx === ibody.length - 1 && teeTop === 0
+  let simdInner, epiLane, postLoop = []
+
+  if (fastPath) {
+    const shIt = nm('shit')
+    newLocalDecls.push(['local', shIt, 'i32'])
+    pre.push(['local.set', itVar, ['i32.const', 0]])
+    const limScalar = limitKeep.negate ? [CMP_NEG[limitKeep.cmp[0]], limitKeep.cmp[1], limitKeep.cmp[2]] : limitKeep.cmp
+    const escLane = [CMP_LANE[escapeKeep.cmp[0]], lift(escapeKeep.cmp[1]), lift(escapeKeep.cmp[2])]
+    const escBreak = escapeKeep.negate ? escLane : ['v128.not', escLane]
+    const sbody = [['br_if', sIn, ['i32.eqz', limScalar]]]            // limit: break when it ≥ bound
+    for (let i = 0; i < ibody.length; i++) {
+      if (i === midIdx) {
+        sbody.push(...teeStmts(tees.slice(teeTop)))
+        sbody.push(['br_if', sIn, ['v128.any_true', escBreak]])      // a lane escaped → stop the pair
+      } else sbody.push(['local.set', shadow.get(ibody[i][1]), lift(ibody[i][2])])  // raw update, no freeze
+    }
+    sbody.push(['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]])
+    simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
+    postLoop = [['local.set', shIt, ['local.get', itVar]]]   // capture the break `it` AFTER the block exits
+
+    // a fresh-labelled copy of the inner block, to finish a lagging lane's remaining iterations
+    let copyN = 0
+    const relabelInner = () => {
+      const ni = nm('tb' + copyN), nl = nm('tl' + copyN); copyN++
+      const rl = (n) => !isArr(n) ? n
+        : ((n[0] === 'block' || n[0] === 'loop' || n[0] === 'br' || n[0] === 'br_if') && (n[1] === iLabel || n[1] === ilLabel))
+          ? [n[0], n[1] === iLabel ? ni : nl, ...n.slice(2).map(rl)]
+          : n.map(rl)
+      return rl(innerBlock)
+    }
+    const skipTees = tees.slice(teeTop).map(t => ['local.set', t.tgt, t.expr])   // scalar tees, on the extracted x/y
+    const notEsc = escapeKeep.negate ? ['i32.eqz', escapeKeep.cmp] : escapeKeep.cmp
+    epiLane = (k) => {
+      const out = []
+      // Extract carried AND temp lanes: the escape compare may read a temp (the optimizer
+      // copy-propagates `x = xt` so `x*x` becomes `xt*xt`); the skip test below needs it.
+      for (const v of [...carried, ...temp]) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
+      for (let i = 0; i < innerIdx; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && perPxInit.has(s[1])) out.push(bump(s, k)) }
+      out.push(['local.set', itVar, ['local.get', shIt]])
+      out.push(['if', limScalar, ['then',                            // escape exit (it < bound)…
+        ...skipTees,
+        ['if', notEsc, ['then',                                      // …and THIS lane hadn't escaped yet → finish it
+          ['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]],
+          relabelInner()]]]])
+      for (const s of epilogue) out.push(bump(s, k))
+      return out
+    }
+  } else {
+    newLocalDecls.push(['local', iterV, 'v128'], ['local', activeV, 'v128'], ['local', maxitLane, 'v128'])
+    pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
+    pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
+    pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
+    // AND a keep into the active mask: limit compares iter (f64x2) to the bound; escape lifts its
+    // z-comparison; a mid-break's ¬X is the DIRECT compare negated by v128.not (NaN-exact).
+    const keepMask = (keep, isLimit) => {
+      const m = isLimit
+        ? [CMP_LANE[keep.cmp[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
+        : [CMP_LANE[keep.cmp[0]], lift(keep.cmp[1]), lift(keep.cmp[2])]
+      return keep.negate ? ['v128.not', m] : m
+    }
+    const sbody = [
+      ...teeStmts(tees.slice(0, teeTop)),
+      ['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepTopC, kTop === 'limit')]],
+      ['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]],
+    ]
+    for (let i = 0; i < ibody.length; i++) {
+      if (i === midIdx) {
+        sbody.push(...teeStmts(tees.slice(teeTop)))
+        sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]])
+      } else {
+        const v = ibody[i][1]
+        if (carried.has(v)) sbody.push(['local.set', shadow.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
+        else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])
+      }
+    }
+    sbody.push(['local.set', iterV, ['v128.bitselect', ['f64x2.add', ['local.get', iterV], ['f64x2.splat', ['f64.const', 1]]], ['local.get', iterV], ['local.get', activeV]]])
+    simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
+    const carriedInEpi = [...carried].filter(v => epilogue.some(s => readsVar(s, v)))
+    epiLane = (k) => {
+      const out = []
+      for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
+      out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
+      for (const s of epilogue) out.push(bump(s, k))
+      return out
     }
   }
-  sbody.push(['local.set', iterV, ['v128.bitselect', ['f64x2.add', ['local.get', iterV], ['f64x2.splat', ['f64.const', 1]]], ['local.get', iterV], ['local.get', activeV]]])
-  const simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
 
-  // epilogue ×2 — extract each lane's carried+it into the scalar locals, run the scalar
-  // colour/store code with pixel IVs advanced by the lane offset.
-  const carriedInEpi = [...carried].filter(v => epilogue.some(s => readsVar(s, v)))
-  const epiLane = (k) => {
-    const out = []
-    for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
-    out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
-    for (const s of epilogue) out.push(bump(s, k))
-    return out
-  }
-
-  // SIMD outer loop: process a pair while x+1 is still a valid pixel (x+1 < bound), then
-  // advance every pixel IV by 2 (in its own type). The scalar tail finishes any last pixel.
-  const sOut = nm('ob'), sOl = nm('ol')
+  // SIMD outer loop: process a pair while x+1 is still a valid pixel, then advance every pixel IV
+  // by 2. The scalar tail (original block) finishes any last odd pixel.
   const simdOuter = ['block', sOut, ['loop', sOl,
     ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
-    ...pre, simdInner, ...epiLane(0), ...epiLane(1),
+    ...pre, simdInner, ...postLoop, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
 

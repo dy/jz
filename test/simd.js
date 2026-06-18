@@ -1650,7 +1650,10 @@ const SHIP_INT = `out[j] = it`   // integer output through the parallel-counter 
 const shipRun = (src, ...a) => {
   const sx = runVec(src, ESC_SCALAR), dx = runVec(src, ESC_VEC)
   sx.render(...a); dx.render(...a)
-  return [sx.cs() >>> 0, dx.cs() >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+  // "vectorized" = emits f64x2 lanes. The escape-after-update (ship) shape takes the
+  // break-on-first-escape FAST path (no per-iteration freeze), so it has no v128.bitselect —
+  // the masked escape-at-top path still does. f64x2 presence is the mechanism-agnostic marker.
+  return [sx.cs() >>> 0, dx.cs() >>> 0, /f64x2\./.test(wat(src, ESC_VEC))]
 }
 
 test('escape-time f64x2 - burning-ship (escape-after-update, abs, colour epilogue)', () => {
