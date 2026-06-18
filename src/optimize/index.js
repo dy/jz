@@ -143,7 +143,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true }),
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, experimentalStencil: true, experimentalOuterStrip: true }),
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
@@ -160,7 +160,12 @@ const LEVEL_PRESETS = Object.freeze({
   // relaxedSimd: fold f64x2 dot-pairs to f64x2.relaxed_madd (single fused VFMADD,
   // one rounding) — faster + more accurate, but the fused result diverges bit-for-bit
   // from the non-fused JS/native reference (bench `fma` parity class). speed-only.
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true }),
+  // experimentalStencil / experimentalOuterStrip: the neighbour-load 5-point stencil
+  // vectorizer (waves/schrodinger) + the inner-reduction outer-strip-mine (metaballs).
+  // Proven: bit-exact across the whole example corpus, 1.3–1.7× over the scalar path.
+  // Both carry hard correctness gates (in-place-alias bail, OOB-safe bound), so a non-
+  // matching loop is untouched. Speed-tier (extra SIMD codegen for throughput).
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, experimentalStencil: true, experimentalOuterStrip: true }),
 })
 
 /**

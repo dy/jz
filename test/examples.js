@@ -58,9 +58,11 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
 // bases stay distinct (no aliasing); a lane-parallel stencil reorders nothing per lane.
 test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
-    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    const sten = (jz.compile(src, { ...OPT, experimentalStencil: true, wat: true }).match(/f64x2\./g) || []).length;
-    ok(sten > base, `waves frame vectorizes under the stencil flag (${base} → ${sten} f64x2)`);
+    // experimentalStencil is now default-on at speed (the build options), so the SCALAR baseline
+    // turns it explicitly off; the vectorized side is the plain build.
+    const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    ok(sten > base, `waves frame vectorizes via the stencil pass (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(40, 30);
@@ -68,7 +70,7 @@ test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () =
         for (let f = 0; f < 25; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT, experimentalStencil: true }), scal = run({ ...OPT });
+    const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
     is(simd.length, scal.length);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (1200 px, 25 frames)');
 });
@@ -81,8 +83,9 @@ test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () =
 // of the frame run via the kept scalar tail.
 test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/metaballs/metaballs.js', import.meta.url), 'utf8');
-    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    const os = (jz.compile(src, { ...OPT, experimentalOuterStrip: true, wat: true }).match(/f64x2\./g) || []).length;
+    // experimentalOuterStrip is now default-on at speed; SCALAR baseline turns it explicitly off.
+    const base = (jz.compile(src, { ...OPT, experimentalOuterStrip: false, wat: true }).match(/f64x2\./g) || []).length;
+    const os = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     ok(os > base, `metaballs field loop outer-strips (${base} → ${os} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
@@ -91,7 +94,7 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
         for (let f = 0; f < 15; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT, experimentalOuterStrip: true }), scal = run({ ...OPT });
+    const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalOuterStrip: false });
     is(simd.length, scal.length);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
 });
@@ -104,10 +107,11 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
 // stride-1 by construction.
 test('example: schrodinger float-index + f32-widening stencil vectorizes and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/schrodinger/schrodinger.js', import.meta.url), 'utf8');
-    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    const wat = jz.compile(src, { ...OPT, experimentalStencil: true, wat: true });
+    // experimentalStencil is now default-on at speed; SCALAR baseline turns it explicitly off.
+    const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const wat = jz.compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
-    ok(sten > base, `schrodinger stepR/stepI vectorize under the stencil flag (${base} → ${sten} f64x2)`);
+    ok(sten > base, `schrodinger stepR/stepI vectorize via the stencil pass (${base} → ${sten} f64x2)`);
     ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
     const run = (opts) => {
         const { exports } = jz(src, opts);
@@ -116,7 +120,7 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
         for (let f = 0; f < 12; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT, experimentalStencil: true }), scal = run({ ...OPT });
+    const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
     is(simd.length, scal.length);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'schrodinger float-index stencil bit-exact vs scalar (1536 px, 12 frames)');
 });

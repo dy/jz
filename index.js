@@ -537,13 +537,14 @@ const jzCompileInner = (code, opts = {}) => {
   // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
   if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
 
-  // opts.experimentalStencil: enable the (opt-in, unstable) neighbour-load stencil
-  // vectorizer (a[i±1] / 2-D 5-point). Off by default until proven across the corpus.
-  if (opts.experimentalStencil && ctx.transform.optimize) ctx.transform.optimize.experimentalStencil = true
+  // opts.experimentalStencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
+  // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an
+  // explicit `false` can still disable it (e.g. to A/B against the scalar path).
+  if (opts.experimentalStencil !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalStencil = !!opts.experimentalStencil
 
-  // opts.experimentalOuterStrip: enable the (opt-in, unstable) outer-loop strip-mine
-  // vectorizer (2 adjacent pixels in f64x2 lanes over an inner reduction). Off by default.
-  if (opts.experimentalOuterStrip && ctx.transform.optimize) ctx.transform.optimize.experimentalOuterStrip = true
+  // opts.experimentalOuterStrip: the outer-loop strip-mine vectorizer (2 adjacent pixels in f64x2
+  // lanes over an inner reduction). Default-on at speed; two-way like experimentalStencil.
+  if (opts.experimentalOuterStrip !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalOuterStrip = !!opts.experimentalOuterStrip
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')
