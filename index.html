@@ -6,7 +6,7 @@
 <title>jz — Computational JavaScript, compiled to WASM</title>
 <meta name="description" content="jz (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid jz is valid JS: it runs in any engine, then compiles to portable WASM. 2.4× faster than the same code in V8; beats Rust and Zig → wasm on numeric kernels.">
 <link rel="icon" href="jz.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="assets/site.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -48,8 +48,12 @@ a { color: inherit; }
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
   /* origin = the content-left, snapped to a whole pixel. At odd viewport widths the centered column
      lands on a half-pixel, which renders every 1px rule as two faint pixels (the "doubled/crooked"
-     subgrid). --grid-x is set by JS to the rounded content-left; the calc is the pre-JS fallback. */
-  background-position: var(--grid-x, calc((100% - var(--colw)) / 2 + var(--padx))) 0;
+     subgrid). --grid-x is set by JS to the rounded content-left; the calc is the pre-JS fallback.
+     The fallback uses 100vw (a LENGTH), not 100%: a percentage in background-position resolves
+     per layer against (area − image size), so the 8/40/80 tiles would each phase to a different
+     origin and the subgrids drift out of alignment (the stray vertical lines / wrong divisions).
+     A length is absolute → one origin for all layers → they nest even before JS runs. */
+  background-position: var(--grid-x, calc((100vw - var(--colw)) / 2 + var(--padx))) 0;
 }
 
 /* the editable dock below the hero (see .dock) holds this demo's source — edit + Run recompiles it */
@@ -288,7 +292,7 @@ footer .legal .om { font-size: 15px; }
     <div class="intro">
       <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="80" height="80" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
       <h1>Computational JavaScript, <br class="hb">compiled to WASM</h1>
-      <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b><a class="ref" href="bench/" aria-label="how this is measured — see the benchmark">*</a>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
+      <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
     </div>
     <div class="cta-live">
       <div class="fps" aria-label="performance">

@@ -6,7 +6,10 @@
   "types": "index.d.ts",
   "type": "module",
   "exports": {
-    ".": { "types": "./index.d.ts", "default": "./index.js" },
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
     "./wasi": "./wasi.js",
     "./interop": "./interop.js",
     "./transform": "./transform.js"
@@ -90,6 +93,7 @@
   ],
   "devDependencies": {
     "esbuild": "^0.28.0",
+    "sprae": "^13.3.8",
     "tst": "^9.4.0"
   }
 }

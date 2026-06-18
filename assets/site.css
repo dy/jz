@@ -8,11 +8,11 @@
    add `.fixed` for the full-screen example pages that overlay a canvas.
    ────────────────────────────────────────────────────────────────────────── */
 
-/* Jost (libre Futura) — bundled fallback; URL resolves relative to this file (site root).
+/* Jost (libre Futura) — bundled fallback; URL resolves relative to this file (assets/).
    On machines with real Futura installed the stack below renders it; Jost matches elsewhere. */
 @font-face {
   font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
-  src: url(examples/lib/jost.woff2) format('woff2');
+  src: url(jost.woff2) format('woff2');
 }
 
 /* ── Shared design tokens. The invariants every page reuses (fonts, band, spacing).

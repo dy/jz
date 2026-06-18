@@ -37,7 +37,7 @@ if (EMBED) {
 // Inject the shared masthead for every example page. The LOOK comes from the shared
 // site.css (.masthead) — one source of truth across all pages; here we add only the
 // markup, the `.fixed` overlay (example pages are full-screen canvases), and the link.
-const SITE_CSS = new URL('../../site.css', import.meta.url).href
+const SITE_CSS = new URL('../../assets/site.css', import.meta.url).href
 const addMasthead = (name) => {
   if (name) document.title = `${titleOf(name)} - jz`   // tab title (covers hud-only examples too)
   if (document.querySelector('.masthead')) return
