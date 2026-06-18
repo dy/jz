@@ -2691,16 +2691,30 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     return null
   }
   const topBc = breakCond(innerLoop[2])
-  const keepTop = topBc && keepOf(topBc)
-  if (!keepTop) return null
+  let keepTop = topBc && keepOf(topBc)
   const ibody = innerLoop.slice(3, iEnd - 1)
-  let midIdx = -1, keepMid = null
-  for (let i = 0; i < ibody.length; i++) {
-    const bc = breakCond(ibody[i])
-    if (bc) { if (midIdx >= 0) return null; midIdx = i; keepMid = keepOf(bc); if (!keepMid) return null }
-    else if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
+  let midIdx = -1, keepMid = null, compoundTop = false
+  // Compound while-guard `while (it<MAX && |z|²<T)` → `eqz(and(A,B))`: two keep conditions, both
+  // at the top (continue while A AND B). The Julia set is written this way. Split A,B into the two
+  // keeps; the body is then pure updates (no mid-break).
+  if (!keepTop && isArr(topBc) && topBc[0] === 'i32.eqz' && isArr(topBc[1]) && topBc[1][0] === 'i32.and'
+      && isArr(topBc[1][1]) && CMP_LANE[topBc[1][1][0]] && isArr(topBc[1][2]) && CMP_LANE[topBc[1][2][0]]) {
+    keepTop = { cmp: topBc[1][1], negate: false }
+    keepMid = { cmp: topBc[1][2], negate: false }
+    compoundTop = true
   }
-  if (midIdx < 0) return null
+  if (!keepTop) return null
+  if (compoundTop) {
+    for (let i = 0; i < ibody.length; i++)
+      if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
+  } else {
+    for (let i = 0; i < ibody.length; i++) {
+      const bc = breakCond(ibody[i])
+      if (bc) { if (midIdx >= 0) return null; midIdx = i; keepMid = keepOf(bc); if (!keepMid) return null }
+      else if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
+    }
+    if (midIdx < 0) return null
+  }
 
   // classify f64 vars written across [top-guard, …body…]: loop-carried (first access a READ)
   // vs within-iteration temp (first access a WRITE — including squares tee'd in the guard).
@@ -2844,12 +2858,23 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       pre.push(['local.set', cLane.get(cv), lane])
     } else pre.push(['local.set', cLane.get(cv), ['f64x2.splat', ['local.get', cv]]])
   }
-  // Seed each carried lane: a constant splats; a per-pixel z₀ (Julia) builds its [v, v+1] ramp
-  // exactly like a c-var. Decline (return null) if the seed reads inner state we can't lift.
-  for (const v of carried) {
+  // Seed each carried lane in dependency order. Seeds reading only non-carried values (z₀ = a
+  // const, or a per-pixel ramp for the Julia set) build their lanes via liftCLane. Seeds reading
+  // a carried var — the cached squares `zx2 = zx*zx` in Julia's compound guard — lift through the
+  // already-built shadow lanes instead.
+  const seedDeps = (e) => [...carried].some(c => readsVar(e, c))
+  const depLiftable = (n) => !isArr(n) ? false
+    : n[0] === 'local.get' ? shadow.has(n[1])
+    : n[0] === 'f64.const' ? true
+    : (LANE_PURE.f64.has(n[0]) && n.slice(1).every(depLiftable))
+  for (const v of carried) if (!seedDeps(carriedInit.get(v))) {
     const lane = liftCLane(carriedInit.get(v))
     if (!lane) return null
     pre.push(['local.set', shadow.get(v), lane])
+  }
+  for (const v of carried) if (seedDeps(carriedInit.get(v))) {
+    if (!depLiftable(carriedInit.get(v))) return null
+    pre.push(['local.set', shadow.get(v), lift(carriedInit.get(v))])
   }
   const teeStmts = (range) => range.map(t => ['local.set', shadow.get(t.tgt), lift(t.expr)])
   const sIn = nm('ib'), sIl = nm('il'), sOut = nm('ob'), sOl = nm('ol')
@@ -2860,22 +2885,39 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   // iterations when the pair is coherent, which adjacent pixels overwhelmingly are). Inside-set
   // pixels (both lanes to MAX) run clean 2× with zero mask overhead — exactly where the masked
   // loop bled its speedup. Other shapes (escape-at-top, body after the break) take the masked path.
-  const fastPath = kTop === 'limit' && kMid === 'escape' && midIdx === ibody.length - 1 && teeTop === 0
+  // escape-at-MID: `…updates…; if (|z|²>T) break` (burning-ship). escape-at-TOP: the escape gates
+  // the loop head — a `while (|z|²<T)` (mandelbrot) or the second half of a compound `while (it<MAX
+  // && |z|²<T)` (Julia). Both take the fast path; only the tail's `it` resume point differs.
+  const escAtMid = !compoundTop && kMid === 'escape' && midIdx === ibody.length - 1
+  const escAtTop = compoundTop || kTop === 'escape'
+  const fastPath = escAtMid || escAtTop
   let simdInner, epiLane, postLoop = []
 
   if (fastPath) {
-    const shIt = nm('shit')
-    newLocalDecls.push(['local', shIt, 'i32'])
-    pre.push(['local.set', itVar, ['i32.const', 0]])
-    const limScalar = limitKeep.negate ? [CMP_NEG[limitKeep.cmp[0]], limitKeep.cmp[1], limitKeep.cmp[2]] : limitKeep.cmp
-    const escLane = [CMP_LANE[escapeKeep.cmp[0]], lift(escapeKeep.cmp[1]), lift(escapeKeep.cmp[2])]
-    const escBreak = escapeKeep.negate ? escLane : ['v128.not', escLane]
-    const sbody = [['br_if', sIn, ['i32.eqz', limScalar]]]            // limit: break when it ≥ bound
+    const shIt = nm('shit'), escF = nm('escf')
+    newLocalDecls.push(['local', shIt, 'i32'], ['local', escF, 'i32'])
+    pre.push(['local.set', itVar, ['i32.const', 0]], ['local.set', escF, ['i32.const', 0]])
+    const limOf = (keepC) => keepC.negate ? [CMP_NEG[keepC.cmp[0]], keepC.cmp[1], keepC.cmp[2]] : keepC.cmp
+    // emit a keep at its source position: a LIMIT (it is shared) → a scalar i32 guard; an ESCAPE
+    // → an any_true break. `escF` records whether the loop exited via an escape (vs the limit) —
+    // they can BOTH land at it=MAX (escape-at-top fires before the limit-at-mid's final update),
+    // so `it < MAX` alone can't tell them apart; the tail must run only on an escape exit.
+    const fastKeep = (keepC, kind, teeRange) => {
+      const out = teeStmts(teeRange)
+      if (kind === 'limit') out.push(['br_if', sIn, ['i32.eqz', limOf(keepC)]])
+      else {
+        const escL = [CMP_LANE[keepC.cmp[0]], lift(keepC.cmp[1]), lift(keepC.cmp[2])]
+        out.push(['local.set', escF, ['i32.const', 1]])
+        out.push(['br_if', sIn, ['v128.any_true', keepC.negate ? escL : ['v128.not', escL]]])
+        out.push(['local.set', escF, ['i32.const', 0]])
+      }
+      return out
+    }
+    const sbody = [...fastKeep(keepTopC, kTop, tees.slice(0, teeTop))]
+    if (compoundTop) sbody.push(...fastKeep(keepMidC, kMid, tees.slice(teeTop)))   // second top keep
     for (let i = 0; i < ibody.length; i++) {
-      if (i === midIdx) {
-        sbody.push(...teeStmts(tees.slice(teeTop)))
-        sbody.push(['br_if', sIn, ['v128.any_true', escBreak]])      // a lane escaped → stop the pair
-      } else sbody.push(['local.set', shadow.get(ibody[i][1]), lift(ibody[i][2])])  // raw update, no freeze
+      if (!compoundTop && i === midIdx) sbody.push(...fastKeep(keepMidC, kMid, tees.slice(teeTop)))
+      else sbody.push(['local.set', shadow.get(ibody[i][1]), lift(ibody[i][2])])   // raw update, no freeze
     }
     sbody.push(['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]])
     simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
@@ -2891,8 +2933,9 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
           : n.map(rl)
       return rl(innerBlock)
     }
-    const skipTees = tees.slice(teeTop).map(t => ['local.set', t.tgt, t.expr])   // scalar tees, on the extracted x/y
-    const notEsc = escapeKeep.negate ? ['i32.eqz', escapeKeep.cmp] : escapeKeep.cmp
+    const escKeepC = compoundTop ? keepMidC : (kTop === 'escape' ? keepTopC : keepMidC)
+    const escTees = (kTop === 'escape' ? tees.slice(0, teeTop) : tees.slice(teeTop)).map(t => ['local.set', t.tgt, t.expr])
+    const notEsc = escKeepC.negate ? ['i32.eqz', escKeepC.cmp] : escKeepC.cmp
     epiLane = (k) => {
       const out = []
       // Extract carried AND temp lanes: the escape compare may read a temp (the optimizer
@@ -2900,10 +2943,12 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       for (const v of [...carried, ...temp]) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
       for (let i = 0; i < innerIdx; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && perPxInit.has(s[1])) out.push(bump(s, k)) }
       out.push(['local.set', itVar, ['local.get', shIt]])
-      out.push(['if', limScalar, ['then',                            // escape exit (it < bound)…
-        ...skipTees,
-        ['if', notEsc, ['then',                                      // …and THIS lane hadn't escaped yet → finish it
-          ['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]],
+      out.push(['if', ['local.get', escF], ['then',                 // exited via escape (not the limit)…
+        ...escTees,
+        ['if', notEsc, ['then',                                      // …and THIS lane hadn't escaped → finish it
+          // escape-at-MID already ran this iteration's update, so step past it before resuming;
+          // escape-at-TOP tests before the update, so resume at the same it.
+          ...(escAtMid ? [['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]]] : []),
           relabelInner()]]]])
       for (const s of epilogue) out.push(bump(s, k))
       return out
@@ -2924,10 +2969,12 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     const sbody = [
       ...teeStmts(tees.slice(0, teeTop)),
       ['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepTopC, kTop === 'limit')]],
+      // compound `while (A && B)`: the second keep (B) also gates at the top, before the body
+      ...(compoundTop ? teeStmts(tees.slice(teeTop)).concat([['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]]]) : []),
       ['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]],
     ]
     for (let i = 0; i < ibody.length; i++) {
-      if (i === midIdx) {
+      if (!compoundTop && i === midIdx) {
         sbody.push(...teeStmts(tees.slice(teeTop)))
         sbody.push(['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepMidC, kMid === 'limit')]])
       } else {

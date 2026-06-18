@@ -1724,7 +1724,9 @@ const DUAL_INT = `mem[(y*width + x)|0] = it`
 const dualRun = (src, ...a) => {
   const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
   s.render(...a); d.render(...a)
-  return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+  // escape-at-top (escape = while-cond) takes the break-on-first FAST path → no v128.bitselect;
+  // f64x2 presence is the mechanism-agnostic "is it vectorized" marker (bit-exactness is `is` above).
+  return [s.cs(4096) >>> 0, d.cs(4096) >>> 0, /f64x2\./.test(wat(src, ESC_VEC))]
 }
 
 test('escape-time f64x2 - dual-exit smooth colour (escape=while-cond, f64 IV)', () => {
