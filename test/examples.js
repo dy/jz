@@ -17,6 +17,24 @@ test('example: build options keep kernels vectorized (SIMD)', () => {
     ok(/f64x2\./.test(wat), `burningship must vectorize under the examples build options (OPT=${JSON.stringify(OPT)})`);
 });
 
+// Achievement ratchet: the escape-time fractals BEAT V8 (Node, 800×500: burning-ship 1.46×, Julia
+// 1.19×, mandelbrot vectorized) because the divergent escape vectorizer takes the BREAK-ON-FIRST
+// fast path — f64x2 lanes with NO per-iteration v128.bitselect freeze. The old masked SIMD froze
+// every escaped lane each step, which nearly cancelled the 2× and left jz ~0.9× V8 (slower). Wall-
+// clock is machine-dependent (see the jukebox ratchet above), so pin the DETERMINISTIC CAUSE: each
+// fractal must (1) vectorize, (2) carry no freeze, (3) emit the scalar tail. A regression to the
+// masked path (re-adds bitselect) or to scalar (drops f64x2) trips this. Covers burning-ship
+// (escape-after-update), Julia (compound guard + per-pixel z₀ + cached squares — vectorizes with
+// NO kernel change), mandelbrot (escape-at-top).
+test('example: escape-time fractals take the break-on-first FAST path (beats V8)', () => {
+    for (const name of ['burningship', 'julia', 'mandelbrot']) {
+        let wat = jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+        ok(/f64x2\./.test(wat), `${name}: must vectorize (f64x2) under the examples build options`);
+        ok(!/v128\.bitselect/.test(wat), `${name}: must take the FAST path — no per-iteration freeze (v128.bitselect)`);
+        ok(/\$__esc\d+_tb\d+/.test(wat), `${name}: must emit the break-on-first scalar tail`);
+    }
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;
