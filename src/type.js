@@ -401,16 +401,20 @@ export function exprType(expr, locals) {
 
   // Always f64
   if (op === '/' || op === '**' || op === '[' || op === '{}' || op === 'str') return 'f64'
-  // arr[i] — typed integer arrays return i32. Only Int8/Uint8/Int16/Uint16/Int32
-  // (every value fits in signed i32). Skip Uint32: 0..2^32-1 overflows signed.
-  // During analyzeBody the in-progress typedElems is in localTypedElemsOverlay;
-  // post-analyze passes read from ctx.types.typedElem.
+  // arr[i] — integer typed arrays (Int8/Uint8/Int16/Uint16/Int32/Uint32, aux 0..5) read as i32:
+  // the element IS a 32-bit machine integer, so a binding used in integer/bitwise ops stays i32
+  // instead of round-tripping i32.load → f64 → trunc back (the deopt that made packed-pixel fade
+  // loops like lorenz slow). Uint32 reads carry the full 0..2^32-1 range as the i32 bit-pattern;
+  // ToInt32-coercing uses (& | ^ << >> >>>, i32.store) are bit-exact, and value uses that need the
+  // unsigned magnitude (compare, f64 convert) go through the elem-aux's unsigned path. Floats
+  // (Float32/Float64, aux 6/7) genuinely yield f64. typedElems: in-progress reads come from
+  // localTypedElemsOverlay during analyzeBody; post-analyze passes read ctx.types.typedElem.
   if (op === '[]') {
     if (typeof args[0] === 'string') {
       const ctor = ctx.func.localTypedElemsOverlay?.get(args[0]) ?? ctx.types.typedElem?.get(args[0])
       if (ctor) {
         const aux = typedElemAux(ctor)
-        if (aux != null && (aux & 7) <= 4) return 'i32'
+        if (aux != null && (aux & 7) <= 5) return 'i32'
       }
     }
     return 'f64'

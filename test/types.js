@@ -710,6 +710,21 @@ test('typed-narrow: codegen — narrowed helper return type is i32', () => {
   ok(/\(result i32\)/.test(body), '$mk returns i32 (narrowed)')
 })
 
+test('typed-narrow: Uint32Array integer reads are i32, not round-tripped through f64', () => {
+  // Deopt fix: a packed-pixel fade `p = px[i]; … p & 0xff …` over a Uint32Array must read
+  // i32.load directly — NOT i32.load → f64.convert_i32_u → trunc_sat back (with a dead ToInt32
+  // Infinity guard). That round-trip made lorenz's O(W·H) fade loop lose to V8 (0.66×→1.35×
+  // once removed). Uint32 elements are 32-bit ints (elemAux 5); a binding used integrally stays
+  // i32. (Float32/Float64, aux 6/7, still yield f64 — guarded by the `(aux & 7) <= 5` bound.)
+  const body = fnBody(wat(`
+    let px = new Uint32Array(64)
+    export let fade = () => { let i = 0; while (i < 64) { let p = px[i]; px[i] = ((p & 0xff) * 249) >> 8; i++ } }
+  `), 'fade')
+  ok(body, '$fade present in WAT')
+  ok(!/f64\.convert_i32_u/.test(body), 'Uint32 read used bitwise must stay i32 (no widen to f64)')
+  ok(!/f64\.const Infinity/.test(body), 'no dead ToInt32 Infinity guard on a provably-i32 value')
+})
+
 test('typed-narrow: codegen — receiver uses static elem load (no __is_str_key dispatch)', () => {
   const w = wat(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])

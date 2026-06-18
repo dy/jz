@@ -136,6 +136,27 @@ test('signed i32 operands keep their fast-path semantics', async () => {
   is(await evaluate('(-1 | 0) < 5'), true) // signed -1 < 5
 })
 
+// A Uint32Array element read is typed i32 (the 32-bit element) for fast integer/bitwise use, but
+// its full 0..2^32-1 magnitude must survive EVERY use — bitwise (bits), comparison, integer and
+// f64 arithmetic, and a raw value read. Unlike the `>>>`-result local below, the typed-array read
+// carries its unsigned elem-aux to each use, so high values (≥ 2^31) don't sign-flip. (This is what
+// lets the lorenz fade loop drop the i32→f64→i32 round-trip while staying numerically correct.)
+test('uint32: Uint32Array element reads keep full unsigned range across all uses', () => {
+  const e = run(`let a = new Uint32Array(2)
+    export let setup = () => { a[0] = 4294967295; a[1] = 16 }
+    export let raw  = () => a[0]
+    export let cmp  = () => a[0] < 5 ? 1 : 0
+    export let add  = () => a[0] + 1
+    export let bits = () => (a[0] >>> 16) & 0xff
+    export let div  = () => a[0] / 16`)
+  e.setup()
+  is(e.raw(), 4294967295)         // raw value read — unsigned, not -1
+  is(e.cmp(), 0)                  // 4294967295 < 5 is false (unsigned compare)
+  is(e.add(), 4294967296)         // value arithmetic carries the magnitude
+  is(e.bits(), 255)               // bitwise on the top byte
+  is(e.div(), 268435455.9375)     // f64 convert is unsigned
+})
+
 // ───────────────────────────────────────────── KNOWN LIMITATION (not yet fixed)
 
 test.todo('unsignedness survives a local binding read outside a >>> sink', () => {
