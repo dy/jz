@@ -143,7 +143,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, experimentalStencil: true, experimentalOuterStrip: true }),
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true }),
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
@@ -160,12 +160,10 @@ const LEVEL_PRESETS = Object.freeze({
   // relaxedSimd: fold f64x2 dot-pairs to f64x2.relaxed_madd (single fused VFMADD,
   // one rounding) — faster + more accurate, but the fused result diverges bit-for-bit
   // from the non-fused JS/native reference (bench `fma` parity class). speed-only.
-  // experimentalStencil / experimentalOuterStrip: the neighbour-load 5-point stencil
-  // vectorizer (waves/schrodinger) + the inner-reduction outer-strip-mine (metaballs).
-  // Proven: bit-exact across the whole example corpus, 1.3–1.7× over the scalar path.
-  // Both carry hard correctness gates (in-place-alias bail, OOB-safe bound), so a non-
-  // matching loop is untouched. Speed-tier (extra SIMD codegen for throughput).
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, experimentalStencil: true, experimentalOuterStrip: true }),
+  // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
+  // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
+  // `cfg.experimentalStencil !== false` at the call site, not a speed-only size/precision trade.)
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true }),
 })
 
 /**
@@ -2561,7 +2559,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (cfg && cfg.vectorizeLaneLocal === true) {
     const fullWatr = cfg.watr === true || typeof cfg.watr === 'object'
     const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
-    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil === true, cfg.experimentalOuterStrip === true)
+    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil !== false, cfg.experimentalOuterStrip !== false)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
