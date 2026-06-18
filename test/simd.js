@@ -1960,6 +1960,31 @@ test('SIMD vectorize - LICM preamble before the loop: pure lifts, impure bails',
   ok(!/v128|f64x2|i32x4\./.test(wat(forin, ON)), 'impure-setup for-in must NOT vectorize')
 })
 
+test('SIMD map-reduce - bit-exact f64 reduction (the n-body force loop)', () => {
+  // A loop with MULTIPLE f64 accumulators whose per-iteration contributions are
+  // independent of the accumulators (direct-summation gravity). It vectorizes 2
+  // interactions per step in f64x2 then accumulates each lane IN SCALAR ORDER, so the
+  // reduction is BIT-EXACT vs the unoptimized scalar truth (every f64x2 op is IEEE-754-
+  // identical per lane; the per-accumulator addition order is preserved). Odd N exercises
+  // the ≤1-element scalar remainder.
+  const nb = (N) => `export let main = () => {
+    const N=${N}, px=new Float64Array(N), py=new Float64Array(N), pz=new Float64Array(N), mm=new Float64Array(N)
+    let s=0x1234abcd|0
+    for(let i=0;i<N;i++){ s^=s<<13;s^=s>>>17;s^=s<<5; px[i]=(s>>>0)/4294967296*2-1; py[i]=i*0.013-3; pz[i]=i*0.007; mm[i]=1+(i&7)*0.1 }
+    let acc=0
+    for(let it=0;it<4;it++) for(let i=0;i<N;i++){
+      const xi=px[i],yi=py[i],zi=pz[i]; let ax=0,ay=0,az=0
+      for(let j=0;j<N;j++){ const dx=px[j]-xi,dy=py[j]-yi,dz=pz[j]-zi
+        const r2=dx*dx+dy*dy+dz*dz+0.05; const inv=1/(r2*Math.sqrt(r2)); const f=mm[j]*inv
+        ax+=dx*f; ay+=dy*f; az+=dz*f }
+      acc += ax*0.013 + ay*0.017 + az*0.019 }
+    return (acc*1e6)|0 }`
+  const ON = { optimize: 'speed' }, O0 = { optimize: false }   // O0 = scalar ground truth
+  for (const N of [9, 16, 17, 64, 65, 128, 256, 257])
+    is(runVec(nb(N), ON).main(), runVec(nb(N), O0).main(), `n-body N=${N} bit-exact`)
+  ok(/f64x2\.sqrt/.test(wat(nb(64), ON)), 'f64x2 map-reduce must fire on the n-body force loop')
+})
+
 // ── Per-pixel-color vectorizer (tryPerPixelColor) ─────────────────────────────
 // Achievement pin: a pixel loop that computes an f64 value from the index (cos/sin/sqrt…), packs
 // it to a u32 colour and stores it — no inner loop — lifts two adjacent pixels into f64x2 lanes
