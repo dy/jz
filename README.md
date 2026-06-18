@@ -4,6 +4,8 @@
 
 **jz** (_javascript zero_) is **minimal functional JS** that compiles to performant WASM.
 
+Plain JS in, lean GC-free WASM out — for the slow 10% (DSP, audio, physics, parsers): no type annotations, no runtime, no lock-in.
+
 
 ```js
 import jz from 'jz'
@@ -69,6 +71,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `noSimd: true` | Disable auto-vectorization (no jz-emitted `v128`) for engines without the SIMD proposal. Explicit `f32x4`/`i32x4` intrinsics still compile. |
 | `whyNotSimd: true` | Diagnostic (CLI `--why-not-simd`): emit a `simd-why-not` warning per loop the auto-vectorizer declined, naming the first blocking op — finds loops one op away from SIMD. Noisy; off by default. Surfaced via the `warnings` sink. |
 | `experimentalStencil: true` | Opt-in (CLI `--experimental-stencil`): vectorize neighbour-load stencils — `b[i] = f(a[i-1], a[i], a[i+1])` and 2-D 5-point sweeps — to f64x2. Bit-exact vs scalar (a lane-parallel map reorders nothing within a lane). Unstable / off by default until proven across the corpus. |
+| `experimentalOuterStrip: true` | Opt-in (CLI `--experimental-outer-strip`): strip-mine a pixel loop whose per-pixel value is an inner reduction (e.g. metaballs' field sum over blobs) into f64x2 — two adjacent pixels per step. Bit-exact vs scalar (each lane accumulates in scalar order). Unstable / off by default. |
 | `randomSeed` | `Math.random` seeding — default draws from host entropy (non-reproducible); a number fixes it for a reproducible sequence, `true` forces entropy explicitly. |
 | `wat: true` | `compile()` returns WAT text instead of WASM binary. |
 | `names: true` | Emit a WASM `name` section (function symbols) for profilers/debuggers. |
@@ -130,6 +133,7 @@ Options:
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
   --experimental-stencil    Vectorize neighbour-load stencils (a[i±1]); opt-in
+  --experimental-outer-strip  Strip-mine pixel loops over an inner reduction to f64x2; opt-in
   --no-tail-call            Use ordinary call frames instead of return_call
   --names                   Emit wasm name section for profilers/debuggers
   --stats                   Print compile-phase timings to stderr

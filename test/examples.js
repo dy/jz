@@ -73,6 +73,29 @@ test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () =
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (1200 px, 25 frames)');
 });
 
+// Outer-loop strip-mine (experimental): metaballs sums an inverse-square field over every blob
+// per pixel — the outer W×H pixel loops are independent, the inner blob loop is a reduction. With
+// experimentalOuterStrip, two adjacent pixels (xi, xi+1) run as f64x2 lanes (cx → ramp, blob loads
+// → splat, sum → per-lane f64x2), then each lane packs its colour. BIT-EXACT: each lane accumulates
+// in the same scalar order (a per-lane reduction reorders nothing). The odd-width column + the rest
+// of the frame run via the kept scalar tail.
+test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/metaballs/metaballs.js', import.meta.url), 'utf8');
+    const base = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const os = (jz.compile(src, { ...OPT, experimentalOuterStrip: true, wat: true }).match(/f64x2\./g) || []).length;
+    ok(os > base, `metaballs field loop outer-strips (${base} → ${os} f64x2)`);
+    const run = (opts) => {
+        const { exports } = jz(src, opts);
+        const px = exports.resize(48, 32);
+        exports.init();
+        for (let f = 0; f < 15; f++) exports.frame(f);
+        return Array.from(px);
+    };
+    const simd = run({ ...OPT, experimentalOuterStrip: true }), scal = run({ ...OPT });
+    is(simd.length, scal.length);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;

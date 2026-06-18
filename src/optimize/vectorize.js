@@ -3588,13 +3588,214 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- Outer-loop strip-mine over an inner reduction (tryOuterStrip, experimental) ----
+//
+// The dual of tryPerPixelColor for pixel loops whose per-pixel value comes from an
+// INNER REDUCTION over invariant data — metaballs `sum += r²/((cx-bx[b])²+(cy-by[b])²+ε)`,
+// voronoi/lyapunov shapes. Strip-mine the OUTER pixel loop 2-wide: pixels (xi, xi+1) →
+// f64x2 lanes. The per-pixel coordinate (`cx = xi/W`) becomes a ramp `[cx, cx+1/W]`; the
+// inner loop's loads `bx[b]` are indexed by the INNER IV (same for both pixels) → splat;
+// the accumulator `sum` becomes an f64x2 carrying both lanes' running sums. After the inner
+// loop, each lane's sum is extracted and the scalar pack+store runs per lane (xi, xi+1).
+//
+// BIT-EXACT: each lane accumulates in the SAME scalar order as the original (f64x2.add is
+// per-lane IEEE-754-identical) — a per-lane reduction reorders nothing, unlike a horizontal
+// fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
+// only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
+// Gated behind cfg.experimentalOuterStrip until proven across the corpus.
+function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
+  if (!enabled) return null
+  const outer = matchOuterPixelLoop(blockNode)
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+
+  // Exactly one inner loop in obody; it is the per-pixel reduction.
+  let innerIdx = -1, innerBlock = null
+  for (let i = 0; i < obody.length; i++) {
+    const s = obody[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) {
+      if (innerBlock) return null
+      innerBlock = s; innerIdx = i
+    }
+  }
+  if (!innerBlock) return null
+  const ibl = matchBlockLoop(innerBlock, { allowPreamble: true })
+  if (!ibl) return null
+  if (ibl.preamble.length) return null
+  const innerIV = ibl.incVar, ibody = ibl.body
+  // No impure calls (a non-pure call would read stale state in the per-lane epilogue). $math.* pure.
+  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
+  if (obody.some(impureCall)) return null
+
+  const id = freshIdRef.next++
+  const nm = (s) => `$__os${id}_${s}`
+  const bump = (n, k) => k === 0 ? n
+    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
+    : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const rampOf = (piv) => pivType.get(piv) === 'f64'
+    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
+    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+
+  const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
+  // Lift a scalar f64 expr to f64x2 (null = not liftable). pxVar → ramp; lane local → shadow;
+  // pixel-invariant local/global → splat; pixel-invariant f64.load → splat(scalar load);
+  // $math.*2 transcendental; cond → bitselect; LANE_PURE.f64 op → recurse.
+  const liftOS = (n) => {
+    if (!isArr(n)) return null
+    const op = n[0]
+    if (op === 'f64.const') return ['f64x2.splat', n]
+    if (op === 'local.get') {
+      const v = n[1]
+      if (laneMap.has(v)) return ['local.get', laneMap.get(v)]
+      if (pivType.get(v) === 'f64') return rampOf(v)
+      if (writesName(loopNode, v)) return null
+      return ['f64x2.splat', n]
+    }
+    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampOf(n[1][1])
+    if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
+    if (LOAD_OPS[op] === 'f64') {
+      // pixel-invariant load (address reads neither the pixel IV nor any per-pixel lane) is the
+      // same value for both lanes → load once, splat. A per-pixel gather is not supported.
+      const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
+      if (readsName(addr, pxVar) || [...laneMap.keys()].some(lv => readsName(addr, lv))) return null
+      return ['f64x2.splat', n]
+    }
+    if (op === 'call') {
+      const v2 = PPC_CALL2[n[1]]
+      if (v2 && n.length === 3) { const a = liftOS(n[2]); return a && ['call', v2, a] }
+      if (v2 && n.length === 4) { const a = liftOS(n[2]), b = liftOS(n[3]); return (a && b) ? ['call', v2, a, b] : null }
+      return null
+    }
+    if (op === 'if') {
+      if (!isArr(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null
+      const thenN = n[3], elseN = n[4]
+      if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) return null
+      if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) return null
+      let cond = n[2]
+      if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+      const cmp = isArr(cond) && cond.length === 3 ? CMP_LANE[cond[0]] : null
+      if (!cmp) return null
+      const ca = liftOS(cond[1]), cb = liftOS(cond[2]), x = liftOS(thenN[1]), y = liftOS(elseN[1])
+      if (!ca || !cb || !x || !y) return null
+      return ['v128.bitselect', x, y, [cmp, ca, cb]]
+    }
+    if (LANE_PURE.f64.has(op)) {
+      const ks = n.slice(1).map(liftOS)
+      return ks.some(k => k === null) ? null : [LANE_PURE.f64.get(op).simd, ...ks]
+    }
+    return null
+  }
+
+  // ---- lift the inner loop body: temp f64 lane locals + f64 accumulator(s) `acc = acc + EXPR`,
+  // the inner IV bump stays scalar. Anything else (or an unliftable expr) → bail. ----
+  // Pre-scan: f64 accumulators `acc = acc + EXPR`. Assign their f64x2 shadows up front so laneInit
+  // can seed them and the lift can accumulate into them (order-independent of the inner body).
+  const accNames = new Set()
+  for (const s of ibody) {
+    if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) continue
+    const name = s[1], rhs = s[2]
+    if (fnLocals.get(name) !== 'f64' || !isArr(rhs) || rhs[0] !== 'f64.add') continue
+    const addend = isLocalGet(rhs[1], name) ? rhs[2] : isLocalGet(rhs[2], name) ? rhs[1] : null
+    if (addend != null && !readsName(addend, name)) { accNames.add(name); laneMap.set(name, nm('acc' + name.replace(/\W/g, ''))) }
+  }
+  if (!accNames.size) return null
+
+  // ---- pre-inner-loop stmts (obody[<innerIdx]): per-pixel coord lanes (cx = f(xi) → ramp),
+  // accumulator seeds (→ splat), scalar inner-IV init. MUST run before the inner-body lift so the
+  // per-pixel coord lanes are registered when the inner loop references them. ----
+  const laneInit = []
+  for (let i = 0; i < innerIdx; i++) {
+    const s = obody[i]
+    if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) { laneInit.push(s); continue }
+    const name = s[1]
+    if (accNames.has(name)) {                       // accumulator seed → splat
+      const seed = liftOS(s[2])
+      if (!seed) return null
+      laneInit.push(['local.set', laneMap.get(name), seed]); continue
+    }
+    if (fnLocals.get(name) === 'f64' && readsName(s[2], pxVar)) {   // per-pixel coord (cx = xi/W) → ramp lane
+      const lane = liftOS(s[2])
+      if (!lane) return null
+      const sh = nm('p' + name.replace(/\W/g, ''))
+      laneMap.set(name, sh)
+      laneInit.push(['local.set', sh, lane]); continue
+    }
+    laneInit.push(s)                                // scalar (inner IV init `b=0`, invariant setup)
+  }
+
+  // ---- lift the inner-loop body: temp f64 lane locals + accumulate into the acc shadows; the
+  // inner IV bump stays scalar. Per-pixel coords now resolve via laneMap. ----
+  const liftedInner = []
+  for (const s of ibody) {
+    if (matchInc1(s) === innerIV || matchIncN(s)?.name === innerIV) { liftedInner.push(s); continue }
+    if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) return null
+    const name = s[1], rhs = s[2]
+    if (fnLocals.get(name) !== 'f64') return null
+    if (accNames.has(name)) {
+      const addend = isLocalGet(rhs[1], name) ? rhs[2] : rhs[1]
+      const lifted = liftOS(addend)
+      if (!lifted) return null
+      liftedInner.push(['local.set', laneMap.get(name), ['f64x2.add', ['local.get', laneMap.get(name)], lifted]]); continue
+    }
+    if (readsName(rhs, name)) return null   // loop-carried non-accumulator → bail
+    const lifted = liftOS(rhs)
+    if (!lifted) return null
+    const sh = laneMap.get(name) || nm('t' + name.replace(/\W/g, ''))
+    laneMap.set(name, sh)
+    liftedInner.push(['local.set', sh, lifted])
+  }
+
+  // ---- epilogue (obody[>innerIdx]): the per-pixel pack+store, run scalar per lane (bumped to xi+k),
+  // reading the extracted accumulator/lane values. Safety: every in-loop read must be a lane local,
+  // a pixel IV, or written within the epilogue itself. ----
+  const epilogue = obody.slice(innerIdx + 1)
+  {
+    const epiWritten = new Set()
+    const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
+    epilogue.forEach(wr)
+    const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
+    epilogue.forEach(rd)
+    for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
+  }
+  // store must exist + vary per lane
+  let hasStore = false
+  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
+  epilogue.forEach(findStore)
+  if (!hasStore) return null
+
+  // ============================ emit ============================
+  const newLocalDecls = [...new Set(laneMap.values())].map(n => ['local', n, 'v128'])
+  const epiReads = [...laneMap.keys()].filter(v => epilogue.some(s => readsVar(s, v)))
+  // Rebuild the inner loop with its scalar scaffold (exit + the bottom IV bump, which lives at
+  // loopNode[incIdx] — NOT in `body`) and the lifted f64x2 body in between.
+  const innerLoopNode = ibl.loopNode
+  const iExit = innerLoopNode[2]                       // (br_if iBrk (eqz (b < count)))
+  const iInc = innerLoopNode[ibl.incIdx]               // (local.set b (i32.add b 1)) — scalar, kept
+  const iLabelB = innerBlock[1], iLabelL = innerLoopNode[1]
+  const innerSimd = ['block', iLabelB, ['loop', iLabelL, iExit, ...liftedInner, iInc, ['br', iLabelL]]]
+  const laneCompute = [...laneInit, innerSimd]
+  const epiLane = (k) => [
+    ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
+    ...epilogue.map(s => bump(s, k)),
+  ]
+  const sOut = nm('ob'), sOl = nm('ol')
+  const simdOuter = ['block', sOut, ['loop', sOl,
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ...laneCompute, ...epiLane(0), ...epiLane(1),
+    ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
+    ['br', sOl]]]
+  const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Pass entry ------------------------------------------------------------
 
 /**
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false, outerStrip = false) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -3645,6 +3846,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
         ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef)
+        ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.

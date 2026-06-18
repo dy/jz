@@ -238,6 +238,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.experimentalStencil] - Opt-in: vectorize neighbour-load
  *   stencils (`b[i]=f(a[i-1],a[i],a[i+1])`, 2-D 5-point) to f64x2. Bit-exact vs scalar.
  *   Unstable — off by default until proven across the corpus.
+ * @param {boolean} [opts.experimentalOuterStrip] - Opt-in: strip-mine a pixel loop whose
+ *   per-pixel value is an inner reduction (metaballs-shape) into f64x2 lanes (2 pixels at
+ *   once). Bit-exact vs scalar. Unstable — off by default.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
@@ -537,6 +540,10 @@ const jzCompileInner = (code, opts = {}) => {
   // opts.experimentalStencil: enable the (opt-in, unstable) neighbour-load stencil
   // vectorizer (a[i±1] / 2-D 5-point). Off by default until proven across the corpus.
   if (opts.experimentalStencil && ctx.transform.optimize) ctx.transform.optimize.experimentalStencil = true
+
+  // opts.experimentalOuterStrip: enable the (opt-in, unstable) outer-loop strip-mine
+  // vectorizer (2 adjacent pixels in f64x2 lanes over an inner reduction). Off by default.
+  if (opts.experimentalOuterStrip && ctx.transform.optimize) ctx.transform.optimize.experimentalOuterStrip = true
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')

@@ -2556,7 +2556,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (cfg && cfg.vectorizeLaneLocal === true) {
     const fullWatr = cfg.watr === true || typeof cfg.watr === 'object'
     const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
-    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil === true)
+    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil === true, cfg.experimentalOuterStrip === true)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies

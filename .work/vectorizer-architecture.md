@@ -342,12 +342,26 @@ flag off)**. CLI `--experimental-stencil` / `opts.experimentalStencil`; off by d
 across the rest of the corpus.
 
   *Corpus status (measured):* `waves` ✓ (vectorizes + bit-exact). `ivCoeff` also handles inline row
-  bases `idx = y*w + x` (invariant×invariant ⇒ coeff 0; tested bit-exact). The other stencil rows
-  are blocked on **recognition**, not the lift: `schrodinger`/`slime`/`diffusion` aren't even
-  candidates — `--why-not-simd` is silent on their hot loops, so `matchBlockLoop` (and
-  `matchOuterPixelLoop`) reject them before any stencil scan. Extending stencil to them is a
-  recognition task (their loop nesting/shape), tracked as the next stencil increment — NOT an
-  `ivCoeff`/lift gap. `diffusion` additionally needs the toroidal-wrap conditional index handled.
+  bases `idx = y*w + x` (invariant×invariant ⇒ coeff 0; tested bit-exact).
+
+  **`schrodinger`/`slime`/`diffusion` are blocked UPSTREAM, in type inference — not the vectorizer
+  (investigated in depth).** Root cause: their grid-dimension globals `W`/`H` are inferred **f64**
+  (assigned from the untyped `resize(w,h)` params), so the derived `w`/`h`/`idx` are f64 too. That
+  cascades into TWO scaffold-level rejections, which is why `--why-not-simd` is *silent* (not even a
+  candidate — `matchBlockLoop` bails before any stencil scan):
+  1. The loop bound `x < w-1` becomes a **float compare** `f64.lt(convert(x), w-1)` — `matchExitBrIf`
+     only accepts `i32.lt_s/u`, so the loop is rejected.
+  2. The index `y*w+x` is computed in float and converted back via `select(wrap(trunc_sat(…)))` — not
+     an i32-affine expression, so even past the bound, the stencil address scan can't match it.
+  Forcing the dims i32 in-source (`let w = W|0`) did NOT unblock it (W is read as f64 elsewhere /
+  the float idx persists), confirming the fix belongs in inference (narrow `0`-init globals that are
+  only ever assigned numeric params used in integer/index contexts → i32), NOT in a vectorizer hack
+  (recognizing float bounds + `trunc_sat`-derived indices would paper over the inference gap and is
+  fragile). The vectorizer itself is **ready** — proven by the i32 inline-row synthetic that
+  vectorizes bit-exactly. `diffusion` additionally needs the toroidal-wrap conditional index.
+
+  → **Next vectorizer-side gap (not inference-blocked):** outer-loop strip-mining over an inner
+  reduction (Step 7 — metaballs/voronoi/lyapunov), the genuinely-next *vectorizer* primitive.
 
   *Superseded original plan (kept for reference):* `matchStencilDelta` + `liftStencil` +
 `classifyBody` branch, behind `cfg.experimentalStencil`. *Unlocks:* waves, schrodinger, diffusion,
@@ -371,11 +385,22 @@ leaf WAT fns before the f64x2 pass; existing sin2/cos2 then cover the exposed `M
 *Unlocks:* plasma. *Verify:* plasma pixel-identical; pre-pass gated on `hasSideEffect` + callee
 loop scan.
 
-**Step 7 — Outer-strip-mine (5–7 d, flagged).** `cloneNodeSubst` + `matchOuterStrip` +
-`liftOuterStrip` + voronoi i32x4 argmin tracker, behind `cfg.experimentalOuterStrip`. *Unlocks:*
-metaballs, lbm, voronoi. *Guard:* per-lane scalar order; f64 reassoc gate `optimize≥2`; alias
-check (no store depends on both inner+outer IV; outer-IV writes non-overlapping). *Verify:*
-metaballs pixel-identical (integer); lbm ULP; ratchet metaballs >1.0×.
+**Step 7 — Outer-strip-mine (✅ DONE, flagged `experimentalOuterStrip`).** Added `tryOuterStrip` —
+the dual of `tryPerPixelColor` for pixel loops whose per-pixel value is an INNER REDUCTION over
+invariant data (metaballs `sum += r²/((cx-bx[b])²+…)`). Strip-mines the outer pixel loop 2-wide:
+the per-pixel coord `cx` → ramp `[cx, cx+δ]`, the inner loop's `bx[b]` loads (inner-IV-indexed, same
+for both pixels) → splat, the accumulator `sum` → an f64x2 carrying both lanes; the inner loop's
+scalar scaffold (trip count `b<count` invariant) is kept, only its f64 body lifts; after the inner
+loop each lane's sum is extracted and the scalar pack+store runs per lane. Reuses
+`matchOuterPixelLoop` + `matchBlockLoop` + a self-contained `liftOS` (ramp / splat /
+pixel-invariant-`f64.load`→splat / `$math.*2` / bitselect / LANE_PURE). **BIT-EXACT** — each lane
+accumulates in scalar order (a per-lane reduction reorders nothing, unlike a horizontal fold).
+*Verified:* metaballs vectorizes **0→21 f64x2**, bit-exact end-to-end (1536 px × 15 frames);
+test/examples.js regression; **default builds byte-identical (ratchet +0, flag off)**; CLI
+`--experimental-outer-strip` / `opts.experimentalOuterStrip`.
+  - *Scope:* the single-f64-accumulator metaballs shape. lbm (9 strided channels) and voronoi
+    (min + argmin, needs a per-lane i32x4 index tracker) are not yet handled — follow-on extensions.
+    lyapunov is additionally `Math.log`-blocked (needs the log mirror, Step 4).
 
 **Step 8 — Active-mask divergent loop (5–7 d, flagged).** `liftDivergentMask` (~300):
 per-lane i32x4 counters, `bitselect` freeze, `all_true` exit, conditional-store suppression via
