@@ -1246,597 +1246,40 @@
       (local.get $i)
     )
   )
-  (func $processCascade
-    (param $x i32)
-    (param $coeffs i32)
-    (param $state i32)
-    (param $nStages i32)
-    (param $out i32)
-    (result f64)
-    (local $n i32)
-    (local $i i32)
-    (local $v f64)
-    (local $b0 f64)
-    (local $b1 f64)
-    (local $b2 f64)
-    (local $a1 f64)
-    (local $a2 f64)
-    (local $x1 f64)
-    (local $x2 f64)
-    (local $y1 f64)
-    (local $y2 f64)
-    (local $y f64)
-    (local $__ab0 i32)
-    (local $__ab1 i32)
-    (local $__pe0 i32)
-    (local.set $n
-      (i32.shr_u
-        (i32.load
-          (i32.sub (local.get $x) (i32.const 8))
+  (func $__alloc_hdr_n_d_d_1
+    (param $a0 i32)
+    (param $a1 i32)
+    (result i32)
+    (local $__inl3_len i32)
+    (local $__inl3_stride i32)
+    (local $__inl3_ptr i32)
+    (local.set $__inl3_len (local.get $a0))
+    (local.set $__inl3_stride (i32.const 1))
+    (local.set $__inl3_ptr
+      (call $__alloc
+        (i32.add
+          (i32.const 16)
+          (local.tee $__inl3_stride (local.get $a1))
         )
-        (i32.const 3)
       )
     )
-    (block $brk0
-      (loop $loop0
-        (br_if $brk0
-          (i32.eqz
-            (i32.lt_s (local.get $i) (local.get $n))
-          )
-        )
-        (local.set $v
-          (f64.load
-            (i32.add
-              (local.get $x)
-              (local.tee $__pe0
-                (i32.shl (local.get $i) (i32.const 3))
-              )
-            )
-          )
-        )
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0 (local.get $coeffs))
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1 (local.get $state))
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $v))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 40))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 32))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 80))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 64))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 120))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 96))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 160))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 128))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 200))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 160))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 240))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 192))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (local.set $b0
-          (f64.load offset=0
-            (local.tee $__ab0
-              (i32.add (local.get $coeffs) (i32.const 280))
-            )
-          )
-        )
-        (local.set $b1
-          (f64.load offset=8 (local.get $__ab0))
-        )
-        (local.set $b2
-          (f64.load offset=16 (local.get $__ab0))
-        )
-        (local.set $a1
-          (f64.load offset=24 (local.get $__ab0))
-        )
-        (local.set $a2
-          (f64.load offset=32 (local.get $__ab0))
-        )
-        (local.set $x1
-          (f64.load offset=0
-            (local.tee $__ab1
-              (i32.add (local.get $state) (i32.const 224))
-            )
-          )
-        )
-        (local.set $x2
-          (f64.load offset=8 (local.get $__ab1))
-        )
-        (local.set $y1
-          (f64.load offset=16 (local.get $__ab1))
-        )
-        (local.set $y2
-          (f64.load offset=24 (local.get $__ab1))
-        )
-        (local.set $y
-          (f64.sub
-            (f64.sub
-              (f64.add
-                (f64.add
-                  (f64.mul (local.get $b0) (local.get $y))
-                  (f64.mul (local.get $b1) (local.get $x1))
-                )
-                (f64.mul (local.get $b2) (local.get $x2))
-              )
-              (f64.mul (local.get $a1) (local.get $y1))
-            )
-            (f64.mul (local.get $a2) (local.get $y2))
-          )
-        )
-        (f64.store offset=0
-          (local.get $__ab1)
-          (local.get $v)
-        )
-        (f64.store offset=8
-          (local.get $__ab1)
-          (local.get $x1)
-        )
-        (f64.store offset=16
-          (local.get $__ab1)
-          (local.get $y)
-        )
-        (f64.store offset=24
-          (local.get $__ab1)
-          (local.get $y1)
-        )
-        (local.set $v (local.get $y))
-        (f64.store
-          (i32.add (local.get $out) (local.get $__pe0))
-          (local.get $y)
-        )
-        (local.set $i
-          (i32.add (local.get $i) (i32.const 1))
-        )
-        (br $loop0)
-      )
+    (i64.store (local.get $__inl3_ptr) (i64.const 0))
+    (i32.store offset=8
+      (local.get $__inl3_ptr)
+      (local.get $a0)
     )
-    (f64.const nan:0x7FF8000200000000)
+    (i32.store offset=12
+      (local.get $__inl3_ptr)
+      (local.get $a1)
+    )
+    (memory.fill
+      (local.tee $__inl3_len
+        (i32.add (local.get $__inl3_ptr) (i32.const 16))
+      )
+      (i32.const 0)
+      (local.get $__inl3_stride)
+    )
+    (local.get $__inl3_len)
   )
   (func $__i32_to_str
     (param $val i32)
@@ -1956,41 +1399,6 @@
       )
     )
     (local.get $len)
-  )
-  (func $__alloc_hdr_n_d_d_1
-    (param $a0 i32)
-    (param $a1 i32)
-    (result i32)
-    (local $__inl3_len i32)
-    (local $__inl3_stride i32)
-    (local $__inl3_ptr i32)
-    (local.set $__inl3_len (local.get $a0))
-    (local.set $__inl3_stride (i32.const 1))
-    (local.set $__inl3_ptr
-      (call $__alloc
-        (i32.add
-          (i32.const 16)
-          (local.tee $__inl3_stride (local.get $a1))
-        )
-      )
-    )
-    (i64.store (local.get $__inl3_ptr) (i64.const 0))
-    (i32.store offset=8
-      (local.get $__inl3_ptr)
-      (local.get $a0)
-    )
-    (i32.store offset=12
-      (local.get $__inl3_ptr)
-      (local.get $a1)
-    )
-    (memory.fill
-      (local.tee $__inl3_len
-        (i32.add (local.get $__inl3_ptr) (i32.const 16))
-      )
-      (i32.const 0)
-      (local.get $__inl3_stride)
-    )
-    (local.get $__inl3_len)
   )
   (func $__len
     (param $ptr i64)
@@ -2937,96 +2345,359 @@
       (local.get $ta)
     )
   )
+  (func $fft
+    (param $re i32)
+    (param $im i32)
+    (param $wre i32)
+    (param $wim i32)
+    (param $n i32)
+    (result f64)
+    (local $i i32)
+    (local $j i32)
+    (local $bit i32)
+    (local $tr f64)
+    (local $ti f64)
+    (local $xi f64)
+    (local $tr3 f64)
+    (local $ti4 f64)
+    (local $tw2 f64)
+    (local $tw4 f64)
+    (local $tw10 f64)
+    (local $tw11 f64)
+    (local $__ab0 i32)
+    (local $__ab1 i32)
+    (local $__ab2 i32)
+    (local $__ab3 i32)
+    (local $__ab4 i32)
+    (local $__ab5 i32)
+    (local $__ab6 i32)
+    (local $__ab7 i32)
+    (local $__pe0 i32)
+    (local $__pe1 i32)
+    (local $__pe4 i32)
+    (local.set $i (i32.const 1))
+    (block $brk0
+      (loop $loop0
+        (br_if $brk0
+          (i32.eqz
+            (i32.lt_s (local.get $i) (i32.const 65536))
+          )
+        )
+        (local.set $bit (i32.const 32768))
+        (block $brk1
+          (loop $loop1
+            (br_if $brk1
+              (i32.eqz
+                (i32.ne
+                  (i32.and (local.get $j) (local.get $bit))
+                  (i32.const 0)
+                )
+              )
+            )
+            (local.set $j
+              (i32.xor (local.get $j) (local.get $bit))
+            )
+            (local.set $bit
+              (i32.shr_s (local.get $bit) (i32.const 1))
+            )
+            (br $loop1)
+          )
+        )
+        (local.set $j
+          (i32.xor (local.get $j) (local.get $bit))
+        )
+        (if
+          (i32.lt_s (local.get $i) (local.get $j))
+          (then
+            (local.set $tr
+              (f64.load
+                (local.tee $__ab0
+                  (i32.add
+                    (local.get $re)
+                    (local.tee $__pe0
+                      (i32.shl (local.get $i) (i32.const 3))
+                    )
+                  )
+                )
+              )
+            )
+            (local.set $tw2
+              (f64.load
+                (local.tee $__ab1
+                  (i32.add
+                    (local.get $re)
+                    (local.tee $__pe1
+                      (i32.shl (local.get $j) (i32.const 3))
+                    )
+                  )
+                )
+              )
+            )
+            (f64.store (local.get $__ab0) (local.get $tw2))
+            (f64.store (local.get $__ab1) (local.get $tr))
+            (local.set $ti
+              (f64.load
+                (local.tee $__ab2
+                  (i32.add (local.get $im) (local.get $__pe0))
+                )
+              )
+            )
+            (local.set $tw4
+              (f64.load
+                (local.tee $__ab3
+                  (i32.add (local.get $im) (local.get $__pe1))
+                )
+              )
+            )
+            (f64.store (local.get $__ab2) (local.get $tw4))
+            (f64.store (local.get $__ab3) (local.get $ti))
+          )
+        )
+        (local.set $i
+          (i32.add (local.get $i) (i32.const 1))
+        )
+        (br $loop0)
+      )
+    )
+    (local.set $i (i32.const 2))
+    (block $brk6
+      (loop $loop6
+        (br_if $brk6
+          (i32.eqz
+            (i32.le_s (local.get $i) (i32.const 65536))
+          )
+        )
+        (local.set $bit
+          (i32.shr_s (local.get $i) (i32.const 1))
+        )
+        (local.set $j
+          (select
+            (i32.wrap_i64
+              (i64.trunc_sat_f64_s
+                (local.tee $tr
+                  (f64.div
+                    (f64.const 65536)
+                    (f64.convert_i32_s (local.get $i))
+                  )
+                )
+              )
+            )
+            (i32.const 0)
+            (f64.ne (local.get $tr) (f64.const Infinity))
+          )
+        )
+        (local.set $__pe0 (i32.const 0))
+        (block $brk8
+          (loop $loop8
+            (br_if $brk8
+              (i32.eqz
+                (i32.lt_s (local.get $__pe0) (i32.const 65536))
+              )
+            )
+            (local.set $__ab0 (i32.const 0))
+            (local.set $__pe1 (i32.const 0))
+            (block $brk9
+              (loop $loop9
+                (br_if $brk9
+                  (i32.eqz
+                    (i32.lt_s (local.get $__ab0) (local.get $bit))
+                  )
+                )
+                (local.set $tw2
+                  (f64.load
+                    (i32.add
+                      (local.get $wre)
+                      (local.tee $__ab1
+                        (i32.shl (local.get $__pe1) (i32.const 3))
+                      )
+                    )
+                  )
+                )
+                (local.set $ti
+                  (f64.load
+                    (i32.add (local.get $wim) (local.get $__ab1))
+                  )
+                )
+                (local.set $__ab2
+                  (i32.add (local.get $__pe0) (local.get $__ab0))
+                )
+                (local.set $tw4
+                  (f64.load
+                    (local.tee $__ab4
+                      (i32.add
+                        (local.get $re)
+                        (local.tee $__ab3
+                          (i32.shl
+                            (i32.add (local.get $__ab2) (local.get $bit))
+                            (i32.const 3)
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+                (local.set $xi
+                  (f64.load
+                    (local.tee $__ab5
+                      (i32.add (local.get $im) (local.get $__ab3))
+                    )
+                  )
+                )
+                (local.set $tr3
+                  (f64.sub
+                    (f64.mul (local.get $tw2) (local.get $tw4))
+                    (f64.mul (local.get $ti) (local.get $xi))
+                  )
+                )
+                (local.set $ti4
+                  (f64.add
+                    (f64.mul (local.get $tw2) (local.get $xi))
+                    (f64.mul (local.get $ti) (local.get $tw4))
+                  )
+                )
+                (local.set $tw10
+                  (f64.sub
+                    (f64.load
+                      (local.tee $__ab6
+                        (i32.add
+                          (local.get $re)
+                          (local.tee $__pe4
+                            (i32.shl (local.get $__ab2) (i32.const 3))
+                          )
+                        )
+                      )
+                    )
+                    (local.get $tr3)
+                  )
+                )
+                (f64.store (local.get $__ab4) (local.get $tw10))
+                (local.set $tw11
+                  (f64.sub
+                    (f64.load
+                      (local.tee $__ab7
+                        (i32.add (local.get $im) (local.get $__pe4))
+                      )
+                    )
+                    (local.get $ti4)
+                  )
+                )
+                (f64.store (local.get $__ab5) (local.get $tw11))
+                (f64.store
+                  (local.get $__ab6)
+                  (f64.add
+                    (f64.load (local.get $__ab6))
+                    (local.get $tr3)
+                  )
+                )
+                (f64.store
+                  (local.get $__ab7)
+                  (f64.add
+                    (f64.load (local.get $__ab7))
+                    (local.get $ti4)
+                  )
+                )
+                (local.set $__ab0
+                  (i32.add (local.get $__ab0) (i32.const 1))
+                )
+                (local.set $__pe1
+                  (i32.add (local.get $__pe1) (local.get $j))
+                )
+                (br $loop9)
+              )
+            )
+            (local.set $__pe0
+              (i32.add (local.get $__pe0) (local.get $i))
+            )
+            (br $loop8)
+          )
+        )
+        (local.set $i
+          (i32.shl (local.get $i) (i32.const 1))
+        )
+        (br $loop6)
+      )
+    )
+    (f64.const nan:0x7FF8000200000000)
+  )
   (func $main
     (export "main")
     (result f64)
-    (local $__inl14_stateLen i32)
-    (local $__inl14_j i32)
-    (local $__inl14_i1 i32)
-    (local $__inl14_j2 i32)
-    (local $__inl14_t0 f64)
-    (local $__inl14_tw19 f64)
-    (local $__inl14___pe1 i32)
-    (local $__inl14__pg2 i32)
-    (local $__inl14__pg1 i32)
-    (local $__inl14__pg0 i32)
-    (local $__inl14___inl11_s2 f64)
-    (local $__inl14___inl11_s3 f64)
-    (local $__inl14___inl11_s4 f64)
-    (local $__inl14___inl11_s5 f64)
-    (local $__inl14___inl11_s6 f64)
-    (local $__inl14___inl11_s7 f64)
-    (local $__inl14___inl11_s8 f64)
-    (local $__inl14___inl11_s9 f64)
-    (local $__inl14___inl11_s10 f64)
-    (local $__inl14___inl11_sl16 i32)
-    (local $__inl14___inl11_sl17 i32)
-    (local $__inl14___inl11_sl18 i32)
-    (local $__inl14___inl11_sl19 i32)
-    (local $__inl14___inl11_sl20 i32)
-    (local $__inl14___inl11_sl21 i32)
-    (local $__inl14___inl11_st22 i32)
-    (local $__inl14___inl11___inl2_ptr i64)
-    (local $__inl14___inl11___inl4_ptr i64)
-    (local $__inl14___inl12_n i32)
-    (local $__inl14___inl12_s i32)
-    (local $__inl14___inl12___pe0 i32)
-    (local $__ab0 i32)
+    (local $inl6_dt f64)
+    (local $inl10_ci f64)
+    (local $inl11_half i32)
+    (local $inl12_k i32)
+    (local $inl14_ni f64)
+    (local $i i32)
+    (local $i5 i32)
+    (local $__pe2 i32)
+    (local $__pe3 i32)
+    (local $__pe4 i32)
+    (local $_pg1 i32)
+    (local $_pg0 i32)
+    (local $__inl11_s5 f64)
+    (local $__inl11_s6 f64)
+    (local $__inl11_s7 f64)
+    (local $__inl11_s8 f64)
+    (local $__inl11_s9 f64)
+    (local $__inl11_s10 f64)
+    (local $__inl11_sl17 i32)
+    (local $__inl11_sl18 i32)
+    (local $__inl11_sl19 i32)
+    (local $__inl11_sl20 i32)
+    (local $__inl11_sl21 i32)
+    (local $__inl11_st22 i32)
+    (local $__inl11___inl2_ptr i64)
+    (local $__inl11___inl4_ptr i64)
+    (local $__inl12_x2 f64)
+    (local $__inl13_x f64)
+    (local $__inl14_n i32)
+    (local $__inl14_s i32)
+    (local $__inl14___pe0 i32)
     (local $__iv0_0 i32)
-    (local $__mc1_len i32)
-    (local $__mc1_dst i32)
-    (local $__mc2_len i32)
-    (local $__mc2_dst i32)
-    (local $__mc3_len i32)
-    (local $__mc3_dst i32)
-    (local $__mc4_len i32)
-    (local $__mc4_dst i32)
-    (local $__mc5_len i32)
-    (local $__mc5_dst i32)
-    (local $__mc6_len i32)
-    (local $__mc6_dst i32)
-    (local $__iv7_0 i32)
-    (local $__iv8_0 i32)
-    (local.set $__inl14__pg0 (i32.const 480000))
-    (local.set $__inl14__pg1 (i32.const 8))
-    (local.set $__inl14__pg2 (i32.const 21))
-    (local.set $__inl14___inl12___pe0
+    (local $__simd_bound1 i32)
+    (local $inl6_dt__v v128)
+    (local $__simd_bound2 i32)
+    (local $__iv3_0 i32)
+    (local $__iv4_0 i32)
+    (local.set $_pg0 (i32.const 65536))
+    (local.set $_pg1 (i32.const 21))
+    (local.set $__inl14___pe0
       (call $__alloc_hdr_n_d_d_1
-        (local.tee $__inl14___inl12___pe0 (i32.const 3840000))
-        (local.get $__inl14___inl12___pe0)
+        (local.tee $__inl14___pe0 (i32.const 524288))
+        (local.get $__inl14___pe0)
       )
     )
-    (local.set $__inl14___inl12_s (i32.const 305441741))
+    (local.set $__inl14_s (i32.const 305441741))
     (block
       (local.set $__iv0_0
         (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_n) (i32.const 3))
+          (local.get $__inl14___pe0)
+          (i32.shl (local.get $__inl14_n) (i32.const 3))
         )
       )
-      (block $__inl14L___inl12L_brk2
-        (loop $__inl14L___inl12L_loop2
-          (br_if $__inl14L___inl12L_brk2
+      (block $__inl14L_brk2
+        (loop $__inl14L_loop2
+          (br_if $__inl14L_brk2
             (i32.eqz
-              (i32.lt_s (local.get $__inl14___inl12_n) (i32.const 480000))
+              (i32.lt_s (local.get $__inl14_n) (i32.const 65536))
             )
           )
-          (local.set $__inl14___inl12_s
+          (local.set $__inl14_s
             (i32.xor
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14___inl12_s) (i32.const 13))
+              (local.get $__inl14_s)
+              (i32.shl (local.get $__inl14_s) (i32.const 13))
             )
           )
-          (local.set $__inl14___inl12_s
+          (local.set $__inl14_s
             (i32.xor
-              (local.get $__inl14___inl12_s)
-              (i32.shr_u (local.get $__inl14___inl12_s) (i32.const 17))
+              (local.get $__inl14_s)
+              (i32.shr_u (local.get $__inl14_s) (i32.const 17))
             )
           )
-          (local.set $__inl14___inl12_s
+          (local.set $__inl14_s
             (i32.xor
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14___inl12_s) (i32.const 5))
+              (local.get $__inl14_s)
+              (i32.shl (local.get $__inl14_s) (i32.const 5))
             )
           )
           (f64.store
@@ -3034,7 +2705,7 @@
             (f64.sub
               (f64.mul
                 (f64.div
-                  (f64.convert_i32_u (local.get $__inl14___inl12_s))
+                  (f64.convert_i32_u (local.get $__inl14_s))
                   (f64.const 4294967296)
                 )
                 (f64.const 2)
@@ -3042,617 +2713,470 @@
               (f64.const 1)
             )
           )
-          (local.set $__inl14___inl12_n
-            (i32.add (local.get $__inl14___inl12_n) (i32.const 1))
+          (local.set $__inl14_n
+            (i32.add (local.get $__inl14_n) (i32.const 1))
           )
           (local.set $__iv0_0
             (i32.add (local.get $__iv0_0) (i32.const 8))
           )
-          (br $__inl14L___inl12L_loop2)
+          (br $__inl14L_loop2)
         )
       )
     )
-    (local.set $__inl14___inl12_n (local.get $__inl14___inl12___pe0))
-    (local.set $__inl14___inl12___pe0 (i32.const 8))
-    (local.set $__inl14___inl12___pe0
+    (local.set $__inl14_n (local.get $__inl14___pe0))
+    (local.set $__inl14___pe0
       (call $__alloc_hdr_n_d_d_1
-        (local.tee $__inl14___inl12___pe0 (i32.const 320))
-        (local.get $__inl14___inl12___pe0)
-      )
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 0))
-          (i32.const 3)
+        (local.tee $__inl14___pe0
+          (i32.shl (local.get $_pg0) (i32.const 3))
         )
+        (local.get $__inl14___pe0)
       )
-      (f64.const 0.1)
     )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.2)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.5)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.6)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 5))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.101)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.1995)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.49)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.595)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 10))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10200000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.199)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.48)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.59)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 15))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10300000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.1985)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.47)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.585)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 20))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10400000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.198)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.46)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.58)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 25))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10500000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.1975)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.45)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.575)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 30))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10600000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.197)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.44)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.57)
-    )
-    (f64.store offset=0
-      (i32.add
-        (local.get $__inl14___inl12___pe0)
-        (i32.shl
-          (local.tee $__inl14___inl12_s (i32.const 35))
-          (i32.const 3)
-        )
-      )
-      (f64.const 0.10700000000000001)
-    )
-    (f64.store offset=8
-      (local.tee $__ab0
-        (i32.add
-          (local.get $__inl14___inl12___pe0)
-          (i32.shl (local.get $__inl14___inl12_s) (i32.const 3))
-        )
-      )
-      (f64.const 0.1965)
-    )
-    (f64.store offset=16
-      (local.get $__ab0)
-      (f64.const 0.1)
-    )
-    (f64.store offset=24
-      (local.get $__ab0)
-      (f64.const -1.43)
-    )
-    (f64.store offset=32
-      (local.get $__ab0)
-      (f64.const 0.565)
-    )
-    (local.set $__inl14___inl12_s
+    (local.set $__inl14_s
       (call $__alloc_hdr_n_d_d_1
-        (local.tee $__inl14___inl12_s (i32.const 256))
-        (local.get $__inl14___inl12_s)
+        (local.tee $__inl14_s
+          (i32.shl (local.get $_pg0) (i32.const 3))
+        )
+        (local.get $__inl14_s)
       )
     )
-    (local.set $__inl14___pe1
+    (local.set $__pe2
       (call $__alloc_hdr_n_d_d_1
-        (local.tee $__inl14___pe1
-          (i32.shl (local.get $__inl14__pg0) (i32.const 3))
+        (local.tee $__pe2
+          (i32.shl
+            (i32.shr_s (local.get $_pg0) (i32.const 1))
+            (i32.const 3)
+          )
         )
-        (local.get $__inl14___pe1)
+        (local.get $__pe2)
       )
     )
-    (local.set $__inl14_stateLen (i32.const 32))
-    (block
-      (if
-        (i32.lt_s (local.get $__inl14_j) (local.get $__inl14_stateLen))
-        (then
-          (local.set $__mc1_len
-            (i32.shl
-              (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j))
-              (i32.const 3)
-            )
-          )
-          (local.set $__mc1_dst
-            (i32.add
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14_j) (i32.const 3))
-            )
-          )
-          (memory.fill
-            (local.get $__mc1_dst)
-            (i32.const 0)
-            (local.get $__mc1_len)
-          )
-          (local.set $__inl14_j (local.get $__inl14_stateLen))
-        )
-      )
-    )
-    (call $processCascade
-      (local.get $__inl14___inl12_n)
-      (local.get $__inl14___inl12___pe0)
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14__pg1)
-      (local.get $__inl14___pe1)
-    ) drop
-    (local.set $__inl14_j (i32.const 0))
-    (block
-      (if
-        (i32.lt_s (local.get $__inl14_j) (local.get $__inl14_stateLen))
-        (then
-          (local.set $__mc2_len
-            (i32.shl
-              (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j))
-              (i32.const 3)
-            )
-          )
-          (local.set $__mc2_dst
-            (i32.add
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14_j) (i32.const 3))
-            )
-          )
-          (memory.fill
-            (local.get $__mc2_dst)
-            (i32.const 0)
-            (local.get $__mc2_len)
-          )
-          (local.set $__inl14_j (local.get $__inl14_stateLen))
-        )
-      )
-    )
-    (call $processCascade
-      (local.get $__inl14___inl12_n)
-      (local.get $__inl14___inl12___pe0)
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14__pg1)
-      (local.get $__inl14___pe1)
-    ) drop
-    (local.set $__inl14_j (i32.const 0))
-    (block
-      (if
-        (i32.lt_s (local.get $__inl14_j) (local.get $__inl14_stateLen))
-        (then
-          (local.set $__mc3_len
-            (i32.shl
-              (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j))
-              (i32.const 3)
-            )
-          )
-          (local.set $__mc3_dst
-            (i32.add
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14_j) (i32.const 3))
-            )
-          )
-          (memory.fill
-            (local.get $__mc3_dst)
-            (i32.const 0)
-            (local.get $__mc3_len)
-          )
-          (local.set $__inl14_j (local.get $__inl14_stateLen))
-        )
-      )
-    )
-    (call $processCascade
-      (local.get $__inl14___inl12_n)
-      (local.get $__inl14___inl12___pe0)
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14__pg1)
-      (local.get $__inl14___pe1)
-    ) drop
-    (local.set $__inl14_j (i32.const 0))
-    (block
-      (if
-        (i32.lt_s (local.get $__inl14_j) (local.get $__inl14_stateLen))
-        (then
-          (local.set $__mc4_len
-            (i32.shl
-              (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j))
-              (i32.const 3)
-            )
-          )
-          (local.set $__mc4_dst
-            (i32.add
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14_j) (i32.const 3))
-            )
-          )
-          (memory.fill
-            (local.get $__mc4_dst)
-            (i32.const 0)
-            (local.get $__mc4_len)
-          )
-          (local.set $__inl14_j (local.get $__inl14_stateLen))
-        )
-      )
-    )
-    (call $processCascade
-      (local.get $__inl14___inl12_n)
-      (local.get $__inl14___inl12___pe0)
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14__pg1)
-      (local.get $__inl14___pe1)
-    ) drop
-    (local.set $__inl14_j (i32.const 0))
-    (block
-      (if
-        (i32.lt_s (local.get $__inl14_j) (local.get $__inl14_stateLen))
-        (then
-          (local.set $__mc5_len
-            (i32.shl
-              (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j))
-              (i32.const 3)
-            )
-          )
-          (local.set $__mc5_dst
-            (i32.add
-              (local.get $__inl14___inl12_s)
-              (i32.shl (local.get $__inl14_j) (i32.const 3))
-            )
-          )
-          (memory.fill
-            (local.get $__mc5_dst)
-            (i32.const 0)
-            (local.get $__mc5_len)
-          )
-          (local.set $__inl14_j (local.get $__inl14_stateLen))
-        )
-      )
-    )
-    (call $processCascade
-      (local.get $__inl14___inl12_n)
-      (local.get $__inl14___inl12___pe0)
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14__pg1)
-      (local.get $__inl14___pe1)
-    ) drop
-    (local.set $__inl14_j
+    (local.set $__pe3
       (call $__alloc_hdr_n_d_d_1
-        (local.tee $__inl14_j
-          (i32.shl (local.get $__inl14__pg2) (i32.const 3))
+        (local.tee $__pe3
+          (i32.shl
+            (i32.shr_s (local.get $_pg0) (i32.const 1))
+            (i32.const 3)
+          )
         )
-        (local.get $__inl14_j)
+        (local.get $__pe3)
       )
     )
-    (block
-      (local.set $__iv7_0
-        (i32.add
-          (local.get $__inl14_j)
-          (i32.shl (local.get $__inl14_i1) (i32.const 3))
-        )
+    (local.set $inl6_dt
+      (f64.div
+        (f64.const -6.283185307179586)
+        (f64.convert_i32_s (local.get $_pg0))
       )
-      (block $__inl14L_brk16
-        (loop $__inl14L_loop16
-          (br_if $__inl14L_brk16
-            (i32.eqz
-              (i32.lt_s (local.get $__inl14_i1) (local.get $__inl14__pg2))
-            )
-          )
-          (local.set $__inl14_j2 (i32.const 0))
-          (block
-            (if
-              (i32.lt_s (local.get $__inl14_j2) (local.get $__inl14_stateLen))
-              (then
-                (local.set $__mc6_len
-                  (i32.shl
-                    (i32.sub (local.get $__inl14_stateLen) (local.get $__inl14_j2))
-                    (i32.const 3)
+    )
+    (local.set $__inl13_x
+      (f64.mul (local.get $inl6_dt) (local.get $inl6_dt))
+    )
+    (local.set $__inl13_x
+      (f64.add
+        (f64.const 1)
+        (f64.mul
+          (local.get $__inl13_x)
+          (f64.add
+            (f64.const -0.5)
+            (f64.mul
+              (local.get $__inl13_x)
+              (f64.add
+                (f64.const 0.041666666666666664)
+                (f64.mul
+                  (local.get $__inl13_x)
+                  (f64.add
+                    (f64.const -0.001388888888888889)
+                    (f64.mul
+                      (local.get $__inl13_x)
+                      (f64.add
+                        (f64.const 0.0000248015873015873)
+                        (f64.mul (local.get $__inl13_x) (f64.const -2.7557319223985894e-7))
+                      )
+                    )
                   )
                 )
-                (local.set $__mc6_dst
-                  (i32.add
-                    (local.get $__inl14___inl12_s)
-                    (i32.shl (local.get $__inl14_j2) (i32.const 3))
-                  )
-                )
-                (memory.fill
-                  (local.get $__mc6_dst)
-                  (i32.const 0)
-                  (local.get $__mc6_len)
-                )
-                (local.set $__inl14_j2 (local.get $__inl14_stateLen))
               )
             )
           )
-          (local.set $__inl14_t0
-            (call $__time_ms (i32.const 1))
-          )
-          (call $processCascade
-            (local.get $__inl14___inl12_n)
-            (local.get $__inl14___inl12___pe0)
-            (local.get $__inl14___inl12_s)
-            (local.get $__inl14__pg1)
-            (local.get $__inl14___pe1)
-          ) drop
-          (local.set $__inl14_tw19
-            (f64.sub
-              (call $__time_ms (i32.const 1))
-              (local.get $__inl14_t0)
-            )
-          )
-          (f64.store (local.get $__iv7_0) (local.get $__inl14_tw19))
-          (local.set $__inl14_i1
-            (i32.add (local.get $__inl14_i1) (i32.const 1))
-          )
-          (local.set $__iv7_0
-            (i32.add (local.get $__iv7_0) (i32.const 8))
-          )
-          (br $__inl14L_loop16)
         )
       )
     )
-    (local.set $__inl14_i1 (i32.const 1))
-    (local.set $__inl14___inl12_n
+    (local.set $__inl12_x2
+      (f64.mul (local.get $inl6_dt) (local.get $inl6_dt))
+    )
+    (local.set $inl6_dt
+      (f64.mul
+        (local.get $inl6_dt)
+        (f64.add
+          (f64.const 1)
+          (f64.mul
+            (local.get $__inl12_x2)
+            (f64.add
+              (f64.const -0.16666666666666666)
+              (f64.mul
+                (local.get $__inl12_x2)
+                (f64.add
+                  (f64.const 0.008333333333333333)
+                  (f64.mul
+                    (local.get $__inl12_x2)
+                    (f64.add
+                      (f64.const -0.0001984126984126984)
+                      (f64.mul
+                        (local.get $__inl12_x2)
+                        (f64.add
+                          (f64.const 0.0000027557319223985893)
+                          (f64.mul (local.get $__inl12_x2) (f64.const -2.505210838544172e-8))
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+    (local.set $__inl12_x2 (f64.const 1))
+    (local.set $inl11_half
+      (i32.shr_s (local.get $_pg0) (i32.const 1))
+    )
+    (block $brk8
+      (loop $loop8
+        (br_if $brk8
+          (i32.eqz
+            (i32.lt_s (local.get $inl12_k) (local.get $inl11_half))
+          )
+        )
+        (f64.store
+          (i32.add
+            (local.get $__pe2)
+            (local.tee $__pe4
+              (i32.shl (local.get $inl12_k) (i32.const 3))
+            )
+          )
+          (local.get $__inl12_x2)
+        )
+        (f64.store
+          (i32.add (local.get $__pe3) (local.get $__pe4))
+          (local.get $inl10_ci)
+        )
+        (local.set $inl14_ni
+          (f64.add
+            (f64.mul (local.get $__inl12_x2) (local.get $inl6_dt))
+            (f64.mul (local.get $inl10_ci) (local.get $__inl13_x))
+          )
+        )
+        (local.set $__inl12_x2
+          (f64.sub
+            (f64.mul (local.get $__inl12_x2) (local.get $__inl13_x))
+            (f64.mul (local.get $inl10_ci) (local.get $inl6_dt))
+          )
+        )
+        (local.set $inl10_ci (local.get $inl14_ni))
+        (local.set $inl12_k
+          (i32.add (local.get $inl12_k) (i32.const 1))
+        )
+        (br $loop8)
+      )
+    )
+    (block $brk11
+      (loop $loop11
+        (br_if $brk11
+          (i32.eqz
+            (i32.lt_s (local.get $i) (i32.const 5))
+          )
+        )
+        (local.set $inl11_half (i32.const 0))
+        (block
+          (local.set $__simd_bound1
+            (i32.and (local.get $_pg0) (i32.const -2))
+          )
+          (block $__simd_brk1
+            (loop $__simd_loop1
+              (br_if $__simd_brk1
+                (i32.eqz
+                  (i32.lt_s (local.get $inl11_half) (local.get $__simd_bound1))
+                )
+              )
+              (local.set $inl6_dt__v
+                (v128.load
+                  (i32.add
+                    (local.get $__inl14_n)
+                    (local.tee $inl12_k
+                      (i32.shl (local.get $inl11_half) (i32.const 3))
+                    )
+                  )
+                )
+              )
+              (v128.store
+                (i32.add (local.get $__inl14___pe0) (local.get $inl12_k))
+                (local.get $inl6_dt__v)
+              )
+              (v128.store
+                (i32.add (local.get $__inl14_s) (local.get $inl12_k))
+                (f64x2.splat (f64.const 0))
+              )
+              (local.set $inl11_half
+                (i32.add (local.get $inl11_half) (i32.const 2))
+              )
+              (br $__simd_loop1)
+            )
+          )
+          (block $brk12
+            (loop $loop12
+              (br_if $brk12
+                (i32.eqz
+                  (i32.lt_s (local.get $inl11_half) (local.get $_pg0))
+                )
+              )
+              (local.set $inl6_dt
+                (f64.load
+                  (i32.add
+                    (local.get $__inl14_n)
+                    (local.tee $inl12_k
+                      (i32.shl (local.get $inl11_half) (i32.const 3))
+                    )
+                  )
+                )
+              )
+              (f64.store
+                (i32.add (local.get $__inl14___pe0) (local.get $inl12_k))
+                (local.get $inl6_dt)
+              )
+              (f64.store
+                (i32.add (local.get $__inl14_s) (local.get $inl12_k))
+                (f64.const 0)
+              )
+              (local.set $inl11_half
+                (i32.add (local.get $inl11_half) (i32.const 1))
+              )
+              (br $loop12)
+            )
+          )
+        )
+        (call $fft
+          (local.get $__inl14___pe0)
+          (local.get $__inl14_s)
+          (local.get $__pe2)
+          (local.get $__pe3)
+          (local.get $_pg0)
+        ) drop
+        (local.set $i
+          (i32.add (local.get $i) (i32.const 1))
+        )
+        (br $loop11)
+      )
+    )
+    (local.set $inl11_half
+      (call $__alloc_hdr_n_d_d_1
+        (local.tee $inl11_half
+          (i32.shl (local.get $_pg1) (i32.const 3))
+        )
+        (local.get $inl11_half)
+      )
+    )
+    (block
+      (local.set $__iv3_0
+        (i32.add
+          (local.get $inl11_half)
+          (i32.shl (local.get $i5) (i32.const 3))
+        )
+      )
+      (block $brk17
+        (loop $loop17
+          (br_if $brk17
+            (i32.eqz
+              (i32.lt_s (local.get $i5) (local.get $_pg1))
+            )
+          )
+          (local.set $inl12_k (i32.const 0))
+          (block
+            (local.set $__simd_bound2
+              (i32.and (local.get $_pg0) (i32.const -2))
+            )
+            (block $__simd_brk2
+              (loop $__simd_loop2
+                (br_if $__simd_brk2
+                  (i32.eqz
+                    (i32.lt_s (local.get $inl12_k) (local.get $__simd_bound2))
+                  )
+                )
+                (local.set $inl6_dt__v
+                  (v128.load
+                    (i32.add
+                      (local.get $__inl14_n)
+                      (local.tee $__pe4
+                        (i32.shl (local.get $inl12_k) (i32.const 3))
+                      )
+                    )
+                  )
+                )
+                (v128.store
+                  (i32.add (local.get $__inl14___pe0) (local.get $__pe4))
+                  (local.get $inl6_dt__v)
+                )
+                (v128.store
+                  (i32.add (local.get $__inl14_s) (local.get $__pe4))
+                  (f64x2.splat (f64.const 0))
+                )
+                (local.set $inl12_k
+                  (i32.add (local.get $inl12_k) (i32.const 2))
+                )
+                (br $__simd_loop2)
+              )
+            )
+            (block $brk18
+              (loop $loop18
+                (br_if $brk18
+                  (i32.eqz
+                    (i32.lt_s (local.get $inl12_k) (local.get $_pg0))
+                  )
+                )
+                (local.set $inl6_dt
+                  (f64.load
+                    (i32.add
+                      (local.get $__inl14_n)
+                      (local.tee $__pe4
+                        (i32.shl (local.get $inl12_k) (i32.const 3))
+                      )
+                    )
+                  )
+                )
+                (f64.store
+                  (i32.add (local.get $__inl14___pe0) (local.get $__pe4))
+                  (local.get $inl6_dt)
+                )
+                (f64.store
+                  (i32.add (local.get $__inl14_s) (local.get $__pe4))
+                  (f64.const 0)
+                )
+                (local.set $inl12_k
+                  (i32.add (local.get $inl12_k) (i32.const 1))
+                )
+                (br $loop18)
+              )
+            )
+          )
+          (local.set $__inl13_x
+            (call $__time_ms (i32.const 1))
+          )
+          (call $fft
+            (local.get $__inl14___pe0)
+            (local.get $__inl14_s)
+            (local.get $__pe2)
+            (local.get $__pe3)
+            (local.get $_pg0)
+          ) drop
+          (local.set $__inl12_x2
+            (f64.sub
+              (call $__time_ms (i32.const 1))
+              (local.get $__inl13_x)
+            )
+          )
+          (f64.store (local.get $__iv3_0) (local.get $__inl12_x2))
+          (local.set $i5
+            (i32.add (local.get $i5) (i32.const 1))
+          )
+          (local.set $__iv3_0
+            (i32.add (local.get $__iv3_0) (i32.const 8))
+          )
+          (br $loop17)
+        )
+      )
+    )
+    (local.set $__inl14_n (local.get $inl11_half))
+    (local.set $__inl14_s (i32.const 1))
+    (local.set $__pe2
       (i32.shr_u
         (i32.load
-          (i32.sub (local.get $__inl14_j) (i32.const 8))
+          (i32.sub (local.get $inl11_half) (i32.const 8))
         )
         (i32.const 3)
       )
     )
     (block
-      (local.set $__iv8_0
+      (local.set $__iv4_0
         (i32.add
-          (local.get $__inl14_j)
-          (i32.shl (local.get $__inl14_i1) (i32.const 3))
+          (local.get $__inl14_n)
+          (i32.shl (local.get $__inl14_s) (i32.const 3))
         )
       )
-      (block $__inl14L___inl9L_brk0
-        (loop $__inl14L___inl9L_loop0
-          (br_if $__inl14L___inl9L_brk0
+      (block $__inl9L_brk0
+        (loop $__inl9L_loop0
+          (br_if $__inl9L_brk0
             (i32.eqz
-              (i32.lt_s (local.get $__inl14_i1) (local.get $__inl14___inl12_n))
+              (i32.lt_s (local.get $__inl14_s) (local.get $__pe2))
             )
           )
-          (local.set $__inl14_t0
-            (f64.load (local.get $__iv8_0))
+          (local.set $inl6_dt
+            (f64.load (local.get $__iv4_0))
           )
-          (local.set $__inl14___inl12___pe0
-            (i32.sub (local.get $__inl14_i1) (i32.const 1))
+          (local.set $__pe3
+            (i32.sub (local.get $__inl14_s) (i32.const 1))
           )
-          (block $__inl14L___inl9L_brk2
-            (loop $__inl14L___inl9L_loop2
-              (br_if $__inl14L___inl9L_brk2
+          (block $__inl9L_brk2
+            (loop $__inl9L_loop2
+              (br_if $__inl9L_brk2
                 (i32.eqz
                   (i32.and
-                    (i32.ge_s (local.get $__inl14___inl12___pe0) (i32.const 0))
+                    (i32.ge_s (local.get $__pe3) (i32.const 0))
                     (f64.gt
                       (f64.load
-                        (local.tee $__inl14___inl12_s
+                        (local.tee $inl11_half
                           (i32.add
-                            (local.get $__inl14_j)
-                            (i32.shl (local.get $__inl14___inl12___pe0) (i32.const 3))
+                            (local.get $__inl14_n)
+                            (i32.shl (local.get $__pe3) (i32.const 3))
                           )
                         )
                       )
-                      (local.get $__inl14_t0)
+                      (local.get $inl6_dt)
                     )
                   )
                 )
               )
               (f64.store offset=8
-                (local.get $__inl14___inl12_s)
-                (f64.load (local.get $__inl14___inl12_s))
+                (local.get $inl11_half)
+                (f64.load (local.get $inl11_half))
               )
-              (local.set $__inl14___inl12___pe0
-                (i32.sub (local.get $__inl14___inl12___pe0) (i32.const 1))
+              (local.set $__pe3
+                (i32.sub (local.get $__pe3) (i32.const 1))
               )
-              (br $__inl14L___inl9L_loop2)
+              (br $__inl9L_loop2)
             )
           )
           (f64.store offset=8
             (i32.add
-              (local.get $__inl14_j)
-              (i32.shl (local.get $__inl14___inl12___pe0) (i32.const 3))
+              (local.get $__inl14_n)
+              (i32.shl (local.get $__pe3) (i32.const 3))
             )
-            (local.get $__inl14_t0)
+            (local.get $inl6_dt)
           )
-          (local.set $__inl14_i1
-            (i32.add (local.get $__inl14_i1) (i32.const 1))
+          (local.set $__inl14_s
+            (i32.add (local.get $__inl14_s) (i32.const 1))
           )
-          (local.set $__iv8_0
-            (i32.add (local.get $__iv8_0) (i32.const 8))
+          (local.set $__iv4_0
+            (i32.add (local.get $__iv4_0) (i32.const 8))
           )
-          (br $__inl14L___inl9L_loop0)
+          (br $__inl9L_loop0)
         )
       )
     )
-    (local.set $__inl14_j
+    (local.set $__inl14_n
       (select
         (i32.wrap_i64
           (i64.trunc_sat_f64_s
-            (local.tee $__inl14_t0
+            (local.tee $inl6_dt
               (f64.mul
                 (f64.load
                   (i32.add
-                    (local.get $__inl14_j)
+                    (local.get $__inl14_n)
                     (i32.shl
                       (i32.shr_s
                         (i32.sub
                           (i32.shr_u
                             (i32.load
-                              (i32.sub (local.get $__inl14_j) (i32.const 8))
+                              (i32.sub (local.get $__inl14_n) (i32.const 8))
                             )
                             (i32.const 3)
                           )
@@ -3670,34 +3194,34 @@
           )
         )
         (i32.const 0)
-        (f64.ne (local.get $__inl14_t0) (f64.const Infinity))
+        (f64.ne (local.get $inl6_dt) (f64.const Infinity))
       )
     )
-    (local.set $__inl14___inl12_n (i32.const 0))
-    (local.set $__inl14_t0
+    (local.set $__inl14_s (i32.const 0))
+    (local.set $inl6_dt
       (call $__mkptr
         (i32.const 2)
         (i32.const 0)
-        (local.get $__inl14___pe1)
+        (local.get $__inl14___pe0)
       )
     )
-    (local.set $__inl14___inl12___pe0
+    (local.set $__pe2
       (call $__ptr_offset
-        (i64.reinterpret_f64 (local.get $__inl14_t0))
+        (i64.reinterpret_f64 (local.get $inl6_dt))
       )
     )
-    (local.set $__inl14___inl12_s
+    (local.set $__pe3
       (call $__alloc (i32.const 16))
     )
     (i32.store
-      (local.get $__inl14___inl12_s)
+      (local.get $__pe3)
       (i32.shl
         (i32.trunc_sat_f64_s
           (f64.mul
             (f64.convert_i32_s
               (i32.shr_u
                 (i32.load
-                  (i32.sub (local.get $__inl14___pe1) (i32.const 8))
+                  (i32.sub (local.get $__inl14___pe0) (i32.const 8))
                 )
                 (i32.const 3)
               )
@@ -3709,411 +3233,430 @@
       )
     )
     (i32.store offset=4
-      (local.get $__inl14___inl12_s)
+      (local.get $__pe3)
       (i32.add
-        (local.get $__inl14___inl12___pe0)
+        (local.get $__pe2)
         (i32.trunc_sat_f64_s (f64.const 0))
       )
     )
     (i32.store offset=8
-      (local.get $__inl14___inl12_s)
-      (local.get $__inl14___inl12___pe0)
+      (local.get $__pe3)
+      (local.get $__pe2)
     )
-    (local.set $__inl14_i1 (local.get $__inl14___inl12_s))
-    (local.set $__inl14___inl12___pe0 (i32.const -2128831035))
-    (local.set $__inl14___inl12_s
+    (local.set $__inl14___pe0 (local.get $__pe3))
+    (local.set $__pe2 (i32.const -2128831035))
+    (local.set $__pe3
       (i32.shr_u
-        (i32.load (local.get $__inl14___inl12_s))
+        (i32.load (local.get $__pe3))
         (i32.const 2)
       )
     )
-    (block $__inl14L___inl10L_brk4
-      (loop $__inl14L___inl10L_loop4
-        (br_if $__inl14L___inl10L_brk4
+    (block $__inl10L_brk4
+      (loop $__inl10L_loop4
+        (br_if $__inl10L_brk4
           (i32.eqz
-            (i32.lt_s (local.get $__inl14___inl12_n) (local.get $__inl14___inl12_s))
+            (i32.lt_s (local.get $__inl14_s) (local.get $__pe3))
           )
         )
-        (local.set $__inl14___inl12___pe0
+        (local.set $__pe2
           (i32.mul
             (i32.xor
-              (local.get $__inl14___inl12___pe0)
+              (local.get $__pe2)
               (i32.load
                 (i32.add
-                  (i32.load offset=4 (local.get $__inl14_i1))
-                  (i32.shl (local.get $__inl14___inl12_n) (i32.const 2))
+                  (i32.load offset=4 (local.get $__inl14___pe0))
+                  (i32.shl (local.get $__inl14_s) (i32.const 2))
                 )
               )
             )
             (i32.const 16777619)
           )
         )
-        (local.set $__inl14___inl12_n
-          (i32.add (local.get $__inl14___inl12_n) (i32.const 256))
+        (local.set $__inl14_s
+          (i32.add (local.get $__inl14_s) (i32.const 256))
         )
-        (br $__inl14L___inl10L_loop4)
+        (br $__inl10L_loop4)
       )
     )
-    (local.set $__inl14_i1 (local.get $__inl14___inl12___pe0))
-    (local.set $__inl14__pg0 (i32.const 0))
-    (local.set $__inl14__pg1 (i32.const 0))
-    (local.set $__inl14__pg2 (i32.const 0))
-    (local.set $__inl14___inl12_n (i32.const 0))
-    (local.set $__inl14___inl12___pe0 (i32.const 0))
-    (local.set $__inl14___inl12_s (i32.const 1))
-    (local.set $__inl14___inl11___inl2_ptr
+    (local.set $__inl14___pe0 (local.get $__pe2))
+    (local.set $_pg0
+      (i32.shr_s
+        (select
+          (i32.wrap_i64
+            (i64.trunc_sat_f64_s
+              (local.tee $inl6_dt
+                (f64.mul
+                  (f64.convert_i32_s (local.get $_pg0))
+                  (f64.const 16)
+                )
+              )
+            )
+          )
+          (i32.const 0)
+          (f64.ne (local.get $inl6_dt) (f64.const Infinity))
+        )
+        (i32.const 1)
+      )
+    )
+    (local.set $_pg1 (i32.const 0))
+    (local.set $__inl14_s (i32.const 0))
+    (local.set $__pe2 (i32.const 0))
+    (local.set $__pe3 (i32.const 0))
+    (local.set $inl11_half (i32.const 0))
+    (local.set $inl12_k (i32.const 1))
+    (local.set $__inl11___inl2_ptr
       (i64.reinterpret_f64
         (block
           (result f64)
-          (local.set $__inl14_t0
+          (local.set $inl6_dt
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000044))
             )
           )
-          (local.set $__inl14___pe1
+          (local.set $__pe4
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14_t0))
+              (i64.reinterpret_f64 (local.get $inl6_dt))
             )
           )
-          (local.set $__inl14_tw19
-            (call $__i32_to_str (local.get $__inl14_j))
+          (local.set $__inl13_x
+            (call $__i32_to_str (local.get $__inl14_n))
           )
-          (local.set $__inl14_j
+          (local.set $__inl14_n
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14_tw19))
+              (i64.reinterpret_f64 (local.get $__inl13_x))
             )
           )
-          (local.set $__inl14___inl11_s2
+          (local.set $__inl12_x2
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000058))
             )
           )
-          (local.set $__inl14_stateLen
+          (local.set $i
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s2))
+              (i64.reinterpret_f64 (local.get $__inl12_x2))
             )
           )
-          (local.set $__inl14___inl11_s3
-            (call $__i32_to_str (local.get $__inl14_i1))
+          (local.set $inl10_ci
+            (call $__i32_to_str (local.get $__inl14___pe0))
           )
-          (local.set $__inl14_i1
+          (local.set $__inl14___pe0
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s3))
+              (i64.reinterpret_f64 (local.get $inl10_ci))
             )
           )
-          (local.set $__inl14___inl11_s4
+          (local.set $inl14_ni
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa00010000006c))
             )
           )
-          (local.set $__inl14_j2
+          (local.set $i5
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s4))
+              (i64.reinterpret_f64 (local.get $inl14_ni))
             )
           )
-          (local.set $__inl14___inl11_s5
-            (call $__i32_to_str (i32.const 480000))
+          (local.set $__inl11_s5
+            (call $__i32_to_str (local.get $_pg0))
           )
-          (local.set $__inl14___inl11_sl16
+          (local.set $_pg0
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s5))
+              (i64.reinterpret_f64 (local.get $__inl11_s5))
             )
           )
-          (local.set $__inl14___inl11_s6
+          (local.set $__inl11_s6
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000080))
             )
           )
-          (local.set $__inl14___inl11_sl17
+          (local.set $__inl11_sl17
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s6))
+              (i64.reinterpret_f64 (local.get $__inl11_s6))
             )
           )
-          (local.set $__inl14___inl11_s7
-            (call $__i32_to_str (i32.const 8))
+          (local.set $__inl11_s7
+            (call $__i32_to_str (i32.const 16))
           )
-          (local.set $__inl14___inl11_sl18
+          (local.set $__inl11_sl18
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s7))
+              (i64.reinterpret_f64 (local.get $__inl11_s7))
             )
           )
-          (local.set $__inl14___inl11_s8
+          (local.set $__inl11_s8
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000090))
             )
           )
-          (local.set $__inl14___inl11_sl19
+          (local.set $__inl11_sl19
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s8))
+              (i64.reinterpret_f64 (local.get $__inl11_s8))
             )
           )
-          (local.set $__inl14___inl11_s9
+          (local.set $__inl11_s9
             (call $__i32_to_str (i32.const 21))
           )
-          (local.set $__inl14___inl11_sl20
+          (local.set $__inl11_sl20
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s9))
+              (i64.reinterpret_f64 (local.get $__inl11_s9))
             )
           )
-          (local.set $__inl14___inl11_s10
+          (local.set $__inl11_s10
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa400000000000))
             )
           )
-          (local.set $__inl14___inl11_sl21
+          (local.set $__inl11_sl21
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl14___inl11_s10))
+              (i64.reinterpret_f64 (local.get $__inl11_s10))
             )
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___pe1) (local.get $__inl14_j))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__pe4) (local.get $__inl14_n))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14_stateLen))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $i))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14_i1))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl14___pe0))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14_j2))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $i5))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl16))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $_pg0))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl17))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl17))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl18))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl18))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl19))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl19))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl20))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl20))
           )
-          (local.set $__inl14___inl11_st22
-            (i32.add (local.get $__inl14___inl11_st22) (local.get $__inl14___inl11_sl21))
+          (local.set $__inl11_st22
+            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl21))
           )
           (if
             (result f64)
-            (i32.eqz (local.get $__inl14___inl11_st22))
+            (i32.eqz (local.get $__inl11_st22))
             (then (f64.const nan:0x7FFA400000000000))
             (else
-              (local.set $__inl14__pg0
+              (local.set $_pg1
                 (call $__alloc
-                  (i32.add (i32.const 4) (local.get $__inl14___inl11_st22))
+                  (i32.add (i32.const 4) (local.get $__inl11_st22))
                 )
               )
-              (i32.store (local.get $__inl14__pg0) (local.get $__inl14___inl11_st22))
-              (local.set $__inl14__pg0
-                (i32.add (local.get $__inl14__pg0) (i32.const 4))
+              (i32.store (local.get $_pg1) (local.get $__inl11_st22))
+              (local.set $_pg1
+                (i32.add (local.get $_pg1) (i32.const 4))
               )
-              (local.set $__inl14__pg1 (local.get $__inl14__pg0))
+              (local.set $__inl14_s (local.get $_pg1))
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14_t0))
-                (local.get $__inl14__pg0)
-                (local.get $__inl14___pe1)
+                (i64.reinterpret_f64 (local.get $inl6_dt))
+                (local.get $_pg1)
+                (local.get $__pe4)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg0) (local.get $__inl14___pe1))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14_tw19))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14_j)
-              )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14_j))
+              (local.set $__inl14_s
+                (i32.add (local.get $_pg1) (local.get $__pe4))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s2))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14_stateLen)
+                (i64.reinterpret_f64 (local.get $__inl13_x))
+                (local.get $__inl14_s)
+                (local.get $__inl14_n)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14_stateLen))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s3))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14_i1)
-              )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14_i1))
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl14_n))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s4))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14_j2)
+                (i64.reinterpret_f64 (local.get $__inl12_x2))
+                (local.get $__inl14_s)
+                (local.get $i)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14_j2))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s5))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl16)
-              )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl16))
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $i))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s6))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl17)
+                (i64.reinterpret_f64 (local.get $inl10_ci))
+                (local.get $__inl14_s)
+                (local.get $__inl14___pe0)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl17))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s7))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl18)
-              )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl18))
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl14___pe0))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s8))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl19)
+                (i64.reinterpret_f64 (local.get $inl14_ni))
+                (local.get $__inl14_s)
+                (local.get $i5)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl19))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s9))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl20)
-              )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl20))
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $i5))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl14___inl11_s10))
-                (local.get $__inl14__pg1)
-                (local.get $__inl14___inl11_sl21)
+                (i64.reinterpret_f64 (local.get $__inl11_s5))
+                (local.get $__inl14_s)
+                (local.get $_pg0)
               )
-              (local.set $__inl14__pg1
-                (i32.add (local.get $__inl14__pg1) (local.get $__inl14___inl11_sl21))
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $_pg0))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl11_s6))
+                (local.get $__inl14_s)
+                (local.get $__inl11_sl17)
+              )
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl11_sl17))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl11_s7))
+                (local.get $__inl14_s)
+                (local.get $__inl11_sl18)
+              )
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl11_sl18))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl11_s8))
+                (local.get $__inl14_s)
+                (local.get $__inl11_sl19)
+              )
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl11_sl19))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl11_s9))
+                (local.get $__inl14_s)
+                (local.get $__inl11_sl20)
+              )
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl11_sl20))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl11_s10))
+                (local.get $__inl14_s)
+                (local.get $__inl11_sl21)
+              )
+              (local.set $__inl14_s
+                (i32.add (local.get $__inl14_s) (local.get $__inl11_sl21))
               )
               (call $__mkptr
                 (i32.const 4)
                 (i32.const 0)
-                (local.get $__inl14__pg0)
+                (local.get $_pg1)
               )
             )
           )
         )
       )
     )
-    (local.set $__inl14_j (i32.const 0))
-    (local.set $__inl14_i1 (i32.const 0))
-    (local.set $__inl14__pg0 (i32.const 0))
-    (local.set $__inl14__pg1
+    (local.set $_pg0 (i32.const 0))
+    (local.set $_pg1 (i32.const 0))
+    (local.set $__inl14_n (i32.const 0))
+    (local.set $__inl14___pe0
       (call $__alloc (i32.const 12))
     )
-    (local.set $__inl14___pe1
+    (local.set $__inl14_s
       (i32.and
         (i32.wrap_i64
-          (i64.shr_u (local.get $__inl14___inl11___inl2_ptr) (i64.const 32))
+          (i64.shr_u (local.get $__inl11___inl2_ptr) (i64.const 32))
         )
         (i32.const 32767)
       )
     )
     (if
-      (i32.and (local.get $__inl14___pe1) (i32.const 16384))
+      (i32.and (local.get $__inl14_s) (i32.const 16384))
       (then
-        (local.set $__inl14_j
-          (i32.and (local.get $__inl14___pe1) (i32.const 7))
+        (local.set $_pg0
+          (i32.and (local.get $__inl14_s) (i32.const 7))
         )
-        (local.set $__inl14__pg0
-          (call $__alloc (local.get $__inl14_j))
+        (local.set $__inl14_n
+          (call $__alloc (local.get $_pg0))
         )
-        (local.set $__inl14_i1 (i32.const 0))
-        (block $__inl14L___inl11L___inl2L_done
-          (loop $__inl14L___inl11L___inl2L_loop
-            (br_if $__inl14L___inl11L___inl2L_done
-              (i32.ge_s (local.get $__inl14_i1) (local.get $__inl14_j))
+        (local.set $_pg1 (i32.const 0))
+        (block $__inl11L___inl2L_done
+          (loop $__inl11L___inl2L_loop
+            (br_if $__inl11L___inl2L_done
+              (i32.ge_s (local.get $_pg1) (local.get $_pg0))
             )
             (i32.store8
-              (i32.add (local.get $__inl14__pg0) (local.get $__inl14_i1))
-              (block $__inl14L___inl11L___inl5
+              (i32.add (local.get $__inl14_n) (local.get $_pg1))
+              (block $__inl11L___inl5
                 (result i32)
-                (local.set $__inl14___inl12___pe0 (local.get $__inl14_i1))
+                (local.set $inl11_half (local.get $_pg1))
                 (i32.and
                   (i32.shr_u
                     (i32.wrap_i64
-                      (i64.and (local.get $__inl14___inl11___inl2_ptr) (i64.const 4294967295))
+                      (i64.and (local.get $__inl11___inl2_ptr) (i64.const 4294967295))
                     )
-                    (i32.shl (local.get $__inl14_i1) (i32.const 3))
+                    (i32.shl (local.get $_pg1) (i32.const 3))
                   )
                   (i32.const 0xFF)
                 )
               )
             )
-            (local.set $__inl14_i1
-              (i32.add (local.get $__inl14_i1) (i32.const 1))
+            (local.set $_pg1
+              (i32.add (local.get $_pg1) (i32.const 1))
             )
-            (br $__inl14L___inl11L___inl2L_loop)
+            (br $__inl11L___inl2L_loop)
           )
         )
-        (i32.store (local.get $__inl14__pg1) (local.get $__inl14__pg0))
+        (i32.store (local.get $__inl14___pe0) (local.get $__inl14_n))
         (i32.store offset=4
-          (local.get $__inl14__pg1)
-          (local.get $__inl14_j)
+          (local.get $__inl14___pe0)
+          (local.get $_pg0)
         )
       )
       (else
         (i32.store
-          (local.get $__inl14__pg1)
-          (call $__ptr_offset (local.get $__inl14___inl11___inl2_ptr))
+          (local.get $__inl14___pe0)
+          (call $__ptr_offset (local.get $__inl11___inl2_ptr))
         )
         (i32.store offset=4
-          (local.get $__inl14__pg1)
-          (block $__inl14L___inl11L___inl4
+          (local.get $__inl14___pe0)
+          (block $__inl11L___inl4
             (result i32)
-            (local.set $__inl14___inl11___inl4_ptr (local.get $__inl14___inl11___inl2_ptr))
+            (local.set $__inl11___inl4_ptr (local.get $__inl11___inl2_ptr))
             (if
               (i32.ne
                 (i32.and
                   (i32.wrap_i64
-                    (i64.shr_u (local.get $__inl14___inl11___inl4_ptr) (i64.const 47))
+                    (i64.shr_u (local.get $__inl11___inl4_ptr) (i64.const 47))
                   )
                   (i32.const 15)
                 )
                 (i32.const 4)
               )
               (then
-                (br $__inl14L___inl11L___inl4 (i32.const 0))
+                (br $__inl11L___inl4 (i32.const 0))
               )
             )
-            (local.set $__inl14___inl12_n
+            (local.set $__pe3
               (i32.and
                 (i32.wrap_i64
-                  (i64.shr_u (local.get $__inl14___inl11___inl4_ptr) (i64.const 32))
+                  (i64.shr_u (local.get $__inl11___inl4_ptr) (i64.const 32))
                 )
                 (i32.const 32767)
               )
             )
             (if
-              (i32.and (local.get $__inl14___inl12_n) (i32.const 16384))
+              (i32.and (local.get $__pe3) (i32.const 16384))
               (then
-                (br $__inl14L___inl11L___inl4
-                  (i32.and (local.get $__inl14___inl12_n) (i32.const 7))
+                (br $__inl11L___inl4
+                  (i32.and (local.get $__pe3) (i32.const 7))
                 )
               )
             )
-            (local.set $__inl14__pg2
-              (call $__ptr_offset (local.get $__inl14___inl11___inl4_ptr))
+            (local.set $__pe2
+              (call $__ptr_offset (local.get $__inl11___inl4_ptr))
             )
             (if
               (result i32)
-              (i32.ge_u (local.get $__inl14__pg2) (i32.const 4))
+              (i32.ge_u (local.get $__pe2) (i32.const 4))
               (then
                 (i32.load
-                  (i32.sub (local.get $__inl14__pg2) (i32.const 4))
+                  (i32.sub (local.get $__pe2) (i32.const 4))
                 )
               )
               (else (i32.const 0))
@@ -4124,34 +3667,34 @@
     )
     (drop
       (call $__fd_write
-        (local.get $__inl14___inl12_s)
-        (local.get $__inl14__pg1)
+        (local.get $inl12_k)
+        (local.get $__inl14___pe0)
         (i32.const 1)
-        (i32.add (local.get $__inl14__pg1) (i32.const 8))
+        (i32.add (local.get $__inl14___pe0) (i32.const 8))
       )
     )
-    (local.set $__inl14_j (i32.const 1))
-    (local.set $__inl14_i1 (i32.const 10))
-    (local.set $__inl14__pg0
+    (local.set $_pg0 (i32.const 1))
+    (local.set $_pg1 (i32.const 10))
+    (local.set $__inl14_n
       (call $__alloc (i32.const 13))
     )
     (i32.store8
-      (local.tee $__inl14__pg1
-        (i32.add (local.get $__inl14__pg0) (i32.const 12))
+      (local.tee $__inl14___pe0
+        (i32.add (local.get $__inl14_n) (i32.const 12))
       )
       (i32.const 10)
     )
-    (i32.store (local.get $__inl14__pg0) (local.get $__inl14__pg1))
+    (i32.store (local.get $__inl14_n) (local.get $__inl14___pe0))
     (i32.store offset=4
-      (local.get $__inl14__pg0)
+      (local.get $__inl14_n)
       (i32.const 1)
     )
     (drop
       (call $__fd_write
         (i32.const 1)
-        (local.get $__inl14__pg0)
+        (local.get $__inl14_n)
         (i32.const 1)
-        (i32.add (local.get $__inl14__pg0) (i32.const 8))
+        (i32.add (local.get $__inl14_n) (i32.const 8))
       )
     )
     (f64.const nan:0x7FF8000200000000)

@@ -5,37 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JZ bench</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<link rel="stylesheet" href="../site.css">
 <style>
 /* Swiss B&W, same system as ../repl */
-@font-face {
-  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
-  src: url(../examples/lib/jost.woff2) format('woff2');
-}
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
   --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ink: #000; --paper: #fff; --mid: #757575; --soft: #595959; --faint: #e8e8e8;
-  --band: #0a0a0a; --red: #c00;
+  --ink: #f0f0f2; --paper: #000; --mid: #8a8a93; --soft: #b7b7c1; --faint: #1c1c25;
+  --band: #000; --red: #ff5a5a;
   --padx: 32px;
 }
 html { scroll-behavior: smooth; }
 body { background: var(--paper); color: var(--ink); font-family: var(--sans);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
-header { background: var(--band); color: var(--paper); display: flex; align-items: center; min-height: 44px; padding: 0 var(--padx); }
-.wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
-.wordmark .mark { font-weight: 700; color: #fff; }
-.wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
-header .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
-header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
-header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
-header nav a:hover { opacity: 1; }
-header .gh { display: flex; }
+/* masthead styling is shared via ../site.css (.masthead); centre its content to the main column width */
+.masthead { padding-inline: max(var(--padx), calc(50% - 468px)); }
 
-main { max-width: 1080px; margin: 0 auto; padding: 0 var(--padx) 90px; }
+main { max-width: 1000px; margin: 0 auto; padding: 0 var(--padx) 90px; }
 section { margin-top: 64px; }
 h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 18px; }
+h2 .info { font-size: 13px; font-weight: 400; color: var(--mid); cursor: help; vertical-align: 1px; margin-left: 2px; transition: color .14s; }
+h2 .info:hover, h2 .info:focus-visible { color: var(--ink); }
 p { font-size: 14px; line-height: 1.55; max-width: 70ch; }
 p + p { margin-top: 10px; }
 a { color: var(--ink); }
@@ -112,6 +104,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--mid); }
 .card h3 .play ~ .play { margin-left: 10px; }
 .card h3 .play .ico { display: block; }
+.card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src pushed to the right, after the tag + size */
 .card h3 .play:hover { background: none; color: var(--ink); }
 .card .row { grid-template-columns: 124px 1fr 132px; font-size: 11.5px; padding: 2.5px 0; }
 .card .bar { height: 12px; }
@@ -127,8 +120,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 </head>
 <body>
 
-<header>
-  <h1 class="wordmark" style="font-size:19px"><span class="mark">JZ</span><span class="sub">bench</span></h1>
+<header class="masthead">
+  <a class="wordmark" href="../"><span class="mark">JZ</span><span class="sub">bench</span></a>
   <nav>
     <a href="../repl/">repl</a>
     <a href="../examples/">examples</a>
@@ -152,12 +145,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 </div>
 
 <section id="speed">
-  <h2>Corpus</h2>
+  <h2>Corpus <span class="info" tabindex="0" data-tip="Each bar is the geometric mean, across the corpus, of that target's median run time ÷ JZ's — normalized so JZ = 1× (lower = faster). Only cases where both produced a matching checksum are counted; native is shown as the median (its distribution is bimodal). Times are medians of repeated runs on the reference machine.">&#9432;</span></h2>
   <div id="geomean"></div>
 </section>
 
 <section id="cases">
-  <h2>Per case</h2>
+  <h2>Cases</h2>
   <div class="chips" id="chips"></div>
   <div class="cards" id="cards"></div>
 </section>
@@ -179,8 +172,8 @@ const $ = id => document.getElementById(id)
 // Invocation details live in the methodology table, not in row labels.
 const BANDS = [
   ['js', 'JS'],
-  ['wasm', 'JS → WASM'],
-  ['native', 'Native (Reference only)'],
+  ['wasm', 'WASM'],
+  ['native', 'Native'],
 ]
 const TARGETS = {
   v8:    { label: 'Node', band: 'js' },
@@ -318,8 +311,8 @@ const renderGeomean = () => {
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
   }
   if (yours) {
-    html += `<div class="subdiv">JZ (your machine)</div>`
-    const yr = [{ label: 'JZ', sub: yours.sub, geo: 1, solid: true, strong: true }, { label: yours.label, geo: yours.geo }]
+    html += `<div class="subdiv">Your machine</div>`
+    const yr = [{ label: 'JZ', sub: yours.sub, geo: 1, solid: true, strong: true }, { label: yours.label, sub: yours.sub, geo: yours.geo }]
     for (const r of yr)
       html += rowHtml({ label: r.label, sub: r.sub, rel: r.geo, maxLin, text: fmtX(r.geo), solid: r.solid, strong: r.strong })
   }
@@ -404,10 +397,10 @@ const renderCards = () => {
   for (const c of CASES) {
     if (filter !== 'all' && FAMILY[c.id] !== filter) continue
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
-    const play = `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}`
+    const play = `<span class="actions"><button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}</span>`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
-      <h3>${esc(c.id)}${play}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}</h3>
+      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
       ${cardRows(c)}
     </div>`
   }

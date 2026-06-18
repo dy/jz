@@ -49,15 +49,12 @@ const addMasthead = (name) => {
   const header = document.createElement('header')
   header.className = 'masthead fixed'
   // critical inline so the band never flashes unstyled before site.css resolves
-  header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#0a0a0a'
+  header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#000'
   header.innerHTML = `
-    <a class="logo" href="../../" aria-label="jz — home"><img src="../../jz.svg" width="40" height="40" alt="jz"></a>
+    <div class="wordmark"><a class="mark" href="../../">JZ</a><a class="sub" href="../">examples</a></div>
     <nav>
       <a href="../../repl/">repl</a>
-      <a href="../../floatbeat/">floatbeat</a>
-      <a href="../">examples</a>
       <a href="../../bench/">bench</a>
-      <a href="https://github.com/dy/jz#readme">docs</a>
       <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
         <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
@@ -70,7 +67,22 @@ const addMasthead = (name) => {
   if (!document.getElementById('jz-canvas-fit')) {
     const fit = document.createElement('style')
     fit.id = 'jz-canvas-fit'
-    fit.textContent = 'body > canvas:not(.gradient) { position: fixed !important; top: 64px !important; left: 0 !important; width: 100vw !important; height: calc(100vh - 128px) !important; object-fit: contain !important; }'
+    // The demo is centered to the shared site column (consistent with bench/examples/home) — not
+    // edge-to-edge. The two bands inset to the same column so the logo + controls align with the
+    // demo's edges. The fullscreen button (⛶) drops the cap so it fills the viewport. `--jz-demopad`
+    // is the symmetric inset that yields a `--jz-democol`-wide centered column.
+    fit.textContent =
+      ':root{--jz-democol:1000px;--jz-demopad:max(24px,calc(50% - 500px))}'
+      // chrome-black page — centering creates side margins, so whichever example we frame (runDemo
+      // OR a custom-hud page like mandelbrot/zzfx with its own light body) shows black beside it.
+      // This style only exists on framed standalone pages (addMasthead), never in embed.
+      + 'html,body{background:#000!important}'
+      + 'body > canvas:not(.gradient){position:fixed!important;top:64px!important;left:50%!important;'
+      + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
+      + 'height:calc(100vh - 128px)!important;object-fit:contain!important}'
+      + '.masthead.fixed{padding-inline:var(--jz-demopad)!important}'
+      + 'html.jz-full body > canvas:not(.gradient){width:100vw!important}'
+      + 'html.jz-full .masthead.fixed{padding-inline:24px!important}'
     document.head.appendChild(fit)
   }
 }
@@ -96,6 +108,8 @@ const addEdgeNav = (name) => {
     <style>
       /* No chrome — big white chevrons + label, with a soft dark outline (drop-shadow /
          text-shadow) so they stay legible on dark, light AND mid-gray frames alike. */
+      html.jz-full .jz-edge,
+      html.jz-code-open .jz-edge { display: none; }   /* fullscreen / open code = focused single view — no neighbours */
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
         display: flex; align-items: center; text-decoration: none; user-select: none;
@@ -120,6 +134,7 @@ const addEdgeNav = (name) => {
       .jz-edge-prev:hover .label { padding-left: 8px; }
       .jz-edge-next:hover .label { padding-right: 8px; }
       @media (hover: none) { .jz-edge .label { display: none; } }
+      @media (prefers-reduced-motion: reduce) { .jz-edge .chip, .jz-edge .label { transition: none; } }
     </style>`
   document.body.appendChild(wrap)
 }
@@ -198,13 +213,48 @@ const buildLUT = (stops) => {
   return t
 }
 
+// "code" toggle → a panel that slides over the demo area showing the kernel's own source. `code`
+// is a URL (e.g. './mandelbrot.js', fetched once and lazily) or literal source (anything with a
+// newline). Esc, the × , or the link itself dismisses it.
+const setupCode = (link, code) => {
+  const isUrl = !/\n/.test(code)
+  let panel = null, shown = false
+  const build = () => {
+    panel = document.createElement('div')
+    panel.className = 'jz-code-panel'
+    panel.innerHTML = `<button class="jz-code-x" aria-label="close code"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" aria-hidden="true"><path d="M5 5L19 19M19 5L5 19"/></svg></button><div class="jz-code-scroll"><pre class="jz-code-pre"><code></code></pre></div>`
+    document.body.appendChild(panel)
+    const codeEl = panel.querySelector('code')
+    if (!isUrl) codeEl.textContent = code
+    // fetch resolves (doesn't reject) on a 404/500, so guard r.ok — else the error-page HTML
+    // would be shown verbatim instead of the fallback.
+    else fetch(new URL(code, document.baseURI).href).then(r => { if (!r.ok) throw new Error(r.status); return r.text() })
+      .then(t => { codeEl.textContent = t }).catch(() => { codeEl.textContent = '// could not load source' })
+    panel.querySelector('.jz-code-x').onclick = () => toggle(false)
+    for (const ev of ['pointerdown', 'mousedown', 'click', 'touchstart', 'wheel'])
+      panel.addEventListener(ev, (e) => e.stopPropagation())
+    return panel
+  }
+  const toggle = (v) => {
+    shown = v
+    ;(panel || build()).classList.toggle('on', v)
+    link.classList.toggle('on', v)
+    link.setAttribute('aria-expanded', String(v))
+    // a focused source view — drop the prev/next chevrons (same as fullscreen) so they can't
+    // poke over the panel on a narrow (100vw-panel) viewport.
+    document.documentElement.classList.toggle('jz-code-open', v)
+  }
+  link.onclick = () => toggle(!shown)
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && shown) toggle(false) })
+}
+
 // FPS sparkline + ms/frame readout and engine toggle. Call frame(workMs?) once per rendered
 // frame with the measured kernel compute time. FPS alone lies under a vsync cap (both engines
 // peg at the refresh rate), so the HUD also shows kernel ms — the real engine gap
 // regardless of vsync. The sparkline tracks FPS over time so a stall visibly dips the line.
 // Clicking swaps engine and fires onSwitch(kind).
 // `code` (optional): the kernel source — a URL to fetch (e.g. './attractors.js') or
-// literal text (anything containing a newline). Adds a `</>` toggle that overlays it.
+// literal text (anything containing a newline). Adds a "code" link that slides it over the demo.
 // `nav` (optional): this example's name (from EXAMPLES) — adds ‹ prev / next › arrows.
 // `hint` (optional): a bottom-center caption describing the interaction; fades on first use.
 export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', meter = true, hint = '', palette = true, onPalette }) => {
@@ -216,60 +266,104 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   el.innerHTML = `
     <style>
       .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 64px; box-sizing: border-box;
-        display: flex; align-items: center; gap: 18px; padding: 0 28px; background: #0a0a0a;
+        display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: #000;
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
+      html.jz-full .jz-bar { padding-inline: 24px; }
       .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: #8a8a93; letter-spacing: .01em;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .jz-bar .jz-wiki { color: #e8e8ea; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-bar .jz-wiki:hover { color: #fff; }
-      .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
-      .jz-pal .sw { display: block; width: 100%; height: 100%; border-radius: 50%;
-        background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
-      .jz-pal:hover .sw { transform: rotate(120deg); }
-      .jz-pal.on .sw { transform: rotate(360deg); }
-      /* segmented JS|JZ switch — labels inside the track, knob slides over the active one */
-      .jz-engine { position: relative; flex: none; width: 74px; height: 30px; border: 0; padding: 0; cursor: pointer;
+      /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
+         padding-x); labels inherit Futura from the bar (a bare <button> would otherwise fall back to
+         the system UI font). */
+      .jz-engine { position: relative; flex: none; width: 76px; height: 30px; border: 0; padding: 0; cursor: pointer;
         border-radius: 15px; -webkit-appearance: none; appearance: none;
+        font-family: inherit;
         background: linear-gradient(180deg, #232323, #0c0c0c);
-        box-shadow: inset 0 2px 4px rgba(0,0,0,.8), inset 0 -1px 0 rgba(255,255,255,.05); }
+        box-shadow: inset 0 2px 4px rgba(0,0,0,.8), inset 0 -1px 0 rgba(255,255,255,.05),
+          inset 0 0 0 1px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.16); }   /* thin light outline (matches the home-page switch) so it reads on black */
       .jz-engine .knob { position: absolute; top: 3px; left: 3px; width: 35px; height: 24px; border-radius: 12px; z-index: 1;
         background: linear-gradient(180deg, #fcfcfc, #d0d0d0);
         box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 1px rgba(255,255,255,.85);
         transition: transform .24s cubic-bezier(.34,.72,.28,1.3); }
-      .jz-engine.jz .knob { transform: translateX(33px); }
-      .jz-engine .lbl-js, .jz-engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 37px; z-index: 2;
+      .jz-engine.jz .knob { transform: translateX(35px); }
+      .jz-engine .lbl-js, .jz-engine .lbl-jz { position: absolute; top: 0; height: 100%; width: 35px; z-index: 2;
         display: inline-flex; align-items: center; justify-content: center;
-        font-weight: 700; font-size: 11.5px; line-height: 1; letter-spacing: .04em;
+        font-family: inherit; font-weight: 700; font-size: 11.5px; line-height: 1; letter-spacing: .04em;
         color: rgba(255,255,255,.4); transition: color .2s; pointer-events: none; }
-      .jz-engine .lbl-js { left: 0; }
-      .jz-engine .lbl-jz { right: 0; }
+      .jz-engine .lbl-js { left: 3px; }
+      .jz-engine .lbl-jz { left: 38px; }
       .jz-engine.js .lbl-js { color: #141414; }
       .jz-engine.jz .lbl-jz { color: #141414; }
-      @media (prefers-reduced-motion: reduce) { .jz-engine .knob { transition: none; } }
+      @media (prefers-reduced-motion: reduce) { .jz-engine .knob, .jz-pal .sw { transition: none; } }
       .jz-fps { flex: none; display: inline-flex; align-items: center; gap: 12px; color: #f0f0f2; }
       .jz-fps .spark { width: 56px; height: 24px; display: block; }
       .jz-fps .metric { display: inline-flex; align-items: baseline; gap: 3px; }
-      .jz-fps .metric b { font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; display: inline-block; min-width: 2.8ch; text-align: right; }
-      .jz-fps .metric.ms b { min-width: 3.4ch; }
+      /* fixed-width number cells (tabular-nums) so 2→3 digit fps / varying ms never change the
+         group's width and jiggle the toggle to its left. 3ch fits up to "240"; 4ch fits "12.4". */
+      .jz-fps .metric b { font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; display: inline-block; width: 3ch; text-align: right; }
+      .jz-fps .metric.ms b { width: 4ch; }
       .jz-fps .unit { font-size: 12px; color: #8a8a93; }
+      /* palette: a square swatch (matches the modernist B&W frame); rotates on click */
+      .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
+      .jz-pal .sw { display: block; width: 100%; height: 100%; border-radius: 5px;
+        background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
+        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
+      .jz-pal:hover .sw { transform: rotate(90deg); }
+      .jz-pal.on .sw { transform: rotate(180deg); }
+      /* fullscreen — two-angles expand icon; fills the viewport edge-to-edge (Esc / click to exit) */
+      .jz-fs { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer;
+        -webkit-appearance: none; appearance: none; color: #8a8a93; display: inline-flex; align-items: center; justify-content: center; transition: color .18s; }
+      .jz-fs:hover { color: #f0f0f2; }
+      .jz-fs svg { display: block; }
+      /* code preview: a "code" link in the description + a panel that slides over the demo area
+         (between the two bands, same column as the canvas) showing the kernel's own source. */
+      .jz-codelink { font: inherit; color: #e8e8ea; background: none; border: 0; padding: 0; cursor: pointer;
+        text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+      .jz-codelink:hover, .jz-codelink.on { color: #fff; }
+      .jz-code-panel { position: fixed; top: 64px; bottom: 64px; left: 50%; transform: translateX(-50%);
+        width: min(100vw, var(--jz-democol, 1000px)); z-index: 140; background: rgba(6,6,9,.96);
+        opacity: 0; visibility: hidden; transition: opacity .18s ease; }
+      .jz-code-panel.on { opacity: 1; visibility: visible; }
+      html.jz-full .jz-code-panel { width: 100vw; }
+      .jz-code-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+      .jz-code-pre { margin: 0; padding: 30px 34px; color: #d6d6de; tab-size: 2;
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+        font-size: 12.5px; line-height: 1.62; white-space: pre; }
+      .jz-code-x { position: absolute; top: 12px; right: 14px; z-index: 1; width: 28px; height: 28px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border: 0; background: none; color: #8a8a93; cursor: pointer; transition: color .16s; }
+      .jz-code-x:hover { color: #fff; }
     </style>
     <div class="jz-bar">
       <div class="jz-desc"></div>
-      ${palette ? `<button class="jz-pal" id="jz-pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>` : ''}
       <button class="jz-engine" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
       ${meter ? `<div class="jz-fps"><canvas class="spark" id="jz-spark"></canvas><span class="metric"><b id="jz-fps">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="jz-ms-v">··</b><span class="unit">ms</span></span></div>` : ''}
+      ${palette ? `<button class="jz-pal" id="jz-pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>` : ''}
+      <button class="jz-fs" id="jz-fs" title="fullscreen" aria-label="fullscreen"></button>
     </div>`
   document.body.appendChild(el)
 
-  // description (left) + the educational (wiki) link
+  // description (left): capitalized hint, then the (wiki) link and a "code" toggle, each
+  // separated by a thin middot.
   const descEl = el.querySelector('.jz-desc')
-  if (hint) descEl.textContent = hint
+  if (hint) descEl.textContent = hint.charAt(0).toUpperCase() + hint.slice(1)
+  const addLink = (node) => {
+    descEl.appendChild(document.createTextNode(descEl.childNodes.length ? '  ·  ' : ''))
+    descEl.appendChild(node)
+  }
   if (nav && WIKI[nav]) {
     const a = document.createElement('a')
-    a.className = 'jz-wiki'; a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '(wiki)'
-    if (hint) descEl.appendChild(document.createTextNode(' '))
-    descEl.appendChild(a)
+    a.className = 'jz-wiki'; a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'wiki'
+    addLink(a)
+  }
+  // "code" — slides the kernel source in over the demo area (the same .js that IS the example)
+  if (code) {
+    const link = document.createElement('button')
+    link.type = 'button'; link.className = 'jz-codelink'; link.textContent = 'code'
+    link.setAttribute('aria-expanded', 'false')
+    addLink(link)
+    setupCode(link, code)
   }
 
   // The HUD is an overlay — swallow pointer/click so they don't fall through to a
@@ -328,6 +422,36 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   let lut = null
   const pal = el.querySelector('#jz-pal')
   if (pal) pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on'); onPalette?.() }
+
+  // Fullscreen (⛶): toggle the demo edge-to-edge via the Fullscreen API on <html> — the chrome
+  // (both bands) rides along so the controls stay reachable; the `.jz-full` class drops the column
+  // cap. Each toggle dispatches a resize so the demo re-fits + re-seeds to the new width.
+  const fsBtn = el.querySelector('#jz-fs')
+  if (fsBtn && !EMBED) {
+    // Two small sharp corner-brackets on the ╱ diagonal (top-right + bottom-left) — square caps +
+    // miter joins, no rounding, sized to the palette square beside it. In MIN (collapse) the two
+    // brackets point inward but sit well apart (never touching) instead of meeting at the centre.
+    const ico = (d) => `<svg viewBox="0 0 26 26" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${d.map(p => `<path d="${p}"/>`).join('')}</svg>`
+    const MAX = ico(['M18 3H23V8', 'M8 23H3V18'])
+    const MIN = ico(['M23 8H18V3', 'M3 18H8V23'])
+    const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement
+    fsBtn.innerHTML = MAX
+    fsBtn.onclick = () => {
+      const r = document.documentElement
+      if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)
+      else (r.requestFullscreen || r.webkitRequestFullscreen)?.call(r)
+    }
+    const sync = () => {
+      const on = !!fsEl()
+      document.documentElement.classList.toggle('jz-full', on)
+      fsBtn.innerHTML = on ? MIN : MAX
+      fsBtn.setAttribute('aria-label', on ? 'exit fullscreen' : 'fullscreen')
+      fsBtn.title = on ? 'exit fullscreen' : 'fullscreen'
+      try { dispatchEvent(new Event('resize')) } catch {}   // re-fit the demo to the new column width
+    }
+    document.addEventListener('fullscreenchange', sync)
+    document.addEventListener('webkitfullscreenchange', sync)
+  }
   // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
   // Indexes the LUT by luminance, so it works on colored kernels too (false-color remap),
   // not just grayscale ones. Default (lut null) is a plain copy → original colors intact.
@@ -394,12 +518,15 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
   // Shared page + canvas styling — one rule for every demo, no per-example <style>. In embed
   // mode the canvas is full-screen (inset:0); on a standalone page addMasthead's jz-canvas-fit
   // rule (with !important) drops it below the header and object-fits it.
+  // The page (the margins beside the centered demo) is always chrome-black — `bg` paints only the
+  // canvas's own box, so a light demo (maze, watercolor…) owns its area and never bleeds into the
+  // sides. The kernel fills every pixel at the box's aspect, so `bg` shows only during load.
   if (!document.getElementById('jz-demo-css')) {
     const s = document.createElement('style')
     s.id = 'jz-demo-css'
-    s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:${bg};color:#eee;`
+    s.textContent = `html,body{height:100%;margin:0;overflow:hidden;background:#000;color:#eee;`
       + `font-family:'Helvetica Neue',Helvetica,Arial,sans-serif}`
-      + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:${cursor}}`
+      + `body>canvas{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:${cursor};background:${bg}}`
     document.head.appendChild(s)
   }
 

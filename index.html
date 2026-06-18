@@ -13,7 +13,9 @@
   --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a;
-  --band: #0a0a0a; --padx: 28px; --cw: 1000px;   /* shared content column width (hyperstudio-ish) */
+  --band: #0a0a0a; --padx: 28px; --cw: 1040px;   /* content column — a whole 13 big units wide, so the grid coincides */
+  --u: 8px; --u2: 40px; --U: 80px;   /* blueprint grid: 8px minor · 40px mid · 80px major (= the logo, nested) */
+  --colw: calc(var(--cw) + 2 * var(--padx));   /* hero/pitch column box */
 }
 html, body { height: 100%; overflow-x: clip; }
 body { background: #000; color: var(--ink); font-family: var(--font);
@@ -21,22 +23,42 @@ body { background: #000; color: var(--ink); font-family: var(--font);
 a { color: inherit; }
 ::selection { background: #fff; color: #000; }
 
-/* ─────────────────────────── HERO — a single live N-body sim runs full-bleed behind
-   a centred pitch; the engine switch + FPS at the foot drive & measure that very sim. ─────────────────────────── */
-.hero { position: relative; min-height: max(600px, 80svh); display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; }   /* < full height so the REPL top peeks below */
+/* ─────────────────────────── HERO — the demo + blueprint grid occupy a fixed 6-unit (480px) band
+   at the top; the logo/title/sub sit on that grid, and the engine switch + FPS + metrics follow below it. */
+.hero { position: relative; display: flex; flex-direction: column;
+  align-items: center; background: #000; overflow: hidden; --band-h: calc(6 * var(--U)); }   /* grid/demo band = 6 big units */
 
-/* the demo runs as the background layer — white bodies on black, full strength, unfaded */
-.show-stage { position: absolute; inset: 0; z-index: 0; background: #000; display: block;
-  width: 100%; height: 100%; image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+/* the demo (white bodies on black) and the grid share the top band, exactly the same box */
+.show-stage { position: absolute; top: 0; left: 0; z-index: 0; background: #000; display: block;
+  width: 100%; height: var(--band-h); image-rendering: pixelated; cursor: crosshair; touch-action: none; }
 
-/* (the live editor dock has been removed — the REPL section below is the one editor) */
+/* blueprint grid — three nested levels (8 minor · 40 mid · 80 major) sharing ONE origin so they nest.
+   Origin pinned to the content column's left, which (column width = 13 units) makes it viewport-symmetric
+   and coincident with the content. Hard-edged at the 6-unit band bottom — no fade. */
+.hero::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: var(--band-h); z-index: 1; pointer-events: none;
+  border-bottom: 1px solid rgba(255,255,255,.17);   /* closes the band: a clean bottom rule (clearer than the subtler interior lines) where the grid is cut — box-sizing:border-box keeps the band 6 units */
+  background-image:
+    linear-gradient(rgba(255,255,255,.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+  background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
+  /* origin = the content-left, snapped to a whole pixel. At odd viewport widths the centered column
+     lands on a half-pixel, which renders every 1px rule as two faint pixels (the "doubled/crooked"
+     subgrid). --grid-x is set by JS to the rounded content-left; the calc is the pre-JS fallback. */
+  background-position: var(--grid-x, calc((100% - var(--colw)) / 2 + var(--padx))) 0;
+}
+
+/* the editable dock below the hero (see .dock) holds this demo's source — edit + Run recompiles it */
 
 
 /* top bar — nav aligned to the right edge of the shared content column */
 .hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%;
   max-width: calc(var(--cw) + 2 * var(--padx)); margin: 0 auto;
-  display: flex; justify-content: flex-end; align-items: center; gap: 24px; padding: 20px var(--padx) 0; }
+  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 56px; padding: 0 var(--padx); }   /* fixed: nav + pitch top = 192 = 2 units → logo lands on a major line */
 .hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
@@ -48,14 +70,17 @@ a { color: inherit; }
 .pitch { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; width: 100%;
   max-width: calc(var(--cw) + 2 * var(--padx));   /* shared content column */
   display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; text-align: left;
-  padding: clamp(56px,14vh,170px) var(--padx) clamp(36px,5vw,60px);   /* top pad lowers the logo toward centre */
+  padding: 0 var(--padx) clamp(36px,5vw,60px);
   pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
 .pitch a, .pitch button { pointer-events: auto; }
+/* the logo/title/sub sit ON the grid band: this block fills the band's height below the nav, so the
+   CTA + metrics begin right after the 6-unit grid. padding-top puts the logo 1 big unit from the top. */
+.intro { width: 100%; box-sizing: border-box; min-height: calc(var(--band-h) - 56px); padding-top: 24px; }
 /* logo — a faint sharp border whose four edges REFLECT the live sim: JS samples the n-body bodies
    in the band just outside each edge and lights that edge as they fly past (the per-edge --r* vars
    are driven per frame). No animation of its own — the motion is the sim's, never competing. */
-.logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: clamp(22px,2.6vw,34px); }
-.logo img { display: block; width: clamp(78px,9vw,108px); height: auto; position: relative; z-index: 1; }
+.logo { position: relative; display: inline-block; line-height: 0; isolation: isolate; margin-bottom: var(--u2); }   /* one unit tall, one mid-unit gap */
+.logo img { display: block; width: var(--U); height: var(--U); position: relative; z-index: 1; }   /* exactly one major unit */
 /* faint constant 1px border so the mark always has a thin outline */
 .logo::before { content: ''; position: absolute; inset: -1px; z-index: 0; pointer-events: none; padding: 1px;
   background: rgba(255,255,255,.14);
@@ -78,10 +103,11 @@ a { color: inherit; }
 .pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.4× faster" unbroken */
 .pitch .sub .ref { font-size: .7em; vertical-align: super; line-height: 0; color: var(--dim); text-decoration: none; padding: 0 1px; transition: color .16s; }
 .pitch .sub .ref:hover { color: var(--ink); }
+.pitch .sub .nb { white-space: nowrap; }   /* "runs the same source 2.4× faster" stays one line */
 
 /* main CTA — the sole hero action: FPS readout then the JS↔JZ switch on one line.
    The FPS area is a fixed width so changing digit counts can't shift the switch. */
-.cta-live { display: flex; flex-direction: row; align-items: center; gap: 22px; margin-top: clamp(26px,3.2vw,38px); flex-wrap: wrap; }
+.cta-live { display: flex; flex-direction: row; align-items: center; gap: 22px; margin-top: var(--u2); flex-wrap: wrap; }   /* one mid-unit below the grid band */
 /* footer install chip reuses .install */
 .install { display: inline-flex; align-items: baseline; gap: 9px; font-family: var(--mono); font-size: 13.5px;
   color: var(--ink); background: none; border: 0; padding: 0; cursor: copy; }
@@ -91,7 +117,10 @@ a { color: inherit; }
 .install:hover .ci, .install.copied .ci { color: var(--ink); }
 
 /* stats — number over a small identifying label, in a flat row */
-.metrics { display: flex; align-items: flex-start; gap: clamp(20px,2.6vw,34px); margin-top: clamp(40px,6vh,84px); flex-wrap: wrap; }   /* moderate gap from the switch — but still nearer the fps than the REPL */
+.metrics { display: flex; align-items: flex-start; gap: clamp(36px,5vw,64px); margin-top: clamp(40px,6vh,84px); flex-wrap: wrap; }   /* the wide gap separates the Speed group from the Size group */
+.mgroup { display: flex; flex-direction: column; gap: 12px; }
+.mlabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .2em; color: var(--mute); }
+.mstats { display: flex; align-items: flex-start; gap: clamp(18px,2.4vw,32px); flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
 .stat b { font-size: clamp(26px,2.7vw,36px); font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
@@ -139,13 +168,41 @@ a { color: inherit; }
   .metrics { gap: 28px; }
 }
 
-/* ─────────────────────── TRY — the REPL inline (a full playground: write JS → WAT → run → bench) ─────────────────────── */
-.try { background: #000; padding: clamp(36px,5vw,60px) var(--padx); }   /* symmetric → equal gap above (from stats) and below (to FAQ) */
-.try-wrap { max-width: calc(var(--cw) + 66px); margin: 0 auto; }   /* = cw + 2×(REPL padding) → the code's left edge lands exactly on the content column */
-.try-head { max-width: var(--cw); margin: 0 auto clamp(18px,2.4vw,28px); }
-.try-head h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; }
-.try-frame { width: 100%; height: clamp(440px, 62vh, 600px); border: 1px solid #1c1c25; border-radius: 8px; overflow: hidden; background: #000; }
-.try-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+/* ─────────── TRY — an editable dock for the demo running in the hero: pick or edit a source,
+   hit Run, the hero recompiles from it. The full REPL (WAT · console · bench) lives at /repl/. ─────────── */
+.try { background: #000; padding: clamp(12px,1.8vw,22px) var(--padx) clamp(40px,5vw,64px); }   /* tight top → the dock sits close under the stats */
+.try-wrap { max-width: calc(var(--cw) + 2 * var(--padx)); margin: 0 auto; }   /* same column box as the hero/FAQ; content padded to the column line */
+/* header — one line above the editor: file · opt (left), size · download · run (right), all on the page bg */
+.dock-head { display: flex; align-items: center; gap: 18px; padding: 0 var(--padx) 12px; }
+.dock-file { -webkit-appearance: none; appearance: none; border: 0; color: var(--ink);
+  font: 700 17px var(--font); letter-spacing: -.01em; cursor: pointer; padding: 2px 24px 2px 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f0f0f2' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right center / 14px; }
+.dock-opt { -webkit-appearance: none; appearance: none; border: 0; color: var(--soft);
+  font: 13px/1 var(--mono); cursor: pointer; padding: 2px 15px 2px 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b7b7c1' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right center / 9px;
+  margin-left: auto; }   /* starts the right-hand group: speed · size · wasm · run */
+#derr { color: #ff6b6b; font: 12px/1.3 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dsize { font: 12.5px/1 var(--mono); color: var(--dim); }
+.dock-ico { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent;
+  color: var(--soft); font: 11px var(--font); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
+.dock-ico:hover { color: var(--ink); }
+/* Run — the bench page's button: sharp, uppercase, ▶, inverts on hover (white → outline) */
+#drun { background: #fff; color: #000; border: 1px solid #fff; border-radius: 0; padding: 6px 16px;
+  font: 12px var(--font); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+#drun:hover { background: transparent; color: #fff; }
+.dock-box { border: 1px solid #1c1c25; border-radius: 8px; overflow: hidden; background: #0b0b0b; }
+.dock-code { position: relative; height: clamp(360px,52vh,500px); }
+#dhl, #dedit { position: absolute; inset: 0; margin: 0; padding: 20px var(--padx);
+  font: 13px/1.6 var(--mono); tab-size: 2; white-space: pre; border: 0; background: transparent; }
+#dedit { resize: none; overflow: auto; color: transparent; caret-color: #fff; z-index: 1;
+  scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
+#dedit:focus, #dedit:focus-visible { outline: none; }              /* the caret shows focus — no ring */
+#dedit::selection { background: rgba(255,255,255,.22); color: #fff; }   /* selected text reads white, not the syntax grey */
+#dhl { overflow: hidden; pointer-events: none; color: var(--ink); }
+#dhl .k { font-weight: 700; } #dhl .t { font-weight: 600; }
+#dhl .n { font-weight: 600; color: #c8c8c8; } #dhl .s { color: var(--soft); } #dhl .c { color: var(--dim); }
+/* focus — soft, never white */
+.dock select:focus-visible, .dock button:focus-visible { outline: 2px solid var(--dim); outline-offset: 3px; }
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 .examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
@@ -228,78 +285,83 @@ footer .legal .om { font-size: 15px; }
   </nav>
 
   <section class="pitch">
-    <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="108" height="108" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
-    <h1>Computational JavaScript, <br class="hb">compiled to WASM.</h1>
-    <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled
-      ahead-of-time to WASM that runs the same source <b><span id="sub-x">2.4×</span> faster</b><a class="ref" href="bench/" aria-label="how this is measured — see the benchmark">*</a>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
+    <div class="intro">
+      <a class="logo" href="./" aria-label="jz — home"><img src="jz.svg" width="80" height="80" alt="jz"><span class="logo-refl" aria-hidden="true"></span></a>
+      <h1>Computational JavaScript, <br class="hb">compiled to WASM</h1>
+      <p class="sub">Minimal, modern, functional JavaScript — Crockford’s “Good Parts”, compiled ahead-of-time to WASM that runs the same source <b><span :text="subx">2.4×</span>&nbsp;faster</b><a class="ref" href="bench/" aria-label="how this is measured — see the benchmark">*</a>. No runtime, no GC, no type annotations, unlocked SIMD.</p>
+    </div>
     <div class="cta-live">
       <div class="fps" aria-label="performance">
         <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric"><b id="fps-num">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="ms-num">··</b><span class="unit">ms</span></span>
       </div>
       <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="JS / JZ engine — flip to drive the live sim"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
     </div>
+    <!-- FIXME: these metrics can be actually in the second FAQ question "Is that fast?" -->
     <div class="metrics" id="metrics">
-      <a class="stat" data-key="v8" href="bench/"><b>2.4×</b><span>Node V8</span></a>
-      <a class="stat" data-key="as" href="bench/"><b>2.3×</b><span>AssemblyScript</span></a>
-      <a class="stat" data-key="rust" href="bench/"><b>1.1×</b><span>Rust</span></a>
-      <a class="stat" data-key="peak" href="bench/"><b>13.5×</b><span>SIMD peak</span></a>
-      <a class="stat" data-key="size" href="bench/"><b>1–10 kB</b><span>wasm · no runtime</span></a>
+      <div class="mgroup">
+        <span class="mlabel">Speed</span>
+        <div class="mstats">
+          <a class="stat" href="bench/"><b :text="v8">2.4×</b><span>V8</span></a>
+          <a class="stat" href="bench/"><b :text="peak">13.5×</b><span>V8 (peak SIMD)</span></a>
+          <a class="stat" href="bench/"><b :text="porf">3.1×</b><span>Porffor</span></a>
+          <a class="stat" href="bench/"><b :text="rust">1.1×</b><span>Rust</span></a>
+        </div>
+      </div>
+      <div class="mgroup">
+        <span class="mlabel">Size</span>
+        <div class="mstats">
+          <a class="stat" href="bench/"><b :text="assize">1.1×</b><span>AssemblyScript</span></a>
+          <a class="stat" href="bench/"><b :text="porfsize">0.5×</b><span>Porffor</span></a>
+        </div>
+      </div>
+      <!-- QuickJS + C can't be shown: not in bench/results.json (0 cases). And a "QuickJS size" isn't
+           even apples-to-apples — QuickJS is a bytecode interpreter, it emits no comparable .wasm binary.
+           A QuickJS *speed* row is possible only after a bench run that includes a QuickJS target. -->
     </div>
   </section>
 </main>
 
 <section class="try">
   <div class="try-wrap">
-    <div class="try-head">
-      <h2>Or write your own.</h2>
-    </div>
-    <div class="try-frame">
-      <iframe src="repl/?embed" title="jz REPL — compile JavaScript to WASM in your browser" loading="lazy"></iframe>
+    <div class="dock">
+      <div class="dock-head">
+        <select id="dfile" class="dock-file" aria-label="example to edit and render"></select>
+        <span id="derr" role="status" aria-live="polite"></span>
+        <select id="dopt" class="dock-opt" aria-label="optimization target">
+          <option value="0">none</option>
+          <option value="3" selected>speed</option>
+          <option value="size">size</option>
+        </select>
+        <span id="dsize">—</span>
+        <button id="ddl" class="dock-ico" title="download .wasm" aria-label="download wasm">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          wasm
+        </button>
+        <button id="drun" aria-label="run — recompile and update the sim above">▶ run</button>
+      </div>
+      <div class="dock-box">
+        <div class="dock-code">
+          <pre id="dhl" aria-hidden="true"></pre>
+          <textarea id="dedit" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source — edit, then Run to update the sim above"></textarea>
+        </div>
+      </div>
     </div>
   </div>
 </section>
 
+<!-- FIXME: reduce number of questions by making core questions cover multiple aspects -->
 <section class="faq">
   <div class="faq-wrap">
 
     <details open>
-      <summary><span class="fq">What is jz?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">jz (“javascript zero”) compiles the numeric core of JavaScript — math, DSP, parsers, tight loops — ahead-of-time to lean, GC-free WebAssembly. Nothing ships at runtime: the output is plain WASM that runs in any engine or standalone. The same source you’d run in Node, ~2.4× faster.</div>
+      <summary><span class="fq">What’s it for?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">The compute hot-path of a JavaScript app: DSP and audio, math and physics, image and signal processing, parsers and tight numeric loops — anywhere plain JS is too slow, or its GC pauses make the timing too unpredictable to trust. You keep writing JavaScript and compile just those parts. Not for UI, backends/APIs, or async- and I/O-heavy logic — keep regular JavaScript there. jz is a sharp tool for the compute core, not a whole-app framework.</div>
     </details>
 
     <details>
+      <!-- FIXME: weird question, no one asks this - it's more about limits of JZ or difference with jz - the next two questions are same -->
       <summary><span class="fq">Is it really just JavaScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Valid jz is valid JS — every jz program runs and tests in any JavaScript engine unchanged, then compiles to WASM. jz is a focused subset (“the good parts” for compute), not a new language or a TypeScript-like dialect. You don’t port your code into it; you write JavaScript and compile the hot parts.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">Why no type annotations?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Because <code>let x: i32</code> isn’t valid JavaScript — annotations would break the promise that jz runs and tests unchanged in any engine. So jz infers types from what you already write: <code>let bits = (a, b) =&gt; a | b</code> pins <code>i32</code> (a bitwise op); <code>let half = (n) =&gt; n * 0.5</code> pins <code>f64</code> (a non-integer literal). You never annotate, never leave JS — and that’s the sharp edge over AssemblyScript, which needs TypeScript-style types.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">Can jz compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Yes — fully. jz’s whole pipeline (parse → infer → emit → encode) is itself compiled to WASM: <code>dist/jz.wasm</code> is jz compiled by jz. The CI gate <code>test:self</code> round-trips real programs through the wasm-hosted compiler and runs their output. The artifact that builds your code was built by jz.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">How is it different from AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">AssemblyScript is a TypeScript-like dialect — you rewrite into it with explicit type annotations and a managed-memory runtime. jz compiles the JavaScript you already wrote, needs <b>no annotations</b> (it reads types off your literals and operators), ships no runtime or GC, and on our 16-kernel suite produces WASM ~2.3× faster than AssemblyScript at roughly the same size.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">How fast is it, really?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">On a 16-kernel bench (Apple M4 Max), jz averages 2.4× faster than the same source in V8, 1.1× faster than Rust → wasm, and 1.3× faster than Zig → wasm on numeric kernels — native is the peer, not the ceiling. Auto-vectorized reductions go further: a dot-product peaks at 13.5× over V8. Every number is reproducible — <a href="bench/">run the bench yourself</a>.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">What is jz good for — and not?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Good for numeric and math compute, DSP/audio, parsing and transforms, and standalone WASM utilities. Not for UI/frontend, backends/APIs, or async- and I/O-heavy logic — keep regular JavaScript there. jz is a sharp tool for the compute core, not a whole-app framework.</div>
-    </details>
-
-    <details>
-      <summary><span class="fq">Can I use existing npm packages?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Only the ones that fit the subset. There’s no runtime, so packages touching the DOM, async/Promise, the network, or Node APIs won’t compile — but pure numeric, algorithmic, parser, or transform source does. Relative imports (<code>./dep.js</code>) bundle at compile time; bare specifiers resolve with <code>--resolve</code> (CLI) or <code>{ modules }</code> (API). jz is for compiling <i>your</i> compute core, not the npm ecosystem.</div>
+      <div class="ans"><strong>Valid jz is valid JS</strong> — every jz program runs and tests in any JavaScript engine unchanged, then compiles to WASM. jz is a focused subset (“the good parts” for compute), not a new language or a TypeScript-like dialect. You don’t port your code into it; you write JavaScript and compile the hot parts.</div>
     </details>
 
     <details>
@@ -308,13 +370,36 @@ footer .legal .om { font-size: 15px; }
     </details>
 
     <details>
+      <!-- FIXME: this can be nested sections -->
+      <summary><span class="fq">What JavaScript features are supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">The compute subset: numbers, typed arrays, arrow functions and closures, control flow, and math/bitwise ops. Broader JS (<code>var</code>/<code>function</code>/<code>class</code>/<code>==</code>) is lowered automatically; <code>strict</code> mode enforces the pure canonical subset. Async, the DOM, and dynamic <code>eval</code> are out of scope by design.</div>
+    </details>
+
+    <details>
+      <summary><span class="fq">Why no type annotations?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Because <code>let x: i32</code> isn’t valid JavaScript — annotations would break the promise that jz runs and tests unchanged in any engine. So jz infers types from what you already write: <code>let bits = (a, b) =&gt; a | b</code> pins <code>i32</code> (a bitwise op); <code>let half = (n) =&gt; n * 0.5</code> pins <code>f64</code> (a non-integer literal). You never annotate, never leave JS — and that’s the sharp edge over AssemblyScript, which needs TypeScript-style types.</div>
+      <!-- FIXME: Please elaborate the philosophy that types are not needed for compiler to be performant - if that's true. -->
+    </details>
+
+    <details>
+      <summary><span class="fq">How is it different from AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">AssemblyScript is a TypeScript-like dialect — you rewrite into it with explicit type annotations and a managed-memory runtime. jz compiles the JavaScript you already wrote, needs <b>no annotations</b> (it reads types off your literals and operators), ships no runtime or GC, and on our 16-kernel suite produces WASM ~2.3× faster than AssemblyScript at roughly the same size.</div>
+    </details>
+
+    <details>
+      <summary><span class="fq">Can I use existing npm packages?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Only the ones that fit the subset. There’s no runtime, so packages touching the DOM, async/Promise, the network, or Node APIs won’t compile — but pure numeric, algorithmic, parser, or transform source does. Relative imports (<code>./dep.js</code>) bundle at compile time; bare specifiers resolve with <code>--resolve</code> (CLI) or <code>{ modules }</code> (API). jz is for compiling <i>your</i> compute core, not the npm ecosystem.</div>
+    </details>
+
+    <details>
       <summary><span class="fq">Does it use SIMD?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Yes. jz auto-vectorizes fixed-count loops and reductions to WASM <code>v128</code> — something a JIT won’t do from plain JS. Pass <code>noSimd</code> for engines without the SIMD proposal, or drop to explicit <code>f32x4</code>/<code>i32x4</code> intrinsics when you want full control.</div>
     </details>
 
     <details>
-      <summary><span class="fq">What JavaScript features are supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">The compute subset: numbers, typed arrays, arrow functions and closures, control flow, and math/bitwise ops. Broader JS (<code>var</code>/<code>function</code>/<code>class</code>/<code>==</code>) is lowered automatically; <code>strict</code> mode enforces the pure canonical subset. Async, the DOM, and dynamic <code>eval</code> are out of scope by design.</div>
+      <summary><span class="fq">Can jz compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <!-- FIXME: answer with facts, not fillers: Yes, see jz.wasm and test:self pipeline -->
+      <div class="ans">Yes — fully. jz’s whole pipeline (parse → infer → emit → encode) is itself compiled to WASM: <code>dist/jz.wasm</code> is jz compiled by jz. The CI gate <code>test:self</code> round-trips real programs through the wasm-hosted compiler and runs their output. The artifact that builds your code was built by jz.</div>
     </details>
 
     <details>
@@ -348,9 +433,11 @@ footer .legal .om { font-size: 15px; }
 </section>
 
 <footer>
+  <!-- FIXME: worth adding status badges maybe? -->
   <div class="fwrap">
     <div class="brand-col">
       <a class="wordmark" href="./"><span class="mark">JZ</span><span class="sub">javascript zero</span></a>
+      <!-- FIXME: DRY - instead be wit or ironic -->
       <p>Minimal functional JS that compiles ahead-of-time to performant WASM. Experimental — pin a version.</p>
       <button class="install" id="install2" title="click to copy"><span class="dollar">$</span><span>npm&nbsp;install&nbsp;jz</span><span class="ci">copy</span></button>
     </div>
@@ -374,35 +461,49 @@ footer .legal .om { font-size: 15px; }
 </footer>
 
 <script type="module">
-// One screen: the N-body sim runs full-bleed on the hero canvas, compiled HERE from the
-// real examples/nbody/nbody.js. The JS/JZ switch flips between jz-compiled wasm and the
-// same source run as plain JS. The REPL section below is the editor.
-import jz from './dist/jz.js'
+// One screen: a demo runs full-bleed on the hero canvas, compiled HERE in the page. The JS/JZ
+// switch flips between jz-compiled wasm and the same source run as plain JS. The editable dock
+// below holds that demo's source — edit it, hit Run, and the hero recompiles from your edit.
+import jz, { compile } from './dist/jz.js'
+import sprae from './dist/sprae.js'
 const $ = id => document.getElementById(id)
 
-// live metrics — computed from the committed bench/results.json (the row above is pre-filled so
-// there's no flash; these values update in-place when the fetch succeeds, so the row always
-// reflects the latest bench run rather than a hand-typed snapshot)
+// Blueprint grid origin — snap the centered column's left edge to a whole pixel so the 1px rules
+// render crisp (a half-pixel origin, on odd-width viewports, doubles every line). Matches where the
+// logo element actually paints, keeping logo + grid aligned.
+{
+  const hero = document.querySelector('.hero')
+  const cw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cw')) || 1040
+  const setGridX = () => hero.style.setProperty('--grid-x', Math.round((hero.clientWidth - cw) / 2) + 'px')
+  setGridX(); addEventListener('resize', setGridX)
+}
+
+// live metrics — a sprae binding over the committed bench/results.json. The markup is pre-filled
+// (no flash); the `:text` directives on the stat <b>s and the sub figure read this reactive state,
+// which we fill from the fresh bench numbers so the row always reflects the latest run.
 ;(async () => {
+  const m = sprae(document.querySelector('.pitch'),
+    { v8: '2.4×', peak: '13.5×', porf: '3.1×', rust: '1.1×', assize: '1.1×', porfsize: '0.5×', subx: '2.4×' })
   try {
     const r = await (await fetch('bench/results.json')).json()
     const cases = Object.values(r.cases)
     const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
-    const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt]) a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
-    let peak = 0; for (const c of cases) { const t = c.targets; if (t.jz && t.v8) peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
-    const sizes = []; for (const c of cases) if (c.targets.jz) sizes.push(c.targets.jz.bytes)
-    const f = (x, d = 1) => { const s = x.toFixed(d); return s.replace(/\.0$/, '') }
-    const set = (k, v) => { const el = document.querySelector(`.stat[data-key="${k}"] b`); if (el && v != null) el.textContent = v }
+    // exclude parity-DIFF runs (a target that produced the WRONG answer) — speed on a wrong result
+    // isn't a fair comparison. Matters for Porffor, which miscompiles several kernels.
+    const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt] && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+    let peak = 0; for (const c of cases) { const t = c.targets; if (t.jz && t.v8 && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
+    const f = (x, d = 1) => x.toFixed(d).replace(/\.0$/, '')
+    const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
     const v8x = f(ratio('v8')) + '×'
-    set('v8', v8x)
-    const sx = $('sub-x'); if (sx) sx.textContent = v8x   // keep the hero sentence's figure in sync with the bench too
-    set('as', f(ratio('as')) + '×')
-    set('rust', f(ratio('rust')) + '×')
-    set('peak', f(peak) + '×')
-    const mins = Math.min(...sizes), maxs = Math.max(...sizes)
-    const kb = b => b < 1000 ? null : (b / 1000).toFixed(b < 10000 ? 1 : 0).replace(/\.0$/, '')
-    const minK = kb(mins), maxK = kb(maxs)
-    set('size', minK && maxK ? minK + '–' + maxK + ' kB' : mins + '–' + maxs + ' B')
+    m.v8 = v8x; m.subx = v8x                 // sub sentence's figure stays in sync with the V8 stat
+    m.peak = f(peak) + '×'
+    m.porf = f(ratio('porf')) + '×'          // Porffor — only the few kernels it compiles (see bench)
+    m.rust = f(ratio('rust')) + '×'
+    // size vs AssemblyScript's .wasm (apples-to-apples, binary↔binary). MEDIAN, not geomean: the
+    // `synth` outlier (jz ~4× AS there) skews the mean; the typical kernel is ≈1.1× AS.
+    const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
+    const asMed = sizeRatio('as'); if (asMed != null) m.assize = f(asMed) + '×'
+    const pfMed = sizeRatio('porf'); if (pfMed != null) m.porfsize = f(pfMed) + '×'   // jz is ~half Porffor's .wasm
   } catch {}
 })()
 
@@ -420,9 +521,11 @@ for (const id of ['install2']) {
 // ── the hero sim: the real n-body source, compiled in-page, full-bleed on <canvas id=stage> ──
 const stage = $('stage'), g = stage.getContext('2d', { alpha: false })
 let W = 0, H = 0, img = null, out32 = null, px = null
-let jzEx = null, jsMod = null, kind = 'jz', gen = 0, t = 0, src = ''
+let jzEx = null, jsMod = null, kind = 'jz', gen = 0, t = 0, src = '', frameArgs = (t) => [t]
 const cur = () => (kind === 'jz' ? jzEx : jsMod)
-const buildJz = (s) => jz(s, { optimize: 'speed' }).exports
+const dopt = $('dopt')
+const optsObj = () => ({ optimize: dopt.value === 'size' ? 'size' : +dopt.value })
+const buildJz = (s) => jz(s, optsObj()).exports
 const buildJs = async (s) => { const u = URL.createObjectURL(new Blob([s], { type: 'text/javascript' })); try { return await import(u) } finally { URL.revokeObjectURL(u) } }
 // resolution: dpr-capped, with a pixel budget — the same policy jzdemo's runDemo uses,
 // tuned higher (1.3 MP) so the sim renders crisp at full-bleed instead of the old 0.5× blur.
@@ -485,8 +588,8 @@ const loop = () => {
   if (!e || !px) return
   const t0 = performance.now()
   try {
-    if (holding) e.grow?.(ptrX, ptrY)   // inflate the held body every frame (radius ∝ √mass → slows as it grows)
-    e.frame(t); t += 1 / 60; out32.set(px); g.putImageData(img, 0, 0)
+    if (holding) e.grow?.(ptrX, ptrY)   // nbody: inflate the held body every frame (other demos ignore it)
+    e.frame(...frameArgs(t)); t += 1 / 60; out32.set(px); g.putImageData(img, 0, 0)
   } catch (err) { return }
   const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
   curFps = fps; curMs = msEMA
@@ -512,11 +615,61 @@ const engineEl = $('engine')
 const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
 engineEl.onclick = async () => { const k = kind === 'jz' ? 'js' : 'jz'; setEngineUI(k); await rebuild(src) }
 
-// ── boot: fetch the real n-body source, compile it, run. Same file the example page runs. ──
+// ── the dock: a live editor for the demo running in the hero. Pick or edit a source, hit Run,
+//    and the hero recompiles from it. The full REPL (WAT · console · bench) lives at /repl/. ──
+const dedit = $('dedit'), dhl = $('dhl'), dfile = $('dfile'), dsize = $('dsize'), derr = $('derr')
+
+// renderable demos: each exports resize(w,h)→px + frame(…); `args` maps the loop clock to that
+// demo's frame signature (nbody/plasma take just t; lorenz spins; julia sweeps its c-constant)
+const EXAMPLES = [
+  { file: 'nbody.js',  path: 'examples/nbody/nbody.js',   args: t => [t] },
+  { file: 'plasma.js', path: 'examples/plasma/plasma.js', args: t => [t] },
+  { file: 'lorenz.js', path: 'examples/lorenz/lorenz.js', args: t => [t, t * 0.3] },
+  { file: 'julia.js',  path: 'examples/julia/julia.js',   args: t => [t, Math.sin(t * 0.1) * 0.7, Math.cos(t * 0.13) * 0.7] },
+]
+for (const [i, ex] of EXAMPLES.entries()) { const o = document.createElement('option'); o.value = i; o.textContent = ex.file; dfile.appendChild(o) }
+
+// editor = textarea (transparent ink) over a <pre> that paints the syntax — one regex, mono greys
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
+const CLS = ['c', 's', 'n', 'k', 't']
+const hil = (s) => { let h = '', last = 0, m; TOKEN.lastIndex = 0; while ((m = TOKEN.exec(s))) { h += esc(s.slice(last, m.index)); const i = m.slice(1).findIndex(g => g !== undefined); h += `<span class="${CLS[i]}">${esc(m[0])}</span>`; last = TOKEN.lastIndex } return h + esc(s.slice(last)) }
+const paint = () => { dhl.innerHTML = hil(dedit.value) + '\n' }
+dedit.addEventListener('input', paint)
+dedit.addEventListener('scroll', () => { dhl.scrollTop = dedit.scrollTop; dhl.scrollLeft = dedit.scrollLeft })
+dedit.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '  '); paint() }
+  else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run() }
+})
+
+// size + download come from a real compile of whatever's in the editor; a compile error shows inline
+const fmtB = n => n < 1000 ? n + ' B' : +(n / 1000).toFixed(2) + ' kB'
+let bytes = null
+const sizeIt = (s) => {
+  try { bytes = compile(s, optsObj()); dsize.textContent = fmtB(bytes.length); derr.textContent = ''; return true }
+  catch (e) { bytes = null; dsize.textContent = ''; derr.textContent = '✗ ' + String(e.message || e).split('\n')[0]; return false }
+}
+const run = async () => { src = dedit.value; if (sizeIt(src)) await rebuild(src) }   // Run → the hero recompiles
+$('drun').addEventListener('click', run)
+dopt.addEventListener('change', run)
+$('ddl').addEventListener('click', () => {
+  if (!bytes) return
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }))
+  a.download = (EXAMPLES[+dfile.value]?.file || 'module').replace(/\.js$/, '') + '.wasm'; a.click(); URL.revokeObjectURL(a.href)
+})
+
+const loadExample = async (i) => {
+  const ex = EXAMPLES[i]; if (!ex) return
+  frameArgs = ex.args
+  try { dedit.value = await (await fetch(ex.path)).text() } catch { return }
+  paint(); src = dedit.value; sizeIt(src); await rebuild(src)
+}
+dfile.addEventListener('change', () => loadExample(+dfile.value))
+
+// ── boot: load the first demo into the dock + hero, then start the loop ──
 ;(async () => {
-  try { src = await (await fetch('examples/nbody/nbody.js')).text() } catch (e) { return }
   setEngineUI('jz')
-  await rebuild(src)
+  await loadExample(0)
   fit(); loop()
 })()
 

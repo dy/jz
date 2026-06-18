@@ -5,14 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz floatbeat — type a formula, hear music · compiled in your browser</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
+<link rel="stylesheet" href="../site.css">
 <style>
 /* ── Floatbeat playground — Swiss/Braun discipline on near-black. Mostly monochrome;
       one warm accent, used only where something is live. Structure mirrors the repl:
       code left, the signal right. ── */
-@font-face {
-  font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
-  src: url(../lib/jost.woff2) format('woff2');
-}
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
   --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
@@ -30,22 +27,7 @@ body {
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 
-/* ── masthead ── */
-header {
-  background: var(--band); color: #fff; flex: 0 0 auto;
-  display: flex; align-items: center; min-height: 44px; padding: 0 16px;
-  font-family: var(--sans);
-}
-.wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; text-decoration: none; color: #fff; }
-.wordmark .mark { font-weight: 700; }
-.wordmark .sub { font-weight: 400; color: #8a8a8a; margin-left: .45em; transition: color .18s; }
-.wordmark .sep { color: #5a5a5a; margin: 0 .42em; }
-.wordmark .page { color: #fff; }
-.wordmark:hover .sub { color: #fff; }
-header nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
-header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px; text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
-header nav a:hover { opacity: 1; }
-header .gh { display: flex; }
+/* masthead styling is shared via ../site.css (.masthead) */
 
 /* ── main split ── */
 main { flex: 1; display: flex; min-height: 0; }
@@ -78,7 +60,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .gutter pre { padding-right: 10px; }
 .gutter .cur { color: var(--soft); }
 .codearea { position: absolute; left: var(--gutter); top: 0; right: 0; bottom: 0; }
-#guides { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+#guides { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 #hl, #editor {
   position: absolute; inset: 0; margin: 0;
   padding: var(--top) 16px 18px var(--pad);
@@ -150,6 +132,26 @@ select {
 .visswitch button:hover { color: var(--soft); }
 .visswitch button.on { color: #fff; border-bottom-color: var(--accent); }
 
+/* top-right HUD: engine toggle + live fps / compute-ms (the same-source JS⇄jz proof) */
+.hud { position: absolute; top: 12px; right: 14px; z-index: 5; display: flex; align-items: center; gap: 10px;
+  background: rgba(12,12,18,.55); backdrop-filter: blur(8px); border: 1px solid var(--line); padding: 5px 7px; }
+.hud .engine { display: flex; border: 1px solid var(--line); }
+.hud .engine button { border: 0; background: transparent; color: var(--dim); cursor: pointer;
+  font-family: var(--sans); font-size: 10.5px; letter-spacing: .1em; padding: 4px 10px; transition: color .15s, background .15s; }
+.hud .engine button.on { background: #ececec; color: #111; }
+.hud .engine button:disabled { opacity: .35; cursor: default; }
+.hud .meter { font: 11px/1 var(--mono); color: var(--dim); white-space: nowrap; padding-right: 2px; }
+.hud .meter b { color: var(--soft); font-weight: 400; }
+.hud .meter .dot { margin: 0 5px; color: #3a3a45; }
+
+/* top-center per-visualizer options (e.g. spectrogram log/mel) */
+.visopts { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; }
+.visopts .seg { display: flex; border: 1px solid var(--line); background: rgba(12,12,18,.55); backdrop-filter: blur(8px); }
+.visopts .seg button { border: 0; background: transparent; color: var(--dim); cursor: pointer;
+  font-family: var(--sans); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; padding: 5px 11px; }
+.visopts .seg button + button { border-left: 1px solid var(--line); }
+.visopts .seg button.on { background: #dcdcdc; color: #0a0a0a; }
+
 /* ── library drawer ── */
 .scrim { position: fixed; inset: 0; z-index: 9; background: rgba(4,4,8,.5); opacity: 0; pointer-events: none; transition: opacity .25s; }
 .scrim.open { opacity: 1; pointer-events: auto; }
@@ -190,13 +192,12 @@ select {
 </head>
 <body>
 
-<header>
-  <a class="wordmark" href="../" aria-label="back to examples">
-    <span class="mark">JZ</span><span class="sub">examples</span><span class="sep" aria-hidden="true">›</span><span class="page">floatbeat</span>
-  </a>
+<header class="masthead">
+  <a class="wordmark" href="../"><span class="mark">JZ</span><span class="sub">floatbeat</span></a>
   <nav>
-    <a href="../../repl/">repl</a>
-    <a href="../../bench/">bench</a>
+    <a href="../repl/">repl</a>
+    <a href="../examples/">examples</a>
+    <a href="../bench/">bench</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -207,7 +208,7 @@ select {
   <div class="pane code">
     <div class="srcbar">
       <button class="tbtn" id="lib" aria-label="open library" aria-controls="library">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="3.4" height="14" rx=".6"/><rect x="8" y="5" width="3.4" height="14" rx=".6"/><path d="M14.4 6.3l3.3-.9 3.4 12.8-3.3.9z"/></svg>
         Library
       </button>
       <button class="tbtn" id="share" aria-label="copy share link">
@@ -240,6 +241,14 @@ select {
 
   <div class="pane vis" id="visPane">
     <canvas id="scope"></canvas>
+    <div class="visopts" id="visopts"></div>
+    <div class="hud" id="hud">
+      <div class="engine">
+        <button data-k="js" id="ejs" title="run the same source as plain JS">JS</button>
+        <button data-k="jz" id="ejz" class="on" title="run the jz-compiled WASM">JZ</button>
+      </div>
+      <div class="meter"><b id="fps">··</b> fps<span class="dot">·</span><b id="ms">··</b> ms</div>
+    </div>
     <pre id="wat"></pre>
     <button id="watClose" title="close WAT" aria-label="close WAT" hidden>×</button>
     <div id="hint">press play, then edit the formula</div>
@@ -265,9 +274,14 @@ select {
 // The compiler runs HERE — `jz(src)` parses, infers types, emits WASM and instantiates
 // it on every edit. No server, no prebuilt .wasm, no build step. The hot sample-fill
 // loop is the part jz compiles; the visualizer reads the resulting audio off an analyser.
-import jz, { compile } from '../../dist/jz.js'
-import { FLOATBEATS } from '../jukebox/floatbeats.js'
+import jz, { compile } from '../dist/jz.js'
+import { FLOATBEATS } from '../examples/jukebox/floatbeats.js'
+import { makeChordBody } from './chords.js'
 import { makeVisualizers } from './visualizers.js'
+
+// Library = the soft randomized chord player up front, then the community corpus.
+// A `make()` entry regenerates a fresh randomized body each load; others are static.
+const LIBRARY = [{ name: 'After Hours', by: 'random walk · jazz harmony', sr: 44100, make: makeChordBody }, ...FLOATBEATS]
 
 const $ = (id) => document.getElementById(id)
 const editor = $('editor'), hlEl = $('hl'), gutterEl = $('gutter'), guides = $('guides')
@@ -390,16 +404,36 @@ const wrap = (body) => /\bexport\b/.test(body) ? body :
 `export let beat = (${body})
 export let fill = (len, off) => { let b = new Float64Array(len); let i = 0; while (i < len) { let s = beat(off + i); b[i] = s < -1 ? -1 : (s > 1 ? 1 : s); i++ } return b }`
 
-let engine = null, lastSrc = '', lastOk = false
+let jzFill = null, jsFill = null, kind = 'jz', lastSrc = '', lastOk = false, lastMs = 0
+const setKind = (k) => {
+  if (k === 'js' && !jsFill) return
+  kind = k; lastMs = 0
+  $('ejs').classList.toggle('on', k === 'js'); $('ejz').classList.toggle('on', k === 'jz')
+}
 const buildEngine = (src) => {
   const mod = wrap(src)
+  const bare = !/\bexport\b/.test(src)
   const t0 = performance.now()
   const bytes = compile(mod)
   const { exports, memory } = jz(mod)
   const ms = performance.now() - t0
   if (typeof exports.fill !== 'function') throw new Error('export `fill` not found')
-  engine = (len, off) => { const v = exports.fill(len, off); const out = Float64Array.from(v); memory.reset(); return out }
+  jzFill = (len, off) => { const v = exports.fill(len, off); const out = Float64Array.from(v); memory.reset(); return out }
+  // JS engine — the SAME formula as plain JS, for an honest side-by-side. Bare formulas run
+  // via new Function; a rare export-style source has no simple JS path, so the toggle greys out.
+  if (bare) { const fn = new Function('t', `return (${src})(t)`)
+    jsFill = (len, off) => { const b = new Float64Array(len); for (let i = 0; i < len; i++) { const s = fn(off + i); b[i] = s < -1 ? -1 : s > 1 ? 1 : s } return b } }
+  else jsFill = null
+  $('ejs').disabled = !jsFill
+  if (kind === 'js' && !jsFill) setKind('jz')
   return { ms, bytes: bytes.length }
+}
+// time the active engine's chunk fill — the live jz-vs-JS compute number in the HUD
+const fillMeasured = (len, off) => {
+  const f = kind === 'js' && jsFill ? jsFill : jzFill
+  const t0 = performance.now(); const out = f(len, off); const dt = performance.now() - t0
+  lastMs = lastMs ? lastMs * 0.85 + dt * 0.15 : dt
+  return out
 }
 const setStatus = (html) => { statusEl.innerHTML = html }
 const rebuild = (src) => {
@@ -436,9 +470,9 @@ const audio = () => {
   return actx
 }
 const schedule = () => {
-  if (!engine) return
+  if (!jzFill) return
   while (nextTime < actx.currentTime + 0.3) {
-    const out = engine(CHUNK, off)
+    const out = fillMeasured(CHUNK, off)
     const buf = actx.createBuffer(1, CHUNK, SR); buf.getChannelData(0).set(out)
     const s = actx.createBufferSource(); s.buffer = buf; s.connect(master); s.start(nextTime)
     queued.push(s); if (queued.length > 6) { try { queued.shift().stop() } catch {} }
@@ -454,7 +488,7 @@ const reflectPlay = () => {
 
 // ── visualizers ───────────────────────────────────────────────────────────────
 const VIS = makeVisualizers()
-let vis = VIS[2]   // spectrogram leads — the song's structure made visible
+let vis = VIS[0]   // spectrogram leads — the song's structure made visible
 const g2 = scope.getContext('2d')
 let W = 0, H = 0, dpr = 1
 const resize = () => {
@@ -473,12 +507,30 @@ const buildSwitch = () => {
   sw.querySelectorAll('button').forEach((b) => b.onclick = () => {
     vis = VIS.find((v) => v.id === b.dataset.id)
     sw.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
-    vis.resize(W, H, dpr)
+    vis.resize(W, H, dpr); renderVisOpts()
   })
 }
+// per-visualizer option segments (e.g. spectrogram log/mel), top-center over the signal
+const renderVisOpts = () => {
+  const c = $('visopts')
+  if (!vis.opts) { c.innerHTML = ''; return }
+  c.innerHTML = vis.opts.map((o) => `<div class="seg" data-key="${o.key}">${o.values.map((v) => `<button data-v="${v}"${v === o.cur ? ' class="on"' : ''}>${v}</button>`).join('')}</div>`).join('')
+  c.querySelectorAll('.seg').forEach((seg) => seg.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    const key = seg.dataset.key
+    vis.set(key, b.dataset.v)
+    const o = vis.opts.find((o) => o.key === key); if (o) o.cur = b.dataset.v
+    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
+  }))
+}
 
+const fpsEl = $('fps'), msEl = $('ms')
+let fps = 0, lastFrame = performance.now()
 const loop = () => {
   requestAnimationFrame(loop)
+  const now = performance.now(), dt = now - lastFrame; lastFrame = now
+  const inst = dt > 0 ? Math.min(1000 / dt, 240) : fps; fps += (inst - fps) * 0.1
+  fpsEl.textContent = fps >= 1 ? fps.toFixed(0) : '··'
+  msEl.textContent = lastMs ? lastMs.toFixed(lastMs < 10 ? 2 : 1) : '··'
   if (analyser && playing) { analyser.getFloatTimeDomainData(timeBuf); analyser.getByteFrequencyData(freqBuf) }
   else { timeBuf.fill(0); freqBuf.fill(0) }
   vis.frame(g2, { time: timeBuf, freq: freqBuf, sr: actx ? actx.sampleRate : SR, W, H, dpr, accent: ACCENT, playing })
@@ -498,8 +550,8 @@ $('watClose').addEventListener('click', () => setWat(false))
 let tuneIdx = -1
 const fmtSr = (sr) => (sr % 1000 ? (sr / 1000).toFixed(2) : sr / 1000) + ' kHz'
 const buildLibrary = () => {
-  $('libcount').textContent = FLOATBEATS.length
-  $('liblist').innerHTML = FLOATBEATS.map((t, i) =>
+  $('libcount').textContent = LIBRARY.length
+  $('liblist').innerHTML = LIBRARY.map((t, i) =>
     `<button class="libitem" data-i="${i}"><span class="nm">${esc(t.name)}</span><span class="mt">${esc(t.by)} · ${fmtSr(t.sr)}</span></button>`
   ).join('') + `<button class="libitem new" data-i="-1"><span class="nm">＋ New formula</span><span class="mt">blank slate, 44.1 kHz</span></button>`
   $('liblist').querySelectorAll('.libitem').forEach((b) => b.onclick = () => { loadTune(+b.dataset.i); closeLib() })
@@ -513,12 +565,12 @@ const setSrc = (src, sr) => {
 const loadTune = (i) => {
   tuneIdx = i
   if (i < 0) { setSrc(DEFAULT, 44100); setTune('untitled', 'you', 44100) }
-  else { const t = FLOATBEATS[i]; setSrc(t.body, t.sr); setTune(t.name, t.by, t.sr) }
+  else { const t = LIBRARY[i]; setSrc(t.make ? t.make() : t.body, t.sr); setTune(t.name, t.by, t.sr) }
   markLibrary()
   if (playing) { stopStream(); startStream() }
 }
 const setTune = (name, by, sr) => { $('tune').innerHTML = `<b>${esc(name)}</b> <span>· ${esc(by)} · ${fmtSr(sr)}</span>` }
-const switchTune = (dir) => { const n = FLOATBEATS.length; loadTune(tuneIdx < 0 ? (dir > 0 ? 0 : n - 1) : (tuneIdx + dir + n) % n) }
+const switchTune = (dir) => { const n = LIBRARY.length; loadTune(tuneIdx < 0 ? (dir > 0 ? 0 : n - 1) : (tuneIdx + dir + n) % n) }
 
 const openLib = () => { $('library').classList.add('open'); $('scrim').classList.add('open') }
 const closeLib = () => { $('library').classList.remove('open'); $('scrim').classList.remove('open') }
@@ -529,6 +581,8 @@ $('scrim').addEventListener('click', closeLib)
 $('play').addEventListener('click', () => playing ? stopStream() : startStream())
 $('prev').addEventListener('click', () => switchTune(-1))
 $('next').addEventListener('click', () => switchTune(1))
+$('ejs').addEventListener('click', () => setKind('js'))
+$('ejz').addEventListener('click', () => setKind('jz'))
 srSel.addEventListener('change', () => { SR = +srSel.value; CHUNK = SR / 2 | 0; if (playing) { stopStream(); startStream() } })
 
 // ── editing: live recompile, Tab→2sp, Cmd/Ctrl+Enter toggles play ──────────────
@@ -567,13 +621,13 @@ $('share').addEventListener('click', async () => {
 })
 
 // ── boot ──────────────────────────────────────────────────────────────────────
-buildLibrary(); buildSwitch(); measureChar(); resize()
+buildLibrary(); buildSwitch(); renderVisOpts(); measureChar(); resize()
 const fromHash = () => {
   const h = location.hash.slice(1); if (!h) return false
   const dot = h.indexOf('.'); if (dot < 0) return false
   try {
     const sr = +h.slice(0, dot) || 44100, src = dec(h.slice(dot + 1))
-    const match = FLOATBEATS.findIndex((t) => t.body === src)
+    const match = LIBRARY.findIndex((t) => t.body === src)
     if (match >= 0) { loadTune(match); return true }
     tuneIdx = -1; setSrc(src, sr); setTune('shared', 'link', sr); return true
   } catch { return false }

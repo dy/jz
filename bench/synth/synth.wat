@@ -19,8 +19,10 @@
   (memory (export "memory") 1)
   (data
     (i32.const 0)
-    "NaNInfinity-Infinitytruefalsenullundefined[Array][Object]\00\00\00C\d2C\06\0a\00\00\00median_us=\00\00\c5\f23\f2\0a\00\00\00 checksum=\00\00gL^\e1\09\00\00\00 samples=\00\00\00\f1\cd\0b\fe\08\00\00\00 stages=d\d0\b3v\06\00\00\00 runs=\00\00\00\00\00\00\00\00\00\00\f1\cd\0b\fe\80\00\00\00\00\00\00\00\00\00\00\00C\d2C\06D\00\00\00d\d0\b3v\90\00\00\00\c5\f23\f2X\00\00\00\00\00\00\00\00\00\00\00gL^\e1l"
+    "NaNInfinity-Infinitytruefalsenullundefined[Array][Object]\00\00\00C\d2C\06\0a\00\00\00median_us=\00\00\c5\f23\f2\0a\00\00\00 checksum=\00\00gL^\e1\09\00\00\00 samples=\00\00\00\f1\cd\0b\fe\08\00\00\00 stages=d\d0\b3v\06\00\00\00 runs=\00\00\00\00\00\00\00\00\00\00\08\00\00\00\08\00\00\00\aeG\e1z\14Zp@\c3\f5(\5c\8fZr@\aeG\e1z\14\9at@H\e1z\14\ae\d3u@\00\00\00\00\00\80x@\00\00\00\00\00\80{@\aeG\e1z\14\de~@\00\00\00\00\00Z\80@\00\00\00\00\00\00\00\00\f1\cd\0b\fe\80\00\00\00\00\00\00\00\00\00\00\00C\d2C\06D\00\00\00d\d0\b3v\90\00\00\00\c5\f23\f2X\00\00\00\00\00\00\00\00\00\00\00gL^\e1l"
   )
+  (tag $__jz_err (param f64))
+  (export "__jz_last_err_bits" (global $__jz_last_err_bits))
   (table
     (export "__jz_table") 0 funcref
   )
@@ -29,60 +31,102 @@
     (mut i32)
     (i32.const 1024)
   )
-  (func $__str_copy
-    (param $src i64)
-    (param $dst i32)
-    (param $len i32)
-    (local $w i32)
+  (global $__jz_last_err_bits i64
+    (i64.const 0)
+  )
+  (func $__char_at
+    (param $ptr i64)
+    (param $i i32)
+    (result i32)
     (if
+      (result i32)
       (i64.ne
-        (i64.and (local.get $src) (i64.const 0x0000400000000000))
+        (i64.and (local.get $ptr) (i64.const 0x0000400000000000))
         (i64.const 0)
       )
       (then
-        ;; SSO: up to 4 chars packed in low 32 bits (LE byte order). Unroll: write 1/2/3/4 bytes
-        ;; depending on len. (len > 4 is rare/disallowed in practice — fallback handles up to 4.)
-        (local.set $w
-          (i32.wrap_i64 (local.get $src))
-        )
         (if
-          (i32.ge_u (local.get $len) (i32.const 4))
-          (then
-            (i32.store (local.get $dst) (local.get $w))
+          (result i32)
+          (i32.ge_u
+            (local.get $i)
+            (i32.and
+              (i32.wrap_i64
+                (i64.shr_u (local.get $ptr) (i64.const 32))
+              )
+              (i32.const 16383)
+            )
           )
+          (then (i32.const 0))
           (else
-            (if
-              (i32.eq (local.get $len) (i32.const 0))
-              (then (return))
-            )
-            (i32.store8 (local.get $dst) (local.get $w))
-            (if
-              (i32.eq (local.get $len) (i32.const 1))
-              (then (return))
-            )
-            (i32.store8 offset=1
-              (local.get $dst)
-              (i32.shr_u (local.get $w) (i32.const 8))
-            )
-            (if
-              (i32.eq (local.get $len) (i32.const 2))
-              (then (return))
-            )
-            (i32.store8 offset=2
-              (local.get $dst)
-              (i32.shr_u (local.get $w) (i32.const 16))
+            (i32.and
+              (i32.shr_u
+                (i32.wrap_i64
+                  (i64.and (local.get $ptr) (i64.const 4294967295))
+                )
+                (i32.shl (local.get $i) (i32.const 3))
+              )
+              (i32.const 0xFF)
             )
           )
         )
       )
       (else
-        ;; Heap STRING: memory.copy directly from string data
-        (memory.copy
-          (local.get $dst)
-          (i32.wrap_i64
-            (i64.and (local.get $src) (i64.const 4294967295))
+        (if
+          (result i32)
+          (i32.ge_u
+            (local.get $i)
+            ;; non-SSO length: view → aux[12:0]; own heap string → header at off-4
+            ;; (off<4 sentinel guards the literal-data-segment edge). Both arms
+            ;; are loop-invariant — V8 LICM hoists the whole select.
+            (if
+              (result i32)
+              (i64.ne
+                (i64.and (local.get $ptr) (i64.const 0x0000200000000000))
+                (i64.const 0)
+              )
+              (then
+                (i32.and
+                  (i32.wrap_i64
+                    (i64.shr_u (local.get $ptr) (i64.const 32))
+                  )
+                  (i32.const 8191)
+                )
+              )
+              (else
+                (if
+                  (result i32)
+                  (i32.lt_u
+                    (i32.wrap_i64
+                      (i64.and (local.get $ptr) (i64.const 4294967295))
+                    )
+                    (i32.const 4)
+                  )
+                  (then (i32.const 0))
+                  (else
+                    (i32.load
+                      (i32.sub
+                        (i32.wrap_i64
+                          (i64.and (local.get $ptr) (i64.const 4294967295))
+                        )
+                        (i32.const 4)
+                      )
+                    )
+                  )
+                )
+              )
+            )
           )
-          (local.get $len)
+          (then (i32.const 0))
+          (else
+            (i32.load8_u
+              (i32.add
+                (i32.wrap_i64
+                  (i64.and (local.get $ptr) (i64.const 4294967295))
+                )
+                (local.get $i)
+              )
+            )
+          )
         )
       )
     )
@@ -149,6 +193,64 @@
         )
       )
       (else (i32.const 0))
+    )
+  )
+  (func $__str_copy
+    (param $src i64)
+    (param $dst i32)
+    (param $len i32)
+    (local $w i32)
+    (if
+      (i64.ne
+        (i64.and (local.get $src) (i64.const 0x0000400000000000))
+        (i64.const 0)
+      )
+      (then
+        ;; SSO: up to 4 chars packed in low 32 bits (LE byte order). Unroll: write 1/2/3/4 bytes
+        ;; depending on len. (len > 4 is rare/disallowed in practice — fallback handles up to 4.)
+        (local.set $w
+          (i32.wrap_i64 (local.get $src))
+        )
+        (if
+          (i32.ge_u (local.get $len) (i32.const 4))
+          (then
+            (i32.store (local.get $dst) (local.get $w))
+          )
+          (else
+            (if
+              (i32.eq (local.get $len) (i32.const 0))
+              (then (return))
+            )
+            (i32.store8 (local.get $dst) (local.get $w))
+            (if
+              (i32.eq (local.get $len) (i32.const 1))
+              (then (return))
+            )
+            (i32.store8 offset=1
+              (local.get $dst)
+              (i32.shr_u (local.get $w) (i32.const 8))
+            )
+            (if
+              (i32.eq (local.get $len) (i32.const 2))
+              (then (return))
+            )
+            (i32.store8 offset=2
+              (local.get $dst)
+              (i32.shr_u (local.get $w) (i32.const 16))
+            )
+          )
+        )
+      )
+      (else
+        ;; Heap STRING: memory.copy directly from string data
+        (memory.copy
+          (local.get $dst)
+          (i32.wrap_i64
+            (i64.and (local.get $src) (i64.const 4294967295))
+          )
+          (local.get $len)
+        )
+      )
     )
   )
   (func $__alloc
@@ -240,39 +342,6 @@
     (call $__mkstr
       (local.get $src)
       (local.get $len)
-    )
-  )
-  (func $__mkptr
-    (param $type i32)
-    (param $aux i32)
-    (param $offset i32)
-    (result f64)
-    (f64.reinterpret_i64
-      (i64.or
-        (i64.const 0x7FF8000000000000)
-        (i64.or
-          (i64.shl
-            (i64.and
-              (i64.extend_i32_u (local.get $type))
-              (i64.const 15)
-            )
-            (i64.const 47)
-          )
-          (i64.or
-            (i64.shl
-              (i64.and
-                (i64.extend_i32_u (local.get $aux))
-                (i64.const 32767)
-              )
-              (i64.const 32)
-            )
-            (i64.and
-              (i64.extend_i32_u (local.get $offset))
-              (i64.const 4294967295)
-            )
-          )
-        )
-      )
     )
   )
   (func $__to_str
@@ -1032,60 +1101,38 @@
     )
     (local.get $val)
   )
-  (func $__ptr_offset
-    (param $ptr i64)
-    (result i32)
-    (local $off i32)
-    (local $t i32)
-    (local.set $off
-      (i32.wrap_i64
-        (i64.and (local.get $ptr) (i64.const 4294967295))
-      )
-    )
-    ;; ARRAY/SET/MAP/HASH can be reallocated on growth; follow the forwarding pointer
-    ;; (cap=-1 sentinel at -4, new offset at -8). Other types never forward, so they skip
-    ;; the loop; a well-formed ptr without forwarding pays one bounds + cap check per hop.
-    (local.set $t
-      (i32.wrap_i64
-        (i64.and
-          (i64.shr_u (local.get $ptr) (i64.const 47))
-          (i64.const 15)
-        )
-      )
-    )
-    (if
-      (i32.and
-        (i32.shl (i32.const 1) (local.get $t))
-        (i32.const 898)
-      )
-      (then
-        (if
-          (i32.and
-            (i32.ge_u (local.get $off) (i32.const 8))
-            (i32.le_u
-              (local.get $off)
-              (i32.shl (memory.size) (i32.const 16))
+  (func $__mkptr
+    (param $type i32)
+    (param $aux i32)
+    (param $offset i32)
+    (result f64)
+    (f64.reinterpret_i64
+      (i64.or
+        (i64.const 0x7FF8000000000000)
+        (i64.or
+          (i64.shl
+            (i64.and
+              (i64.extend_i32_u (local.get $type))
+              (i64.const 15)
             )
+            (i64.const 47)
           )
-          (then
-            (if
-              (i32.eq
-                (i32.load
-                  (i32.sub (local.get $off) (i32.const 4))
-                )
-                (i32.const -1)
+          (i64.or
+            (i64.shl
+              (i64.and
+                (i64.extend_i32_u (local.get $aux))
+                (i64.const 32767)
               )
-              (then
-                (local.set $off
-                  (call $__ptr_offset_fwd (local.get $off))
-                )
-              )
+              (i64.const 32)
+            )
+            (i64.and
+              (i64.extend_i32_u (local.get $offset))
+              (i64.const 4294967295)
             )
           )
         )
       )
     )
-    (local.get $off)
   )
   (func $__pow10
     (param $n i32)
@@ -1174,6 +1221,61 @@
     )
     (local.get $r)
   )
+  (func $__ptr_offset
+    (param $ptr i64)
+    (result i32)
+    (local $off i32)
+    (local $t i32)
+    (local.set $off
+      (i32.wrap_i64
+        (i64.and (local.get $ptr) (i64.const 4294967295))
+      )
+    )
+    ;; ARRAY/SET/MAP/HASH can be reallocated on growth; follow the forwarding pointer
+    ;; (cap=-1 sentinel at -4, new offset at -8). Other types never forward, so they skip
+    ;; the loop; a well-formed ptr without forwarding pays one bounds + cap check per hop.
+    (local.set $t
+      (i32.wrap_i64
+        (i64.and
+          (i64.shr_u (local.get $ptr) (i64.const 47))
+          (i64.const 15)
+        )
+      )
+    )
+    (if
+      (i32.and
+        (i32.shl (i32.const 1) (local.get $t))
+        (i32.const 898)
+      )
+      (then
+        (if
+          (i32.and
+            (i32.ge_u (local.get $off) (i32.const 8))
+            (i32.le_u
+              (local.get $off)
+              (i32.shl (memory.size) (i32.const 16))
+            )
+          )
+          (then
+            (if
+              (i32.eq
+                (i32.load
+                  (i32.sub (local.get $off) (i32.const 4))
+                )
+                (i32.const -1)
+              )
+              (then
+                (local.set $off
+                  (call $__ptr_offset_fwd (local.get $off))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+    (local.get $off)
+  )
   (func $__mkstr
     (param $buf i32)
     (param $len i32)
@@ -1246,772 +1348,1262 @@
       (local.get $i)
     )
   )
-  (func $multiplyMany
-    (param $a i32)
-    (param $b i32)
+  (func $render
     (param $out i32)
-    (param $iters i32)
     (result f64)
-    (local $atap2_0 f64)
-    (local $atap3_1 f64)
-    (local $atap4_2 f64)
-    (local $atap5_3 f64)
-    (local $atap6_4 f64)
-    (local $atap7_5 f64)
-    (local $atap8_6 f64)
-    (local $atap9_7 f64)
-    (local $atap10_8 f64)
-    (local $atap11_9 f64)
-    (local $atap12_10 f64)
-    (local $atap13_11 f64)
-    (local $atap14_12 f64)
-    (local $atap15_13 f64)
-    (local $atap16_14 f64)
-    (local $atap17_15 f64)
-    (local $btap18_0 f64)
-    (local $btap19_1 f64)
-    (local $btap20_2 f64)
-    (local $btap21_3 f64)
-    (local $btap22_4 f64)
-    (local $btap23_5 f64)
-    (local $btap24_6 f64)
-    (local $btap25_7 f64)
-    (local $btap26_8 f64)
-    (local $btap27_9 f64)
-    (local $btap28_10 f64)
-    (local $btap29_11 f64)
-    (local $btap30_12 f64)
-    (local $btap31_13 f64)
-    (local $btap32_14 f64)
-    (local $btap33_15 f64)
-    (local $outtap34_0 f64)
-    (local $outtap35_1 f64)
-    (local $outtap36_2 f64)
-    (local $outtap37_3 f64)
-    (local $outtap38_4 f64)
-    (local $outtap39_5 f64)
-    (local $outtap40_6 f64)
-    (local $outtap41_7 f64)
-    (local $outtap42_8 f64)
-    (local $outtap43_9 f64)
-    (local $outtap44_10 f64)
-    (local $outtap45_11 f64)
-    (local $outtap46_12 f64)
-    (local $outtap47_13 f64)
-    (local $outtap48_14 f64)
-    (local $outtap49_15 f64)
-    (local $n i32)
+    (local $x1 f64)
+    (local $x2 f64)
+    (local $y1 f64)
+    (local $y2 f64)
+    (local $note i32)
+    (local $freq f64)
+    (local $dph f64)
+    (local $ph f64)
+    (local $off i32)
+    (local $t i32)
     (local $s f64)
-    (local $t f64)
-    (local $__pe0 i32)
-    (local $__pe1 i32)
-    (local $__pe2 i32)
-    (local $__pe3 i32)
-    (local $__pe4 i32)
-    (local $__pe5 i32)
-    (local $__pe6 i32)
-    (local $__pe7 i32)
-    (local $__pe8 i32)
-    (local $__pe9 i32)
-    (local $__pe10 i32)
-    (local $__pe11 i32)
-    (local $__pe12 i32)
-    (local $__pe13 i32)
-    (local $__pe14 i32)
-    (local $__pe15 i32)
-    (local $__dot2_0 v128)
-    (local $__dotadd_1 f64)
-    (local $__dotpair_2 v128)
-    (local $__dotpair_3 v128)
-    (local $__dotpair_4 v128)
-    (local $__dotpair_5 v128)
-    (local $__dot2_6 v128)
-    (local $__dotpair_7 v128)
-    (local $__dotpair_8 v128)
-    (local $__dotpair_9 v128)
-    (local $__dotpair_10 v128)
-    (local $__dot2_11 v128)
-    (local $__dot2_12 v128)
-    (local $__dot2_13 v128)
-    (local $__dot2_14 v128)
-    (local $__dot2_15 v128)
-    (local $__dot2_16 v128)
-    (local.set $atap2_0
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe0 (i32.const 0))
-        )
-      )
-    )
-    (local.set $atap3_1
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe1 (i32.const 8))
-        )
-      )
-    )
-    (local.set $atap4_2
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe2 (i32.const 16))
-        )
-      )
-    )
-    (local.set $atap5_3
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe3 (i32.const 24))
-        )
-      )
-    )
-    (local.set $atap6_4
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe4 (i32.const 32))
-        )
-      )
-    )
-    (local.set $atap7_5
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe5 (i32.const 40))
-        )
-      )
-    )
-    (local.set $atap8_6
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe6 (i32.const 48))
-        )
-      )
-    )
-    (local.set $atap9_7
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe7 (i32.const 56))
-        )
-      )
-    )
-    (local.set $atap10_8
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe8 (i32.const 64))
-        )
-      )
-    )
-    (local.set $atap11_9
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe9 (i32.const 72))
-        )
-      )
-    )
-    (local.set $atap12_10
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe10 (i32.const 80))
-        )
-      )
-    )
-    (local.set $atap13_11
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe11 (i32.const 88))
-        )
-      )
-    )
-    (local.set $atap14_12
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe12 (i32.const 96))
-        )
-      )
-    )
-    (local.set $atap15_13
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe13 (i32.const 104))
-        )
-      )
-    )
-    (local.set $atap16_14
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe14 (i32.const 112))
-        )
-      )
-    )
-    (local.set $atap17_15
-      (f64.load
-        (i32.add
-          (local.get $a)
-          (local.tee $__pe15 (i32.const 120))
-        )
-      )
-    )
-    (local.set $btap18_0
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe0))
-      )
-    )
-    (local.set $btap19_1
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe1))
-      )
-    )
-    (local.set $btap20_2
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe2))
-      )
-    )
-    (local.set $btap21_3
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe3))
-      )
-    )
-    (local.set $btap22_4
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe4))
-      )
-    )
-    (local.set $btap23_5
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe5))
-      )
-    )
-    (local.set $btap24_6
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe6))
-      )
-    )
-    (local.set $btap25_7
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe7))
-      )
-    )
-    (local.set $btap26_8
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe8))
-      )
-    )
-    (local.set $btap27_9
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe9))
-      )
-    )
-    (local.set $btap28_10
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe10))
-      )
-    )
-    (local.set $btap29_11
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe11))
-      )
-    )
-    (local.set $btap30_12
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe12))
-      )
-    )
-    (local.set $btap31_13
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe13))
-      )
-    )
-    (local.set $btap32_14
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe14))
-      )
-    )
-    (local.set $btap33_15
-      (f64.load
-        (i32.add (local.get $b) (local.get $__pe15))
-      )
-    )
-    (local.set $outtap34_0
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe0))
-      )
-    )
-    (local.set $outtap35_1
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe1))
-      )
-    )
-    (local.set $outtap36_2
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe2))
-      )
-    )
-    (local.set $outtap37_3
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe3))
-      )
-    )
-    (local.set $outtap38_4
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe4))
-      )
-    )
-    (local.set $outtap39_5
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe5))
-      )
-    )
-    (local.set $outtap40_6
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe6))
-      )
-    )
-    (local.set $outtap41_7
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe7))
-      )
-    )
-    (local.set $outtap42_8
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe8))
-      )
-    )
-    (local.set $outtap43_9
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe9))
-      )
-    )
-    (local.set $outtap44_10
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe10))
-      )
-    )
-    (local.set $outtap45_11
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe11))
-      )
-    )
-    (local.set $outtap46_12
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe12))
-      )
-    )
-    (local.set $outtap47_13
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe13))
-      )
-    )
-    (local.set $outtap48_14
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe14))
-      )
-    )
-    (local.set $outtap49_15
-      (f64.load
-        (i32.add (local.get $out) (local.get $__pe15))
-      )
-    )
+    (local $y f64)
+    (local $ab1 i32)
+    (local $ai2 i32)
+    (local $inf3 f64)
+    (local $_pg2 f64)
+    (local $_pg1 i32)
+    (local $_pg0 i32)
+    (local $__inl1_v i64)
+    (local $__inl1_t i32)
+    (local $__inl1_len i32)
+    (local $__inl1_i i32)
+    (local $__inl1_c i32)
+    (local $__inl1_neg i32)
+    (local $__inl1_seen i32)
+    (local $__inl1_exp i32)
+    (local $__inl1_expNeg i32)
+    (local $__inl1_expDigits i32)
+    (local $__inl1_dot i32)
+    (local $__inl1_sigDigits i32)
+    (local $__inl1_decExp i32)
+    (local $__inl1_dropped i32)
+    (local $__inl1_round i32)
+    (local $__inl1_radix i32)
+    (local $__inl1_digit i32)
+    (local $__inl1_sbase i32)
+    (local $__inl1_result f64)
+    (local $__inl1_f f64)
+    (local $__inl1_mant i64)
+    (local $__inl13_q f64)
+    (local $__inl13_m f64)
+    (local $__inl13_phi f64)
+    (local $__inl13_p2 f64)
+    (local $__inl13_sp f64)
+    (local $__inl13_cp f64)
+    (local $__inl13_r i32)
+    (local $__inl13_ng0 f64)
+    (local $__inl13_ng1 f64)
+    (local $__li0 i32)
+    (local $__li1 f64)
+    (local $__li2 i32)
+    (local $__li3 i32)
+    (local $__li4 i32)
+    (local $__li5 f64)
+    (local $__li6 i32)
+    (local $__li7 f64)
+    (local $__li8 i32)
+    (local.set $_pg0 (i32.const 8192))
+    (local.set $_pg1 (i32.const 400))
+    (local.set $_pg2 (f64.const 0.6))
     (block $brk0
       (loop $loop0
         (br_if $brk0
           (i32.eqz
-            (i32.lt_s (local.get $n) (i32.const 200000))
+            (i32.lt_s (local.get $note) (i32.const 64))
           )
         )
-        (local.set $__dotadd_1
+        (local.set $freq
           (f64.mul
-            (f64.convert_i32_s (local.get $n))
-            (f64.const 1e-7)
+            (block $__inl1
+              (result f64)
+              (local.set $__inl1_v
+                (i64.reinterpret_f64
+                  (if
+                    (result f64)
+                    (i32.lt_u
+                      (local.tee $ai2
+                        (i32.and
+                          (i32.add
+                            (i32.mul (local.get $note) (i32.const 3))
+                            (i32.const 1)
+                          )
+                          (i32.const 7)
+                        )
+                      )
+                      (i32.load
+                        (i32.sub
+                          (local.tee $ab1
+                            (call $__ptr_offset (i64.const 0x7ff88000000000a8))
+                          )
+                          (i32.const 8)
+                        )
+                      )
+                    )
+                    (then
+                      (f64.load
+                        (i32.add
+                          (local.get $ab1)
+                          (i32.shl (local.get $ai2) (i32.const 3))
+                        )
+                      )
+                    )
+                    (else (f64.const nan:0x7FF8000200000000))
+                  )
+                )
+              )
+              (local.set $__inl1_c (i32.const 0))
+              (local.set $__inl1_neg (i32.const 0))
+              (local.set $__inl1_seen (i32.const 0))
+              (local.set $__inl1_exp (i32.const 0))
+              (local.set $__inl1_expNeg (i32.const 0))
+              (local.set $__inl1_expDigits (i32.const 0))
+              (local.set $__inl1_dot (i32.const 0))
+              (local.set $__inl1_sigDigits (i32.const 0))
+              (local.set $__inl1_decExp (i32.const 0))
+              (local.set $__inl1_dropped (i32.const 0))
+              (local.set $__inl1_round (i32.const 0))
+              (local.set $__inl1_radix (i32.const 0))
+              (local.set $__inl1_digit (i32.const 0))
+              (local.set $__inl1_result (f64.const 0))
+              (local.set $__inl1_mant (i64.const 0))
+              (local.set $__inl1_f
+                (f64.reinterpret_i64 (local.get $__inl1_v))
+              )
+              (if
+                (f64.eq (local.get $__inl1_f) (local.get $__inl1_f))
+                (then
+                  (br $__inl1 (local.get $__inl1_f))
+                )
+              )
+              (if
+                (i64.eq (local.get $__inl1_v) (i64.const 0x7FF8000100000000))
+                (then
+                  (br $__inl1 (f64.const 0))
+                )
+              )
+              (if
+                (i64.eq (local.get $__inl1_v) (i64.const 0x7FF8000200000000))
+                (then
+                  (br $__inl1 (f64.const nan))
+                )
+              )
+              (if
+                (i64.eq (local.get $__inl1_v) (i64.const 0x7FF8000400000000))
+                (then
+                  (br $__inl1 (f64.const 0))
+                )
+              )
+              (if
+                (i64.eq (local.get $__inl1_v) (i64.const 0x7FF8000500000000))
+                (then
+                  (br $__inl1 (f64.const 1))
+                )
+              )
+              (local.set $__inl1_t
+                (i32.and
+                  (i32.wrap_i64
+                    (i64.shr_u (local.get $__inl1_v) (i64.const 47))
+                  )
+                  (i32.const 15)
+                )
+              )
+              ;; ToNumber(Symbol) is a TypeError. A Symbol is an ATOM (type 0) with a user
+              ;; atom-id (>= 16); null/undefined returned above, and a bare NaN carries
+              ;; aux 0, so type==0 && aux>=16 uniquely identifies a Symbol.
+              (if
+                (i32.and
+                  (i32.eqz (local.get $__inl1_t))
+                  (i32.ge_u
+                    (i32.and
+                      (i32.wrap_i64
+                        (i64.shr_u (local.get $__inl1_v) (i64.const 32))
+                      )
+                      (i32.const 32767)
+                    )
+                    (i32.const 16)
+                  )
+                )
+                (then
+                  (throw $__jz_err (f64.const 0))
+                )
+              )
+              ;; Non-string values go through ToString per JS spec, then re-check the
+              ;; type in case ToString itself returned a non-string sentinel.
+              (if
+                (i32.ne (local.get $__inl1_t) (i32.const 4))
+                (then
+                  (local.set $__inl1_v
+                    (call $__to_str (local.get $__inl1_v))
+                  )
+                  (local.set $__inl1_t
+                    (i32.and
+                      (i32.wrap_i64
+                        (i64.shr_u (local.get $__inl1_v) (i64.const 47))
+                      )
+                      (i32.const 15)
+                    )
+                  )
+                  (if
+                    (i32.ne (local.get $__inl1_t) (i32.const 4))
+                    (then
+                      (br $__inl1 (f64.const nan))
+                    )
+                  )
+                )
+              )
+              (local.set $__inl1_len
+                (call $__str_byteLen (local.get $__inl1_v))
+              )
+              (local.set $__inl1_sbase
+                (i32.wrap_i64
+                  (i64.and (local.get $__inl1_v) (i64.const 4294967295))
+                )
+              )
+              ;; Trim leading whitespace. An empty / all-whitespace string is +0.
+              (local.set $__inl1_i
+                (call $__skipws
+                  (local.get $__inl1_v)
+                  (i32.const 0)
+                  (local.get $__inl1_len)
+                )
+              )
+              (if
+                (i32.ge_s (local.get $__inl1_i) (local.get $__inl1_len))
+                (then
+                  (br $__inl1 (f64.const 0))
+                )
+              )
+              ;; NonDecimalIntegerLiteral (0x / 0o / 0b). Per the grammar no sign may
+              ;; precede the prefix, so it is matched before sign consumption.
+              (if
+                (i32.and
+                  (i32.lt_s
+                    (i32.add (local.get $__inl1_i) (i32.const 1))
+                    (local.get $__inl1_len)
+                  )
+                  (i32.eq
+                    (if
+                      (result i32)
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                      (then
+                        (i32.load8_u
+                          (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                        )
+                      )
+                      (else
+                        (call $__char_at
+                          (local.get $__inl1_v)
+                          (local.get $__inl1_i)
+                        )
+                      )
+                    )
+                    (i32.const 48)
+                  )
+                )
+                (then
+                  (local.set $__inl1_c
+                    (if
+                      (result i32)
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                      (then
+                        (i32.load8_u
+                          (i32.add
+                            (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                            (i32.const 1)
+                          )
+                        )
+                      )
+                      (else
+                        (call $__char_at
+                          (local.get $__inl1_v)
+                          (i32.add (local.get $__inl1_i) (i32.const 1))
+                        )
+                      )
+                    )
+                  )
+                  (if
+                    (i32.or
+                      (i32.eq (local.get $__inl1_c) (i32.const 120))
+                      (i32.eq (local.get $__inl1_c) (i32.const 88))
+                    )
+                    (then
+                      (local.set $__inl1_radix (i32.const 16))
+                    )
+                  )
+                  (if
+                    (i32.or
+                      (i32.eq (local.get $__inl1_c) (i32.const 111))
+                      (i32.eq (local.get $__inl1_c) (i32.const 79))
+                    )
+                    (then
+                      (local.set $__inl1_radix (i32.const 8))
+                    )
+                  )
+                  (if
+                    (i32.or
+                      (i32.eq (local.get $__inl1_c) (i32.const 98))
+                      (i32.eq (local.get $__inl1_c) (i32.const 66))
+                    )
+                    (then
+                      (local.set $__inl1_radix (i32.const 2))
+                    )
+                  )
+                )
+              )
+              (if
+                (local.get $__inl1_radix)
+                (then
+                  (local.set $__inl1_i
+                    (i32.add (local.get $__inl1_i) (i32.const 2))
+                  )
+                  (block $__inl1L_ndDone
+                    (local.set $__li0
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                    )
+                    (local.set $__li1
+                      (f64.convert_i32_s (local.get $__inl1_radix))
+                    )
+                    (loop $__inl1L_ndLoop
+                      (br_if $__inl1L_ndDone
+                        (i32.ge_s (local.get $__inl1_i) (local.get $__inl1_len))
+                      )
+                      (local.set $__inl1_c
+                        (if
+                          (result i32)
+                          (local.get $__li0)
+                          (then
+                            (i32.load8_u
+                              (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                            )
+                          )
+                          (else
+                            (call $__char_at
+                              (local.get $__inl1_v)
+                              (local.get $__inl1_i)
+                            )
+                          )
+                        )
+                      )
+                      ;; Decode digit; 99 sentinel for any non-[0-9a-fA-F] char so the
+                      ;; unsigned ">= radix" test rejects it and any out-of-base digit.
+                      (local.set $__inl1_digit
+                        (if
+                          (result i32)
+                          (i32.and
+                            (i32.ge_s (local.get $__inl1_c) (i32.const 48))
+                            (i32.le_s (local.get $__inl1_c) (i32.const 57))
+                          )
+                          (then
+                            (i32.sub (local.get $__inl1_c) (i32.const 48))
+                          )
+                          (else
+                            (if
+                              (result i32)
+                              (i32.and
+                                (i32.ge_s (local.get $__inl1_c) (i32.const 97))
+                                (i32.le_s (local.get $__inl1_c) (i32.const 102))
+                              )
+                              (then
+                                (i32.sub (local.get $__inl1_c) (i32.const 87))
+                              )
+                              (else
+                                (if
+                                  (result i32)
+                                  (i32.and
+                                    (i32.ge_s (local.get $__inl1_c) (i32.const 65))
+                                    (i32.le_s (local.get $__inl1_c) (i32.const 70))
+                                  )
+                                  (then
+                                    (i32.sub (local.get $__inl1_c) (i32.const 55))
+                                  )
+                                  (else (i32.const 99))
+                                )
+                              )
+                            )
+                          )
+                        )
+                      )
+                      (br_if $__inl1L_ndDone
+                        (i32.ge_u (local.get $__inl1_digit) (local.get $__inl1_radix))
+                      )
+                      (local.set $__inl1_result
+                        (f64.add
+                          (f64.mul (local.get $__inl1_result) (local.get $__li1))
+                          (f64.convert_i32_s (local.get $__inl1_digit))
+                        )
+                      )
+                      (local.set $__inl1_seen (i32.const 1))
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                      (br $__inl1L_ndLoop)
+                    )
+                  )
+                  ;; No digits, or trailing non-whitespace ("0b1.0", "0xg") → NaN.
+                  (if
+                    (i32.eqz (local.get $__inl1_seen))
+                    (then
+                      (br $__inl1 (f64.const nan))
+                    )
+                  )
+                  (local.set $__inl1_i
+                    (call $__skipws
+                      (local.get $__inl1_v)
+                      (local.get $__inl1_i)
+                      (local.get $__inl1_len)
+                    )
+                  )
+                  (if
+                    (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                    (then
+                      (br $__inl1 (f64.const nan))
+                    )
+                  )
+                  (br $__inl1 (local.get $__inl1_result))
+                )
+              )
+              ;; Sign (StrDecimalLiteral only).
+              (if
+                (i32.eq
+                  (if
+                    (result i32)
+                    (i64.eqz
+                      (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                    )
+                    (then
+                      (i32.load8_u
+                        (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                      )
+                    )
+                    (else
+                      (call $__char_at
+                        (local.get $__inl1_v)
+                        (local.get $__inl1_i)
+                      )
+                    )
+                  )
+                  (i32.const 45)
+                )
+                (then
+                  (local.set $__inl1_neg (i32.const 1))
+                  (local.set $__inl1_i
+                    (i32.add (local.get $__inl1_i) (i32.const 1))
+                  )
+                )
+              )
+              (if
+                (i32.eq
+                  (if
+                    (result i32)
+                    (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                    (then
+                      (if
+                        (result i32)
+                        (i64.eqz
+                          (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                        )
+                        (then
+                          (i32.load8_u
+                            (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                          )
+                        )
+                        (else
+                          (call $__char_at
+                            (local.get $__inl1_v)
+                            (local.get $__inl1_i)
+                          )
+                        )
+                      )
+                    )
+                    (else (i32.const 0))
+                  )
+                  (i32.const 43)
+                )
+                (then
+                  (local.set $__inl1_i
+                    (i32.add (local.get $__inl1_i) (i32.const 1))
+                  )
+                )
+              )
+              ;; "Infinity" — the only non-numeric token ToNumber accepts. The 8 letters
+              ;; are packed little-endian in one i64; any mismatch, short input, or
+              ;; trailing non-whitespace makes the whole string NaN.
+              (if
+                (i32.eq
+                  (if
+                    (result i32)
+                    (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                    (then
+                      (if
+                        (result i32)
+                        (i64.eqz
+                          (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                        )
+                        (then
+                          (i32.load8_u
+                            (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                          )
+                        )
+                        (else
+                          (call $__char_at
+                            (local.get $__inl1_v)
+                            (local.get $__inl1_i)
+                          )
+                        )
+                      )
+                    )
+                    (else (i32.const 0))
+                  )
+                  (i32.const 73)
+                )
+                (then
+                  (block $__inl1L_infBad
+                    (local.set $__inl1_digit (i32.const 0))
+                    (local.set $__li2
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                    )
+                    (loop $__inl1L_infl
+                      (if
+                        (i32.lt_s (local.get $__inl1_digit) (i32.const 8))
+                        (then
+                          (br_if $__inl1L_infBad
+                            (i32.ge_s
+                              (i32.add (local.get $__inl1_i) (local.get $__inl1_digit))
+                              (local.get $__inl1_len)
+                            )
+                          )
+                          (br_if $__inl1L_infBad
+                            (i32.ne
+                              (if
+                                (result i32)
+                                (local.get $__li2)
+                                (then
+                                  (i32.load8_u
+                                    (i32.add
+                                      (local.get $__inl1_sbase)
+                                      (i32.add (local.get $__inl1_i) (local.get $__inl1_digit))
+                                    )
+                                  )
+                                )
+                                (else
+                                  (call $__char_at
+                                    (local.get $__inl1_v)
+                                    (i32.add (local.get $__inl1_i) (local.get $__inl1_digit))
+                                  )
+                                )
+                              )
+                              (i32.and
+                                (i32.wrap_i64
+                                  (i64.shr_u
+                                    (i64.const 0x7974696e69666e49)
+                                    (i64.extend_i32_u
+                                      (i32.shl (local.get $__inl1_digit) (i32.const 3))
+                                    )
+                                  )
+                                )
+                                (i32.const 255)
+                              )
+                            )
+                          )
+                          (local.set $__inl1_digit
+                            (i32.add (local.get $__inl1_digit) (i32.const 1))
+                          )
+                          (br $__inl1L_infl)
+                        )
+                      )
+                    )
+                    (local.set $__inl1_i
+                      (call $__skipws
+                        (local.get $__inl1_v)
+                        (i32.add (local.get $__inl1_i) (i32.const 8))
+                        (local.get $__inl1_len)
+                      )
+                    )
+                    (br_if $__inl1L_infBad
+                      (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                    )
+                    (br $__inl1
+                      (if
+                        (result f64)
+                        (local.get $__inl1_neg)
+                        (then (f64.const -inf))
+                        (else (f64.const inf))
+                      )
+                    )
+                  )
+                  (br $__inl1 (f64.const nan))
+                )
+              )
+              ;; Decimal significand. Keep 18 significant decimal digits, track the
+              ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
+              (block $__inl1L_numDone
+                (local.set $__li3
+                  (i64.eqz
+                    (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                  )
+                )
+                (loop $__inl1L_numLoop
+                  (br_if $__inl1L_numDone
+                    (i32.ge_s (local.get $__inl1_i) (local.get $__inl1_len))
+                  )
+                  (local.set $__inl1_c
+                    (if
+                      (result i32)
+                      (local.get $__li3)
+                      (then
+                        (i32.load8_u
+                          (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                        )
+                      )
+                      (else
+                        (call $__char_at
+                          (local.get $__inl1_v)
+                          (local.get $__inl1_i)
+                        )
+                      )
+                    )
+                  )
+                  (if
+                    (i32.and
+                      (i32.eq (local.get $__inl1_c) (i32.const 46))
+                      (i32.eqz (local.get $__inl1_dot))
+                    )
+                    (then
+                      (local.set $__inl1_dot (i32.const 1))
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                      (br $__inl1L_numLoop)
+                    )
+                  )
+                  (br_if $__inl1L_numDone
+                    (i32.or
+                      (i32.lt_s (local.get $__inl1_c) (i32.const 48))
+                      (i32.gt_s (local.get $__inl1_c) (i32.const 57))
+                    )
+                  )
+                  (local.set $__inl1_seen (i32.const 1))
+                  (local.set $__inl1_c
+                    (i32.sub (local.get $__inl1_c) (i32.const 48))
+                  )
+                  (if
+                    (i32.and
+                      (i32.eqz (local.get $__inl1_sigDigits))
+                      (i32.eqz (local.get $__inl1_c))
+                    )
+                    (then
+                      (if
+                        (local.get $__inl1_dot)
+                        (then
+                          (local.set $__inl1_decExp
+                            (i32.sub (local.get $__inl1_decExp) (i32.const 1))
+                          )
+                        )
+                      )
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                      (br $__inl1L_numLoop)
+                    )
+                  )
+                  ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
+                  ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
+                  ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
+                  (if
+                    (i32.lt_s (local.get $__inl1_sigDigits) (i32.const 18))
+                    (then
+                      (local.set $__inl1_mant
+                        (i64.add
+                          (i64.mul (local.get $__inl1_mant) (i64.const 10))
+                          (i64.extend_i32_s (local.get $__inl1_c))
+                        )
+                      )
+                      (local.set $__inl1_sigDigits
+                        (i32.add (local.get $__inl1_sigDigits) (i32.const 1))
+                      )
+                      (if
+                        (local.get $__inl1_dot)
+                        (then
+                          (local.set $__inl1_decExp
+                            (i32.sub (local.get $__inl1_decExp) (i32.const 1))
+                          )
+                        )
+                      )
+                    )
+                    (else
+                      (if
+                        (i32.eqz (local.get $__inl1_dropped))
+                        (then
+                          (if
+                            (i32.ge_s (local.get $__inl1_c) (i32.const 5))
+                            (then
+                              (local.set $__inl1_round (i32.const 1))
+                            )
+                          )
+                        )
+                      )
+                      (local.set $__inl1_dropped (i32.const 1))
+                      (if
+                        (i32.eqz (local.get $__inl1_dot))
+                        (then
+                          (local.set $__inl1_decExp
+                            (i32.add (local.get $__inl1_decExp) (i32.const 1))
+                          )
+                        )
+                      )
+                    )
+                  )
+                  (local.set $__inl1_i
+                    (i32.add (local.get $__inl1_i) (i32.const 1))
+                  )
+                  (br $__inl1L_numLoop)
+                )
+              )
+              ;; No digits — the literal was a bare sign or stray text ("abc", "+") → NaN.
+              ;; (Empty / all-whitespace strings already returned +0 above.)
+              (if
+                (i32.eqz (local.get $__inl1_seen))
+                (then
+                  (br $__inl1 (f64.const nan))
+                )
+              )
+              (if
+                (local.get $__inl1_round)
+                (then
+                  (local.set $__inl1_mant
+                    (i64.add (local.get $__inl1_mant) (i64.const 1))
+                  )
+                )
+              )
+              (local.set $__inl1_result
+                (f64.convert_i64_u (local.get $__inl1_mant))
+              )
+              ;; Scientific notation. 'e'/'E' commits to an ExponentPart — at least one
+              ;; digit must follow ("1e", "5e+" are NaN).
+              (local.set $__inl1_c
+                (if
+                  (result i32)
+                  (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                  (then
+                    (if
+                      (result i32)
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                      (then
+                        (i32.load8_u
+                          (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                        )
+                      )
+                      (else
+                        (call $__char_at
+                          (local.get $__inl1_v)
+                          (local.get $__inl1_i)
+                        )
+                      )
+                    )
+                  )
+                  (else (i32.const 0))
+                )
+              )
+              (if
+                (i32.or
+                  (i32.eq (local.get $__inl1_c) (i32.const 101))
+                  (i32.eq (local.get $__inl1_c) (i32.const 69))
+                )
+                (then
+                  (local.set $__inl1_i
+                    (i32.add (local.get $__inl1_i) (i32.const 1))
+                  )
+                  (if
+                    (i32.eq
+                      (if
+                        (result i32)
+                        (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                        (then
+                          (if
+                            (result i32)
+                            (i64.eqz
+                              (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                            )
+                            (then
+                              (i32.load8_u
+                                (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                              )
+                            )
+                            (else
+                              (call $__char_at
+                                (local.get $__inl1_v)
+                                (local.get $__inl1_i)
+                              )
+                            )
+                          )
+                        )
+                        (else (i32.const 0))
+                      )
+                      (i32.const 45)
+                    )
+                    (then
+                      (local.set $__inl1_expNeg (i32.const 1))
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                    )
+                  )
+                  (if
+                    (i32.eq
+                      (if
+                        (result i32)
+                        (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                        (then
+                          (if
+                            (result i32)
+                            (i64.eqz
+                              (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                            )
+                            (then
+                              (i32.load8_u
+                                (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                              )
+                            )
+                            (else
+                              (call $__char_at
+                                (local.get $__inl1_v)
+                                (local.get $__inl1_i)
+                              )
+                            )
+                          )
+                        )
+                        (else (i32.const 0))
+                      )
+                      (i32.const 43)
+                    )
+                    (then
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                    )
+                  )
+                  (block $__inl1L_expDone
+                    (local.set $__li4
+                      (i64.eqz
+                        (i64.and (local.get $__inl1_v) (i64.const 0x0000400000000000))
+                      )
+                    )
+                    (loop $__inl1L_expLoop
+                      (br_if $__inl1L_expDone
+                        (i32.ge_s (local.get $__inl1_i) (local.get $__inl1_len))
+                      )
+                      (local.set $__inl1_c
+                        (if
+                          (result i32)
+                          (local.get $__li4)
+                          (then
+                            (i32.load8_u
+                              (i32.add (local.get $__inl1_sbase) (local.get $__inl1_i))
+                            )
+                          )
+                          (else
+                            (call $__char_at
+                              (local.get $__inl1_v)
+                              (local.get $__inl1_i)
+                            )
+                          )
+                        )
+                      )
+                      (br_if $__inl1L_expDone
+                        (i32.or
+                          (i32.lt_s (local.get $__inl1_c) (i32.const 48))
+                          (i32.gt_s (local.get $__inl1_c) (i32.const 57))
+                        )
+                      )
+                      (local.set $__inl1_exp
+                        (i32.add
+                          (i32.mul (local.get $__inl1_exp) (i32.const 10))
+                          (i32.sub (local.get $__inl1_c) (i32.const 48))
+                        )
+                      )
+                      (local.set $__inl1_expDigits
+                        (i32.add (local.get $__inl1_expDigits) (i32.const 1))
+                      )
+                      (local.set $__inl1_i
+                        (i32.add (local.get $__inl1_i) (i32.const 1))
+                      )
+                      (br $__inl1L_expLoop)
+                    )
+                  )
+                  (if
+                    (i32.eqz (local.get $__inl1_expDigits))
+                    (then
+                      (br $__inl1 (f64.const nan))
+                    )
+                  )
+                  (if
+                    (local.get $__inl1_expNeg)
+                    (then
+                      (local.set $__inl1_decExp
+                        (i32.sub (local.get $__inl1_decExp) (local.get $__inl1_exp))
+                      )
+                    )
+                    (else
+                      (local.set $__inl1_decExp
+                        (i32.add (local.get $__inl1_decExp) (local.get $__inl1_exp))
+                      )
+                    )
+                  )
+                )
+              )
+              ;; Reject trailing non-whitespace ("5px", numeric separators "1_0", …).
+              (local.set $__inl1_i
+                (call $__skipws
+                  (local.get $__inl1_v)
+                  (local.get $__inl1_i)
+                  (local.get $__inl1_len)
+                )
+              )
+              (if
+                (i32.lt_s (local.get $__inl1_i) (local.get $__inl1_len))
+                (then
+                  (br $__inl1 (f64.const nan))
+                )
+              )
+              (if
+                (i32.gt_s (local.get $__inl1_decExp) (i32.const 0))
+                (then
+                  (local.set $__inl1_result
+                    (f64.mul
+                      (local.get $__inl1_result)
+                      (call $__pow10 (local.get $__inl1_decExp))
+                    )
+                  )
+                )
+              )
+              (if
+                (i32.lt_s (local.get $__inl1_decExp) (i32.const 0))
+                (then
+                  (local.set $__inl1_result
+                    (f64.div
+                      (local.get $__inl1_result)
+                      (call $__pow10
+                        (i32.sub (i32.const 0) (local.get $__inl1_decExp))
+                      )
+                    )
+                  )
+                )
+              )
+              (if
+                (result f64)
+                (local.get $__inl1_neg)
+                (then
+                  (f64.neg (local.get $__inl1_result))
+                )
+                (else (local.get $__inl1_result))
+              )
+            )
+            (f64.convert_i32_s
+              (select
+                (i32.const 2)
+                (i32.const 1)
+                (i32.ne
+                  (i32.and
+                    (i32.shr_s (local.get $note) (i32.const 2))
+                    (i32.const 1)
+                  )
+                  (i32.const 0)
+                )
+              )
+            )
           )
         )
-        (local.set $__dotpair_2
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap18_0))
-            (local.get $btap19_1)
-          )
+        (local.set $dph
+          (f64.div (local.get $freq) (f64.const 44100))
         )
-        (local.set $__dotpair_3
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap22_4))
-            (local.get $btap23_5)
-          )
-        )
-        (local.set $__dotpair_4
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap26_8))
-            (local.get $btap27_9)
-          )
-        )
-        (local.set $__dotpair_5
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap30_12))
-            (local.get $btap31_13)
-          )
-        )
-        (local.set $__dot2_0
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap5_3))
-              (local.get $__dotpair_5)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap4_2))
-                (local.get $__dotpair_4)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap3_1))
-                  (local.get $__dotpair_3)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap2_0))
-                    (local.get $__dotpair_2)
+        (local.set $ph (f64.const 0))
+        (local.set $off
+          (select
+            (i32.wrap_i64
+              (i64.trunc_sat_f64_s
+                (local.tee $inf3
+                  (f64.mul
+                    (f64.convert_i32_s (local.get $note))
+                    (f64.convert_i32_s (local.get $_pg0))
                   )
                 )
               )
             )
-            (f64x2.splat (local.get $__dotadd_1))
+            (i32.const 0)
+            (f64.ne (local.get $inf3) (f64.const Infinity))
           )
         )
-        (local.set $outtap34_0
-          (f64x2.extract_lane 0 (local.get $__dot2_0))
-        )
-        (local.set $outtap35_1
-          (f64x2.extract_lane 1 (local.get $__dot2_0))
-        )
-        (local.set $__dotpair_7
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap20_2))
-            (local.get $btap21_3)
+        (local.set $t (i32.const 0))
+        (block $brk4
+          (local.set $__li5
+            (f64.convert_i32_s (local.get $_pg1))
           )
-        )
-        (local.set $__dotpair_8
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap24_6))
-            (local.get $btap25_7)
+          (local.set $__li6
+            (i32.add (local.get $_pg1) (i32.const 1600))
           )
-        )
-        (local.set $__dotpair_9
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap28_10))
-            (local.get $btap29_11)
+          (local.set $__li7
+            (f64.sub (f64.const 1) (local.get $_pg2))
           )
-        )
-        (local.set $__dotpair_10
-          (f64x2.replace_lane 1
-            (f64x2.splat (local.get $btap32_14))
-            (local.get $btap33_15)
+          (local.set $__li8
+            (i32.sub (local.get $_pg0) (i32.const 2400))
           )
-        )
-        (local.set $__dot2_6
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap5_3))
-              (local.get $__dotpair_10)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap4_2))
-                (local.get $__dotpair_9)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap3_1))
-                  (local.get $__dotpair_8)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap2_0))
-                    (local.get $__dotpair_7)
+          (loop $loop4
+            (br_if $brk4
+              (i32.eqz
+                (i32.lt_s (local.get $t) (local.get $_pg0))
+              )
+            )
+            (local.set $s
+              (f64.mul
+                (block $__inl13
+                  (result f64)
+                  (local.set $__inl13_ng0 (f64.const 0))
+                  (local.set $__inl13_ng1 (f64.const 0))
+                  (local.set $__inl13_q
+                    (f64.mul (local.get $ph) (f64.const 4))
+                  )
+                  (local.set $__inl13_m
+                    (f64.floor
+                      (f64.add (local.get $__inl13_q) (f64.const 0.5))
+                    )
+                  )
+                  (local.set $__inl13_phi
+                    (f64.mul
+                      (f64.sub (local.get $__inl13_q) (local.get $__inl13_m))
+                      (f64.const 1.5707963267948966)
+                    )
+                  )
+                  (local.set $__inl13_p2
+                    (f64.mul (local.get $__inl13_phi) (local.get $__inl13_phi))
+                  )
+                  (local.set $__inl13_sp
+                    (f64.mul
+                      (local.get $__inl13_phi)
+                      (f64.add
+                        (f64.const 1)
+                        (f64.mul
+                          (local.get $__inl13_p2)
+                          (f64.add
+                            (f64.const -0.16666666666666666)
+                            (f64.mul
+                              (local.get $__inl13_p2)
+                              (f64.add
+                                (f64.const 0.008333333333333333)
+                                (f64.mul
+                                  (local.get $__inl13_p2)
+                                  (f64.add
+                                    (f64.const -0.0001984126984126984)
+                                    (f64.mul
+                                      (local.get $__inl13_p2)
+                                      (f64.add
+                                        (f64.const 0.0000027557319223985893)
+                                        (f64.mul (local.get $__inl13_p2) (f64.const -2.505210838544172e-8))
+                                      )
+                                    )
+                                  )
+                                )
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                  (local.set $__inl13_cp
+                    (f64.add
+                      (f64.const 1)
+                      (f64.mul
+                        (local.get $__inl13_p2)
+                        (f64.add
+                          (f64.const -0.5)
+                          (f64.mul
+                            (local.get $__inl13_p2)
+                            (f64.add
+                              (f64.const 0.041666666666666664)
+                              (f64.mul
+                                (local.get $__inl13_p2)
+                                (f64.add
+                                  (f64.const -0.001388888888888889)
+                                  (f64.mul
+                                    (local.get $__inl13_p2)
+                                    (f64.add
+                                      (f64.const 0.0000248015873015873)
+                                      (f64.mul (local.get $__inl13_p2) (f64.const -2.7557319223985894e-7))
+                                    )
+                                  )
+                                )
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                  (local.set $__inl13_r
+                    (i32.and
+                      (select
+                        (i32.wrap_i64
+                          (i64.trunc_sat_f64_s (local.get $__inl13_m))
+                        )
+                        (i32.const 0)
+                        (f64.ne (local.get $__inl13_m) (f64.const Infinity))
+                      )
+                      (i32.const 3)
+                    )
+                  )
+                  (if
+                    (result f64)
+                    (i32.eq (local.get $__inl13_r) (i32.const 0))
+                    (then (local.get $__inl13_sp))
+                    (else
+                      (if
+                        (result f64)
+                        (i32.eq (local.get $__inl13_r) (i32.const 1))
+                        (then (local.get $__inl13_cp))
+                        (else
+                          (if
+                            (result f64)
+                            (i32.eq (local.get $__inl13_r) (i32.const 2))
+                            (then
+                              (local.set $__inl13_ng0
+                                (f64.neg (local.get $__inl13_sp))
+                              )
+                              (select
+                                (f64.const nan)
+                                (local.get $__inl13_ng0)
+                                (f64.ne (local.get $__inl13_ng0) (local.get $__inl13_ng0))
+                              )
+                            )
+                            (else
+                              (local.set $__inl13_ng1
+                                (f64.neg (local.get $__inl13_cp))
+                              )
+                              (select
+                                (f64.const nan)
+                                (local.get $__inl13_ng1)
+                                (f64.ne (local.get $__inl13_ng1) (local.get $__inl13_ng1))
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+                (if
+                  (result f64)
+                  (i32.lt_s (local.get $t) (local.get $_pg1))
+                  (then
+                    (f64.div
+                      (f64.convert_i32_s (local.get $t))
+                      (local.get $__li5)
+                    )
+                  )
+                  (else
+                    (if
+                      (result f64)
+                      (i32.lt_s (local.get $t) (local.get $__li6))
+                      (then
+                        (f64.sub
+                          (f64.const 1)
+                          (f64.div
+                            (f64.mul
+                              (local.get $__li7)
+                              (f64.convert_i32_s
+                                (i32.sub (local.get $t) (local.get $_pg1))
+                              )
+                            )
+                            (f64.const 1600)
+                          )
+                        )
+                      )
+                      (else
+                        (select
+                          (local.get $_pg2)
+                          (f64.mul
+                            (f64.div
+                              (f64.convert_i32_s
+                                (i32.sub (local.get $_pg0) (local.get $t))
+                              )
+                              (f64.const 2400)
+                            )
+                            (local.get $_pg2)
+                          )
+                          (i32.lt_s (local.get $t) (local.get $__li8))
+                        )
+                      )
+                    )
                   )
                 )
               )
             )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap36_2
-          (f64x2.extract_lane 0 (local.get $__dot2_6))
-        )
-        (local.set $outtap37_3
-          (f64x2.extract_lane 1 (local.get $__dot2_6))
-        )
-        (local.set $__dot2_11
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap9_7))
-              (local.get $__dotpair_5)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap8_6))
-                (local.get $__dotpair_4)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap7_5))
-                  (local.get $__dotpair_3)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap6_4))
-                    (local.get $__dotpair_2)
-                  )
+            (local.set $ph
+              (f64.add (local.get $ph) (local.get $dph))
+            )
+            (if
+              (f64.ge (local.get $ph) (f64.const 1))
+              (then
+                (local.set $ph
+                  (f64.sub (local.get $ph) (f64.const 1))
                 )
               )
             )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap38_4
-          (f64x2.extract_lane 0 (local.get $__dot2_11))
-        )
-        (local.set $outtap39_5
-          (f64x2.extract_lane 1 (local.get $__dot2_11))
-        )
-        (local.set $__dot2_12
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap9_7))
-              (local.get $__dotpair_10)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap8_6))
-                (local.get $__dotpair_9)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap7_5))
-                  (local.get $__dotpair_8)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap6_4))
-                    (local.get $__dotpair_7)
+            (local.set $y
+              (f64.sub
+                (f64.sub
+                  (f64.add
+                    (f64.add
+                      (f64.mul (f64.const 0.0675) (local.get $s))
+                      (f64.mul (f64.const 0.135) (local.get $x1))
+                    )
+                    (f64.mul (f64.const 0.0675) (local.get $x2))
                   )
+                  (f64.mul (f64.const -1.143) (local.get $y1))
                 )
+                (f64.mul (f64.const 0.412) (local.get $y2))
               )
             )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap40_6
-          (f64x2.extract_lane 0 (local.get $__dot2_12))
-        )
-        (local.set $outtap41_7
-          (f64x2.extract_lane 1 (local.get $__dot2_12))
-        )
-        (local.set $__dot2_13
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap13_11))
-              (local.get $__dotpair_5)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap12_10))
-                (local.get $__dotpair_4)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap11_9))
-                  (local.get $__dotpair_3)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap10_8))
-                    (local.get $__dotpair_2)
-                  )
+            (local.set $x2 (local.get $x1))
+            (local.set $x1 (local.get $s))
+            (local.set $y2 (local.get $y1))
+            (local.set $y1 (local.get $y))
+            (f64.store
+              (i32.add
+                (local.get $out)
+                (i32.shl
+                  (i32.add (local.get $off) (local.get $t))
+                  (i32.const 3)
                 )
               )
+              (local.get $y)
             )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap42_8
-          (f64x2.extract_lane 0 (local.get $__dot2_13))
-        )
-        (local.set $outtap43_9
-          (f64x2.extract_lane 1 (local.get $__dot2_13))
-        )
-        (local.set $__dot2_14
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap13_11))
-              (local.get $__dotpair_10)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap12_10))
-                (local.get $__dotpair_9)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap11_9))
-                  (local.get $__dotpair_8)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap10_8))
-                    (local.get $__dotpair_7)
-                  )
-                )
-              )
+            (local.set $t
+              (i32.add (local.get $t) (i32.const 1))
             )
-            (f64x2.splat (local.get $__dotadd_1))
+            (br $loop4)
           )
         )
-        (local.set $outtap44_10
-          (f64x2.extract_lane 0 (local.get $__dot2_14))
-        )
-        (local.set $outtap45_11
-          (f64x2.extract_lane 1 (local.get $__dot2_14))
-        )
-        (local.set $__dot2_15
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap17_15))
-              (local.get $__dotpair_5)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap16_14))
-                (local.get $__dotpair_4)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap15_13))
-                  (local.get $__dotpair_3)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap14_12))
-                    (local.get $__dotpair_2)
-                  )
-                )
-              )
-            )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap46_12
-          (f64x2.extract_lane 0 (local.get $__dot2_15))
-        )
-        (local.set $outtap47_13
-          (f64x2.extract_lane 1 (local.get $__dot2_15))
-        )
-        (local.set $__dot2_16
-          (f64x2.add
-            (f64x2.relaxed_madd
-              (f64x2.splat (local.get $atap17_15))
-              (local.get $__dotpair_10)
-              (f64x2.relaxed_madd
-                (f64x2.splat (local.get $atap16_14))
-                (local.get $__dotpair_9)
-                (f64x2.relaxed_madd
-                  (f64x2.splat (local.get $atap15_13))
-                  (local.get $__dotpair_8)
-                  (f64x2.mul
-                    (f64x2.splat (local.get $atap14_12))
-                    (local.get $__dotpair_7)
-                  )
-                )
-              )
-            )
-            (f64x2.splat (local.get $__dotadd_1))
-          )
-        )
-        (local.set $outtap48_14
-          (f64x2.extract_lane 0 (local.get $__dot2_16))
-        )
-        (local.set $outtap49_15
-          (f64x2.extract_lane 1 (local.get $__dot2_16))
-        )
-        (local.set $t (local.get $atap2_0))
-        (local.set $atap2_0 (local.get $outtap49_15))
-        (local.set $atap7_5
-          (f64.add
-            (local.get $t)
-            (f64.mul (local.get $outtap44_10) (f64.const 0.000001))
-          )
-        )
-        (local.set $btap18_0
-          (f64.add
-            (local.get $btap18_0)
-            (f64.mul (local.get $outtap34_0) (f64.const 1e-11))
-          )
-        )
-        (local.set $btap23_5
-          (f64.sub
-            (local.get $btap23_5)
-            (f64.mul (local.get $outtap39_5) (f64.const 1e-11))
-          )
-        )
-        (local.set $n
-          (i32.add (local.get $n) (i32.const 1))
+        (local.set $note
+          (i32.add (local.get $note) (i32.const 1))
         )
         (br $loop0)
       )
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 0))
-      )
-      (local.get $atap2_0)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe1 (i32.const 40))
-      )
-      (local.get $atap7_5)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (local.get $btap18_0)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe1))
-      (local.get $btap23_5)
-    )
-    (f64.store
-      (i32.add (local.get $out) (local.get $__pe0))
-      (local.get $outtap34_0)
-    )
-    (f64.store offset=8
-      (local.get $out)
-      (local.get $outtap35_1)
-    )
-    (f64.store offset=16
-      (local.get $out)
-      (local.get $outtap36_2)
-    )
-    (f64.store offset=24
-      (local.get $out)
-      (local.get $outtap37_3)
-    )
-    (f64.store offset=32
-      (local.get $out)
-      (local.get $outtap38_4)
-    )
-    (f64.store
-      (i32.add (local.get $out) (local.get $__pe1))
-      (local.get $outtap39_5)
-    )
-    (f64.store offset=48
-      (local.get $out)
-      (local.get $outtap40_6)
-    )
-    (f64.store offset=56
-      (local.get $out)
-      (local.get $outtap41_7)
-    )
-    (f64.store offset=64
-      (local.get $out)
-      (local.get $outtap42_8)
-    )
-    (f64.store offset=72
-      (local.get $out)
-      (local.get $outtap43_9)
-    )
-    (f64.store offset=80
-      (local.get $out)
-      (local.get $outtap44_10)
-    )
-    (f64.store offset=88
-      (local.get $out)
-      (local.get $outtap45_11)
-    )
-    (f64.store offset=96
-      (local.get $out)
-      (local.get $outtap46_12)
-    )
-    (f64.store offset=104
-      (local.get $out)
-      (local.get $outtap47_13)
-    )
-    (f64.store offset=112
-      (local.get $out)
-      (local.get $outtap48_14)
-    )
-    (f64.store offset=120
-      (local.get $out)
-      (local.get $outtap49_15)
     )
     (f64.const nan:0x7FF8000200000000)
   )
@@ -2134,40 +2726,160 @@
     )
     (local.get $len)
   )
-  (func $__alloc_hdr_n_d_d_1
-    (param $a0 i32)
-    (param $a1 i32)
+  (func $__skipws
+    (param $v i64)
+    (param $i i32)
+    (param $len i32)
     (result i32)
-    (local $__inl3_len i32)
-    (local $__inl3_stride i32)
-    (local $__inl3_ptr i32)
-    (local.set $__inl3_len (local.get $a0))
-    (local.set $__inl3_stride (i32.const 1))
-    (local.set $__inl3_ptr
-      (call $__alloc
-        (i32.add
-          (i32.const 16)
-          (local.tee $__inl3_stride (local.get $a1))
+    (local $b i32)
+    (local $cp i32)
+    (local $n i32)
+    (local $sbase i32)
+    (local.set $sbase
+      (i32.wrap_i64
+        (i64.and (local.get $v) (i64.const 4294967295))
+      )
+    )
+    (block $done
+      (loop $l
+        (br_if $done
+          (i32.ge_s (local.get $i) (local.get $len))
         )
+        (local.set $b
+          (if
+            (result i32)
+            (i64.eqz
+              (i64.and (local.get $v) (i64.const 0x0000400000000000))
+            )
+            (then
+              (i32.load8_u
+                (i32.add (local.get $sbase) (local.get $i))
+              )
+            )
+            (else
+              (call $__char_at
+                (local.get $v)
+                (local.get $i)
+              )
+            )
+          )
+        )
+        (if
+          (i32.lt_u (local.get $b) (i32.const 0x80))
+          (then
+            (local.set $cp (local.get $b))
+            (local.set $n (i32.const 1))
+          )
+          (else
+            (if
+              (i32.lt_u (local.get $b) (i32.const 0xe0))
+              (then
+                (local.set $n (i32.const 2))
+                (local.set $cp
+                  (i32.or
+                    (i32.shl
+                      (i32.and (local.get $b) (i32.const 0x1f))
+                      (i32.const 6)
+                    )
+                    (i32.and
+                      (call $__char_at
+                        (local.get $v)
+                        (i32.add (local.get $i) (i32.const 1))
+                      )
+                      (i32.const 0x3f)
+                    )
+                  )
+                )
+              )
+              (else
+                (if
+                  (i32.lt_u (local.get $b) (i32.const 0xf0))
+                  (then
+                    (local.set $n (i32.const 3))
+                    (local.set $cp
+                      (i32.or
+                        (i32.or
+                          (i32.shl
+                            (i32.and (local.get $b) (i32.const 0x0f))
+                            (i32.const 12)
+                          )
+                          (i32.shl
+                            (i32.and
+                              (call $__char_at
+                                (local.get $v)
+                                (i32.add (local.get $i) (i32.const 1))
+                              )
+                              (i32.const 0x3f)
+                            )
+                            (i32.const 6)
+                          )
+                        )
+                        (i32.and
+                          (call $__char_at
+                            (local.get $v)
+                            (i32.add (local.get $i) (i32.const 2))
+                          )
+                          (i32.const 0x3f)
+                        )
+                      )
+                    )
+                  )
+                  (else
+                    (return (local.get $i))
+                  )
+                )
+              )
+            )
+          )
+        )
+        (br_if $done
+          (i32.eqz
+            (i32.or
+              (i32.or
+                (i32.and
+                  (i32.ge_s (local.get $cp) (i32.const 9))
+                  (i32.le_s (local.get $cp) (i32.const 13))
+                )
+                (i32.or
+                  (i32.eq (local.get $cp) (i32.const 32))
+                  (i32.eq (local.get $cp) (i32.const 160))
+                )
+              )
+              (i32.or
+                (i32.or
+                  (i32.eq (local.get $cp) (i32.const 0x1680))
+                  (i32.and
+                    (i32.ge_s (local.get $cp) (i32.const 0x2000))
+                    (i32.le_s (local.get $cp) (i32.const 0x200a))
+                  )
+                )
+                (i32.or
+                  (i32.or
+                    (i32.eq (local.get $cp) (i32.const 0x2028))
+                    (i32.eq (local.get $cp) (i32.const 0x2029))
+                  )
+                  (i32.or
+                    (i32.or
+                      (i32.eq (local.get $cp) (i32.const 0x202f))
+                      (i32.eq (local.get $cp) (i32.const 0x205f))
+                    )
+                    (i32.or
+                      (i32.eq (local.get $cp) (i32.const 0x3000))
+                      (i32.eq (local.get $cp) (i32.const 0xfeff))
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+        (local.set $i
+          (i32.add (local.get $i) (local.get $n))
+        )
+        (br $l)
       )
     )
-    (i64.store (local.get $__inl3_ptr) (i64.const 0))
-    (i32.store offset=8
-      (local.get $__inl3_ptr)
-      (local.get $a0)
-    )
-    (i32.store offset=12
-      (local.get $__inl3_ptr)
-      (local.get $a1)
-    )
-    (memory.fill
-      (local.tee $__inl3_len
-        (i32.add (local.get $__inl3_ptr) (i32.const 16))
-      )
-      (i32.const 0)
-      (local.get $__inl3_stride)
-    )
-    (local.get $__inl3_len)
+    (local.get $i)
   )
   (func $__len
     (param $ptr i64)
@@ -2532,6 +3244,41 @@
         )
       )
     )
+  )
+  (func $__alloc_hdr_n
+    (param $len i32)
+    (param $cap i32)
+    (param $stride i32)
+    (result i32)
+    (local $ptr i32)
+    (local $__pe0 i32)
+    (local.set $ptr
+      (call $__alloc
+        (i32.add
+          (i32.const 16)
+          (local.tee $__pe0
+            (i32.mul (local.get $cap) (local.get $stride))
+          )
+        )
+      )
+    )
+    (i64.store (local.get $ptr) (i64.const 0))
+    (i32.store offset=8
+      (local.get $ptr)
+      (local.get $len)
+    )
+    (i32.store offset=12
+      (local.get $ptr)
+      (local.get $cap)
+    )
+    (memory.fill
+      (local.tee $ptr
+        (i32.add (local.get $ptr) (i32.const 16))
+      )
+      (i32.const 0)
+      (local.get $__pe0)
+    )
+    (local.get $ptr)
   )
   (func $__time_ms
     (param $clock i32)
@@ -3114,335 +3861,102 @@
       (local.get $ta)
     )
   )
-  (func $init
-    (param $a i32)
-    (param $b i32)
-    (result f64)
-    (local $__pe0 i32)
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 0))
-      )
-      (f64.const 0.125)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 1)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 8))
-      )
-      (f64.const 0.25)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.9375)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 16))
-      )
-      (f64.const 0.375)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.875)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 24))
-      )
-      (f64.const 0.5)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.8125)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 32))
-      )
-      (f64.const 0.625)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.75)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 40))
-      )
-      (f64.const 0.75)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.6875)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 48))
-      )
-      (f64.const 0.875)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.625)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 56))
-      )
-      (f64.const 1)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.5625)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 64))
-      )
-      (f64.const 1.125)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.5)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 72))
-      )
-      (f64.const 1.25)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.4375)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 80))
-      )
-      (f64.const 1.375)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.375)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 88))
-      )
-      (f64.const 1.5)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.3125)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 96))
-      )
-      (f64.const 1.625)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.25)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 104))
-      )
-      (f64.const 1.75)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.1875)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 112))
-      )
-      (f64.const 1.875)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.125)
-    )
-    (f64.store
-      (i32.add
-        (local.get $a)
-        (local.tee $__pe0 (i32.const 120))
-      )
-      (f64.const 2)
-    )
-    (f64.store
-      (i32.add (local.get $b) (local.get $__pe0))
-      (f64.const 0.0625)
-    )
-    (f64.const nan:0x7FF8000200000000)
-  )
   (func $main
     (export "main")
     (result f64)
     (local $i1 i32)
     (local $t0 f64)
-    (local $tw9 f64)
+    (local $tw5 f64)
     (local $__pe0 i32)
     (local $__pe1 i32)
-    (local $__pe2 i32)
-    (local $__pe3 i32)
-    (local $_pg1 i32)
     (local $_pg0 i32)
-    (local $__inl9___ab0 i32)
-    (local $__inl11_s2 f64)
-    (local $__inl11_s3 f64)
-    (local $__inl11_s4 f64)
-    (local $__inl11_s5 f64)
-    (local $__inl11_s6 f64)
-    (local $__inl11_s7 f64)
-    (local $__inl11_s8 f64)
-    (local $__inl11_s9 f64)
-    (local $__inl11_s10 f64)
-    (local $__inl11_sl11 i32)
-    (local $__inl11_sl13 i32)
-    (local $__inl11_sl15 i32)
-    (local $__inl11_sl17 i32)
-    (local $__inl11_sl18 i32)
-    (local $__inl11_sl19 i32)
-    (local $__inl11_sl20 i32)
-    (local $__inl11_sl21 i32)
-    (local $__inl11_st22 i32)
-    (local $__inl11___inl2_fd i32)
-    (local $__inl11___inl2_ptr i64)
-    (local $__inl11___inl4_ptr i64)
+    (local $__inl10_j i32)
+    (local $__inl10_len1 i32)
+    (local $__inl10___ab0 i32)
+    (local $__inl12_s2 f64)
+    (local $__inl12_s3 f64)
+    (local $__inl12_s4 f64)
+    (local $__inl12_s5 f64)
+    (local $__inl12_s6 f64)
+    (local $__inl12_s7 f64)
+    (local $__inl12_s8 f64)
+    (local $__inl12_s9 f64)
+    (local $__inl12_s10 f64)
+    (local $__inl12_sl11 i32)
+    (local $__inl12_sl13 i32)
+    (local $__inl12_sl15 i32)
+    (local $__inl12_sl16 i32)
+    (local $__inl12_sl17 i32)
+    (local $__inl12_sl18 i32)
+    (local $__inl12_sl19 i32)
+    (local $__inl12_sl20 i32)
+    (local $__inl12_sl21 i32)
+    (local $__inl12_st22 i32)
+    (local $__inl12___inl3_fd i32)
+    (local $__inl12___inl3_ptr i64)
+    (local $__inl12___inl4_ptr i64)
     (local $__iv0_0 i32)
     (local $__iv1_0 i32)
-    (local.set $_pg0 (i32.const 200000))
-    (local.set $_pg1 (i32.const 21))
+    (local.set $_pg0 (i32.const 21))
     (local.set $__pe0
-      (call $__alloc_hdr_n_d_d_1
-        (local.tee $__pe0 (i32.const 128))
+      (call $__alloc_hdr_n
+        (local.tee $__pe0 (i32.const 4194304))
         (local.get $__pe0)
+        (i32.const 1)
       )
     )
+    (call $render (local.get $__pe0)) drop
+    (call $render (local.get $__pe0)) drop
+    (call $render (local.get $__pe0)) drop
+    (call $render (local.get $__pe0)) drop
+    (call $render (local.get $__pe0)) drop
     (local.set $__pe1
-      (call $__alloc_hdr_n_d_d_1
-        (local.tee $__pe1 (i32.const 128))
+      (call $__alloc_hdr_n
+        (local.tee $__pe1 (i32.const 168))
         (local.get $__pe1)
-      )
-    )
-    (local.set $__pe2
-      (call $__alloc_hdr_n_d_d_1
-        (local.tee $__pe2 (i32.const 128))
-        (local.get $__pe2)
-      )
-    )
-    (call $init
-      (local.get $__pe0)
-      (local.get $__pe1)
-    ) drop
-    (call $multiplyMany
-      (local.get $__pe0)
-      (local.get $__pe1)
-      (local.get $__pe2)
-      (local.get $_pg0)
-    ) drop
-    (call $multiplyMany
-      (local.get $__pe0)
-      (local.get $__pe1)
-      (local.get $__pe2)
-      (local.get $_pg0)
-    ) drop
-    (call $multiplyMany
-      (local.get $__pe0)
-      (local.get $__pe1)
-      (local.get $__pe2)
-      (local.get $_pg0)
-    ) drop
-    (call $multiplyMany
-      (local.get $__pe0)
-      (local.get $__pe1)
-      (local.get $__pe2)
-      (local.get $_pg0)
-    ) drop
-    (call $multiplyMany
-      (local.get $__pe0)
-      (local.get $__pe1)
-      (local.get $__pe2)
-      (local.get $_pg0)
-    ) drop
-    (local.set $__pe3
-      (call $__alloc_hdr_n_d_d_1
-        (local.tee $__pe3 (i32.const 168))
-        (local.get $__pe3)
+        (i32.const 1)
       )
     )
     (block
       (local.set $__iv0_0
         (i32.add
-          (local.get $__pe3)
+          (local.get $__pe1)
           (i32.shl (local.get $i1) (i32.const 3))
         )
       )
-      (block $brk8
-        (loop $loop8
-          (br_if $brk8
+      (block $brk4
+        (loop $loop4
+          (br_if $brk4
             (i32.eqz
-              (i32.lt_s (local.get $i1) (local.get $_pg1))
+              (i32.lt_s (local.get $i1) (local.get $_pg0))
             )
           )
-          (call $init
-            (local.get $__pe0)
-            (local.get $__pe1)
-          ) drop
           (local.set $t0
             (call $__time_ms (i32.const 1))
           )
-          (call $multiplyMany
-            (local.get $__pe0)
-            (local.get $__pe1)
-            (local.get $__pe2)
-            (local.get $_pg0)
-          ) drop
-          (local.set $tw9
+          (call $render (local.get $__pe0)) drop
+          (local.set $tw5
             (f64.sub
               (call $__time_ms (i32.const 1))
               (local.get $t0)
             )
           )
-          (f64.store (local.get $__iv0_0) (local.get $tw9))
+          (f64.store (local.get $__iv0_0) (local.get $tw5))
           (local.set $i1
             (i32.add (local.get $i1) (i32.const 1))
           )
           (local.set $__iv0_0
             (i32.add (local.get $__iv0_0) (i32.const 8))
           )
-          (br $loop8)
+          (br $loop4)
         )
       )
     )
-    (local.set $__pe0 (local.get $__pe3))
-    (local.set $__pe1 (i32.const 1))
-    (local.set $__pe3
+    (local.set $i1 (i32.const 1))
+    (local.set $__inl10_len1
       (i32.shr_u
         (i32.load
-          (i32.sub (local.get $__pe3) (i32.const 8))
+          (i32.sub (local.get $__pe1) (i32.const 8))
         )
         (i32.const 3)
       )
@@ -3450,35 +3964,35 @@
     (block
       (local.set $__iv1_0
         (i32.add
-          (local.get $__pe0)
-          (i32.shl (local.get $__pe1) (i32.const 3))
+          (local.get $__pe1)
+          (i32.shl (local.get $i1) (i32.const 3))
         )
       )
-      (block $__inl9L_brk0
-        (loop $__inl9L_loop0
-          (br_if $__inl9L_brk0
+      (block $__inl10L_brk0
+        (loop $__inl10L_loop0
+          (br_if $__inl10L_brk0
             (i32.eqz
-              (i32.lt_s (local.get $__pe1) (local.get $__pe3))
+              (i32.lt_s (local.get $i1) (local.get $__inl10_len1))
             )
           )
           (local.set $t0
             (f64.load (local.get $__iv1_0))
           )
-          (local.set $i1
-            (i32.sub (local.get $__pe1) (i32.const 1))
+          (local.set $__inl10_j
+            (i32.sub (local.get $i1) (i32.const 1))
           )
-          (block $__inl9L_brk2
-            (loop $__inl9L_loop2
-              (br_if $__inl9L_brk2
+          (block $__inl10L_brk2
+            (loop $__inl10L_loop2
+              (br_if $__inl10L_brk2
                 (i32.eqz
                   (i32.and
-                    (i32.ge_s (local.get $i1) (i32.const 0))
+                    (i32.ge_s (local.get $__inl10_j) (i32.const 0))
                     (f64.gt
                       (f64.load
-                        (local.tee $__inl9___ab0
+                        (local.tee $__inl10___ab0
                           (i32.add
-                            (local.get $__pe0)
-                            (i32.shl (local.get $i1) (i32.const 3))
+                            (local.get $__pe1)
+                            (i32.shl (local.get $__inl10_j) (i32.const 3))
                           )
                         )
                       )
@@ -3488,33 +4002,33 @@
                 )
               )
               (f64.store offset=8
-                (local.get $__inl9___ab0)
-                (f64.load (local.get $__inl9___ab0))
+                (local.get $__inl10___ab0)
+                (f64.load (local.get $__inl10___ab0))
               )
-              (local.set $i1
-                (i32.sub (local.get $i1) (i32.const 1))
+              (local.set $__inl10_j
+                (i32.sub (local.get $__inl10_j) (i32.const 1))
               )
-              (br $__inl9L_loop2)
+              (br $__inl10L_loop2)
             )
           )
           (f64.store offset=8
             (i32.add
-              (local.get $__pe0)
-              (i32.shl (local.get $i1) (i32.const 3))
+              (local.get $__pe1)
+              (i32.shl (local.get $__inl10_j) (i32.const 3))
             )
             (local.get $t0)
           )
-          (local.set $__pe1
-            (i32.add (local.get $__pe1) (i32.const 1))
+          (local.set $i1
+            (i32.add (local.get $i1) (i32.const 1))
           )
           (local.set $__iv1_0
             (i32.add (local.get $__iv1_0) (i32.const 8))
           )
-          (br $__inl9L_loop0)
+          (br $__inl10L_loop0)
         )
       )
     )
-    (local.set $__pe0
+    (local.set $__pe1
       (select
         (i32.wrap_i64
           (i64.trunc_sat_f64_s
@@ -3522,13 +4036,13 @@
               (f64.mul
                 (f64.load
                   (i32.add
-                    (local.get $__pe0)
+                    (local.get $__pe1)
                     (i32.shl
                       (i32.shr_s
                         (i32.sub
                           (i32.shr_u
                             (i32.load
-                              (i32.sub (local.get $__pe0) (i32.const 8))
+                              (i32.sub (local.get $__pe1) (i32.const 8))
                             )
                             (i32.const 3)
                           )
@@ -3549,32 +4063,31 @@
         (f64.ne (local.get $t0) (f64.const Infinity))
       )
     )
-    (local.set $__pe1 (local.get $__pe2))
-    (local.set $__pe2 (i32.const 0))
+    (local.set $i1 (i32.const 0))
     (local.set $t0
       (call $__mkptr
         (i32.const 2)
         (i32.const 0)
-        (local.get $__pe1)
+        (local.get $__pe0)
       )
     )
-    (local.set $__pe3
+    (local.set $__inl10_len1
       (call $__ptr_offset
         (i64.reinterpret_f64 (local.get $t0))
       )
     )
-    (local.set $i1
+    (local.set $__inl10_j
       (call $__alloc (i32.const 16))
     )
     (i32.store
-      (local.get $i1)
+      (local.get $__inl10_j)
       (i32.shl
         (i32.trunc_sat_f64_s
           (f64.mul
             (f64.convert_i32_s
               (i32.shr_u
                 (i32.load
-                  (i32.sub (local.get $__pe1) (i32.const 8))
+                  (i32.sub (local.get $__pe0) (i32.const 8))
                 )
                 (i32.const 3)
               )
@@ -3586,62 +4099,59 @@
       )
     )
     (i32.store offset=4
-      (local.get $i1)
+      (local.get $__inl10_j)
       (i32.add
-        (local.get $__pe3)
+        (local.get $__inl10_len1)
         (i32.trunc_sat_f64_s (f64.const 0))
       )
     )
     (i32.store offset=8
-      (local.get $i1)
-      (local.get $__pe3)
+      (local.get $__inl10_j)
+      (local.get $__inl10_len1)
     )
-    (local.set $__pe1 (local.get $i1))
-    (local.set $__pe3 (i32.const -2128831035))
-    (local.set $i1
+    (local.set $__pe0 (local.get $__inl10_j))
+    (local.set $__inl10_len1 (i32.const -2128831035))
+    (local.set $__inl10_j
       (i32.shr_u
-        (i32.load (local.get $i1))
+        (i32.load (local.get $__inl10_j))
         (i32.const 2)
       )
     )
-    (block $__inl10L_brk4
-      (loop $__inl10L_loop4
-        (br_if $__inl10L_brk4
+    (block $__inl11L_brk4
+      (loop $__inl11L_loop4
+        (br_if $__inl11L_brk4
           (i32.eqz
-            (i32.lt_s (local.get $__pe2) (local.get $i1))
+            (i32.lt_s (local.get $i1) (local.get $__inl10_j))
           )
         )
-        (local.set $__pe3
+        (local.set $__inl10_len1
           (i32.mul
             (i32.xor
-              (local.get $__pe3)
+              (local.get $__inl10_len1)
               (i32.load
                 (i32.add
-                  (i32.load offset=4 (local.get $__pe1))
-                  (i32.shl (local.get $__pe2) (i32.const 2))
+                  (i32.load offset=4 (local.get $__pe0))
+                  (i32.shl (local.get $i1) (i32.const 2))
                 )
               )
             )
             (i32.const 16777619)
           )
         )
-        (local.set $__pe2
-          (i32.add (local.get $__pe2) (i32.const 256))
+        (local.set $i1
+          (i32.add (local.get $i1) (i32.const 256))
         )
-        (br $__inl10L_loop4)
+        (br $__inl11L_loop4)
       )
     )
-    (local.set $__pe1 (local.get $__pe3))
-    (local.set $_pg0
-      (i32.shl (local.get $_pg0) (i32.const 4))
-    )
-    (local.set $_pg1 (i32.const 0))
-    (local.set $__pe2 (i32.const 0))
-    (local.set $__pe3 (i32.const 0))
+    (local.set $__pe0 (local.get $__inl10_len1))
+    (local.set $_pg0 (i32.const 0))
     (local.set $i1 (i32.const 0))
-    (local.set $__inl9___ab0 (i32.const 0))
-    (local.set $__inl11___inl2_fd (i32.const 1))
-    (local.set $__inl11___inl2_ptr
+    (local.set $__inl10_len1 (i32.const 0))
+    (local.set $__inl10_j (i32.const 0))
+    (local.set $__inl10___ab0 (i32.const 0))
+    (local.set $__inl12___inl3_fd (i32.const 1))
+    (local.set $__inl12___inl3_ptr
       (i64.reinterpret_f64
         (block
           (result f64)
@@ -3650,238 +4160,238 @@
               (call $__to_str (i64.const 0x7ffa000100000044))
             )
           )
-          (local.set $__inl11_sl11
+          (local.set $__inl12_sl11
             (call $__str_byteLen
               (i64.reinterpret_f64 (local.get $t0))
             )
           )
-          (local.set $tw9
-            (call $__i32_to_str (local.get $__pe0))
-          )
-          (local.set $__pe0
-            (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $tw9))
-            )
-          )
-          (local.set $__inl11_s2
-            (f64.reinterpret_i64
-              (call $__to_str (i64.const 0x7ffa000100000058))
-            )
-          )
-          (local.set $__inl11_sl13
-            (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s2))
-            )
-          )
-          (local.set $__inl11_s3
+          (local.set $tw5
             (call $__i32_to_str (local.get $__pe1))
           )
           (local.set $__pe1
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s3))
+              (i64.reinterpret_f64 (local.get $tw5))
             )
           )
-          (local.set $__inl11_s4
+          (local.set $__inl12_s2
+            (f64.reinterpret_i64
+              (call $__to_str (i64.const 0x7ffa000100000058))
+            )
+          )
+          (local.set $__inl12_sl13
+            (call $__str_byteLen
+              (i64.reinterpret_f64 (local.get $__inl12_s2))
+            )
+          )
+          (local.set $__inl12_s3
+            (call $__i32_to_str (local.get $__pe0))
+          )
+          (local.set $__pe0
+            (call $__str_byteLen
+              (i64.reinterpret_f64 (local.get $__inl12_s3))
+            )
+          )
+          (local.set $__inl12_s4
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa00010000006c))
             )
           )
-          (local.set $__inl11_sl15
+          (local.set $__inl12_sl15
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s4))
+              (i64.reinterpret_f64 (local.get $__inl12_s4))
             )
           )
-          (local.set $__inl11_s5
-            (call $__i32_to_str (local.get $_pg0))
+          (local.set $__inl12_s5
+            (call $__i32_to_str (i32.const 524288))
           )
-          (local.set $_pg0
+          (local.set $__inl12_sl16
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s5))
+              (i64.reinterpret_f64 (local.get $__inl12_s5))
             )
           )
-          (local.set $__inl11_s6
+          (local.set $__inl12_s6
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000080))
             )
           )
-          (local.set $__inl11_sl17
+          (local.set $__inl12_sl17
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s6))
+              (i64.reinterpret_f64 (local.get $__inl12_s6))
             )
           )
-          (local.set $__inl11_s7
-            (call $__i32_to_str (i32.const 4))
+          (local.set $__inl12_s7
+            (call $__i32_to_str (i32.const 64))
           )
-          (local.set $__inl11_sl18
+          (local.set $__inl12_sl18
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s7))
+              (i64.reinterpret_f64 (local.get $__inl12_s7))
             )
           )
-          (local.set $__inl11_s8
+          (local.set $__inl12_s8
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa000100000090))
             )
           )
-          (local.set $__inl11_sl19
+          (local.set $__inl12_sl19
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s8))
+              (i64.reinterpret_f64 (local.get $__inl12_s8))
             )
           )
-          (local.set $__inl11_s9
+          (local.set $__inl12_s9
             (call $__i32_to_str (i32.const 21))
           )
-          (local.set $__inl11_sl20
+          (local.set $__inl12_sl20
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s9))
+              (i64.reinterpret_f64 (local.get $__inl12_s9))
             )
           )
-          (local.set $__inl11_s10
+          (local.set $__inl12_s10
             (f64.reinterpret_i64
               (call $__to_str (i64.const 0x7ffa400000000000))
             )
           )
-          (local.set $__inl11_sl21
+          (local.set $__inl12_sl21
             (call $__str_byteLen
-              (i64.reinterpret_f64 (local.get $__inl11_s10))
+              (i64.reinterpret_f64 (local.get $__inl12_s10))
             )
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_sl11) (local.get $__pe0))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_sl11) (local.get $__pe1))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl13))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl13))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__pe1))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__pe0))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl15))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl15))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $_pg0))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl16))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl17))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl17))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl18))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl18))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl19))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl19))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl20))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl20))
           )
-          (local.set $__inl11_st22
-            (i32.add (local.get $__inl11_st22) (local.get $__inl11_sl21))
+          (local.set $__inl12_st22
+            (i32.add (local.get $__inl12_st22) (local.get $__inl12_sl21))
           )
           (if
             (result f64)
-            (i32.eqz (local.get $__inl11_st22))
+            (i32.eqz (local.get $__inl12_st22))
             (then (f64.const nan:0x7FFA400000000000))
             (else
-              (local.set $_pg1
+              (local.set $_pg0
                 (call $__alloc
-                  (i32.add (i32.const 4) (local.get $__inl11_st22))
+                  (i32.add (i32.const 4) (local.get $__inl12_st22))
                 )
               )
-              (i32.store (local.get $_pg1) (local.get $__inl11_st22))
-              (local.set $_pg1
-                (i32.add (local.get $_pg1) (i32.const 4))
+              (i32.store (local.get $_pg0) (local.get $__inl12_st22))
+              (local.set $_pg0
+                (i32.add (local.get $_pg0) (i32.const 4))
               )
-              (local.set $__pe2 (local.get $_pg1))
+              (local.set $i1 (local.get $_pg0))
               (call $__str_copy
                 (i64.reinterpret_f64 (local.get $t0))
-                (local.get $_pg1)
-                (local.get $__inl11_sl11)
+                (local.get $_pg0)
+                (local.get $__inl12_sl11)
               )
-              (local.set $__pe2
-                (i32.add (local.get $_pg1) (local.get $__inl11_sl11))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $tw9))
-                (local.get $__pe2)
-                (local.get $__pe0)
-              )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__pe0))
+              (local.set $i1
+                (i32.add (local.get $_pg0) (local.get $__inl12_sl11))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s2))
-                (local.get $__pe2)
-                (local.get $__inl11_sl13)
-              )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl13))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s3))
-                (local.get $__pe2)
+                (i64.reinterpret_f64 (local.get $tw5))
+                (local.get $i1)
                 (local.get $__pe1)
               )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__pe1))
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__pe1))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s4))
-                (local.get $__pe2)
-                (local.get $__inl11_sl15)
+                (i64.reinterpret_f64 (local.get $__inl12_s2))
+                (local.get $i1)
+                (local.get $__inl12_sl13)
               )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl15))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s5))
-                (local.get $__pe2)
-                (local.get $_pg0)
-              )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $_pg0))
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl13))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s6))
-                (local.get $__pe2)
-                (local.get $__inl11_sl17)
+                (i64.reinterpret_f64 (local.get $__inl12_s3))
+                (local.get $i1)
+                (local.get $__pe0)
               )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl17))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s7))
-                (local.get $__pe2)
-                (local.get $__inl11_sl18)
-              )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl18))
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__pe0))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s8))
-                (local.get $__pe2)
-                (local.get $__inl11_sl19)
+                (i64.reinterpret_f64 (local.get $__inl12_s4))
+                (local.get $i1)
+                (local.get $__inl12_sl15)
               )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl19))
-              )
-              (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s9))
-                (local.get $__pe2)
-                (local.get $__inl11_sl20)
-              )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl20))
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl15))
               )
               (call $__str_copy
-                (i64.reinterpret_f64 (local.get $__inl11_s10))
-                (local.get $__pe2)
-                (local.get $__inl11_sl21)
+                (i64.reinterpret_f64 (local.get $__inl12_s5))
+                (local.get $i1)
+                (local.get $__inl12_sl16)
               )
-              (local.set $__pe2
-                (i32.add (local.get $__pe2) (local.get $__inl11_sl21))
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl16))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl12_s6))
+                (local.get $i1)
+                (local.get $__inl12_sl17)
+              )
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl17))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl12_s7))
+                (local.get $i1)
+                (local.get $__inl12_sl18)
+              )
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl18))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl12_s8))
+                (local.get $i1)
+                (local.get $__inl12_sl19)
+              )
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl19))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl12_s9))
+                (local.get $i1)
+                (local.get $__inl12_sl20)
+              )
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl20))
+              )
+              (call $__str_copy
+                (i64.reinterpret_f64 (local.get $__inl12_s10))
+                (local.get $i1)
+                (local.get $__inl12_sl21)
+              )
+              (local.set $i1
+                (i32.add (local.get $i1) (local.get $__inl12_sl21))
               )
               (call $__mkptr
                 (i32.const 4)
                 (i32.const 0)
-                (local.get $_pg1)
+                (local.get $_pg0)
               )
             )
           )
@@ -3889,111 +4399,111 @@
       )
     )
     (local.set $_pg0 (i32.const 0))
-    (local.set $_pg1 (i32.const 0))
     (local.set $__pe0 (i32.const 0))
-    (local.set $__pe1
+    (local.set $__pe1 (i32.const 0))
+    (local.set $i1
       (call $__alloc (i32.const 12))
     )
-    (local.set $__pe2
+    (local.set $__inl12_sl11
       (i32.and
         (i32.wrap_i64
-          (i64.shr_u (local.get $__inl11___inl2_ptr) (i64.const 32))
+          (i64.shr_u (local.get $__inl12___inl3_ptr) (i64.const 32))
         )
         (i32.const 32767)
       )
     )
     (if
-      (i32.and (local.get $__pe2) (i32.const 16384))
+      (i32.and (local.get $__inl12_sl11) (i32.const 16384))
       (then
         (local.set $_pg0
-          (i32.and (local.get $__pe2) (i32.const 7))
+          (i32.and (local.get $__inl12_sl11) (i32.const 7))
         )
-        (local.set $__pe0
+        (local.set $__pe1
           (call $__alloc (local.get $_pg0))
         )
-        (local.set $_pg1 (i32.const 0))
-        (block $__inl11L___inl2L_done
-          (loop $__inl11L___inl2L_loop
-            (br_if $__inl11L___inl2L_done
-              (i32.ge_s (local.get $_pg1) (local.get $_pg0))
+        (local.set $__pe0 (i32.const 0))
+        (block $__inl12L___inl3L_done
+          (loop $__inl12L___inl3L_loop
+            (br_if $__inl12L___inl3L_done
+              (i32.ge_s (local.get $__pe0) (local.get $_pg0))
             )
             (i32.store8
-              (i32.add (local.get $__pe0) (local.get $_pg1))
-              (block $__inl11L___inl5
+              (i32.add (local.get $__pe1) (local.get $__pe0))
+              (block $__inl12L___inl5
                 (result i32)
-                (local.set $__inl9___ab0 (local.get $_pg1))
+                (local.set $__inl10___ab0 (local.get $__pe0))
                 (i32.and
                   (i32.shr_u
                     (i32.wrap_i64
-                      (i64.and (local.get $__inl11___inl2_ptr) (i64.const 4294967295))
+                      (i64.and (local.get $__inl12___inl3_ptr) (i64.const 4294967295))
                     )
-                    (i32.shl (local.get $_pg1) (i32.const 3))
+                    (i32.shl (local.get $__pe0) (i32.const 3))
                   )
                   (i32.const 0xFF)
                 )
               )
             )
-            (local.set $_pg1
-              (i32.add (local.get $_pg1) (i32.const 1))
+            (local.set $__pe0
+              (i32.add (local.get $__pe0) (i32.const 1))
             )
-            (br $__inl11L___inl2L_loop)
+            (br $__inl12L___inl3L_loop)
           )
         )
-        (i32.store (local.get $__pe1) (local.get $__pe0))
+        (i32.store (local.get $i1) (local.get $__pe1))
         (i32.store offset=4
-          (local.get $__pe1)
+          (local.get $i1)
           (local.get $_pg0)
         )
       )
       (else
         (i32.store
-          (local.get $__pe1)
-          (call $__ptr_offset (local.get $__inl11___inl2_ptr))
+          (local.get $i1)
+          (call $__ptr_offset (local.get $__inl12___inl3_ptr))
         )
         (i32.store offset=4
-          (local.get $__pe1)
-          (block $__inl11L___inl4
+          (local.get $i1)
+          (block $__inl12L___inl4
             (result i32)
-            (local.set $__inl11___inl4_ptr (local.get $__inl11___inl2_ptr))
+            (local.set $__inl12___inl4_ptr (local.get $__inl12___inl3_ptr))
             (if
               (i32.ne
                 (i32.and
                   (i32.wrap_i64
-                    (i64.shr_u (local.get $__inl11___inl4_ptr) (i64.const 47))
+                    (i64.shr_u (local.get $__inl12___inl4_ptr) (i64.const 47))
                   )
                   (i32.const 15)
                 )
                 (i32.const 4)
               )
               (then
-                (br $__inl11L___inl4 (i32.const 0))
+                (br $__inl12L___inl4 (i32.const 0))
               )
             )
-            (local.set $i1
+            (local.set $__inl10_j
               (i32.and
                 (i32.wrap_i64
-                  (i64.shr_u (local.get $__inl11___inl4_ptr) (i64.const 32))
+                  (i64.shr_u (local.get $__inl12___inl4_ptr) (i64.const 32))
                 )
                 (i32.const 32767)
               )
             )
             (if
-              (i32.and (local.get $i1) (i32.const 16384))
+              (i32.and (local.get $__inl10_j) (i32.const 16384))
               (then
-                (br $__inl11L___inl4
-                  (i32.and (local.get $i1) (i32.const 7))
+                (br $__inl12L___inl4
+                  (i32.and (local.get $__inl10_j) (i32.const 7))
                 )
               )
             )
-            (local.set $__pe3
-              (call $__ptr_offset (local.get $__inl11___inl4_ptr))
+            (local.set $__inl10_len1
+              (call $__ptr_offset (local.get $__inl12___inl4_ptr))
             )
             (if
               (result i32)
-              (i32.ge_u (local.get $__pe3) (i32.const 4))
+              (i32.ge_u (local.get $__inl10_len1) (i32.const 4))
               (then
                 (i32.load
-                  (i32.sub (local.get $__pe3) (i32.const 4))
+                  (i32.sub (local.get $__inl10_len1) (i32.const 4))
                 )
               )
               (else (i32.const 0))
@@ -4004,34 +4514,34 @@
     )
     (drop
       (call $__fd_write
-        (local.get $__inl11___inl2_fd)
-        (local.get $__pe1)
+        (local.get $__inl12___inl3_fd)
+        (local.get $i1)
         (i32.const 1)
-        (i32.add (local.get $__pe1) (i32.const 8))
+        (i32.add (local.get $i1) (i32.const 8))
       )
     )
     (local.set $_pg0 (i32.const 1))
-    (local.set $_pg1 (i32.const 10))
-    (local.set $__pe0
+    (local.set $__pe0 (i32.const 10))
+    (local.set $__pe1
       (call $__alloc (i32.const 13))
     )
     (i32.store8
-      (local.tee $__pe1
-        (i32.add (local.get $__pe0) (i32.const 12))
+      (local.tee $i1
+        (i32.add (local.get $__pe1) (i32.const 12))
       )
       (i32.const 10)
     )
-    (i32.store (local.get $__pe0) (local.get $__pe1))
+    (i32.store (local.get $__pe1) (local.get $i1))
     (i32.store offset=4
-      (local.get $__pe0)
+      (local.get $__pe1)
       (i32.const 1)
     )
     (drop
       (call $__fd_write
         (i32.const 1)
-        (local.get $__pe0)
+        (local.get $__pe1)
         (i32.const 1)
-        (i32.add (local.get $__pe0) (i32.const 8))
+        (i32.add (local.get $__pe1) (i32.const 8))
       )
     )
     (f64.const nan:0x7FF8000200000000)
