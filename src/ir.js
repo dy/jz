@@ -566,19 +566,21 @@ export function buildRefcount(fn) {
  *  existing ids in a single walk. Replaces the per-pass
  *  `while (fn.some(... === $__prefixK)) k++` (O(K·N)) with one O(N) scan. */
 export function nextLocalId(fn, prefix) {
-  const seen = new Set()
+  // HIGH-WATER mark (max existing + 1), NOT the first free id. Callers allocate sequentially
+  // (id++), so a first-gap start would walk straight into an existing higher local once watr's
+  // coalesce has left non-contiguous numbering (e.g. $__pe0,$__pe1,$__pe5 → start at 2, then
+  // mint 3,4,5 and collide on $__pe5 = "Duplicate local"). High-water is always collision-free.
   const needle = `$__${prefix}`
+  let id = 0
   const walk = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith(needle)) {
       const tail = n[1].slice(needle.length)
-      if (/^\d+$/.test(tail)) seen.add(+tail)
+      if (/^\d+$/.test(tail)) { const k = +tail; if (k >= id) id = k + 1 }
     }
     for (let i = 0; i < n.length; i++) walk(n[i])
   }
   walk(fn)
-  let id = 0
-  while (seen.has(id)) id++
   return id
 }
 
