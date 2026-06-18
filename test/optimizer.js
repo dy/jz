@@ -2116,6 +2116,24 @@ test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / IN
       is(f(x, v), (x / v) | 0, `(${x}/${v})|0`)
 })
 
+test('local-const fold: a chained const divisor becomes a literal (magic-multipliable)', () => {
+  // A function-local `const` built from earlier consts (the blur window `2*rr+1`) folds to
+  // a compile-time i32, so the int-divide lowering hands the wasm backend a CONSTANT
+  // divisor (i32.const) — which V8 magic-multiplies — instead of a runtime `local.get`.
+  const chain = `export let f = (x0) => { let x = x0|0; const rr = 4|0; const win = 2*rr+1; return (x/win)|0 }`
+  const w = jz.compile(chain, { wat: true, optimize: 'speed' })
+  ok(/i32\.div_s\s+\([^)]*\)\s*\(i32\.const 9\)|i32\.const 9/.test(w), 'win folds to the literal 9')
+  ok(!/i32\.div_s\s+\([^)]*\)\s*\(local\.get \$win/.test(w), 'divisor is not a runtime local')
+  const { f } = run(chain, { optimize: 'speed' })
+  for (const x of [0, 1, 8, 9, 17, 2295, 100000, -50]) is(f(x), (x / 9) | 0, `(${x}/9)`)
+  // a reassigned `let` must NOT fold (its value isn't constant)
+  const reassigned = `export let f = (x0) => { let x = x0|0; let d = 9|0; d = 3; return (x/d)|0 }`
+  const { f: g } = run(reassigned, { optimize: 'speed' })
+  for (const x of [0, 9, 30, 100]) is(g(x), (x / 3) | 0, `reassigned (${x}/3)`)
+  // bitwise/shift fold too (R|0, 1<<s)
+  is(run(`export let f = (x0) => { let x = x0|0; const m = 1 << 3; return (x/m)|0 }`, { optimize: 'speed' }).f(100), 12)
+})
+
 test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
   // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
   // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /

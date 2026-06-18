@@ -544,21 +544,54 @@ function analyzeFuncForEmit(func, programFacts) {
 }
 
 function seedLocalIntConsts(body) {
+  // Fold each never-reassigned local `const`/`let NAME = EXPR` to a known i32, so a
+  // divisor / bound / size built from earlier consts (`rr = R|0; win = 2*rr+1`) becomes
+  // a compile-time literal — which lets the int-divide lowering hand the wasm backend a
+  // constant divisor to magic-multiply (no runtime sdiv), array bounds resolve, etc.
+  // Mirrors the module-scope fold (evalConst above); a string ref resolves through the
+  // intConst already recorded on its rep, and the fixpoint lets a later const see an
+  // earlier one regardless of declaration order. Skips nested functions (own scope).
+  const evalC = (n) => {
+    if (typeof n === 'number') return Number.isInteger(n) ? n : null
+    if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return Number.isInteger(n[1]) ? n[1] : null
+    if (typeof n === 'string') return intLiteralValue(n)   // a seeded intConst / literal local
+    if (!Array.isArray(n)) return null
+    const [op, a, b] = n
+    const va = evalC(a); if (va == null) return null
+    if (op === 'u-' || (op === '-' && b === undefined)) return -va
+    const vb = evalC(b); if (vb == null) return null
+    switch (op) {
+      case '+': return va + vb; case '-': return va - vb; case '*': return va * vb
+      case '&': return va & vb; case '|': return va | vb; case '^': return va ^ vb
+      case '<<': return va << vb; case '>>': return va >> vb; case '>>>': return va >>> vb
+      default: return null
+    }
+  }
+  const decls = []
   const walk = (node) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     if (op === '=>') return
     if (op === 'let' || op === 'const') {
-      for (const decl of args) {
-        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-        const value = intLiteralValue(decl[2])
-        if (value != null && !isReassigned(body, decl[1])) updateRep(decl[1], { intConst: value })
-      }
+      for (const decl of args)
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && !isReassigned(body, decl[1])) decls.push(decl)
       return
     }
     for (const arg of args) walk(arg)
   }
   walk(body)
+  const seeded = new Set()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const decl of decls) {
+      if (seeded.has(decl[1])) continue
+      const value = evalC(decl[2])
+      if (value != null && Number.isInteger(value) && value >= I32_MIN && value <= I32_MAX) {
+        updateRep(decl[1], { intConst: value }); seeded.add(decl[1]); changed = true
+      }
+    }
+  }
 }
 
 // ── Loop-invariant exported-param coercion hoist ────────────────────────────
