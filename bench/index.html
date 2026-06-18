@@ -75,10 +75,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 
 /* bar rows */
-.row { display: grid; grid-template-columns: 220px 1fr 120px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
+.row { display: grid; grid-template-columns: 220px 1fr 178px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
 .bar { height: 15px; position: relative; background: transparent; }
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--ink); background: var(--paper); min-width: 2px; }
 .bar i.solid { background: var(--ink); }
@@ -106,7 +107,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .card h3 .play .ico { display: block; }
 .card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src pushed to the right, after the tag + size */
 .card h3 .play:hover { background: none; color: var(--ink); }
-.card .row { grid-template-columns: 124px 1fr 132px; font-size: 11.5px; padding: 2.5px 0; }
+.card .row { grid-template-columns: 110px 1fr 172px; font-size: 11.5px; padding: 2.5px 0; }
 .card .bar { height: 12px; }
 
 @media (max-width: 640px) {
@@ -164,6 +165,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
+import { headlineStats } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 
 // ── targets: band = which question the row answers ──────────────────────────
@@ -261,13 +263,13 @@ const nCases = n => `${n} case${n === 1 ? '' : 's'}`
 
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity }) => {
+const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size }) => {
   const cut = rel > BREAK
   const w = cut ? 100 : (rel / maxLin * 100)
   return `<div class="row${strong ? ' strong' : ''}">
     <span class="lab">${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
     <span class="bar"><i class="${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
-    <span class="val">${esc(text)}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
+    <span class="val">${esc(text)}${size ? `<span class="sz">${esc(fmtB(size))}</span>` : ''}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
   </div>`
 }
 
@@ -320,35 +322,21 @@ const renderGeomean = () => {
 }
 
 // ── stat strip ───────────────────────────────────────────────────────────────
-const SYS_NATIVE = ['nat', 'natgcc', 'rust', 'zig', 'go']
-const JS_ENGINE = { v8: 'V8', deno: 'Deno', bun: 'Bun', spidermonkey: 'SpiderMonkey', graaljs: 'GraalJS' }
+// The SAME six headline figures as the landing page, computed by the shared
+// assets/headline.js over this exact results.json — so the front numbers never
+// drift between the two pages. The per-engine / native detail lives in the geomean
+// chart below; this strip is the consistent 10-second story.
+const STRIP = [
+  ['v8', 'V8', 'jz vs V8 (Node) — geomean of jz’s per-case speedup over the corpus'],
+  ['peak', 'V8 (peak SIMD)', 'best single-case jz speedup over V8 — where SIMD lands hardest'],
+  ['porf', 'Porffor', 'jz vs Porffor — geomean over the kernels Porffor compiles correctly'],
+  ['rust', 'Rust', 'jz vs Rust → wasm — geomean over the corpus'],
+  ['assize', 'AssemblyScript size', 'jz’s .wasm vs AssemblyScript’s — median over shared cases (binary ↔ binary)'],
+  ['porfsize', 'Porffor size', 'jz’s .wasm vs Porffor’s — median over shared cases'],
+]
 const renderStrip = () => {
-  const cells = []
-  // perf vs each JS engine present (geomean of jz's per-case speedup); higher = jz faster
-  for (const [tid, t] of Object.entries(TARGETS)) {
-    if (t.band !== 'js') continue
-    const g = geoRatio(tid)
-    const eng = JS_ENGINE[tid] || t.label
-    if (g) cells.push({ big: fmtX(g.geo), lab: `${eng} perf`, tip: `jz runs ${fmtX(g.geo)} the speed of ${eng} — geomean over ${g.n} cases` })
-  }
-  // near-native: geomean of best-native / jz; ~1× means jz matches the native binary
-  const nat = []
-  for (const c of CORPUS) {
-    const best = Math.min(...SYS_NATIVE.map(t => c.targets[t]?.parity !== 'DIFF' && c.targets[t]?.medianUs || Infinity))
-    if (best < Infinity) nat.push(best / c.targets.jz.medianUs)
-  }
-  // median, not geomean: the distribution is bimodal — jz beats strict-FP native
-  // only on auto-vectorized reductions (dotprod, poly), so a geomean would let
-  // those two outliers falsely imply parity. Median = the typical case.
-  if (nat.length) cells.push({ big: fmtX(median(nat)), lab: 'native perf', tip: `jz vs the fastest native binary (C/Rust/Go), median of ${nat.length} cases — native is the floor; jz only pulls ahead on auto-vectorized FP reductions where strict-fp native can't reassociate` })
-  // size: jz's .wasm vs AssemblyScript's .wasm — the only apples-to-apples size
-  // comparison (binary vs binary, same kernels). A vs-".js-source" ratio would
-  // compare a binary to commented, unminified text, so it's intentionally omitted.
-  const shared = CORPUS.filter(c => c.targets.jz?.bytes && c.targets.as?.bytes)
-  if (shared.length) {
-    const r = geo(shared.map(c => c.targets.jz.bytes)) / geo(shared.map(c => c.targets.as.bytes))
-    cells.push({ big: fmtX(r), lab: 'AS size', tip: `jz's compiled .wasm vs AssemblyScript's .wasm, same kernels — geomean over ${shared.length} cases (≈1× = same size)` })
-  }
+  const s = headlineStats(DATA)
+  const cells = STRIP.filter(([k]) => s[k]).map(([k, lab, tip]) => ({ big: s[k], lab, tip }))
   $('strip').innerHTML = cells.map(c => `<div class="stat"${c.tip ? ` tabindex="0" data-tip="${esc(c.tip)}"` : ''}><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
   $('strip').hidden = false
 }
@@ -380,7 +368,7 @@ const cardRows = c => {
   const maxLin = Math.max(...[...entries.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
   let html = entries.map(r => rowHtml({
     label: r.label, sub: r.sub, rel: r.medianUs / base, maxLin,
-    text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, solid: r.strong, strong: r.strong, parity: r.parity,
+    text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity,
   })).join('')
   if (lrows.length) {
     html += `<div class="subdiv">JZ (your machine)</div>`
