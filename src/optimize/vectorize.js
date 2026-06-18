@@ -1,4 +1,5 @@
 import { findBodyStart } from '../ir.js'
+import { warn } from '../ctx.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -697,70 +698,84 @@ const hasSideEffect = (node) => {
 // ---- Recognize a (block (loop)) pair --------------------------------------
 
 /**
- * Try to vectorize the inner loop. Returns the replacement node array
- * (synthetic outer block) or null on no match.
+ * Match the canonical vectorizable loop SCAFFOLD shared by every inner-loop
+ * recognizer:
+ *   (block $blk [preamble…]
+ *     (loop $loop
+ *       (br_if $blk (i32.eqz (i32.lt_{s,u} $i BOUND)))   ; exit guard
+ *       BODY…
+ *       (local.set $i (i32.add $i 1))                     ; bottom increment
+ *       (br $loop)))
+ *
+ * Returns the structural FACTS only — no policy — or null when the shape
+ * doesn't match:
+ *   { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar,
+ *     exitInfo, bound, boundLocal, body, preamble }
+ *   - `blockNode` is the original block, embedded verbatim as the scalar tail by
+ *     each lifter's wrapper (the never-miscompile remainder loop).
+ *   - `body`       = loopNode.slice(3, incIdx) (between exit guard and increment)
+ *   - `bound`      = the raw BOUND expr; `boundLocal` = its local name when it is
+ *     `(local.get $L)`, else null. Bound shape is NOT rejected here — callers that
+ *     require a local-or-const bound check it themselves (tryStrengthReduceIV is
+ *     bound-shape-agnostic, so baking a rejection in would change its behavior).
+ *
+ * `opts.allowPreamble` (default false): when true, LICM-hoisted invariant
+ *   `(local.set $__li* EXPR)` statements BEFORE the loop are collected into
+ *   `preamble` (pure & loop-invariant by construction — safe to clone/re-run);
+ *   a non-`$__li` preamble, an impure value, or any array content AFTER the loop
+ *   bails. When false, ANY non-loop array content in the block bails.
  */
-function tryVectorize(blockNode, fnLocals, freshIdRef) {
+function matchBlockLoop(blockNode, opts = {}) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  // Find label and inner loop.
-  let blockLabel = null
-  let loopIdx = -1, loopNode = null
+  const allowPreamble = !!opts.allowPreamble
+  let blockLabel = null, loopNode = null
   const preamble = []
   for (let i = 1; i < blockNode.length; i++) {
     const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) {
-      blockLabel = c; continue
-    }
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
     if (isArr(c) && c[0] === 'loop') {
       if (loopNode) return null  // multiple loops
-      loopIdx = i; loopNode = c
+      loopNode = c
     } else if (isArr(c)) {
-      // A LICM-hoisted invariant `(local.set $__liN EXPR)` BEFORE the loop (e.g. the
-      // particle step's `-9.8 * DT`) is fine: run a clone of it ahead of the SIMD
-      // block so the lifted body reads the same value. Restricted to the `$__li`
-      // locals hoistInvariantLoop emits — pure & loop-invariant by construction, so
-      // cloning (running twice) is side-effect-free. A non-`$__li` preamble (e.g. a
-      // for-in's `$__inl_ptr = (call $__alloc …)`, which allocates), content after
-      // the loop, or any non-`local.set` still bails; the side-effect check is belt-
-      // and-suspenders against a hoisted impure value.
-      if (loopNode || c[0] !== 'local.set' || typeof c[1] !== 'string'
+      // `loopNode` truthy ⇒ this content is AFTER the loop ⇒ bail (even for a $__li set).
+      if (!allowPreamble || loopNode || c[0] !== 'local.set' || typeof c[1] !== 'string'
         || !c[1].startsWith('$__li') || hasSideEffect(c[2])) return null
       preamble.push(c)
     }
   }
   if (!loopNode || !blockLabel) return null
 
-  // Loop layout: ['loop', '$label', ...stmts]
   const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
   if (!loopLabel) return null
 
-  // Find induction increment + back-branch at the END.
-  let endIdx = loopNode.length - 1
+  const endIdx = loopNode.length - 1
   if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
   const incIdx = endIdx - 1
   const incVar = matchInc1(loopNode[incIdx])
   if (!incVar) return null
 
-  // First stmt must be the exit br_if.
   const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo) return null
-  if (exitInfo.ind !== incVar) return null
+  if (!exitInfo || exitInfo.ind !== incVar) return null
 
-  // Body = stmts between exit and increment.
-  const body = []
-  for (let i = 3; i < incIdx; i++) body.push(loopNode[i])
+  const bound = exitInfo.bound
+  const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
+  const body = loopNode.slice(3, incIdx)
+  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble }
+}
 
-  // Bound must be loop-invariant. For now, accept (local.get $L) where $L
-  // is declared but not written inside the body, OR (i32.const N).
-  let bound = exitInfo.bound
-  let boundLocal = null
-  if (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string') {
-    boundLocal = bound[1]
-  } else if (isI32Const(bound)) {
-    // ok
-  } else {
-    return null
-  }
+/**
+ * Try to vectorize the inner loop. Returns the replacement node array
+ * (synthetic outer block) or null on no match.
+ */
+function tryVectorize(bl, fnLocals, freshIdRef) {
+  // Consumes the shared scaffold descriptor (matchBlockLoop, computed once by the
+  // dispatch). The LICM `$__li` preamble is cloned ahead of the SIMD block; each
+  // set is pure & loop-invariant, so the kept scalar tail harmlessly re-runs it.
+  if (!bl) return null
+  const { incVar, bound, boundLocal, body, preamble } = bl
+
+  // Bound must be loop-invariant: (local.get $L) or (i32.const N).
+  if (!boundLocal && !isI32Const(bound)) return null
 
   // Detect lane type from the FIRST load in body.
   let laneType = null
@@ -928,7 +943,7 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   // A clone of any LICM-hoisted preamble runs first (so the SIMD block sees the
   // invariant); the original block is preserved unchanged as the scalar tail (which
   // re-runs the preamble harmlessly — it is loop-invariant).
-  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, blockNode]
+  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
 
   // Locals to add to function header.
   const newLocalDecls = [
@@ -958,31 +973,10 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
 // Float adds are not strictly associative — vectorized reduction differs
 // from scalar reduction by ulps. Acceptable when bit-exact equality is not
 // required (which it isn't, by spec, in JS engines either).
-function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-
-  // Match outer (block (loop)) structure. Same loop-shape as tryVectorize.
-  let blockLabel = null
-  let loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') {
-      if (loopNode) return null
-      loopNode = c
-    } else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
-  const incIdx = endIdx - 1
-  const incVar = matchInc1(loopNode[incIdx])
-  if (!incVar) return null
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo) return null
-  if (exitInfo.ind !== incVar) return null
+function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
+  // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
+  if (!bl || bl.preamble.length) return null
+  const { loopNode, incIdx, incVar } = bl
 
   // Body is either a bare single-statement reduction —
   //   (local.set $acc (OP (local.get $acc) EXPR))            add/xor/and/or
@@ -1089,11 +1083,9 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
   }
   if (!widen && accType !== (reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
 
-  // Bound classification (same as tryVectorize).
-  let bound = exitInfo.bound
-  let boundLocal = null
-  if (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string') boundLocal = bound[1]
-  else if (!isI32Const(bound)) return null
+  // Bound must be loop-invariant: (local.get $L) or (i32.const N).
+  const { bound, boundLocal } = bl
+  if (!boundLocal && !isI32Const(bound)) return null
 
   // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of
   // accName forbidden (the accumulator only appears in the outer wrapper).
@@ -1266,7 +1258,7 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
     ? [['if', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]],
         ['then', ...initAcc, simdBlock, ...combineAccs, ...mergeStmts]]]
     : [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
-  const wrapper = ['block', boundSetup, ...core, blockNode]
+  const wrapper = ['block', boundSetup, ...core, bl.blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
@@ -1285,29 +1277,10 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
 // per-element compute is expensive (a sqrt + reciprocal) so the 2-wide arithmetic
 // outweighs the serial lane-accumulation. The original block is preserved as the ≤1
 // scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
-function tryMapReduceVectorize(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
-  const incIdx = endIdx - 1
-  const incVar = matchInc1(loopNode[incIdx])
-  if (!incVar) return null
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo || exitInfo.ind !== incVar) return null
-  const bound = exitInfo.bound
-  const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
+function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
+  if (!bl || bl.preamble.length) return null
+  const { incVar, bound, boundLocal, body } = bl
   if (!boundLocal && !isI32Const(bound)) return null
-  const body = loopNode.slice(3, incIdx)
   if (body.length < 2) return null
 
   // Every body stmt must be `(local.set $x EXPR)`. An accumulator reads its own target
@@ -1389,7 +1362,7 @@ function tryMapReduceVectorize(blockNode, fnLocals, freshIdRef) {
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]],
       ['br', simdLoop]]]
   const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -2]]]
-  const wrapper = ['block', boundSetup, simdBlock, blockNode]
+  const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
 }
 
@@ -1452,13 +1425,30 @@ function liftCanon(coreV, C, ctx, info) {
     ['v128.bitselect', splatC, g, [laneNe, g, g]]]
 }
 
+// --why-not-simd diagnostics. `_whyNotActive` is armed only for the duration of a
+// vectorizeLaneLocal call made with the flag on (cleared on exit — never leaks into
+// codegen, which never reads it). `_whyNotReason` captures the FIRST (deepest) lift
+// bail for the block currently under the recognizer chain; the walk reads it after.
+let _whyNotActive = false
+let _whyNotReason = null
+
+// Mark a lift bail and record its reason. First-write-wins: the innermost failing op
+// sets ctx.failReason; outer frames see ctx.fail already set and return without
+// overwriting, so the reason names the actual blocking op, not a wrapper.
+const liftFail = (ctx, reason) => {
+  ctx.fail = true
+  if (ctx.failReason == null) ctx.failReason = reason
+  if (_whyNotActive && _whyNotReason == null) _whyNotReason = reason
+  return null
+}
+
 /** Lift a statement. Returns lifted stmt, or null to skip, or ['__seq__', ...] for multiple. */
 function liftStmt(stmt, ctx) {
   if (!isArr(stmt)) {
     // Bare strings like "drop" — produced by stack-form WAT. We unwrap value-blocks
     // separately so an isolated "drop" should not appear here, but tolerate it.
     if (stmt === 'drop') return null
-    ctx.fail = true; return null
+    return liftFail(ctx, 'non-array statement')
   }
   const op = stmt[0]
 
@@ -1475,7 +1465,7 @@ function liftStmt(stmt, ctx) {
       if (ctx.fail) return null
       return ['local.set', laneName, v]
     }
-    ctx.fail = true; return null
+    return liftFail(ctx, `local.set ${name}: loop-carried or unclassified local`)
   }
 
   if (STORE_OPS[op]) {
@@ -1485,7 +1475,7 @@ function liftStmt(stmt, ctx) {
     if (ctx.fail) return null
     // Handle memarg if present (last positional after addr/val): unlikely in
     // pre-watr IR for this shape; bail if more than 3 children.
-    if (stmt.length !== 3) { ctx.fail = true; return null }
+    if (stmt.length !== 3) return liftFail(ctx, `${op} with memarg`)
     return [simdStore, addr, val]
   }
 
@@ -1513,12 +1503,12 @@ function liftStmt(stmt, ctx) {
   }
 
   // Standalone expression-as-statement (e.g. a load that gets dropped) — bail.
-  ctx.fail = true; return null
+  return liftFail(ctx, `standalone ${op} statement`)
 }
 
 /** Lift a value expression into v128 context. */
 function liftExprV(expr, ctx) {
-  if (!isArr(expr)) { ctx.fail = true; return null }
+  if (!isArr(expr)) return liftFail(ctx, 'non-expression operand')
   const op = expr[0]
   const info = LANE_INFO[ctx.laneType]
 
@@ -1535,7 +1525,7 @@ function liftExprV(expr, ctx) {
 
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
-    if (LOAD_OPS[op] !== ctx.laneType) { ctx.fail = true; return null }
+    if (LOAD_OPS[op] !== ctx.laneType) return liftFail(ctx, `${op}: load type ≠ lane type ${ctx.laneType}`)
     return ['v128.load', expr[1]]
   }
 
@@ -1564,9 +1554,9 @@ function liftExprV(expr, ctx) {
       return [info.splat, ['local.get', name]]
     }
     if (kind === 'addr' || name === ctx.incVar) {
-      ctx.fail = true; return null  // can't be in a value position
+      return liftFail(ctx, `${name}: address/induction var used as lane data`)
     }
-    ctx.fail = true; return null
+    return liftFail(ctx, `${name}: unclassified local in value position`)
   }
 
   // Loop-invariant global (e.g. a hoistConstantPool'd const, or any global the
@@ -1583,13 +1573,13 @@ function liftExprV(expr, ctx) {
   if (ctx.laneType === 'f64' || ctx.laneType === 'f32') {
     if (op === 'select') {
       const m = matchCanonSelect(expr, ctx.laneType)
-      if (!m) { ctx.fail = true; return null }
+      if (!m) return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
       const coreV = liftExprV(m.val, ctx)
       return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
     }
     if (op === 'block') {
       const m = matchCanonBlock(expr, ctx.laneType)
-      if (!m) { ctx.fail = true; return null }
+      if (!m) return liftFail(ctx, 'non-canonical value-block')
       const coreV = liftExprV(m.core, ctx)
       return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
     }
@@ -1604,14 +1594,14 @@ function liftExprV(expr, ctx) {
   // evaluates X,Y before its 3rd operand, but any address `local.tee` lives in
   // COND and must run before the branches read it (matching scalar order).
   if (op === 'if') {
-    if (!isArr(expr[1]) || expr[1][0] !== 'result' || expr[1][1] !== ctx.laneType) { ctx.fail = true; return null }
+    if (!isArr(expr[1]) || expr[1][0] !== 'result' || expr[1][1] !== ctx.laneType) return liftFail(ctx, 'conditional without lane-typed result')
     const thenN = expr[3], elseN = expr[4]
-    if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) { ctx.fail = true; return null }
-    if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) { ctx.fail = true; return null }
+    if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) return liftFail(ctx, 'malformed conditional then-branch')
+    if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) return liftFail(ctx, 'malformed conditional else-branch')
     let cond = expr[2]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]  // strip `!= 0`
     const cmpSimd = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
-    if (!cmpSimd) { ctx.fail = true; return null }
+    if (!cmpSimd) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
     const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
     const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
     const x = liftExprV(thenN[1], ctx); if (ctx.fail) return null
@@ -1633,7 +1623,7 @@ function liftExprV(expr, ctx) {
       // Second operand stays scalar i32 — must be const or invariant local.
       const b = expr[2]
       if (!isI32Const(b) && !(isArr(b) && b[0] === 'local.get' && ctx.localKind.get(b[1]) === 'invariant')) {
-        ctx.fail = true; return null
+        return liftFail(ctx, `${op}: shift amount not a constant or loop-invariant`)
       }
       return [entry.simd, a, b]
     }
@@ -1645,7 +1635,7 @@ function liftExprV(expr, ctx) {
     return [entry.simd, a, b]
   }
 
-  ctx.fail = true; return null
+  return liftFail(ctx, `${op}: no lane-pure SIMD mapping for ${ctx.laneType}`)
 }
 
 // ---- Induction-variable strength reduction --------------------------------
@@ -1679,25 +1669,12 @@ function matchAffineAddr(node, ind) {
  * `br_if` to the *block* label, i.e. an early break, is fine: the loop is exiting). Runs
  * only where the vectorizer runs (speed levels), so it never grows the size-tuned build.
  */
-function tryStrengthReduceIV(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
-  const incIdx = endIdx - 1
-  const incVar = matchInc1(loopNode[incIdx])
-  if (!incVar) return null
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo || exitInfo.ind !== incVar) return null
+function tryStrengthReduceIV(bl, fnLocals, freshIdRef) {
+  // Bound-shape-agnostic: strength-reduces address arithmetic, not the loop bound,
+  // so it accepts any scaffold (no local-or-const bound check). No preamble (was
+  // allowPreamble:false).
+  if (!bl || bl.preamble.length) return null
+  const { loopNode, loopLabel, incIdx, incVar } = bl
 
   // Scan the body (stmts between the exit br_if and the bottom increment): collect
   // affine-address sites, track every written local, and bail on a loop-label branch.
@@ -1741,7 +1718,7 @@ function tryStrengthReduceIV(blockNode, fnLocals, freshIdRef) {
     for (const s of g.sites) s.parent[s.idx] = ['local.get', p]
   }
   loopNode.splice(incIdx + 1, 0, ...bumps)   // after the induction increment, before the br
-  return { wrapper: ['block', ...preInits, blockNode], newLocalDecls }
+  return { wrapper: ['block', ...preInits, bl.blockNode], newLocalDecls }
 }
 
 // ---- memory.copy / memory.fill loop idioms ---------------------------------
@@ -1786,27 +1763,12 @@ const MEMOP_STORES = {
  *  - In-bounds for the same reason the lane vectorizer's wide loads are: the
  *    moved window is exactly the byte range the scalar iterations touch.
  */
-function tryMemCopyFill(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
+function tryMemCopyFill(bl, fnLocals, freshIdRef) {
+  if (!bl || bl.preamble.length) return null   // no-preamble policy (was allowPreamble:false)
+  const { loopNode, incVar, bound } = bl
   // Shape: [loop, $l, boundExit, (set,)? store, inc, br] — 1- or 2-statement body.
   if (loopNode.length !== 6 && loopNode.length !== 7) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
-  const incVar = matchInc1(loopNode[endIdx - 1])
-  if (!incVar) return null
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo || exitInfo.ind !== incVar) return null
-  const bound = exitInfo.bound
+  // Bound: const or an invariant local that is not the IV itself.
   if (!(isI32Const(bound) || (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' && bound[1] !== incVar))) return null
 
   // Body shapes (emit produces the two-statement form with a temp + shared
@@ -1891,7 +1853,7 @@ function tryMemCopyFill(blockNode, fnLocals, freshIdRef) {
       ['then',
         ['memory.copy', ['local.get', dstA], ['local.get', srcA], ['local.get', lenB]],
         ...finish],
-      ['else', blockNode]]]
+      ['else', bl.blockNode]]]
   }
 
   const wrapper = ['block',
@@ -1949,25 +1911,13 @@ function matchByteCompare(node, ind) {
  * reads too. (charCodeAt over a jz string is out of scope — it lowers to per-char
  * bounds/SSO/heap/decode branches, not a flat byte load.)
  */
-function tryByteScan(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  // Exact shape: [loop, $l, boundExit, matchExit, inc, br] — nothing else.
+function tryByteScan(bl, fnLocals, freshIdRef) {
+  if (!bl || bl.preamble.length) return null
+  const { blockLabel, loopNode, incVar, exitInfo } = bl
+  // Exact shape: [loop, $l, boundExit, matchExit, inc, br] — nothing else. The
+  // scaffold already verified boundExit/inc/back-branch; only the extra match-exit
+  // br_if at loopNode[3] and the strict length remain.
   if (loopNode.length !== 6) return null
-  if (!(isArr(loopNode[5]) && loopNode[5][0] === 'br' && loopNode[5][1] === loopLabel)) return null
-  const incVar = matchInc1(loopNode[4])
-  if (!incVar) return null
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)    // (br_if $b (eqz (i < bound)))
-  if (!exitInfo || exitInfo.ind !== incVar) return null
   const matchExit = loopNode[3]
   if (!(isArr(matchExit) && matchExit[0] === 'br_if' && matchExit[1] === blockLabel && matchExit.length === 3)) return null
   const bc = matchByteCompare(matchExit[2], incVar)
@@ -2789,12 +2739,25 @@ const matchPixelExit = (stmt, label) => {
   return null
 }
 
-function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
+/**
+ * Match the OUTER per-pixel loop scaffold shared by tryDivergentEscapeVectorize
+ * (inner escape loop) and tryPerPixelColor (straight-line body):
+ *   (block $o [preamble: pure local.set…]
+ *     (loop $l (br_if $o (i32.eqz (IV < WIDTH))) OBODY… (pxIV += 1)… (br $l)))
+ * One-or-more trailing `v += 1` are pixel induction vars (the bound IV plus any
+ * parallel counters like `j`); the exit bounds one of them by an invariant width.
+ *
+ * Returns the shared FACTS, or null:
+ *   { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar, widthBound, pivType,
+ *     obody }  — obody = loopNode.slice(3, pivStart), the per-pixel work between
+ *   the exit guard and the IV bumps. Both consumers branch on `obody` afterward.
+ * The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
+ *   a constant, or a local/global the loop nest never writes (`writesName`).
+ */
+function matchOuterPixelLoop(blockNode) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
   const oLabel = (typeof blockNode[1] === 'string' && blockNode[1].startsWith('$')) ? blockNode[1] : null
   if (!oLabel) return null
-  // Block may carry LICM-hoisted invariants (`local.set …`) before the loop; they
-  // feed both the SIMD path and the scalar tail, so capture them as a preamble.
   let loopNode = null, loopPos = -1
   for (let i = 2; i < blockNode.length; i++) {
     const c = blockNode[i]
@@ -2809,7 +2772,6 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   if (!llabel) return null
   const oEnd = loopNode.length - 1
   if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
-  // Trailing `v += 1` statements are the pixel IVs (loop IV + parallel counters like `j`).
   const pixelIVs = []   // [{ name, type }]
   let pivStart = oEnd
   for (let i = oEnd - 1; i >= 3; i--) {
@@ -2821,19 +2783,22 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const oExit = matchPixelExit(loopNode[2], oLabel)
   const pxIV = oExit && pixelIVs.find(p => p.name === oExit.ind && p.type === oExit.type)
   if (!pxIV) return null
-  const pxVar = oExit.ind                       // the loop-bound pixel IV
   const widthBound = oExit.bound
   const pivType = new Map(pixelIVs.map(p => [p.name, p.type]))
-  // The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
-  // a constant, or a local/global that the loop nest never writes.
   if (isI32Const(widthBound)) { /* ok */ }
   else if (isArr(widthBound) && (widthBound[0] === 'local.get' || widthBound[0] === 'global.get')) {
-    const setOp = widthBound[0] === 'local.get' ? 'local.set' : 'global.set'
-    const writes = (n) => isArr(n) && (((n[0] === setOp || (setOp === 'local.set' && n[0] === 'local.tee')) && n[1] === widthBound[1]) || n.some(writes))
-    if (writes(loopNode)) return null
+    if (writesName(loopNode, widthBound[1])) return null
   } else return null
-
   const obody = loopNode.slice(3, pivStart)     // between exit guard and the pixel-IV bumps
+  return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit }
+}
+
+function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
+  // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail).
+  const outer = matchOuterPixelLoop(blockNode)
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+
   let innerIdx = -1, innerBlock = null
   for (let i = 0; i < obody.length; i++) {
     const s = obody[i]
@@ -3229,44 +3194,13 @@ const PPC_CALL2 = {
 // rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
 // loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).
 function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
-  // ---- outer-loop match (identical to tryDivergentEscapeVectorize 2596-2637) ----
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  const oLabel = (typeof blockNode[1] === 'string' && blockNode[1].startsWith('$')) ? blockNode[1] : null
-  if (!oLabel) return null
-  let loopNode = null, loopPos = -1
-  for (let i = 2; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (!isArr(c)) return null
-    if (c[0] === 'loop') { if (loopNode) return null; loopNode = c; loopPos = i }
-    else if (loopNode) return null
-    else if (c[0] !== 'local.set') return null
-  }
-  if (!loopNode) return null
-  const preamble = blockNode.slice(2, loopPos)
-  const llabel = (typeof loopNode[1] === 'string' && loopNode[1].startsWith('$')) ? loopNode[1] : null
-  if (!llabel) return null
-  const oEnd = loopNode.length - 1
-  if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
-  const pixelIVs = []
-  let pivStart = oEnd
-  for (let i = oEnd - 1; i >= 3; i--) {
-    const m = matchPixelInc(loopNode[i])
-    if (!m) break
-    pixelIVs.unshift(m); pivStart = i
-  }
-  if (!pixelIVs.length) return null
-  const oExit = matchPixelExit(loopNode[2], oLabel)
-  const pxIV = oExit && pixelIVs.find(p => p.name === oExit.ind && p.type === oExit.type)
-  if (!pxIV) return null
-  const pxVar = oExit.ind, widthBound = oExit.bound
-  const pivType = new Map(pixelIVs.map(p => [p.name, p.type]))
-  if (isI32Const(widthBound)) { /* ok */ }
-  else if (isArr(widthBound) && (widthBound[0] === 'local.get' || widthBound[0] === 'global.get')) {
-    if (writesName(loopNode, widthBound[1])) return null
-  } else return null
+  // Outer per-pixel scaffold — shared with tryDivergentEscapeVectorize; this pass
+  // takes the straight-line-body branch (no inner escape loop) below.
+  const outer = matchOuterPixelLoop(blockNode)
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
 
   // ---- body: straight-line (no inner escape loop), no impure call ----
-  const obody = loopNode.slice(3, pivStart)
   for (const s of obody)
     if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return null  // inner escape loop → tryDivergentEscapeVectorize's job
   // A non-pure call (e.g. a ray-march helper that writes a scratch global / memory) can mutate state
@@ -3437,10 +3371,12 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
+  const fnName = typeof fn[1] === 'string' ? fn[1] : '(anon)'
+  let whyNotN = 0
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()
@@ -3467,24 +3403,44 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
       if (isArr(node[i])) walk(node, i)
     }
     if (node[0] === 'block') {
-      const r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
-        ?? tryMemCopyFill(node, fnLocals, freshIdRef)
-        ?? tryVectorize(node, fnLocals, freshIdRef)
-        ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
-        ?? tryMapReduceVectorize(node, fnLocals, freshIdRef)
+      if (_whyNotActive) _whyNotReason = null
+      // Recognition layer: match the canonical (block (loop)) scaffold ONCE; the
+      // inner-scaffold lifters (memcpy/map/reduce/map-reduce/byte-scan) consume the
+      // descriptor instead of each re-matching. The outer-pixel + special-shape
+      // recognizers (divergent-escape, ramp-map, blur, channel-reduce, per-pixel)
+      // do their own matching on the raw node. Order is preserved exactly — it is
+      // load-bearing (first match wins).
+      const bl = matchBlockLoop(node, { allowPreamble: true })
+      let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
+        ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
+        ?? tryVectorize(bl, fnLocals, freshIdRef)
+        ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
+        ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
-        ?? tryByteScan(node, fnLocals, freshIdRef)
+        ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef)
-        ?? tryStrengthReduceIV(node, fnLocals, freshIdRef)
+      // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
+      // Reported BEFORE the scalar strength-reduce fallback (which fires on most
+      // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
+      if (!r && _whyNotActive && (bl || matchOuterPixelLoop(node))) {
+        whyNotN++
+        warn('simd-why-not',
+          `${fnName}: loop #${whyNotN} not vectorized — ${_whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
+          { fn: `${fnName}#${whyNotN}` })
+      }
+      // Scalar IV strength-reduction is a non-SIMD fallback; it may still fire.
+      r = r ?? tryStrengthReduceIV(bl, fnLocals, freshIdRef)
       if (r) {
         parent[idx] = r.wrapper
         newLocalDeclsAll.push(...r.newLocalDecls)
       }
     }
   }
+  _whyNotActive = whyNot
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
+  _whyNotActive = false
 
   if (newLocalDeclsAll.length) {
     // Sibling loops (and the straight-line dot pass) can each lift the SAME source

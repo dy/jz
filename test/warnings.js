@@ -194,6 +194,28 @@ test('warnings: simd-aos-stride on interleaved index', () => {
   ok(ws.some(w => w.code === 'simd-aos-stride'))
 })
 
+// --why-not-simd (opts.whyNotSimd): per-loop diagnostic naming the op that blocked
+// vectorization. A clean i32 typed-array map whose only blocker is i32.rem_s (no
+// lane-pure SIMD mapping) reaches the lifter, so the reason is op-specific.
+const remMap = `
+  export let f = (n) => {
+    let a = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = a[i] % 3
+    return a[0]
+  }
+`
+test('warnings: simd-why-not names the blocking op when whyNotSimd is set', () => {
+  if (belowOpt(2)) return  // only emitted when vectorizeLaneLocal runs (optimize >= 2)
+  const ws = warningsFor(remMap, { whyNotSimd: true })
+  const w = ws.find(w => w.code === 'simd-why-not')
+  ok(w, 'simd-why-not emitted')
+  ok(/i32\.rem_s/.test(w.message), `names the blocking op: ${w && w.message}`)
+})
+
+test('warnings: simd-why-not is off by default (noisy — opt-in only)', () => {
+  is(warningsFor(remMap).filter(w => w.code === 'simd-why-not').length, 0)
+})
+
 test('warnings: int-global-truncation when a scalar global is i32-narrowed from a param', () => {
   // jz infers integer module globals to i32 (the size/index/stride perf win). A
   // scalar global fed from a parameter may hold a fractional Number (DSP state) that

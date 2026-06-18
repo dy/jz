@@ -232,6 +232,9 @@ jz.memory = enhanceMemory
  *     src/optimize/index.js) and change between versions; prefer the level/string forms.
  * @param {boolean} [opts.noSimd] - Disable auto-vectorization (no jz-emitted v128) for
  *   engines without the SIMD proposal. Explicit f32x4/i32x4 intrinsics still compile.
+ * @param {boolean} [opts.whyNotSimd] - Diagnostic: emit a `simd-why-not` warning (via
+ *   opts.warnings) for each canonical loop the auto-vectorizer declined, naming the
+ *   first blocking op. Finds loops one op away from SIMD. Noisy — off by default.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
@@ -521,6 +524,12 @@ const jzCompileInner = (code, opts = {}) => {
   // explicit f32x4/i32x4 intrinsics in source are the user's own opt-in and stay.
   // Applied after auto-config so it wins over any re-resolved preset.
   if (opts.noSimd) ctx.transform.optimize.vectorizeLaneLocal = false
+
+  // opts.whyNotSimd (CLI --why-not-simd): emit a `simd-why-not` warning per
+  // canonical loop that the auto-vectorizer declined, naming the blocking op —
+  // a diagnostic to find loops that are "one op away" from SIMD. Rides the
+  // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
+  if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')

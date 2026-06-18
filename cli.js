@@ -57,6 +57,7 @@ Options:
   --import-memory           Import env.memory instead of exporting own memory
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
+  --why-not-simd            Report, per loop, why the auto-vectorizer declined it
   --no-tail-call            Use ordinary call frames instead of return_call
   --names                   Emit wasm name section for profilers/debuggers
   --stats                   Print compile-phase timings to stderr
@@ -171,7 +172,7 @@ function printStats(profile) {
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
   let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false
-  let memory, maxMemory, importMemory = false, define
+  let memory, maxMemory, importMemory = false, define, whyNotSimd = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -190,6 +191,7 @@ async function handleCompile(args) {
     else if (a === '--import-memory') importMemory = true
     else if (a === '--no-alloc') alloc = false
     else if (a === '--no-simd') noSimd = true
+    else if (a === '--why-not-simd') whyNotSimd = true
     else if (a === '--no-tail-call') noTailCall = true
     else if (a === '--names') names = true
     else if (a === '--stats') stats = true
@@ -222,6 +224,7 @@ async function handleCompile(args) {
     ...(importMemory && { importMemory: true }),
     ...(alloc === false && { alloc: false }),
     ...(noSimd && { noSimd: true }),
+    ...(whyNotSimd && { whyNotSimd: true }),
     ...(noTailCall && { noTailCall: true }),
     ...(define && { define }),
     ...(names && { names: true }),

@@ -67,6 +67,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `strict: true` | Enforce the pure canonical subset: skip jzify lowering (so `var`/`function`/`class`/`==`/… are rejected, not accepted) **and** reject dynamic fallbacks (`obj[k]`, `for-in`, unknown receiver methods). Off by default — broader JS is lowered automatically. |
 | `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) for standalone modules that never marshal heap values. |
 | `noSimd: true` | Disable auto-vectorization (no jz-emitted `v128`) for engines without the SIMD proposal. Explicit `f32x4`/`i32x4` intrinsics still compile. |
+| `whyNotSimd: true` | Diagnostic (CLI `--why-not-simd`): emit a `simd-why-not` warning per loop the auto-vectorizer declined, naming the first blocking op — finds loops one op away from SIMD. Noisy; off by default. Surfaced via the `warnings` sink. |
 | `randomSeed` | `Math.random` seeding — default draws from host entropy (non-reproducible); a number fixes it for a reproducible sequence, `true` forces entropy explicitly. |
 | `wat: true` | `compile()` returns WAT text instead of WASM binary. |
 | `names: true` | Emit a WASM `name` section (function symbols) for profilers/debuggers. |
@@ -126,6 +127,7 @@ Options:
   --import-memory           Import env.memory instead of exporting own memory
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
+  --why-not-simd            Report, per loop, why the auto-vectorizer declined it
   --no-tail-call            Use ordinary call frames instead of return_call
   --names                   Emit wasm name section for profilers/debuggers
   --stats                   Print compile-phase timings to stderr
@@ -388,7 +390,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 <summary><strong>How do I inspect or debug the output?</strong></summary>
 
 - **Semantics** — valid jz is valid JS: run the same source under Node and diff results (mind the [documented divergences](#faq)); `console.log` works inside compiled modules too.
-- **Codegen** — `jz program.js --wat` (API: `compile(src, { wat: true })`) shows the emitted WAT: grep `v128` to confirm a loop vectorized, `__dyn_get`/`__ext_call` to spot dynamic fallbacks inference couldn't narrow.
+- **Codegen** — `jz program.js --wat` (API: `compile(src, { wat: true })`) shows the emitted WAT: grep `v128` to confirm a loop vectorized, `__dyn_get`/`__ext_call` to spot dynamic fallbacks inference couldn't narrow. `--why-not-simd` (API: `whyNotSimd: true`) goes further — for each loop the auto-vectorizer declined it reports the first blocking op (e.g. `i32.rem_s: no lane-pure SIMD mapping`), so you don't have to grep the WAT to find what's one op away.
 - **Dynamic fallbacks** — compile with `strict: true` to turn every fallback (`obj[k]`, `for-in`, unknown receiver method) into a compile error pointing at the site.
 - **Profiling** — `--names` (API: `names: true`) emits a wasm `name` section so DevTools profilers and disassemblers show real function names; `--stats` (API: the `profile` sink) collects per-stage compile timings.
 - **Slow kernel checklist** — a stray float literal pins a counter to f64; a plain `[]` where a typed array would do; a loop-carried dependency (`a[i-1]`, running sum) blocks SIMD. The signals in *Why no type annotations?* below are the levers.
