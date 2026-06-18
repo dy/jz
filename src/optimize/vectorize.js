@@ -1276,6 +1276,123 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef, multiAcc = false) {
   return { wrapper, newLocalDecls }
 }
 
+// Bit-exact f64 map-reduce (the direct-summation n-body force loop). A loop that
+// accumulates one or more f64 reductions whose per-iteration contribution is computed
+// INDEPENDENTLY of the accumulators. Process 2 iterations per step in f64x2 — every lane
+// op (sub/mul/add/div/sqrt) is IEEE-754-identical to scalar f64 (no FMA in non-relaxed
+// SIMD) — then accumulate each accumulator's two lane contributions IN SCALAR ORDER, so
+// the reduction is BIT-EXACT (unlike the reassociating tryReduceVectorize). Wins when the
+// per-element compute is expensive (a sqrt + reciprocal) so the 2-wide arithmetic
+// outweighs the serial lane-accumulation. The original block is preserved as the ≤1
+// scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
+function tryMapReduceVectorize(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  let blockLabel = null, loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+    else if (isArr(c)) return null
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  const incIdx = endIdx - 1
+  const incVar = matchInc1(loopNode[incIdx])
+  if (!incVar) return null
+  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+  if (!exitInfo || exitInfo.ind !== incVar) return null
+  const bound = exitInfo.bound
+  const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
+  if (!boundLocal && !isI32Const(bound)) return null
+  const body = loopNode.slice(3, incIdx)
+  if (body.length < 2) return null
+
+  // Every body stmt must be `(local.set $x EXPR)`. An accumulator reads its own target
+  // through `f64.add` (`acc = acc + EXPR`); the rest are per-iteration lane locals. (One
+  // write per acc — duplicate writes would break the per-acc ordering.)
+  for (const s of body) if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) return null
+  const accSet = new Set()
+  for (const s of body) if (isArr(s[2]) && s[2][0] === 'f64.add' && isLocalGet(s[2][1], s[1])) accSet.add(s[1])
+  if (!accSet.size) return null
+  const writeCount = new Map()
+  for (const s of body) writeCount.set(s[1], (writeCount.get(s[1]) || 0) + 1)
+  for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64') return null }
+
+  // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
+  // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements.
+  const offsetTees = new Map()
+  const allNames = new Set()
+  const gather = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allNames.add(n[1]); for (let i = 1; i < n.length; i++) gather(n[i]) }
+  for (const s of body) gather(s)
+  for (const name of allNames) { const k = _offsetLocalStride(body, name, incVar); if (k != null) offsetTees.set(name, k) }
+
+  // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
+  // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
+  const laneV = new Map()
+  const newLocalDecls = []
+  const fresh = () => { const n = `$__mr${freshIdRef.next++}`; newLocalDecls.push(['local', n, 'v128']); return n }
+  let bad = false
+  const lift = (e) => {
+    if (bad || !isArr(e)) { bad = true; return null }
+    const op = e[0]
+    if (op === 'f64.const') return ['f64x2.splat', e]
+    if (op === 'f64.load') {
+      const m = matchLaneAddr(e[1], incVar, new Map(), offsetTees)
+      if (!m || m.strideLog2 !== 3) { bad = true; return null }
+      return ['v128.load', e[1]]   // 16 bytes = 2 consecutive f64s; the f64x2 op reads them
+    }
+    if (op === 'local.get' && typeof e[1] === 'string') {
+      if (e[1] === incVar || accSet.has(e[1])) { bad = true; return null }   // IV-as-data / acc-dependent contribution
+      if (laneV.has(e[1])) return ['local.get', laneV.get(e[1])]
+      if (writeCount.has(e[1])) { bad = true; return null }   // a body local used BEFORE its set this iteration → loop-carried, not a fresh lane
+      return ['f64x2.splat', e]   // genuine loop-invariant scalar (xi, …)
+    }
+    if ((op === 'f64.add' || op === 'f64.sub' || op === 'f64.mul' || op === 'f64.div') && e.length === 3)
+      return [op.replace('f64.', 'f64x2.'), lift(e[1]), lift(e[2])]
+    if (op === 'f64.sqrt' && e.length === 2) return ['f64x2.sqrt', lift(e[1])]
+    bad = true; return null
+  }
+
+  // Lifted body: setup lanes → f64x2 temps (in order, so the offset tee in the first load
+  // is set before later loads read it); each accumulator → a temp + two in-order adds.
+  const lifted = []
+  for (const s of body) {
+    if (accSet.has(s[1])) {
+      const cV = fresh()
+      const v = lift(s[2][2])
+      if (bad) return null
+      lifted.push(['local.set', cV, v],
+        ['local.set', s[1], ['f64.add', ['local.get', s[1]], ['f64x2.extract_lane', 0, ['local.get', cV]]]],
+        ['local.set', s[1], ['f64.add', ['local.get', s[1]], ['f64x2.extract_lane', 1, ['local.get', cV]]]])
+    } else {
+      const tv = fresh()
+      laneV.set(s[1], tv)
+      const v = lift(s[2])
+      if (bad) return null
+      lifted.push(['local.set', tv, v])
+    }
+  }
+  if (bad || !lifted.length) return null
+
+  // SIMD prefix over the even prefix [0, bound & ~1); the original block is the ≤1 scalar
+  // remainder (continues j and the accumulators). IV advances by 2.
+  const id = freshIdRef.next++
+  const simdBoundName = `$__mrb${id}`, simdBrk = `$__mrbrk${id}`, simdLoop = `$__mrl${id}`
+  const boundExpr = boundLocal ? ['local.get', boundLocal] : ['i32.const', constNum(bound)]
+  const simdBlock = ['block', simdBrk,
+    ['loop', simdLoop,
+      ['br_if', simdBrk, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
+      ...lifted,
+      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]],
+      ['br', simdLoop]]]
+  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -2]]]
+  const wrapper = ['block', boundSetup, simdBlock, blockNode]
+  return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
+}
+
 // Scalar locals that are ALWAYS computed as `(i32.add base (i32.shl ind K))`
 // or aliased to such an address are "address tees", not lane data. They stay
 // scalar i32 in the lifted body.
@@ -3112,7 +3229,6 @@ const PPC_CALL2 = {
 // rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
 // loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).
 function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
-  const DBG = (r) => { if (typeof process !== 'undefined' && process.env?.PPCDEBUG) console.error('[ppc]', r); return null }
   // ---- outer-loop match (identical to tryDivergentEscapeVectorize 2596-2637) ----
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
   const oLabel = (typeof blockNode[1] === 'string' && blockNode[1].startsWith('$')) ? blockNode[1] : null
@@ -3152,12 +3268,12 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
   // ---- body: straight-line (no inner escape loop), no impure call ----
   const obody = loopNode.slice(3, pivStart)
   for (const s of obody)
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return DBG('inner-loop')  // → escape pass
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return null  // inner escape loop → tryDivergentEscapeVectorize's job
   // A non-pure call (e.g. a ray-march helper that writes a scratch global / memory) can mutate state
   // that a lane local — computed ONCE, before the per-lane epilogue runs the call — would then read
   // stale, breaking bit-exactness. $math.* helpers are pure (no global/memory writes), so allow them.
   const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
-  if (obody.some(impureCall)) return DBG('impure-call')
+  if (obody.some(impureCall)) return null
 
   // bump: substitute every pixel IV with (IV + k) in its own type — for the lane-k epilogue.
   const bump = (n, k) => k === 0 ? n
@@ -3260,25 +3376,28 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
     }
     epilogue.push(s)
   }
-  if (!laneMap.size) return DBG('no-lane-locals')
+  if (!laneMap.size) return null   // nothing lifted to f64x2
   // Only worth the extract overhead if a costly op (a *2 transcendental or f64x2.sqrt) got lifted.
   const heavy = (n) => isArr(n) && ((n[0] === 'call' && /\$math\.(sin2|cos2|pow2|log2_v|atan2_2|exp2_2|tan2)/.test(n[1])) || n[0] === 'f64x2.sqrt' || n.some(heavy))
-  if (![...laneLifted.values()].some(heavy)) return DBG('no-heavy-op; lanes=' + [...laneMap.keys()])
+  if (![...laneLifted.values()].some(heavy)) return null   // only cheap arithmetic lifted — not worth it
 
   // Exactly one i32.store, found anywhere in the epilogue (jz wraps `mem[off]=…` in a `(block …)`).
   let storeStmt = null
   const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) { if (storeStmt) storeStmt = false; else if (storeStmt !== false) storeStmt = n } for (const c of n) findStore(c) }
   epilogue.forEach(findStore)
-  if (!storeStmt || storeStmt[0] !== 'i32.store') return DBG('store:' + (storeStmt && storeStmt[0]))
+  if (!storeStmt || storeStmt[0] !== 'i32.store') return null   // not exactly one u32 colour store
   // The store cell must differ per lane, i.e. its address must depend on a pixel IV — directly
   // (chladni's `px[j]`) or transitively through an epilogue local (interference's `mem[offset]`,
   // offset=w*y+x). Follow the address's reads through epilogue local definitions to a pixel IV.
+  // Walk every child except a set's name slot (a def nested under an `(if … then)` must still be
+  // recorded — the n.slice(2)-everywhere form would miss it, conservatively bailing a valid kernel).
   const epiDef = new Map()
-  for (const s of epilogue) { const collect = (n) => { if (!isArr(n)) return; if (n[0] === 'local.set' && typeof n[1] === 'string' && !epiDef.has(n[1])) epiDef.set(n[1], n[2]); for (const c of n.slice(2)) collect(c) }; collect(s) }
+  const collect = (n) => { if (!isArr(n)) return; if (n[0] === 'local.set' && typeof n[1] === 'string' && !epiDef.has(n[1])) epiDef.set(n[1], n[2]); for (const c of (n[0] === 'local.set' ? n.slice(2) : n.slice(1))) collect(c) }
+  epilogue.forEach(collect)
   const feedsIV = (n, seen = new Set()) => isArr(n) && (n[0] === 'local.get'
     ? (pivType.has(n[1]) || (epiDef.has(n[1]) && !seen.has(n[1]) && (seen.add(n[1]), feedsIV(epiDef.get(n[1]), seen))))
     : n.some(c => feedsIV(c, seen)))
-  if (!feedsIV(storeStmt[1])) return DBG('store-addr-no-iv')
+  if (!feedsIV(storeStmt[1])) return null   // store cell wouldn't vary per lane → can't pair
 
   // ---- epilogue safety: runs scalar per lane (each statement bumped to pixel j+k). It may read a
   // lane local (extracted below), an invariant/pixel-IV, or a value the epilogue itself computes —
@@ -3291,7 +3410,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
     epilogue.forEach(wr)
     const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
     epilogue.forEach(rd)
-    for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return DBG('epi-reads-inloop:' + v)
+    for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null   // reads an in-loop value with no per-lane source
   }
   const epiReads = [...laneMap.keys()].filter(v => epilogue.some(s => readsVar(s, v)))
 
@@ -3352,6 +3471,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryMemCopyFill(node, fnLocals, freshIdRef)
         ?? tryVectorize(node, fnLocals, freshIdRef)
         ?? tryReduceVectorize(node, fnLocals, freshIdRef, multiAcc)
+        ?? tryMapReduceVectorize(node, fnLocals, freshIdRef)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
