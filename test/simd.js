@@ -2038,6 +2038,24 @@ test('SIMD stencil - 5-point with derived IV (c = rc + x) bit-exact', () => {
   ok(hasV128(wat(src(24), STENCIL)), '5-point stencil with derived IV vectorized')
 })
 
+test('SIMD stencil - inline row base (idx = y*w + x) bit-exact', () => {
+  if (belowOpt(2)) return
+  // No precomputed row-base local: the index is `y*w + x` inline. ivCoeff treats the
+  // invariant×invariant `y*w` as coeff 0, so `idx` is still a stride-1 derived IV.
+  const src = (n) => `
+    let a = new Float64Array(${n*n}), b = new Float64Array(${n*n})
+    export let main = () => {
+      let i = 0; while (i < ${n*n}) { a[i] = Math.sin(i*0.07)*2.0; i++ }
+      let w = ${n}, h = ${n}, y = 1
+      while (y < h-1) { let x = 1; while (x < w-1) { let idx = y*w + x; b[idx] = a[idx-1] + a[idx+1] - 2.0*a[idx]; x++ } y++ }
+      let s = 0.0, t = 0; while (t < ${n*n}) { s += b[t]; t++ }
+      return s
+    }`
+  for (const n of [24, 25])
+    is(runVec(src(n), STENCIL).main(), runVec(src(n), SCALAR).main(), `inline-row n=${n} bit-exact`)
+  ok(hasV128(wat(src(24), STENCIL)), 'inline y*w+x stencil vectorized')
+})
+
 test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays correct', () => {
   if (belowOpt(2)) return
   // Reading the WRITTEN array at a shifted index is loop-carried — SIMD would read

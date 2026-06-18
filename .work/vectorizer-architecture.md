@@ -272,7 +272,7 @@ The only real work is **address recognition**: extend `matchLaneAddr` to accept 
 2. *Swapped double-buffers* (the real `waves`/likely `schrodinger`): `a`/`b` are globals swapped each
    frame (`tmp=a;a=b;b=tmp`), so the compiler can't statically prove `a ≠ b` — the current
    distinct-base-⇒-no-alias assumption is unsound here. `waves` needs alias disproof (or a
-   conservative bail) before it's safe; perf-map already flags this.
+   conservative bail) before it's safe (initial concern — corrected just below).
 
 **Recommended first target:** a stencil over **distinct, non-swapped** arrays with no wrap
 conditional (a clean `dst[i] = f(src[i±δ])`, `dst≠src`) — NOT `diffusion` (toroidal-wrap
@@ -280,7 +280,7 @@ conditional index is a separate blocker). Implement gated behind `cfg.experiment
 the in-place-alias bail as a hard correctness gate, and bit-exact `test/simd.js` cases (incl.
 odd-width tail) before enabling by default.
 
-### Refined plan — `waves` needs NO new alias analysis (corrects the perf-map note)
+### Refined plan — `waves` needs NO new alias analysis (corrects the initial concern above)
 
 Verified against the codebase:
 - `--why-not-simd` on `waves` reports the fallback reason for `$frame`'s loops → they **are
@@ -339,8 +339,15 @@ plain map path relies on). *Verified:* waves vectorizes 2→16 f64x2 and is **bi
 (1200 px, 25 frames); synthetic 3-point (odd-width tail), 5-point derived-IV, and in-place-bail tests
 in test/simd.js; waves regression in test/examples.js; **default builds byte-identical (ratchet +0,
 flag off)**. CLI `--experimental-stencil` / `opts.experimentalStencil`; off by default until proven
-across the rest of the corpus (schrodinger/diffusion/slime are next — diffusion needs the toroidal
-wrap handled separately).
+across the rest of the corpus.
+
+  *Corpus status (measured):* `waves` ✓ (vectorizes + bit-exact). `ivCoeff` also handles inline row
+  bases `idx = y*w + x` (invariant×invariant ⇒ coeff 0; tested bit-exact). The other stencil rows
+  are blocked on **recognition**, not the lift: `schrodinger`/`slime`/`diffusion` aren't even
+  candidates — `--why-not-simd` is silent on their hot loops, so `matchBlockLoop` (and
+  `matchOuterPixelLoop`) reject them before any stencil scan. Extending stencil to them is a
+  recognition task (their loop nesting/shape), tracked as the next stencil increment — NOT an
+  `ivCoeff`/lift gap. `diffusion` additionally needs the toroidal-wrap conditional index handled.
 
   *Superseded original plan (kept for reference):* `matchStencilDelta` + `liftStencil` +
 `classifyBody` branch, behind `cfg.experimentalStencil`. *Unlocks:* waves, schrodinger, diffusion,

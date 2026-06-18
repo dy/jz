@@ -1019,6 +1019,10 @@ function tryStencil(bl, fnLocals, freshIdRef, enabled) {
       const c = n[0] === 'i32.add' ? a + b : a - b
       return c === 0 || c === 1 ? c : null
     }
+    // `y*w` (inline row base, e.g. idx = y*w + x): invariant×invariant ⇒ coeff 0.
+    // Any IV-dependent factor would be non-unit-stride (stride-w) ⇒ reject.
+    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
+      return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
     return null
   }
   const countSets = (name) => {
