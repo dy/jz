@@ -1,7 +1,7 @@
 {
   "name": "jz",
   "version": "0.6.0",
-  "description": "Functional JS subset compiling to WASM",
+  "description": "Ahead-of-time compiler for the numeric core of JavaScript (DSP, audio, math, parsers) to lean GC-free WASM — valid jz is valid JS, no type annotations, no runtime.",
   "main": "index.js",
   "types": "index.d.ts",
   "type": "module",
@@ -55,6 +55,7 @@
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
+    "bench:readme": "node scripts/bench-readme.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
     "prepublishOnly": "npm test && npm run test:self",
@@ -89,7 +90,13 @@
     "audio",
     "creative-coding",
     "assemblyscript",
-    "porffor"
+    "porffor",
+    "numeric",
+    "signal-processing",
+    "math",
+    "audio-worklet",
+    "js-to-wasm",
+    "performance"
   ],
   "devDependencies": {
     "esbuild": "^0.28.0",
