@@ -23,7 +23,22 @@
   --band: #000;          /* pure black chrome, site-wide */
   --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
   color-scheme: dark;    /* native scrollbars + form controls render dark (matches the black UI; keeps code/wat bars identical) */
+  /* ── ONE shared content column for every page (landing hero, bench, examples): content-left snapped
+     to the 80px grid, width = cw. So the column lines up edge-to-edge as you move between pages. ── */
+  --U: 80px;             /* major grid unit — also the rounding step for the shared inset */
+  --cw: 960px;          /* content column width = 12 big units */
+  --padx: 40px;          /* base side inset (a mid unit) */
+  --colw: calc(var(--cw) + 2 * var(--padx));
+  --gx-pad: var(--padx); /* grid-aligned side inset; snapped to --U just below */
 }
+@supports (padding: round(1px, 1px)) {
+  :root { --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--U))); }
+}
+
+/* Cross-document View Transitions: every page links this stylesheet, so same-origin navigations
+   (landing ↔ examples ↔ bench ↔ repl) cross-fade instead of hard-cutting. The shared masthead column
+   makes the header look continuous across the fade. Progressive enhancement — ignored where unsupported. */
+@view-transition { navigation: auto; }
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
@@ -31,29 +46,24 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .masthead {
   background: var(--band); color: #fff; flex: 0 0 auto;
   display: flex; align-items: center; gap: 16px;
-  min-height: 64px; padding: 0 var(--mast-px);
+  min-height: var(--U); padding: 0 var(--mast-px);   /* 1 unit (80px) tall — matches the landing's hero-nav for a frictionless cross-page header */
   font-family: var(--font);
 }
 .masthead.fixed { position: fixed; top: 0; left: 0; right: 0; z-index: 200; }
 .masthead .logo { display: flex; align-items: center; line-height: 0; flex: 0 0 auto; }
 .masthead .logo img { display: block; width: 40px; height: 40px; }
 
-.masthead .wordmark { margin: 0; font-size: 19px; font-weight: 400; letter-spacing: -.02em;
-  line-height: 1; color: #fff; text-decoration: none; }
-.masthead .wordmark .mark { font-weight: 700; color: #fff; text-decoration: none; }
-.masthead .wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; text-decoration: none; transition: color .18s; }
-.masthead .wordmark .sep  { font-weight: 400; color: #5a5a5a; margin: 0 .42em; }
-.masthead .wordmark .page { font-weight: 400; color: #fff; }
-/* Only the standalone breadcrumb LINKS (example pages: <a class="mark"/"sub">) brighten on
-   hover. A single "JZ <page>" home link must NOT highlight its page label (e.g. JZ repl). */
-.masthead .wordmark a.mark:hover,
-.masthead .wordmark a.sub:hover { color: #fff; }
+/* brand: the jz.svg logo (links home) + the section label. The logo is the SVG FILE itself — never re-created in Futura text. */
+.masthead .brand { display: flex; align-items: baseline; gap: .55em; flex: 0 0 auto; }   /* the label's baseline sits on the logo's bottom edge (logo lifted to it), not centered */
+.masthead .brand .sub { font-size: 19px; font-weight: 400; letter-spacing: -.02em; color: #8a8a8a; text-decoration: none; transition: color .18s; }
+.masthead .brand a.sub:hover { color: #fff; }
 .masthead .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
 
 .masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
 .masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
   text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
 .masthead nav a:hover { opacity: 1; }
+.masthead .ver { text-transform: none; letter-spacing: .02em; opacity: .6; }
 .masthead .gh { display: flex; }
 
 @media (max-width: 520px) {
@@ -62,3 +72,15 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   .masthead nav { gap: 14px; }
   .masthead nav a { font-size: 11px; }
 }
+
+/* ── Shared headline metrics — the SAME block on the landing hero and the bench strip.
+   The six figures come from assets/headline.js (one data source); this is the one visual
+   definition, so the two pages can never drift. Each page supplies the palette tokens
+   (--ink / --dim / --mute). Grouped into Speed / Size via .mgroup + .mlabel. ── */
+.mgroup { display: flex; flex-direction: column; gap: 12px; }
+.mlabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .2em; color: var(--mute); }
+.mstats { display: flex; align-items: flex-start; gap: clamp(14px, 1.7vw, 24px); flex-wrap: wrap; }
+.mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
+.mstats .stat b { font-size: clamp(22px, 1.9vw, 30px); font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
+.mstats .stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
+.mstats .stat:hover b { color: #fff; }
