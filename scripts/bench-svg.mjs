@@ -26,29 +26,27 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 // deterministically between runs.
 //   ratio = geomean(engine median / jz median) over the cases the engine ran
 //           (lower = faster; jz is the 1.00× baseline). These reproduce from the
-//           per-case table in README.md. Bun is the measured JSC geomean.
+//           per-case table in README.md. native C is the lone non-wasm reference row.
 // SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
 // Porffor denominator, so the offline render is internally consistent. The live
 // bench.mjs run passes its own current count (geoCases.length) instead.
-export const SNAPSHOT_N = 12
+export const SNAPSHOT_N = 22
 export const SNAPSHOT = [
   { label: 'jz', sub: '-O3', ratio: 1.00 },
-  { label: 'native C', sub: 'clang -O3', ratio: 1.13 },
-  { label: 'Zig', sub: 'ReleaseFast', ratio: 1.14 },
-  { label: 'Rust', sub: 'rustc -O3', ratio: 1.19 },
-  { label: 'Bun', sub: 'JavaScriptCore', ratio: 1.40 },
-  { label: 'Go', sub: 'gc', ratio: 1.88 },
-  { label: 'V8', sub: 'Node', ratio: 2.45 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.52 },
-  { label: 'Porffor', sub: `runs 4 / ${SNAPSHOT_N}`, ratio: 5.55 },
-  { label: 'NumPy', sub: 'Python', ratio: 7.41 },
+  { label: 'native C', sub: 'clang -O3 · ref', ratio: 1.07 },
+  { label: 'C', sub: 'zig cc → wasm', ratio: 2.43 },
+  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.63 },
+  { label: 'V8', sub: 'Node (JS)', ratio: 2.69 },
+  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.80 },
+  { label: 'Porffor', sub: `runs 3 / ${SNAPSHOT_N}`, ratio: 3.49 },
+  { label: 'Go', sub: 'gc → wasm', ratio: 4.91 },
 ]
 
-// Native -O3 reference engines (C, Rust) — the speed-of-light baseline. Always drawn:
-// on a run/box without the C/Rust toolchains their committed SNAPSHOT ratios stand in
-// (a stable reference, not a same-run measurement), so the chart always shows the native
-// ceiling. Zig/Go are native too, but the chart pins C and Rust as the pair.
-export const REFERENCE = new Set(['native C', 'Rust'])
+// native C (clang -O3, native binary) — the lone speed-of-light reference, the only
+// non-wasm row on the chart. Always drawn: on a box without clang its committed SNAPSHOT
+// ratio stands in (a stable ceiling, not a same-run measurement). Rust/Go/C race here as
+// wasm rivals (compiled to wasm32-wasi, run in V8) — competitors, not the reference.
+export const REFERENCE = new Set(['native C'])
 
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
 const HERO = '#000000'   // jz — black accent (B&W identity)
@@ -57,7 +55,7 @@ const GRAY = '#adb5bd'   // every other ball — minimal, one accent
 /** Build the animated SVG string from rows `[{ label, sub?, ratio }]`.
  *  `cases` (optional) = number of bench cases behind each geomean, for the caption. */
 export function benchSvg(rows, cases) {
-  const W = 720, rowH = 50, top = 20, bottom = 44
+  const W = 720, rowH = 50, top = 20, bottom = 54
   const H = top + rows.length * rowH + bottom
 
   const labelW = 156, numW = 54, pad = 16
@@ -97,9 +95,11 @@ export function benchSvg(rows, cases) {
   }
 
   const caption = `geometric mean across ${cases ? `${cases} benchmark cases` : 'the bench corpus'} · lower is faster, jz = 1.00× baseline`
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
+  const scope = `every rival compiled to WebAssembly, run in V8 · native C = reference`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
   <rect width="${W}" height="${H}" rx="12" fill="#ffffff"/>
 ${rows.map(lane).join('')}
+  <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="#495057">${scope}</text>
   <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="#868e96">${caption}</text>
 </svg>
 `
@@ -113,8 +113,8 @@ export function renderBenchSvg(rows = SNAPSHOT, cases = SNAPSHOT_N) {
   return SVG_PATH
 }
 
-/** Guarantee the native reference rows (C, Rust) are present: a run that lacked
- *  their toolchain drops them, so fall back to the committed SNAPSHOT ratios.
+/** Guarantee the native C reference row is present: a run that lacked clang
+ *  drops it, so fall back to the committed SNAPSHOT ratio.
  *  Measured rows win — the fallback only fills genuine gaps. */
 export function withReference(rows) {
   const have = new Set(rows.map(r => r.label))

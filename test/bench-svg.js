@@ -9,10 +9,12 @@ import { benchSvg, withReference, REFERENCE, SNAPSHOT, SNAPSHOT_N } from '../scr
 
 const rows = [{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
 
-test('bench-svg: caption names the geomean and its case count', () => {
+test('bench-svg: caption names the geomean, case count, and the wasm-vs-wasm scope', () => {
   const svg = benchSvg(rows, 12)
   ok(/geometric mean across 12 benchmark cases/.test(svg), 'caption must state geomean + N cases')
   ok(svg.includes('lower is faster'), 'caption must state the direction')
+  ok(/compiled to WebAssembly/i.test(svg), 'chart signals every rival is wasm (apples-to-apples)')
+  ok(/native C = reference/i.test(svg), 'native C marked as the reference, not a wasm peer')
 })
 
 test('bench-svg: missing count degrades to corpus wording, never "undefined"', () => {
@@ -22,9 +24,10 @@ test('bench-svg: missing count degrades to corpus wording, never "undefined"', (
 })
 
 test('bench-svg: jz is labeled by optimization tier, not a pipeline', () => {
+  // jz's sub is its -O tier (parallel to clang/rustc/asc -O3); the wasm framing now
+  // lives in the chart's scope line + the rival subs, so jz's own label stays a tier.
   const svg = benchSvg(rows, 12)
   ok(svg.includes('>-O3<'), 'jz sub-label is -O3 (parallel to clang/rustc/asc -O3)')
-  ok(!/wasm/i.test(svg), 'no "→ wasm" pipeline label — it broke the O3-vs-O3 read')
   is(SNAPSHOT.find(r => r.label === 'jz').sub, '-O3')
 })
 
@@ -40,20 +43,19 @@ test('bench-svg: snapshot render is internally consistent (caption N = Porffor d
   is(capN, porfDenom, 'caption N and Porffor denominator must agree')
 })
 
-test('bench-svg: C and Rust are always shown (reference fallback when a run drops them)', () => {
+test('bench-svg: native C is always shown (the lone speed-of-light reference)', () => {
   // every reference label must have a SNAPSHOT row to fall back to, else the
   // guarantee is silently empty — a relabel in one file and not the other
   for (const label of REFERENCE) ok(SNAPSHOT.some(r => r.label === label), `SNAPSHOT has a "${label}" row to fall back to`)
-  const out = withReference(rows)   // rows has neither C nor Rust
-  const labels = out.map(r => r.label)
-  ok(labels.includes('native C') && labels.includes('Rust'), 'C and Rust injected when missing')
+  const out = withReference(rows)   // rows has no native C
+  ok(out.map(r => r.label).includes('native C'), 'native C injected when missing')
   // a measured row wins — the fallback fills only genuine gaps, never duplicates
-  const live = withReference([...rows, { label: 'Rust', sub: 'rustc -O3', ratio: 1.05 }])
-  is(live.filter(r => r.label === 'Rust').length, 1, 'measured Rust not duplicated')
-  is(live.find(r => r.label === 'Rust').ratio, 1.05, 'measured Rust ratio kept over snapshot')
+  const live = withReference([...rows, { label: 'native C', sub: 'clang -O3', ratio: 1.05 }])
+  is(live.filter(r => r.label === 'native C').length, 1, 'measured native C not duplicated')
+  is(live.find(r => r.label === 'native C').ratio, 1.05, 'measured native C ratio kept over snapshot')
 })
 
-test('bench-svg: native C/Rust render the same gray ball as competitors; only jz is black', () => {
+test('bench-svg: every non-jz ball (native C + wasm rivals) is the same gray; only jz is black', () => {
   const svg = benchSvg([{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'native C', sub: 'clang -O3', ratio: 1.13 }], 12)
   ok(!/fill="#ffffff"\s+stroke=/.test(svg), 'no hollow reference rings — every non-jz ball is the same gray')
   ok(/<circle[^>]*fill="#adb5bd"/.test(svg), 'native C drawn as the gray competitor ball')

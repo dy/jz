@@ -1,7 +1,8 @@
 // Shared headline statistics — the figures behind the landing hero (.mstats, the top three)
 // and the bench page's stat strip, computed once from bench/results.json so the two
 // can never drift. Returns formatted "N×" strings (null when a target is absent):
-//   v8/porf/rust  geomean of target.medianUs / jz.medianUs over correct-result cases
+//   v8/porf/rust  geomean of target.medianUs / jz.medianUs over correct cases
+//                 (rust = Rust→wasm — apples-to-apples, same V8 engine as jz)
 //   asspeed       geomean of as.medianUs / jz.medianUs (jz vs AssemblyScript on speed)
 //   peak          max V8/jz speedup (the best single-case SIMD win)
 //   assize/porfsize  MEDIAN of jz.wasm / target.wasm bytes (apples-to-apples binary↔binary)
@@ -17,7 +18,7 @@ export function headlineStats(results) {
   for (const c of cases) { const t = c.targets; if (t.jz && t.v8 && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
   const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
   return {
-    v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf')), rust: f(ratio('rust')),
+    v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf')), rust: f(ratio('rust-wasm')),
     asspeed: f(ratio('as')),                 // jz vs AssemblyScript on speed (the hero's 3rd stat)
     assize: f(sizeRatio('as')), porfsize: f(sizeRatio('porf')),
   }

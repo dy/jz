@@ -149,6 +149,11 @@ const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
 const asWasmPath = c => join(caseBuild(c), `${c.id}.as.wasm`)
+// Rival sources compiled to wasm32-wasi (run in node's V8 — same engine as jz):
+const rustWasmPath = c => join(caseBuild(c), `${c.id}.rust.wasm`)
+const goWasmPath = c => join(caseBuild(c), `${c.id}.go.wasm`)
+const zigWasmPath = c => join(caseBuild(c), `${c.id}.zig.wasm`)
+const cWasmPath = c => join(caseBuild(c), `${c.id}.c.wasm`)
 
 const compileJz = c => {
   // `jz-wasmtime` / `jz-w2c` consume the wasm standalone — no JS host. Lower
@@ -427,6 +432,50 @@ const targets = {
       execFileSync('asc', [c.as, '-O3', '--runtime', 'stub', '--noAssert', '-o', asWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-as.mjs'), asWasmPath(c)]),
   },
+  // ── Rivals compiled to wasm32-wasi, run in node's V8 — the honest apples-to-apples
+  //    axis (jz ships wasm; so does Rust/Go/Zig/C here). Native stays only as a labeled
+  //    reference. Each rival is its own unmodified self-timing source. ──
+  'rust-wasm': {
+    name: 'Rust → wasm (V8)',
+    available: c => !!c.rs && has('rustc'),
+    bin: rustWasmPath,
+    run: c => tryRun('rust-wasm', c, () => {
+      execFileSync('rustc', ['--target', 'wasm32-wasip1', '-C', 'opt-level=3', '-o', rustWasmPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), rustWasmPath(c)]),
+  },
+  'go-wasm': {
+    name: 'Go → wasm (V8)',
+    available: c => !!c.go && has('go'),
+    bin: goWasmPath,
+    run: c => tryRun('go-wasm', c, () => {
+      const goCache = build('go-cache')
+      mkdirSync(goCache, { recursive: true })
+      execFileSync('go', ['build', '-ldflags=-s -w', '-o', goWasmPath(c), c.go], { cwd: BENCH_DIR, stdio: 'pipe', env: { ...process.env, GOOS: 'wasip1', GOARCH: 'wasm', GOCACHE: goCache } })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), goWasmPath(c)]),
+  },
+  // DEFERRED: zig 0.16's new std.process.Init / Io.File stdout path exits 71 under
+  // node:wasi (compiles clean, emits nothing). Wired and ready for when that lands;
+  // meanwhile it's out of SVG_TARGETS and the default corpus run.
+  'zig-wasm': {
+    name: 'Zig → wasm (V8)',
+    available: c => !!c.zig && has('zig'),
+    bin: zigWasmPath,
+    run: c => tryRun('zig-wasm', c, () => {
+      const zigCache = build('zig-cache')
+      const zigGlobalCache = build('zig-global-cache')
+      mkdirSync(zigCache, { recursive: true })
+      mkdirSync(zigGlobalCache, { recursive: true })
+      execFileSync('zig', ['build-exe', c.zig, '-target', 'wasm32-wasi', '-O', 'ReleaseFast', '-lc', '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, '-femit-bin=' + zigWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), zigWasmPath(c)]),
+  },
+  'c-wasm': {
+    name: 'C → wasm (V8)',
+    available: c => !!c.c && has('zig'),   // zig cc bundles clang + wasi-libc (no emcc/wasi-sdk needed)
+    bin: cWasmPath,
+    run: c => tryRun('c-wasm', c, () => {
+      execFileSync('zig', ['cc', '-target', 'wasm32-wasi', '-O3', '-ffp-contract=off', '-o', cWasmPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), cWasmPath(c)]),
+  },
   'jz-wasmtime': {
     name: 'jz → wasmtime',
     available: () => has('wasmtime'),
@@ -477,6 +526,10 @@ const TARGET_CMDS = {
   porf: 'porf --allocator-chunks=128 run <case>-flat.js',
   jz: "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
   as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
+  'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
+  'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
+  'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast -lc <case>.zig → node (V8 wasm)',
+  'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
@@ -513,20 +566,19 @@ for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case
 
 // Per-(case, target) valid medians, collected to drive the geomean bench.svg.
 const grid = {}
-// The engines shown in bench/bench.svg: jz against the native-binary cluster
-// (C/Zig/Rust/Go), the JS/wasm field (V8/Bun/AssemblyScript/Porffor), and NumPy.
-// A target with no measured data on a run (e.g. bun absent) is simply skipped.
+// The engines in bench/bench.svg — the WASM scope (apples-to-apples, all run in
+// node's V8): jz vs Rust/Go/C compiled to wasm, the JS→wasm field (AssemblyScript,
+// Porffor), and V8 (plain JS). native C is kept only as a labeled speed-of-light
+// reference, never a beat-claim. A target with no data on a run is simply skipped.
 const SVG_TARGETS = [
   { id: 'jz', label: 'jz', sub: '-O3' },
-  { id: 'nat', label: 'native C', sub: 'clang -O3' },
-  { id: 'zig', label: 'Zig', sub: 'ReleaseFast' },
-  { id: 'rust', label: 'Rust', sub: 'rustc -O3' },
-  { id: 'go', label: 'Go', sub: 'gc' },
-  { id: 'v8', label: 'V8', sub: 'Node' },
-  { id: 'bun', label: 'Bun', sub: 'JSC' },
+  { id: 'c-wasm', label: 'C', sub: 'zig cc → wasm' },
+  { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
+  { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
-  { id: 'porf', label: 'Porffor', sub: '' },
-  { id: 'numpy', label: 'NumPy', sub: 'Python' },
+  { id: 'porf', label: 'Porffor', sub: 'JS → wasm' },
+  { id: 'v8', label: 'V8', sub: 'Node (JS)' },
+  { id: 'nat', label: 'native C', sub: 'clang -O3 · ref' },
 ]
 
 for (const cid of selectedCases) {

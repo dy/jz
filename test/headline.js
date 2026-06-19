@@ -10,9 +10,9 @@ const C = (jz, rest) => ({ targets: { jz, ...rest } })
 test('headline: ratios are geomean(target/jz), peak is max, sizes are median', () => {
   const r = { cases: {
     a: C({ medianUs: 100, bytes: 1000, parity: 'ok' },
-      { v8: { medianUs: 200, parity: 'ok' }, as: { medianUs: 300, bytes: 900, parity: 'ok' }, rust: { medianUs: 90, parity: 'ok' } }),
+      { v8: { medianUs: 200, parity: 'ok' }, as: { medianUs: 300, bytes: 900, parity: 'ok' }, 'rust-wasm': { medianUs:90, parity: 'ok' } }),
     b: C({ medianUs: 100, bytes: 2000, parity: 'ok' },
-      { v8: { medianUs: 400, parity: 'ok' }, as: { medianUs: 300, bytes: 1000, parity: 'ok' }, rust: { medianUs: 110, parity: 'ok' } }),
+      { v8: { medianUs: 400, parity: 'ok' }, as: { medianUs: 300, bytes: 1000, parity: 'ok' }, 'rust-wasm': { medianUs:110, parity: 'ok' } }),
   } }
   const s = headlineStats(r)
   is(s.asspeed, '3×')    // geomean(300/100, 300/100) — the figure this test exists to pin

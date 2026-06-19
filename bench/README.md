@@ -79,9 +79,11 @@ where a vectorized array implementation is a meaningful Python convention.
 Pure interpreters (CPython, QuickJS, Hermes, Javy's embedded-QuickJS) are not
 benchmarked: this suite measures compiled-code quality, and an interpreter row
 inflates jz's lead for free without answering a question a user actually has.
-The fair field is the JIT engines (V8/Bun/Deno/SpiderMonkey/GraalJS), the other
-JS→wasm compilers (AssemblyScript, Porffor, jawsm), and the native AOT
-baselines (C/Rust/Zig/Go, NumPy's vectorized C).
+The headline field is wasm-vs-wasm, apples-to-apples: jz against the other
+languages compiled to the same target — WebAssembly run in V8 — i.e. Rust, Go,
+and C (`wasm32-wasi`), AssemblyScript, and Porffor, plus the JS JITs it replaces
+(V8/Bun/Deno/SpiderMonkey/GraalJS). Native C/Rust/Zig/Go and NumPy's vectorized
+C are kept only as a speed-of-light reference, never presented as the wasm peer.
 
 ### Parity classes
 
@@ -99,9 +101,9 @@ correctly-rounded; cascade is the same algorithm.
 | --- | --- |
 | `nat` | clang `-O3` native C baseline, when a matching C workload exists |
 | `natgcc` | gcc `-O3`, when real gcc is installed |
-| `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native`, when a matching `.rs` exists |
-| `go` | Go native compiler, when a matching `.go` exists |
-| `zig` | Zig `build-exe -O ReleaseFast`, when a matching `.zig` exists |
+| `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native` — native baseline; the headline rival is `rust-wasm` |
+| `go` | Go native compiler — native baseline; the headline rival is `go-wasm` |
+| `zig` | Zig `build-exe -O ReleaseFast` — native baseline |
 | `numpy` | vectorized NumPy, when a matching `.npy.py` exists |
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |
@@ -111,6 +113,9 @@ correctly-rounded; cascade is the same algorithm.
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
+| `rust-wasm` | Rust → `wasm32-wasip1` (`rustc --target wasm32-wasip1 -C opt-level=3`), run in node's V8 — the apples-to-apples Rust rival |
+| `go-wasm` | Go → `wasm32-wasip1` (`GOOS=wasip1 GOARCH=wasm go build`), run in node's V8 |
+| `c-wasm` | C → `wasm32-wasi` (`zig cc -target wasm32-wasi -O3`, no emcc/wasi-sdk needed), run in node's V8 |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
@@ -119,7 +124,7 @@ correctly-rounded; cascade is the same algorithm.
 
 The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
-`.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
+`.wasm` for `jz`/`as`/`rust-wasm`/`go-wasm`/`c-wasm`/hand-WAT/jawsm/`jz-w2c` (the C-translated
 executable), or the source file for raw-JS interpreters where there is no
 compile step. For source files with imports, raw-JS size is only the entry file;
 jz size is the bundled wasm artifact.
@@ -159,10 +164,10 @@ available from earlier runs.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **4.69 ms** | **2.06×** | **3.4 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.63 ms | 1.45× | 1.9 kB | ok |
-| V8 (node) raw JS | 9.64 ms | 1.00× | 3.2 kB | ok |
-| native C (clang -O3) | 3.87 ms | 2.49× | 32.7 kB | ok |
+| **jz → V8 wasm** | **4.64 ms** | **1.94×** | **3.4 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.51 ms | 1.38× | 1.9 kB | ok |
+| V8 (node) raw JS | 8.98 ms | 1.00× | 3.2 kB | ok |
+| native C (clang -O3) | 3.86 ms | 2.32× | 32.7 kB | ok |
 | hand-WAT → V8 wasm | 6.49 ms | 1.90× | 767 B | ok |
 
 jz beats V8 raw JS by 2.1× and AS by 1.4×. The typed-array scalarization,
@@ -173,10 +178,10 @@ that matches the hand-WAT floor.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **1.47 ms** | **5.85×** | **3.1 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.79 ms | 1.27× | 1.6 kB | ok |
-| V8 (node) raw JS | 8.62 ms | 1.00× | 1.2 kB | ok |
-| native C (clang -O3) | 1.96 ms | 4.40× | 32.8 kB | ok |
+| **jz → V8 wasm** | **1.49 ms** | **5.75×** | **3.1 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.71 ms | 1.28× | 1.6 kB | ok |
+| V8 (node) raw JS | 8.57 ms | 1.00× | 1.2 kB | ok |
+| native C (clang -O3) | 1.97 ms | 4.35× | 32.8 kB | ok |
 | hand-WAT → V8 wasm | 8.12 ms | 1.47× | 414 B | ok |
 
 jz is 5.9× faster than V8 raw JS and 4.6× faster than AS. The scalarized
@@ -187,9 +192,9 @@ this from JS source.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **0.13 ms** | **12.89×** | **1.4 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.77 ms | 2.14× | 1.3 kB | ok |
-| V8 (node) raw JS | 1.65 ms | 1.00× | 1014 B | ok |
+| **jz → V8 wasm** | **0.13 ms** | **12.67×** | **1.4 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.81 ms | 2.07× | 1.3 kB | ok |
+| V8 (node) raw JS | 1.67 ms | 1.00× | 1014 B | ok |
 
 jz is 12.9× faster than V8 raw JS and 5.9× faster than AS. The bimorphic
 `sum` (called with both `Float64Array` and `Int32Array`) stays on typed
@@ -199,10 +204,10 @@ paths without falling back to generic dispatch.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **1.01 ms** | **3.97×** | **1.2 kB** | **ok** |
-| V8 (node) raw JS | 3.99 ms | 1.00× | 1005 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 8.86 ms | 0.45× | 1.5 kB | ok |
-| native C (clang -O3) | 0.92 ms | 4.33× | 32.9 kB | ok |
+| **jz → V8 wasm** | **1.01 ms** | **3.84×** | **1.2 kB** | **ok** |
+| V8 (node) raw JS | 3.87 ms | 1.00× | 1005 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.15 ms | 0.42× | 1.5 kB | ok |
+| native C (clang -O3) | 0.95 ms | 4.08× | 32.9 kB | ok |
 | hand-WAT → V8 wasm | 3.59 ms | 1.11× | 355 B | ok |
 
 jz is 4.0× faster than V8 raw JS and 8.8× faster than AS. The i32 hot path
@@ -213,8 +218,8 @@ overhead on every operation.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **0.05 ms** | **2.42×** | **2.2 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.03× | 1.6 kB | ok |
+| **jz → V8 wasm** | **0.06 ms** | **2.26×** | **2.2 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.15× | 1.6 kB | ok |
 | V8 (node) raw JS | 0.13 ms | 1.00× | 2.0 kB | ok |
 
 jz is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
@@ -224,9 +229,9 @@ jz is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **0.27 ms** | **2.26×** | **1.4 kB** | **ok** |
-| V8 (node) raw JS | 0.61 ms | 1.00× | 1.3 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 0.79 ms | 0.77× | 1.9 kB | ok |
+| **jz → V8 wasm** | **0.26 ms** | **2.37×** | **1.4 kB** | **ok** |
+| V8 (node) raw JS | 0.62 ms | 1.00× | 1.3 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 0.80 ms | 0.78× | 1.9 kB | ok |
 
 jz is 2.3× faster than V8 raw JS and 2.9× faster than AS. Closure +
 `Array.map` lowers to a preallocated typed loop with no per-iteration alloc.
@@ -236,9 +241,9 @@ V8's JIT does not inline the closure across the `map` boundary.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **0.68 ms** | **1.89×** | **1.8 kB** | **ok** |
-| V8 (node) raw JS | 1.29 ms | 1.00× | 1.1 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 1.34 ms | 0.96× | 2.2 kB | ok |
+| **jz → V8 wasm** | **0.69 ms** | **1.93×** | **1.8 kB** | **ok** |
+| V8 (node) raw JS | 1.33 ms | 1.00× | 1.1 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 1.40 ms | 0.95× | 2.1 kB | ok |
 
 jz is 1.9× faster than V8 raw JS and 2.0× faster than AS. Schema-slot
 reads are direct field offsets; the gap is small because the workload is
@@ -248,9 +253,9 @@ memory-bound.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| AssemblyScript (asc -O3 --runtime stub) | 8.22 ms | 1.13× | 1.3 kB | ok |
-| **jz → V8 wasm** | **8.33 ms** | **1.11×** | **1.4 kB** | **ok** |
-| V8 (node) raw JS | 9.26 ms | 1.00× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 8.90 ms | 1.11× | 1.3 kB | ok |
+| **jz → V8 wasm** | **8.45 ms** | **1.17×** | **1.4 kB** | **ok** |
+| V8 (node) raw JS | 9.90 ms | 1.00× | 1.8 kB | ok |
 
 jz is 1.1× faster than V8 raw JS and ties AS. The dense f64 hot loop with
 conditional break compacts to 1.0 kB — the smallest wasm in the suite.
@@ -269,9 +274,9 @@ inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **5.15 ms** | **1.62×** | **1.8 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 7.45 ms | 1.12× | 1.9 kB | ok |
-| V8 (node) raw JS | 8.34 ms | 1.00× | 1.6 kB | ok |
+| **jz → V8 wasm** | **4.65 ms** | **1.67×** | **1.8 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 7.96 ms | 0.98× | 1.9 kB | ok |
+| V8 (node) raw JS | 7.79 ms | 1.00× | 1.6 kB | ok |
 
 jz is 1.6× faster than V8 raw JS and 1.4× faster than AS. Call-heavy
 nested loops with typed-array index propagation stay on the i32 path.
@@ -280,9 +285,9 @@ nested loops with typed-array index propagation stay on the i32 path.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **jz → V8 wasm** | **8.40 ms** | **1.18×** | **1.5 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 8.66 ms | 1.15× | 1.4 kB | ok |
-| V8 (node) raw JS | 9.95 ms | 1.00× | 1.8 kB | ok |
+| **jz → V8 wasm** | **8.74 ms** | **1.11×** | **1.5 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.76 ms | 1.11× | 1.4 kB | ok |
+| V8 (node) raw JS | 9.71 ms | 1.00× | 1.8 kB | ok |
 
 jz is 1.2× faster than V8 raw JS and ties AS. Integer narrowing and
 typed-array parameter propagation keep the LUT lookup on raw i32.
@@ -316,8 +321,8 @@ is [results.json](results.json).)
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| V8 (node) raw JS | 1.03 ms | 1.00× | 2.6 kB | ok |
-| **jz → V8 wasm** | **1.10 ms** | **0.94×** | **238.5 kB** | **ok** |
+| V8 (node) raw JS | 1.38 ms | 1.00× | 2.6 kB | ok |
+| **jz → V8 wasm** | **1.17 ms** | **1.17×** | **238.4 kB** | **ok** |
 
 jz is 1.07× slower than V8 raw JS on this large compiler bundle. The size
 (144 kB) is the full jz-compiled watr parser + encoder + optimizer; V8's JIT
@@ -329,13 +334,18 @@ Aggregate geomean (jz / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.44×** | — |
-| AssemblyScript | **0.39×** | **1.15×** |
+| V8 (node) | **0.40×** | — |
+| AssemblyScript | **0.36×** | **1.16×** |
 
 jz wins or ties V8 on every kernel case; the only V8 losses are the
 self-hosting rows `watr` (1.07×) and `jessie` (1.28×). AS is beaten on
 speed across the shared cases. On size jz is ~1.1× AS (geomean 1.16×,
 median 1.10×) — jz wins on speed, AS on bytes.
+
+Against the systems languages compiled to the same target — **WebAssembly, run in
+V8** — jz is **2.4× faster than C, 2.6× than Rust, and 4.9× than Go** (geomean),
+and **competitive with native C** itself (1.07×, the lone non-wasm reference).
+That apples-to-apples wasm field is the headline chart above.
 
 Case-by-case summary:
 
@@ -347,12 +357,13 @@ Case-by-case summary:
   workloads where codegen quality matters less than data layout.
 * **json: solid win.** jz beats V8 by 1.3× on runtime JSON parsing; AS
   cannot run this case.
-* **alpha: the native floor.** jz beats V8 2.0× but trails native Rust ~13×
-  (358 µs vs 27 µs) — alpha's hot path is an unsigned i32 multiply. jz already
-  lifts it to 128-bit SIMD (an i16x8 widening byte-map); native pulls ahead on
-  width alone — 256-bit AVX2 with a fused byte multiply-add, run as native code
-  with no per-load bounds checks. The residual is the v128-vs-AVX2 ceiling, not
-  a missing pass. A known gap we publish rather than hide.
+* **alpha: the native floor.** jz beats V8 2.0× and every wasm rival (Rust/C/Go
+  → wasm), but trails the native-C reference ~14× (374 µs vs 26 µs) — alpha's hot
+  path is an unsigned i32 multiply. jz already lifts it to 128-bit SIMD (an i16x8
+  widening byte-map); native C pulls ahead on width alone — 256-bit AVX2 with a
+  fused byte multiply-add, run as native code with no per-load bounds checks. The
+  residual is the wasm-v128-vs-AVX2 ceiling, not a missing pass. A known gap we
+  publish rather than hide.
 * **watr: near parity.** jz is 1.07× slower than V8 on a 144 kB compiler
   bundle. It is one of two self-host rows (with jessie) where V8's
   profile-guided JIT tiers beat jz's AOT wasm.

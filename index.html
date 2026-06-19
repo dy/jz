@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
-<meta name="description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and keeps pace with native Rust and Zig on numeric kernels.">
+<meta name="description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and faster than Rust, Go, and C compiled to WebAssembly — competitive with native C on numeric kernels.">
 <link rel="canonical" href="https://dy.github.io/jz/">
 <meta name="theme-color" content="#000000">
 <!-- social card — text-only for now; add a 1200×630 og:image for a rich preview -->
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://dy.github.io/jz/">
 <meta property="og:title" content="JZ — JS→WASM compiler for numeric code (DSP, audio, math)">
-<meta property="og:description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and keeps pace with native Rust and Zig on numeric kernels.">
+<meta property="og:description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and faster than Rust, Go, and C compiled to WebAssembly — competitive with native C on numeric kernels.">
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
@@ -94,7 +94,7 @@ a { color: inherit; }
 
 /* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
    Left: logo + title, then the description and npm CTA. Right: a "Speed" line and the live JS↔WASM switch.
-   The Speed line shows vs V8 / vs AssemblyScript / vs native Rust — peak SIMD, Porffor and the size
+   The Speed line shows vs V8 / vs AssemblyScript / vs Rust→wasm — peak SIMD, Porffor and the size
    figures live on the bench strip (the expanded view). */
 .pitch { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; width: 100%; max-width: var(--colw); text-align: left;
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;   /* the SAME content column as every section + the nav: content-left = gx-pad, width = cw */
@@ -251,7 +251,7 @@ a { color: inherit; }
 .exrow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
 .exrow a { display: block; aspect-ratio: 1; overflow: hidden; }
 .exrow img { width: 100%; height: 100%; object-fit: cover; display: block;
-  filter: grayscale(1) brightness(.66) contrast(1.04); transition: filter .5s cubic-bezier(.22,.6,.36,1); }
+  filter: grayscale(1) brightness(.92) contrast(1.02); transition: filter .5s cubic-bezier(.22,.6,.36,1); }
 .exrow a:hover img { filter: grayscale(.35) brightness(1.05) contrast(1.03); }
 .exrow .ex-all { display: flex; align-items: center; justify-content: center; padding: 8px; text-align: center;
   text-decoration: none; color: var(--soft); font-size: clamp(11px,1.05vw,13px); letter-spacing: .01em; line-height: 1.35;
@@ -297,14 +297,16 @@ footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: #000; }
   display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }   /* brand (JZ + MIT under it) · two nav columns */
 .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
 .wordmark img { width: 40px; height: 40px; display: block; }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); }
+footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12.5px; color: var(--dim); }
+footer .legal .by a { color: var(--soft); }
+footer .legal .by a:hover { color: #fff; }
 footer .legal a { color: var(--soft); text-decoration: none; }
 footer .legal a:hover { color: #fff; }
 footer .legal .om { font-size: 15px; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
 footer .fcol a:hover { color: #fff; }
-@media (max-width: 640px) { .fwrap { flex-wrap: wrap; gap: 28px 40px; } footer .legal { margin-left: 0; align-self: auto; flex-basis: 100%; } }
+@media (max-width: 640px) { .fwrap { flex-wrap: wrap; gap: 28px 40px; } footer .legal { margin-left: 0; align-self: auto; flex-basis: 100%; align-items: flex-start; } }
 
 /* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
    The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
@@ -327,7 +329,7 @@ footer .fcol a:hover { color: #fff; }
     <a href="examples/">examples</a>
     <a href="bench/">bench</a>
     <a href="repl/">repl</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0 · experimental</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -349,9 +351,9 @@ footer .fcol a:hover { color: #fff; }
         <span class="mlabel">Speed</span>
         <div class="mrow">
           <div class="mstats">
-            <a class="stat" href="bench/"><b :text="v8">2.2×</b><span>V8</span></a>
-            <a class="stat" href="bench/"><b :text="asspeed">2.6×</b><span>AssemblyScript</span></a>
-            <a class="stat" href="bench/"><b :text="rust">1.1×</b><span>Rust</span></a>
+            <a class="stat" href="bench/"><b :text="v8">2.7×</b><span>V8</span></a>
+            <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span>AssemblyScript</span></a>
+            <a class="stat" href="bench/"><b :text="rust">2.6×</b><span>Rust→wasm</span></a>
           </div>
         </div>
       </div>
@@ -360,8 +362,8 @@ footer .fcol a:hover { color: #fff; }
            between plain JS and jz-compiled WASM; the fps/ms it drives reads right beside it. -->
       <div class="cta-live">
         <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="Run the live demo as plain JS or as JZ-compiled WASM"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
-        <div class="fps" aria-label="compute throughput, frames per second">
-          <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Frames per second the live engine can compute — uncapped by your display, which stops at ~60. Higher is better. Flip JS/JZ to compare."><b id="ms-num">··</b><span class="unit">fps</span></span>
+        <div class="fps" aria-label="compute throughput, operations per second">
+          <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second — how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b id="ms-num">··</b><span class="unit">op/s</span></span>
         </div>
       </div>
     </div>
@@ -391,6 +393,11 @@ footer .fcol a:hover { color: #fff; }
     <details name="faq">
       <summary><span class="fq">Why not just Rust, Go, or C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
       <div class="ans">Your existing JS already compiles to WASM that competes against Rust, Go, and C — without a second language or a port to keep in sync. Reach for native when you’ve genuinely outgrown JS — not because someone says Rust is faster. <a href="bench/">See the bench →</a></div>
+    </details>
+
+    <details name="faq">
+      <summary><span class="fq">Is it as fast as native C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Closer than you’d expect. Across the kernel corpus the same <code>.wasm</code> runs on par with native C — and about 2.4× faster than that same C compiled to WASM, because JZ auto-vectorizes where the C→wasm path doesn’t. Need a real binary? <code>jz → wasm2c → clang -O3</code> carries it the rest of the way to native. <a href="bench/">See the bench →</a></div>
     </details>
 
     <details name="faq">
@@ -426,6 +433,7 @@ footer .fcol a:hover { color: #fff; }
 
 <section class="examples">
   <div class="ex-wrap">
+    <h2>Examples</h2>
     <div class="exrow">
       <a href="examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" alt="Raymarcher" loading="lazy"></a>
       <a href="examples/lorenz/"><img src="examples/thumbs/lorenz.webp" alt="Lorenz" loading="lazy"></a>
@@ -460,7 +468,10 @@ footer .fcol a:hover { color: #fff; }
       <a href="https://www.npmjs.com/package/jz">npm</a>
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
-    <div class="legal">MIT · <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></div>
+    <div class="legal">
+      <span class="by">by <a href="https://github.com/dy">dy</a></span>
+      <span class="lic">MIT · <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
+    </div>
   </div>
 </footer>
 
@@ -480,14 +491,14 @@ const $ = id => document.getElementById(id)
 // which we fill from the fresh bench numbers so the row always reflects the latest run.
 ;(async () => {
   const m = sprae(document.querySelector('.pitch'),
-    { v8: '2.2×', asspeed: '2.6×', rust: '1.1×', vsv8: '2.2–13.5×' })   // hero stats + the V8 range (geomean→peak) for the sub
+    { v8: '2.7×', asspeed: '2.8×', rust: '2.6×', vsv8: '2.7×, up to 13.5×' })   // hero stats + the V8 range (geomean→peak) for the sub
   try {
     const r = await (await fetch('bench/results.json')).json()
     const s = headlineStats(r)               // shared with the bench page → identical figures
     if (s.v8) m.v8 = s.v8                     // same source, faster than V8
-    if (s.v8 && s.peak) m.vsv8 = s.v8.replace('×', '') + '–' + s.peak   // "2.2–13.5×" — typical (geomean) → peak
+    if (s.v8 && s.peak) m.vsv8 = s.v8 + ', up to ' + s.peak   // "2.7×, up to 13.5×" — typical (geomean), then peak SIMD
     if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
-    if (s.rust) m.rust = s.rust              // ≈ native Rust
+    if (s.rust) m.rust = s.rust              // jz vs Rust → wasm (apples-to-apples)
   } catch {}
 })()
 
