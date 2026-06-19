@@ -346,6 +346,15 @@ const tokenize = (src, re, cls) => {
 }
 const highlight = src => tokenize(src, TOKEN, TOKEN_CLS)
 const highlightWat = line => tokenize(line, WTOKEN, WCLS)
+// Custom sections (jz:schema/rest/noalias/…) carry long byte tuples; collapse the
+// payload to `a b c … z` so the WAT stays scannable. Display-only — fold math reads
+// the original lines, and no parens are dropped, so paren depth is unchanged.
+const shrinkCustom = line => {
+  const m = line.match(/^(\s*\(@custom\s+"[^"]*"\s+\()([\d ]+?)\s*(\)*)$/)
+  if (!m) return line
+  const nums = m[2].trim().split(/\s+/)
+  return nums.length <= 8 ? line : `${m[1]}${nums.slice(0, 6).join(' ')} … ${nums[nums.length - 1]}${m[3]}`
+}
 
 // `errAt` ({line, col}, 1-based) wraps the token at the error position in a
 // red-squiggle span. Slicing the source in three keeps character offsets in
@@ -453,7 +462,7 @@ const renderWat = (wat) => {
   while (i < n) {
     const hdr = isHeader(i), folded = hdr && watFolded.has(i)
     const tog = hdr ? `<span class="wfold" data-l="${i}">${folded ? '▸' : '▾'}</span>` : '<span class="wfold"></span>'
-    html += `<div class="wrow">${tog}<span class="wcode">${highlightWat(lines[i])}${folded ? '<span class="wdots"> … </span>' : ''}</span></div>`
+    html += `<div class="wrow">${tog}<span class="wcode">${highlightWat(shrinkCustom(lines[i]))}${folded ? '<span class="wdots"> … </span>' : ''}</span></div>`
     i = folded ? foldEnd(i) + 1 : i + 1
   }
   watEl.innerHTML = html

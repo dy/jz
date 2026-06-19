@@ -4,9 +4,6 @@
 
 **jz** (_javascript zero_) is **minimal functional JS** that compiles to performant WASM.
 
-Plain JS in, lean GC-free WASM out — for the slow 10% (DSP, audio, physics, parsers): no type annotations, no runtime, no lock-in.
-
-
 ```js
 import jz from 'jz'
 
@@ -19,14 +16,16 @@ dist(3, 4) // 5
 
 ## Why?
 
-jz distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid jz is valid JS** – run and test as JS, compile to portable WASM.
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
-| Numeric / math compute      | UI / frontend              |
-| DSP / audio / bytebeats     | Backend / APIs             |
-| Parsing / transforms        | Async / I/O-heavy logic    |
-| WASM utilities              | JavaScript runtime         |
+| Numeric, math, compute      | UI, DOM, frontend          |
+| DSP, audio, bytebeats       | Backend, APIs, server      |
+| Demoscene, games            | Crypto, security           |
+| Parsers, transforms         | Async, I/O                 |
+| Simulation, physics         | Dynamic, OOP               |
+| WASM utilities              | JS runtime                 |
 
 
 ## Usage
