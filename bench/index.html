@@ -65,6 +65,8 @@ button:hover { background: var(--ink); color: var(--paper); }
 button:disabled { opacity: .4; cursor: default; }
 button:disabled:hover { background: var(--paper); color: var(--ink); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.report { display: inline-block; margin-top: 16px; font-family: var(--sans); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
+.report:hover { background: var(--ink); color: var(--paper); }
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 
@@ -161,8 +163,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 </section>
 
 <section id="honest">
-  <h2>Keeping it honest</h2>
-  <p>Every number here is <b>gated in CI</b> — a commit that regresses a kernel can't land — and we <b>publish our losses</b>: where JZ trails native, it's in the cases above, not hidden. Think JZ should win on your kernel? <a href="../repl/">Bench it in the REPL →</a> If it loses to plain JS on a compute kernel, we treat that as a bug — and want to hear about it.</p>
+  <p>Slower than your JS on a compute kernel? That's a bug.</p>
+  <a class="report" href="../repl/">Report a slow case</a>
 </section>
 
 </main>
