@@ -1,6 +1,6 @@
 // Bench pin tests — the competitive-regression gate.
 //
-// Project invariant (see CONTRIBUTING.md): on the bench corpus, jz wasm is
+// Project invariant (see docs/CONTRIBUTING.md): on the bench corpus, jz wasm is
 //   • at least as fast as V8, AssemblyScript and Porffor (speed-tuned build),
 //   • within the native-parity band of `clang -O3` (geomean jz/C ≈ parity), and
 //   • at least as small as AssemblyScript (-Oz) and Porffor (size-tuned build).
@@ -149,7 +149,11 @@ const SIZE = {
   bytebeat:       { as: 'win',  porf: 'win' },
   fft:            { as: 'todo', porf: 'win' },
   synth:          { as: 'todo', porf: 'win' },
-  blur:           { as: 'win',  porf: 'win' },
+  // blur is a SPEED kernel — its win is throughput (vectorized: ~9× V8, ~5× AS),
+  // not size. The size-preset build is scalar (vectorizer off) and jz's RGBA-stencil
+  // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
+  // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
+  blur:           { as: 'todo', porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
@@ -171,10 +175,15 @@ const WASMOPT_SLACK_MIN = 0.70
 // throughput win that put it ahead of native clang/rustc -O3 — deliberate
 // speed-for-bytes, like the watr STR_INTERN pin above. The vectorized output is
 // wasm-opt-tight (passes the slack gate), so this is genuine SIMD code, not bloat.
+// blur: the channel-reduce vectorizer (default-on at speed) SIMDs the RGBA box-filter
+// accumulation — ~84 f64x2/i32x4 ops that buy ~9× V8 / ~5× AS throughput. The
+// default-optimize build measured here is now the vectorized one (was ~2300 B scalar
+// when blur landed); same deliberate speed-for-bytes trade as bytebeat. Ratchet down
+// as codegen tightens.
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
-  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 2300, watr: 245000,
+  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────

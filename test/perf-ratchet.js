@@ -12,7 +12,7 @@
 // an improvement lowers the count — lock the gain with `node test/perf-ratchet.js
 // --update`. Pure codegen signal: no timing, machine-independent, byte-stable.
 //
-// "Ratchet, don't backslide" (CONTRIBUTING). Run standalone or via the suite.
+// "Ratchet, don't backslide" (docs/CONTRIBUTING.md). Run standalone or via the suite.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
