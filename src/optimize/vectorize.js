@@ -1806,6 +1806,48 @@ function liftStmt(stmt, ctx) {
     return out
   }
 
+  // Standalone conditional store: `if (COND) { …inter; store(addr,A) } [else { …inter; store(addr,B) }]`.
+  // Both arms end in a store to the SAME address; a missing else keeps the current value. Speculatively
+  // lift both arms (intermediate sets become lane locals; masked lanes are discarded — lane-pure ops
+  // are trap-free) and emit ONE store of `bitselect(A, B, mask(COND))`. Unlocks per-pixel conditional
+  // maps like lorenz's i32x4 trail fade (`if (p & 0xffffff) px[i] = fade(p)`).
+  if (op === 'if' && isArr(stmt[2]) && stmt[2][0] === 'then') {
+    const armOf = (arm) => {
+      let body = arm.slice(1)
+      if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {   // unwrap a single block arm
+        const b = body[0]; let i = 1
+        if (typeof b[i] === 'string' && b[i].startsWith('$')) i++
+        if (isArr(b[i]) && b[i][0] === 'result') i++
+        body = b.slice(i)
+      }
+      const last = body[body.length - 1]
+      if (!isArr(last) || !STORE_OPS[last[0]] || last.length !== 3) return null
+      return { inter: body.slice(0, -1), addr: last[1], val: last[2], store: last[0] }
+    }
+    const thenA = armOf(stmt[2]), elseA = (isArr(stmt[3]) && stmt[3][0] === 'else') ? armOf(stmt[3]) : null
+    if (!thenA || (isArr(stmt[3]) && !elseA)) return liftFail(ctx, 'if-store: arm is not a conditional store')
+    if (elseA && (JSON.stringify(thenA.addr) !== JSON.stringify(elseA.addr) || thenA.store !== elseA.store)) return liftFail(ctx, 'if-store: arms store differently')
+    // mask from COND: a lane comparison, or (i32) a truthy test `lift(cond) != 0`.
+    let cond = stmt[1]
+    if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+    const cmp = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
+    let mask
+    if (cmp) { const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null; const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null; mask = [cmp, ca, cb] }
+    else if (ctx.laneType === 'i32') { const lc = liftExprV(cond, ctx); if (ctx.fail) return null; mask = ['i32x4.ne', lc, ['i32x4.splat', ['i32.const', 0]]] }
+    else return liftFail(ctx, 'if-store: non-comparison condition')
+    const out = ['__seq__']
+    const liftInter = (arm) => { for (const s of arm.inter) { const l = liftStmt(s, ctx); if (ctx.fail) return false; if (l != null) { if (Array.isArray(l) && l[0] === '__seq__') out.push(...l.slice(1)); else out.push(l) } } return true }
+    if (!liftInter(thenA)) return null
+    if (elseA && !liftInter(elseA)) return null
+    const thenVal = liftExprV(thenA.val, ctx); if (ctx.fail) return null
+    const elseVal = elseA ? liftExprV(elseA.val, ctx) : ['v128.load', thenA.addr]   // no else ⇒ keep current value
+    if (ctx.fail) return null
+    const mtmp = `$__mask${ctx.freshIdRef.next++}`
+    ctx.extraLocals.push(['local', mtmp, 'v128'])
+    out.push(['local.set', mtmp, mask], ['v128.store', thenA.addr, ['v128.bitselect', thenVal, elseVal, ['local.get', mtmp]]])
+    return out
+  }
+
   // Standalone expression-as-statement (e.g. a load that gets dropped) — bail.
   return liftFail(ctx, `standalone ${op} statement`)
 }

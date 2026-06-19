@@ -180,6 +180,19 @@ test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exac
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'newton outcome-tracking bit-exact vs scalar (1536 px)');
 });
 
+// Standalone conditional store: lorenz's trail-fade loop is `if (p & 0xffffff) px[i] = fade(p)` — a
+// per-pixel i32 map with a no-else conditional (untouched pixels keep their value). The lift now folds
+// `if(c){…;store(addr,A)}[else{…;store(addr,B)}]` into one store of bitselect(A, B, mask(c)) — both
+// arms evaluated speculatively (lane-pure ⇒ trap-free), a missing else keeping the loaded value.
+test('example: lorenz conditional trail-fade vectorizes (i32x4 if-store) bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/lorenz/lorenz.js', import.meta.url), 'utf8');
+    const wat = jz.compile(src, { ...OPT, wat: true });
+    ok((wat.match(/v128\.bitselect/g) || []).length > 0, 'lorenz fade lifts to an if-store bitselect');
+    const run = (opts) => { const { exports } = jz(src, { ...opts, randomSeed: 5 }); const px = exports.resize(80, 60); if (exports.init) exports.init(); for (let f = 0; f < 30; f++) exports.frame(f * 0.05, 0.3); return [...px]; };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz if-store bit-exact vs scalar (4800 px, 30 frames)');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;
