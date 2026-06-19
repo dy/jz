@@ -17,14 +17,15 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
-/* masthead styling is shared via ../assets/site.css (.masthead); centre its content to the grid column width */
-.masthead { padding-inline: max(32px, calc(50% - 468px)); }
+/* masthead + grid share the ONE site content column (assets/site.css): content-left = gx-pad, width = cw,
+   so the examples grid lines up edge-to-edge with the landing and bench. */
+.masthead { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 
-/* Classical Swiss grid — centred to the bench page width, even gutters, caption under each frame */
+/* Classical Swiss grid on the shared content column, even gutters, caption under each frame */
 .grid {
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: 36px 32px 72px;
+  max-width: var(--colw);
+  margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
+  padding: 36px var(--padx) 72px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: 44px 28px;
@@ -58,7 +59,7 @@ html, body {
   display: block;
   font-family: var(--font);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: -.01em;
   color: #f4f4f4;
 }
@@ -75,10 +76,11 @@ html, body {
 <body>
 
 <header class="masthead">
-  <a class="wordmark" href="../"><span class="mark">JZ</span><span class="sub">examples</span></a>
+  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">examples</span></div>
   <nav>
     <a href="../repl/">repl</a>
     <a href="../bench/">bench</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
     <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>

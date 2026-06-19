@@ -51,16 +51,17 @@ const addMasthead = (name) => {
   // critical inline so the band never flashes unstyled before site.css resolves
   header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#000'
   header.innerHTML = `
-    <div class="wordmark"><a class="mark" href="../../">JZ</a><a class="sub" href="../">examples</a></div>
+    <div class="brand"><a class="logo" href="../../"><img src="../../jz.svg" width="40" height="40" alt="jz"></a><a class="sub" href="../">examples</a></div>
     <nav>
       <a href="../../repl/">repl</a>
       <a href="../../bench/">bench</a>
+      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
       <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
         <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
     </nav>`
   document.body.insertBefore(header, document.body.firstChild)
-  // Frame the demo between the two bands: the fixed 64px masthead on top and the 64px
+  // Frame the demo between the two bands: the fixed 80px masthead on top and the 64px
   // bottom bar below. The canvas fills that gap (runDemo sizes the backing to this box, so it
   // fills edge-to-edge — no letterbox). The HUD's own <canvas> lives inside .jz-bar
   // (body > div > canvas), so `body > canvas` = the demo.
@@ -72,14 +73,14 @@ const addMasthead = (name) => {
     // demo's edges. The fullscreen button (⛶) drops the cap so it fills the viewport. `--jz-demopad`
     // is the symmetric inset that yields a `--jz-democol`-wide centered column.
     fit.textContent =
-      ':root{--jz-democol:1000px;--jz-demopad:max(24px,calc(50% - 500px))}'
+      ':root{--jz-democol:960px;--jz-demopad:max(24px,calc(50% - 480px))}'
       // chrome-black page — centering creates side margins, so whichever example we frame (runDemo
       // OR a custom-hud page like mandelbrot/zzfx with its own light body) shows black beside it.
       // This style only exists on framed standalone pages (addMasthead), never in embed.
       + 'html,body{background:#000!important}'
-      + 'body > canvas:not(.gradient){position:fixed!important;top:64px!important;left:50%!important;'
+      + 'body > canvas:not(.gradient){position:fixed!important;top:80px!important;left:50%!important;'
       + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
-      + 'height:calc(100vh - 128px)!important;object-fit:contain!important}'
+      + 'height:calc(100vh - 144px)!important;object-fit:contain!important}'
       + '.masthead.fixed{padding-inline:var(--jz-demopad)!important}'
       + 'html.jz-full body > canvas:not(.gradient){width:100vw!important}'
       + 'html.jz-full .masthead.fixed{padding-inline:24px!important}'
@@ -364,8 +365,8 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-codelink { font: inherit; color: #e8e8ea; background: none; border: 0; padding: 0; cursor: pointer;
         text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-codelink:hover, .jz-codelink.on { color: #fff; }
-      .jz-code-panel { position: fixed; top: 64px; bottom: 64px; left: 50%; transform: translateX(-50%);
-        width: min(100vw, var(--jz-democol, 1000px)); z-index: 140; background: rgba(6,6,9,.96);
+      .jz-code-panel { position: fixed; top: 80px; bottom: 64px; left: 50%; transform: translateX(-50%);
+        width: min(100vw, var(--jz-democol, 960px)); z-index: 140; background: rgba(6,6,9,.96);
         opacity: 0; visibility: hidden; transition: opacity .18s ease; }
       .jz-code-panel.on { opacity: 1; visibility: visible; }
       html.jz-full .jz-code-panel { width: 100vw; }

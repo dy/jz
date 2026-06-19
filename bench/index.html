@@ -14,22 +14,23 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ink: #f0f0f2; --paper: #000; --mid: #8a8a93; --soft: #b7b7c1; --faint: #1c1c25;
   --band: #000; --red: #ff5a5a;
-  --padx: 32px;
+  --dim: #7e7e8a; --mute: #50505a;   /* headline-metric label tones — match the landing hero (shared .mstats in site.css) */
+  --padx: 40px;   /* matches the shared column in assets/site.css (which also gives --cw/--colw/--gx-pad) */
 }
 html { scroll-behavior: smooth; }
 body { background: var(--paper); color: var(--ink); font-family: var(--sans);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
-/* masthead styling is shared via ../assets/site.css (.masthead); centre its content to the main column width */
-.masthead { padding-inline: max(var(--padx), calc(50% - 468px)); }
+/* masthead + main share the ONE site content column (assets/site.css): content-left = gx-pad, width = cw,
+   so bench lines up edge-to-edge with the landing and the examples pages. */
+.masthead { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 
-main { max-width: 1000px; margin: 0 auto; padding: 0 var(--padx) 90px; }
+main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding: 0 var(--padx) 90px; }
 section { margin-top: 64px; }
 h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 18px; }
-h2 .info { font-size: 13px; font-weight: 400; color: var(--mid); cursor: help; vertical-align: 1px; margin-left: 2px; transition: color .14s; }
-h2 .info:hover, h2 .info:focus-visible { color: var(--ink); }
 p { font-size: 14px; line-height: 1.55; max-width: 70ch; }
 p + p { margin-top: 10px; }
+#speed > p { margin: 0 0 22px; }   /* corpus note, sits under the heading above the bars */
 a { color: var(--ink); }
 .dim { color: var(--mid); }
 code, .mono { font-family: var(--mono); font-size: .92em; }
@@ -67,19 +68,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 
-/* stat strip — the 10-second story, sat next to the title; numbers are the copy */
-.strip { display: flex; gap: 32px; flex-wrap: wrap; align-items: baseline; }
-.intro .strip { margin: 0; border: 0; padding: 0; }
-.stat { display: flex; flex-direction: column; gap: 3px; }
-.stat b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
-.stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
+/* stat strip — the SAME Speed/Size metric block as the landing hero (shared .mstats/.stat in
+   assets/site.css); the two groups sit side by side in one row under the title (wraps if narrow). */
+#strip { display: flex; flex-wrap: wrap; gap: clamp(28px, 5vw, 56px); align-items: flex-start; }
 
 /* bar rows */
-.row { display: grid; grid-template-columns: 220px 1fr 178px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
+.row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
 .row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
+#geomean .val { text-align: right; }   /* corpus rows carry only the multiplier — pin it to the right edge, no dead gap */
 .bar { height: 15px; position: relative; background: transparent; }
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--ink); background: var(--paper); min-width: 2px; }
 .bar i.solid { background: var(--ink); }
@@ -105,7 +104,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--mid); }
 .card h3 .play ~ .play { margin-left: 10px; }
 .card h3 .play .ico { display: block; }
-.card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src pushed to the right, after the tag + size */
+.card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src right-aligned in each card */
 .card h3 .play:hover { background: none; color: var(--ink); }
 .card .row { grid-template-columns: 110px 1fr 172px; font-size: 11.5px; padding: 2.5px 0; }
 .card .bar { height: 12px; }
@@ -115,17 +114,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   .row .lab, .card .row .lab { grid-column: 1 / -1; text-align: left; }
   .row .val { font-size: 10.5px; }
   .cards { grid-template-columns: 1fr; }
-  .strip { gap: 26px; }
 }
 </style>
 </head>
 <body>
 
 <header class="masthead">
-  <a class="wordmark" href="../"><span class="mark">JZ</span><span class="sub">bench</span></a>
+  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">bench</span></div>
   <nav>
     <a href="../repl/">repl</a>
     <a href="../examples/">examples</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
     <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -142,11 +141,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
       <span id="globalstat"></span>
     </div>
   </div>
-  <div class="strip" id="strip" hidden></div>
+  <div id="strip" hidden></div>
 </div>
 
 <section id="speed">
-  <h2>Corpus <span class="info" tabindex="0" data-tip="Each bar is the geometric mean, across the corpus, of that target's median run time ÷ JZ's — normalized so JZ = 1× (lower = faster). Only cases where both produced a matching checksum are counted; native is shown as the median (its distribution is bimodal). Times are medians of repeated runs on the reference machine.">&#9432;</span></h2>
+  <h2>Corpus</h2>
+  <p class="dim">Each bar is the geometric mean, across the corpus, of a target's median run time ÷ JZ's — normalized so JZ = 1× (lower is faster). Only matching-checksum cases count.</p>
   <div id="geomean"></div>
 </section>
 
@@ -178,14 +178,14 @@ const BANDS = [
   ['native', 'Native'],
 ]
 const TARGETS = {
-  v8:    { label: 'Node', band: 'js' },
-  deno:  { label: 'Deno', band: 'js' },
-  bun:   { label: 'Bun', band: 'js' },
+  v8:    { label: 'JS', sub: 'node', band: 'js' },
+  deno:  { label: 'JS', sub: 'deno', band: 'js' },
+  bun:   { label: 'JS', sub: 'bun', band: 'js' },
   spidermonkey: { label: 'SpiderMonkey', band: 'js', hatch: true },
   graaljs: { label: 'GraalJS', band: 'js', hatch: true },
   jz:    { label: 'JZ', band: 'wasm', strong: true },
   wat:   { label: 'hand-WAT', band: 'wasm', hatch: true },
-  'jz-wasmtime': { label: 'JZ', sub: 'wasmtime', band: 'wasm', hatch: true },
+  'jz-wasmtime': { label: 'JZ', sub: 'wasi', band: 'wasm', hatch: true },
   as:    { label: 'AssemblyScript', band: 'wasm' },
   porf:  { label: 'Porffor', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm' },
@@ -213,12 +213,12 @@ const ICO = {
 const FAMILY = { biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio',
   mat4: 'numeric', poly: 'numeric', bitwise: 'numeric', dotprod: 'numeric',
   mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
-  callback: 'alloc', aos: 'alloc', blur: 'image' }
+  callback: 'alloc', aos: 'alloc', blur: 'image', matmul: 'numeric', heat: 'numeric' }
 const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
   mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
   tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
   mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
-  blur: 'rgba · stencil' }
+  blur: 'rgba · stencil', matmul: 'gemm · f64', heat: 'stencil · f64' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -237,6 +237,8 @@ const INSIGHTS = {
   sort: 'In-place heapsort — call-heavy nested loops, indices provably i32.',
   crc32: 'Table-driven byte CRC — serially-dependent LUT chain, 2 loads + 4 ALU per byte.',
   blur: 'Separable box blur on an RGBA8 image — sliding-window stencil with integer accumulation; memory-bound layout codegen.',
+  matmul: 'Dense C = A·Bᵀ, Bᵀ pre-transposed so each output is a contiguous dot — the multiply-accumulate kernel every linear-algebra library lives on; integer-valued, so bit-exact across targets.',
+  heat: 'Explicit-Euler 5-point Laplacian over a double-buffered grid (dst≠src, fixed border) — the clean neighbour-load stencil a[i±1]/a[i±W] jz lifts to f64x2, bit-exact.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -283,12 +285,12 @@ const geoRatio = tid => {
   return rs.length ? { geo: geo(rs), n: rs.length } : null
 }
 
-// your-machine geomean: your browser's JS vs the JZ artifact, normalized to JZ.
+// your-browser geomean: your browser's JS ÷ the JZ artifact, over the cases you ran.
 const localGeo = () => {
   const rs = []
   for (const r of Object.values(local))
     if (r.js?.medianUs && r.jzwasm?.medianUs && r.js.parity !== 'DIFF') rs.push(r.js.medianUs / r.jzwasm.medianUs)
-  return rs.length ? { label: 'JS', sub: nCases(rs.length), geo: geo(rs) } : null
+  return rs.length ? { n: rs.length, geo: geo(rs) } : null
 }
 
 const renderGeomean = () => {
@@ -299,45 +301,53 @@ const renderGeomean = () => {
       const g = geoRatio(tid)
       if (g) rows.push({ tid, band, ...t, ...g })
     }
-  const min = Math.min(...rows.map(r => r.geo))
+  // your-browser JS folds into the JS band as a regular row, sorted with the rest
+  // (its own geomean vs jz). The reference JZ row already anchors the baseline.
   const yours = localGeo()
-  const rels = rows.map(r => r.geo / min).concat(yours ? [1, yours.geo] : [])
-  const maxLin = Math.max(...rels.filter(r => r <= BREAK), 1)
+  if (yours) rows.push({ tid: '__jslive', band: 'js', label: 'JS browser', geo: yours.geo, n: yours.n })
+  const min = Math.min(...rows.map(r => r.geo))
+  const maxLin = Math.max(...rows.map(r => r.geo / min).filter(r => r <= BREAK), 1)
   let html = ''
   for (const [band, lab] of BANDS) {
     const bandRows = rows.filter(r => r.band === band).sort((a, b) => a.geo - b.geo)
     if (!bandRows.length) continue
     html += `<div class="bandlab">${lab}</div>`
     for (const r of bandRows)
-      html += rowHtml({ label: r.label, sub: `${r.sub ? r.sub + ' · ' : ''}${nCases(r.n)}`,
+      html += rowHtml({ label: r.sub ? `${r.label} ${r.sub}` : r.label, sub: nCases(r.n),
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
-  }
-  if (yours) {
-    html += `<div class="subdiv">Your machine</div>`
-    const yr = [{ label: 'JZ', sub: yours.sub, geo: 1, solid: true, strong: true }, { label: yours.label, sub: yours.sub, geo: yours.geo }]
-    for (const r of yr)
-      html += rowHtml({ label: r.label, sub: r.sub, rel: r.geo, maxLin, text: fmtX(r.geo), solid: r.solid, strong: r.strong })
   }
   $('geomean').innerHTML = html
 }
 
 // ── stat strip ───────────────────────────────────────────────────────────────
-// The SAME six headline figures as the landing page, computed by the shared
+// The headline figures — same source as the landing hero (it shows the top three) — computed by the shared
 // assets/headline.js over this exact results.json — so the front numbers never
 // drift between the two pages. The per-engine / native detail lives in the geomean
 // chart below; this strip is the consistent 10-second story.
+// The same metric styling as the landing hero (assets/headline.js),
+// the same Speed / Size grouping and labels, rendered with the shared .mstats/.stat styles
+// (assets/site.css). Stats deep-link to the corpus chart (the hero links to /bench/ → here).
 const STRIP = [
-  ['v8', 'V8', 'jz vs V8 (Node) — geomean of jz’s per-case speedup over the corpus'],
-  ['peak', 'V8 (peak SIMD)', 'best single-case jz speedup over V8 — where SIMD lands hardest'],
-  ['porf', 'Porffor', 'jz vs Porffor — geomean over the kernels Porffor compiles correctly'],
-  ['rust', 'Rust', 'jz vs Rust → wasm — geomean over the corpus'],
-  ['assize', 'AssemblyScript size', 'jz’s .wasm vs AssemblyScript’s — median over shared cases (binary ↔ binary)'],
-  ['porfsize', 'Porffor size', 'jz’s .wasm vs Porffor’s — median over shared cases'],
+  ['Speed', [
+    ['v8', 'V8'],
+    ['asspeed', 'AssemblyScript'],
+    ['peak', 'V8 (peak SIMD)', 'Needs the WASM SIMD proposal — baseline in Chrome 91+, Firefox 89+, Safari 16.4+, Node 16+; pass noSimd for older engines.'],
+    ['porf', 'Porffor'],
+    ['rust', 'Rust'],
+  ]],
+  ['Size', [
+    ['assize', 'AssemblyScript'],
+    ['porfsize', 'Porffor'],
+  ]],
 ]
 const renderStrip = () => {
   const s = headlineStats(DATA)
-  const cells = STRIP.filter(([k]) => s[k]).map(([k, lab, tip]) => ({ big: s[k], lab, tip }))
-  $('strip').innerHTML = cells.map(c => `<div class="stat"${c.tip ? ` tabindex="0" data-tip="${esc(c.tip)}"` : ''}><b>${c.big}</b><span>${c.lab}</span></div>`).join('')
+  const cell = ([k, lab, title]) => s[k]
+    ? `<a class="stat" href="#speed"><b>${s[k]}</b><span${title ? ` title="${esc(title)}"` : ''}>${esc(lab)}</span></a>` : ''
+  $('strip').innerHTML = STRIP.map(([label, defs]) => {
+    const cells = defs.map(cell).join('')
+    return cells ? `<div class="mgroup"><span class="mlabel">${label}</span><div class="mstats">${cells}</div></div>` : ''
+  }).join('')
   $('strip').hidden = false
 }
 
@@ -367,16 +377,14 @@ const cardRows = c => {
   // bar length everywhere in the card (each ratio is relative to its group's fastest)
   const maxLin = Math.max(...[...entries.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
   let html = entries.map(r => rowHtml({
-    label: r.label, sub: r.sub, rel: r.medianUs / base, maxLin,
+    label: r.sub ? `${r.label} ${r.sub}` : r.label, rel: r.medianUs / base, maxLin,
     text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity,
   })).join('')
-  if (lrows.length) {
-    html += `<div class="subdiv">JZ (your machine)</div>`
-    for (const r of lrows)
-      html += rowHtml({ label: r.label, sub: '',
-        rel: r.medianUs / lbase, maxLin,
-        text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity })
-  }
+  // your-browser rows follow as regular rows (no divider) — a different machine, so
+  // their absolute µs / × can't sort meaningfully into the reference list above
+  for (const r of lrows)
+    html += rowHtml({ label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin,
+      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity })
   return html
 }
 
