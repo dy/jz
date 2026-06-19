@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
+import jz from '../index.js'
 
 // Source-level f32x4 / i32x4 intrinsics (module/simd.js) lowering to wasm SIMD (v128).
 // The point: v128 must flow through user locals (let v = f32x4.…), survive
@@ -202,6 +203,41 @@ test('simd: f64x2.sin / f64x2.cos — both lanes, all quadrants', () => {
   }
   is(s0(0, 0), 0); is(c0(0, 0), 1)                 // exact at origin
   ok(Number.isNaN(s0(Infinity, 0)), 'sin(∞) → NaN') // ∞ − ∞·π propagates NaN
+})
+
+test('simd: f64x2.log / exp / exp2 — true-vectorized, BIT-EXACT to scalar', () => {
+  // log/exp/exp2 run ONE poly across both lanes (≈2×, log beats V8 native). The hot path (both lanes
+  // normal/finite) mirrors the scalar op-for-op; any edge lane routes both to the scalar fallback.
+  // Either way each lane must be bit-for-bit equal to jz's scalar $math.log/exp/exp2 — the invariant
+  // the per-pixel-color / toneMap passes lift against (a lossy mirror would change every demo's pixels).
+  const { L0, L1, SL, E0, SE, X0, SX } = run(`
+    export let L0 = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 0)
+    export let L1 = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 1)
+    export let SL = (x) => Math.log(x)
+    export let E0 = (a, b) => f64x2.lane(f64x2.exp(f64x2.lanes(a, b)), 0)
+    export let SE = (x) => Math.exp(x)
+    export let X0 = (a, b) => f64x2.lane(f64x2.exp2(f64x2.lanes(a, b)), 0)
+    export let SX = (x) => 2 ** x
+  `)
+  // hot path (both lanes finite > 0) exercises the true 2-wide poly:
+  for (const [a, b] of [[0.5, 1.1], [2.0, 3.7], [100.0, 1e-3], [1.5, 7.0], [1e8, 1e-30]]) {
+    is(L0(a, b), SL(a)); is(L1(a, b), SL(b))       // log: both lanes === scalar
+    is(E0(a, b), SE(a)); is(X0(a, b), SX(a))       // exp / exp2 === scalar
+  }
+  // an edge lane (≤0 / ∞ / NaN / denormal) forces the scalar fallback for BOTH lanes — still exact:
+  for (const e of [0, -1, Infinity, NaN, 5e-310]) {
+    is(L0(2.0, e), SL(2.0))                          // the finite lane, via fallback
+    ok(Object.is(L1(2.0, e), SL(e)), `log edge lane ${e} === scalar`)
+  }
+})
+
+test('simd: f64x2.log_v is a true poly, not extract-scalar repack', () => {
+  // Regression guard: log_v must evaluate one fdlibm poly across both lanes — frexp via i64x2 bit-ops
+  // and s=f/(f+2) via f64x2.div — NOT extract both lanes and call scalar $math.log twice. A revert to
+  // the old extract-scalar mirror (no transcendental speedup) would drop these ops.
+  const w = jz.compile(`export let f = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 0)`, { wat: true })
+  ok(/i64x2\.shr_u/.test(w), 'log_v extracts the exponent with i64x2.shr_u (true frexp, 2-wide)')
+  ok(/f64x2\.div/.test(w), 'log_v computes s = f/(f+2) with f64x2.div (true 2-wide poly)')
 })
 
 test('simd: f64x2.sin reused across a let-binding + two extracts', () => {

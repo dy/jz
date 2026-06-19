@@ -107,5 +107,11 @@ export default (ctx) => {
     e[`f64x2.${o}`] = (a, b) => V([`f64x2.${o}`, op(a), op(b)])
   e['f64x2.sin'] = emitter(['math.sin2'], (a) => V(['call', '$math.sin2', op(a)]))
   e['f64x2.cos'] = emitter(['math.cos2'], (a) => V(['call', '$math.cos2', op(a)]))
+  // f64x2.log/exp/exp2 lower to the true-vectorized $math.log_v/$math.exp_v/$math.exp2_v polys —
+  // both lanes through one fdlibm/2^f evaluation (≈2× over two scalar calls), bit-exact via a
+  // hot-path-vectorized + scalar-edge-fallback split (module/math.js).
+  e['f64x2.log'] = emitter(['math.log_v'], (a) => V(['call', '$math.log_v', op(a)]))
+  e['f64x2.exp'] = emitter(['math.exp_v'], (a) => V(['call', '$math.exp_v', op(a)]))
+  e['f64x2.exp2'] = emitter(['math.exp2_v'], (a) => V(['call', '$math.exp2_v', op(a)]))
   e['f64x2.lane'] = (v, k) => F(['f64x2.extract_lane', lane2(k), op(v)])
 }

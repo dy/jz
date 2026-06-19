@@ -3696,9 +3696,11 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
 const PPC_CALL2 = {
   '$math.sin_core': '$math.sin2', '$math.cos_core': '$math.cos2',
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
-  '$math.pow': '$math.pow2',   // Phase 2: 2-arg; bit-exact per-lane scalar (see module/math.js)
+  '$math.pow': '$math.pow2',   // 2-arg; bit-exact per-lane scalar (cancellation-sensitive — see module/math.js)
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
-  '$math.log': '$math.log_v',                                       // 1-arg; bit-exact extract/repack
+  // log/exp/exp2: TRUE f64x2 polys — both lanes one evaluation (≈2×, beats V8 native log). Bit-exact
+  // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).
+  '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
 }
 
 // Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
