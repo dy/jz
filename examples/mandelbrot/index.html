@@ -16,9 +16,10 @@
 <script type="module">
 import { loadEngine, hud } from "../lib/jzdemo.js";
 
-// jz runs the 4-wide SIMD kernel (mandelbrot.simd.js → .wasm); the JS toggle runs the
-// scalar mandelbrot.js. Same image (large bail-out smooth colour), ~1.5–2.5× on jz.
-const urls = { js: "./mandelbrot.js", wasm: "./mandelbrot.simd.wasm" };
+// One source both ways: the JS toggle imports mandelbrot.js, the jz toggle runs the SAME file
+// compiled to wasm — where jz's escape-time vectorizer lifts the inner loop to f64x2 on its own
+// (no hand-written SIMD kernel needed). Same image, large bail-out smooth colour.
+const urls = { js: "./mandelbrot.js", wasm: "./mandelbrot.wasm" };
 
 // Set up the canvas with a 2D rendering context
 const cnv = document.getElementsByTagName("canvas")[0];

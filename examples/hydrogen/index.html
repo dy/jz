@@ -22,7 +22,7 @@ const showName = () => { const i = Math.round(sel); orbEl.innerHTML = `<b style=
 
 const demo = runDemo({
   name: "hydrogen",
-  hint: "Hydrogen orbitals — |ψ|² in phase color (warm ψ>0, cool ψ<0) · drag ↔ to scrub s→p→d→f",
+  hint: "Hydrogen orbitals — electron probability cloud |ψ|² · drag ↔ to scrub s→p→d→f",
   size: { budget: 360000 },
   load: () => showName(),
   frame: (e, t) => {

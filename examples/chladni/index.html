@@ -6,106 +6,43 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
-<!-- frequency + note readout: top-center, bare white text with a soft dark outline (no box) -->
-<div id="freq" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 15px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.04em;color:#fff;text-shadow:0 0 3px rgba(0,0,0,.9),0 0 1px rgba(0,0,0,.9),0 1px 2px rgba(0,0,0,.7);pointer-events:none">— <small style="opacity:.7;font-weight:500;margin-left:.15em">Hz</small></div>
-
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// A Chladni plate only resonates at DISCRETE eigenmodes, so the engine snaps the frequency to
-// the nearest (n,m) pair — a band of frequencies legitimately shares one figure. 1 ≤ n < m ≤ 12
-// → C(12,2) = 66 modes. Horizontal position on the plate maps to 40…20000 Hz.
-//
-// The plate figure F(x,y)=cos(nπx)cos(mπy)−cos(mπx)cos(nπy) is BUILT from four 1-D standing
-// waves: cos(nπx), cos(mπx) across, cos(nπy), cos(mπy) down. We trace those component waves in
-// green — a left strip (the y-waves) and a bottom strip (the x-waves) — so you watch the plate's
-// lattice fall out of the two waves it superposes. The kernel publishes the live (n,m).
-const F_LO = 40, F_HI = 20000
-let pos = 0, dirty = true
-const freqEl = document.getElementById("freq")
-const posToFreq = (p) => F_LO + p * (F_HI - F_LO)
-const NOTE = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
-const noteName = (f) => { const k = Math.round(69 + 12 * Math.log2(f / 440)); return NOTE[((k % 12) + 12) % 12] + (Math.floor(k / 12) - 1) }
-const fmtHz = (f) => (f >= 1000 ? (f / 1000).toFixed(2) + " <small>kHz</small>" : Math.round(f) + " <small>Hz</small>")
-const setPos = (p) => {
-  pos = p < 0 ? 0 : p > 1 ? 1 : p; dirty = true
-  const f = posToFreq(pos)
-  freqEl.innerHTML = `<b style="color:#46dc78;font-weight:700;margin-right:.5em">${noteName(f)}</b>${fmtHz(f)}`
-}
-const setSharp = (p) => { if (demo.engine?.setSharpness) demo.engine.setSharpness(5 + p * 55) }
-
-const PI = Math.PI
-const GREEN = (a) => `rgba(70,220,120,${a})`
+// The figure F(x,y)=cos(nπx)cos(mπy)−cos(mπx)cos(nπy) is the COMBINATION of two standing waves: n
+// half-waves across (x), m down (y). So we drive them straight from the cursor — horizontal travel
+// sets n, vertical sets m — and you watch the two axes interfere into a nodal figure. Idle, they
+// drift on their own. n,m are integers (true eigenmodes) and kept distinct: n=m is the degenerate
+// all-nodal plate.
+const LO = 2, HI = 10
+let manual = false, manualAt = -10, nowT = 0, curN = 3, curM = 5
 
 const demo = runDemo({
   name: "chladni",
-  hint: "Chladni plate — nodal figures; the green strips are the x & y standing waves it superposes",
+  hint: "Chladni plate — drag: horizontal sets the across-wave n, vertical the down-wave m",
   size: { dpr: 2, budget: null },
   cursor: "move",
-  load: (e) => { setPos(0.35) },
-  frame: (e) => {
-    if (dirty) { e.frame(posToFreq(pos)); dirty = false }
-  },
-  // Drawn on top of the plate each frame: dark side/bottom panels framing the plate, with the
-  // mode's two component standing waves traced in green (left = y-waves, bottom = x-waves). The
-  // wave next to a plate row/column IS that row/column's 1-D displacement — they line up exactly.
-  overlay: (g, d) => {
-    const W = d.W, H = d.H, e = d.engine
-    if (!e || !e.modeN) return
-    const n = e.modeN(), m = e.modeM()
-    if (!n) return
-    const minWH = W < H ? W : H, aspX = W / minWH, aspY = H / minWH
-    const sw = Math.round(W * 0.15), sh = Math.round(H * 0.15)   // strip widths
-    const plateB = H - sh                                        // plate bottom (above x-strip)
-    const lw1 = Math.max(1.6, W * 0.0022), lw2 = Math.max(1, W * 0.0015)
-
-    // dark panels over the two strips, then a thin frame around the live plate
-    g.fillStyle = 'rgba(0,0,0,0.9)'
-    g.fillRect(0, 0, sw, H)
-    g.fillRect(0, plateB, W, sh)
-    g.strokeStyle = 'rgba(150,160,155,0.45)'; g.lineWidth = Math.max(1, W * 0.001)
-    g.strokeRect(sw + 0.5, 0.5, W - sw - 1, plateB - 1)
-
-    g.lineJoin = 'round'
-    // LEFT strip — y-component waves cos(nπy), cos(mπy) plotted as horizontal displacement vs y
-    const cxL = sw * 0.5, ampL = sw * 0.34
-    const drawY = (k, a, lw) => {
-      g.beginPath()
-      for (let py = 0; py <= plateB; py += 2) {
-        const platey = (py / H - 0.5) * aspY + 0.5
-        const x = cxL + ampL * Math.cos(k * PI * platey)
-        py ? g.lineTo(x, py) : g.moveTo(x, py)
-      }
-      g.strokeStyle = GREEN(a); g.lineWidth = lw; g.stroke()
+  frame: (e, t) => {
+    nowT = t
+    if (manual && t - manualAt > 6) manual = false
+    if (!manual) {
+      curN = LO + Math.round((HI - LO) * (0.5 - 0.5 * Math.cos(t * 0.11)))
+      curM = LO + Math.round((HI - LO) * (0.5 - 0.5 * Math.cos(t * 0.083 + 2.0)))
     }
-    // BOTTOM strip — x-component waves cos(nπx), cos(mπx) plotted as vertical displacement vs x
-    const cyB = plateB + sh * 0.5, ampB = sh * 0.34
-    const drawX = (k, a, lw) => {
-      g.beginPath()
-      for (let px = sw; px <= W; px += 2) {
-        const platex = (px / W - 0.5) * aspX + 0.5
-        const y = cyB + ampB * Math.cos(k * PI * platex)
-        px > sw ? g.lineTo(px, y) : g.moveTo(px, y)
-      }
-      g.strokeStyle = GREEN(a); g.lineWidth = lw; g.stroke()
-    }
-    g.shadowColor = 'rgba(70,220,120,0.55)'; g.shadowBlur = Math.max(2, W * 0.004)
-    drawY(n, 0.95, lw1); drawY(m, 0.6, lw2)
-    drawX(n, 0.95, lw1); drawX(m, 0.6, lw2)
-    g.shadowBlur = 0
-
-    // tiny mode tag (n,m) where the two strips meet
-    g.fillStyle = 'rgba(70,220,120,0.95)'
-    g.font = `700 ${Math.round(sw * 0.26)}px 'Helvetica Neue',Helvetica,Arial,sans-serif`
-    g.textAlign = 'center'; g.textBaseline = 'middle'
-    g.fillText(`${n},${m}`, sw * 0.5, plateB + sh * 0.5)
+    let n = curN, m = curM
+    if (n === m) m = m < HI ? m + 1 : m - 1     // skip the degenerate n=m (whole plate nodal)
+    e.frame(n, m)
   },
 })
 
-// Drag to sweep eigenmodes (horizontal) and line sharpness (vertical). No effect on hover.
 const ptr = trackPointer(demo.cv)
-demo.cv.addEventListener("pointermove", () => { if (ptr.down) { setPos(ptr.x); setSharp(ptr.y) } })
-demo.cv.addEventListener("pointerdown", () => { setPos(ptr.x); setSharp(ptr.y) })
+const dial = () => {
+  manual = true; manualAt = nowT
+  curN = LO + Math.round((HI - LO) * ptr.x)
+  curM = LO + Math.round((HI - LO) * ptr.y)
+}
+demo.cv.addEventListener("pointerdown", dial)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) dial() })
 </script>
 </body>
 </html>

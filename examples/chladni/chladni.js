@@ -1,62 +1,29 @@
-// Chladni plate — the Camerata Lausanne generator (after Demian Conrad). A musical
-// frequency selects a square-plate eigenmode (n,m); the nodal lines — where the plate
-// is still and sand settles — are the zero set of
+// Chladni plate — the nodal figures of a vibrating square plate. A plate driven at an eigenmode is
+// still along its NODAL LINES (where sand settles); here they're the zero set of
 //   F(x,y) = cos(nπx)·cos(mπy) − cos(mπx)·cos(nπy),
-// drawn as crisp white curves on black ("black is space, white is sound"). Modes are
-// ordered by eigenfrequency √(n²+m²), so a rising frequency sweeps from the bold X+arcs
-// of (2,1) up to dense lattices. Per pixel: two cos (the y-terms hoist per row) and a
-// divide-free ridge for the line — jz's throughput sweet spot. Same source = the V8
-// baseline (imported) and the compiled wasm.
+// drawn as crisp white curves on black ("black is space, white is sound"). n is the number of
+// half-waves ACROSS the plate, m the number DOWN — so the figure is literally the COMBINATION of an
+// x-axis standing wave and a y-axis one. The host maps horizontal cursor travel to n and vertical
+// to m, so you dial the two axes independently and watch their interference lock into a figure.
+// Per pixel: two cos (the y-terms hoist per row) and a divide-free ridge — jz's throughput sweet
+// spot. Same source = the V8 baseline (imported) and the compiled wasm.
 let W = 0, H = 0, px, SC = 0, cx = 0, cy = 0   // uniform plate scale + viewport centre
-let nArr, mArr, NMODES = 0      // (n,m) mode pairs, ascending eigenfrequency √(n²+m²)
-let SHARP = 15.0                // nodal-line sharpness, pointer-controlled
-let curN = 0, curM = 0          // the mode (n,m) the last frame drew — so the host can plot its
-export let modeN = () => curN   // two component standing waves cos(nπ·) / cos(mπ·) alongside the
-export let modeM = () => curM   // plate (the x/y waves it's "taking"). Integers → jz-safe.
+let SHARP = 14.0                               // nodal-line sharpness (≈ inverse half-width)
 
 export let resize = (w, h) => {
-  // Map pixels to plate space with ONE uniform scale (no stretch): the unit plate [0,1]²
-  // fills the shorter screen side and the longer side extends the periodic figure — so the
-  // canvas can be full-screen at any aspect and the nodal lines stay perfectly square.
+  // Map pixels to plate space with ONE uniform scale (no stretch): the unit plate [0,1]² fills the
+  // shorter screen side and the longer side extends the periodic figure — so the canvas can be
+  // full-screen at any aspect and the nodal lines stay perfectly square.
   W = w; H = h; SC = 1.0 / (w < h ? w : h); cx = w * 0.5; cy = h * 0.5
   px = new Uint32Array(w * h)
-  // Enumerate distinct pairs 1 ≤ n < m ≤ 12 and insertion-sort by n²+m² (∝ eigenfreq),
-  // so frequency sweeps simple→complex figures. Integer modes ride Int32Arrays (a scalar
-  // f64 global fed these would be i32-narrowed anyway — here they ARE integers).
-  let K = 12, cap = (K * (K - 1)) >> 1
-  nArr = new Int32Array(cap); mArr = new Int32Array(cap)
-  let keys = new Int32Array(cap)
-  let cnt = 0
-  let n = 1
-  while (n <= K) {
-    let m = n + 1
-    while (m <= K) {
-      let key = n * n + m * m
-      let i = cnt
-      while (i > 0 && keys[i - 1] > key) { keys[i] = keys[i - 1]; nArr[i] = nArr[i - 1]; mArr[i] = mArr[i - 1]; i = i - 1 }
-      keys[i] = key; nArr[i] = n; mArr[i] = m; cnt = cnt + 1
-      m = m + 1
-    }
-    n = n + 1
-  }
-  NMODES = cnt
   return px
 }
 
-// `freq` (Hz-ish, ~40..20000) selects the mode: higher frequency → higher eigenmode →
-// richer nodal figure. (Adjustable/audio-driven later; here the demo sweeps it.)
-export let setSharpness = (k) => { SHARP = k }
-
-export let frame = (freq) => {
+// n = half-waves across (x), m = half-waves down (y); the host drives them from cursor x/y.
+export let frame = (n, m) => {
   let PI = Math.PI
-  let t01 = (freq - 40.0) / 19960.0
-  if (t01 < 0.0) t01 = 0.0
-  if (t01 > 1.0) t01 = 1.0
-  let idx = (t01 * (NMODES - 1) + 0.5) | 0
-  let n = nArr[idx], m = mArr[idx]
-  curN = n; curM = m              // publish the mode so the host can draw its component waves
   let nP = n * PI, mP = m * PI
-  let K = SHARP                   // nodal-line sharpness (≈ inverse half-width in f-units)
+  let K = SHARP
 
   let j = 0, py = 0
   while (py < H) {
@@ -67,8 +34,8 @@ export let frame = (freq) => {
     while (qx < W) {
       let x = (qx - cx) * SC + 0.5
       let f = Math.cos(nP * x) * cym - Math.cos(mP * x) * cyn
-      // Divide-free ridge: a sharp white core on the nodal line (f≈0) plus a wider,
-      // softer glow → the Camerata thick-white-on-black look. No per-pixel divides.
+      // Divide-free ridge: a sharp white core on the nodal line (f≈0) plus a wider, softer glow →
+      // the thick-white-on-black look. No per-pixel divides.
       let fk = f * K
       let q = 1.0 - fk * fk
       let core = q > 0.0 ? (q * q * 255.0) | 0 : 0

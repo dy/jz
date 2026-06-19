@@ -18,7 +18,6 @@ const demo = runDemo({
   name: "attractors",
   hint: "a de Jong strange attractor · click to morph it",
   size: { dpr: 1.5, budget: null },
-  wasm: "attractors.simd",
   cursor: "pointer",
   frame: (e, t) => {
     const a = base[0] + Math.sin(t * 0.05) * 0.22

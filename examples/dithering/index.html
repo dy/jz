@@ -14,10 +14,11 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // Four 1-bit dithers of the same shaded sphere — cycle automatically every few seconds, or drag
 // left↔right to pick. The pixelated backing keeps the dot pattern crisp at any window size.
-const NAMES = ["Threshold", "Ordered · Bayer 8×8", "Floyd–Steinberg", "Atkinson"]
+const NAMES = ["Threshold", "Random", "Ordered · Bayer 4×4", "Ordered · Bayer 8×8", "Clustered-dot halftone", "Floyd–Steinberg", "Jarvis–Judice–Ninke", "Atkinson"]
+const N = NAMES.length
 let mode = 0, manual = false, manualAt = -10, nowT = 0
 const algoEl = document.getElementById("algo")
-const setMode = (m) => { m = m < 0 ? 0 : m > 3 ? 3 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `${mode + 1}⁄4 &nbsp; <b style="font-weight:700">${NAMES[mode]}</b>` } }
+const setMode = (m) => { m = m < 0 ? 0 : m > N - 1 ? N - 1 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `${mode + 1}⁄${N} &nbsp; <b style="font-weight:700">${NAMES[mode]}</b>` } }
 setMode(0)
 
 const demo = runDemo({
@@ -27,13 +28,13 @@ const demo = runDemo({
   frame: (e, t) => {
     nowT = t
     if (manual && t - manualAt > 6) manual = false        // hand control back after 6s idle
-    if (!manual) setMode(Math.floor(t / 3.5) % 4)         // auto-cycle the four methods
+    if (!manual) setMode(Math.floor(t / 2.6) % N)         // auto-cycle the methods
     e.frame(t, mode)
   },
 })
 
 const ptr = trackPointer(demo.cv)
-const pick = () => { manual = true; manualAt = nowT; setMode((ptr.x * 4) | 0) }
+const pick = () => { manual = true; manualAt = nowT; setMode(Math.min(N - 1, (ptr.x * N) | 0)) }
 demo.cv.addEventListener("pointerdown", pick)
 demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
 </script>

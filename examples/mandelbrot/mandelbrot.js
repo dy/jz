@@ -7,7 +7,10 @@ const NUM_COLORS = 2048;
 const BAILOUT = 256.0;
 
 let mem;
-let viewCx = 0, viewCy = 0, viewZoom = 0;
+// View state in a Float64Array: scalar module globals init'd to 0 would be i32-NARROWED in jz, so
+// setView's fractional cx/cy/zoom would truncate to 0 and `viewZoom===0` would force the default
+// view — pan/zoom silently ignored. A typed array keeps them f64.
+let view = new Float64Array(3);   // [cx, cy, zoom]
 
 export let resize = (width, height) => {
   mem = new Uint16Array(width * height);
@@ -15,9 +18,10 @@ export let resize = (width, height) => {
 };
 export let dataOffset = () => mem;
 
-export let setView = (cx, cy, zoom) => { viewCx = cx; viewCy = cy; viewZoom = zoom; }
+export let setView = (cx, cy, zoom) => { view[0] = cx; view[1] = cy; view[2] = zoom; }
 
 export let computeLine = (y, width, height, limit) => {
+  let viewCx = view[0], viewCy = view[1], viewZoom = view[2];
   let scale, translateX, translateY;
   if (viewZoom === 0) {
     scale = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);

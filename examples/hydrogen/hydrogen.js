@@ -1,7 +1,7 @@
 // Hydrogen orbitals — the electron probability cloud of the hydrogen atom. Each eigenstate
-// ψₙₗₘ(r,θ,φ) = Rₙₗ(r)·Yₗₘ(θ,φ); we render |ψ|² in the x–z plane (φ=0) as a glowing cloud, tinted
-// by the wavefunction's PHASE (warm where ψ>0, cool where ψ<0) so the +/− lobes that make a p a
-// dumbbell and a d a cloverleaf are visible. `sel` (a fractional orbital index) cross-dissolves
+// ψₙₗₘ(r,θ,φ) = Rₙₗ(r)·Yₗₘ(θ,φ); we render |ψ|² in the x–z plane (φ=0) as a glowing grayscale cloud
+// (white where the electron is most likely) — the dark nodal surfaces between the bright lobes are
+// what make a p a dumbbell and a d a cloverleaf. `sel` (a fractional orbital index) cross-dissolves
 // through a curated tour — 1s → 2s → 2p → 3s → 3p → 3d → 4f — so it morphs continuously.
 //
 // The real orbitals are hard-coded analytic forms (a₀=1, un-normalized — resize() finds each one's
@@ -67,7 +67,6 @@ export let frame = (t, sel) => {
   let frac = sel - i0
   let s0 = scaleOf(i0), s1 = scaleOf(i1)
   let in0 = 1.0 / norm[i0], in1 = 1.0 / norm[i1]
-  let domHi = frac >= 0.5                         // which orbital owns the phase color this pixel
   let aspect = W / H
 
   let py = 0
@@ -92,21 +91,13 @@ export let frame = (t, sel) => {
       let b1 = p1 * p1 * in1
 
       let b = b0 * (1.0 - frac) + b1 * frac
-      let pdom = domHi ? p1 : p0
 
       let v = b > 1.0 ? 1.0 : b
       v = Math.pow(v, 0.45)                         // lift the faint outer cloud
+      let g = (v * 255.0) | 0                        // grayscale density — white cloud on black
+      if (g > 255) g = 255
 
-      let rr = 0.0, gg = 0.0, bb = 0.0
-      if (pdom >= 0.0) { rr = v * 255.0; gg = v * 150.0; bb = v * 70.0 }   // ψ>0 → warm
-      else { rr = v * 70.0; gg = v * 150.0; bb = v * 255.0 }              // ψ<0 → cool
-      let core = v * v * v * 130.0                  // white-hot dense core
-      rr = rr + core; gg = gg + core; bb = bb + core
-      if (rr > 255.0) rr = 255.0
-      if (gg > 255.0) gg = 255.0
-      if (bb > 255.0) bb = 255.0
-
-      px[py * W + qx] = (255 << 24) | ((bb | 0) << 16) | ((gg | 0) << 8) | (rr | 0)
+      px[py * W + qx] = (255 << 24) | (g << 16) | (g << 8) | g
       qx++
     }
     py++

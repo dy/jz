@@ -73,6 +73,9 @@ const FRAME_ARGS = {
   'pascal-sierpinski': () => [0],
   'gauss-primes': () => [0, 0, 0],
   'domain-color': () => [0, 0.3, 0.2, 0, 0],
+  chladni:       () => [3, 5],          // (n,m) wave numbers — a clean mid-complexity figure
+  hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
+  dithering:     () => [1.0, 5],        // Floyd–Steinberg of the lit sphere
   phyllotaxis:   () => [0, GOLDEN],
   harmonograph:  () => [0, 0.06, 0.5],
   truchet:       () => [0, 30],

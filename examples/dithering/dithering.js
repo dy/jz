@@ -1,21 +1,31 @@
-// Dithering — four ways to render a smooth grayscale image with only black & white pixels.
+// Dithering — eight ways to render a smooth grayscale image with only black & white pixels.
 // A shaded sphere over a soft gradient (continuous tone, lit by a circling light) is reduced to
-// 1-bit by four classic methods, selected by `mode`:
-//   0 threshold · 1 ordered (Bayer 8×8) · 2 Floyd–Steinberg · 3 Atkinson
-// Threshold and ordered are per-pixel; the two error-diffusion passes are inherently SEQUENTIAL
-// — each pixel pushes its quantization error onto pixels not yet visited — a tight scalar sweep
-// that jz turns into clean wasm. resize(w,h) → Uint32Array; frame(t, mode) renders.
+// 1-bit by `mode`:
+//   0 threshold · 1 random · 2 ordered Bayer 4×4 · 3 ordered Bayer 8×8 · 4 clustered-dot halftone
+//   5 Floyd–Steinberg · 6 Jarvis–Judice–Ninke · 7 Atkinson
+// The threshold/random/ordered/halftone passes are per-pixel; the three error-diffusion passes
+// are inherently SEQUENTIAL — each pixel pushes its quantization error onto pixels not yet visited
+// — a tight scalar sweep that jz turns into clean wasm. resize(w,h) → Uint32Array; frame(t,mode).
+// Everything is deterministic (the "random" mode is a per-pixel hash), so JS and jz match exactly.
 
 let W = 0, H = 0, px
 let gray            // Float64Array — continuous-tone source AND the error-diffusion work buffer
-let bayer           // Int32Array(64) — 8×8 ordered-dither threshold matrix (values 0..63)
+let bayer4          // Int32Array(16) — 4×4 ordered-dither threshold matrix (values 0..15)
+let bayer8          // Int32Array(64) — 8×8 dispersed-dot threshold matrix (values 0..63)
+let halftone        // Int32Array(64) — 8×8 clustered-dot screen (ink grows as a dot from the centre)
 
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
   gray = new Float64Array(w * h)
+  bayer4 = new Int32Array([
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5
+  ])
   // Classic 8×8 Bayer matrix (recursive dispersed-dot), values 0..63.
-  bayer = new Int32Array([
+  bayer8 = new Int32Array([
      0, 32,  8, 40,  2, 34, 10, 42,
     48, 16, 56, 24, 50, 18, 58, 26,
     12, 44,  4, 36, 14, 46,  6, 38,
@@ -25,7 +35,27 @@ export let resize = (w, h) => {
     15, 47,  7, 39, 13, 45,  5, 37,
     63, 31, 55, 23, 61, 29, 53, 21
   ])
+  // Clustered-dot halftone screen: threshold lowest at each 8×8 tile's centre, rising outward, so
+  // as a region darkens the ink fills from the centre into a growing dot — the newspaper look.
+  halftone = new Int32Array(64)
+  let i = 0
+  while (i < 64) {
+    let x = i % 8, y = (i / 8) | 0
+    let fx = ((x + 0.5) / 8.0) * 2.0 - 1.0
+    let fy = ((y + 0.5) / 8.0) * 2.0 - 1.0
+    let v = Math.cos(Math.PI * fx) + Math.cos(Math.PI * fy)   // 2 at centre → −2 at corners
+    halftone[i] = (((2.0 - v) / 4.0) * 63.0) | 0              // 0 at centre (fills first)
+    i++
+  }
   return px
+}
+
+// Deterministic per-pixel hash → [0,1): an integer scramble (i32 wraps identically in JS and jz),
+// so "random" dithering is reproducible and JS/jz stay bit-exact.
+let hash01 = (x, y) => {
+  let h = (x * 1103515245 + 12345) ^ (y * 12820163 + 9301)
+  h = h & 0x7fffffff
+  return (h % 4096) / 4096.0
 }
 
 // Fill gray[] with the continuous-tone source: a Lambert-shaded sphere lit by a circling light,
@@ -75,19 +105,30 @@ export let frame = (t, mode) => {
     let i = 0
     while (i < n) { putBW(i, gray[i] >= 0.5 ? 1 : 0); i++ }
   } else if (md === 1) {
-    // Ordered dithering — compare each pixel to its Bayer-matrix threshold
+    // Random — threshold against a per-pixel hash (white-noise dither, the naive baseline)
+    let py = 0
+    while (py < H) {
+      let qx = 0
+      while (qx < W) { let idx = py * W + qx; putBW(idx, gray[idx] >= hash01(qx, py) ? 1 : 0); qx++ }
+      py++
+    }
+  } else if (md === 2 || md === 3 || md === 4) {
+    // Ordered — compare each pixel to a tiled threshold screen: Bayer 4×4, Bayer 8×8, or the
+    // clustered-dot halftone. (One loop, three screens — the matrix + tile mask differ only.)
     let py = 0
     while (py < H) {
       let qx = 0
       while (qx < W) {
         let idx = py * W + qx
-        let thr = (bayer[(py & 7) * 8 + (qx & 7)] + 0.5) / 64.0
+        let thr = md === 2 ? (bayer4[(py & 3) * 4 + (qx & 3)] + 0.5) / 16.0
+          : md === 3 ? (bayer8[(py & 7) * 8 + (qx & 7)] + 0.5) / 64.0
+          : (halftone[(py & 7) * 8 + (qx & 7)] + 0.5) / 64.0
         putBW(idx, gray[idx] >= thr ? 1 : 0)
         qx++
       }
       py++
     }
-  } else if (md === 2) {
+  } else if (md === 5) {
     // Floyd–Steinberg — push the quantization error to 4 forward neighbours (7,3,5,1)/16
     let py = 0
     while (py < H) {
@@ -102,6 +143,39 @@ export let frame = (t, mode) => {
           if (qx > 0) gray[idx + W - 1] = gray[idx + W - 1] + err * 0.1875
           gray[idx + W] = gray[idx + W] + err * 0.3125
           if (qx + 1 < W) gray[idx + W + 1] = gray[idx + W + 1] + err * 0.0625
+        }
+        putBW(idx, on)
+        qx++
+      }
+      py++
+    }
+  } else if (md === 6) {
+    // Jarvis–Judice–Ninke — a wider 12-neighbour diffusion (/48) → smoother gradients, less texture
+    let py = 0
+    while (py < H) {
+      let qx = 0
+      while (qx < W) {
+        let idx = py * W + qx
+        let old = gray[idx]
+        let on = old >= 0.5 ? 1 : 0
+        let e = (old - on) / 48.0
+        if (qx + 1 < W) gray[idx + 1] = gray[idx + 1] + e * 7.0
+        if (qx + 2 < W) gray[idx + 2] = gray[idx + 2] + e * 5.0
+        if (py + 1 < H) {
+          let r = idx + W
+          if (qx - 2 >= 0) gray[r - 2] = gray[r - 2] + e * 3.0
+          if (qx - 1 >= 0) gray[r - 1] = gray[r - 1] + e * 5.0
+          gray[r] = gray[r] + e * 7.0
+          if (qx + 1 < W) gray[r + 1] = gray[r + 1] + e * 5.0
+          if (qx + 2 < W) gray[r + 2] = gray[r + 2] + e * 3.0
+        }
+        if (py + 2 < H) {
+          let r = idx + 2 * W
+          if (qx - 2 >= 0) gray[r - 2] = gray[r - 2] + e * 1.0
+          if (qx - 1 >= 0) gray[r - 1] = gray[r - 1] + e * 3.0
+          gray[r] = gray[r] + e * 5.0
+          if (qx + 1 < W) gray[r + 1] = gray[r + 1] + e * 3.0
+          if (qx + 2 < W) gray[r + 2] = gray[r + 2] + e * 1.0
         }
         putBW(idx, on)
         qx++
