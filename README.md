@@ -538,4 +538,10 @@ Small & fast JS subset → full JS spec & bundled engine:
 * [**watr**](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into valid `.wasm`.
 
 
+## Contributing
+
+Setup, code layout, and the bench/perf invariants are in [CONTRIBUTING.md](docs/CONTRIBUTING.md);
+the architecture & design rationale (NaN-boxing, type inference, native pipeline) in [DESIGN.md](docs/DESIGN.md).
+
+
 <p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>

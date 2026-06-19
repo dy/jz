@@ -11,23 +11,29 @@ Method: 6-lens research workflow (audience / first-visit questions / positioning
 proof-credibility / discoverability) → synthesis → adversarial stress-test → revision, then
 **manual verification of the load-bearing claims** against the real repo (below).
 
+**Canonical:** this doc is the project's single source of truth for audience & personas (§1).
+Sibling docs: [`ecosystem.md`](ecosystem.md) = expansion / integration / channel map;
+[`../docs/DESIGN.md`](../docs/DESIGN.md) = technical design record.
+
 ---
 
-## Overlap with `.work/research.md` (the pre-existing audience notes)
+## Audience reconciliation — earlier notes → personas
 
-Two lenses, complementary — not duplicates:
+This section folds the project's **earlier audience notes** (the former `research.md` NICE
+list, now consolidated here; `ecosystem.md` §4's reach map) into the conversion-ranked
+personas of §1. Two lenses, complementary — not duplicates:
 
-| research.md says | This doc says | Relationship |
+| Reachable audience (broader notes) | This doc (conversion priority) | Relationship |
 |---|---|---|
 | **Web Audio / DSP** community (bytebeat demo) | **#1 persona: Web-Audio/DSP kernel authors** | **Agree** — strongest fit. This doc adds *why* (AudioWorklet 2ms budget, GC glitch) and that the page is currently silent for them. |
 | **Edge compute** (EdgeJS, CF Workers, Deno) | de-prioritized for the page | **Diverge by goal.** Most edge work is async/IO — *out of jz's subset*. The numeric-on-edge slice is real but narrow and hard to discover. Watch, don't shape the page around it. |
 | **Game jams / JS13K** (1–2 kB output) | de-prioritized for the page | **Diverge by goal.** Tiny-wasm size is a genuine *shareable hook*, but jam code is thrown away → low real-adoption conversion, and it's bursty (annual). Keep as a demo, not a page persona. |
 | **Porffor community** (education done) | "ignore for page" (compiler-curious) | **Agree-ish.** Reachable, but they star/discuss; they rarely ship a kernel. Serve on the bench page. |
-| **README "four/five visitor classes"** (Skeptic, Curious explorer, Pragmatist, Embedder, Language/compiler) | **First-visit questions** (5s/30s/2min) | **Complementary.** research.md models *reading-mode* (what a reader scans for); this doc models *who to optimize for* + *attention-horizon ordering*. A DSP author arrives in "Pragmatist" mode. **Finding: that excellent reader-class model is applied in the README but NOT on the landing page.** |
+| **README "four/five visitor classes"** (Skeptic, Curious explorer, Pragmatist, Embedder, Language/compiler) | **First-visit questions** (5s/30s/2min) | **Complementary.** The README models *reading-mode* (what a reader scans for); this doc models *who to optimize for* + *attention-horizon ordering*. A DSP author arrives in "Pragmatist" mode. **Finding: that excellent reader-class model is applied in the README but NOT on the landing page.** |
 
-Net: research.md answers *"who can be reached"*; this doc answers *"who to optimize the page for,
-given the real-adoption goal."* Both valid. The audience bullets there are a reachability list; the
-personas here are a conversion-priority ranking.
+Net: the broader notes answer *"who can be reached"*; the §1 personas answer *"who to optimize
+the page for, given the real-adoption goal."* This doc holds both — reachability as context,
+conversion-priority as the decision.
 
 ---
 

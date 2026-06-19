@@ -4,6 +4,14 @@ Answers the todo "AS ecosystem audit" plus the wider question: where does jz
 overlap the WASM/JS ecosystem, what examples make it undeniable, and how does it
 become known across the dev spectrum.
 
+> **Status (2026-06).** The example/gallery axis is largely **shipped** (~70
+> demos in `examples/`, the `floatbeat/` playground, the `repl/` WAT REPL — see
+> §2). The live expansion items are now **integration & reach**, not more demos:
+> `unplugin-jz`, dogfooding the author's libs, the unifying playground site,
+> embedded-MCU (§3.6), and two remaining flagship kernels (CHIP-8, QOI). Audience
+> **personas** are canonical in [`marketing.md`](marketing.md); this doc is the
+> **expansion map** (overlap, integration surfaces, channels).
+
 ---
 
 ## 0. The lens (everything below is judged against this)
@@ -124,44 +132,16 @@ Source: <https://www.assemblyscript.org/built-with-assemblyscript.html>
 
 ---
 
-## 2. Astonishing examples (have 3, this is the next batch)
+## 2. Astonishing examples — gallery shipped, two flagships open
 
-Current: game-of-life, interference, mandelbrot — all canvas + integer/float
-loops. Solid but conventional. Each example folder is `kernel.js` + `build.mjs` +
-`index.html` + `test.mjs`; reuse that shape.
-
-Ranked by astonishment × fit × effort. Tier 1 = build next.
-
-### Tier 1 — flagships
-
-**A. Strange attractors** (Clifford / de Jong / Lorenz).
-A 2-line float formula iterated millions of times paints a luminous structure.
-Pure f64 — jz's literal sweet spot. The toggle is dramatic: 5M points/frame is a
-slideshow as JS, smooth as jz-WASM. Tweetable source, mathematical beauty.
-*Whoa:* "this entire galaxy is four lines of arithmetic."
-
-**B. Floatbeat / bytebeat playground** (already on the roadmap — make it the flagship).
-A one-liner `t => (t*((t>>12|t>>8)&63&t>>4))` becomes music; floatbeat (f64 in
-[-1,1]) is jz's home turf. Type formula → hear sound, sample-accurate in an
-AudioWorklet, compiled live (jz compiles faster than the audio buffer drains).
-This is the single best vibecoder/musician hook and it doubles as the live-coding
-proof. Shareable permalinks per formula.
-
-**C. Software path tracer / SDF raymarcher** ("Shadertoy on the CPU, but fast").
-A weekend-raytracer or SDF march loop in plain JS, progressive accumulation.
-Astonishing precisely because "CPU ray tracing is supposed to be slow in JS." AS
-ships as-smallpt; jz does it in *plain JS* and toggles against itself.
-
-### Tier 2 — strong, build after Tier 1 lands
-
-**D. Reaction-diffusion (Gray-Scott) / Lenia.** Continuous cellular automata —
-Gray-Scott grows Turing patterns, Lenia grows things that look *alive*. Per-pixel
-convolution per frame = compute-bound and mesmerizing. Lenia is the jaw-dropper.
-
-**E. Boids / flow-field particles.** The canonical generative-art piece
-(mattdesl / Tyler Hobbs territory): a simplex-noise flow field driving 100k+
-particles. The particle count you can push live *is* the benchmark. Speaks
-directly to the generative-art audience.
+The "next batch" has largely **shipped**: the gallery now spans ~70 demos in
+`examples/` — attractors + lorenz (was A), raymarcher + raytrace (C), diffusion +
+lenia (D), boids + swarm + slime (E), dithering (I), rfft spectrogram (H), and
+many more — plus the floatbeat playground (`floatbeat/`, B) and a WAT-showing
+REPL (`repl/`). Each is a `kernel.js` + `build.mjs` + `index.html` + `test.mjs`
+folder carrying the JS⇆jz-WASM toggle. The example axis is **no longer the gap**;
+two high-value kernels remain unbuilt, each worth it for the specific argument it
+wins:
 
 **F. CHIP-8 (or tiny Game Boy-ish) emulator core.** An emulator CPU loop is pure
 integer dispatch — jz's floor. CHIP-8 is a few hundred readable lines and runs
@@ -173,18 +153,6 @@ QOI's reference is ~300 lines of simple logic, trivially in-subset. Competes
 head-on with surma's hand-WAT `miniqoi` (904 B) on *size* while staying readable
 JS. Drag an image → watch it encode. Ties into the user's color-space work.
 
-**H. Real-time FFT spectrogram.** ✅ Shipped — `examples/rfft/`. Floatbeat tune →
-jz-computed split-radix RFFT → scrolling **log/mel spectrogram** (A-weighted per
-IEC 61672, equal-octave log scale by default — pitch-faithful for musicians — mel
-one click away) with the momentary waveform overlaid and wavefont peak-hold bars.
-DSP staple, compute-bound, real-time; squarely jz's primary (audio/DSP) audience —
-and the kernel where the compiler's auto i32-index narrowing makes idiomatic source
-beat V8 (§0).
-
-**I. Dithering & convolution filters** (Floyd-Steinberg, ordered/Bayer, blur,
-edge-detect). Drag image → instant filter. Dithering is visually striking and
-retro-flavored (funky-coder bait); per-pixel compute.
-
 ### Cross-cutting demo pattern — the toggle and the gallery
 
 - Every demo ships a **"JS ⇆ jz-WASM" switch** that swaps engines on the *same
@@ -194,18 +162,17 @@ retro-flavored (funky-coder bait); per-pixel compute.
   and let it land where it lands (jz wins transcendental-heavy work, ties/loses
   pure-arithmetic loops to V8's JIT). The proof is "same source ⇆ 9 KB WASM,"
   not a fabricated speedup.
-  - ✅ **Shipped & verified:** the switch + FPS/ms HUD is wired into
-    `examples/{game-of-life,interference,mandelbrot}` and a new
+  - ✅ **Shipped & verified:** the switch + FPS/ms HUD (shared loader/HUD in
+    `examples/lib/jzdemo.js`) is the gallery standard across `examples/`, incl.
     `examples/rfft/` (floatbeat tune → live jz-computed spectrogram + waveform
     overlay + wavefont bars + click-to-shuffle + live code panel). The HUD's FPS
     line is a **linefont sparkline** (each glyph a sample, ligatures join them
     into a continuous chart) on an absolute scale, so it tracks the true fps level
-    and steps when the engine is swapped. Shared loader/HUD in
-    `examples/lib/jzdemo.js`; `npm run build:examples` is green.
-- The **vehicle** that makes the world know jz is **one playground site**:
-  gallery (A,C,D,E,F,I) + floatbeat (B) + a REPL that shows produced WAT, every
-  item a shareable permalink. The demo *is* the marketing. There is no
-  `playground/` or `repl/` dir yet — this is greenfield.
+    and steps when the engine is swapped. `npm run build:examples` is green.
+- The **remaining greenfield** is the unifying **playground site**: one URL that
+  threads the gallery + floatbeat + the WAT REPL into shareable permalinks. The
+  pieces exist (`examples/`, `floatbeat/`, `repl/`); the single front door that
+  makes the world know jz does not yet. The demo *is* the marketing.
 
 ---
 
@@ -314,7 +281,7 @@ one point in a field jz fits natively because pure modules emit import-free WASM
 - **Cloudflare Workers / Fastly Compute / Deno / Wasmtime / Wasmer / Spin** —
   "write a fast edge function in JS, ship standalone WASI WASM."
 - Affect: jz becomes the no-Rust on-ramp for the edge-WASM crowd that explicitly
-  doesn't want to learn Rust/C (noted in research.md).
+  doesn't want to learn Rust/C (noted in marketing.md).
 
 ### 3.4 WASM-4 fantasy console — *fun, viral, an actual gap*
 WASM-4 supports AS, C, D, Go, Nim, Odin, Rust, Zig, WAT — **no plain-JS path**
@@ -384,6 +351,10 @@ the most credible benchmark: the author's published libs measurably faster.
 
 ## 4. Promotion across the dev spectrum
 
+Reach/channel map across the full spectrum (the conversion-ranked persona detail —
+desires, objections, ship-likelihood — is canonical in [`marketing.md`](marketing.md)
+§1; this table is the broader who-to-reach-and-where view).
+
 | Audience | Hook | Vehicle | Where they live |
 |---|---|---|---|
 | **Serious devs** | "Compile your hot path to WASM without leaving JS" | unplugin-jz, AudioWorklet, QOI codec, bench post (native-C parity) | HN "Show HN", lobste.rs, perf blogs |
@@ -399,23 +370,23 @@ the demo itself.
 
 ---
 
-## 5. Recommended next actions (minimal first cut)
+## 5. Recommended next actions (reconciled)
 
-1. **Close the AS-parity todo** with the §1 verdict: no test port; add 2–3 AS
-   showcase kernels (path tracer, emulator core, a codec) to `bench/`/`examples/`.
-2. **Build Tier-1 examples** A (attractors) and C (path tracer) — both reuse the
-   existing `build.mjs` + canvas pattern and need no new infra. ✅ The JS↔WASM
-   toggle is already wired into the three existing demos, plus a new RFFT
-   spectrogram demo (`examples/rfft/`) where the compiler's auto i32-index narrowing
-   makes idiomatic source beat V8 1.69–1.74× on the FFT kernel —
-   `examples/rfft/bench.mjs`.
-3. **Floatbeat playground (B)** — already roadmapped; promote to flagship, it's
-   the vibecoder + live-coding + audio proof in one artifact.
-4. **`unplugin-jz`** — highest-leverage integration; turns jz into a drop-in build
-   speedup with zero workflow change.
-5. **Dogfood** color-space / digital-filter / web-audio-api as the trust anchor.
+1. **AS-parity todo — closed** per the §1 verdict (no test port). The AS showcase
+   kernels still worth adding to `bench/`/`examples/` are an emulator core (F) and
+   a codec (G/QOI).
+2. **Examples — shipped.** Attractors, raymarcher, diffusion/lenia, boids, rfft,
+   dithering and ~60 more are live in `examples/`, all carrying the JS↔WASM toggle;
+   the RFFT kernel beats V8 1.69–1.74× via auto i32-index narrowing
+   (`examples/rfft/bench.mjs`).
+3. **Floatbeat playground — shipped** (`floatbeat/`): the vibecoder + live-coding +
+   audio proof in one artifact.
+4. **`unplugin-jz`** — still the highest-leverage *open* integration; turns jz into
+   a drop-in build speedup with zero workflow change.
+5. **Dogfood** color-space / digital-filter / web-audio-api as the trust anchor —
+   still open, and (with unplugin) the move that manufactures real-adoption proof.
+6. **Unifying playground site** — thread the shipped gallery + floatbeat + REPL into
+   one shareable front door (§2).
 
 Out of scope, explicitly: blockchain/smart-contract anything; porting AS's unit
 tests; chasing full-app frameworks (jz is for kernels, not UIs).
-</content>
-</invoke>

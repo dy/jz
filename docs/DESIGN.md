@@ -1,3 +1,15 @@
+# jz — design & architecture
+
+The decided architecture and design rationale behind jz: representation, allocator,
+type inference, the native pipeline, and the principles that fix them. Status markers
+in headings: **[x]** = decided / reflected in the code, **[ ]** = designed or deferred.
+
+Audience & persona material lives in [`.work/marketing.md`](../.work/marketing.md)
+(canonical) and the expansion map in [`.work/ecosystem.md`](../.work/ecosystem.md);
+this document is the technical record.
+
+---
+
 ## [x] Vision & goal
 
 > **jz = JS as it should have been → WASM**
@@ -49,32 +61,6 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   4. **Immediacy** — compilation is interactive, not a build step.
   5. **Tiny footprint** — kilobytes, not megabytes. No runtime, no wrappers.
   6. **Elegance** — compiler itself is minimal and clean. <2K lines.
-
-## [x] Key audiences (NICE)
-
-  1. **Audio/DSP developers** (primary)
-     - _Needs_: real-time processing, no GC pauses
-     - _Interests_: JS syntax for compute kernels, worklet-ready output
-     - _Concerns_: latency, deterministic execution
-     - _Expectations_: replaces hand-written DSP with JS
-
-  2. **JS developers wanting performance**
-     - _Needs_: native speed for hot paths
-     - _Interests_: no learning curve, instant compilation
-     - _Concerns_: constraints, JS divergences
-     - _Expectations_: write JS → get WASM
-
-  3. **Embedded / plugin developers**
-     - _Needs_: small sandboxed compute modules
-     - _Interests_: kilobyte output, no runtime
-     - _Concerns_: output size, security boundary
-     - _Expectations_: WASM for microcontrollers and browsers
-
-  4. **Creative / live coders**
-     - _Needs_: real-time compilation during performance
-     - _Interests_: in-browser compile, instant feedback
-     - _Concerns_: compilation speed, expressiveness
-     - _Expectations_: compile-on-keystroke
 
 ## [x] Paradigm shift -> WASM as live medium, not build artifact
 
@@ -136,7 +122,6 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Transparent, but clever
   * Uncompromised performance.
 
-
 ## [x] Applications -> Audio/DSP, real-time compute
 
   * Digital filter DSP (array processing, in-place mutation)
@@ -146,7 +131,6 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Game physics/math kernels
   * Embedded scripting (IoT, microcontrollers)
   * Plugin systems (safe sandboxed compute)
-
 
 ## [x] Alternatives
 
@@ -290,13 +274,6 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * All types resolved at compile-time. No runtime dispatch.
 
 ## [x] Pointers -> i32 internal, boundary wraps (see Data representation above)
-
-## [x] Imports -> Pre-bundled source, primitives-only linking
-
-  * Resolution = host responsibility. Compilation = jz responsibility (no I/O).
-  * CLI: fs + importmap. API: `modules` option. WASM: pre-bundled format.
-  * Bundle into single WASM (default). Primitives-only linking for numeric leaf modules.
-  * Circular imports prohibited. Named exports + re-export.
 
 ## [ ] Host APIs -> WASI + shim
 
@@ -459,13 +436,6 @@ when*. Read it before adding a new consumer.
   * NaN-boxing pointer kinds (7 types)
   * Compile-time rational simplification
 
-## Audiences
-
-* Web Audio / DSP community — jz -e "bytebeat expression" is a natural demo. The bytebeat test exists already.
-* Edge compute (EdgeJS, CF Workers, Deno) — these communities are actively looking for ways to write WASM without learning Rust or C.
-* Game jams / JS13K — the 1-2 kB WASM output is competitive with hand-optimized JS for size categories.
-* Porffor community — they've already done the education work. jz is a different point in the design space (faster output, stricter subset).
-
 ## [ ] Optimization principle — minimal theoretical WASM, or no value
 
 > *"Nothing takes place in the universe in which some rule of maximum or minimum does not appear."* — Euler
@@ -497,84 +467,3 @@ developer adjusts nothing):
   - WASM/watr branch hints, native tail calls, SIMD where provable
   - whole-program devirtualization, SRoA, const-fold, i32/f64 narrowing
   - README *performance hints* — documentation only, advisory, never required
-
----
-
-## README audience model — the four visitor classes
-
-*(Archived from the README's trailing HTML comment — design scaffolding for who the doc serves and what each reader scans for.)*
-
-### Skeptics — "Oh great, another JS-to-WASM compiler"
-
-Seen AssemblyScript, Porffor, Javy. Looking for reasons to dismiss or take seriously.
-
-| They ask | They look for |
-|---|---|
-| Why not just AssemblyScript/Porffor? | Honest comparison with trade-offs, not sales copy |
-| What JS does it actually support? | Concrete subset, not "JS you already know" |
-| Are the benchmarks real? | Reproducible numbers, CI gating, no cherry-picking |
-| Where does it break? | Divergence list — if it's hidden, they assume the worst |
-| Is this a toy or production? | Test262 badge, self-host, bench CI |
-
-Scroll straight to Alternatives and the divergence FAQ. If either smells like marketing, they leave.
-
-### Curious explorers — "Interesting — show me something"
-
-Came from a link, not evaluating anything. Want a 30-second "aha" then a path to go deeper.
-
-| They ask | They look for |
-|---|---|
-| What is this in one sentence? | Tagline that names the thing, not the aspirations |
-| Show me it working | Opening code example — compile, call, done |
-| What's it good for? | Good-for / not-for table — tells them whether to care |
-| Something visual | Examples grid — mandelbrot, spectrogram |
-
-Read the first 20 lines and either leave or open a fold. The Language diagram is their entry point.
-
-### Pragmatists — "Can I use this for my problem?"
-
-Have a real use case — DSP, parser, numeric kernel. Need concrete answers.
-
-| They ask | They look for |
-|---|---|
-| Does it handle my case? | Good-for table + supported language list |
-| How do I pass data in/out? | Passing-data fold — numbers, arrays, strings, objects |
-| How do I deploy the output? | Deploy FAQ — .wasm in production, interop bundle |
-| What's the DX? Error messages? | Error example in Language section |
-| What doesn't work? | Divergence FAQ — upfront, not buried |
-| Can I test normally? | "Valid jz is valid JS" — use existing test runner |
-| How do I debug? | --wat flag, mentioned in FAQ entries |
-| Can I split into files? | Import/export FAQ |
-| What's the memory story? | Bump allocator FAQ — when to reset, how to share |
-
-Skip straight to Usage folds and FAQ. They need answers, not framing.
-
-### Embedders — "Can I ship this in my product?"
-
-Building a product that compiles or runs jz output. Care about weight, deps, stability.
-
-| They ask | They look for |
-|---|---|
-| How big is the runtime? | Interop bundle size — jz/interop without compiler |
-| What's the compile speed? | ~2–60 ms range — compile on the fly or AOT? |
-| Can I ship just the .wasm? | Deploy FAQ — jz/interop is the thin bridge |
-| What are the runtime dependencies? | Dependency list — currently none beyond WASM |
-| Can I run it in a worker / service worker? | "Compile in the browser or a Worker?" FAQ |
-| How stable is the output format? | "Is jz production-ready?" FAQ — pre-1.0, pin a version |
-| What's the license? | MIT — bottom of page |
-| Memory ABI for non-JS hosts? | Deploy FAQ — the _alloc/_clear exports, header layout |
-
-Read Deploy and Options carefully. They're the ones who'd read layout.js.
-
-### Language / compiler people — "How does it work internally?"
-
-Want to understand the approach, not use it. Read the source, not just the README.
-
-| They ask | They look for |
-|---|---|
-| What's the compilation model? | "How does jz work?" pipeline fold |
-| What optimizations are applied? | Optimization FAQ |
-| What's the type inference story? | "Why no type annotations?" FAQ |
-| Can it self-host? | Self-host FAQ |
-
-These people read src/ regardless. The README just needs to not lie about what's inside.

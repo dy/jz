@@ -348,9 +348,11 @@ Case-by-case summary:
 * **json: solid win.** jz beats V8 by 1.3× on runtime JSON parsing; AS
   cannot run this case.
 * **alpha: the native floor.** jz beats V8 2.0× but trails native Rust ~13×
-  (358 µs vs 27 µs) — alpha's hot path is an unsigned i32 multiply that
-  clang/rustc vectorize as SIMD i32×4 while jz still emits scalar. A known,
-  documented gap we publish rather than hide.
+  (358 µs vs 27 µs) — alpha's hot path is an unsigned i32 multiply. jz already
+  lifts it to 128-bit SIMD (an i16x8 widening byte-map); native pulls ahead on
+  width alone — 256-bit AVX2 with a fused byte multiply-add, run as native code
+  with no per-load bounds checks. The residual is the v128-vs-AVX2 ceiling, not
+  a missing pass. A known gap we publish rather than hide.
 * **watr: near parity.** jz is 1.07× slower than V8 on a 144 kB compiler
   bundle. It is one of two self-host rows (with jessie) where V8's
   profile-guided JIT tiers beat jz's AOT wasm.

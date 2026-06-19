@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Operational guide for AI agents working in this repo. Architecture, code layout, and
-conventions live in [CONTRIBUTING.md](CONTRIBUTING.md) — read it first. This file is
+conventions live in [CONTRIBUTING.md](docs/CONTRIBUTING.md) — read it first. This file is
 only the things that bite automated edits.
 
 ## Verify before claiming done

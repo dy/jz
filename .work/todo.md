@@ -110,7 +110,7 @@ correctness risk for zero measured benefit:
 - [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
   wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
   builtin actually appearing in a kernel. Owner: module/math.js (+ siblings), test/math.js.
-- [ ] **Representation carriers** (design: research.md) — jsstring internal-locals flow;
+- [ ] **Representation carriers** (design: docs/DESIGN.md) — jsstring internal-locals flow;
   boundary string cache (interop.js, by identity); schema-object field packing (i32/ptr, not
   f64-tag); typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32
   cell, not nanbox). Each blocked on a converging carrier fact + no current workload;
@@ -726,7 +726,7 @@ Supersedes the former Deferred › "Boolean ATOM tag" entry. Suite: 1813 → 182
 ### Representation carriers — foundation + done workstreams (2026-05-19/20)
 
 Per-site carrier inference. Design narrative (user surface, evidence ladder,
-what-ships-vs-what-drops, open policy questions) moved to `research.md` ›
+what-ships-vs-what-drops, open policy questions) moved to `docs/DESIGN.md` ›
 "Representation -> per-site, inferred". Open carriers stay live under `#### Representation`.
 
 * [x] **Narrowing investigation (primary).** Survey (`.work/narrow-survey.mjs`,

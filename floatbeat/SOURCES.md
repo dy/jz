@@ -1,6 +1,8 @@
-# Bytebeat / Floatbeat Collection
+# Bytebeat / Floatbeat — sources & formula reference
 
-Curated sources and classic formulas for testing jz compilation against JS baseline.
+Curated players, archives, and classic formulas behind the floatbeat playground
+(`floatbeat/`) and the bytebeat differential tests (`test/bytebeat.js`, which
+compile each formula via jz and compare against a JS `Function()` baseline).
 
 ## Sources
 
@@ -56,7 +58,9 @@ Curated sources and classic formulas for testing jz compilation against JS basel
 
 ## Classic Formulas
 
-See `formulas.js` for 24 curated formulas covering bytebeat (0-255) and floatbeat (-1..1) styles.
+The reference corpus below is exercised by `test/bytebeat.js` (each compiled via
+jz and diffed against a JS baseline: tolerance `0` for bytebeat, `1e-6` for
+floatbeat).
 
 ### Bytebeat (0-255 output)
 
@@ -90,31 +94,3 @@ See `formulas.js` for 24 curated formulas covering bytebeat (0-255) and floatbea
 25. **Noise Percussion** - Hi-hat + click pattern using high-frequency sine products.
 26. **Classic Floatbeat** - Beating sines, the quintessential floatbeat texture.
 27. **Bytebeat Anthem Float** - Xpansive+Varjohukka formula mapped to float range.
-
-## jz Tests
-
-The formulas are now integrated into the main jz test suite:
-- `test/bytebeat.js` — 24 `tst` test cases, each compiling the formula via jz and comparing against a JS `Function()` baseline.
-- `test/index.js` — imports `test/bytebeat.js` so `npm test` runs them automatically.
-
-Run: `npm test`
-
-Each test validates `t = 0..tRange-1` with tolerance `0` for bytebeat and `1e-6` for floatbeat.
-
-## jz Testing Strategy (standalone)
-
-Each formula in `formulas.js` is paired with metadata:
-- `name`: human-readable name
-- `author`: original author
-- `type`: `"bytebeat"` (0-255) or `"floatbeat"` (-1..1)
-- `src`: original C/JS formula
-- `jz`: jz-compatible function body
-- `sampleRate`: recommended playback rate (8000, 11025, 22050, 32000, 44100, 48000)
-- `tRange`: number of samples to validate
-
-The standalone test runner (`test.mjs`):
-1. Compiles the `jz` formula via `jz.compile()`
-2. Runs the compiled WASM function for `t = 0..tRange-1`
-3. Runs the same formula via JS `eval()` or `Function()`
-4. Compares outputs within tolerance (`1e-6` for floatbeat, exact for bytebeat)
-5. Reports mismatches with `t` index and expected/actual values
