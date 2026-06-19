@@ -53,8 +53,9 @@ test('bench-svg: C and Rust are always shown (reference fallback when a run drop
   is(live.find(r => r.label === 'Rust').ratio, 1.05, 'measured Rust ratio kept over snapshot')
 })
 
-test('bench-svg: reference rows (C, Rust) render as hollow rings, jz/competitors solid', () => {
+test('bench-svg: native C/Rust render the same gray ball as competitors; only jz is black', () => {
   const svg = benchSvg([{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'native C', sub: 'clang -O3', ratio: 1.13 }], 12)
-  ok(svg.includes('fill="#ffffff" stroke="#adb5bd"'), 'native C drawn as a hollow reference ring')
+  ok(!/fill="#ffffff"\s+stroke=/.test(svg), 'no hollow reference rings — every non-jz ball is the same gray')
+  ok(/<circle[^>]*fill="#adb5bd"/.test(svg), 'native C drawn as the gray competitor ball')
   ok(/<circle[^>]*fill="#000000"/.test(svg), 'jz stays a solid black ball')
 })
