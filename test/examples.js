@@ -125,6 +125,29 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'schrodinger float-index stencil bit-exact vs scalar (1536 px, 12 frames)');
 });
 
+// Toroidal-wrap stencils: diffusion's 5-point Gray-Scott and slime's 3×3 diffuse blur both index
+// neighbours with a torus wrap (`xw = x>0 ? x-1 : w-1`). The wrap-select is stride-1 in the interior
+// (1 ≤ x ≤ w-2); tryStencil treats it as a coeff-1 derived IV and PEELS the boundaries — scalar x=0
+// before the SIMD, the SIMD capped at `min(bound, rightWrapBoundary) - (lanes-1)` so no chunk reaches
+// a wrap column, the kept scalar tail finishing them. A nested-loop GUARD stops the OUTER y-loop from
+// matching (its body holds the inner x-loop). BIT-EXACT (lane-parallel stencil, no reassoc). NOTE:
+// slime seeds agents from Math.random, so a fixed randomSeed is required to compare SIMD vs scalar.
+test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-exact', () => {
+    const cases = [
+        { name: 'diffusion', min: 40, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
+        { name: 'slime', min: 10, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
+    ];
+    for (const { name, min, drive } of cases) {
+        const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
+        const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+        ok(sten >= min, `${name} wrap-stencil vectorizes (${sten} f64x2)`);
+        const run = (opts) => drive(jz(src, { ...opts, randomSeed: 42 }).exports);
+        const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+        is(simd.length, scal.length);
+        is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} wrap-stencil bit-exact vs scalar (3072 px)`);
+    }
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;

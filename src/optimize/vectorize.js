@@ -742,7 +742,11 @@ function matchBlockLoop(blockNode, opts = {}) {
       // accepts only un-inlined `$__li*` (keeps the existing recognizers byte-identical);
       // `allowInlinedLi` (gated callers only) also accepts the `__liN` marker anywhere — both are
       // pure & loop-invariant by construction (belt-and-suspenders: hasSideEffect guard).
-      const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? /__li\d/.test(c[1]) : c[1].startsWith('$__li'))
+      // Under allowInlinedLi a block preamble is loop-invariant by construction (jz hoists only
+      // invariants before the loop; IV-dependent work lives in the body), so any PURE local.set is
+      // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
+      // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
+      const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
       if (!allowPreamble || loopNode || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2])) return null
       preamble.push(c)
     }
@@ -755,7 +759,17 @@ function matchBlockLoop(blockNode, opts = {}) {
   const endIdx = loopNode.length - 1
   if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
   const incIdx = endIdx - 1
-  const incVar = matchInc1(loopNode[incIdx])
+  let incVar = matchInc1(loopNode[incIdx])
+  // CSE'd increment (gated): O3 may fold `x+1` into a body tee (the `xe = x+1` wrap) and write the
+  // increment as `x = $t` reusing it. Recover the IV when `$t` is `(tee/set $t (i32.add x 1))` in body.
+  if (!incVar && opts.allowInlinedLi) {
+    const inc = loopNode[incIdx]
+    if (isArr(inc) && inc[0] === 'local.set' && inc.length === 3 && isLocalGet(inc[2])) {
+      const copyOf = inc[2][1], iv = inc[1]
+      const findInc1 = (m) => isArr(m) && (((m[0] === 'local.set' || m[0] === 'local.tee') && m[1] === copyOf && isArr(m[2]) && m[2][0] === 'i32.add' && isLocalGet(m[2][1], iv) && constNum(m[2][2]) === 1) || m.some(findInc1))
+      if (loopNode.slice(3, incIdx).some(findInc1)) incVar = iv
+    }
+  }
   if (!incVar) return null
 
   const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
@@ -995,6 +1009,15 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
   const { incVar, bound, body, preamble } = bl   // preamble: LICM-hoisted $__li invariants
   if (body.some(hasGlobalSet)) return null
 
+  // Leaf-stencil guard: a stencil body is pure array arithmetic. A NESTED LOOP (the outer loop of a
+  // 2-D sweep, whose body contains the inner loop) or a non-$math call must NOT be lifted as a
+  // stencil — its "neighbour reads" would be the nested loop's loads, misaligned. waves/schrodinger/
+  // metaballs bodies are pure arithmetic (math calls allowed), so they pass.
+  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
+    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
+    || n.some(hasNestedLoopOrCall))
+  if (body.some(hasNestedLoopOrCall)) return null
+
   const writes = new Set()
   for (const s of body) collectWrites(s, writes)
 
@@ -1013,6 +1036,24 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
   // Element-index coefficient in the IV: 0 (loop-invariant), 1 (stride-1 affine —
   // IV, a derived IV, or either ± invariant), or null (anything else).
   const derived = new Set()
+  let needsPeel = false
+  const rightBs = []
+  const unTee = (b) => (isArr(b) && b[0] === 'local.tee' && b.length === 3) ? b[2] : b   // CSE folds x±1 into a tee
+  const isStep = (b, op) => { b = unTee(b); return isArr(b) && b[0] === op && b.length === 3 && isLocalGet(b[1], incVar) && isI32Const(b[2]) && constNum(b[2]) === 1 }
+  const isZeroGuard = (g) => isArr(g) && ((g[0] === 'i32.eqz' && isLocalGet(g[1], incVar)) || (g[0] === 'i32.eq' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0))
+  // Toroidal wrap-select: `xw = x>0?x-1:w-1` / `xe = x<w-1?x+1:0`. Fires its wrap value only at a
+  // boundary column the peel covers — LEFT (interior x-1) at x=0, RIGHT (interior x+1) at x=B.
+  // Returns null | {dir:'L'} | {dir:'R',B}. Sound for ANY B: simdBound caps at min(bound,…B)-(lanes-1)
+  // so no chunk reaches x=B (no need to prove B==bound-1, which may be hoisted out of reach).
+  const isWrapSelect = (e) => {
+    if (!isArr(e) || e[0] !== 'select' || e.length !== 4) return null
+    const g = e[3]
+    if (isStep(e[1], 'i32.sub') && ivCoeff(e[2]) === 0 && isArr(g) && g[0] === 'i32.gt_s' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0) return { dir: 'L' }
+    if (isStep(e[2], 'i32.sub') && ivCoeff(e[1]) === 0 && isZeroGuard(g)) return { dir: 'L' }
+    if (isStep(e[1], 'i32.add') && ivCoeff(e[2]) === 0 && isArr(g) && g[0] === 'i32.lt_s' && isLocalGet(g[1], incVar)) return { dir: 'R', B: g[2] }
+    if (isStep(e[2], 'i32.add') && ivCoeff(e[1]) === 0 && isArr(g) && g[0] === 'i32.eq' && isLocalGet(g[1], incVar)) return { dir: 'R', B: g[2] }
+    return null
+  }
   const ivCoeff = (n) => {
     if (isLocalGet(n)) {
       const nm = n[1]
@@ -1029,7 +1070,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
     }
     // `y*w` (inline row base, e.g. idx = y*w + x): invariant×invariant ⇒ coeff 0.
     // Any IV-dependent factor would be non-unit-stride (stride-w) ⇒ reject.
-    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
+    if (isArr(n) && (n[0] === 'i32.mul' || n[0] === 'f64.mul') && n.length === 3)
       return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
     // Float-derived index (grid loops compute the row base `y*w` in f64): the index arrives as
     // `idx = select(wrap(trunc_sat(INV + convert(x))), 0, ≠Inf)`. For an integer counter x,
@@ -1045,9 +1086,14 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
     if (isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'i32.wrap_i64' || n[0] === 'i64.trunc_sat_f64_s') && n.length === 2)
       return ivCoeff(n[1])
     if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
-    if (isArr(n) && n[0] === 'select' && n.length === 4 && isI32Const(n[2])
-        && isArr(n[3]) && n[3][0] === 'f64.ne' && isArr(n[3][2]) && n[3][2][0] === 'f64.const' && /inf/i.test(String(n[3][2][1])))
-      return ivCoeff(n[1])   // jz overflow-canon: finite (always, for grids) ⇒ the trunc branch
+    if (isArr(n) && n[0] === 'select') {
+      // Toroidal wrap-select (inline in an address or named): stride-1 interior; flag the peel.
+      const w = isWrapSelect(n)
+      if (w) { needsPeel = true; if (w.dir === 'R' && !rightBs.some(b => exprEq(b, w.B))) rightBs.push(w.B); return 1 }
+      // jz overflow-canon `select(wrap(trunc_sat(…)), 0, ≠Inf)`: finite (grids) ⇒ the trunc branch.
+      if (n.length === 4 && isI32Const(n[2]) && isArr(n[3]) && n[3][0] === 'f64.ne' && isArr(n[3][2]) && n[3][2][0] === 'f64.const' && /inf/i.test(String(n[3][2][1])))
+        return ivCoeff(n[1])
+    }
     return null
   }
   const countSets = (name) => {
@@ -1056,17 +1102,18 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
     for (const s of body) w(s)
     return k
   }
-  // Derived IVs: `c = INV + x` (coeff 1), set exactly once, first access a write.
+  // Derived IVs: `c = INV + x` (coeff 1) or a toroidal wrap-select; set exactly once, first access a
+  // write. RECURSES into nested tees — O3 CSEs `rc+x` into `(local.tee $pe (i32.add rc x))` inside a
+  // load address, reused by the store. (ivCoeff returns 1 for a wrap-select and flags needsPeel.)
   for (let pass = 0; pass < 4; pass++) {
     let added = false
-    for (const s of body) {
-      if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3
-          && !derived.has(s[1]) && fnLocals.get(s[1]) === 'i32' && countSets(s[1]) === 1
-          && ivCoeff(s[2]) === 1) {
-        let fk = null; for (const t of body) { const k = firstAccess(t, s[1]); if (k) { fk = k; break } }
-        if (fk === 'write') { derived.add(s[1]); added = true }
-      }
+    const consider = (name, def) => {
+      if (derived.has(name) || fnLocals.get(name) !== 'i32' || countSets(name) !== 1 || ivCoeff(def) !== 1) return
+      let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
+      if (fk === 'write') { derived.add(name); added = true }
     }
+    const walk = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string' && x.length === 3) consider(x[1], x[2]); for (let i = 1; i < x.length; i++) walk(x[i]) }
+    for (const s of body) walk(s)
     if (!added) break
   }
 
@@ -1187,16 +1234,27 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
   // Overshoot-safe bound: a full lanes-wide chunk [x,x+lanes) must stay < bound for
   // ANY start x (stencils start at 1). `bound-(lanes-1)` — NOT `& ~(lanes-1)`, which
   // overshoots for a non-multiple start. SIMD reads ⊆ scalar reads ⇒ no new OOB.
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes - 1]]]
+  // A toroidal-wrap stencil additionally PEELS both boundary columns scalar: cap the SIMD at
+  // `min(bound, …rightWrapBoundaries) - (lanes-1)` so no chunk reaches a right-wrap column x=B,
+  // and run x=0 scalar below (where the left wrap fires) so the SIMD starts in the wrap-free interior.
+  const simdCap = rightBs.reduce((acc, b) => ['select', cloneNode(b), acc, ['i32.lt_s', cloneNode(b), acc]], boundExpr)
+  const boundSetup = ['local.set', simdBoundName, ['i32.sub', simdCap, ['i32.const', lanes - 1]]]
   const simdBlock = ['block', simdBrkLabel,
     ['loop', simdLoopLabel,
       ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
       ...lifted,
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
       ['br', simdLoopLabel]]]
+  // Left-boundary peel for a wrap stencil: run the original scalar body once for x=0 (where the wrap
+  // takes its WRAP branch), advancing x to 1 so the SIMD starts in the wrap-free interior. Guarded so
+  // an empty loop (x ≥ bound) is untouched. Right boundary + odd tail: the kept scalar tail (blockNode).
+  const peelStmts = needsPeel
+    ? [['if', ['i32.lt_s', ['local.get', incVar], cloneNode(bound)],
+        ['then', ...body.map(cloneNode), cloneNode(bl.loopNode[bl.incIdx])]]]
+    : []
   // LICM-hoisted $__li invariants run ahead of the SIMD block (the scalar tail's
   // copy inside bl.blockNode re-runs them harmlessly — pure & loop-invariant).
-  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
+  const wrapper = ['block', ...preamble.map(cloneNode), ...peelStmts, boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }
