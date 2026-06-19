@@ -42,10 +42,10 @@ a { color: inherit; }
 /* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
    occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
 .hero { position: relative; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(9 * var(--U)); }   /* band = 9 units (720px) = 1-unit header (the menu sits here) + 8-unit grid below it; logo+title+desc+FPS+metrics land on the grid, with a spare unit below the description */
+  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(8 * var(--U)); }   /* band = 8 units (640px) = the grid; the nav floats over its top (no header band above), content sits on the grid */
 
 /* the live demo (grid-current.js's electron pulses) paints onto the grid band — exactly the grid's box */
-.grid-current { position: absolute; top: var(--U); left: calc(var(--gx-pad) - var(--grid-over)); z-index: 1; display: block;
+.grid-current { position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); z-index: 1; display: block;
   width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); pointer-events: none; opacity: 1; contain: paint; }
   /* Width = content column (--cw) + --grid-over each side (a whole multiple of 80, no half-cut) + 1px so the gradient's final major line lands inside the box; left = content-left − --grid-over so the pulses' grid runs through the content edges. top = 1 unit (below the header band), height = 8 units (640px). Explicit width because a <canvas> is a replaced element; JS reads the rect and only re-fits when the size actually changes. */
   /* plain alpha (not mix-blend-mode: screen): the pulses composite predictably over the black band +
@@ -56,7 +56,7 @@ a { color: inherit; }
    unit down (below the header band). A length (never shifts with scrollbar/viewport). The grid-current canvas
    shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
 .hero::before {
-  content: ''; position: absolute; top: var(--U); left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
+  content: ''; position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
   border-bottom: 1px solid rgba(255,255,255,.17);   /* a clean bright rule closing the cut band. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
   background-image:
     linear-gradient(rgba(255,255,255,.062) 1px, transparent 1px),
@@ -75,9 +75,9 @@ a { color: inherit; }
 }
 
 /* top bar — a 1-unit-tall header band above the grid; menu right-aligned to the content column */
-.hero-nav { position: relative; z-index: 2; flex: 0 0 auto; width: 100%; max-width: var(--colw);
+.hero-nav { position: absolute; z-index: 2; top: 20px; left: 0; right: 0; max-width: var(--colw);
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;   /* the same content column as the pitch + every section */
-  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 60px; margin-top: 20px; padding: 0 var(--padx); }   /* 60px bar + 20px top margin = 80px (1 unit) total, so the grid below is unmoved; the menu gets breathing room above it */
+  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 60px; padding: 0 var(--padx); }   /* the menu floats over the grid (absolute, top:20) */
 .hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
@@ -144,7 +144,7 @@ a { color: inherit; }
 /* stats (.mgroup/.mlabel/.mstats/.stat — number over a small label) now live in assets/site.css,
    the ONE shared definition reused by the bench strip so the two metric blocks can't drift. */
 
-.fps { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 24px; color: var(--ink); font-family: var(--font); }   /* sizes to content; 24px sparkline→number — the readout reads as one group, tighter than the gap out to the switch */
+.fps { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-family: var(--font); }   /* sizes to content; tight sparkline→number so the readout reads as one group */
 .fps-spark { width: 80px; height: 34px; display: block; }
 .fps .metric { display: inline-flex; align-items: baseline; gap: 4px; }   /* tight number↔unit */
 .fps .metric b { font-weight: 400; font-size: 20px; font-variant-numeric: tabular-nums;
@@ -174,48 +174,65 @@ a { color: inherit; }
 .engine.js .lbl-js { color: #141414; }
 .engine.jz .lbl-jz { color: #141414; }
 @media (prefers-reduced-motion: reduce) { .engine .knob { transition: none; } }
+/* <1080 — a slightly smaller switch; the full-size one reads too big once the layout tightens */
+@media (max-width: 1080px) {
+  .engine { width: 76px; height: 40px; top: -6px; }
+  .engine .knob { width: 32px; height: 32px; }
+  .engine.jz .knob { transform: translateX(36px); }
+  .engine .lbl-js, .engine .lbl-jz { width: 38px; font-size: 12px; }
+}
 
 /* below ~the content column's fit width, the bled grid can't stay whole-celled with padding → let it go full-bleed (the one place the grid may touch the edges; edge cells cut by the viewport are fine here) */
 @media (max-width: 1180px) { .grid-current, .hero::before { left: 0; width: 100%; } }
 
-/* ≤900 — the perf numbers leave their fixed 120px grid cells and just flow (gap, not grid), so they shrink with the column instead of overflowing */
-@media (max-width: 900px) {
+/* ≤1040 — the 2-col flexes + the perf numbers leave their fixed 120px grid cells and flow, so nothing clips before the stack */
+@media (max-width: 1040px) {
   .pitch { grid-template-columns: minmax(0, 1fr) auto; }
   .metrics .mstats { gap: clamp(18px, 2.6vw, 32px); }
   .metrics .stat { width: auto; }
 }
-/* ≤800 — stack: the metrics + FPS/switch drop below the description (no title-level drop) */
-@media (max-width: 800px) {
+/* ≤960 — stack: the metrics + FPS/switch wrap below the description, no title-level drop (margin-top:0) */
+@media (max-width: 960px) {
   .pitch { grid-template-columns: 1fr; row-gap: clamp(24px, 4vh, 40px); }
-  .pright { margin-top: 0; }
+  .pright { margin-top: 0; gap: 16px; }
   .metrics { margin-top: 0; min-height: 0; }
+}
+/* 721–960 — tablet: the bench numbers and the FPS/switch fit on one line, side by side */
+@media (min-width: 721px) and (max-width: 960px) {
+  .pright { flex-direction: row; flex-wrap: wrap; align-items: flex-end; justify-content: flex-start; column-gap: clamp(24px,4vw,56px); row-gap: 16px; margin-left: var(--u2); }
 }
 
 @media (max-width: 720px) {
   /* one column: the left stack (logo+title, description) then the right stack (metrics, FPS/switch) */
   .pitch { grid-template-columns: 1fr; row-gap: clamp(22px,4vh,40px); }
   .pright { margin-top: 0; }   /* no title-level drop once stacked */
-  .metrics { margin-top: 80px; margin-left: 40px; }   /* under the description, indented 40px to match it */
-  .phead { align-items: center; gap: 16px; }   /* logo + title side-by-side (row), vertically centred */
+  .cta-live { gap: 14px; }   /* tighter readout↔toggle so the cta fits within the indent */
+  .metrics .mstats { gap: 10px; }   /* tighter so the 3 stats stay on one line when indented */
+  .phead { align-items: flex-end; gap: 16px; }   /* logo + title side-by-side; title bottom-aligned to the JZ letters */
+  .metrics .mstats .stat b { font-size: 24px; }   /* lighter speed numbers on mobile */
   .logo img { width: 80px; height: 80px; margin: 0; }   /* 80px mark on mobile (1 unit) */
-  .pitch h1 { font-size: clamp(22px, 5.4vw, 30px); padding-top: 0; }   /* ~desktop size, eased down only gently on the narrowest phones; no JZ-letter drop */
-  .pitch h1 .hb { display: none; }
+  .pitch h1 { font-size: 18px; padding-top: 0; position: relative; top: -8px; }   /* fixed small size on mobile; lifted 8px to sit at the JZ letters, not below */
   .hero-nav { gap: 14px; padding: 12px var(--padx); }
   .hero-nav a.opt { display: none; }
 }
+/* ≥380 phones are wide enough that the indented metrics + FPS still fit — line them up under the description */
+@media (min-width: 380px) and (max-width: 720px) {
+  .pright { margin-left: var(--u2); }
+}
+@media (max-width: 379px) { .pitch .sub { margin-left: 0; } }   /* below 380 the stats sit flush left — bring the description with them */
 
 /* ─────────── TRY — the real REPL embedded (chrome-stripped via ?embed): edit or paste source, hit
    Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
-.try { position: relative; z-index: 3; margin-top: calc(-2 * var(--U)); padding: 0 var(--padx) clamp(40px,5vw,64px); }   /* the REPL panel rides 2 units (160px) up onto the grid band; no bg, so the blueprint shows around it */
+.try { position: relative; z-index: 3; margin-top: calc(-3 * var(--U)); padding: 0 var(--padx) clamp(40px,5vw,64px); pointer-events: none; }   /* rides up onto the grid band; no bg + click-through so the blueprint around the REPL (and its pulse shooter) stays clickable */
 .try-wrap { max-width: calc(var(--cw) + 1px); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* the shared content column (cw) + 1px so the panel's right border lands ON the content-right grid line and covers it (its left border already does) */
-.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid #1c1c25; background: #000; }
+.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid #1c1c25; background: #000; pointer-events: auto; }   /* re-enable clicks on the REPL itself (the .try section is click-through) */
 /* stacked (≤800) hero is taller, so the REPL must ride up less or it covers the FPS/switch. Placed AFTER .try so it wins the cascade. */
-@media (max-width: 800px) { .try { margin-top: 0; } }
+@media (max-width: 960px) { .try { margin-top: calc(-2 * var(--U)); } }   /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line closing the FAQ, above the examples */
 .cli { background: #000; padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
-.cli .install { font-size: clamp(13px,1.4vw,15px); }   /* smaller than the old 16–20px */
+.cli .install { font-size: clamp(14px,1.5vw,16px); }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
 .install .cmd { white-space: pre; }
 .install.caret-on .cmd::after { content: ''; display: inline-block; width: .58ch; height: 1.05em; margin-left: 2px; vertical-align: -.16em; background: currentColor; animation: caret-blink 1.06s step-end infinite; }
@@ -236,7 +253,8 @@ a { color: inherit; }
 
 /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
 .faq { background: #000; padding: clamp(36px,5vw,60px) var(--padx) clamp(28px,4vw,48px); }   /* top = pitch bottom gap; the centred install command closes the section below */
-.faq-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--U); }   /* shared content column, narrowed 1 unit (80px) each side so the FAQ reads tighter */
+.faq-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* shared content column (no extra inset) */
+@media (min-width: 721px) { .faq-wrap { padding-inline: 40px; } }   /* gentle side breathing room on tablet+ (none on phones) */
 .faq summary .fq, .faq .ans { max-width: 720px; }   /* rows + dividers span the full container; only the text is capped to a readable width */
 .faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
 .faq details { border-top: 1px solid #1c1c25; }
@@ -251,6 +269,7 @@ a { color: inherit; }
   transition: transform .24s cubic-bezier(.34,.72,.28,1.3), color .16s; }
 .faq details[open] summary .chev { transform: rotate(180deg); color: var(--ink); }
 .faq .ans { padding: 0 8px clamp(20px,2.2vw,26px) 0; font-size: 14.5px; line-height: 1.66; color: var(--soft); }
+.faq .ans p + p { margin-top: 0.7em; }   /* gentle gap between paragraphs within an answer */
 .faq details[open] .ans { animation: faq-reveal .3s cubic-bezier(.22,.6,.36,1); }
 @keyframes faq-reveal { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 /* smooth height expand/collapse where supported (Chrome 129+); elsewhere native + the fade above */
@@ -261,7 +280,7 @@ a { color: inherit; }
   .faq details[open]::details-content { block-size: auto; }
 }
 .faq .ans a { color: var(--ink); text-underline-offset: 2px; }
-.faq .ans code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
+.faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: rgba(255,255,255,.08); padding: .1em .4em; border-radius: 4px; white-space: nowrap; }
 .faq .ans b { color: var(--ink); }   /* bold call-outs read white against the soft body */
 
 /* ─────────────────────────── FOOTER ─────────────────────────── */
@@ -312,7 +331,7 @@ footer .fcol a:hover { color: #fff; }
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
         <h1>Computational JS, <br class="hb">compiled to WASM</h1>
       </div>
-      <p class="sub">Plain JavaScript → WASM, ahead-of-time. Same source, <b><span :text="v8">2.2×</span>&nbsp;faster than V8</b>. For DSP, audio, simulations, parsers.</p>
+      <p class="sub">Plain JavaScript → WASM, ahead-of-time. Same source, <b><span :text="vsv8">2.2–13.5×</span> faster than V8 JIT</b>, beats native Rust on many kernels. For DSP, audio, simulations, parsers.</p>
     </div>
 
     <div class="pcol pright">
@@ -354,40 +373,41 @@ footer .fcol a:hover { color: #fff; }
 
     <details name="faq" open>
       <summary><span class="fq">What is JZ?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans"><p><b>JavaScript Zero</b> – a minimal, modern functional JavaScript — Crockford’s “good parts”, compiled ahead-of-time to WASM. No runtime, no GC, no type annotations, unlocked SIMD.</p>
-        <p><b>Valid JZ is valid JS</b>: the same source runs in any engine, or compiles to a lean, portable <code>.wasm</code>.</p>
-        <p><b>Good for:</b> DSP, audio, simulations, parsers, hot loops.<br><b>Not for:</b> async, DOM, I/O (keep those in regular JS).</p>
+      <div class="ans"><p><b>Valid JZ is valid JS.</b> It’s the numeric core of JavaScript — Crockford’s “good parts” — compiled ahead-of-time to lean, no GC, no runtime, no annotations, SIMD-enabled, deterministic.
+        The same file runs as plain JS in any engine, or compiles unchanged to a lean, portable <code>.wasm</code>.</p>
+        <p><b>Good for:</b> DSP & audio, image & video, simulation & physics, parsers & codecs, games & demoscene, numerical & scientific computing — any compute-bound hot loop.</p>
+        <p></o><b>Not for:</b> async, server glue, DOM/UI, OOP/dynamic/polymorphic code, string-templating, allocation-heavy, I/O, anything not hot — compiling it adds zero gain, keep those in regular JS.</p>
       </div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">Why not just Rust, Go, or C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Going native means a second language, a second toolchain, and a port to keep in sync with your JS. JZ compiles existing JS codebase — same tests, same tooling — into nearly native WASM. It is runs <a href="/bench/">competitive</a> with Rust and Zig on numeric kernels. The produced WASM falls back to the JS code.</div>
+      <div class="ans">You don’t need to. Going native means a second language, a second toolchain, and a separate port to keep in sync with your JS. JZ compiles the JavaScript you already wrote and tested into near-native (or faster): competitive with Rust and Zig on numeric kernels. <a href="bench/">See the bench →</a></div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">Why no type annotations?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">JZ reads the types straight from the code: literals (<code>0</code> vs <code>0.5</code>), operators (<code>|</code> and <code>&lt;&lt;</code> force <code>i32</code>, <code>*</code>/<code>**</code> stay <code>f64</code>), typed-array element types, and how each value flows. In practice the compute path infers cleanly, hot loops are monomorphic by nature. Annotations would make it a new language (AssemblyScript); JZ stays valid JS. Anything genuinely polymorphic falls back to a dynamic value — always correct, just off the fast path.</div>
+      <div class="ans">Clean code already carries them: <code>let x = 0.5</code>, <code>Float32Array</code>, index, counter in a loop — you know the types without being told, and so does JZ. Annotations add nothing a reader (or a model) can’t already see; they just bolt a second language onto your logic. Anything genuinely dynamic falls back to a slower, always-correct path.</div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">What JS parts are supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Not the whole language — a strict modern subset, focused on compute: <code>let</code>/<code>const</code>, arrows, loops, objects, arrays, typed arrays, <code>Math</code>/<code>String</code>/<code>JSON</code>/<code>RegExp</code>; legacy <code>var</code>/<code>function</code>/<code>class</code>/<code>==</code> is lowered for you. By design: numbers are <code>f64</code> (integer-proven values <code>i32</code>), strings are UTF-8 bytes, objects are fixed-shape, no GC. Not supported: <code>async</code>/Promise, generators, the DOM, <code>fetch</code>, Node APIs — keep those in regular JS. <a href="https://github.com/dy/jz#language" target="_blank" rel="noopener">Full list →</a></div>
+      <div class="ans">Not all of it — a strict modern subset built for compute: <code>let</code>/<code>const</code>, arrows, loops, objects, arrays, typed arrays, <code>Math</code>/<code>String</code>/<code>JSON</code>/<code>RegExp</code> (legacy <code>var</code>/<code>function</code>/<code>class</code>/<code>==</code> is lowered for you). Numbers are <code>f64</code> (<code>i32</code> when provably integer), strings UTF-8, objects fixed-shape, no GC. No <code>async</code>, generators, DOM, <code>fetch</code>, or Node — those stay in regular JS. <a href="https://github.com/dy/jz#language" target="_blank" rel="noopener">Full list →</a></div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">Why not AssemblyScript or Porffor?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">AssemblyScript is a TypeScript dialect — a new language that can’t run in a JS engine. Porffor targets the full JS spec (and can’t self-host yet). JZ compiles the JavaScript you already wrote: no annotations, and faster than AssemblyScript on the bench. <a href="bench/">See the bench →</a></div>
+      <div class="ans">AssemblyScript is a TypeScript dialect — a new language that can’t run in a JS engine. Porffor chases the whole JS spec and can’t self-host yet. JZ compiles your JS as-is, no annotations — and beats AssemblyScript on the bench. <a href="bench/">See the bench →</a></div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">Can it compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Yes — JZ compiles its own source into <code>jz.wasm</code>, a JZ-compiled copy of the compiler, and CI gates every commit on that self-hosted build passing the full suite. Compiling itself is the toughest test there is: it proves JZ handles real, substantial JavaScript, not just demo kernels. <a href="https://github.com/dy/jz/actions" target="_blank" rel="noopener">See the CI →</a></div>
+      <div class="ans">Yes — and it’s the hardest test we run. JZ compiles its own source to <code>jz.wasm</code>, and CI gates every commit on that self-compiled build passing the full suite. A compiler that compiles itself handles real, substantial JavaScript — not just demo kernels. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank" rel="noopener" aria-label="self-host CI status"><img src="https://github.com/dy/jz/actions/workflows/selfhost.yml/badge.svg" alt="self-host CI status" style="height:18px;vertical-align:middle"></a></div>
     </details>
 
     <details name="faq">
       <summary><span class="fq">How do I use it?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">It slots into your build as a single step — via the <b>CLI</b> or the <b>JS API</b> — and emits a plain <code>.wasm</code> you load like any other module. Setup and options are on <a href="https://github.com/dy/jz" target="_blank" rel="noopener">GitHub →</a>.</div>
+      <div class="ans">One step in your build — the CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) — and out comes a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank" rel="noopener">Setup &amp; options →</a></div>
     </details>
   </div>
 </section>
@@ -452,11 +472,12 @@ const $ = id => document.getElementById(id)
 // which we fill from the fresh bench numbers so the row always reflects the latest run.
 ;(async () => {
   const m = sprae(document.querySelector('.pitch'),
-    { v8: '2.2×', asspeed: '2.6×', rust: '1.1×' })   // the 3 hero stats; the rest live on the bench strip
+    { v8: '2.2×', asspeed: '2.6×', rust: '1.1×', vsv8: '2.2–13.5×' })   // hero stats + the V8 range (geomean→peak) for the sub
   try {
     const r = await (await fetch('bench/results.json')).json()
     const s = headlineStats(r)               // shared with the bench page → identical figures
     if (s.v8) m.v8 = s.v8                     // same source, faster than V8
+    if (s.v8 && s.peak) m.vsv8 = s.v8.replace('×', '') + '–' + s.peak   // "2.2–13.5×" — typical (geomean) → peak
     if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
     if (s.rust) m.rust = s.rust              // ≈ native Rust
   } catch {}
