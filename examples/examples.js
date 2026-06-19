@@ -11,25 +11,10 @@
 // the landing hero rotates through.
 
 export const examples = [
-  // games & cellular life — interactive, emergent (most expressive first)
-  { name: 'game-of-life', title: 'Game of Life',      blurb: "Conway's Life, straight into shared pixel memory" },
-  { name: 'sand',         title: 'Falling Sand',      blurb: 'falling-sand automaton — pour sand, water & walls' },
-  { name: 'lenia',        title: 'Lenia',             blurb: 'continuous cellular automaton — smooth-kernel “digital life”' },
-  { name: 'slime',        title: 'Slime Mold',        blurb: 'Physarum slime mold — agents grow transport networks' },
-  { name: 'dla',          title: 'DLA',               blurb: 'diffusion-limited aggregation — a random-walk crystal' },
-  { name: 'diffusion',    title: 'Reaction–Diffusion', blurb: 'Gray–Scott — organic coral & labyrinths' },
-  { name: 'maze',         title: 'Maze',              blurb: 'recursive-backtracker maze, then BFS solve' },
-  { name: 'wireworld',    title: 'Wireworld',         blurb: 'a 4-state CA that races electrons along wires' },
-  { name: 'rule30',       title: 'Rule 30',           blurb: "Wolfram's elementary CA — one rule, endless aperiodic complexity" },
-  { name: 'ising',        title: 'Ising Model',       blurb: 'Metropolis spin flips — magnetic domains order & melt through Tc' },
-  { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — a spanning cluster snaps in at p_c' },
-  // swarms & gravity
   { name: 'nbody',        title: 'N-body',            blurb: '1024-body gravity — pairwise attraction', show: true },
   { name: 'boids',        title: 'Boids',             blurb: 'Reynolds flocking — cohesion, alignment, separation; the cursor is a hawk', show: true },
   { name: 'swarm',        title: 'Swarm',             blurb: 'flies that chase and circle the cursor' },
-  // chladni
   { name: 'chladni',      title: 'Chladni',           blurb: 'Camerata plate — frequency sweeps the nodal figure', show: true },
-  // mandelbrot & escape-time fractals
   { name: 'mandelbrot',   title: 'Mandelbrot',        blurb: 'escape-time fractal with smooth coloring' },
   { name: 'julia',        title: 'Julia',             blurb: 'z² + c — a fractal that morphs as you steer c', show: true },
   { name: 'buddhabrot',   title: 'Buddhabrot',        blurb: 'density of Mandelbrot escape orbits — a luminous nebula accumulates' },
@@ -37,7 +22,7 @@ export const examples = [
   { name: 'newton',       title: 'Newton Fractal',    blurb: "Newton's method on z³−1 — basins of attraction meet on a fractal edge" },
   { name: 'lyapunov',     title: 'Lyapunov',          blurb: 'Markus–Lyapunov “zircon” — order in gold, chaos in dark' },
   { name: 'domain-color', title: 'Domain Coloring',   blurb: 'a complex function as an analytic landscape — zeros sink dark, poles flare bright' },
-  // physics simulators
+  { name: 'fern',         title: 'Barnsley Fern',     blurb: 'the chaos game on four affine maps grows a fern that sways' },
   { name: 'sph',          title: 'SPH Fluid',         blurb: 'SPH particle fluid — smoothed-particle hydrodynamics' },
   { name: 'lbm',          title: 'Lattice-Boltzmann', blurb: 'lattice-Boltzmann flow — a von Kármán vortex street' },
   { name: 'cloth',        title: 'Cloth',             blurb: 'Verlet spring-mass cloth — grab and swing it' },
@@ -47,7 +32,6 @@ export const examples = [
   { name: 'interference', title: 'Interference',      blurb: 'two-source wave field, recomputed every frame' },
   { name: 'schrodinger',  title: 'Schrödinger',       blurb: 'a quantum wavepacket diffracts through a double slit and tunnels' },
   { name: 'erosion',      title: 'Erosion',           blurb: 'hydraulic erosion — rain carves a fractal terrain' },
-  // fields, attractors & curves
   { name: 'plasma',       title: 'Plasma',            blurb: 'FBM domain-warp — the classic flowing plasma', show: true },
   { name: 'lorenz',       title: 'Lorenz',            blurb: 'the butterfly that launched chaos theory — a strange attractor in 3D', show: true },
   { name: 'attractors',   title: 'Attractors',        blurb: 'de Jong map — millions of iters into luminous curves' },
@@ -59,17 +43,25 @@ export const examples = [
   { name: 'epicycles',    title: 'Fourier Epicycles', blurb: 'a chain of rotating circles redraws a curve — the DFT made visible' },
   { name: 'bifurcation',  title: 'Bifurcation',       blurb: "the logistic map's period-doubling cascade into chaos" },
   { name: 'times-table',  title: 'Times Tables',      blurb: 'chords i→i·k mod N draw cardioids, nephroids and beyond', show: true },
-  // growth, tilings & number art
-  { name: 'fern',         title: 'Barnsley Fern',     blurb: 'the chaos game on four affine maps grows a fern that sways' },
-  { name: 'lsystem',      title: 'L-Systems',         blurb: 'string-rewriting grammars draw Koch, the dragon, and growing plants' },
   { name: 'apollonian',   title: 'Apollonian Gasket', blurb: "Descartes' circle theorem packs circles within circles, forever" },
   { name: 'truchet',      title: 'Truchet Tiles',     blurb: 'two random arc tiles assemble into endless flowing labyrinths' },
   { name: 'penrose',      title: 'Penrose Tiling',    blurb: 'golden-ratio deflation — aperiodic order with five-fold symmetry' },
   { name: 'hyperbolic',   title: 'Hyperbolic Tiling', blurb: "a tessellation of the Poincaré disk — Escher's Circle Limit" },
+  { name: 'lsystem',      title: 'L-Systems',         blurb: 'string-rewriting grammars draw Koch, the dragon, and growing plants' },
   { name: 'ulam',         title: 'Ulam Spiral',       blurb: 'primes on a square spiral — diagonals of prime-rich quadratics' },
   { name: 'pascal-sierpinski', title: 'Pascal mod p', blurb: "Pascal's triangle mod p — mod 2 is Sierpiński, primes remix it" },
   { name: 'gauss-primes', title: 'Gaussian Primes',   blurb: 'primes of ℤ[i] in the plane — eightfold-symmetric constellations' },
-  // painterly & ray
+  { name: 'diffusion',    title: 'Reaction–Diffusion', blurb: 'Gray–Scott — organic coral & labyrinths' },
+  { name: 'game-of-life', title: 'Game of Life',      blurb: "Conway's Life, straight into shared pixel memory" },
+  { name: 'sand',         title: 'Falling Sand',      blurb: 'falling-sand automaton — pour sand, water & walls' },
+  { name: 'lenia',        title: 'Lenia',             blurb: 'continuous cellular automaton — smooth-kernel “digital life”' },
+  { name: 'slime',        title: 'Slime Mold',        blurb: 'Physarum slime mold — agents grow transport networks' },
+  { name: 'dla',          title: 'DLA',               blurb: 'diffusion-limited aggregation — a random-walk crystal' },
+  { name: 'maze',         title: 'Maze',              blurb: 'recursive-backtracker maze, then BFS solve' },
+  { name: 'wireworld',    title: 'Wireworld',         blurb: 'a 4-state CA that races electrons along wires' },
+  { name: 'rule30',       title: 'Rule 30',           blurb: "Wolfram's elementary CA — one rule, endless aperiodic complexity" },
+  { name: 'ising',        title: 'Ising Model',       blurb: 'Metropolis spin flips — magnetic domains order & melt through Tc' },
+  { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — a spanning cluster snaps in at p_c' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'wet-paper pigment diffusion with edge darkening' },
   { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — drop ink, comb it into swirls' },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray-sphere intersection' },

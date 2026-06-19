@@ -161,6 +161,22 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 </section>
 
 </main>
+<footer>
+  <div class="fwrap">
+    <a class="wordmark" href="../" aria-label="jz — home"><img src="../jz.svg" width="40" height="40" alt="jz"></a>
+    <nav class="fcol">
+      <a href="../repl/">repl</a>
+      <a href="../examples/">examples</a>
+      <a href="../bench/">bench</a>
+    </nav>
+    <nav class="fcol">
+      <a href="https://github.com/dy/jz">github</a>
+      <a href="https://www.npmjs.com/package/jz">npm</a>
+      <a href="https://github.com/dy/jz/issues">issues</a>
+    </nav>
+    <div class="legal">MIT · <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></div>
+  </div>
+</footer>
 
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
@@ -301,10 +317,13 @@ const renderGeomean = () => {
       const g = geoRatio(tid)
       if (g) rows.push({ tid, band, ...t, ...g })
     }
-  // your-browser JS folds into the JS band as a regular row, sorted with the rest
-  // (its own geomean vs jz). The reference JZ row already anchors the baseline.
+  // your-browser rows fold into their bands as regular rows, sorted with the rest:
+  // JZ browser (your jz, = 1× like the reference JZ) and JS browser (your JS ÷ your jz).
   const yours = localGeo()
-  if (yours) rows.push({ tid: '__jslive', band: 'js', label: 'JS browser', geo: yours.geo, n: yours.n })
+  if (yours) {
+    rows.push({ tid: '__jzlive', band: 'wasm', label: 'JZ browser', geo: 1, n: yours.n, strong: true })
+    rows.push({ tid: '__jslive', band: 'js', label: 'JS browser', geo: yours.geo, n: yours.n })
+  }
   const min = Math.min(...rows.map(r => r.geo))
   const maxLin = Math.max(...rows.map(r => r.geo / min).filter(r => r <= BREAK), 1)
   let html = ''
@@ -361,12 +380,12 @@ const renderChips = () => {
 const cardRows = c => {
   const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid])
     .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r })).sort((a, b) => a.medianUs - b.medianUs)
-  // bar anchor: fastest browser-class row, so a freak-fast native row (zlib crc32)
-  // can't crush the scale; printed ratios stay vs the true fastest
+  // anchor = fastest browser-class row (≈ jz), so a freak-fast native row (zlib crc32)
+  // can't crush the scale; the printed × is vs this anchor too, so jz reads ≈ 1× and the
+  // bars, the ×, and the sort order all agree (native, being faster, shows a fraction).
   const ok = entries.filter(r => r.parity !== 'DIFF')
   const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
   const base = anchor < Infinity ? anchor : ok[0].medianUs
-  const fastest = ok[0].medianUs
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
   const lrows = l && (l.js || l.jzwasm)
@@ -376,16 +395,18 @@ const cardRows = c => {
   // one shared scale across reference + local rows, so an equal ratio is an equal
   // bar length everywhere in the card (each ratio is relative to its group's fastest)
   const maxLin = Math.max(...[...entries.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
-  let html = entries.map(r => rowHtml({
-    label: r.sub ? `${r.label} ${r.sub}` : r.label, rel: r.medianUs / base, maxLin,
-    text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / fastest)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity,
-  })).join('')
-  // your-browser rows follow as regular rows (no divider) — a different machine, so
-  // their absolute µs / × can't sort meaningfully into the reference list above
-  for (const r of lrows)
-    html += rowHtml({ label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin,
-      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity })
-  return html
+  // reference + your-browser rows in ONE list, sorted by bar ratio — so the just-measured
+  // rows land in their proper place (each ratio is vs its group's fastest ≈ jz, machine-
+  // independent), not dumped at the end. The raw µs differs by machine; the × is the compare.
+  const all = [
+    ...entries.map(r => ({ rel: r.medianUs / base, p: {
+      label: r.sub ? `${r.label} ${r.sub}` : r.label, rel: r.medianUs / base, maxLin,
+      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
+    ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
+      label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin,
+      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity } })),
+  ]
+  return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('')
 }
 
 const renderCards = () => {
