@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz repl — JS → WASM, compiled in your browser</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
-<!-- ?embed (the landing iframes this) → full-black, chrome-stripped. Set before paint, no white flash. -->
+<!-- ?embed (the landing iframes this) → drops the masthead. The page is dark either way now. -->
 <script>new URLSearchParams(location.search).has('embed') && document.documentElement.classList.add('embed')</script>
 <style>
-/* ── Swiss / International Typographic Style: paper-white, black ink, geometric sans ── */
-/* Jost (libre Futura) self-hosted — geometric fallback where Futura isn't installed */
+/* ── Dark, to match the site (assets/site.css is color-scheme:dark). Geometric sans chrome,
+   monospace code; one black REPL — editor (left) over a terminal (right), no white seam. ── */
 @font-face {
   font-family: Jost; font-style: normal; font-weight: 100 900; font-display: swap;
   src: url(../assets/jost.woff2) format('woff2');
@@ -18,270 +18,298 @@
 :root {
   --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ink: #000; --paper: #fff; --mid: #757575; --soft: #595959; --faint: #e8e8e8;
-  --band: #0a0a0a;
-  --padx: 32px;
+  /* ── EDITOR THEME (left pane). Light by default — a bright workbench against the dark
+     WAT/CLI on the right, which read as the "low-level" output. ?embed flips this whole
+     block back to dark (one override) so the landing's dark section stays seamless.
+     The right pane (.right) is ALWAYS dark — its colors live in its own var block. ── */
+  --ink: #1b1c1e;         /* code text */
+  --paper: #d5d8dc;       /* editor / body background — cool, fresh light gray (cassette-like), not stark white */
+  --mid: #585b5f;         /* comments */
+  --soft: #464a4e;        /* strings */
+  --faint: #bbbec2;       /* hairlines (darker than the gray bg so they show) */
+  --guide: #adb1b7;       /* nesting guide line */
+  --gut-fg: #8a8d91;      /* line numbers */
+  --num: #292a2d;         /* number tokens */
+  --active: #e1e4e8;      /* active (caret) line — a touch brighter than the gray */
+  --sel: rgba(0,0,0,.15); /* selection (light areas) */
+  --sb: #b3b6ba;          /* editor scrollbar */
+  --err: #c0291f;         /* compile-error squiggle */
+  --drop-bg: rgba(213,216,220,.9);
+  --code-top: 14px;       /* editor top inset — code starts at the top (logo now lives bottom-left) */
+  --band: #000;
+  --gutw: 30px;           /* line-number gutter width — recomputed to digit count by renderGutter */
+  --lh: 20.15px;          /* code line box (13px × 1.55) — gutter matches it for row alignment */
+  --padx: 24px;
+  color-scheme: light;    /* editor side; the dark right pane sets its own (below) */
 }
 html, body { height: 100%; }
 body {
   background: var(--paper); color: var(--ink);
   font-family: var(--sans);
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex; overflow: hidden;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 
-/* ── masthead (dark): brand + site nav only — no working controls here ── */
-header {
-  background: var(--band); color: var(--paper);
-  display: flex; align-items: center;
-  min-height: 44px;
-  padding: 0 var(--padx);
+/* no masthead — the panes run edge-to-edge. The only brand is the jz logo in the
+   top-left corner of the editor (links home); it sits in the editor's top inset,
+   aligned with the terminal toolbar opposite it. */
+/* the jz mark — a dark tile tucked in the BOTTOM-left corner with an 8px inset (no need to
+   shout up top); the code starts at the top. For short kernels it sits in the empty space
+   below the code; only a very long paste scrolls under it. */
+.brand { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; line-height: 0;
+  opacity: .85; transition: opacity .18s; }
+.brand:hover { opacity: 1; }
+.brand img { display: block; width: 32px; height: 32px; }
+
+/* ── main split: editor (left) · divider · terminal (right) ── */
+main { flex: 1; display: flex; min-height: 0; }
+.pane { min-width: 0; display: flex; flex-direction: column; }
+.code { flex: 0 0 var(--lw, 320px); position: relative; overflow: hidden; }   /* editor pane — initial width 320px (the divider/localStorage overrides once dragged) */
+.right { flex: 1 1 0; min-height: 0; position: relative; color-scheme: dark;   /* always dark — the "low-level" output side */
+  /* every terminal color lives in these vars */
+  --bg: #0b0b0b; --fg: #d4d4d4; --dim: #7c7c7c; --bright: #fff; --line: #242424;
+  background: var(--bg); color: var(--fg); }
+
+/* draggable seam — 6px grab area, 1px visible line; persisted to localStorage */
+.divider { flex: 0 0 6px; position: relative; cursor: col-resize; background: var(--paper);
+  align-self: stretch; touch-action: none; }
+.divider::before { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px;
+  background: var(--faint); transition: background .15s; }
+.divider:hover::before, .divider.drag::before { background: #3f3f46; }
+.divider:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+
+/* ── editor (left): line-number gutter + indent guides + syntax overlay over a textarea ──
+   four stacked layers, all sharing one geometry so the caret, highlight and guides never drift:
+   guides (z0) · highlight (z0) · textarea (z1, transparent text + real caret) · gutter (z2). */
+#gutter { position: absolute; top: 0; left: 0; bottom: 0; width: var(--gutw); z-index: 2;
+  overflow: hidden; pointer-events: none; background: var(--paper); }
+#gutter pre { font: 11px/var(--lh) var(--mono); color: var(--gut-fg); text-align: right;
+  padding: var(--code-top) 7px 16px 0; will-change: transform; }
+#guides, #hl, #editor {
+  position: absolute; inset: 0; margin: 0;
+  padding: var(--code-top) 16px 16px calc(var(--gutw) + 8px);   /* top inset clears the corner logo */
+  font: 13px/1.55 var(--mono); tab-size: 2; white-space: pre; border: 0; background: transparent;
 }
-.wordmark { font-size: 19px; font-weight: 400; letter-spacing: -.02em; line-height: 1; }
-.wordmark .mark { font-weight: 700; color: #fff; }
-.wordmark .sub  { font-weight: 400; color: #8a8a8a; margin-left: .45em; }
-header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
-header nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
-  text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
-header nav a:hover { opacity: 1; }
-header .gh { display: flex; }
+#guides { overflow: hidden; pointer-events: none; color: transparent; z-index: 0; }
+#guides .ig { display: inline-block; width: 1ch; border-left: 1px solid var(--guide); }
+#hl { overflow: hidden; pointer-events: none; color: var(--ink); z-index: 0; }
+#editor { resize: none; overflow: auto; color: transparent; caret-color: var(--ink); z-index: 1; }
+#editor:focus, #editor:focus-visible { outline: none; }   /* the caret shows focus — a ring adds nothing */
+/* active (caret) line — a full-width band behind the code; its gutter number brightens */
+#activeline { position: absolute; left: var(--gutw); right: 0; height: var(--lh); z-index: 0;
+  background: var(--active); pointer-events: none; visibility: hidden; }
+#gutter .acn { color: var(--ink); }
+/* selection — one language everywhere: a neutral translucent band that contrasts each
+   surface (dark on the light editor, light on the dark WAT/CLI). */
+#editor::selection { background: var(--sel); }
+#wat ::selection, #out ::selection, #expr::selection { background: rgba(255,255,255,.20); }
+/* monochrome syntax: weight + gray steps. The editor (#hl) follows its theme; the WAT (#wat)
+   is always on the dark pane, so its number/string/comment hues are fixed light. */
+#hl .k, #wat .k { font-weight: 700; }                  /* keyword */
+#hl .t, #wat .t { font-weight: 600; }                  /* Type / builtin / $name */
+#hl .n { font-weight: 600; color: var(--num); }        /* number (editor) */
+#hl .s { color: var(--soft); }                         /* string  (editor) */
+#hl .c { color: var(--mid); }                          /* comment (editor) */
+#wat .n { font-weight: 600; color: #c8c8c8; }          /* number  (WAT, dark) */
+#wat .s { color: #9a9a9a; }                            /* string  (WAT, dark) */
+#wat .c { color: var(--dim); }                         /* comment (WAT, dark) */
+/* the page's only hue: semantic red, compile-error position */
+#hl .e { text-decoration: underline wavy var(--err) 2px; text-underline-offset: 3px; }
 
-/* ── no toolbar: controls float over their own pane, in the top corners ── */
-/* source (light): preset · opt (left) · ⚙ settings hamburger (right) */
-.srcbar { position: absolute; top: 0; left: 0; right: 0; z-index: 3;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 14px 8px var(--padx); background: var(--paper); color: var(--ink);
-  pointer-events: none; }
-.srcbar > * { pointer-events: auto; }
-.controls { display: flex; align-items: center; gap: 11px; }
-.optlabel { display: flex; align-items: center; gap: 9px; }
-.optlabel > span { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
+/* drop a file → the editor pane is the target; dashed overlay while dragging */
+.code.drag::after { content: 'drop a .js file to load it'; position: absolute; inset: 8px; z-index: 4;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+  border: 1.5px dashed var(--mid); border-radius: 6px; background: var(--drop-bg);
+  color: var(--soft); font-family: var(--sans); font-size: 13px; letter-spacing: .04em; }
 
-/* wat (dark): module size · ↓wasm, top-right corner */
-.watbar { position: absolute; top: 0; right: 0; z-index: 3;
-  display: flex; align-items: center; gap: 14px;
-  padding: 9px 16px 9px 14px; color: #c2c2c2; background: var(--bg); }
+/* ── terminal (right): controls float over the WAT · WAT (foldable) · console ── */
+/* a full-width toolbar across the top of the WAT pane: the speed selector at the left, then size · ↓wasm · ⚙
+   grouped at the right. A solid band with a hairline rule; #wat is padded below it so no code hides behind it. */
+.watbar { position: absolute; top: 0; left: 0; right: 0; z-index: 5; height: 36px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+  padding: 0 4px; color: #c2c2c2; background: var(--bg); border-bottom: 1px solid var(--line); }
 #stat { display: inline-flex; align-items: center; white-space: nowrap; color: inherit; font-size: 12px; }
 #stat .err { font-weight: 700; color: #ff6b6b; }
 .badge { display: inline-block; border: 1px solid #6a6a6a; color: #ddd; font-size: 9.5px; font-weight: 700;
   letter-spacing: .1em; padding: 1px 5px; vertical-align: 1px; margin-left: 8px; }
+.wb-actions { display: flex; align-items: center; gap: 2px; }
 
-/* form controls */
-select {
-  font-family: var(--sans); font-size: 12px;
-  background: var(--paper); color: var(--ink);
-  border: 1px solid var(--ink); border-radius: 0; padding: 4px 7px; cursor: pointer;
-}
-/* the hidden "preset" placeholder reads as a hint, not a real selection */
-#preset:has(option[value=""]:checked) { color: var(--mid); }
+select { font-family: var(--sans); font-size: 12px; background: transparent; color: inherit;
+  border: 0; border-radius: 0; padding: 4px 6px 4px 0; cursor: pointer; }
+#opt { margin-right: auto; }   /* speed selector to the left; size + actions stay grouped at the right */
 select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
 
-/* icons (wasm · settings) — inherit the pane's ink/light color, fade until hover */
-.ico { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0;
+/* icons (wasm · settings) — inherit the pane color, fade until hover */
+.ico { display: inline-flex; align-items: center; gap: 5px; padding: 6px 7px; border: 0;
   background: transparent; color: inherit; opacity: .62; cursor: pointer; font: inherit; transition: opacity .18s; }
 .ico:hover { opacity: 1; }
 .ico.wasm { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
 
 .check { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-.check input { appearance: none; width: 13px; height: 13px; border: 1px solid var(--ink); cursor: pointer; }
-.check input:checked { background: var(--ink); box-shadow: inset 0 0 0 2px var(--paper); }
+.check input { appearance: none; width: 13px; height: 13px; border: 1px solid #6a6a6a; cursor: pointer; }
+.check input:checked { background: var(--fg); box-shadow: inset 0 0 0 2px #14141a; }
 
-/* ── ⚙ compile-options popover: strict · names (room to grow) ── */
+/* ⚙ compile-options popover: strict · names — always on the dark pane, so its colors
+   come from the terminal's own vars (not the themed editor --ink). */
 .gear { position: relative; display: flex; }
-.menu {
-  position: absolute; right: 0; top: calc(100% + 10px); z-index: 10;
-  display: flex; flex-direction: column; gap: 11px;
-  min-width: 170px; padding: 13px 15px;
-  background: var(--paper); color: var(--ink); border: 1px solid var(--ink);
-}
+.menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 10;
+  display: flex; flex-direction: column; gap: 11px; min-width: 160px; padding: 13px 15px;
+  background: #14141a; color: var(--fg); border: 1px solid var(--line); }
 .menu[hidden] { display: none; }
-.menu label { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; color: var(--mid); }
-.menu .check { justify-content: flex-start; gap: 8px; color: var(--ink); }
+.menu .check { justify-content: flex-start; gap: 8px; color: var(--fg); }
+.menu .opt-field { display: flex; flex-direction: column; gap: 7px; }
+.menu .opt-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .14em; color: var(--dim); }
+.menu .opt-seg { display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.menu .opt-seg label { flex: 1; display: flex; position: relative; }
+.menu .opt-seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.menu .opt-seg span { flex: 1; text-align: center; padding: 5px 6px; font-size: 11px; color: var(--dim); white-space: nowrap; transition: background .12s, color .12s; }
+.menu .opt-seg label + label span { border-left: 1px solid var(--line); }
+.menu .opt-seg input:checked + span { background: #2a2a2a; color: var(--bright); }
+.menu .opt-seg input:focus-visible + span { outline: 1px solid #6a6a6a; outline-offset: -2px; }
 
-/* ── main split ── */
-main { flex: 1; display: flex; min-height: 0; }
-.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.code { position: relative; }
-#editor, #hl {
-  position: absolute; inset: 0; margin: 0; padding: 46px var(--padx) 16px;
-  font: 13px/1.55 var(--mono); tab-size: 2; white-space: pre;
-  border: 0; background: transparent;
-}
-#editor {
-  resize: none; overflow: auto;
-  color: transparent; caret-color: var(--ink); z-index: 1;
-}
-#editor:focus, #editor:focus-visible { outline: none; }   /* the caret shows focus — a ring adds nothing */
-#editor::selection { background: rgba(0, 0, 0, .14); }
-#hl { overflow: hidden; pointer-events: none; color: var(--ink); }
-/* monochrome syntax: weight + gray steps, no hue (all ≥ 4.5:1 on paper) */
-#hl .k { font-weight: 700; }                      /* keyword */
-#hl .t { font-weight: 600; }                      /* Type / builtin */
-#hl .n { font-weight: 600; color: #3a3a3a; }      /* number */
-#hl .s { color: var(--soft); }                    /* string */
-#hl .c { color: var(--mid); }                     /* comment */
-/* the page's only hue: semantic red, compile-error position */
-#hl .e { text-decoration: underline wavy #c00 2px; text-underline-offset: 3px; }
-/* right pane = a dark "terminal": WAT (top) over the console (bottom).
-   every terminal color lives in these vars — flip them to return to light. */
-.right {
-  --bg: #0b0b0b; --fg: #d4d4d4; --dim: #7c7c7c; --bright: #fff; --line: #242424; --input: #161616;
-  position: relative;
-  border-left: 1px solid var(--ink); display: flex; flex-direction: column; min-height: 0;
-  background: var(--bg); color: var(--fg);
-}
-.console { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+/* WAT + console share a resizable vertical split below the toolbar */
+.terminal { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
 
-/* wat (top of the split) — a touch taller than the console; it runs longer */
-#wat { flex: 1.6 1 0; min-height: 0; overflow: auto; padding: 14px var(--padx) 14px 16px; font: 11.5px/1.5 var(--mono); white-space: pre; color: #b3b3b3; }
+/* WAT view — read-only, structural folds (module/func/global/…); no line numbers */
+#wat { flex: 0 0 var(--wh, 60%); min-height: 0; overflow: auto; padding: 44px 0 8px 6px; font: 11.5px/1.55 var(--mono); color: #b3b3b3; }   /* 44px top clears the 36px .watbar above */
+.wrow { display: flex; white-space: pre; min-width: 100%; }
+.wrow:hover { background: #ffffff07; }
+.wfold { flex: 0 0 18px; position: sticky; left: 0; z-index: 1; background: var(--bg);
+  text-align: center; color: #777; }
+.wfold[data-l] { cursor: pointer; }
+.wfold[data-l]:hover { color: #fff; }
+.wcode { flex: 1 0 auto; padding-right: 16px; }
+.wdots { color: #666; }
 
-/* output console (bottom of the split) — tight left gutter, terminal-style */
+/* horizontal seam between WAT and console — 6px grab, 1px line; persisted */
+.hdivider { flex: 0 0 6px; position: relative; cursor: row-resize; background: var(--bg); touch-action: none; }
+.hdivider::before { content: ''; position: absolute; left: 0; right: 0; top: 2px; height: 1px;
+  background: var(--line); transition: background .15s; }
+.hdivider:hover::before, .hdivider.drag::before { background: #3f3f46; }
+.hdivider:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+
+/* output console (bottom of the split) — terminal-style */
+.console { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
 #out { flex: 1; min-height: 0; overflow: auto; padding: 14px var(--padx) 14px 16px; font: 12.5px/1.6 var(--mono); }
 #out div { white-space: pre-wrap; word-break: break-word; }
-#out .sys { color: var(--dim); }                       /* "compiled in N ms" — CLI status */
+#out .sys { color: var(--dim); }
 #out .sys::before { content: '✓ '; }
-#out .in { color: var(--dim); }                        /* echoed input */
+#out .in { color: var(--dim); }
 #out .in::before { content: '❯ '; }
-#out .res { font-weight: 700; color: var(--bright); }  /* eval result */
+#out .res { font-weight: 700; color: var(--bright); }
 #out .log { color: var(--fg); }
 #out .log::before { content: '· '; color: var(--dim); }
-#out .err { font-weight: 700; color: #ff6b6b; }        /* the one hue: error red */
+#out .err { font-weight: 700; color: #ff6b6b; }
 #out .err::before { content: '✗ '; }
 #out .note { color: var(--dim); }
 #out a { color: inherit; }
 #out .rule { border-top: 1px solid var(--line); margin: 8px 0; }
 
-/* js-vs-wasm result table */
-.bench { border-collapse: collapse; margin: 4px 0 2px; font: 12px/1.55 var(--mono); }
-.bench th, .bench td { text-align: right; padding: 1px 0 1px 28px; }
-.bench th:first-child, .bench td:first-child { text-align: left; padding-left: 0; }
-.bench th { color: var(--dim); font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .12em; }
-.bench td { color: var(--fg); }
-.bench td:first-child { color: var(--dim); }
-.bench .win { color: var(--bright); font-weight: 700; }
-
-/* CLI input — its own faintly-raised band with a bright prompt + caret */
-.prompt { display: flex; gap: 10px; align-items: center; padding: 9px 16px;
-  background: var(--input); border-top: 1px solid var(--line); }
-.prompt .chev { font-family: var(--mono); font-size: 12px; font-weight: 400; line-height: 1; color: var(--bright); }
-.prompt input {
-  flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--bright); background: transparent;
-  caret-color: var(--bright); outline-offset: 2px; padding: 2px 0;
-}
+/* CLI input — a devtools-style caret line: type a call, Enter runs it, Bench races it vs plain JS */
+.prompt { display: flex; gap: 9px; align-items: center; padding: 5px 16px 11px; }
+.prompt .chev { font-family: var(--mono); font-size: 13px; line-height: 1; color: var(--bright); }
+.prompt input { flex: 1; border: 0; font: 13px/1.4 var(--mono); color: var(--bright); background: transparent;
+  caret-color: var(--bright); padding: 2px 0; }
+.prompt input:focus, .prompt input:focus-visible { outline: none; }   /* the bright caret already shows focus */
 .prompt input::placeholder { color: #5c5c5c; }
-#bench {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--sans); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
-  background: transparent; color: var(--fg); border: 1px solid #3a3a3a; border-radius: 0;
-  padding: 4px 9px; cursor: pointer; white-space: nowrap;
-}
-#bench:hover { background: var(--bright); color: #000; border-color: var(--bright); }
+.prompt .bench { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; position: relative;
+  font: 400 11px/1 var(--sans); text-transform: uppercase; letter-spacing: .12em;
+  color: var(--dim); background: transparent; border: 1px solid var(--line); padding: 6px 11px; cursor: pointer;
+  transition: color .15s, border-color .15s; }
+.prompt .bench svg { width: 13px; height: 13px; }
+.prompt .bench:hover { color: var(--bright); border-color: var(--bright); }
+/* hover tooltip explaining what "bench" does (uses the aria-label, so a11y + the visible tip share one source) */
+.prompt .bench::after { content: attr(aria-label); position: absolute; bottom: calc(100% + 8px); right: 0;
+  width: max-content; max-width: 230px; white-space: normal; text-align: left; padding: 8px 10px;
+  background: #161616; color: #cfcfcf; border: 1px solid var(--line); border-radius: 5px;
+  font: 400 11px/1.45 var(--sans); text-transform: none; letter-spacing: normal;
+  opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity .15s, transform .15s; z-index: 20; }
+.prompt .bench:hover::after, .prompt .bench:focus-visible::after { opacity: 1; transform: translateY(0); }
 
-/* thin scrollbars — light editor, dark terminal */
-#editor { scrollbar-width: thin; scrollbar-color: #bbb transparent; }
+/* thin dark scrollbars throughout */
+#editor { scrollbar-width: thin; scrollbar-color: var(--sb) transparent; }
 #out, #wat { scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
 #editor::-webkit-scrollbar, #out::-webkit-scrollbar, #wat::-webkit-scrollbar { width: 8px; height: 8px; }
-#editor::-webkit-scrollbar-thumb { background: #ccc; }
-#editor::-webkit-scrollbar-thumb:hover { background: #888; }
+#editor::-webkit-scrollbar-thumb { background: var(--sb); }
 #out::-webkit-scrollbar-thumb, #wat::-webkit-scrollbar-thumb { background: #333; }
+#editor::-webkit-scrollbar-thumb:hover { background: var(--mid); }
 #out::-webkit-scrollbar-thumb:hover, #wat::-webkit-scrollbar-thumb:hover { background: #555; }
 
 @media (max-width: 760px) {
   main { flex-direction: column; }
-  .right { border-left: 0; border-top: 1px solid var(--ink); }
+  .code { flex: 1 1 0; }                       /* ignore the persisted --lw; stack 50/50 */
+  .divider { display: none; }
+  .right { border-top: 1px solid var(--faint); }
   /* ≥ 44px touch targets; 16px input so iOS doesn't zoom on focus */
-  select, #bench { padding: 11px 13px; font-size: 14px; }
-  .ico { padding: 6px; }
+  select { padding: 11px 13px; font-size: 14px; }
   .prompt input { font-size: 16px; }
   .check input { width: 18px; height: 18px; }
 }
 
-/* ── ?embed: the landing docks this in a black section. Strip the masthead and flip the
-   editor (light) pane to the same ink the terminal already uses — one black REPL, no seams.
-   The standalone /repl/ keeps its paper-white Swiss design (this only applies under .embed). ── */
-html.embed header { display: none; }
+/* ?embed: the landing iframes this in its own dark section — flip the EDITOR theme back to
+   dark (one override of the whole token block), hide the brand (the landing shows it), and
+   reclaim the logo's top inset so the code starts at the top. The right pane is unchanged. */
 html.embed {
-  --paper: #0b0b0b;   /* editor pane bg = the terminal's --bg → both halves match */
-  --ink:   #e6e6e6;   /* was #000 — now the light foreground */
-  --mid:   #8a8a8a;
-  --soft:  #b3b3b3;
-  --faint: #242424;
+  --ink: #e6e6e6; --paper: #0b0b0b; --mid: #8a8a8a; --soft: #b3b3b3; --faint: #242424;
+  --guide: #ffffff24; --gut-fg: #4e4e4e; --num: #c8c8c8; --active: #17181d; --sel: rgba(255,255,255,.20);
+  --sb: #3a3a3a; --err: #ff5a5a; --drop-bg: rgba(20,20,26,.78);
+  --code-top: 12px;
+  color-scheme: dark;
 }
-html.embed .right { border-left-color: var(--faint); }          /* quiet seam, not a bright rule */
-html.embed #hl .n { color: #c8c8c8; }                            /* number: light on dark (was #3a3a3a) */
-html.embed #editor::selection { background: rgba(255,255,255,.16); }
-html.embed #editor { scrollbar-color: #3a3a3a transparent; }
-html.embed #editor::-webkit-scrollbar-thumb { background: #333; }
-html.embed #editor::-webkit-scrollbar-thumb:hover { background: #555; }
-
-/* embed = a taste, not the full tool: drop opt · settings · bench, and the per-keystroke WAT
-   speaks for itself. The preset reads as the editor's file-tab — no border, an active underline. */
-html.embed .controls, html.embed #bench { display: none; }
-html.embed #preset {
-  -webkit-appearance: none; appearance: none;
-  border: 0; border-radius: 0; background: transparent; color: var(--ink);
-  padding: 6px 0; cursor: pointer; border-bottom: 2px solid currentColor;
-}
-html.embed #preset:hover { color: #fff; }
+html.embed .brand { display: none; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1 class="wordmark"><span class="mark">JZ</span><span class="sub">repl</span></h1>
-  <nav>
-    <a href="../examples/">examples</a>
-    <a href="../bench/">bench</a>
-    <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
-      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-    </a>
-  </nav>
-</header>
-
 <main>
   <div class="pane code">
-    <div class="srcbar">
-      <select id="preset" aria-label="preset"></select>
-      <div class="controls">
-        <label class="optlabel"><span>opt</span>
-          <select id="opt" aria-label="optimization target" title="optimization target">
-            <option value="0">none</option>
-            <option value="3" selected>speed</option>
-            <option value="size">size</option>
-          </select>
-        </label>
+    <div id="activeline"></div>
+    <a class="brand" href="../" aria-label="jz — home" title="jz — home">
+      <img src="../jz.svg" alt="jz" width="22" height="22">
+    </a>
+    <div id="gutter"><pre id="gutterlines"></pre></div>
+    <pre id="guides" aria-hidden="true"></pre>
+    <pre id="hl" aria-hidden="true"></pre>
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source — paste or drop a .js file"></textarea>
+  </div>
+  <div class="divider" id="divider" role="separator" aria-orientation="vertical" aria-label="resize panes" tabindex="0"></div>
+  <div class="pane right">
+    <div class="watbar">
+      <span id="stat"></span>
+      <span class="wb-actions">
+        <button id="dl" class="ico wasm" title="download .wasm" aria-label="download wasm">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          <span>wasm</span>
+        </button>
         <div class="gear">
           <button id="settings" class="ico" aria-label="compile options" aria-controls="menu" aria-expanded="false" title="compile options">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
           <div id="menu" class="menu" hidden>
+            <div class="opt-field">
+              <span class="opt-lbl">optimize</span>
+              <div class="opt-seg" role="radiogroup" aria-label="optimization level">
+                <label><input type="radio" name="opt" value="0"><span>none</span></label>
+                <label><input type="radio" name="opt" value="3" checked><span>speed</span></label>
+                <label><input type="radio" name="opt" value="size"><span>size</span></label>
+              </div>
+            </div>
             <label class="check"><input type="checkbox" id="strict"> strict</label>
             <label class="check"><input type="checkbox" id="names"> names</label>
           </div>
         </div>
-      </div>
+      </span>
     </div>
-    <pre id="hl" aria-hidden="true"></pre>
-    <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="jz source"></textarea>
-  </div>
-  <div class="pane right">
-    <div class="watbar">
-      <span id="stat"></span>
-      <button id="dl" class="ico wasm" title="download .wasm" aria-label="download wasm">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        <span>wasm</span>
-      </button>
-    </div>
-    <pre id="wat"></pre>
-    <div class="console">
-      <div id="out" aria-live="polite"></div>
-      <div class="prompt">
-        <span class="chev">❯</span>
-        <input id="expr" aria-label="expression to run against the compiled exports" placeholder="call an export — dist(3, 4)" spellcheck="false" autocomplete="off">
-        <button id="bench" title="benchmark this call — jz-WASM vs plain JS">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 13V9M10 2h4M12 5V2"/></svg>
-          bench
-        </button>
+    <div class="terminal">
+      <div id="wat"></div>
+      <div class="hdivider" id="hdivider" role="separator" aria-orientation="horizontal" aria-label="resize WAT / console" tabindex="0"></div>
+      <div class="console">
+        <div id="out" aria-live="polite"></div>
+        <div class="prompt">
+          <span class="chev">❯</span>
+          <input id="expr" aria-label="expression to run against the compiled exports" placeholder="orbit(100000)" spellcheck="false" autocomplete="off">
+          <button id="bench" class="bench" aria-label="Benchmark this call — runs it as jz-compiled WASM and as the same source in plain JS, then compares their speed (Shift+Enter)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V9.5"/><path d="M9.5 2.5h5M12 2.5v3.5"/></svg><span>bench</span></button>
+        </div>
       </div>
     </div>
   </div>
@@ -294,22 +322,31 @@ html.embed #preset:hover { color: #fff; }
 import jz, { compile } from '../dist/jz.js'
 
 const $ = id => document.getElementById(id)
-const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr'), hlEl = $('hl')
+const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr')
+const hlEl = $('hl'), guidesEl = $('guides'), gutterEl = $('gutterlines'), activeEl = $('activeline'), mainEl = document.querySelector('main')
 
-// ── syntax highlight: one regex, monochrome classes (comment/string/number/keyword/Type) ──
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+
+// ── syntax highlight: one regex per language, monochrome classes ──
+// JS: comment/string/number/keyword/Type
 const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
 const TOKEN_CLS = ['c', 's', 'n', 'k', 't']
-const highlight = (src) => {
-  let html = '', last = 0, m
-  TOKEN.lastIndex = 0
-  while ((m = TOKEN.exec(src))) {
+// WAT: comment(;;)/string/$name/keyword/type/number
+const WTOKEN = /(;;[^\n]*)|("(?:\\.|[^"\\\n])*")|(\$[^\s()";]+)|\b(module|func|param|result|local|global|memory|data|table|elem|type|import|export|start|mut|offset|align|shared|block|loop|if|then|else|end|br|br_if|call|call_indirect|return)\b|\b(i32|i64|f32|f64|v128|funcref|externref)\b|(-?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?|nan|inf))/g
+const WCLS = ['c', 's', 't', 'k', 't', 'n']
+const tokenize = (src, re, cls) => {
+  let html = '', last = 0, m; re.lastIndex = 0
+  while ((m = re.exec(src))) {
     html += esc(src.slice(last, m.index))
     const i = m.slice(1).findIndex(g => g !== undefined)
-    html += `<span class="${TOKEN_CLS[i]}">${esc(m[0])}</span>`
-    last = TOKEN.lastIndex
+    html += `<span class="${cls[i]}">${esc(m[0])}</span>`
+    last = re.lastIndex
   }
   return html + esc(src.slice(last))
 }
+const highlight = src => tokenize(src, TOKEN, TOKEN_CLS)
+const highlightWat = line => tokenize(line, WTOKEN, WCLS)
+
 // `errAt` ({line, col}, 1-based) wraps the token at the error position in a
 // red-squiggle span. Slicing the source in three keeps character offsets in
 // lockstep with the textarea, so the overlay never drifts.
@@ -330,24 +367,116 @@ const paint = (errAt = null) => {
     `<span class="e">${highlight(tok)}</span>` +
     highlight(src.slice(off + tok.length)) + '\n'
 }
-const syncScroll = () => { hlEl.scrollTop = editor.scrollTop; hlEl.scrollLeft = editor.scrollLeft }
-editor.addEventListener('scroll', syncScroll)
 
-// ── presets: each one is a use-case ────────────────────────────────────────
-const PRESETS = {
-  start: {
-    name: 'intro',
-    expr: 'orbit(100000)',
-    src: `// jz — minimal JS that compiles to WASM, on every keystroke.
-// Size (top-right) and compile time (console) are real — measured here.
-// Call exports from the prompt below — values marshal across.
+// the caret's line index — drives the active-line band + the brightened gutter number
+const caretLine = () => editor.value.slice(0, editor.selectionStart).split('\n').length - 1
+let activeLine = 0
+
+// gutter (line numbers) — dynamic width; the caret's line number is brightened
+const renderGutter = () => {
+  const n = editor.value.split('\n').length
+  // dynamic width: fit the widest line number (min 2 digits → 32px, matching the corner logo;
+  // grows for 3+ digit files)
+  const digits = Math.max(2, String(n).length)
+  document.documentElement.style.setProperty('--gutw', (digits * 8 + 16) + 'px')
+  let s = ''
+  for (let i = 1; i <= n; i++) s += (i - 1 === activeLine ? `<span class="acn">${i}</span>` : i) + '\n'
+  gutterEl.innerHTML = s
+}
+// nesting guides (JS only): a faint vertical rule at every ENCLOSING indent level —
+// columns 0, 2, 4 … within this line's leading whitespace — so each level of nesting
+// shows one continuous line down its block.
+const renderGuides = () => {
+  let html = ''
+  for (const line of editor.value.split('\n')) {
+    const lead = line.match(/^ */)[0].length
+    let cells = ''
+    for (let c = 0; c < lead; c++) cells += (c % 2 === 0) ? '<span class="ig"> </span>' : ' '
+    html += cells + '\n'
+  }
+  guidesEl.innerHTML = html
+}
+// line metrics (constant per page) — used to place the active-line band
+const _cs = getComputedStyle(editor)
+const LH = parseFloat(_cs.lineHeight) || 20.15
+const PADTOP = parseFloat(_cs.paddingTop) || 44
+const positionActive = () => {
+  if (document.activeElement !== editor) { activeEl.style.visibility = 'hidden'; return }   // only while editing
+  const y = PADTOP + activeLine * LH - editor.scrollTop
+  activeEl.style.top = y + 'px'
+  activeEl.style.visibility = (y < PADTOP - 1 || y > editor.clientHeight) ? 'hidden' : 'visible'
+}
+const updateActive = () => {
+  const nl = caretLine()
+  if (nl !== activeLine) { activeLine = nl; renderGutter() }
+  positionActive()
+}
+const syncScroll = () => {
+  hlEl.scrollTop = guidesEl.scrollTop = editor.scrollTop
+  hlEl.scrollLeft = guidesEl.scrollLeft = editor.scrollLeft
+  gutterEl.style.transform = `translateY(${-editor.scrollTop}px)`
+  positionActive()
+}
+const refresh = () => { activeLine = caretLine(); paint(); renderGutter(); renderGuides(); syncScroll() }
+editor.addEventListener('scroll', syncScroll)
+document.addEventListener('selectionchange', () => { if (document.activeElement === editor) updateActive() })
+editor.addEventListener('focus', updateActive)
+editor.addEventListener('blur', positionActive)
+
+// ── WAT view — read-only, structural folds (no line numbers) ─────────────────
+// fold toggles only on definition headers (module/func/global/…), matched to
+// their closing line by paren depth, so the outline stays tidy. Fold state is
+// keyed to the current WAT text and reset only when the text actually changes.
+const FOLDABLE = /^\s*\((?:module|func|global|memory|data|table|elem|type|import|export)\b/
+const parenDelta = (line) => {
+  let d = 0, str = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (str) { if (c === '\\') i++; else if (c === '"') str = false; continue }
+    if (c === '"') str = true
+    else if (c === ';' && line[i + 1] === ';') break
+    else if (c === '(') d++
+    else if (c === ')') d--
+  }
+  return d
+}
+let watFolded = new Set(), watLast = null
+const renderWat = (wat) => {
+  if (wat !== watLast) { watFolded = new Set(); watLast = wat }
+  const lines = wat.split('\n'), n = lines.length
+  const start = new Array(n), end = new Array(n)
+  let d = 0
+  for (let i = 0; i < n; i++) { start[i] = d; d += parenDelta(lines[i]); end[i] = d }
+  const isHeader = i => i + 1 < n && end[i] > start[i] && FOLDABLE.test(lines[i])
+  const foldEnd = i => { let j = i + 1; while (j < n && end[j] > start[i]) j++; return j }   // closing line
+  let html = '', i = 0
+  while (i < n) {
+    const hdr = isHeader(i), folded = hdr && watFolded.has(i)
+    const tog = hdr ? `<span class="wfold" data-l="${i}">${folded ? '▸' : '▾'}</span>` : '<span class="wfold"></span>'
+    html += `<div class="wrow">${tog}<span class="wcode">${highlightWat(lines[i])}${folded ? '<span class="wdots"> … </span>' : ''}</span></div>`
+    i = folded ? foldEnd(i) + 1 : i + 1
+  }
+  watEl.innerHTML = html
+}
+watEl.addEventListener('click', (e) => {
+  const f = e.target.closest('.wfold')
+  if (!f || f.dataset.l === undefined) return
+  const l = +f.dataset.l
+  watFolded.has(l) ? watFolded.delete(l) : watFolded.add(l)
+  renderWat(watLast)
+})
+
+// ── intro — the default scratch when the URL carries no source ────────────────
+// (presets live in /bench/ — each card's "repl" button deep-links its source here.)
+const INTRO_EXPR = 'orbit(100000)'
+const INTRO_SRC = `// Paste your own code, or drop a .js file here
 
 export let orbit = (n) => {
   let x = 0
   for (let i = 0; i < n; i++) x += Math.sin(i * 0.001) * Math.cos(i * 0.0005)
   return x
 }
-// ↑ a real workload — hit "js vs wasm" on orbit(100000)
+// ↑ a real workload — run orbit(100000) below, or hit Bench to race jz vs plain JS
 
 export let shout = (s) => s.toUpperCase() + '!'
 // ↑ strings cross the boundary as UTF-8
@@ -355,421 +484,12 @@ export let shout = (s) => s.toUpperCase() + '!'
 export let count = (s) => s.charCodeAt(0)
 // ↑ typed by method call — i32 return
 
-console.log('compiled + instantiated, top-level ran')`,
-  },
-  simd: {
-    name: 'auto-SIMD',
-    expr: 'waves(1.5)',
-    src: `// Plain loops over typed arrays vectorize to v128 — check the WAT tab
-// for f64x2 lanes, and the v128 badge above. Then hit "js vs wasm".
-
-export let waves = (k) => {
-  let a = new Float64Array(8192)
-  for (let i = 0; i < a.length; i++) a[i] = i * 0.001
-  let s = 0
-  for (let p = 0; p < 40; p++) {
-    for (let i = 0; i < a.length; i++) a[i] = a[i] * 0.9995 + k * 0.001   // ← SIMD map
-    for (let i = 0; i < a.length; i++) s += a[i]                          // ← SIMD reduce
-  }
-  return s
-}`,
-  },
-  plasma: {
-    name: 'plasma field',
-    expr: 'plasma(1.5)',
-    src: `// The classic demoscene plasma — a field of layered sines.
-// Transcendental-heavy loops are where AOT wasm beats the JIT.
-
-export let plasma = (t) => {
-  let acc = 0
-  for (let y = 0; y < 64; y++) {
-    for (let x = 0; x < 64; x++) {
-      let v = Math.sin(x * 0.12 + t) + Math.sin(y * 0.13 - t)
-      v += Math.sin((x + y) * 0.09 + t * 1.3)
-      v += Math.cos(x * 0.07 - y * 0.11 + t * 0.5)
-      v += Math.sin(Math.sqrt(x*x + y*y) * 0.18 - t * 0.7)
-      v += Math.cos(v + t)
-      acc += v
-    }
-  }
-  return acc
-}`,
-  },
-  biquad: {
-    name: 'audio biquad',
-    expr: 'filter(4096)',
-    src: `// Audio DSP — 4 cascaded lowpass biquads over a 4096-sample block.
-// Recursive filters can't SIMD; jz wins on raw f64 throughput.
-
-export let filter = (n) => {
-  let x = new Float64Array(n)
-  for (let i = 0; i < n; i++) x[i] = Math.sin(i * 0.3) + Math.sin(i * 1.7) * 0.5
-  let b0 = 0.067455, b1 = 0.134911, b2 = 0.067455
-  let a1 = -1.142981, a2 = 0.412802
-  for (let s = 0; s < 4; s++) {
-    let z1 = 0, z2 = 0
-    for (let i = 0; i < n; i++) {
-      let inp = x[i]
-      let out = b0 * inp + z1
-      z1 = b1 * inp - a1 * out + z2
-      z2 = b2 * inp - a2 * out
-      x[i] = out
-    }
-  }
-  let acc = 0
-  for (let i = 0; i < n; i++) acc += x[i]
-  return acc
-}`,
-  },
-  mat4: {
-    name: 'mat4 multiply',
-    expr: 'multiply(200000)',
-    src: `// 4x4 matrix multiplication — tight numeric loop, heavy f64 arithmetic.
-// Each iteration multiplies two 4x4 matrices into an output buffer.
-
-export let multiply = (iters) => {
-  let a = new Float64Array(16)
-  let b = new Float64Array(16)
-  let out = new Float64Array(16)
-  for (let i = 0; i < 16; i++) {
-    a[i] = (i + 1) * 0.125
-    b[i] = (16 - i) * 0.0625
-  }
-  for (let n = 0; n < iters; n++) {
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        let s = 0
-        for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
-        out[r * 4 + c] = s + n * 0.0000001
-      }
-    }
-  }
-  return out[0] + out[15]
-}`,
-  },
-  poly: {
-    name: 'polymorphic reduce',
-    expr: 'reduce(80)',
-    src: `// Polymorphic typed-array reduction — sums f64 and i32 arrays.
-// Tests type narrowing and mixed-representation handling.
-
-export let reduce = (iters) => {
-  let f64 = new Float64Array(8192)
-  let i32 = new Int32Array(8192)
-  for (let i = 0; i < 8192; i++) {
-    f64[i] = (i % 251) * 0.25
-    i32[i] = (i * 17) & 1023
-  }
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < iters; i++) {
-    let s = 0
-    for (let j = 0; j < f64.length; j++) s += f64[j]
-    for (let j = 0; j < i32.length; j++) s += i32[j]
-    h = (h ^ (s | 0)) * 0x01000193 | 0
-  }
-  return h >>> 0
-}`,
-  },
-  bitwise: {
-    name: 'bitwise mix',
-    expr: 'mix(128)',
-    src: `// Pure integer bitwise ops — shifts, rotates, imul.
-// Hash kernel: every iteration scrambles a 64k state buffer.
-
-export let mix = (rounds) => {
-  let n = 65536
-  let state = new Int32Array(n)
-  let s = 0x1234abcd | 0
-  for (let i = 0; i < n; i++) {
-    s ^= s << 13
-    s ^= s >>> 17
-    s ^= s << 5
-    state[i] = s
-  }
-  for (let r = 0; r < rounds; r++) {
-    for (let i = 0; i < n; i++) {
-      let x = state[i] | 0
-      x ^= x << 7
-      x ^= x >>> 9
-      x = Math.imul(x, 1103515245) + 12345
-      state[i] = x ^ (x >>> 16)
-    }
-  }
-  return state[0] >>> 0
-}`,
-  },
-  tokenizer: {
-    name: 'tokenizer scan',
-    expr: 'tokenize(512)',
-    src: `// Branch-heavy lexical scan — classifies each character as
-// digit, identifier, punctuation, or whitespace. Mixes integer and
-// string operations in a tight loop.
-
-export let tokenize = (repeat) => {
-  let base = 'let alpha_12 = beta + 12345; if (alpha_12 >= 99) { total = total + alpha_12; }\\n'
-  let src = ''
-  for (let i = 0; i < repeat; i++) src = src + base
-  let n = src.length
-
-  let isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95
-
-  let h = 0x811c9dc5 | 0
-  let number = 0
-  let inNumber = 0
-  let inIdent = 0
-  let tokens = 0
-  for (let i = 0; i < n; i++) {
-    let c = src.charCodeAt(i)
-    if (c >= 48 && c <= 57) {
-      number = ((number * 10) + (c - 48)) | 0
-      inNumber = 1
-    } else {
-      if (inNumber) { h = (h ^ number) * 0x01000193 | 0; tokens++; number = 0; inNumber = 0 }
-      if (isAlpha(c)) {
-        if (!inIdent) { h = (h ^ c) * 0x01000193 | 0; tokens++ }
-        inIdent = 1
-      } else {
-        if (c > 32) { h = (h ^ c) * 0x01000193 | 0; tokens++ }
-        inIdent = 0
-      }
-    }
-  }
-  if (inNumber) { h = (h ^ number) * 0x01000193 | 0; tokens++ }
-  return ((h ^ tokens) * 0x01000193) >>> 0
-}`,
-  },
-  callback: {
-    name: 'callback map',
-    expr: 'mapReduce(64)',
-    src: `// Closure-heavy workload — array.map followed by dense reduction.
-// Tests closure allocation, inlining, and fusion.
-
-export let mapReduce = (iters) => {
-  let a = []
-  let n = 4096
-  for (let i = 0; i < n; i++) a.push((i % 97) - 48)
-
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < iters; i++) {
-    let b = a.map(x => x * 2 + i)
-    for (let j = 0; j < b.length; j++) h = (h ^ (b[j] | 0)) * 0x01000193 | 0
-  }
-  return h >>> 0
-}`,
-  },
-  aos: {
-    name: 'AoS to SoA',
-    expr: 'transform(64)',
-    src: `// Array-of-Structs to Struct-of-Arrays transformation.
-// Reads object properties, writes typed arrays — mixed shape access.
-
-export let transform = (iters) => {
-  let n = 16384
-  let rows = []
-  for (let i = 0; i < n; i++) rows.push({ x: i * 0.5, y: i + 1, z: (i & 7) - 3 })
-
-  let xs = new Float64Array(n)
-  let ys = new Float64Array(n)
-  let zs = new Float64Array(n)
-
-  for (let r = 0; r < iters; r++) {
-    for (let i = 0; i < rows.length; i++) {
-      let p = rows[i]
-      xs[i] = p.x + p.y * 0.25 + r
-      ys[i] = p.y - p.z * 0.5
-      zs[i] = p.z + p.x * 0.125
-    }
-  }
-  return xs[0] + ys[0] + zs[0]
-}`,
-  },
-  mandelbrot: {
-    name: 'mandelbrot escape',
-    expr: 'render(256)',
-    src: `// Mandelbrot set escape-time algorithm — the classic floatbench.
-// Per-pixel iteration: z := z² + c until |z|² > 4 or max_iter.
-
-export let render = (size) => {
-  let out = new Uint32Array(size * size)
-  let x0 = -2.0, x1 = 0.5
-  let y0 = -1.25, y1 = 1.25
-  let maxIter = 256
-  let dx = (x1 - x0) / size
-  let dy = (y1 - y0) / size
-
-  for (let py = 0; py < size; py++) {
-    let cy = y0 + py * dy
-    for (let px = 0; px < size; px++) {
-      let cx = x0 + px * dx
-      let zx = 0, zy = 0, i = 0
-      while (i < maxIter) {
-        let x2 = zx * zx, y2 = zy * zy
-        if (x2 + y2 > 4.0) break
-        zy = 2 * zx * zy + cy
-        zx = x2 - y2 + cx
-        i++
-      }
-      out[py * size + px] = i
-    }
-  }
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < out.length; i += 128) h = (h ^ out[i]) * 0x01000193 | 0
-  return h >>> 0
-}`,
-  },
-  json: {
-    name: 'JSON parse',
-    expr: 'parseWalk(512)',
-    src: `// JSON parsing + object traversal. Static literal folded at compile time;
-// use 'let SRC' (not const) to force runtime parsing on every iteration.
-
-let SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20}],"meta":{"scale":7,"bias":11}}'
-
-export let parseWalk = (iters) => {
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < iters; i++) {
-    let o = JSON.parse(SRC)
-    let items = o.items
-    let s = o.meta.bias
-    for (let j = 0; j < items.length; j++) {
-      let it = items[j]
-      s += it.id * o.meta.scale + it.kind + it.value
-    }
-    h = (h ^ (s | 0)) * 0x01000193 | 0
-  }
-  return h >>> 0
-}`,
-  },
-  sort: {
-    name: 'heapsort',
-    expr: 'sort(8192)',
-    src: `// In-place heapsort — comparison-heavy, no SIMD.
-// Tests branch prediction and swap operations.
-
-export let sort = (n) => {
-  let a = new Float64Array(n)
-  let s = 0x9e3779b9 | 0
-  for (let i = 0; i < n; i++) {
-    s ^= s << 13
-    s ^= s >>> 17
-    s ^= s << 5
-    a[i] = ((s >>> 0) / 4294967296)
-  }
-
-  let heapify = (n) => {
-    for (let root = (n >> 1) - 1; root >= 0; root--) {
-      let i = root
-      let child = 2 * i + 1
-      while (child < n) {
-        if (child + 1 < n && a[child] < a[child + 1]) child++
-        if (a[i] >= a[child]) break
-        let t = a[i]; a[i] = a[child]; a[child] = t
-        i = child
-        child = 2 * i + 1
-      }
-    }
-  }
-
-  heapify(n)
-  for (let end = n - 1; end > 0; end--) {
-    let t = a[0]; a[0] = a[end]; a[end] = t
-    let i = 0
-    let child = 1
-    while (child < end) {
-      if (child + 1 < end && a[child] < a[child + 1]) child++
-      if (a[i] >= a[child]) break
-      let u = a[i]; a[i] = a[child]; a[child] = u
-      i = child
-      child = 2 * i + 1
-    }
-  }
-
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < a.length; i += 256) {
-    let v = a[i] * 1000000
-    h = (h ^ (v | 0)) * 0x01000193 | 0
-  }
-  return h >>> 0
-}`,
-  },
-  crc32: {
-    name: 'CRC-32 hash',
-    expr: 'hash(16384, 220)',
-    src: `// CRC-32 (IEEE, reflected) table-driven hash over a byte buffer.
-// Pure integer kernel: Uint8Array reads, Int32Array LUT, bit ops.
-
-export let hash = (n, iters) => {
-  let buf = new Uint8Array(n)
-  let table = new Int32Array(256)
-  for (let i = 0; i < 256; i++) {
-    let c = i
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
-    table[i] = c | 0
-  }
-  let x = 0x12345678 | 0
-  for (let i = 0; i < n; i++) {
-    x = (Math.imul(x, 1103515245) + 12345) | 0
-    buf[i] = (x >>> 16) & 0xff
-  }
-
-  let crc32 = (buf) => {
-    let c = 0xffffffff | 0
-    for (let i = 0; i < n; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
-    return (c ^ 0xffffffff) >>> 0
-  }
-
-  let h = 0
-  for (let it = 0; it < iters; it++) {
-    h = (h ^ crc32(buf)) | 0
-    buf[it % n] = (buf[it % n] + 1) & 0xff
-  }
-  return h >>> 0
-}`,
-  },
-  dotprod: {
-    name: 'dot product',
-    expr: 'dot(8192, 200)',
-    src: `// Dot-product reduction — multiply-accumulate, the fundamental DSP kernel.
-// Latency-bound dependency chain; multi-accumulator vectorization earns its keep.
-
-export let dot = (n, iters) => {
-  let a = new Float64Array(n)
-  let b = new Float64Array(n)
-  for (let i = 0; i < n; i++) {
-    a[i] = (i % 13) - 6
-    b[i] = ((i * 7) % 11) - 5
-  }
-
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < iters; i++) {
-    let s = 0
-    for (let j = 0; j < n; j++) s += a[j] * b[j]
-    h = (h ^ (s | 0)) * 0x01000193 | 0
-  }
-  return h >>> 0
-}`,
-  },
-  lint: {
-    name: 'the linter',
-    expr: 'f(1)',
-    src: `// jz lowers legacy JS by default (var, ==, function — see it compile).
-// Now tick "strict" above: the canonical subset rejects each legacy
-// construct with a pointed error. The language is the linter.
-
-var x = 1
-
-function f(n) {
-  if (n == x) return 1
-  return 0
-}
-
-export { f }`,
-  },
-}
+console.log('compiled + instantiated, top-level ran')`
 
 // ── compile pipeline ────────────────────────────────────────────────────────
 const state = { src: '', exports: null, memory: null, bytes: null, wat: '', ok: false }
-const opts = () => ({ strict: $('strict').checked, optimize: $('opt').value === 'size' ? 'size' : +$('opt').value, names: $('names').checked })
+const optVal = () => (document.querySelector('input[name=opt]:checked') || { value: '3' }).value
+const opts = () => { const o = optVal(); return { strict: $('strict').checked, optimize: o === 'size' ? 'size' : +o, names: $('names').checked } }
 
 // pretty size: B under 1k, then kB / MB (SI), trailing zeros trimmed
 const fmtB = n =>
@@ -791,16 +511,16 @@ const build = () => {
       state.exports = exports; state.memory = memory
     })
     state.src = src; state.bytes = bytes; state.ok = true; state.wat = ''
-    stat.textContent = fmtB(bytes.length)        // bar: module size, right by the ↓wasm button
+    stat.textContent = fmtB(bytes.length)        // bar: module size, by the opt selector
     stat.title = ''
-    out.textContent = ''                         // CLI watch-mode: a fresh console each (re)compile
+    if (out.childElementCount) rule()            // gentle separator — the source recompiled (history kept)
     print('sys', `compiled in ${ms < 1 ? ms.toFixed(2) : ms.toFixed(1)} ms`)
     for (const l of logs) print('log', l)
-    // a stale prompt hint (previous preset's export) misleads — point at a real export
-    const hinted = expr.placeholder.match(/— (\w+)/)?.[1]
+    // a stale prompt hint (previous export) misleads — point at a real export
+    const hinted = expr.placeholder.match(/^(\w+)/)?.[1]
     if (typeof state.exports[hinted] !== 'function') {
       const first = fnExports()[0]
-      if (first) expr.placeholder = `call an export — ${first}(…)`
+      if (first) expr.placeholder = `${first}(…)`
     }
     // WAT (third compile) is always shown in the top split — compute it off the
     // keystroke path so typing stays snappy, then paint it in
@@ -809,7 +529,7 @@ const build = () => {
       try {
         state.wat = compile(src, { ...o, wat: true })
         if (state.wat.includes('v128')) stat.insertAdjacentHTML('beforeend', '<span class="badge">v128</span>')
-        watEl.textContent = state.wat
+        renderWat(state.wat)
       } catch {}
     }, 0)
     setHash(src)
@@ -819,7 +539,7 @@ const build = () => {
     const msg = String(e.message || e)
     stat.innerHTML = '<span class="err">✗</span>'   // bar: compact fail marker (full text on hover)
     stat.title = msg
-    out.textContent = ''                            // CLI: the compile error IS the console output
+    if (out.childElementCount) rule()               // gentle separator — recompiled, then the error
     print('err', firstLine(e))
     const at = msg.match(/\bat (\d+):(\d+)/)
     if (at) paint({ line: +at[1], col: +at[2] })
@@ -835,13 +555,12 @@ const setHash = (src) => {
 }
 
 let deb = 0
-editor.addEventListener('input', () => { $('preset').value = ''; paint(); syncScroll(); clearTimeout(deb); deb = setTimeout(build, 250) })
+editor.addEventListener('input', () => { refresh(); clearTimeout(deb); deb = setTimeout(build, 250) })
 $('strict').addEventListener('change', build)
-$('opt').addEventListener('change', build)
+for (const r of document.querySelectorAll('input[name=opt]')) r.addEventListener('change', build)
 $('names').addEventListener('change', build)
 
 // ── output / eval ───────────────────────────────────────────────────────────
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
 const firstLine = e => String(e.message || e).split('\n')[0]
 const print = (cls, text) => {
   const d = document.createElement('div')
@@ -851,21 +570,6 @@ const print = (cls, text) => {
   out.scrollTop = out.scrollHeight
 }
 const rule = () => { const d = document.createElement('div'); d.className = 'rule'; out.appendChild(d) }
-// render the js-vs-wasm numbers as a compact table; `wins[i]` = the faster column (1=wasm, 2=js)
-const benchTable = (rows, wins) => {
-  const t = document.createElement('table'); t.className = 'bench'
-  rows.forEach((cells, ri) => {
-    const tr = document.createElement('tr')
-    cells.forEach((c, ci) => {
-      const cell = document.createElement(ri ? 'td' : 'th')
-      cell.textContent = c
-      if (ri && ci === wins[ri - 1]) cell.className = 'win'
-      tr.appendChild(cell)
-    })
-    t.appendChild(tr)
-  })
-  out.appendChild(t); out.scrollTop = out.scrollHeight
-}
 
 // Capture console output during wasm/js execution (default env.print wiring
 // routes to console.log/console.error).
@@ -910,115 +614,85 @@ const runExpr = () => {
 }
 
 expr.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') runExpr()
+  if (e.key === 'Enter') e.shiftKey ? benchExpr() : runExpr()
   else if (e.key === 'ArrowUp' && hi > 0) { expr.value = hist[--hi]; e.preventDefault() }
   else if (e.key === 'ArrowDown') { hi = Math.min(hist.length, hi + 1); expr.value = hist[hi] || ''; e.preventDefault() }
 })
 const hist = []; let hi = 0
 
-// ── js vs wasm — same source, two engines, honest numbers ──────────────────
-const measure = (fn, after) => {
-  // grow batch until it takes ≥60ms, then report ops/s from the largest batch
-  let n = 1
-  for (;;) {
-    const t0 = performance.now()
-    for (let i = 0; i < n; i++) fn()
-    const dt = performance.now() - t0
-    after?.()
-    if (dt >= 60) return n / dt * 1000
-    n = Math.min(n * 4, n * Math.ceil(80 / Math.max(dt, 0.25)) + 1)
-  }
+// ── bench: race a call — jz-wasm vs the SAME source as plain JS. The honest line is
+//    "faster on the kernels it's for, or it's a bug" — so when jz loses, offer a 1-click report. ──
+let jsTwin = { src: null, mod: null, url: null }
+const jsTwinOf = async (src) => {                 // the source as a plain-JS module (valid jz is valid JS)
+  if (jsTwin.src === src && jsTwin.mod) return jsTwin.mod
+  if (jsTwin.url) URL.revokeObjectURL(jsTwin.url)
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+  const mod = await import(url)
+  jsTwin = { src, mod, url }
+  return mod
 }
+const makeRunner = (scope, code) => { const fn = new Function('$', `with ($) { return (${code}) }`); return () => fn(scope) }
+const medianMs = (run, reset) => {                // median per-call ms over 40 reps, after an 8-rep warmup
+  for (let i = 0; i < 8; i++) { run(); reset && reset() }
+  const t = []
+  for (let i = 0; i < 40; i++) { const a = performance.now(); run(); t.push(performance.now() - a); reset && reset() }
+  return t.sort((x, y) => x - y)[20]
+}
+const fx = n => n < 1 ? n.toFixed(3) : n < 10 ? n.toFixed(2) : n.toFixed(1)
+const reportUrl = (code, jzMs, jsMs) => {
+  const slower = (jzMs / jsMs).toFixed(2)
+  const permalink = location.origin + location.pathname + '#' + encodeHash(state.src)
+  const body = [
+    `jz is slower than plain JS on this kernel — from the REPL bench (a slowdown on a compute kernel is a bug we want).`, '',
+    `**Call:** \`${code}\``,
+    `**jz (wasm):** ${jzMs.toFixed(3)} ms · **JS (V8):** ${jsMs.toFixed(3)} ms · **${slower}× slower** (median of 40, in-browser)`,
+    `**opt:** ${optVal()}${$('strict').checked ? ' · strict' : ''}`, '',
+    `**Repro — REPL permalink (exact source):** ${permalink}`,
+  ].join('\n')
+  return `https://github.com/dy/jz/issues/new?labels=slowdown&title=${encodeURIComponent(`Slowdown: jz ${slower}× slower than JS on ${code}`)}&body=${encodeURIComponent(body)}`
+}
+const benchRow = (label, ms) => `  ${label.padEnd(3)}${fx(ms).padStart(7)} ms\n`   // monospace table row, ms right-aligned
+const printBench = (code, jzMs, jsMs) => {
+  const d = document.createElement('div'); d.className = 'res'
+  const table = benchRow('jz', jzMs) + benchRow('js', jsMs)
+  const ratio = jsMs / jzMs                          // > 1 → jz faster
+  if (ratio >= 1.03) d.textContent = table + `  ${fx(ratio)}× faster · median of 40`
+  else if (ratio >= 0.97) d.textContent = table + `  ≈ even (${fx(ratio)}×) · median of 40`
+  else if (ratio >= 0.8) d.textContent = table + `  ${fx(1 / ratio)}× slower · median of 40`   // modest (< 1.25×) — within the expected range; no report, to avoid normal-case spam
+  else {                                             // a meaningful slowdown (≥ 1.25×) on a kernel jz is meant for — invite a 1-click report
+    d.append(table + `  ${fx(1 / ratio)}× slower · median of 40 · `)
+    const a = document.createElement('a')
+    a.href = reportUrl(code, jzMs, jsMs); a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Report it →'
+    d.append(a)
+  }
+  out.appendChild(d); out.scrollTop = out.scrollHeight
+}
+const benchExpr = async () => {
+  const code = expr.value.trim()
+  if (!code) { print('note', 'type a call to bench — e.g. orbit(100000)'); return }
+  if (!state.ok || !state.exports) { print('err', 'nothing compiled yet'); return }
+  print('in', `bench ${code}`)
+  await new Promise(r => setTimeout(r))            // paint the prompt line before the (blocking) timing loop
+  let js
+  try { js = await jsTwinOf(state.src) }
+  catch (e) { print('err', 'could not run the source as plain JS — ' + firstLine(e)); return }
+  try {
+    const runJz = makeRunner(state.exports, code), runJs = makeRunner(js, code)
+    const reset = () => state.memory?.reset?.()
+    runJz(); runJs()                               // one call each first — a thrown expr surfaces here
+    const jzMs = medianMs(runJz, reset), jsMs = medianMs(runJs)
+    if (jzMs < 0.01 || jsMs < 0.01) print('note', "too fast to measure — under the timer's resolution. Try a bigger input, e.g. orbit(100000).")
+    else printBench(code, jzMs, jsMs)
+    reset()
+  } catch (e) { print('err', firstLine(e)) }
+}
+$('bench').addEventListener('click', benchExpr)
 
+// exports the prompt can call — drives the placeholder hint (to bench a kernel, use /bench/)
 const fnExports = () => Object.keys(state.exports || {})
   .filter(k => typeof state.exports[k] === 'function' && !k.startsWith('_'))
 
-$('bench').addEventListener('click', async () => {
-  if (!state.exports) { print('err', 'nothing compiled yet'); return }
-  // the benched expression is whatever's in the prompt — any call, any export.
-  // Empty prompt guesses: the last run expression, else the preset's default
-  // (each only if its export still exists in the current module).
-  let code = expr.value.trim()
-  const callable = (e) => e && typeof state.exports[e.match(/^\w+/)?.[0]] === 'function'
-  if (!code) code = [hist[hist.length - 1], $('preset').selectedOptions[0]?.dataset.expr].find(callable) || ''
-  if (!code) { print('err', `type a call to bench — exports: ${fnExports().join(', ') || 'none'}`); return }
-  if (!state.ok) print('note', 'compile error — benching the last good module')
-  print('in', code)
-  try {
-    // the same source is a valid ES module: import it and run it as plain JS
-    const blob = () => URL.createObjectURL(new Blob([state.src], { type: 'text/javascript' }))
-    const url = blob()
-    let jsMod
-    try { jsMod = await import(url) } finally { URL.revokeObjectURL(url) }
-    // compile the expression ONCE — a per-iteration `new Function` costs ~µs
-    // itself and would drown sub-µs calls / compress every ratio toward 1
-    const exprFn = new Function('$', `with ($) { return (${code}) }`)
-    const wasmFn = () => exprFn(state.exports)
-    const jsFn = () => exprFn(jsMod)
-    const wr = wasmFn(), jr = jsFn()
-    state.memory?.reset?.()
-    // numbers compare with relative epsilon — SIMD reassociates f64 sums, and
-    // jz's own sin/cos/exp kernels are ~1e-7-class (drift accumulates in sums)
-    const same = typeof wr === 'number' && typeof jr === 'number'
-      ? Math.abs(wr - jr) <= 1e-6 * Math.max(Math.abs(wr), Math.abs(jr), 1)
-      : fmt(wr) === fmt(jr)
-    if (!same) print('note', `results differ — wasm ${fmt(wr)} · js ${fmt(jr)}`)
-    // WARM — V8 at full JIT tier-up: interleave engines across rounds, keep medians
-    const reset = () => state.memory?.reset?.()
-    const ws = [], js_ = []
-    for (let r = 0; r < 5; r++) { ws.push(measure(wasmFn, reset)); js_.push(measure(jsFn)) }
-    const med = a => a.sort((x, y) => x - y)[a.length >> 1]
-    const w = med(ws), j = med(js_)
-    const opsFmt = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x.toFixed(1)
-    // sub-µs calls only time call overhead — say so rather than print a misleading ~1× table
-    if (w > 1e6) { print('note', 'call too cheap to compare — bench heavier work, e.g. orbit(100000)'); rule(); return }
-    // COLD — first call on fresh copies (jz is machine code at once; JS starts interpreted)
-    let wCold, jCold
-    if (w < 2e5) {
-      const N = Math.min(24, Math.max(12, Math.ceil(w * 0.005)))
-      const wasmCopies = [], jsCopies = [], u2 = blob()
-      try {
-        for (let i = 0; i < N; i++) { wasmCopies.push(jz(state.src, opts()).exports); jsCopies.push(await import(u2 + '#' + i)) }
-      } finally { URL.revokeObjectURL(u2) }
-      let t0 = performance.now(); for (const e of wasmCopies) exprFn(e); wCold = (performance.now() - t0) / N
-      t0 = performance.now(); for (const m of jsCopies) exprFn(m); jCold = (performance.now() - t0) / N
-    }
-    // table — wasm | js, faster cell highlighted; one-line verdict below
-    const msFmt = x => x >= 1 ? x.toFixed(2) + ' ms' : (x * 1000).toFixed(0) + ' µs'
-    const rows = [['', 'wasm', 'js'], ['warm', opsFmt(w) + ' ops/s', opsFmt(j) + ' ops/s']]
-    const wins = [w >= j ? 1 : 2]
-    if (wCold != null) { rows.push(['first call', msFmt(wCold), msFmt(jCold)]); wins.push(wCold <= jCold ? 1 : 2) }
-    benchTable(rows, wins)
-    const cmp = (r) => r >= 1 ? `wasm ${r.toFixed(2)}×` : `js ${(1 / r).toFixed(2)}×`
-    let line = `${cmp(w / j)} faster, warm`
-    if (wCold != null) line += ` · ${cmp(jCold / wCold)} on first call`
-    print('note', line)
-    rule()
-  } catch (e) { print('err', firstLine(e)) }
-})
-
-// ── presets + download ───────────────────────────────────────────────────────
-// first option is the placeholder shown when the editor holds custom (non-preset) code
-const phOpt = document.createElement('option')
-phOpt.value = ''; phOpt.textContent = 'preset'; phOpt.hidden = true
-$('preset').appendChild(phOpt)
-for (const [id, p] of Object.entries(PRESETS)) {
-  const o = document.createElement('option')
-  o.value = id; o.textContent = p.name; o.dataset.expr = p.expr
-  $('preset').appendChild(o)
-}
-const loadPreset = (id) => {
-  const p = PRESETS[id]; if (!p) return
-  $('preset').value = id
-  editor.value = p.src
-  paint()
-  expr.placeholder = 'call an export — ' + p.expr
-  expr.value = ''
-  out.textContent = ''
-  build()
-}
-$('preset').addEventListener('change', () => loadPreset($('preset').value))
-
+// ── download .wasm ────────────────────────────────────────────────────────────
 $('dl').addEventListener('click', () => {
   if (!state.ok || !state.bytes) return
   const a = document.createElement('a')
@@ -1039,6 +713,59 @@ gear.addEventListener('click', (e) => {
 menu.addEventListener('click', (e) => e.stopPropagation())   // tweaking a knob keeps it open
 document.addEventListener('click', () => { if (!menu.hidden) closeMenu() })
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) { closeMenu(); gear.focus() } })
+
+// ── resizable splits — vertical (editor/terminal) + horizontal (WAT/console),
+//    each persisted to localStorage. One helper drives both axes. ──────────────
+const rightEl = document.querySelector('.right'), termEl = document.querySelector('.terminal')
+const store = (k, v) => { try { localStorage.setItem(k, v) } catch {} }
+// makeResizer(el, {target, prop, key, min, max, reset, axis, decKey, incKey})
+// — axis(e) → percent along the resize axis; prop is the CSS var it sets on target.
+const makeResizer = (el, c) => {
+  const cur = () => parseFloat(getComputedStyle(c.target).getPropertyValue(c.prop)) || c.reset
+  const set = (pct, save) => {
+    pct = Math.min(c.max, Math.max(c.min, pct))
+    c.target.style.setProperty(c.prop, pct + '%')
+    if (save) store(c.key, pct + '%')
+  }
+  try { const sv = localStorage.getItem(c.key); if (sv) c.target.style.setProperty(c.prop, sv) } catch {}
+  let on = false
+  el.addEventListener('pointerdown', (e) => { on = true; el.classList.add('drag'); el.setPointerCapture(e.pointerId); e.preventDefault() })
+  el.addEventListener('pointermove', (e) => { if (on) set(c.axis(e), false) })
+  el.addEventListener('pointerup', () => { if (!on) return; on = false; el.classList.remove('drag'); set(cur(), true) })
+  el.addEventListener('dblclick', () => set(c.reset, true))
+  el.addEventListener('keydown', (e) => {
+    if (e.key === c.decKey) { set(cur() - 2, true); e.preventDefault() }
+    else if (e.key === c.incKey) { set(cur() + 2, true); e.preventDefault() }
+  })
+}
+makeResizer($('divider'), {
+  target: mainEl, prop: '--lw', key: 'jz-repl-split', min: 20, max: 80, reset: 50,
+  decKey: 'ArrowLeft', incKey: 'ArrowRight',
+  axis: (e) => { const r = mainEl.getBoundingClientRect(); return (e.clientX - r.left) / r.width * 100 },
+})
+makeResizer($('hdivider'), {
+  target: rightEl, prop: '--wh', key: 'jz-repl-wat', min: 15, max: 85, reset: 60,
+  decKey: 'ArrowUp', incKey: 'ArrowDown',
+  axis: (e) => { const r = termEl.getBoundingClientRect(); return (e.clientY - r.top) / r.height * 100 },
+})
+
+// ── file drop — replaces the editor content (single file; the repl compiles one source) ──
+const codePane = document.querySelector('.code')
+let dragDepth = 0
+codePane.addEventListener('dragenter', (e) => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+  e.preventDefault(); if (dragDepth++ === 0) codePane.classList.add('drag')
+})
+codePane.addEventListener('dragover', (e) => {
+  if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault()
+})
+codePane.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; codePane.classList.remove('drag') } })
+codePane.addEventListener('drop', async (e) => {
+  e.preventDefault(); dragDepth = 0; codePane.classList.remove('drag')
+  const f = e.dataTransfer?.files?.[0]
+  if (!f) return
+  try { setSource(await f.text()); build() } catch {}
+})
 
 // ── url hash: #<base64url(source)> ──────────────────────────────────────────
 const encodeHash = (src) => {
@@ -1068,31 +795,22 @@ editor.addEventListener('keydown', (e) => {
 })
 
 // ── boot ────────────────────────────────────────────────────────────────────
+const setSource = (src) => { editor.value = src; refresh() }
+
 // External hash navigation (pasting a shared link while already here).
 // Our own setHash uses replaceState, which never fires hashchange.
 addEventListener('hashchange', () => {
   try {
     const src = decodeHash(location.hash.slice(1))
-    if (src !== editor.value) { editor.value = src; $('preset').value = ''; paint(); build() }
+    if (src !== editor.value) { setSource(src); build() }
   } catch {}
 })
 
 const h = location.hash.slice(1)
 if (h) {
-  try {
-    const src = decodeHash(h)
-    // a reload carries the auto-updated hash — if it's verbatim a preset,
-    // keep that preset selected instead of showing a blank select
-    const match = Object.keys(PRESETS).find(id => PRESETS[id].src === src)
-    if (match) {
-      loadPreset(match)
-    } else {
-      editor.value = src
-      $('preset').value = ''   // shared custom code, not a preset → show placeholder
-      paint(); build()
-    }
-  } catch { loadPreset('start') }
-} else loadPreset('start')
+  try { setSource(decodeHash(h)); build() }
+  catch { setSource(INTRO_SRC); expr.placeholder = INTRO_EXPR; build() }
+} else { setSource(INTRO_SRC); expr.placeholder = INTRO_EXPR; build() }
 </script>
 </body>
 </html>
