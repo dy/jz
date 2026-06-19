@@ -94,7 +94,7 @@ cnv.addEventListener('wheel', e => {
   e.preventDefault();
   const rect = cnv.getBoundingClientRect();
   const pxX = e.clientX - rect.left, pxY = e.clientY - rect.top;
-  const k = Math.exp(-e.deltaY * 0.001);
+  const k = Math.exp(e.deltaY * 0.001);   // scroll up → zoom IN (consistent with julia / ship / buddhabrot)
   const preX = view.cx + (pxX - width * 0.5) * view.zoom;
   const preY = view.cy + (pxY - height * 0.5) * view.zoom;
   view.zoom *= k;

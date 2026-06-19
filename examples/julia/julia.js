@@ -3,7 +3,8 @@
 // the fractal morphs continuously. c is passed as f64 args (a setter global would be
 // narrowed to i32 in jz, freezing the shape). Smooth-iteration grayscale. The tight
 // per-pixel complex iteration is exactly the kind of float loop jz turns into clean wasm.
-// resize(w,h) → Uint32Array; frame(t, cre, cim) renders.
+// resize(w,h) → Uint32Array; frame(t, cre, cim, vcx, vcy, vscale) renders the view centred
+// at (vcx,vcy) with half-height vscale — the host drives those from scroll-zoom / drag-pan.
 
 let W = 0, H = 0, px, invW = 0, invH = 0, aspect = 1
 let MAXIT = 160
@@ -14,14 +15,13 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (t, cre, cim) => {
-  let scale = 1.5
+export let frame = (t, cre, cim, vcx, vcy, vscale) => {
   let j = 0, py = 0
   while (py < H) {
-    let y0 = (py * invH - 0.5) * 2.0 * scale
+    let y0 = (py * invH - 0.5) * 2.0 * vscale + vcy
     let qx = 0
     while (qx < W) {
-      let x0 = (qx * invW - 0.5) * 2.0 * scale * aspect
+      let x0 = (qx * invW - 0.5) * 2.0 * vscale * aspect + vcx
       let zx = x0, zy = y0
       let it = 0
       let zx2 = zx * zx, zy2 = zy * zy

@@ -2,9 +2,11 @@
 // ψ = R + iI evolved as staggered real/imaginary fields.
 // Render: brightness = |ψ|², hue = phase angle.
 //
-// Visscher scheme (stable):
-//   R_{n+1} = R_n + dt*(0.5*L(I_n) - V*I_n)
-//   I_{n+1} = I_n + dt*(-0.5*L(R_{n+1}) + V*R_{n+1})  ← uses updated R
+// Visscher scheme (stable), forward-time Schrödinger ∂ψ/∂t = i(½∇²ψ − Vψ):
+//   R_{n+1} = R_n + dt*(-0.5*L(I_n) + V*I_n)
+//   I_{n+1} = I_n + dt*( 0.5*L(R_{n+1}) - V*R_{n+1})  ← uses updated R
+// (sign of the bracket = +Ĥ on R, −Ĥ on I; the opposite sign runs time backwards,
+//  which sends a +kx packet the WRONG way — leftward, away from the slits.)
 
 let W = 0, H = 0
 let R   // Float64Array — real part of ψ
@@ -78,7 +80,7 @@ let stepR = () => {
     while (x < w - 1) {
       let idx = y * w + x
       let lapI = I[idx - w] + I[idx + w] + I[idx - 1] + I[idx + 1] - 4.0 * I[idx]
-      R[idx] = R[idx] + dt * (0.5 * lapI - V[idx] * I[idx])
+      R[idx] = R[idx] + dt * (-0.5 * lapI + V[idx] * I[idx])
       x++
     }
     y++
@@ -93,7 +95,7 @@ let stepI = () => {
     while (x < w - 1) {
       let idx = y * w + x
       let lapR = R[idx - w] + R[idx + w] + R[idx - 1] + R[idx + 1] - 4.0 * R[idx]
-      I[idx] = I[idx] + dt * (-0.5 * lapR + V[idx] * R[idx])
+      I[idx] = I[idx] + dt * (0.5 * lapR - V[idx] * R[idx])
       x++
     }
     y++

@@ -25,9 +25,9 @@ let cur = 0             // backtrace cursor
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  // coarse cell grid sized for a ~10px pitch → a classic maze: wide black corridors, thin 1px
-  // walls (a fine 1px-corridor grid reads as a busy gray mesh, not a black-bg maze).
-  let PITCH = 10
+  // fine cell grid sized for a ~5px pitch → a dense maze: ~4px black corridors, thin 1px walls
+  // (still a clean ~4:1 corridor:wall ratio, so it reads as a black-bg maze, not a gray mesh).
+  let PITCH = 5
   GX = (w / PITCH) | 0; if (GX < 10) GX = 10
   GY = (h / PITCH) | 0; if (GY < 8) GY = 8
   BW = 2 * GX + 1; BH = 2 * GY + 1
@@ -157,11 +157,13 @@ let shadeCells = () => {
 }
 
 export let frame = (t) => {
-  if (phase === 0) { let k = 0; while (k < GX) { genStep(); if (phase !== 0) break; k++ } }
-  else if (phase === 1) { let k = 0; while (k < GX * 3) { solveStep(); if (phase !== 1) break; k++ } }
+  // per-frame work scales with the (now finer) grid so generation stays a brisk ~2s and the
+  // solve flood / backtrace keep pace — the 5px pitch has ~4× the cells of the old 10px one.
+  if (phase === 0) { let k = 0; while (k < GX * 2) { genStep(); if (phase !== 0) break; k++ } }
+  else if (phase === 1) { let k = 0; while (k < GX * 5) { solveStep(); if (phase !== 1) break; k++ } }
   else if (phase === 2) {
     let k = 0
-    while (k < GX) {
+    while (k < GX * 2) {
       bit[cur] = 2                                     // mark path (special value)
       if (prev[cur] < 0) { phase = 3; waitc = 0; break }
       cur = prev[cur]; k++

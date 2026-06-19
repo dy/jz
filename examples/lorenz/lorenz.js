@@ -11,7 +11,8 @@ let W = 0, H = 0, px
 // [x, y, z, θ, scX, scY, offX, offY]
 let st = new Float64Array(8)
 const SIG = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
-const DT = 0.005, STEPS = 340
+const DT = 0.002, STEPS = 850   // many fine substeps → a dense trail of tiny single-pixel points
+                                 // (DT·STEPS held ≈ 1.7 so the trajectory advances at the same pace)
 
 // Lorenz derivatives
 let dx = (x, y, z) => SIG * (y - x)
@@ -81,13 +82,9 @@ export let frame = (t, theta) => {
     let sx = (x * cosT - y * sinT) * scX + offX
     let sy = offY - z * scY
 
-    // 2×2 splat (bright centre, dimmer neighbours) → a 2px ribbon instead of a 1px thread,
-    // so the wings read as a dense surface rather than a sparse wire.
-    let ix = sx | 0, iy = sy | 0
-    plot(ix, iy, 170)
-    plot(ix + 1, iy, 95)
-    plot(ix, iy + 1, 95)
-    plot(ix + 1, iy + 1, 55)
+    // a single fine 1px point — the high substep count makes the trail dense without
+    // fattening each dot, so the wings read as a delicate stippled surface, not a ribbon.
+    plot(sx | 0, sy | 0, 150)
     k++
   }
 

@@ -2184,3 +2184,27 @@ test('clamp-peel: for-loop stencils (the bench shape) peel + bit-exact + guards 
   }
   for (const [n, s] of Object.entries(danger)) { ok(!fires(s), `${n} bails`); for (const w of [3, 16, 64]) for (const r of [1, 2, 4]) is(on(s)(w, r), off(s)(w, r), `${n} w=${w} r=${r}`) }
 })
+
+test('forward-propagation: typed-array global swap must survive (double-buffer idiom)', () => {
+  // The canonical ping-pong swap `let s = f; f = g; g = s` over reassignable typed-array
+  // module globals. forwardPropagate tracked `s = (global.get $f)` as a single-use copy but
+  // had NO invalidation for the intervening `f = g` (global.set $f) — so it substituted the
+  // now-stale `(global.get $f)` into `g = s`, collapsing it to `g = g` (a vacuumed self-store).
+  // After the swap f AND g then aliased the SAME buffer, so a stencil sim (lbm) streamed into
+  // the buffer it was reading → noise. purgeGlobalRefs on every global.set is the fix. Pin all
+  // opt levels, both swap legs, and the cross-call persistence (the bug also breaks getG alone).
+  const SRC = `
+    let f = new Float64Array(2)
+    let g = new Float64Array(2)
+    export let init = () => { f[0] = 1.0; g[0] = 99.0 }
+    export let swap = () => { let s = f; f = g; g = s }
+    export let getF = (i) => f[i]
+    export let getG = (i) => g[i]
+  `
+  for (const optimize of [null, 'size', 'speed']) {
+    const { init, swap, getF, getG } = run(SRC, { optimize })
+    init(); swap()
+    is(getF(0), 99, `opt=${optimize}: f → old g (99)`)
+    is(getG(0), 1,  `opt=${optimize}: g → old f (1)`)
+  }
+})

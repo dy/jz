@@ -7,26 +7,19 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-let baseCx = -0.45, baseCy = -0.5, userSet = false
+// The kernel already takes (t, cx, cy, halfH) — centre + half-height — so pan/zoom is just a
+// matter of driving those from the shared panZoom: drag to pan, scroll to zoom into the masts
+// and reflection, double-click to reset to the whole ship.
+const home = { cx: -0.45, cy: -0.5, scale: 1.35 }
+const view = { ...home }
 const demo = runDemo({
   name: "burningship",
-  hint: "Burning Ship fractal — drag to recenter, auto-zoom breathes",
-  frame: (e, t) => {
-    if (ptr.down) {
-      baseCx += (ptr.x - 0.5) * 0.04
-      baseCy += (ptr.y - 0.5) * 0.04
-      userSet = true
-    }
-    const cx = baseCx + Math.cos(t * 0.07) * 0.01
-    const cy = baseCy + Math.sin(t * 0.05) * 0.01
-    // gentle breathing zoom: halfH oscillates around 1.35
-    const halfH = 1.35 * (1.0 + 0.15 * Math.sin(t * 0.08))
-    e.frame(t, cx, cy, halfH)
-  },
+  hint: "Burning Ship fractal — drag to pan · scroll to zoom",
+  frame: (e, t) => { e.frame(t, view.cx, view.cy, view.scale) },
 })
-const ptr = trackPointer(demo.cv)
+panZoom(demo.cv, view, home, () => {})
 </script>
 </body>
 </html>

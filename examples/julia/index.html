@@ -7,14 +7,17 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, trackPointer, panZoom } from "../lib/jzdemo.js"
 
-// c drifts gently; drag steers it and the new value is KEPT — afterwards it just
-// drifts a little around wherever you left it (never snaps back).
+// c drifts gently; drag steers it and the new value is KEPT — afterwards it just drifts a
+// little around wherever you left it (never snaps back). Scroll zooms the view toward the
+// cursor and double-click resets it; drag stays reserved for steering c.
 let baseRe = -0.7, baseIm = 0.27, userSet = false
+const home = { cx: 0, cy: 0, scale: 1.5 }
+const view = { ...home }
 const demo = runDemo({
   name: "julia",
-  hint: "the Julia set — drag to steer the constant c",
+  hint: "the Julia set — drag to steer c · scroll to zoom",
   frame: (e, t) => {
     let cre, cim
     if (ptr.down) {                       // drag → c in [-1.2,1.2], remember it
@@ -26,10 +29,11 @@ const demo = runDemo({
       cre = baseRe + Math.cos(t * 0.13) * amp
       cim = baseIm + Math.sin(t * 0.11) * amp
     }
-    e.frame(t, cre, cim)
+    e.frame(t, cre, cim, view.cx, view.cy, view.scale)
   },
 })
 const ptr = trackPointer(demo.cv)
+panZoom(demo.cv, view, home, () => {}, { drag: false })   // zoom + dblclick-reset; drag steers c
 </script>
 </body>
 </html>

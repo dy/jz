@@ -7,9 +7,13 @@
 
 let W = 0, H = 0, px
 
-let STEPS = 6500     // curve resolution
-let TMAX = 130.0      // τ integration range — long enough for the detuned figure to precess
-                      // through a full rosette and for damping to spiral it gently inward
+let STEPS = 6000     // curve resolution
+let TMAX = 100.0      // τ integration range — long enough for the detuned figure to precess
+                      // through a full rosette, short enough that the damping has spiralled it
+                      // back to the centre by the end (so the trace closes rather than scribbles)
+let A2 = 0.62         // amplitude of the *second* pendulum on each axis, smaller than the first
+                      // — a clean primary ellipse modulated by a secondary, the classic harmonograph
+                      // (equal amplitudes summed to ±2R, overflowing the frame into a chord scribble)
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -47,7 +51,7 @@ export let frame = (t, detune, phaseShift) => {
 
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
-  let R = minDim * 0.44
+  let R = minDim * 0.26   // first-pendulum amplitude; max excursion R*(1+A2) ≈ 0.42·minDim stays in frame
 
   // Frequency ratios 2:3 with slight detuning → figure precesses
   let f1 = 2.0
@@ -55,8 +59,8 @@ export let frame = (t, detune, phaseShift) => {
   let f3 = 3.0
   let f4 = 2.0 + detune * 0.5
 
-  // Damping (gentle inward spiral over TMAX → the figure fills a rosette band)
-  let d1 = 0.006, d2 = 0.006, d3 = 0.006, d4 = 0.006
+  // Damping (inward spiral over TMAX → the figure starts wide and winds to the centre)
+  let d1 = 0.012, d2 = 0.012, d3 = 0.012, d4 = 0.012
 
   // Phase offsets (evolve with t for animation)
   let p1 = phaseShift
@@ -70,16 +74,16 @@ export let frame = (t, detune, phaseShift) => {
   let tau0 = 0.0
   let e10 = Math.exp(-d1 * tau0), e20 = Math.exp(-d2 * tau0)
   let e30 = Math.exp(-d3 * tau0), e40 = Math.exp(-d4 * tau0)
-  let px0 = cx + R * (Math.sin(f1 * tau0 + p1) * e10 + Math.sin(f2 * tau0 + p2) * e20)
-  let py0 = cy + R * (Math.sin(f3 * tau0 + p3) * e30 + Math.sin(f4 * tau0 + p4) * e40)
+  let px0 = cx + R * (Math.sin(f1 * tau0 + p1) * e10 + A2 * Math.sin(f2 * tau0 + p2) * e20)
+  let py0 = cy + R * (Math.sin(f3 * tau0 + p3) * e30 + A2 * Math.sin(f4 * tau0 + p4) * e40)
 
   i = 1
   while (i <= STEPS) {
     let tau = i * dt
     let e1 = Math.exp(-d1 * tau), e2 = Math.exp(-d2 * tau)
     let e3 = Math.exp(-d3 * tau), e4 = Math.exp(-d4 * tau)
-    let nx = cx + R * (Math.sin(f1 * tau + p1) * e1 + Math.sin(f2 * tau + p2) * e2)
-    let ny = cy + R * (Math.sin(f3 * tau + p3) * e3 + Math.sin(f4 * tau + p4) * e4)
+    let nx = cx + R * (Math.sin(f1 * tau + p1) * e1 + A2 * Math.sin(f2 * tau + p2) * e2)
+    let ny = cy + R * (Math.sin(f3 * tau + p3) * e3 + A2 * Math.sin(f4 * tau + p4) * e4)
 
     // Fade out as pendulum damps — single gray, overlaps glow
     let amp = Math.exp(-d1 * tau)

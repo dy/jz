@@ -28,11 +28,6 @@ let sortedIdx = new Int32Array(N)
 let hx = new Float64Array(N)
 let hy = new Float64Array(N)
 
-// Trace state — avoid bare fractional module globals
-let tracePts   = new Float64Array(2 * 512)   // (x,y) pairs
-let traceLen   = new Int32Array(1)            // current number of trace points
-let prevPhiArr = new Float64Array(1)          // previous phi for reset detection
-
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
@@ -92,10 +87,6 @@ export let init = () => {
     sortedIdx[j + 1] = key
     i++
   }
-
-  // Reset trace
-  traceLen[0] = 0
-  prevPhiArr[0] = 0.0
 }
 
 // Additive, saturating pixel write
@@ -151,10 +142,6 @@ export let frame = (t, phi) => {
 
   let cx = W * 0.5, cy = H * 0.5
 
-  // Detect loop restart: when phi < prevPhi we've wrapped around
-  if (phi < prevPhiArr[0]) { traceLen[0] = 0 }
-  prevPhiArr[0] = phi
-
   // Walk the epicycle chain to find current tip
   let ex = cx, ey = cy
   let ki = 0
@@ -177,23 +164,28 @@ export let frame = (t, phi) => {
     ki++
   }
 
-  // Store current tip in trace if there's room
-  let tl = traceLen[0] | 0
-  if (tl < N) {
-    tracePts[tl * 2]     = ex
-    tracePts[tl * 2 + 1] = ey
-    traceLen[0] = tl + 1
+  // Draw the traced curve. The epicycle tip path IS the heart, and the heart is already
+  // sampled in hx/hy (screen point j = cx + scale*hx[j], cy + scale*hy[j]). So draw the
+  // heart polyline from the start up to the sample the pen has reached — phi/2π of the way
+  // around — then bridge that leading edge to the live tip. Deterministic and bit-exact
+  // (no Math.* in the trace → JS and jz draw an identical heart), and it always completes
+  // a full loop regardless of frame rate (the old fixed tip buffer froze at ~27%).
+  let PI2 = 6.283185307179586
+  let frac = phi / PI2
+  if (frac < 0.0) frac = 0.0
+  if (frac > 1.0) frac = 1.0
+  let prog = (frac * N) | 0
+  if (prog > N - 1) prog = N - 1
+  let hxs = cx + scale * hx[0], hys = cy + scale * hy[0]
+  let j = 0
+  while (j < prog) {
+    let nxh = cx + scale * hx[j + 1], nyh = cy + scale * hy[j + 1]
+    line(hxs, hys, nxh, nyh, 255, 255, 255)
+    hxs = nxh; hys = nyh
+    j++
   }
-
-  // Draw trace as connected line segments
-  let ti = 0
-  tl = traceLen[0] | 0
-  while (ti < tl - 1) {
-    let tx0 = tracePts[ti * 2], ty0 = tracePts[ti * 2 + 1]
-    let tx1 = tracePts[(ti + 1) * 2], ty1 = tracePts[(ti + 1) * 2 + 1]
-    line(tx0, ty0, tx1, ty1, 255, 255, 255)
-    ti++
-  }
+  // Bridge the leading trace sample to the live epicycle tip (it sits between samples).
+  line(hxs, hys, ex, ey, 255, 255, 255)
 
   // Highlight tip
   addpix(ex | 0, ey | 0, 255, 255, 255)

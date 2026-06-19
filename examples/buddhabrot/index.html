@@ -7,18 +7,21 @@
 </head>
 <body>
 <script type="module">
-import { runDemo } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
+// The nebula accumulates in view coordinates, so any pan/zoom invalidates it — `reset()` wipes
+// the density buffer so it re-accumulates into the new view. Default frames the whole set
+// (centre −0.5, half-height 1.5). Drag to pan, scroll to zoom, double-click to reset.
+const home = { cx: -0.5, cy: 0, scale: 1.5 }
+const view = { ...home }
 const demo = runDemo({
   name: "buddhabrot",
-  hint: "Buddhabrot nebula — escape trajectories accumulate · click to clear",
+  hint: "Buddhabrot nebula — drag to pan · scroll to zoom",
   load: (e) => { if (e.init) e.init() },
-  frame: (e, t) => { e.frame(t) },
+  frame: (e, t) => { e.frame(t, view.cx, view.cy, view.scale) },
 })
-// click to clear
-demo.cv.addEventListener("pointerdown", () => {
-  if (demo.engine && demo.engine.clear) demo.engine.clear()
-})
+const reset = () => { if (demo.engine && demo.engine.clear) demo.engine.clear() }
+panZoom(demo.cv, view, home, reset)   // re-accumulate from scratch whenever the view moves
 </script>
 </body>
 </html>

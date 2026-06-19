@@ -1,14 +1,16 @@
 // Buddhabrot — density histogram of complex trajectories that escape the Mandelbrot set.
 // Unlike Mandelbrot (color = escape time for THIS pixel's c), Buddhabrot counts how many
 // trajectories PASS THROUGH each pixel. The result accumulates across many frames into a
-// luminous nebula. Call clear() to restart.
-let W = 0, H = 0, px, dens
+// luminous nebula. Call clear() to restart. frame(t, vcx, vcy, vscale) plots through a view
+// centred at (vcx,vcy) with half-height vscale — the host drives those from scroll-zoom /
+// drag-pan and clears the accumulation whenever the view moves.
+let W = 0, H = 0, px, dens, aspect = 1.0
 let MAXIT = 200
 // trajectory scratch: store (x,y) pairs for up to MAXIT steps
 let traj  // Float64Array of length 2*MAXIT
 
 export let resize = (w, h) => {
-  W = w; H = h
+  W = w; H = h; aspect = w / h
   dens = new Uint32Array(w * h)
   px = new Uint32Array(w * h)
   traj = new Float64Array(400)  // fixed size: 2*200
@@ -25,8 +27,9 @@ export let clear = () => {
   while (i < n) { dens[i] = 0; i++ }
 }
 
-export let frame = (t) => {
+export let frame = (t, vcx, vcy, vscale) => {
   let samples = 30000
+  let halfW = vscale * aspect      // half-width of the view in world units (aspect-corrected)
   let s = 0
   while (s < samples) {
     // random point in c-plane (bounding box of Mandelbrot)
@@ -52,15 +55,15 @@ export let frame = (t) => {
       while (k < it) {
         let tx = traj[k * 2]
         let ty = traj[k * 2 + 1]
-        // map to pixel coords: x in [-2,1], y in [-1.5,1.5]
-        let ix = ((tx + 2.0) / 3.0 * W) | 0
-        let iy = ((ty + 1.5) / 3.0 * H) | 0
+        // map world (tx,ty) → pixel through the current view (centre vcx,vcy, half-height vscale)
+        let ix = (((tx - vcx) / halfW * 0.5 + 0.5) * W) | 0
+        let iy = (((ty - vcy) / vscale * 0.5 + 0.5) * H) | 0
         if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
           let idx = iy * W + ix
           dens[idx] = dens[idx] + 1
         }
-        // mirror point (symmetric about real axis)
-        let iym = ((-ty + 1.5) / 3.0 * H) | 0
+        // mirror point (the set is symmetric about the real axis y=0)
+        let iym = (((-ty - vcy) / vscale * 0.5 + 0.5) * H) | 0
         if (ix >= 0 && ix < W && iym >= 0 && iym < H) {
           let idxm = iym * W + ix
           dens[idxm] = dens[idxm] + 1

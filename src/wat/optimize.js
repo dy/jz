@@ -1291,6 +1291,19 @@ const purgeRefs = (known, name) => {
   }
 }
 
+/** Drop tracked values that read global `$name`: a `global.set $name` makes them stale.
+ *  The local-only {@link purgeRefs} misses this — so a value captured from a global
+ *  (`let s = f`, where `f` is a reassignable module-level binding) would survive an
+ *  intervening `f = …` and substitute the NEW global. That silently breaks the canonical
+ *  pointer swap `let s = f; f = g; g = s` (g would read post-swap f, i.e. itself). */
+const purgeGlobalRefs = (known, name) => {
+  for (const [key, tracked] of known) {
+    let refs = false
+    walk(tracked.val, n => { if (Array.isArray(n) && n[0] === 'global.get' && n[1] === name) refs = true })
+    if (refs) known.delete(key)
+  }
+}
+
 /** True if `node` recursively contains an op that may read linear memory.
  *  Tracked values whose RHS reads memory go stale after any intervening
  *  memory-mutating op (`*.store`, `memory.copy/fill/init`, atomic stores/rmw). */
@@ -1378,6 +1391,9 @@ const substGets = (node, known) => {
           if (inner === known) inner = new Map(known)
           inner.delete(n[1])
           purgeRefs(inner, n[1])
+        } else if (n[0] === 'global.set' && typeof n[1] === 'string') {   // same staleness as a local write — a sibling operand's
+          if (inner === known) inner = new Map(known)                     // global write invalidates a later operand's global-sourced copy
+          purgeGlobalRefs(inner, n[1])
         }
       })
     }
@@ -1420,6 +1436,7 @@ const forwardPropagate = (funcNode, params, useCounts) => {
         if (!Array.isArray(n)) return
         if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
           { known.delete(n[1]); purgeRefs(known, n[1]) }
+        else if (n[0] === 'global.set' && typeof n[1] === 'string') purgeGlobalRefs(known, n[1])
       })
       const uses = getUseCount(instr[1])
       purgeRefs(known, instr[1]) // entries that read this local just went stale
@@ -1466,8 +1483,10 @@ const forwardPropagate = (funcNode, params, useCounts) => {
       // pre-write tracked value (correct), but later reads must see the new
       // (untracked) value, not the stale constant.
       walk(instr, n => {
-        if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+        if (!Array.isArray(n)) return
+        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
           { known.delete(n[1]); purgeRefs(known, n[1]) }
+        else if (n[0] === 'global.set' && typeof n[1] === 'string') purgeGlobalRefs(known, n[1])
       })
       // Memory write in this statement (any nested store / memory.copy / etc.)
       // invalidates every tracked value whose RHS reads memory: inlining one

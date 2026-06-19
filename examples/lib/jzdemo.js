@@ -168,6 +168,49 @@ export const trackPointer = (el, onChange) => {
   return state
 }
 
+// Scroll-to-zoom (toward the cursor) + drag-to-pan + double-click-to-reset over a
+// complex-plane view, for the escape-time fractals (julia, burningship, buddhabrot).
+// `view = { cx, cy, scale }` is in WORLD units: (cx,cy) is the centre, `scale` the half-height.
+// A pixel (fx,fy ∈ 0..1) maps to world via the same formula the kernels use:
+//   wx = cx + (fx - 0.5)·2·scale·aspect,   wy = cy + (fy - 0.5)·2·scale   (aspect = w/h)
+// so zoom/pan here and the kernel's pixel→world mapping stay in lockstep. `home` is the
+// reset view (its fields are copied on double-click). `onChange()` fires after any change.
+// `drag:false` keeps only zoom + reset — for julia, whose drag already steers the constant c.
+export const panZoom = (el, view, home, onChange, { drag = true } = {}) => {
+  const worldAt = (clientX, clientY) => {
+    const r = el.getBoundingClientRect()
+    const aspect = r.width / r.height
+    return { wx: view.cx + ((clientX - r.left) / r.width - 0.5) * 2 * view.scale * aspect,
+             wy: view.cy + ((clientY - r.top) / r.height - 0.5) * 2 * view.scale }
+  }
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    const before = worldAt(e.clientX, e.clientY)            // world point under the cursor, pre-zoom
+    view.scale *= Math.exp(e.deltaY * 0.0012)               // wheel up → smaller half-height → zoom in
+    if (view.scale > 8) view.scale = 8                       // clamp: don't zoom past the whole set…
+    if (view.scale < 1e-13) view.scale = 1e-13              // …nor past f64 detail (filaments turn blocky)
+    const after = worldAt(e.clientX, e.clientY)
+    view.cx += before.wx - after.wx                          // keep that same point pinned under the cursor
+    view.cy += before.wy - after.wy
+    onChange()
+  }, { passive: false })
+  if (drag) {
+    let down = false, lx = 0, ly = 0
+    el.addEventListener('pointerdown', (e) => { down = true; lx = e.clientX; ly = e.clientY; try { el.setPointerCapture(e.pointerId) } catch {} })
+    el.addEventListener('pointermove', (e) => {
+      if (!down) return
+      const r = el.getBoundingClientRect(), aspect = r.width / r.height
+      view.cx -= (e.clientX - lx) / r.width * 2 * view.scale * aspect    // drag follows the cursor 1:1
+      view.cy -= (e.clientY - ly) / r.height * 2 * view.scale
+      lx = e.clientX; ly = e.clientY
+      onChange()
+    })
+    el.addEventListener('pointerup', (e) => { down = false; try { el.releasePointerCapture(e.pointerId) } catch {} })
+    el.addEventListener('pointerleave', () => { down = false })
+  }
+  el.addEventListener('dblclick', () => { view.cx = home.cx; view.cy = home.cy; view.scale = home.scale; onChange() })
+}
+
 // URLs are page-relative; resolve against the document so dynamic import() (which
 // would otherwise resolve relative to this module) and fetch() agree.
 export const loadEngine = async (kind, { js, wasm }) => {
