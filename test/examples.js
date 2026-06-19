@@ -158,7 +158,11 @@ test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)',
     const wat = jz.compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 80, `plasma vectorizes (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok((wat.match(/\$math\.sin2/g) || []).length >= 6, 'fbm sines lift to $math.sin2');
-    ok(!/__is_str_key/.test(wat), 'foldStrDispatchF64 removed the dead string-dispatch');
+    // foldStrDispatchF64 removed $fbm's dead `+` string-dispatch (a string-dispatch $fbm would be
+    // impure ⇒ never inlined ⇒ no sin2). Other functions may keep legit polymorphic dispatch.
+    const fbmStart = wat.indexOf('(func $fbm');
+    const fbmRegion = wat.slice(fbmStart, wat.indexOf('(func ', fbmStart + 10));
+    ok(!/__is_str_key/.test(fbmRegion), '$fbm is string-dispatch-free (foldStrDispatchF64)');
     const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); for (let f = 0; f < 4; f++) exports.frame(f * 0.1); return [...px]; };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'plasma fbm-inline bit-exact vs scalar (1536 px)');
