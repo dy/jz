@@ -316,6 +316,63 @@ test('SIMD u32x4 - map multiply', () => {
   }`).main(), 72)
 })
 
+// === Mixed-lane log-tonemap (tryToneMap) ===
+//
+// The fern/bifurcation/attractors tail: i32 dens[i] → f64 log → i32 pack → px[i], an i32 loop with an
+// f64 island. Lifts 2-wide (load64_zero → i32x4 low, convert_low → f64x2, log_v, clamp, trunc_sat_zero,
+// pack, masked i64.store). Must be BIT-EXACT vs the scalar oracle — incl. the odd-width scalar tail,
+// the clamp saturation (log·S > 255), and the v==0 lanes (both the conditional-value and if-store forms).
+
+// (a) conditional VALUE form (attractors-shaped): `g=0; if(v>0) g=trunc(min(log(v+1)·S,255)); px=pack(g)`
+const TONE_VALUE = (n) => `
+  let dens = new Uint32Array(${n}), px = new Uint32Array(${n})
+  export let main = () => {
+    let i = 0
+    while (i < ${n}) { dens[i] = (i * 53) % 600; i++ }   // 0..599 — some saturate the 255 clamp, some 0
+    i = 0
+    while (i < ${n}) {
+      let v = dens[i], g = 0
+      if (v > 0) { let L = Math.log(v + 1.0) * 44.0; g = (L > 255.0 ? 255.0 : L) | 0 }
+      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+      i++
+    }
+    let s = 0; i = 0; while (i < ${n}) { s = (s + px[i]) | 0; i++ }
+    return s
+  }`
+
+// (b) conditional STORE form (bifurcation/fern-shaped): if(v>0) px=pack(...) else px=bg
+const TONE_STORE = (n) => `
+  let dens = new Uint32Array(${n}), px = new Uint32Array(${n})
+  export let main = () => {
+    let i = 0
+    while (i < ${n}) { dens[i] = (i * 53) % 600; i++ }
+    i = 0
+    while (i < ${n}) {
+      let v = dens[i]
+      if (v > 0) { let L = Math.log(v + 1.0) * 44.0; if (L > 255.0) L = 255.0; let g = L | 0; px[i] = (255 << 24) | (g << 16) | (g << 8) | g }
+      else { px[i] = (255 << 24) }
+      i++
+    }
+    let s = 0; i = 0; while (i < ${n}) { s = (s + px[i]) | 0; i++ }
+    return s
+  }`
+
+// optimize:'speed' (not SIMD_OPT) so SIMD_PROTECTED keeps Math.log un-inlined → the f64x2 mirror fires
+// (as in the real examples); plain SIMD_OPT inlines the log poly and the tonemap shape never forms.
+const SPEED = { optimize: 'speed' }, SPEED_SCALAR = { optimize: 'speed', noSimd: true }
+for (const [label, mk] of [['value-form', TONE_VALUE], ['store-form', TONE_STORE]]) {
+  test(`SIMD tonemap ${label} - vectorizes mixed-lane and is bit-exact (even + odd width)`, () => {
+    const w64 = wat(mk(64), SPEED)
+    ok(/f64x2\.convert_low_i32x4/.test(w64), `tonemap ${label} lifts the i32→f64 island (convert_low_i32x4)`)
+    ok(/call \$math\.log_v/.test(w64), `tonemap ${label} lifts Math.log → $math.log_v`)
+    for (const n of [64, 63, 1, 2, 3]) {   // even, odd tail, and the smallest widths
+      const simd = runVec(mk(n), SPEED).main()
+      const scal = runVec(mk(n), SPEED_SCALAR).main()
+      is(simd, scal, `tonemap ${label} n=${n}: SIMD checksum === scalar`)
+    }
+  })
+}
+
 // === TypedArray type-aware indexing ===
 
 test('Int32Array - type-aware read/write', () => {

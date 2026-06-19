@@ -54,6 +54,37 @@ The global `ctx` object (defined in `src/ctx.js`) is the single source of compil
 3. Add tests in `test/`
 4. Run `npm test`
 
+## Adding an auto-vectorizer recognizer
+
+The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/vectorize.js`](src/optimize/vectorize.js))
+lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its dispatch; each consumes the
+shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` is fail-safe (the loop
+stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
+
+Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
+
+- **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output
+  buffers byte-for-byte (0 diffs). **Seed RNG** (`randomSeed:K`) for any example using `Math.random` —
+  two un-seeded instances diverge and look like a miscompile. Float reductions that reorder across lanes
+  are ulp-divergent → gate at `optimize≥2`; per-lane maps/reductions reorder nothing and are exact.
+- **Ratchet +0.** `npm run test:ratchet` must stay byte-identical — recognize only the intended shape;
+  don't widen the default corpus path.
+- **Run `npm run test:self`.** The dev suite runs on V8, but the self-host build compiles jz *with jz*.
+  A recognizer can be bit-exact on V8 yet make `dist/jz.wasm` fail validation
+  (`i64.reinterpret_f64 expected f64, found i32`) — **the V8 suite will not catch this.**
+  - *Cause & fix:* a top-level **self-recursive** helper taking the `ctx` object as a param — jz's
+    signature narrowing can't prove the recursive call passes an i32 pointer, so it leaves that one
+    function's `ctx` boxed (`f64`) while every other has `ctx:i32`, and callers emit a bad reinterpret.
+    Define ctx-using *recursive* lifters as **nested `function` declarations that capture `ctx`** (take
+    only `expr`/`stmt` args), like `scanForLoadsStores`. No `ctx` param ⇒ nothing to mis-narrow. Also:
+    don't reassign a parameter (use a local).
+  - *Debug:* `compile(<self.js source>, {optimize:false, wat:true})`, map the failing `function #N` to a
+    name by counting `(func $…` in order, then dump its param types — the odd `ctx:f64` is the smoking gun.
+
+Coverage is not exhausted but is diminishing-returns vs reach work (see `.work/todo.md`): i32x4 cellular
+automata (game-of-life/ising/rule30) and lyapunov's carried-recurrence outer-strip remain feasible;
+gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scatter, so route them to scalar.
+
 ## Principles
 
 - **Don't optimize the compiler source itself.** Readability > cleverness in `src/`. The compiler doesn't need to be fast — the output does.

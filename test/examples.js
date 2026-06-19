@@ -193,6 +193,34 @@ test('example: lorenz conditional trail-fade vectorizes (i32x4 if-store) bit-exa
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz if-store bit-exact vs scalar (4800 px, 30 frames)');
 });
 
+// Mixed-lane log-tonemap (tryToneMap): fern / bifurcation / attractors all end in a flat loop that
+// loads an i32 density, lifts it to f64 for `Math.log(d+1)*S`, clamps, truncates back to i32, packs an
+// ARGB word, and (conditionally) stores it — i32 lanes wrapping an f64 ISLAND that the single-lane lift
+// can't carry. The 2-wide hybrid loads 2 u32 (load64_zero → i32x4 low lanes), `f64x2.convert_low_i32x4_s`
+// into the island, `$math.log_v` + clamp, `i32x4.trunc_sat_f64x2_s_zero` back out, packs, and masked-
+// stores the low 2 lanes. BIT-EXACT per lane (log_v is the per-lane mirror; clamp keeps L finite so
+// trunc_sat == |0; masks match their data width). fern seeds dens via Math.random ⇒ fixed randomSeed.
+test('example: log-tonemap (fern/bifurcation/attractors) vectorizes mixed-lane f64x2 + bit-exact', () => {
+    const cases = [
+        { name: 'bifurcation', w: 70, h: 50, drive: (e) => { const px = e.resize(70, 50); for (let f = 0; f < 4; f++) e.frame(f * 0.1, 2.5, 4.0); return [...px]; } },
+        { name: 'fern',        w: 37, h: 49, drive: (e) => { const px = e.resize(37, 49); if (e.init) e.init(); for (let f = 0; f < 4; f++) e.frame(f, 0.2); return [...px]; } },
+        { name: 'attractors',  w: 45, h: 37, drive: (e) => { const px = e.resize(45, 37); for (let f = 0; f < 3; f++) e.frame(1.4, -2.3, 2.4, -2.1, 15000); return [...px]; } },
+    ];
+    for (const { name, drive } of cases) {
+        const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
+        // experimentalToneMap is default-on at speed; the SCALAR baseline turns it explicitly off.
+        const base = (jz.compile(src, { ...OPT, experimentalToneMap: false, wat: true }).match(/f64x2\./g) || []).length;
+        const wat = jz.compile(src, { ...OPT, wat: true });
+        const tm = (wat.match(/f64x2\./g) || []).length;
+        ok(tm > base, `${name} tonemap vectorizes (${base} → ${tm} f64x2)`);
+        ok(/call \$math\.log_v/.test(wat), `${name} lifts Math.log → the f64x2 mirror $math.log_v`);
+        const run = (opts) => drive(jz(src, { ...opts, randomSeed: 7 }).exports);
+        const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalToneMap: false });
+        is(simd.length, scal.length);
+        is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} mixed-lane tonemap bit-exact vs scalar (${cases.find(c => c.name === name).w * cases.find(c => c.name === name).h} px)`);
+    }
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;

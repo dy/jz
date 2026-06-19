@@ -2703,7 +2703,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
     if (runVectorizer) foldStrDispatchF64(fn)
-    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil !== false, cfg.experimentalOuterStrip !== false, cfg._pureFuncMap || null)
+    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil !== false, cfg.experimentalOuterStrip !== false, cfg._pureFuncMap || null, cfg.experimentalToneMap !== false)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies

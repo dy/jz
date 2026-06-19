@@ -242,6 +242,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.experimentalOuterStrip] - Opt-in: strip-mine a pixel loop whose
  *   per-pixel value is an inner reduction (metaballs-shape) into f64x2 lanes (2 pixels at
  *   once). Bit-exact vs scalar. Unstable — off by default.
+ * @param {boolean} [opts.experimentalToneMap] - Mixed-lane log-tonemap vectorizer: a flat
+ *   `i32 dens[i] → f64 Math.log → i32 pack → px[i]` loop lifts to a 2-wide f64x2 island
+ *   (fern/bifurcation/attractors). Bit-exact vs scalar; default-on at speed, pass `false` to disable.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
@@ -546,6 +549,10 @@ const jzCompileInner = (code, opts = {}) => {
   // opts.experimentalOuterStrip: the outer-loop strip-mine vectorizer (2 adjacent pixels in f64x2
   // lanes over an inner reduction). Default-on at speed; two-way like experimentalStencil.
   if (opts.experimentalOuterStrip !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalOuterStrip = !!opts.experimentalOuterStrip
+
+  // opts.experimentalToneMap: the mixed-lane log-tonemap vectorizer (i32 dens[i] → f64 log →
+  // i32 pack → px[i], 2-wide f64x2 island). Default-on at speed; two-way like the others.
+  if (opts.experimentalToneMap !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalToneMap = !!opts.experimentalToneMap
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')
