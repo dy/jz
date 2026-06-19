@@ -1826,6 +1826,15 @@ function liftExprV(expr, ctx) {
     return [info.splat, expr]
   }
 
+  // `f64(invariant i32)` — e.g. `x[i] / N` with N an i32 global/invariant: the convert is a
+  // loop-invariant scalar, so compute once and splat (== scalar-then-splat, bit-exact). Unblocks
+  // pure-f64 maps that scale/divide by an integer count (rfft cepstrum `cep[i] = x[i] / N`).
+  if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && expr.length === 2) {
+    const inner = expr[1]
+    const inv = isArr(inner) && (inner[0] === 'global.get' || (inner[0] === 'local.get' && ctx.localKind.get(inner[1]) === 'invariant'))
+    if (inv) return [info.splat, expr]
+  }
+
   // NaN-canonicalization wrapper (float lanes only; integer lanes never carry
   // it). Both the flattened `select` form and the un-flattened `block` form
   // lift to a per-lane v128.bitselect — canonical value in NaN lanes, X
@@ -3436,10 +3445,14 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
 // public `$math.{sin,cos}` wrap the same core. Their f64x2 mirrors $math.sin2/$math.cos2 (the
 // vectorized reduce+horner, module/math.js:543) are BIT-EXACT per lane to the scalar core — so we
 // can lift the call straight to the *2 helper. Phase-2 adds pow/log/atan2 here (see PPC_CALL2).
+// NOTE: scalar targets here must be kept out of inlineOnce's single-caller inlining (SIMD_PROTECTED
+// in src/wat/optimize.js) — else the call node is gone before this lift runs.
 const PPC_CALL2 = {
   '$math.sin_core': '$math.sin2', '$math.cos_core': '$math.cos2',
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
   '$math.pow': '$math.pow2',   // Phase 2: 2-arg; bit-exact per-lane scalar (see module/math.js)
+  '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
+  '$math.log': '$math.log_v',                                       // 1-arg; bit-exact extract/repack
 }
 
 // Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
@@ -3572,7 +3585,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
   }
   if (!laneMap.size) return null   // nothing lifted to f64x2
   // Only worth the extract overhead if a costly op (a *2 transcendental or f64x2.sqrt) got lifted.
-  const heavy = (n) => isArr(n) && ((n[0] === 'call' && /\$math\.(sin2|cos2|pow2|log2_v|atan2_2|exp2_2|tan2)/.test(n[1])) || n[0] === 'f64x2.sqrt' || n.some(heavy))
+  const heavy = (n) => isArr(n) && ((n[0] === 'call' && /\$math\.(sin2|cos2|pow2|log_v|atan2_2|hypot_2|exp2_2|tan2)/.test(n[1])) || n[0] === 'f64x2.sqrt' || n.some(heavy))
   if (![...laneLifted.values()].some(heavy)) return null   // only cheap arithmetic lifted — not worth it
 
   // Exactly one i32.store, found anywhere in the epilogue (jz wraps `mem[off]=…` in a `(block …)`).

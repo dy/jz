@@ -556,6 +556,24 @@ export default (ctx) => {
       (f64x2.splat (call $math.pow (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
       (call $math.pow (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.pow'])
 
+  // atan2/hypot/log have no cheap 2-lane polynomial (multi-`return` fdlibm bodies), so — like pow2 —
+  // each f64x2 mirror computes both lanes with the SCALAR helper and repacks: BIT-EXACT by
+  // construction. The per-pixel-color pass only emits these when a truly-2-wide op (sin2/cos2/sqrt)
+  // already justifies the f64x2 pair, so the extract/repack never makes a kernel slower.
+  // NOTE: names avoid the $math.log2/$math.exp2 collision (those are log-/exp-BASE-2).
+  wat('math.atan2_2', `(func $math.atan2_2 (param $y v128) (param $x v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.atan2 (f64x2.extract_lane 0 (local.get $y)) (f64x2.extract_lane 0 (local.get $x))))
+      (call $math.atan2 (f64x2.extract_lane 1 (local.get $y)) (f64x2.extract_lane 1 (local.get $x)))))`, ['math.atan2'])
+  wat('math.hypot_2', `(func $math.hypot_2 (param $x v128) (param $y v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
+      (call $math.hypot (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.hypot'])
+  wat('math.log_v', `(func $math.log_v (param $x v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))
+      (call $math.log (f64x2.extract_lane 1 (local.get $x)))))`, ['math.log'])
+
   // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
   // exp2's NaN/overflow/underflow guards cover exp's). Accurate to exp2's ~6e-9, better
   // than the old 7-term Taylor, and it shares one code path with `2**`.

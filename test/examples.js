@@ -315,3 +315,23 @@ test('example: game-of-life output natively matches WASM', () => {
         is(wasmArr[i], nativeArr[i]);
     }
 });
+
+// Transcendental mirror + convert-splat perf wins. domain-color's per-pixel field is atan2/hypot/sin
+// of a complex map; the 2-wide $math.atan2_2 + $math.hypot_2 mirrors (extract-repack, bit-exact like
+// pow2) let tryPerPixelColor lift it to f64x2. rfft's cepstrum `cep[i]=x[i]/N` (N an i32 global) maps
+// once f64.convert_i32_s(invariant) splats. Both are bit-exact by construction.
+test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/domain-color/domain-color.js', import.meta.url), 'utf8');
+    const wat = jz.compile(src, { ...OPT, wat: true });
+    ok((wat.match(/f64x2\./g) || []).length > 20, `domain-color vectorizes via the per-pixel-color pass (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
+    ok(/\$math\.atan2_2/.test(wat) && /\$math\.hypot_2/.test(wat), 'atan2 → $math.atan2_2, hypot → $math.hypot_2');
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0); return Array.from(px); };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+    is(simd.length, scal.length);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'domain-color mirror lift bit-exact vs scalar (1536 px)');
+});
+
+test('example: rfft cepstrum map vectorizes via convert-splat', () => {
+    const src = fs.readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8');
+    ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'rfft gains f64x2 (cep[i]=x[i]/N maps once convert(N) splats)');
+});

@@ -2059,6 +2059,11 @@ const devirt = (ast) => {
  * @param {Array} ast
  * @returns {Array}
  */
+// Scalar transcendental helpers the auto-vectorizer rewrites to f64x2 mirrors (PPC_CALL2 in
+// src/optimize/vectorize.js). inlineOnce must NOT dissolve their call nodes when single-caller —
+// the post-phase lift needs the call to rewrite it. Keep in sync with PPC_CALL2's keys.
+const SIMD_PROTECTED = new Set(['$math.sin_core', '$math.cos_core', '$math.sin', '$math.cos', '$math.pow', '$math.atan2', '$math.hypot', '$math.log'])
+
 const inlineOnce = (ast) => {
   if (!Array.isArray(ast) || ast[0] !== 'module') return ast
 
@@ -2178,6 +2183,11 @@ const inlineOnce = (ast) => {
     for (const [name, fn] of funcByName) {
       if (pinned.has(name) || otherRef.has(name)) continue
       if (callRefs.get(name) !== 1) continue
+      // Keep the scalar transcendentals that the auto-vectorizer maps to f64x2 mirrors (PPC_CALL2 in
+      // src/optimize/vectorize.js): inlining a single-caller $math.atan2/hypot/log would dissolve the
+      // call node before the post-phase lift can rewrite it to $math.atan2_2/hypot_2/log_v. Keep in
+      // sync with PPC_CALL2's keys.
+      if (SIMD_PROTECTED.has(name)) continue
       if (callsSelf(fn, name)) continue
       // named params/locals only (we'll rename them); reject locals with types
       // we can't zero-init on block re-entry.
