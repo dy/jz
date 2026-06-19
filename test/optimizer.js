@@ -2208,3 +2208,27 @@ test('forward-propagation: typed-array global swap must survive (double-buffer i
     is(getG(0), 1,  `opt=${optimize}: g → old f (1)`)
   }
 })
+
+test('unroll: flattened bodies re-init their accumulators (zero-init elided only once)', () => {
+  // Loop unrolling flattens an outer body's `let s = 0` into one scope, duplicating it.
+  // WASM zero-inits locals, so the FIRST is elided — but the 2nd+ are genuine per-iteration
+  // resets. Dropping them let `s` carry across iterations (the matmul N≤4 miscompile).
+  const { main } = run(`
+    export const main = () => {
+      const A = new Float64Array(4)
+      for (let i = 0; i < 4; i++) A[i] = i + 1
+      let h = 0
+      for (let i = 0; i < 4; i++) { let s = 0; for (let k = 0; k < 4; k++) s += A[k]; h = (h + (s | 0)) | 0 }
+      return h        // 4×(1+2+3+4) = 40; the bug carried s → 10+20+30+40 = 100
+    }`)
+  is(main(), 40)
+  // small dense matmul (the offset-indexed reduce that triggered it) — speed vs scalar oracle
+  const mm = (N) => `export const main = () => {
+    const N = ${N}, A = new Float64Array(N*N), B = new Float64Array(N*N), C = new Float64Array(N*N)
+    for (let i = 0; i < N*N; i++) { A[i] = (i%13)-6; B[i] = ((i*7)%11)-5 }
+    for (let i = 0; i < N; i++) { const ai = i*N; for (let j = 0; j < N; j++) { const bj = j*N
+      let s = 0; for (let k = 0; k < N; k++) s += A[ai+k]*B[bj+k]; C[i*N+j] = s } }
+    let h = 0; for (let i = 0; i < N*N; i++) h = (h + (C[i]|0)) | 0; return h }`
+  for (const N of [2, 3, 4])
+    is(run(mm(N), { optimize: 'speed' }).main(), run(mm(N), { optimize: false }).main(), `matmul N=${N} bit-exact`)
+})

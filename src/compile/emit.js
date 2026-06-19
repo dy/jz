@@ -1083,8 +1083,14 @@ export function emitDecl(...inits) {
     } else {
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
     }
-    if (!(isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length))
+    // `let x = 0` at function scope is normally elided — WASM zero-inits locals. But loop
+    // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are
+    // genuine RE-inits between iterations (e.g. a nested reduce's accumulator). Elide only
+    // the FIRST per name; emit the rest as resets. (Names are preserved — no renaming.)
+    const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
+    if (!zeroInit || ctx.func.zeroInitSeen?.has(name))
       result.push(['local.set', `$${name}`, coerced])
+    else (ctx.func.zeroInitSeen ??= new Set()).add(name)
 
     const schemaId = ctx.schema.idOf?.(name)
     if (ctx.func.localProps?.has(name) && schemaId != null) {

@@ -349,6 +349,7 @@ function scanAndTagNonEscapingClosures(body) {
 // their synthetic labels can't collide with the parent frame's.
 function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.stack = []
+  ctx.func.zeroInitSeen = new Set()   // names whose `let x=0` zero-init was elided once; a 2nd is a real re-init (unrolled bodies)
   ctx.func.maybeNullish = new Set()   // bindings assigned a nullish literal → coerce in arithmetic (null-flow)
   ctx.func.pendingLabel = null        // label awaiting its loop, for `continue <label>`
   ctx.func.uniq = uniq
