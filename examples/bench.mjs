@@ -123,7 +123,12 @@ for (const { name, frame, make, opt, jzSrc } of EXAMPLES) {
   // version (same image, V8 has no auto-SIMD for these divergent per-pixel loops).
   const src = readFileSync(dir + `${name}/${jzSrc || `${name}.js`}`, 'utf8')
   const jsmod = await import(new URL(`${name}/${name}.js`, import.meta.url).href)
-  const { exports, memory } = jz(src)
+  // Compile the showcase at jz's best tier ('speed' = level 3): full nested unroll,
+  // N-accumulator reductions, relaxed-SIMD madd, and the SIMD-helper inliner — the
+  // last lifts a hand-vectorized kernel's per-step helper (raymarcher's SDF) out of
+  // the hot loop, which V8's wasm JIT won't do. The bench measures throughput, so the
+  // speed-for-size / relaxed-fma trades 'speed' makes are exactly what to show here.
+  const { exports, memory } = jz(src, { optimize: 'speed' })
 
   const jsT = timeUs(make(jsmod, null))
   const jzT = timeUs(make(exports, memory))
