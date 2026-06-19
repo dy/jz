@@ -55,6 +55,15 @@ function boxPtrIR(i32node, ptrType, aux = 0) {
  *  `(x >>> 0)` uint32 idiom converts to a positive f64 in [0, 2^32) instead of sign-flipping. */
 export const asF64 = n => {
   if (n == null) err(`compiler internal: expected emitted IR value in ${ctx.func.current?.name || '<module>'}, got empty value`)
+  // A v128 (SIMD) value can't be NaN-boxed into the uniform f64 closure ABI — there is no
+  // lossless f64 carrier for 128 bits. This is reached only at a closure boundary: a SIMD
+  // value captured by, passed to, returned from, or flowing through a `(…)=>…` used as a
+  // VALUE — most commonly an IIFE `(() => f32x4.…)()`, which jz lowers via the closure path.
+  // Without this guard the coercion emits `f64.convert_i32_s(<v128>)` and dies in the wasm
+  // validator with an opaque type error. Keep SIMD inside a NAMED top-level function called
+  // directly (`let sdf = (x) => f32x4.…; sdf(v)` lowers to a typed v128 `call`, no boxing),
+  // and extract scalars with `f64x2.lane` / `f32x4.lane` before crossing a closure boundary.
+  if (n.type === 'v128') err(`SIMD (v128) values can't cross a closure/IIFE boundary — closures use the uniform f64 ABI. Move the SIMD into a named top-level function called directly, or extract a lane (f64x2.lane / f32x4.lane) to an f64 first.`)
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
   if (n.type === 'i64') {

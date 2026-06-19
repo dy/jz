@@ -23,6 +23,19 @@ test('prohibited: super', () => throws('export let f = () => super.x', 'super', 
 test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
+// A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI. Crossing a
+// closure/IIFE boundary with one used to die in the wasm validator with an opaque
+// `f64.convert_i32_s expected i32, found v128`; now it's an actionable compile error.
+// (The proper fix — lambda-lifting IIFEs to typed direct calls — is tracked separately;
+// until then the diagnostic points at the workaround: a named top-level function.)
+test('SIMD across a closure/IIFE boundary → clear error, not an opaque wasm crash', () => {
+  throws('export let f = (a) => f32x4.lane((() => f32x4.splat(a))(), 0)', 'closure', 'IIFE returning v128 errors clearly')
+  throws('export let f = (a) => f32x4.lane((() => f32x4.mul(a, a))(), 0)', 'SIMD', 'IIFE capturing a v128 errors clearly')
+  // Positive control: the SAME work in a NAMED top-level function (typed v128 direct call) compiles + runs.
+  const { exports } = jz('let sq = (x) => f32x4.mul(x, x)\nexport let g = (a) => f32x4.lane(sq(f32x4.splat(a)), 0)')
+  is(exports.g(3), 9, 'named v128 helper called directly works (the documented workaround)')
+})
+
 // ============================================================================
 // Prohibited ops
 // ============================================================================
