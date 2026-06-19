@@ -1683,112 +1683,268 @@ const propagate = (ast) => {
 
 // ==================== FUNCTION INLINING ====================
 
-/**
- * Inline tiny functions (single expression, no locals, no params or simple params).
- * @param {Array} ast
- * @returns {Array}
- */
-const inline = (ast) => {
-  if (!Array.isArray(ast) || ast[0] !== 'module') return ast
+// Shared inliner primitives, used by BOTH passes below: `inline` (duplicates tiny
+// multi-caller bodies — size-for-speed) and `inlineOnce` (splices single-caller
+// bodies, never duplicates). The lift technique is identical — rename the callee's
+// params/locals/labels to fresh `$__inlN_*` names, evaluate args once into the
+// renamed param locals, turn `return X` into `br $__inlN X`, wrap the body in a
+// `(block $__inlN (result T)? …)`. Only the SELECTION policy differs (one caller vs
+// every caller of a small body), so the lift lives here once.
 
-  // Collect inlinable functions
-  const inlinable = new Map() // $name → { body, params }
-
-  for (const node of ast.slice(1)) {
-    if (!Array.isArray(node) || node[0] !== 'func') continue
-
-    const name = typeof node[1] === 'string' && node[1][0] === '$' ? node[1] : null
-    if (!name) continue
-
-    // Check if function is small enough to inline
-    let params = []
-    let body = []
-    let hasLocals = false
-    let hasExport = false
-
-    for (let i = 1; i < node.length; i++) {
-      const sub = node[i]
-      if (!Array.isArray(sub)) continue
-      if (sub[0] === 'param') {
-        // Collect param names and types
-        if (typeof sub[1] === 'string' && sub[1][0] === '$') {
-          params.push({ name: sub[1], type: sub[2] })
-        } else {
-          // Unnamed params - harder to inline
-          params = null
-          break
-        }
-      } else if (sub[0] === 'local') {
-        hasLocals = true
-      } else if (sub[0] === 'export') {
-        hasExport = true
-      } else if (sub[0] !== 'result' && sub[0] !== 'type') {
-        body.push(sub)
-      }
+let inlineUid = 0
+const INL_HEAD = new Set(['export', 'type', 'param', 'result', 'local'])
+const inlBodyStart = (fn) => {
+  let i = 2
+  while (i < fn.length && (typeof fn[i] === 'string' || (Array.isArray(fn[i]) && INL_HEAD.has(fn[i][0])))) i++
+  return i
+}
+const inlIsBranch = op => op === 'br' || op === 'br_if' || op === 'br_table'
+// A subtree we can't lift into a (block …): depth-relative branch labels (which would
+// shift under the added nesting) or tail calls (which would escape the wrapping block).
+const inlUnsafe = (n) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref') return true
+  if (op === 'try' || op === 'try_table' || op === 'delegate' || op === 'rethrow') return true  // exception labels — not handled by the relabeler below
+  if (inlIsBranch(op)) for (let i = 1; i < n.length; i++) if (typeof n[i] === 'number' || (typeof n[i] === 'string' && /^\d+$/.test(n[i]))) return true
+  for (let i = 1; i < n.length; i++) if (inlUnsafe(n[i])) return true
+  return false
+}
+const inlCallsSelf = (n, name) => {
+  if (!Array.isArray(n)) return false
+  if ((n[0] === 'call' || n[0] === 'return_call') && n[1] === name) return true
+  for (let i = 1; i < n.length; i++) if (inlCallsSelf(n[i], name)) return true
+  return false
+}
+// Per-call zero-init constant for a callee local re-entered from a caller loop.
+// null ⇒ a type we can't safely zero here (skip inlining such a callee).
+const inlZeroFor = (t) => {
+  if (t === 'i32') return ['i32.const', 0]
+  if (t === 'i64') return ['i64.const', 0]
+  if (t === 'f32') return ['f32.const', 0]
+  if (t === 'f64') return ['f64.const', 0]
+  if (t === 'v128') return ['v128.const', 'i64x2', '0', '0']  // STRING lanes — watr's v128 encoder calls .replaceAll
+  return null
+}
+// A callee local needs a per-entry reset only if some path reads it before any
+// unconditional write (so it relied on the callee's fresh zero-init). Mirrors
+// coalesceLocals' readsZero heuristic; unconditionally-written scratch needs none.
+const inlNeedsReset = (body, name) => {
+  let seen = false, conditional = false, depth = 0
+  const visit = (n) => {
+    if (seen || !Array.isArray(n)) return
+    const op = n[0]
+    const isSet = op === 'local.set' || op === 'local.tee'
+    if ((isSet || op === 'local.get') && n[1] === name) {
+      if (isSet) for (let i = 2; i < n.length && !seen; i++) visit(n[i])
+      if (seen) return
+      seen = true
+      if (op === 'local.get' || depth > 0) conditional = true
+      return
     }
-
-    // Inline: no locals, <= 4 params, single expression body, not exported
-    if (params && !hasLocals && !hasExport && params.length <= 4 && body.length === 1) {
-      // Check if function mutates any of its params (local.set/tee on param),
-      // or contains a control-transfer op (`return`, `return_call`,
-      // `return_call_indirect`). Inlining such bodies into a different-typed
-      // caller would propagate the transfer to the caller, returning from the
-      // wrong function with the wrong type. Lifting the body into a
-      // `(block $exit ...)` and rewriting returns to `(br $exit X)` would
-      // unlock these — left for a future pass.
-      const paramNames = new Set(params.map(p => p.name))
-      let mutatesParam = false
-      let hasReturn = false
-      walk(body[0], (n) => {
-        if (!Array.isArray(n)) return
-        if ((n[0] === 'local.set' || n[0] === 'local.tee') && paramNames.has(n[1])) {
-          mutatesParam = true
-        }
-        if (n[0] === 'return' || n[0] === 'return_call' || n[0] === 'return_call_indirect') {
-          hasReturn = true
-        }
-      })
-      if (!mutatesParam && !hasReturn) {
-        inlinable.set(name, { body: body[0], params })
-      }
+    const isIf = op === 'if'
+    for (let i = 1; i < n.length && !seen; i++) {
+      const c = n[i]
+      const cond = isIf && Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')
+      if (cond) depth++
+      visit(c)
+      if (cond) depth--
     }
   }
+  for (const n of body) { if (seen) break; visit(n) }
+  if (!seen) return false
+  return conditional
+}
+// Module-level references that pin a function (can't be inlined-away/removed).
+const inlCollectPinned = (n, pinned) => {
+  if (!Array.isArray(n)) return
+  const op = n[0]
+  if (op === 'export' && Array.isArray(n[2]) && n[2][0] === 'func' && typeof n[2][1] === 'string') pinned.add(n[2][1])
+  else if (op === 'start' && typeof n[1] === 'string') pinned.add(n[1])
+  else if (op === 'ref.func' && typeof n[1] === 'string') pinned.add(n[1])
+  else if (op === 'elem') for (const c of n) if (typeof c === 'string' && c[0] === '$') pinned.add(c)
+  for (const c of n) inlCollectPinned(c, pinned)
+}
 
-  // Replace calls with inlined body
-  if (inlinable.size === 0) return ast
+// Parse a func node into { params, locals, inlResult } once, enforcing the
+// liftability contract (named params/locals, zero-init-able local types, ≤1
+// result, no inline export). Returns null if the func can't be lifted.
+const inlParse = (fn) => {
+  const params = [], locals = []
+  let inlResult = null, ok = true, nResult = 0
+  for (let i = 2; i < fn.length; i++) {
+    const c = fn[i]
+    if (typeof c === 'string') continue
+    if (!Array.isArray(c)) { ok = false; break }
+    if (c[0] === 'param') { if (typeof c[1] !== 'string' || c[1][0] !== '$') { ok = false; break } params.push({ name: c[1], type: c[2] }) }
+    else if (c[0] === 'local') { if (typeof c[1] !== 'string' || c[1][0] !== '$' || !inlZeroFor(c[2])) { ok = false; break } locals.push({ name: c[1], type: c[2] }) }
+    else if (c[0] === 'result') { nResult += c.length - 1; if (c.length > 1) inlResult = c[1] }
+    else if (c[0] === 'export') { ok = false; break }
+    else if (c[0] === 'type') continue
+    else break
+  }
+  if (nResult > 1) ok = false
+  return ok ? { params, locals, inlResult } : null
+}
 
-  walkPost(ast, (node) => {
-    if (!Array.isArray(node) || node[0] !== 'call') return
-    const fname = node[1]
-    if (!inlinable.has(fname)) return
+// IR-node count of a callee body — the cheap size proxy gating multi-caller inline.
+const inlBodySize = (fn) => {
+  let n = 0
+  const count = (x) => { if (!Array.isArray(x)) return; n++; for (let i = 1; i < x.length; i++) count(x[i]) }
+  for (let i = inlBodyStart(fn); i < fn.length; i++) count(fn[i])
+  return n
+}
 
-    const { body, params } = inlinable.get(fname)
-    const args = node.slice(2)
+/**
+ * Lift one callee into ONE `(call …)` node. Returns `{ block, decls }` — `block`
+ * replaces the call; `decls` are the renamed param+local declarations to splice into
+ * the caller's local list. A fresh uid per invocation keeps every inlined copy's
+ * locals/labels unique, so the same body can be lifted into many sites.
+ *
+ *   (call $f a0 a1 …) → (block $__inlN (result T)?
+ *     (local.set $__inlN_p0 a0) …            ;; args evaluated once, in order
+ *     (local.set $__inlN_l reset) …          ;; only locals that rely on zero-init
+ *     …body, renamed, `return X` → `br $__inlN X`…)
+ */
+const buildInline = (params, locals, inlResult, cBody, args) => {
+  const uid = ++inlineUid
+  const exit = `$__inl${uid}`
+  const rename = new Map()
+  for (const p of params) rename.set(p.name, `$__inl${uid}_${p.name.slice(1)}`)
+  for (const l of locals) rename.set(l.name, `$__inl${uid}_${l.name.slice(1)}`)
+  // The callee's own block/loop/if labels would shadow same-named caller labels (and
+  // break depth resolution) under the added nesting — give them fresh names too.
+  const labelRename = new Map()
+  const collectLabels = (n) => {
+    if (!Array.isArray(n)) return
+    if (isBranchScope(n[0]) && typeof n[1] === 'string' && n[1][0] === '$' && !labelRename.has(n[1]))
+      labelRename.set(n[1], `$__inl${uid}L_${n[1].slice(1)}`)
+    for (let i = 1; i < n.length; i++) collectLabels(n[i])
+  }
+  for (const n of cBody) collectLabels(n)
+  const sub = (n) => {
+    if (!Array.isArray(n)) return n
+    const op = n[0]
+    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && rename.has(n[1]))
+      return [op, rename.get(n[1]), ...n.slice(2).map(sub)]
+    if (op === 'return') return ['br', exit, ...n.slice(1).map(sub)]
+    if (isBranchScope(op) && typeof n[1] === 'string' && labelRename.has(n[1]))
+      return [op, labelRename.get(n[1]), ...n.slice(2).map(sub)]
+    if (inlIsBranch(op)) return [op, ...n.slice(1).map(c => (typeof c === 'string' && labelRename.has(c)) ? labelRename.get(c) : sub(c))]
+    return n.map((c, i) => i === 0 ? c : sub(c))
+  }
+  const setup = params.map((p, k) => ['local.set', rename.get(p.name), args[k]])
+  const resets = locals.filter(l => inlNeedsReset(cBody, l.name)).map(l => ['local.set', rename.get(l.name), inlZeroFor(l.type)])
+  const inner = cBody.map(sub)
+  const block = inlResult
+    ? ['block', exit, ['result', inlResult], ...setup, ...resets, ...inner]
+    : ['block', exit, ...setup, ...resets, ...inner]
+  const decls = [...params, ...locals].map(p => ['local', rename.get(p.name), p.type])
+  return { block, decls }
+}
 
-    // Simple case: no params
-    if (params.length === 0) {
-      return clone(body)
+/**
+ * Inline SMALL functions into every caller, then delete them — the multi-caller
+ * complement to {@link inlineOnce}. inlineOnce only fires for a lone caller (so it
+ * never duplicates); this duplicates a tiny body across ALL its sites, trading a
+ * bounded amount of size to remove call overhead from hot inner loops (e.g. a
+ * raymarcher's per-step SDF, evaluated 4-wide but still paying a wasm call each
+ * march step). Size-for-speed — opt-in, on at the 'speed' level only.
+ *
+ * A callee qualifies when it is small (≤ INLINE_MAX_NODES IR nodes), named with
+ * named params/locals, single-result-or-void, non-recursive, not pinned
+ * (export/start/elem/ref.func), not a SIMD_PROTECTED transcendental, and free of
+ * depth-relative branches / tail calls (the inlParse + inlUnsafe liftability
+ * contract). Runs to a fixpoint so small-helper chains (sdf → sdRep) collapse.
+ *
+ * `simdOnly` (the speed-level default) restricts inlining to pure SIMD helpers —
+ * every param and the result are `v128`. That targets the case this exists for —
+ * a hand-vectorized hot loop's per-step helper (a raymarcher's SDF), where the call
+ * overhead is paid every iteration and V8's wasm JIT won't inline it — while leaving
+ * SCALAR helpers untouched: those are where jz's codegen-shape/size tuning and the
+ * auto-vectorizer's call-lifting (plasma's fbm → sin2) live, and duplicating them
+ * both bloats and perturbs that machinery for no gain (V8's JIT inlines scalar
+ * helpers itself). The unrestricted form stays available as `watr: { inline: true }`.
+ *
+ * @param {Array} ast
+ * @param {{simdOnly?: boolean}} [opts]
+ * @returns {Array}
+ */
+const INLINE_MAX_NODES = 90
+const isV128SimdHelper = (params, inlResult) =>
+  inlResult === 'v128' && params.length > 0 && params.every(p => p.type === 'v128')
+const inline = (ast, { simdOnly = false } = {}) => {
+  if (!Array.isArray(ast) || ast[0] !== 'module') return ast
+
+  const skip = new Set()  // callees with a non-inlinable site (arity mismatch) — don't re-pick
+  for (let round = 0; round < MAX_INLINE_ROUNDS; round++) {
+    const funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func')
+    const funcByName = new Map()
+    for (const n of funcs) if (typeof n[1] === 'string') funcByName.set(n[1], n)
+
+    const callRefs = new Map(), otherRef = new Set()
+    const countRefs = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === 'call' && typeof n[1] === 'string') callRefs.set(n[1], (callRefs.get(n[1]) || 0) + 1)
+      else if (op === 'return_call' && typeof n[1] === 'string') otherRef.add(n[1])
+      for (let i = 1; i < n.length; i++) countRefs(n[i])
+    }
+    countRefs(ast)
+    const pinned = new Set()
+    for (const n of ast) if (!Array.isArray(n) || n[0] !== 'func') inlCollectPinned(n, pinned)
+
+    // Pick a small, liftable, non-recursive callee with ≥1 plain-call site.
+    let calleeName = null, parsed = null
+    for (const [name, fn] of funcByName) {
+      if (skip.has(name) || pinned.has(name) || otherRef.has(name) || SIMD_PROTECTED.has(name)) continue
+      if (!(callRefs.get(name) >= 1)) continue
+      if (inlBodySize(fn) > INLINE_MAX_NODES) continue
+      if (inlCallsSelf(fn, name)) continue
+      const p = inlParse(fn)
+      if (!p) continue
+      if (simdOnly && !isV128SimdHelper(p.params, p.inlResult)) continue
+      let bad = false
+      for (let i = inlBodyStart(fn); i < fn.length; i++) if (inlUnsafe(fn[i])) { bad = true; break }
+      if (bad) continue
+      calleeName = name; parsed = p; break
+    }
+    if (!calleeName) break
+
+    const callee = funcByName.get(calleeName)
+    const { params, locals, inlResult } = parsed
+    const cBody = callee.slice(inlBodyStart(callee))
+    const expected = callRefs.get(calleeName) || 0  // callee is non-recursive ⇒ all sites are in other funcs
+    let replaced = 0
+
+    // Splice into EVERY caller. A body that itself still calls an as-yet-uninlined
+    // helper is fine — later rounds collapse it (or it stays a call).
+    for (const fn of funcs) {
+      if (fn === callee) continue
+      const addDecls = []
+      for (let i = inlBodyStart(fn); i < fn.length; i++) {
+        fn[i] = walkPost(fn[i], (n) => {
+          if (!Array.isArray(n) || n[0] !== 'call' || n[1] !== calleeName) return
+          const args = n.slice(2)
+          if (args.length !== params.length) return  // arity mismatch — leave the call
+          const { block, decls } = buildInline(params, locals, inlResult, cBody, args)
+          addDecls.push(...decls)
+          replaced++
+          return block
+        })
+      }
+      if (addDecls.length) fn.splice(inlBodyStart(fn), 0, ...addDecls)
     }
 
-    // Substitute params with args
-    const substituted = walkPost(clone(body), (n) => {
-      if (!Array.isArray(n) || n[0] !== 'local.get') return
-      const local = n[1]
-      const paramIdx = params.findIndex(p => p.name === local)
-      if (paramIdx !== -1 && args[paramIdx]) {
-        return clone(args[paramIdx])
-      }
-    })
-
-    return substituted
-  })
+    // Drop the callee only if every site inlined; else keep it and stop re-picking it.
+    if (replaced === expected) { const idx = ast.indexOf(callee); if (idx >= 0) ast.splice(idx, 1) }
+    else skip.add(calleeName)
+  }
 
   return ast
 }
 
 // ==================== INLINE-ONCE ====================
-
-let inlineUid = 0
 
 /**
  * Devirtualize `call_indirect` through NaN-boxed closure values with a statically
@@ -2086,96 +2242,10 @@ const SIMD_PROTECTED = new Set(['$math.sin_core', '$math.cos_core', '$math.sin',
 const inlineOnce = (ast) => {
   if (!Array.isArray(ast) || ast[0] !== 'module') return ast
 
-  const HEAD = new Set(['export', 'type', 'param', 'result', 'local'])
-  const bodyStart = (fn) => {
-    let i = 2
-    while (i < fn.length && (typeof fn[i] === 'string' || (Array.isArray(fn[i]) && HEAD.has(fn[i][0])))) i++
-    return i
-  }
-  const isBranch = op => op === 'br' || op === 'br_if' || op === 'br_table'
-  // A subtree we can't lift into a (block …): depth-relative branch labels (shift
-  // under added nesting) or tail calls (would escape the wrapping block).
-  const unsafe = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref') return true
-    if (op === 'try' || op === 'try_table' || op === 'delegate' || op === 'rethrow') return true  // exception labels — not handled by the relabeler below
-    if (isBranch(op)) for (let i = 1; i < n.length; i++) if (typeof n[i] === 'number' || (typeof n[i] === 'string' && /^\d+$/.test(n[i]))) return true
-    for (let i = 1; i < n.length; i++) if (unsafe(n[i])) return true
-    return false
-  }
-  const callsSelf = (n, name) => {
-    if (!Array.isArray(n)) return false
-    if ((n[0] === 'call' || n[0] === 'return_call') && n[1] === name) return true
-    for (let i = 1; i < n.length; i++) if (callsSelf(n[i], name)) return true
-    return false
-  }
-  // Locals must be re-zeroed each time the inlined block is entered IF the
-  // callee body actually relies on zero-init — i.e. some path reads the local
-  // before any unconditional write. In the original callee they got fresh
-  // zero-init per call; after inlining they're outer-func locals, zeroed only
-  // at outer entry, so a caller-loop that re-enters the inlined block reads
-  // stale values otherwise. Returns null for any type we can't safely
-  // zero-init here (skip inlining such callees).
-  const zeroFor = (t) => {
-    if (t === 'i32') return ['i32.const', 0]
-    if (t === 'i64') return ['i64.const', 0]
-    if (t === 'f32') return ['f32.const', 0]
-    if (t === 'f64') return ['f64.const', 0]
-    if (t === 'v128') return ['v128.const', 'i64x2', 0, 0]
-    // Nullable ref types (`(ref null …)`, `funcref`, `externref`, `anyref`, etc.)
-    // zero-init to `ref.null …` per call; emitting that here would need the exact
-    // heap-type. Non-nullable refs aren't zero-init at all (codegen must seed
-    // them). Either way, skip — let the call survive.
-    return null
-  }
-
-  // Locals whose first observed use is a read — or whose first write is inside
-  // a conditional branch, where the alternate path bypasses it — depend on
-  // zero-init and need a reset when inlined into a caller-loop. Locals that
-  // are unconditionally written before any read (the common scratch pattern,
-  // e.g. `(local.set $bits (local.get $ptr))` opening a helper) don't, and
-  // emitting a spurious reset would only inflate that local's set-count and
-  // block downstream propagation/coalescing. Mirrors `coalesceLocals`'
-  // `readsZero` heuristic.
-  const needsReset = (body, name) => {
-    let seen = false, conditional = false, depth = 0
-    const visit = (n) => {
-      if (seen || !Array.isArray(n)) return
-      const op = n[0]
-      const isSet = op === 'local.set' || op === 'local.tee'
-      if ((isSet || op === 'local.get') && n[1] === name) {
-        if (isSet) for (let i = 2; i < n.length && !seen; i++) visit(n[i])
-        if (seen) return
-        seen = true
-        if (op === 'local.get' || depth > 0) conditional = true
-        return
-      }
-      const isIf = op === 'if'
-      for (let i = 1; i < n.length && !seen; i++) {
-        const c = n[i]
-        const cond = isIf && Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')
-        if (cond) depth++
-        visit(c)
-        if (cond) depth--
-      }
-    }
-    for (const n of body) { if (seen) break; visit(n) }
-    // If the local is never used (dead), no reset; the dead decl will be pruned.
-    if (!seen) return false
-    return conditional
-  }
-
-  // Module-level references that pin a function (can't be removed/inlined-away).
-  const collectPinned = (n, pinned) => {
-    if (!Array.isArray(n)) return
-    const op = n[0]
-    if (op === 'export' && Array.isArray(n[2]) && n[2][0] === 'func' && typeof n[2][1] === 'string') pinned.add(n[2][1])
-    else if (op === 'start' && typeof n[1] === 'string') pinned.add(n[1])
-    else if (op === 'ref.func' && typeof n[1] === 'string') pinned.add(n[1])
-    else if (op === 'elem') for (const c of n) if (typeof c === 'string' && c[0] === '$') pinned.add(c)
-    for (const c of n) collectPinned(c, pinned)
-  }
+  // Lift primitives are shared with `inline` (defined once above buildInline). inlineOnce
+  // splices into a SINGLE caller (never duplicating); `inline` duplicates into every caller.
+  const bodyStart = inlBodyStart, callsSelf = inlCallsSelf, unsafe = inlUnsafe, isBranch = inlIsBranch
+  const zeroFor = inlZeroFor, needsReset = inlNeedsReset, collectPinned = inlCollectPinned
 
   for (let round = 0; round < MAX_INLINE_ROUNDS; round++) {
     const funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func')
@@ -3789,7 +3859,22 @@ export default function optimize(ast, opts = true) {
   // not trip the size-guard into reverting a whole round. A single sweep is
   // complete: every call_indirect is visited; rewritten sites keep the original
   // as the guarded fallback arm.
-  const finish = (a) => pruneEmptyStart(opts.devirt ? devirt(a) : a)
+  // `inline` (multi-caller, size-for-speed) is like `devirt`: it INTENTIONALLY grows
+  // the binary, so it must run OUTSIDE the per-round size-revert guard below (which
+  // would otherwise undo it). Run it once after the rounds converge, then tidy the
+  // (block (local.set $p arg) … body) wrappers it leaves with the same cleanup passes
+  // a normal round would. opt-in (speed level); a no-op when no small callee qualifies.
+  const runInline = (a) => {
+    if (!opts.inline) return a
+    // `inline: true` → safe SIMD-helper-only default; `inline: 'all'` → unrestricted.
+    a = inline(a, { simdOnly: opts.inline !== 'all' })
+    if (opts.propagate) a = propagate(a)
+    if (opts.mergeBlocks) a = mergeBlocks(a)
+    if (opts.vacuum) a = vacuum(a)
+    if (opts.coalesceLocals) a = coalesceLocals(a)
+    return a
+  }
+  const finish = (a) => { a = runInline(a); return pruneEmptyStart(opts.devirt ? devirt(a) : a) }
 
   // Fast path: jz owns this optimizer and feeds it a controlled, type-aware IR.
   // The only passes that can *grow* the binary are inlineOnce/inline; when no
@@ -3820,7 +3905,7 @@ export default function optimize(ast, opts = true) {
   for (let round = 0; round < 3; round++) {
     beforeRound = clone(ast)
 
-    for (const [key, fn] of PASSES) if (opts[key] && key !== 'devirt') ast = fn(ast)
+    for (const [key, fn] of PASSES) if (opts[key] && key !== 'devirt' && key !== 'inline') ast = fn(ast)
     // Second propagate sweep: `inlineOnce`/`inline` (above) leave fresh
     // `(local.set $p arg) … (local.get $p)` wrappers around each inlined call;
     // re-running propagation collapses them within this same round, so the size

@@ -582,6 +582,14 @@ const jzCompileInner = (code, opts = {}) => {
     if (watrOpts === true) watrOpts = { devirt: true }
     else if (typeof watrOpts === 'object' && watrOpts.devirt === undefined) watrOpts.devirt = true
   }
+  // Multi-caller small-function inlining (size-for-speed): on at the 'speed'/level-3
+  // tier only, like devirt above. Removes call overhead from hot inner loops at the
+  // cost of duplicating tiny bodies; level 2 (and the size budgets measured there)
+  // stay untouched.
+  if (cfg.inlineFns) {
+    if (watrOpts === true) watrOpts = { inline: true }
+    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = true
+  }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Stable-pointee module globals: resolve the __ptr_offset once per function.
   // Never-forwarding kinds — every PTR tag outside __ptr_offset's forwarding

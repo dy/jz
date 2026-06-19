@@ -41,6 +41,11 @@ function optimizeTail(module, cfg) {
     if (watrOpts === true) watrOpts = { devirt: true }
     else if (typeof watrOpts === 'object' && watrOpts.devirt === undefined) watrOpts.devirt = true
   }
+  // Mirror index.js: SIMD-helper inlining on at the 'speed'/level-3 tier.
+  if (cfg.inlineFns) {
+    if (watrOpts === true) watrOpts = { inline: true }
+    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = true
+  }
   if (!cfg.watr) return module
   const optimized = watOptimize(module, watrOpts)
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
