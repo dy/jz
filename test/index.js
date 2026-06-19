@@ -53,6 +53,7 @@ const TESTS = [
   'deopt',
   'minimal-output',
   'bench-svg',
+  'headline',
   'examples',
 ]
 
