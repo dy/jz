@@ -148,6 +148,34 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     }
 });
 
+// Pure-function inline into the per-pixel-color lift: plasma's per-pixel value is fbm(...) ×3 (a
+// 5-octave sine helper). foldStrDispatchF64 first removes the dead string-dispatch from $fbm's `+`
+// (its params are raw-f64, so the is-string branch can never fire), making $fbm pure; then liftPPC
+// inlines the call — substituting lifted lane args for params and lifting the body — so the sines
+// become $math.sin2. BIT-EXACT (extract-repack mirror + lane-parallel arithmetic).
+test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)', () => {
+    const src = fs.readFileSync(new URL('../examples/plasma/plasma.js', import.meta.url), 'utf8');
+    const wat = jz.compile(src, { ...OPT, wat: true });
+    ok((wat.match(/f64x2\./g) || []).length > 80, `plasma vectorizes (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
+    ok((wat.match(/\$math\.sin2/g) || []).length >= 6, 'fbm sines lift to $math.sin2');
+    ok(!/__is_str_key/.test(wat), 'foldStrDispatchF64 removed the dead string-dispatch');
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); for (let f = 0; f < 4; f++) exports.frame(f * 0.1); return [...px]; };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'plasma fbm-inline bit-exact vs scalar (1536 px)');
+});
+
+// Divergent-escape with per-lane OUTCOME tracking: newton's inner loop converges to one of N roots
+// and records which via `(then (local.set $root K) (br))` — a 2-statement break the recognizer now
+// accepts, tracking each lane's root in an i32x4 via bitselect on the newly-escaped mask. The
+// achievement-ratcheted escape fractals (break-on-first fast path) are untouched. BIT-EXACT.
+test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/newton/newton.js', import.meta.url), 'utf8');
+    ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'newton vectorizes');
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0); return [...px]; };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'newton outcome-tracking bit-exact vs scalar (1536 px)');
+});
+
 test('example: mandelbrot output natively matches WASM', () => {
     let nativeExports = (() => {
         let mem;

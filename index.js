@@ -50,7 +50,8 @@ import prepare, { GLOBALS } from './src/prepare/index.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize } from './src/optimize/index.js'
+import { optimizeFunc, foldStrDispatchF64, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize } from './src/optimize/index.js'
+import { findBodyStart } from './src/ir.js'
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
@@ -599,6 +600,36 @@ const jzCompileInner = (code, opts = {}) => {
   if (cfg.watr) {
     // Build global name→type map from ctx.scope.globalTypes for promoteGlobals
     const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
+    // Build pure-function map for Phase 2 user-function inline in tryPerPixelColor.
+    // A function is "pure for SIMD inline" if its body contains no side effects:
+    // no global.set, no memory stores, no calls outside $math.*.
+    // foldStrDispatchF64 is run first (idempotent) so the purity check sees the
+    // folded body — dead __is_str_key dispatch would otherwise look impure.
+    if (cfg.vectorizeLaneLocal === true) {
+      const allFuncs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
+      const pureFuncMap = new Map()
+      const hasSideEffect = (node) => {
+        if (!Array.isArray(node)) return false
+        const op = node[0]
+        if (op === 'global.set') return true
+        if (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) return true
+        if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.')) return true
+        if (op === 'call_indirect' || op === 'call_ref') return true
+        return node.some((c, i) => i > 0 && hasSideEffect(c))
+      }
+      for (const fn of allFuncs) {
+        const name = fn[1]
+        if (typeof name !== 'string' || name.startsWith('$math.') || name.startsWith('$__')) continue
+        // Fold dead str-dispatch blocks so purity check sees the clean form.
+        foldStrDispatchF64(fn)
+        const bodyStart = findBodyStart(fn)
+        if (bodyStart < 0) continue
+        let pure = true
+        for (let i = bodyStart; i < fn.length; i++) if (hasSideEffect(fn[i])) { pure = false; break }
+        if (pure) pureFuncMap.set(name, fn)
+      }
+      if (pureFuncMap.size) cfg._pureFuncMap = pureFuncMap
+    }
     time('watrReopt', () => {
       const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
       const volatileGlobals = collectVolatileGlobals(funcs)

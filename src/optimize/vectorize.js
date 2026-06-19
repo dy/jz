@@ -3160,12 +3160,24 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   if (!itVar || fnLocals.get(itVar) !== 'i32') return null
 
   // A break statement (br_if, or `if BC (then (br iLabel))`) → its break-when condition.
+  // breakCond: does this statement break the inner loop?  Returns { cond, assigns } where
+  // `assigns` is a list of { name, val } local.set stmts extracted from the then-block
+  // BEFORE the final br.  Existing single-br form → assigns=[].  Multi-stmt then form (Newton:
+  // `if(cond)(then (local.set $root K)(br $iLabel))`) → assigns=[{name,val}].
   const breakCond = (s) => {
     if (!isArr(s)) return null
-    if (s[0] === 'br_if' && s[1] === iLabel) return s[2]
-    if (s[0] === 'if' && s.length === 3 && isArr(s[2]) && s[2][0] === 'then' && s[2].length === 2 &&
-        isArr(s[2][1]) && s[2][1][0] === 'br' && s[2][1][1] === iLabel) return s[1]
-    return null
+    if (s[0] === 'br_if' && s[1] === iLabel) return { cond: s[2], assigns: [] }
+    if (s[0] !== 'if' || s.length !== 3 || !isArr(s[2]) || s[2][0] !== 'then') return null
+    const then = s[2]
+    // then-block must end with (br $iLabel); all preceding stmts must be local.set
+    if (!isArr(then[then.length - 1]) || then[then.length - 1][0] !== 'br' || then[then.length - 1][1] !== iLabel) return null
+    const assigns = []
+    for (let k = 1; k < then.length - 1; k++) {
+      const st = then[k]
+      if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3) return null
+      assigns.push({ name: st[1], val: st[2] })
+    }
+    return { cond: s[1], assigns }
   }
   // keep (continue) condition vs the break-when condition. A while-guard `(i32.eqz CONT)`
   // keeps on CONT directly; a mid-break `if (X) break` keeps on ¬X. We must NOT lower ¬X by
@@ -3179,8 +3191,9 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     if (CMP_NEG[bc[0]]) return { cmp: bc, negate: true }
     return null
   }
-  const topBc = breakCond(innerLoop[2])
-  let keepTop = topBc && keepOf(topBc)
+  const topBcR = breakCond(innerLoop[2])
+  const topBc = topBcR?.cond   // raw condition expr (backward-compat name for compound-top checks)
+  let keepTop = topBcR && keepOf(topBcR.cond)
   const ibody = innerLoop.slice(3, iEnd - 1)
   let midIdx = -1, keepMid = null, compoundTop = false
   // Compound while-guard `while (it<MAX && |z|²<T)` → `eqz(and(A,B))`: two keep conditions, both
@@ -3193,16 +3206,29 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     compoundTop = true
   }
   if (!keepTop) return null
+  // Collect mid-breaks.  The existing single-break path requires exactly one.
+  // The new multi-break path (Newton-style convergence) allows several outcome breaks
+  // — each `if(COND)(then (local.set $X K)(br $iLabel))` — when the top guard is the
+  // sole limit condition and ALL mid-breaks are escape-kind with i32 outcome assigns.
+  const midBreaks = []   // [{ idx, keep, assigns }]
   if (compoundTop) {
     for (let i = 0; i < ibody.length; i++)
       if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
   } else {
     for (let i = 0; i < ibody.length; i++) {
-      const bc = breakCond(ibody[i])
-      if (bc) { if (midIdx >= 0) return null; midIdx = i; keepMid = keepOf(bc); if (!keepMid) return null }
-      else if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
+      const bcR = breakCond(ibody[i])
+      if (bcR) {
+        const k = keepOf(bcR.cond)
+        if (!k) return null
+        midBreaks.push({ idx: i, keep: k, assigns: bcR.assigns })
+      } else if (!(isArr(ibody[i]) && ibody[i][0] === 'local.set' && ibody[i].length === 3 && fnLocals.get(ibody[i][1]) === 'f64')) return null
     }
-    if (midIdx < 0) return null
+    if (midBreaks.length === 0) return null
+    if (midBreaks.length === 1) {
+      // single-break: preserve exact existing behaviour
+      midIdx = midBreaks[0].idx; keepMid = midBreaks[0].keep
+    }
+    // multi-break: handled below after classification
   }
 
   // classify f64 vars written across [top-guard, …body…]: loop-carried (first access a READ)
@@ -3225,23 +3251,36 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const detee = (n) => isArr(n) ? (n[0] === 'local.tee' ? (tees.push({ tgt: n[1], expr: detee(n[2]) }), ['local.get', n[1]]) : n.map(detee)) : n
   const keepTopC = { cmp: [keepTop.cmp[0], detee(keepTop.cmp[1]), detee(keepTop.cmp[2])], negate: keepTop.negate }
   const teeTop = tees.length
-  const keepMidC = { cmp: [keepMid.cmp[0], detee(keepMid.cmp[1]), detee(keepMid.cmp[2])], negate: keepMid.negate }
+  const keepMidC = keepMid ? { cmp: [keepMid.cmp[0], detee(keepMid.cmp[1]), detee(keepMid.cmp[2])], negate: keepMid.negate } : null
 
   // each keep is an it-limit (mentions `it` directly or via convert) or a z-escape; need one of each
   const isIt = (n) => isLocalGet(n, itVar) || (isArr(n) && n[0] === 'f64.convert_i32_s' && isLocalGet(n[1], itVar))
   const kindOf = (k) => (isIt(k.cmp[1]) || isIt(k.cmp[2])) ? 'limit' : 'escape'
-  const kTop = kindOf(keepTopC), kMid = kindOf(keepMidC)
-  if (kTop === kMid) return null
-  const limitKeep = kTop === 'limit' ? keepTopC : keepMidC
-  const itLeft = isIt(limitKeep.cmp[1])
-  const boundExpr = itLeft ? limitKeep.cmp[2] : limitKeep.cmp[1]
-  const boundI32 = limitKeep.cmp[0].startsWith('i32.')
+  const kTop = kindOf(keepTopC)
+  const limitKeep = keepTopC   // initialised here; may be reassigned below for single-break
+  let kMid = null, boundExpr, boundI32, itLeft
+  if (midBreaks.length === 1) {
+    kMid = kindOf(keepMidC)
+    if (kTop === kMid) return null
+    const lk = kTop === 'limit' ? keepTopC : keepMidC
+    itLeft = isIt(lk.cmp[1])
+    boundExpr = itLeft ? lk.cmp[2] : lk.cmp[1]
+    boundI32 = lk.cmp[0].startsWith('i32.')
+  } else if (midBreaks.length > 1) {
+    // Multi-break path: top must be the sole limit; all mid-breaks must be escape-kind.
+    if (kTop !== 'limit') return null
+    for (const mb of midBreaks) if (kindOf(mb.keep) !== 'escape') return null
+    itLeft = isIt(keepTopC.cmp[1])
+    boundExpr = itLeft ? keepTopC.cmp[2] : keepTopC.cmp[1]
+    boundI32 = keepTopC.cmp[0].startsWith('i32.')
+  }
   // limit bound must be loop-invariant (splatted once per pair): no carried/temp ref, not written
   for (const v of [...carried, ...temp]) if (readsVar(boundExpr, v)) return null
   const boundInvariant = (n) => !isArr(n) || ((n[0] !== 'local.get' && n[0] !== 'global.get') || !writesName(loopNode, n[1])) && n.every((c, i) => i === 0 || boundInvariant(c))
   if (!boundInvariant(boundExpr)) return null
 
-  // c-vars: f64 locals read in the lifted exprs but never written there (per-pixel/invariant inputs)
+  // c-vars: f64 locals read in the lifted exprs but never written there (per-pixel/invariant inputs).
+  // Also allow loop-invariant global.get (e.g. module constants like R3 in newton) — splatted inline.
   const cVars = new Set()
   const liftable = (n) => {
     if (!isArr(n)) return false
@@ -3251,15 +3290,29 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       return true
     }
     if (n[0] === 'f64.const') return true
+    if (n[0] === 'global.get') return !writesName(loopNode, n[1])   // loop-invariant global → splat
     if (LANE_PURE.f64.has(n[0])) { for (let i = 1; i < n.length; i++) if (!liftable(n[i])) return false; return true }
     return false
   }
+  const midIdxSet = new Set(midBreaks.map(mb => mb.idx))
   for (const t of tees) if (!liftable(t.expr)) return null
-  for (let i = 0; i < ibody.length; i++) if (i !== midIdx && !liftable(ibody[i][2])) return null
-  const escapeKeep = kTop === 'escape' ? keepTopC : keepMidC
-  if (!liftable(escapeKeep.cmp[1]) || !liftable(escapeKeep.cmp[2])) return null
+  for (let i = 0; i < ibody.length; i++) if (!midIdxSet.has(i) && !liftable(ibody[i][2])) return null
+  if (midBreaks.length === 1) {
+    const escapeKeep = kTop === 'escape' ? keepTopC : keepMidC
+    if (!liftable(escapeKeep.cmp[1]) || !liftable(escapeKeep.cmp[2])) return null
+  } else {
+    // multi-break: each break's escape condition arguments must be liftable
+    for (const mb of midBreaks) {
+      const mbC = { cmp: [mb.keep.cmp[0], detee(mb.keep.cmp[1]), detee(mb.keep.cmp[2])], negate: mb.keep.negate }
+      mb.keepC = mbC   // store deteed keepC on mb for use in emit
+      if (!liftable(mbC.cmp[1]) || !liftable(mbC.cmp[2])) return null
+    }
+  }
 
   // ---- pre-inner inits + epilogue ----
+  // i32 outcome variables assigned by multi-break outcome stmts (e.g. $root in Newton).
+  // Their pre-inner `local.set $root 0` default-init is valid and must not be rejected.
+  const outcomeVarSetEarly = new Set(midBreaks.flatMap(mb => mb.assigns.map(a => a.name)))
   const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
   const perPxInit = new Map()     // c-var → its per-pixel init expr
   for (let i = 0; i < innerIdx; i++) {
@@ -3273,6 +3326,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
     } else if (temp.has(tgt)) { /* recomputed each iteration — init ignored */ }
     else if (tgt === itVar) { if (constNum(s[2]) !== 0) return null }
     else if (cVars.has(tgt)) perPxInit.set(tgt, s[2])
+    else if (outcomeVarSetEarly.has(tgt)) { /* i32 outcome var default init — ignored, handled per-lane */ }
     else return null
   }
   for (const c of carried) if (!carriedInit.has(c)) return null
@@ -3304,6 +3358,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const lift = (n) => {
     if (n[0] === 'local.get') return ['local.get', shadow.has(n[1]) ? shadow.get(n[1]) : cLane.get(n[1])]
     if (n[0] === 'f64.const') return ['f64x2.splat', n]
+    if (n[0] === 'global.get') return ['f64x2.splat', n]   // loop-invariant module global (e.g. R3)
     return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
   }
   const bump = (n, k) => k === 0 ? n           // substitute every pixel-IV with (IV + k), in its type
@@ -3442,6 +3497,97 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
       for (const s of epilogue) out.push(bump(s, k))
       return out
     }
+  } else if (midBreaks.length > 1) {
+    // ---- MULTI-OUTCOME masked path (Newton-style convergence loops) ----
+    // Each mid-break `if(COND)(then (local.set $X K)(br))` converges a subset of lanes per
+    // iteration.  We track which lanes are still running in `activeV` and per-lane outcomes
+    // in i32x4 shadow vectors (one per distinct i32 outcome variable).  The break mask for
+    // each convergence condition is: v128.and(activeV, breakMaskOf(keepC)).
+    // Bit-exactness: i32x4 layout has 4 lanes of 32 bits.  f64x2 has 2 lanes of 64 bits.
+    // For f64 lane k, i32 lane 2*k carries the outcome (lower 32 bits of the f64 lane).
+    // i32x4.splat(K) fills all 4 i32 lanes with K; v128.bitselect selects at bit level, so
+    // for a converged f64 lane (bits 64k…64k+63 = -1 in the mask) both i32 halves get K.
+    // i32x4.extract_lane(2*k, outcomeVec) recovers the scalar outcome per lane. ✓
+
+    // Collect distinct i32 outcome variables across all mid-breaks.
+    const outcomeVars = []    // distinct i32 local names that get assigned in outcome breaks
+    const outcomeVarSet = new Set()
+    for (const mb of midBreaks) {
+      for (const a of mb.assigns) {
+        // itVar is tracked by iterV (f64x2) directly — not as an i32x4 outcome shadow.
+        if (a.name !== itVar && !outcomeVarSet.has(a.name)) { outcomeVarSet.add(a.name); outcomeVars.push(a.name) }
+      }
+    }
+    // Each outcome var gets an i32x4 shadow vector (initial value 0 = "no convergence" default).
+    const outcomeVec = new Map()
+    for (const v of outcomeVars) { const sv = nm('out' + v.replace(/\W/g, '')); outcomeVec.set(v, sv); newLocalDecls.push(['local', sv, 'v128']) }
+
+    newLocalDecls.push(['local', iterV, 'v128'], ['local', activeV, 'v128'], ['local', maxitLane, 'v128'])
+    pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
+    pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
+    pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
+    for (const sv of outcomeVec.values()) pre.push(['local.set', sv, ['v128.const', 'i32x4', '0', '0', '0', '0']])
+
+    // keepMask for the limit top-guard (iter < MAXIT)
+    const keepMask = (keep, isLimit) => {
+      const m = isLimit
+        ? [CMP_LANE[keep.cmp[0]], itLeft ? ['local.get', iterV] : ['local.get', maxitLane], itLeft ? ['local.get', maxitLane] : ['local.get', iterV]]
+        : [CMP_LANE[keep.cmp[0]], lift(keep.cmp[1]), lift(keep.cmp[2])]
+      return keep.negate ? ['v128.not', m] : m
+    }
+    // breakMaskOf: v128 where bits = -1 for lanes whose break condition is NOW true
+    // (opposite of keepMask: keep.negate=true → break is the positive compare).
+    const breakMaskOf = (keepC) => {
+      const m = [CMP_LANE[keepC.cmp[0]], lift(keepC.cmp[1]), lift(keepC.cmp[2])]
+      return keepC.negate ? m : ['v128.not', m]
+    }
+
+    const sbody = [
+      ...teeStmts(tees.slice(0, teeTop)),
+      ['local.set', activeV, ['v128.and', ['local.get', activeV], keepMask(keepTopC, true)]],
+      ['br_if', sIn, ['i32.eqz', ['v128.any_true', ['local.get', activeV]]]],
+    ]
+    for (let i = 0; i < ibody.length; i++) {
+      const mb = midBreaks.find(m => m.idx === i)
+      if (mb) {
+        // Convergence break: compute which lanes converge on THIS step.
+        const bm = breakMaskOf(mb.keepC)
+        const convV = nm('conv' + i)
+        newLocalDecls.push(['local', convV, 'v128'])
+        sbody.push(['local.set', convV, ['v128.and', ['local.get', activeV], bm]])
+        // Apply each outcome assignment via bitselect on converged-this-step mask.
+        for (const a of mb.assigns) {
+          if (a.name === itVar) {
+            // Assignment to the iteration counter (e.g. it=MAXIT before break): freeze iterV.
+            sbody.push(['local.set', iterV, ['v128.bitselect', ['local.get', maxitLane], ['local.get', iterV], ['local.get', convV]]])
+          } else if (outcomeVec.has(a.name)) {
+            // i32 outcome variable (e.g. root=1/2/3): bitselect into its i32x4 shadow.
+            // The scalar value K must be an i32 constant — splat it across all i32x4 lanes.
+            if (!isArr(a.val) || a.val[0] !== 'i32.const') return null
+            const sv = outcomeVec.get(a.name)
+            sbody.push(['local.set', sv, ['v128.bitselect', ['i32x4.splat', a.val], ['local.get', sv], ['local.get', convV]]])
+          } else return null   // unexpected assign target
+        }
+        // Remove newly-converged lanes from active set.
+        sbody.push(['local.set', activeV, ['v128.andnot', ['local.get', activeV], ['local.get', convV]]])
+      } else {
+        const v = ibody[i][1]
+        if (carried.has(v)) sbody.push(['local.set', shadow.get(v), ['v128.bitselect', lift(ibody[i][2]), ['local.get', shadow.get(v)], ['local.get', activeV]]])
+        else sbody.push(['local.set', shadow.get(v), lift(ibody[i][2])])
+      }
+    }
+    sbody.push(['local.set', iterV, ['v128.bitselect', ['f64x2.add', ['local.get', iterV], ['f64x2.splat', ['f64.const', 1]]], ['local.get', iterV], ['local.get', activeV]]])
+    simdInner = ['block', sIn, ['loop', sIl, ...sbody, ['br', sIl]]]
+    const carriedInEpi = [...carried].filter(v => epilogue.some(s => readsVar(s, v)))
+    epiLane = (k) => {
+      const out = []
+      for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
+      out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
+      // Extract per-lane outcome variables from their i32x4 shadows (i32 lane = 2*k).
+      for (const [v, sv] of outcomeVec) out.push(['local.set', v, ['i32x4.extract_lane', 2 * k, ['local.get', sv]]])
+      for (const s of epilogue) out.push(bump(s, k))
+      return out
+    }
   } else {
     newLocalDecls.push(['local', iterV, 'v128'], ['local', activeV, 'v128'], ['local', maxitLane, 'v128'])
     pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
@@ -3524,7 +3670,7 @@ const PPC_CALL2 = {
 // A call we can't yet vectorize (pow in Phase 1) just ends the SIMD prefix — its lane local and the
 // rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
 // loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).
-function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
+function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap) {
   // Outer per-pixel scaffold — shared with tryDivergentEscapeVectorize; this pass
   // takes the straight-line-body branch (no inner escape loop) below.
   const outer = matchOuterPixelLoop(blockNode)
@@ -3537,7 +3683,9 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
   // A non-pure call (e.g. a ray-march helper that writes a scratch global / memory) can mutate state
   // that a lane local — computed ONCE, before the per-lane epilogue runs the call — would then read
   // stale, breaking bit-exactness. $math.* helpers are pure (no global/memory writes), so allow them.
-  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
+  // Pure user-defined functions in pureFuncMap are also safe: they have no side effects (verified
+  // when the map is built) and liftPPC inlines them expression-level rather than emitting a call.
+  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && !(pureFuncMap && pureFuncMap.has(n[1]))) || n.some(impureCall))
   if (obody.some(impureCall)) return null
 
   // bump: substitute every pixel IV with (IV + k) in its own type — for the lane-k epilogue.
@@ -3572,6 +3720,83 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
   const laneMap = new Map()       // f64 lane-local name → its v128 shadow
   const laneLifted = new Map()    // f64 lane-local name → its lifted f64x2 expr
 
+  // Inline a pure user function call into a lifted f64x2 expression.
+  // `callNode` is ['call', '$name', arg0, arg1, ...]; `outerLift` is the liftPPC fn.
+  // Walks the callee's body, substituting params with lifted args and inlined-local
+  // intermediates. Returns null if any step fails (bail → scalar epilogue).
+  // SOUND: only called when callee is in pureFuncMap (no stores/global.sets/impure
+  // calls); param names are read-only in the inlinee body (verified below).
+  const liftPPCInline = (callNode, outerLift) => {
+    const callee = pureFuncMap.get(callNode[1])
+    if (!callee) return null
+    const calleeBodyStart = findBodyStart(callee)
+    if (calleeBodyStart < 0) return null
+
+    // Collect callee params in order.
+    const calleeParams = []
+    for (let i = 2; i < calleeBodyStart; i++) {
+      const d = callee[i]
+      if (isArr(d) && d[0] === 'param' && typeof d[1] === 'string') calleeParams.push(d[1])
+    }
+    // Args supplied by the call site (call node children after the name).
+    const callArgs = callNode.slice(2)
+    if (callArgs.length !== calleeParams.length) return null
+
+    // Lift each arg with the outer liftPPC.
+    const substMap = new Map()
+    for (let i = 0; i < calleeParams.length; i++) {
+      const lifted = outerLift(callArgs[i])
+      if (lifted === null) return null
+      substMap.set(calleeParams[i], lifted)
+    }
+
+    // Verify no local.set on a param name inside the callee body (params are read-only).
+    for (const pname of calleeParams) {
+      if (writesName(callee.slice(calleeBodyStart), pname)) return null
+    }
+
+    // liftInline: lift a callee-body expression using substMap (params + inlined locals).
+    // Handles f64.const, local.get from substMap, LANE_PURE.f64 ops, and PPC_CALL2 calls.
+    // Returns null on any unsupported node.
+    const liftInline = (n) => {
+      if (!isArr(n)) return null
+      const op = n[0]
+      if (op === 'f64.const') return ['f64x2.splat', n]
+      if (op === 'local.get' && typeof n[1] === 'string') {
+        return substMap.has(n[1]) ? substMap.get(n[1]) : null
+      }
+      if (op === 'call') {
+        const v2 = PPC_CALL2[n[1]]
+        if (v2 && n.length === 3) { const a = liftInline(n[2]); return a && ['call', v2, a] }
+        if (v2 && n.length === 4) { const a = liftInline(n[2]), b = liftInline(n[3]); return (a && b) ? ['call', v2, a, b] : null }
+        return null
+      }
+      if (LANE_PURE.f64.has(op)) {
+        const ks = n.slice(1).map(liftInline)
+        return ks.some(k => k === null) ? null : [LANE_PURE.f64.get(op).simd, ...ks]
+      }
+      return null
+    }
+
+    // Walk callee body: local.set stmts define inlined locals; return stmt gives result.
+    for (let i = calleeBodyStart; i < callee.length; i++) {
+      const stmt = callee[i]
+      if (!isArr(stmt)) return null
+      if (stmt[0] === 'local.set' && typeof stmt[1] === 'string') {
+        const lifted = liftInline(stmt[2])
+        if (lifted === null) return null
+        substMap.set(stmt[1], lifted)
+        continue
+      }
+      if (stmt[0] === 'return') {
+        return liftInline(stmt[1])
+      }
+      // Any other statement type → bail (impure or unsupported structure).
+      return null
+    }
+    return null  // no return stmt found
+  }
+
   // Lift a scalar f64 expression to f64x2: pixel IV → ramp [v, v+1]; an earlier lane local → its
   // shadow; an invariant (local/global the loop never writes) → splat; transcendental call → the
   // *2 helper; conditional → bitselect; LANE_PURE.f64 op → recurse. null = not liftable (the lift
@@ -3601,6 +3826,8 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef) {
       const v2 = PPC_CALL2[n[1]]
       if (v2 && n.length === 3) { const a = liftPPC(n[2]); return a && ['call', v2, a] }
       if (v2 && n.length === 4) { const a = liftPPC(n[2]), b = liftPPC(n[3]); return (a && b) ? ['call', v2, a, b] : null }
+      // Pure user-function inline: substitute params with lifted args, walk body.
+      if (pureFuncMap && pureFuncMap.has(n[1])) return liftPPCInline(n, liftPPC)
       return null
     }
     if (op === 'if') {   // `cond ? X : Y` (jz lowers to (if (result f64) COND (then X)(else Y))) → bitselect
@@ -3903,7 +4130,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false, outerStrip = false) {
+export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false, outerStrip = false, pureFuncMap = null) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -3953,7 +4180,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
         ?? tryByteScan(bl, fnLocals, freshIdRef)
-        ?? tryPerPixelColor(node, fnLocals, freshIdRef)
+        ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
