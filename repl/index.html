@@ -62,7 +62,7 @@ body {
 .brand img { display: block; width: 32px; height: 32px; }
 
 /* ── main split: editor (left) · divider · terminal (right) ── */
-main { flex: 1; display: flex; min-height: 0; }
+main { flex: 1; display: flex; min-height: 0; min-width: 0; }   /* min-width:0 lets the column collapse to the viewport on mobile (else the editor lines force its min-content width and the watbar overflows off-screen) */
 .pane { min-width: 0; display: flex; flex-direction: column; }
 .code { flex: 0 0 var(--lw, 320px); position: relative; overflow: hidden; }   /* editor pane — initial width 320px (the divider/localStorage overrides once dragged) */
 .right { flex: 1 1 0; min-height: 0; position: relative; color-scheme: dark;   /* always dark — the "low-level" output side */
@@ -198,7 +198,7 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
 #out .in::before { content: '❯ '; }
 #out .res { font-weight: 700; color: var(--bright); }
 #out .log { color: var(--fg); }
-#out .log::before { content: '· '; color: var(--dim); }
+#out .log::before { content: '  '; }   /* no marker glyph — just a 2ch blank indent so output lines up under the ❯/✓/✗ lines */
 #out .err { font-weight: 700; color: #ff6b6b; }
 #out .err::before { content: '✗ '; }
 #out .note { color: var(--dim); }
