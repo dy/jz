@@ -15,6 +15,7 @@ import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
 import { ctx, reset, initWarnings } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
+import { liftIIFEs } from '../src/prepare/lift-iife.js'
 import compileAst from '../src/compile/index.js'
 import { resetProgramFactsCache } from '../src/compile/program-facts.js'
 import {
@@ -70,7 +71,7 @@ function setupSelf(strict, optJSON) {
   ctx.transform.strict = !!strict
 }
 function lower(source, strict) {
-  const parsed = parse(source)
+  const parsed = liftIIFEs(parse(source))   // mirror index.js: lift IIFEs before jzify
   return strict ? parsed : jzify(parsed)
 }
 

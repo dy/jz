@@ -971,3 +971,27 @@ test('capture nullable: strict ===null guard inside plain closure', () => {
   `)
   is(r.go(), 7)
 })
+
+// ── IIFE lambda-lifting (liftIIFEs) ──────────────────────────────────────────────────
+// `(params => body)(args)` is hoisted to a top-level function with its free variables
+// appended as params and replaced by a DIRECT call — so it never rides the f64-only
+// closure ABI (SIMD flows through) and pays no closure alloc/indirect call. Capture is
+// by value, exact for a synchronous immediate invocation. inlineOnce then folds the
+// single-caller body back in. A capture that's MUTATED in the body can't lift (no
+// write-back) and stays on the closure path — still correct.
+test('IIFE lift: capture-by-value, params, nesting — direct call, no closure table', () => {
+  is(runHost('export let f = (a) => (() => a * 2.0 + 1.0)()').f(5), 11, 'captures enclosing a by value')
+  is(runHost('export let f = (a) => ((x) => x + a)(10.0)').f(7), 17, 'own param + capture')
+  is(runHost('export let f = (a) => (() => (() => a * 3.0)() + 1.0)()').f(2), 7, 'nested IIFE')
+  is(runHost('let g = 100.0\nexport let f = () => (() => g + 5.0)()').f(), 105, 'module global stays a global ref, not a capture')
+  // A liftable IIFE leaves no closure scaffolding: the lift → direct call → inlineOnce
+  // collapses it, so no call_indirect / table-backed closure survives.
+  if (!onKernel() && !belowOpt(2))
+    ok(!/call_indirect/.test(wat('export let f = (a) => (() => a * 2.0)()')), 'lifted IIFE emits no call_indirect')
+})
+
+test('IIFE lift: a mutated capture bails to the closure path, stays correct', () => {
+  // x is reassigned inside the IIFE; lifting (by-value param) would lose the write-back,
+  // so the lift bails and the closure cell carries it — the visible value is still right.
+  is(runHost('export let f = (a) => { let x = a; let y = (() => { x = x + 10.0; return x * 2.0 })(); return x + y }').f(5), 45, 'mutated-capture IIFE: x=15, y=30 → 45')
+})

@@ -23,17 +23,18 @@ test('prohibited: super', () => throws('export let f = () => super.x', 'super', 
 test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
-// A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI. Crossing a
-// closure/IIFE boundary with one used to die in the wasm validator with an opaque
-// `f64.convert_i32_s expected i32, found v128`; now it's an actionable compile error.
-// (The proper fix — lambda-lifting IIFEs to typed direct calls — is tracked separately;
-// until then the diagnostic points at the workaround: a named top-level function.)
-test('SIMD across a closure/IIFE boundary → clear error, not an opaque wasm crash', () => {
-  throws('export let f = (a) => f32x4.lane((() => f32x4.splat(a))(), 0)', 'closure', 'IIFE returning v128 errors clearly')
-  throws('export let f = (a) => f32x4.lane((() => f32x4.mul(a, a))(), 0)', 'SIMD', 'IIFE capturing a v128 errors clearly')
-  // Positive control: the SAME work in a NAMED top-level function (typed v128 direct call) compiles + runs.
-  const { exports } = jz('let sq = (x) => f32x4.mul(x, x)\nexport let g = (a) => f32x4.lane(sq(f32x4.splat(a)), 0)')
-  is(exports.g(3), 9, 'named v128 helper called directly works (the documented workaround)')
+// A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI. An IIFE is
+// lambda-lifted to a typed direct call (liftIIFEs), so SIMD flows through it — those WORK.
+// A GENUINE closure (an arrow escaping as a value, or an IIFE that mutates a capture so it
+// can't lift) still rides the f64 ABI; carrying v128 there is an actionable compile error,
+// not the opaque `f64.convert_i32_s expected i32, found v128` wasm-validator crash.
+test('SIMD + closures: IIFEs lift and run; genuine closures error clearly', () => {
+  is(jz('export let f = (a) => f32x4.lane((() => f32x4.splat(a))(), 0)').exports.f(3), 3, 'SIMD IIFE returning v128 lifts + runs')
+  is(jz('export let f = (a) => f32x4.lane(((x) => f32x4.mul(x, x))(f32x4.splat(a)), 0)').exports.f(3), 9, 'SIMD IIFE with a v128 param lifts + runs')
+  // An arrow escaping into an array is a real closure value — v128 can't cross the f64 ABI.
+  throws('export let f = () => { let a = [() => f32x4.splat(1.0)]; return f32x4.lane(a[0](), 0) }', 'closure', 'escaping v128 arrow errors clearly')
+  // A capture mutated inside the body can't lift (no write-back) → closure path → same clear error.
+  throws('export let f = (a) => { let x = a; return f32x4.lane((() => { x = x + 1.0; return f32x4.splat(x) })(), 0) }', 'SIMD', 'mutated-capture SIMD IIFE errors clearly')
 })
 
 // ============================================================================

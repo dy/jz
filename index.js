@@ -47,6 +47,7 @@ import watOptimize from "./src/wat/optimize.js";
 import { appendLateStdlib } from './src/wat/assemble.js'
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
+import { liftIIFEs } from './src/prepare/lift-iife.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
@@ -507,6 +508,12 @@ const jzCompileInner = (code, opts = {}) => {
 
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
+  // Lambda-lift immediately-invoked arrow literals to typed direct calls — lets SIMD
+  // flow through the f64-only closure ABI and drops the closure for every IIFE. Runs
+  // BEFORE jzify so it only sees USER arrow IIFEs, not jzify's synthetic wrapper IIFEs
+  // (named/recursive function expressions, method shorthand), which keep the closure
+  // path. A no-op when there are none.
+  parsed = time('liftIIFE', () => liftIIFEs(parsed))
   if (!opts.strict) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
   assertCtxInvariants('post-prepare')
