@@ -1,8 +1,8 @@
 // Mandelbrot — escape-time with continuous (smooth) colouring. A large bail-out radius
-// (|z|² > 256) replaces the old fixed post-escape smoothing loop: the fractional
-// iteration count log2(½·log|z|²) is already smooth at this radius, and |z|² stays well
-// inside f32 range — which lets the SIMD sibling (mandelbrot.simd.js) colour 4 lanes at
-// once without overflow. Same source runs as the V8 baseline and compiles to wasm.
+// (|z|² > 256) replaces the old fixed post-escape smoothing loop: the fractional iteration
+// count log2(½·log|z|²) is already smooth at this radius. One source both ways — the JS toggle
+// imports it, the jz toggle runs it compiled, where the escape-time vectorizer lifts the inner
+// loop to f64x2 on its own (no hand-written SIMD kernel).
 const NUM_COLORS = 2048;
 const BAILOUT = 256.0;
 

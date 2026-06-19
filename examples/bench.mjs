@@ -35,16 +35,16 @@ const EXAMPLES = [
   // `opt: true` marks a serial-recurrence / reduction kernel that ties or trails V8
   // (latency-bound, no cross-pixel ILP for jz to exploit). Reported, kept as a
   // compiler-optimization target — not held to the winners' regression floor.
-  // jz compiles the 4-wide SIMD kernel; V8 runs the scalar baseline (its best — no
-  // auto-SIMD for this divergent loop). Same image, ~1.5× at limit 40 up to ~2.5×.
-  { name: 'mandelbrot', frame: 'computeLine ×H (SIMD-4)', jzSrc: 'mandelbrot.simd.js',
+  // jz auto-vectorizes the scalar source to f64x2 (the escape-time vectorizer); V8 runs the
+  // scalar baseline (no auto-SIMD for this divergent loop). Same image, ~1.5× at limit 40 up.
+  { name: 'mandelbrot', frame: 'computeLine ×H',
     make: (e) => { const W = 320, H = 240; e.resize(W, H); return () => { for (let y = 0; y < H; y++) e.computeLine(y, W, H, 40) } } },
 
   { name: 'plasma', frame: 'frame(t)',
     make: (e) => { e.resize(640, 400); let t = 0; return () => e.frame(t += 0.02) } },
 
-  { name: 'chladni', frame: 'frame(freq)',
-    make: (e) => { e.resize(760, 760); let f = 40; return () => e.frame(f = f < 2000 ? f + 7 : 40) } },
+  { name: 'chladni', frame: 'frame(n, m)',
+    make: (e) => { e.resize(760, 760); let n = 2; return () => e.frame(n = n < 9 ? n + 1 : 2, 7) } },
 
   { name: 'diffusion', frame: 'frame (8 substeps)',
     make: (e) => { e.resize(448, 448); e.clear(); e.seedRect(200, 200, 248, 248); return () => e.frame() } },
@@ -61,12 +61,10 @@ const EXAMPLES = [
   { name: 'waves', frame: 'frame (stencil+render)', opt: true,
     make: (e) => { e.resize(640, 400); e.clear(); for (let k = 0; k < 8; k++) e.drop(100 + k * 60, 200, 4, 1.2); return () => e.frame(0) } },
 
-  // Serial recurrence (x,y chain), no cross-iteration ILP. But the four transcendentals
-  // are independent WITHIN an iteration, so jz compiles the f64x2 SIMD sibling: the two
-  // sines and the two cosines pack two-per-vector (f64x2.sin/cos → $math.sin2/$math.cos2),
-  // halving the trig that dominates the loop. V8 runs the scalar baseline (no auto-SIMD
-  // for a divergent transcendental recurrence). ~1.8× here; density bit-identical to scalar.
-  { name: 'attractors', frame: 'frame 1.2M iters (SIMD-2)', jzSrc: 'attractors.simd.js',
+  // Serial recurrence (x,y chain), no cross-iteration ILP — the four transcendentals per step
+  // dominate. jz runs the scalar source (same as the demo); V8 runs it as plain JS. Density is
+  // bit-identical to V8's; the per-iteration sin/cos throughput is the comparison.
+  { name: 'attractors', frame: 'frame 1.2M iters',
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
   // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global
