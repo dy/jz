@@ -16,16 +16,18 @@ dist(3, 4) // 5
 
 ## Why?
 
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid JZ is valid JS** – run and test as JS, compile to portable WASM.
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid JZ is valid JS** – run and test as JS, compile to WASM.
 
-| Good for                    | Not for                    |
-|-----------------------------|----------------------------|
-| Numeric, math, compute      | UI, DOM, frontend          |
-| DSP, audio, bytebeats       | Backend, APIs, server      |
-| Demoscene, games            | Crypto, security           |
-| Parsers, transforms         | Async, I/O                 |
-| Simulation, physics         | Dynamic, OOP               |
-| WASM utilities              | JS runtime                 |
+| Good for                     | Not for                   |
+|------------------------------|---------------------------|
+| DSP, audio, synthesis        | UI, DOM, the frontend     |
+| Image, video, pixels         | Servers, APIs, I/O        |
+| Simulation, physics, games   | Async, promises, events   |
+| Parsers, codecs, compression | Dynamic, polymorphic, OOP |
+| Scientific, numeric, ML      | Security crypto, big-ints |
+| Hashing, checksums, RNG      | Glue, the cold 90%        |
+
+Output `.wasm` is portable — run it in any host (browser, Node, Deno, edge, plugins), or take it native via [wasm2c](https://github.com/WebAssembly/wabt) (wasm → C → binary).
 
 
 ## Usage
@@ -497,9 +499,9 @@ See [bench →](https://dy.github.io/jz/bench/)
 
 <table>
 <tr>
-<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b> — Camerata-style plate; frequency sweeps the nodal figure.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b> — frequency sweeps the nodal figure.</td>
 <td width="33%"><a href="https://dy.github.io/jz/examples/julia/"><img src="examples/thumbs/julia.webp" width="100%" alt="Julia set"></a><br><b>julia</b> — escape-time Julia set; drag the constant to morph it.</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, millions of iters → luminous curves.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/attractors/"><img src="examples/thumbs/attractors.webp" width="100%" alt="Strange attractor"></a><br><b>attractors</b> — de Jong map, luminous curves.</td>
 </tr>
 <tr>
 <td><a href="https://dy.github.io/jz/examples/raymarcher/"><img src="examples/thumbs/raymarcher.webp" width="100%" alt="SDF raymarcher"></a><br><b>raymarcher</b> — an SDF sphere field; Shadertoy on the CPU.</td>
@@ -519,7 +521,7 @@ See [all examples →](https://dy.github.io/jz/examples/)
 
 ## Alternatives
 
-From small, fast JS subset to full JS spec, bundled engine:
+Small & fast JS subset → full JS spec & bundled engine:
 
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
 * [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — reproducible WASM assembled through a typed *builder API*.
