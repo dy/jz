@@ -339,7 +339,7 @@ footer .fcol a:hover { color: #fff; }
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
         <h1>Computational JS, <br class="hb">compiled to WASM</h1>
       </div>
-      <p class="sub">Plain JavaScript → WASM, ahead-of-time. Same source, <b><span :text="vsv8">2.2–13.5×</span> faster</b>. For DSP, visuals, simulations and more.</p>
+      <p class="sub">Plain JavaScript → WASM, ahead-of-time. Same source, <b><span :text="vsv8">more than 2×</span> faster</b>. For DSP, visuals, simulations and more.</p>
     </div>
 
     <div class="pcol pright">
@@ -390,7 +390,7 @@ footer .fcol a:hover { color: #fff; }
 
     <details name="faq">
       <summary><span class="fq">Why not just Rust, Go, or C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">You don’t need to. Going native means a second language, a second toolchain, and a separate port to keep in sync with your JS. JZ compiles the JavaScript you already have and tested into near-native <code>.wasm</code> competitive with Rust and Zig on numeric kernels. <a href="bench/">See the bench →</a></div>
+      <div class="ans">Your existing JS already compiles to WASM that competes against Rust, Go, and C — without a second language or a port to keep in sync. Reach for native when you’ve genuinely outgrown JS — not because someone says Rust is faster. <a href="bench/">See the bench →</a></div>
     </details>
 
     <details name="faq">
