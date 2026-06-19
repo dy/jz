@@ -10,6 +10,7 @@ and as jz-WASM, so every demo flips one switch to compare them honestly — show
 compute-ms, not a faked speedup (jz wins transcendental-heavy work; V8's JIT ties/wins
 pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
 
+
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
   Vibecoder + audio + live-coding proof in one. Needs: syntax highlight, waveform
@@ -18,15 +19,18 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
   permalink. The demo *is* the marketing. Greenfield (no playground/ yet).
 - [x] **Finish selfcompile** — template tag separate from main jz (real selfcompile); 3×
   cross-AI optimizer passes; **release 0.6.0**.
-- [ ] Main page
-  - [ ] Demo slider
-  - [ ] JZ/JS switch with fps
-  - [ ] Minirepl
-  - [ ] Sponsor call CTA
+- [x] Main page
+  - [x] Demo
+  - [x] JZ/JS switch with fps
+  - [x] Minirepl
+  - [ ] Mobile version
+  - [ ] Sponsor call
+  - [ ] Used by (projects list)
 - [ ] Examples
   - [ ] Instead of myriads better have a few powerful boosted examples
   - [ ] Nice settings-panel side-menu
   - [ ] All math examples: educative, entertaining
+  - [ ] Open in repl
 
 
 ## Reach — perception/proof (highest external leverage)
@@ -137,9 +141,64 @@ correctness risk for zero measured benefit:
 - [ ] potrace playground.
 - [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
 
+
+
+
+
+
+
 ---
 
 ## Archive
+
+
+## Marketing / landing-page — audience-driven (full research → `.work/marketing.md`)
+Goal = **real adoption** (kernels shipped with jz), channel = **page + repo only** (README/npm/page
+ARE the distribution). Personas to optimize the page for: **#1 Web-Audio/DSP authors (highest fit,
+currently invisible on the page)**, #2 JS-library authors (blocked by "fits my build?"), #3 creative
+coders (already over-served — don't add more). Ignore for the page: edge/JS13K/Porffor/compiler-curious
+(reachable but low real-adoption conversion). Verified: hero toggle is an honest **11.8×** jz win
+(grid-current frame, 6×2000 @1360×560) — safe to lead with it as proof.
+
+Done this pass:
+- [x] **Meta description bug fixed** (`index.html`) — was "beats Rust and Zig → wasm" but bench
+  targets are NATIVE (`rustc -C target-cpu=native`/`zig -O ReleaseFast`) and jz loses 7/20 Rust cases.
+  → "Over 2× faster than V8, trades blows with native Rust and Zig". (drops the drift-prone 2.4× too.)
+- [x] **`<title>` → SEO-first** — "jz — JS→WASM compiler for numeric code (DSP, audio, math)".
+- [x] **H1 → benefit/persona-first** — "Your numeric JS, compiled AoT to WASM" (kept your `<br class="hb">`
+  + AoT; avoided "native-speed" as a slight overclaim — let the metrics/live demo prove speed).
+- [x] **FAQ +3 entries** — "Does it fit my build pipeline?" (honest no-plugin-yet), "What JS semantics
+  differ?" (f64 / UTF-8 bytes / no-GC + link), "Can I debug it?" (console.log / --names / --why-not-simd).
+- [x] **Footer copy de-duplicated** (FIXME resolved) — "The slow 10% … the other 90% stays the JS you wrote."
+- [x] **npm `description` + keywords** broadened (numeric, signal-processing, audio-worklet, math,
+  js-to-wasm, performance) — `jz` is unsearchable, so metadata carries discovery.
+- [x] **README first-screen hook** — use-cases + no-annotations/no-lock-in above the fold.
+- [x] **GitHub repo** — description set; topics filled to the 20-cap (+numeric, signal-processing,
+  audio-worklet, js-to-wasm, math, performance, functional). Social-preview image still TODO (manual).
+- [x] **bench/README.md credibility fixes** (verified from results.json): callback 27.56×→2.26× (was
+  10× off), tokenizer "AS wins" (FALSE — jz now 0.84×), aggregate "smaller than AS" (FALSE — jz ~1.1×
+  larger) + V8 0.41→0.43 / AS 0.40→0.36, audio showcase refreshed (blur 9.4×, bytebeat 3.7×, synth→2.0kB),
+  poly 6.2→12.9×, json 1.7→1.3×, summary ranges, watr "only case"→+jessie, +alpha honesty bullet.
+- NOTE: **hero sub left as-is** (your terser rewrite + `.sb` hook) — NOT overridden. Recommendation
+  stands: foreground "valid jz is valid JS / no lock-in" + name DSP in the sub; your call.
+
+Next — page LAYOUT (yours; ready-to-paste markup handed over in chat):
+- [x] **Caption the JS/JZ toggle**: "Same source. Flip to compile it to WASM." (strongest proof; unlabeled = decoration).
+- [x] **Move `npm install jz` chip into the hero** (`.pleft`, under the sub); wire its copy handler like `install2`.
+- [ ] Name the AudioWorklet use case with a real DSP demo above the fold (biquad/minisynth + toggle).
+
+Next — repo:
+- [x] **Finish bench/README.md regeneration** — biquad/mat4/bitwise/aos/mandelbrot/sort/crc32 per-case
+  tables are still an OLDER snapshot (mostly UNDERSTATE current jz). Best fixed by a generator
+  (`scripts/bench-readme.mjs` reading results.json): `npm run bench` would DROP zig/go (not installed)
+  and degrade results.json, so regenerate the doc FROM results.json, don't re-run the bench.
+- [ ] **GitHub social-preview image** (manual upload via repo Settings → every shared link unfurls with the pitch).
+- [x] Stop hardcoding the speed multiple in static copy — meta fixed; in-page metric prefills are
+  live-bound from results.json (self-correct), so left as-is.
+
+(The two highest-leverage non-copy moves for real adoption already live below: **unplugin-jz** and
+**dogfood own libs** under "Reach — perception/proof". They outrank every copy change combined.)
+
 
 - [x] **AoS→SoA layout transform / f64x2 deinterleave** — WON'T BUILD, measured net-negative
   (2026-06-14). The `aos` bench IS the workload, and both SIMD forms are *slower* than the
