@@ -7,29 +7,23 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-// `a` is the relaxation factor; a=(1,0) is plain Newton. Drag steers it and the basins
-// swirl; release and it eases back toward 1 with a gentle drift (never snaps).
-let baseRe = 1.0, baseIm = 0.0, userSet = false
+// `a` is the relaxation factor (a=1 is plain Newton). It drifts on its own around 1 so the
+// basins swirl continuously — which frees DRAG for panning and scroll for zoom, like the other
+// brots (the old drag-steers-a fought the pan). Double-click resets the view.
+const home = { cx: 0, cy: 0, scale: 1.6 }
+const view = { ...home }
 const demo = runDemo({
   name: "newton",
-  hint: "Newton's method on z³−1 — drag to over-relax the step and swirl the basins",
+  hint: "Newton's method on z³−1 — the over-relaxation swirls on its own · drag to pan · scroll to zoom",
   frame: (e, t) => {
-    let are, aim
-    if (ptr.down) {
-      are = 1.0 + (ptr.x * 2 - 1) * 0.6
-      aim = (ptr.y * 2 - 1) * 0.6
-      baseRe = are; baseIm = aim; userSet = true
-    } else {
-      const amp = userSet ? 0.05 : 0.16
-      are = baseRe + Math.cos(t * 0.17) * amp
-      aim = baseIm + Math.sin(t * 0.13) * amp
-    }
-    e.frame(t, are, aim)
+    const are = 1.0 + Math.cos(t * 0.17) * 0.32
+    const aim = Math.sin(t * 0.13) * 0.32
+    e.frame(t, are, aim, view.cx, view.cy, view.scale)
   },
 })
-const ptr = trackPointer(demo.cv)
+panZoom(demo.cv, view, home, () => {})   // drag → pan, scroll → zoom, double-click → reset
 </script>
 </body>
 </html>

@@ -9,39 +9,47 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// The CA steps a few times a second (electrons race too fast at 60fps to follow); the frame
-// is painted every tick regardless. Drag a rubber-band rectangle → a conductor loop;
-// right-click sparks a cell; double-click reseeds.
+// The CA steps a few times a second (electrons race too fast at 60fps to follow); the frame is
+// painted every tick regardless. PENCIL: drag to draw conductor wire cell-by-cell; right-click
+// sparks an electron head onto a wire; double-click reseeds the random tableau.
 let lastStep = -1
-let dragging = false, ax = 0, ay = 0, bx = 0, by = 0
+let drawing = false, lastX = 0, lastY = 0
 const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
 
 const demo = runDemo({
   name: "wireworld",
-  hint: "Wireworld — diodes pass electrons one way (→ through, ← blocked); loops below are clocks · drag to add a loop",
+  hint: "Wireworld — pencil conductor wires; right-click to spark an electron · double-click to reseed",
   size: { budget: 30000 },
   load: (e) => { e.seed(); e.frame(0) },
   frame: (e, t) => { if (t - lastStep >= 1 / 14) { lastStep = t; e.frame(0) } },
-  overlay: (g, d) => {
-    if (!dragging) return
-    g.strokeStyle = "rgba(170,170,170,.85)"; g.lineWidth = 1
-    g.strokeRect(ax * sx(d) + .5, ay * sy(d) + .5, (bx - ax) * sx(d), (by - ay) * sy(d))
-  },
 })
 
 const cv = demo.cv
+// Paint a CONNECTED stroke of single cells from (x0,y0)→(x1,y1) in grid coords, so a fast drag
+// leaves an unbroken wire (the CA needs continuity to conduct). state 3 = conductor, 1 = head.
+const stroke = (x0, y0, x1, y1, state) => {
+  const dx = x1 - x0, dy = y1 - y0
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy)))
+  for (let i = 0; i <= steps; i++) demo.engine.paint(x0 + dx * i / steps, y0 + dy * i / steps, 0, state)
+}
+
 cv.addEventListener("contextmenu", (e) => e.preventDefault())
 cv.addEventListener("pointerdown", (e) => {
-  if (e.button === 2) { demo.engine?.paint(e.offsetX * sx(demo), e.offsetY * sy(demo), 1, 1); return }
-  dragging = true; ax = bx = e.offsetX; ay = by = e.offsetY
+  if (!demo.engine) return
+  const gx = e.offsetX * sx(demo), gy = e.offsetY * sy(demo)
+  if (e.button === 2) { demo.engine.paint(gx, gy, 0, 1); return }   // right-click → spark an electron head
+  drawing = true; lastX = gx; lastY = gy
+  demo.engine.paint(gx, gy, 0, 3)                                   // pencil down → conductor
   try { cv.setPointerCapture(e.pointerId) } catch {}
 })
-cv.addEventListener("pointermove", (e) => { if (dragging) { bx = e.offsetX; by = e.offsetY } })
-cv.addEventListener("pointerup", (e) => {
-  if (dragging && demo.engine) demo.engine.drawRect(ax * sx(demo), ay * sy(demo), bx * sx(demo), by * sy(demo))
-  dragging = false; try { cv.releasePointerCapture(e.pointerId) } catch {}
+cv.addEventListener("pointermove", (e) => {
+  if (!drawing || !demo.engine) return
+  const gx = e.offsetX * sx(demo), gy = e.offsetY * sy(demo)
+  stroke(lastX, lastY, gx, gy, 3)
+  lastX = gx; lastY = gy
 })
-cv.addEventListener("pointerleave", () => { dragging = false })
+cv.addEventListener("pointerup", (e) => { drawing = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { drawing = false })
 cv.addEventListener("dblclick", () => demo.engine && demo.engine.seed())
 </script>
 </body>

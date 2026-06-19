@@ -7,9 +7,10 @@
 // Unlike Mandelbrot/Julia (escape time), this is CONVERGENCE: the boundary is where
 // Newton's method can't decide. `a` is the relaxation factor, passed as f64 args so it
 // stays fractional (a module global would be i32-narrowed in jz). a=1 is plain Newton;
-// steering a off 1 over-/under-relaxes it and the basins swirl. The per-pixel complex
+// driving a off 1 over-/under-relaxes it and the basins swirl. The per-pixel complex
 // loop — a fistful of multiplies and one divide — is exactly what jz compiles to tight wasm.
-// resize(w,h) → Uint32Array; frame(t, are, aim) renders.
+// resize(w,h) → Uint32Array; frame(t, are, aim, vcx, vcy, vscale) renders the view centred at
+// (vcx,vcy) with half-height vscale — the host drives those from scroll-zoom / drag-pan.
 
 let W = 0, H = 0, px, invW = 0, invH = 0, aspect = 1
 let MAXIT = 40
@@ -24,14 +25,14 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (t, are, aim) => {
-  let scale = 1.6
+export let frame = (t, are, aim, vcx, vcy, vscale) => {
+  let scale = vscale
   let j = 0, py = 0
   while (py < H) {
-    let y0 = (py * invH - 0.5) * 2.0 * scale
+    let y0 = (py * invH - 0.5) * 2.0 * scale + vcy
     let qx = 0
     while (qx < W) {
-      let zx = (qx * invW - 0.5) * 2.0 * scale * aspect
+      let zx = (qx * invW - 0.5) * 2.0 * scale * aspect + vcx
       let zy = y0
       let it = 0
       let root = 0

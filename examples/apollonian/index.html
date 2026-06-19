@@ -15,11 +15,12 @@ const demo = runDemo({
   name: "apollonian",
   hint: "Apollonian gasket — drag to pan, scroll to zoom",
   frame: (e, t) => {
+    // ptr.x/y are already normalized to the canvas (0..1), and the kernel maps panX→panX·W
+    // pixels — so a drag delta IS the pan delta, 1:1 in screen space. (The old code divided by
+    // innerWidth again, shrinking every drag ~1000×, which is why panning looked dead.)
     if (ptr.down) {
-      const dx = (ptr.x - lastPx) / (innerWidth || 1)
-      const dy = (ptr.y - lastPy) / (innerHeight || 1)
-      panX += dx * 1.5
-      panY += dy * 1.5
+      panX += (ptr.x - lastPx)
+      panY += (ptr.y - lastPy)
     }
     lastPx = ptr.x; lastPy = ptr.y
     e.frame(t, panX, panY, zoom)

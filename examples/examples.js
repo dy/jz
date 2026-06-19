@@ -31,6 +31,7 @@ export const examples = [
   { name: 'cradle',       title: "Newton's Cradle",   blurb: "Newton's cradle — kinetic energy passing through" },
   { name: 'interference', title: 'Interference',      blurb: 'two-source wave field, recomputed every frame' },
   { name: 'schrodinger',  title: 'Schrödinger',       blurb: 'a quantum wavepacket diffracts through a double slit and tunnels' },
+  { name: 'hydrogen',     title: 'Hydrogen Orbitals', blurb: 'the electron clouds of the hydrogen atom — |ψₙₗₘ|² in phase color, morphing s→p→d→f' },
   { name: 'erosion',      title: 'Erosion',           blurb: 'hydraulic erosion — rain carves a fractal terrain' },
   { name: 'plasma',       title: 'Plasma',            blurb: 'FBM domain-warp — the classic flowing plasma', show: true },
   { name: 'lorenz',       title: 'Lorenz',            blurb: 'the butterfly that launched chaos theory — a strange attractor in 3D', show: true },
@@ -64,6 +65,7 @@ export const examples = [
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — a spanning cluster snaps in at p_c' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'wet-paper pigment diffusion with edge darkening' },
   { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — drop ink, comb it into swirls' },
+  { name: 'dithering',    title: 'Dithering',         blurb: 'one smooth image, four 1-bit dithers — threshold, ordered, Floyd–Steinberg, Atkinson' },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray-sphere intersection' },
 ]
 
@@ -99,6 +101,8 @@ export const WIKI = {
   'interference':      W + 'Wave_interference',
   'waves':             W + 'Wave_equation',
   'schrodinger':       W + 'Schr%C3%B6dinger_equation',
+  'hydrogen':          W + 'Hydrogen_atom',
+  'dithering':         W + 'Dither',
   'plasma':            W + 'Plasma_effect',
   'chladni':           W + 'Cymatics',
   'harmonograph':      W + 'Harmonograph',

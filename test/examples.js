@@ -193,16 +193,17 @@ test('example: lorenz conditional trail-fade vectorizes (i32x4 if-store) bit-exa
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz if-store bit-exact vs scalar (4800 px, 30 frames)');
 });
 
-// Mixed-lane log-tonemap (tryToneMap): fern / bifurcation / attractors all end in a flat loop that
+// Mixed-lane log-tonemap (tryToneMap): fern / attractors both end in a flat loop that
 // loads an i32 density, lifts it to f64 for `Math.log(d+1)*S`, clamps, truncates back to i32, packs an
 // ARGB word, and (conditionally) stores it — i32 lanes wrapping an f64 ISLAND that the single-lane lift
 // can't carry. The 2-wide hybrid loads 2 u32 (load64_zero → i32x4 low lanes), `f64x2.convert_low_i32x4_s`
 // into the island, `$math.log_v` + clamp, `i32x4.trunc_sat_f64x2_s_zero` back out, packs, and masked-
 // stores the low 2 lanes. BIT-EXACT per lane (log_v is the per-lane mirror; clamp keeps L finite so
 // trunc_sat == |0; masks match their data width). fern seeds dens via Math.random ⇒ fixed randomSeed.
-test('example: log-tonemap (fern/bifurcation/attractors) vectorizes mixed-lane f64x2 + bit-exact', () => {
+// (bifurcation deliberately tonemaps via a precomputed LUT — the per-pixel log was slower than scalar —
+// so it no longer takes this path and isn't a case here.)
+test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-exact', () => {
     const cases = [
-        { name: 'bifurcation', w: 70, h: 50, drive: (e) => { const px = e.resize(70, 50); for (let f = 0; f < 4; f++) e.frame(f * 0.1, 2.5, 4.0); return [...px]; } },
         { name: 'fern',        w: 37, h: 49, drive: (e) => { const px = e.resize(37, 49); if (e.init) e.init(); for (let f = 0; f < 4; f++) e.frame(f, 0.2); return [...px]; } },
         { name: 'attractors',  w: 45, h: 37, drive: (e) => { const px = e.resize(45, 37); for (let f = 0; f < 3; f++) e.frame(1.4, -2.3, 2.4, -2.1, 15000); return [...px]; } },
     ];
@@ -283,12 +284,15 @@ test('example: mandelbrot output natively matches WASM', () => {
 
 let golSrc = fs.readFileSync(new URL('../examples/game-of-life/game-of-life.js', import.meta.url), 'utf8');
 
-test('example: jukebox wasm assets are deployable', async () => {
+// Every jukebox voice must compile to valid, instantiable wasm — the bytes
+// examples/jukebox/build.mjs writes and pages.yml deploys (compile(moduleSrc(body),
+// {optimize:3}), identical here). Compiled in-memory rather than read off disk: the
+// .wasm artifacts are gitignored build output (built by build:examples, AFTER this
+// suite runs), so a disk read fails in CI and from a clean checkout. This tests the
+// real property — each floatbeat lowers to deployable wasm — order-independently.
+test('example: jukebox floatbeats compile to deployable wasm', async () => {
     for (let i = 0; i < FLOATBEATS.length; i++) {
-        const url = new URL(`../examples/jukebox/beat-${i}.wasm`, import.meta.url);
-        ok(fs.existsSync(url), `missing ${url.pathname}`);
-
-        const bytes = fs.readFileSync(url);
+        const bytes = jz.compile(moduleSrc(FLOATBEATS[i].body), { optimize: 3 });
         is(bytes[0], 0x00);
         is(bytes[1], 0x61);
         is(bytes[2], 0x73);
@@ -421,9 +425,12 @@ test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', (
     const wat = jz.compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 20, `domain-color vectorizes via the per-pixel-color pass (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok(/\$math\.atan2_2/.test(wat) && /\$math\.hypot_2/.test(wat), 'atan2 → $math.atan2_2, hypot → $math.hypot_2');
-    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0); return Array.from(px); };
+    // Pass a REAL constant c (cx,cy ≠ 0) — frame(0) alone left every pixel 0 (cx=cy=0 is a degenerate
+    // field), so a SIMD-all-zero miscompile read "bit-exact" against scalar-all-zero and slipped through.
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0, 0.37, 0.21, 0, 0); return Array.from(px); };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
     is(simd.length, scal.length);
+    ok(simd.filter(v => v & 0xffffff).length > 1400, `domain-color SIMD renders a real field, not all-black (${simd.filter(v => v & 0xffffff).length}/1536 lit)`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'domain-color mirror lift bit-exact vs scalar (1536 px)');
 });
 

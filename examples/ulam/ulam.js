@@ -7,10 +7,6 @@
 // resize(w,h) → Uint32Array; frame(t, speed) renders incrementally.
 
 let W = 0, H = 0, px
-// spiral cursor state in Int32Array: [ax, ay, dir, run, runLen, remaining, n]
-// dir: 0=right,1=up,2=left,3=down
-let st = new Int32Array(8)       // [ax,ay,dir,run,runLen,remaining,n, _pad]
-let revealed = 0                 // how many numbers have been placed so far
 let isComp                       // Uint8Array sieve
 
 // direction vectors: right,up,left,down
@@ -37,72 +33,40 @@ export let resize = (w, h) => {
     }
     p++
   }
-
-  // reset spiral: center at (cx,cy), n=1, dir=right, run state
-  let cx = (w >> 1), cy = (h >> 1)
-  st[0] = cx; st[1] = cy   // ax, ay
-  st[2] = 0                // dir (right)
-  st[3] = 0                // steps taken in current run
-  st[4] = 1                // runLen (current run length)
-  st[5] = 0                // which half of pair (0 or 1)
-  st[6] = 1                // n (number at current position)
-
-  revealed = 0
   return px
 }
 
 export let frame = (t, speed) => {
-  let spd = speed | 0
-  let target = (t * spd) | 0
-  if (target < 1) target = 1
   let total = W * H
+  let target = (t * speed) | 0
+  if (target < 1) target = 1
   if (target > total) target = total
 
-  // place all numbers from revealed+1 up to target
-  while (revealed < target) {
-    let ax = st[0], ay = st[1]
-    let n = st[6]
+  // Re-walk the WHOLE spiral up to `target` every frame (like mandelbrot recomputes every pixel),
+  // instead of the old incremental ~50-cells/frame reveal. Two wins: (1) the ms readout reflects
+  // real per-frame work — O(target) — so it's a fair JS-vs-jz race instead of pinned at ≈0; and
+  // (2) a far higher reveal rate fills the spiral in seconds. The sieve is precomputed in resize.
+  let i = 0
+  while (i < total) { px[i] = (255 << 24); i++ }   // clear to black
 
-    // paint this cell
+  let ax = W >> 1, ay = H >> 1
+  let dir = 0, steps = 0, runLen = 1, half = 0
+  let n = 1
+  while (n <= target) {
+    // paint this cell — prime → white (background already cleared to black)
     if (ax >= 0 && ax < W && ay >= 0 && ay < H) {
-      let idx = ay * W + ax
-      if (n >= 2 && !isComp[n]) {
-        // prime — pure white
-        px[idx] = (255 << 24) | (255 << 16) | (255 << 8) | 255
-      } else {
-        px[idx] = (255 << 24)  // opaque black (composite)
-      }
+      if (n >= 2 && !isComp[n]) px[ay * W + ax] = (255 << 24) | (255 << 16) | (255 << 8) | 255
     }
 
-    revealed++
-    if (revealed >= target) break
-
-    // advance spiral
-    let dir = st[2]
-    let steps = st[3]
-    let runLen = st[4]
-    let half = st[5]
-
-    st[0] = ax + DX[dir]
-    st[1] = ay + DY[dir]
+    // advance spiral one step: move, then turn left after each run; lengthen every two runs
+    ax = ax + DX[dir]
+    ay = ay + DY[dir]
     steps++
-
     if (steps >= runLen) {
-      // end of this run — turn left
       steps = 0
       dir = (dir + 1) & 3
-      // after 2 runs of same length, increase length
-      if (half == 0) {
-        half = 1
-      } else {
-        half = 0
-        runLen++
-      }
-      st[2] = dir; st[3] = steps; st[4] = runLen; st[5] = half
-    } else {
-      st[3] = steps
+      if (half == 0) { half = 1 } else { half = 0; runLen++ }
     }
-
-    st[6] = n + 1
+    n++
   }
 }

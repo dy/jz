@@ -3948,6 +3948,21 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap) {
     epilogue.push(s)
   }
   if (!laneMap.size) return null   // nothing lifted to f64x2
+  // HAZARD: a lane local re-written by an epilogue statement leaves its f64x2 shadow STALE.
+  // e.g. `let fx=0; if(denom>ε){fx=…}; let mag=hypot(fx,…)` — `fx=0` lifts to a lane local
+  // splat(0); the statement-form `if` lands in the scalar epilogue (updates only the SCALAR local),
+  // so the lifted `hypot(fx,…)` — emitted BEFORE the epilogue — reads the stale splat(0) → all-zero.
+  // Bail ONLY when the stale shadow actually feeds another LANE compute: a lane local whose shadow
+  // is CONSUMED by some laneLifted expr and is ALSO reassigned in the epilogue. (A lane local merely
+  // extracted for the scalar epilogue — e.g. `gv`, clamped by `if(gv<0)gv=0` then packed — is safe:
+  // the clamp runs per-lane after extraction, corrupting no other lane.)
+  {
+    const consumedShadows = new Set()
+    const scanShadow = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') consumedShadows.add(n[1]); for (const c of n.slice(1)) scanShadow(c) }
+    for (const expr of laneLifted.values()) scanShadow(expr)
+    const hazard = (n) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee') && laneMap.has(n[1]) && consumedShadows.has(laneMap.get(n[1]))) || n.slice(1).some(hazard))
+    if (epilogue.some(hazard)) return null
+  }
   // Only worth the extract overhead if a costly op (a *2 transcendental or f64x2.sqrt) got lifted.
   const heavy = (n) => isArr(n) && ((n[0] === 'call' && /\$math\.(sin2|cos2|pow2|log_v|atan2_2|hypot_2|exp2_2|tan2)/.test(n[1])) || n[0] === 'f64x2.sqrt' || n.some(heavy))
   if (![...laneLifted.values()].some(heavy)) return null   // only cheap arithmetic lifted — not worth it

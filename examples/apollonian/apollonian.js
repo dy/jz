@@ -86,14 +86,11 @@ let buildGasket = (R) => {
   cx_[3] = x2; cy_[3] = y2; cr_[3] = r1; dep_[3] = 1.0
   ncircles = 4
 
-  // central circle tangent to all 3 inner circles
-  // by Descartes: (k0 + k1 + k1 + k1 + k4)² = ... → k4 = k1+k1+k1+k0 + 2*sqrt(...)
-  // For 3 equal circles symmetric, the center circle is at origin
-  // k4 = -k0 + 2*k1 (Soddy for inversion) — actually: k4 = k1*3 + k0 + 2*sqrt(3*k1^2+3*k1*k0)
-  let k4_pre = k1 + k1 + k1 + k0
-  let sq_in = k1 * k1 + k1 * k1 + k1 * k1 + k1 * k0 + k1 * k0 + k1 * k0
-  // sq_in = 3*k1^2 + 3*k1*k0
-  let kc = k4_pre + 2.0 * Math.sqrt(sq_in)
+  // Central Soddy circle filling the curvilinear triangle between the three inner circles.
+  // Descartes on the THREE EQUAL inner circles (k1,k1,k1) — NOT the outer: (3k1+kc)² = 2(3k1²+kc²)
+  // ⇒ kc = k1·(3 + 2√3). The old form folded in the outer k0, which made kc too small (rc too
+  // big), so the central circle OVERLAPPED — crossed — each inner circle instead of kissing it.
+  let kc = k1 * (3.0 + 2.0 * sq3)
   let rc = 1.0 / kc
   cx_[4] = 0.0; cy_[4] = 0.0; cr_[4] = rc; dep_[4] = 1.0
   ncircles = 5

@@ -9,14 +9,16 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// speed: pixels per second to reveal; drag left/right to slow/fast
-let baseSpeed = 3000
+// speed: cells per second to reveal; drag left/right to slow/fast. High by default so the spiral
+// fills in a handful of seconds — the kernel now re-walks the whole spiral each frame, so this is
+// just how fast the reveal front advances.
+let baseSpeed = 90000
 const demo = runDemo({
   name: "ulam",
   hint: "Primes on a square spiral — diagonal streaks emerge from quadratic polynomials landing many primes",
   frame: (e, t) => {
     let speed = baseSpeed
-    if (ptr.down) speed = Math.round(baseSpeed * (0.2 + ptr.x * 3.6))
+    if (ptr.down) speed = Math.round(baseSpeed * (0.15 + ptr.x * 2.5))
     e.frame(t, speed)
   },
 })

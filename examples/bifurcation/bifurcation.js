@@ -7,6 +7,7 @@
 // which would be i32-narrowed in jz).
 
 let W = 0, H = 0, dens, px
+let tone  // Uint8Array — density→gray log-tonemap LUT, precomputed once (no per-pixel Math.log)
 
 // r0, r1, x window bounds live in Float64Array to preserve f64 in jz
 let st = new Float64Array(2) // [r0, r1] — fallback in case args missing
@@ -17,6 +18,18 @@ export let resize = (w, h) => {
   px = new Uint32Array(w * h)
   st[0] = 2.5
   st[1] = 4.0
+  // Precompute the log tonemap: gray = min(255, log(d+1)·90). It saturates at 255 by d≈16 and the
+  // per-column density caps at PLOT, so a 512-entry LUT covers every value — turning the hot
+  // tonemap into a flat table read (fast in JS AND jz; a gather won't trip the transcendental
+  // map-vectorizer that made the per-pixel log slower than scalar). tone[0]=0 → v=0 stays black.
+  tone = new Uint8Array(512)
+  let k = 0
+  while (k < 512) {
+    let L = Math.log(k + 1.0) * 90.0
+    if (L > 255.0) L = 255.0
+    tone[k] = L | 0
+    k++
+  }
   return px
 }
 
@@ -48,18 +61,13 @@ export let frame = (t, r0, r1) => {
     col++
   }
 
-  // log-tonemap density → grayscale
+  // log-tonemap density → grayscale via the precomputed LUT (flat table read, no per-pixel log)
   i = 0
   while (i < n) {
     let v = dens[i]
-    if (v > 0) {
-      let L = Math.log(v + 1.0) * 90.0
-      if (L > 255.0) L = 255.0
-      let gv = L | 0
-      px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
-    } else {
-      px[i] = (255 << 24)
-    }
+    if (v > 511) v = 511
+    let gv = tone[v]
+    px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
     i++
   }
 }

@@ -78,9 +78,6 @@ let placeLoop = (x0, y0, x1, y1, k) => {
   }
 }
 
-// drag-drawn rectangle (corners in grid coords) → a conductor loop with one electron
-export let drawRect = (x0, y0, x1, y1) => placeLoop(x0, y0, x1, y1, 1)
-
 let hwire = (x0, x1, y) => { let x = x0; while (x <= x1) { a[y * W + x] = 3; x++ } }
 
 // A Wireworld DIODE on a horizontal wire at row y, gate centred on column cx: a 3-cell cap
@@ -93,33 +90,49 @@ let diodeGate = (cx, y) => {
 
 let addSrc = (x, y) => { if (srcN < 64) { srcX[srcN] = x; srcY[srcN] = y; srcN = srcN + 1 } }
 
-// The classic demo: a bank of diode-gated wires (alternately fed from the left → pass, or
-// from the right → blocked) over a row of clock loops. Deterministic, so every reseed is clean.
+// integer in [lo, lo+span) — Math.random is seeded per run (per instantiation in jz), so the
+// layout below differs on every page load and every reseed.
+let rndi = (lo, span) => lo + ((Math.random() * span) | 0)
+
+// A fresh RANDOM tableau each load, composed ONLY of canonical Wireworld parts — a bank of
+// diode-gated wires (each fed from the left → passes, or the right → blocked at the gate) over a
+// row of circulating clock loops. Counts, rows, gate columns, loop sizes, electron trains and
+// feed sides are all randomized, so it never repeats yet always reads as real Wireworld, not noise.
 export let seed = () => {
   clear()
   srcN = 0; tick = 0
   let mx = (W * 0.05) | 0; if (mx < 2) mx = 2
-  let left = mx, right = W - 1 - mx, gateX = W >> 1
-  let nW = 6
-  let y = (H * 0.10) | 0
-  let dy = ((H * 0.52) / nW) | 0; if (dy < 3) dy = 3
+  let left = mx, right = W - 1 - mx
+  let jit = W >> 3                                 // gate-column jitter half-range
+
+  // ── bank of diode-gated wires across the upper band ──
+  let nW = rndi(4, 4)                              // 4..7 wires
+  let topY = (H * 0.08) | 0
+  let dy = ((H * 0.5) / nW) | 0; if (dy < 3) dy = 3
   let i = 0
   while (i < nW) {
+    let y = topY + i * dy
+    let gx = (W >> 1) - jit + rndi(0, 2 * jit)     // jittered gate column
+    if (gx < left + 3) gx = left + 3
+    if (gx > right - 3) gx = right - 3
     hwire(left, right, y)
-    diodeGate(gateX, y)
-    if ((i & 1) === 0) addSrc(left, y)       // fed from the left → passes the diode →
-    else addSrc(right, y)                     // fed from the right → blocked at the gate
-    y = y + dy
+    diodeGate(gx, y)
+    if (Math.random() < 0.5) addSrc(left, y)       // fed from the left → passes the diode →
+    else addSrc(right, y)                           // fed from the right → blocked at the gate
     i++
   }
-  // clock loops along the bottom — oscillators of graded size
-  let ly = (H * 0.70) | 0, lh = (H * 0.24) | 0
+
+  // ── a row of clock loops along the bottom, random sizes/trains/gaps ──
+  let baseY = (H * 0.66) | 0
+  let maxH = (H * 0.28) | 0; if (maxH < 8) maxH = 8
   let lx = left, j = 0
-  while (lx < right - 18 && j < 8) {
-    let lw = 14 + ((lx * 7 + j * 11) % 26)
+  while (lx < right - 16 && j < 10) {
+    let lw = rndi(12, 18)                           // 12..29 wide
+    let lh = rndi(8, maxH)
     if (lx + lw > right) break
-    placeLoop(lx, ly, lx + lw, ly + lh, 1 + (j % 2))
-    lx = lx + lw + 9
+    let ly = baseY + rndi(0, maxH >> 2)
+    placeLoop(lx, ly, lx + lw, ly + lh, rndi(1, 3)) // 1..3 electrons (trains)
+    lx = lx + lw + rndi(7, 9)
     j = j + 1
   }
 }
@@ -166,10 +179,10 @@ export let frame = (t) => {
     }
   }
 
-  // render — grayscale: empty black, conductor dark, tail mid, head white
+  // render — grayscale: empty PURE black, conductor dark, tail mid, head white
   let n = w * h, i = 0
   while (i < n) {
-    let s = a[i], g = 16
+    let s = a[i], g = 0
     if (s === 3) g = 70
     else if (s === 2) g = 150
     else if (s === 1) g = 255

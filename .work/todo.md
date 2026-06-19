@@ -23,7 +23,8 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
   - [x] Demo
   - [x] JZ/JS switch with fps
   - [x] Minirepl
-  - [ ] Mobile version
+  - [x] Mobile version
+  - [ ] Light theme?
   - [ ] Sponsor call
   - [ ] Used by (projects list)
 - [ ] Examples
@@ -31,6 +32,7 @@ pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
   - [ ] Nice settings-panel side-menu
   - [ ] All math examples: educative, entertaining
   - [ ] Open in repl
+
 
 
 ## Reach — perception/proof (highest external leverage)
@@ -134,22 +136,65 @@ correctness risk for zero measured benefit:
   order. Needs a per-entry `seq` or sibling order-list. Documented divergence in test262 xfail.
 
 ## Ideas
-- [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
-- [x] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
-- [x] template tag as a build tool — jz`code` in a Node script replaces a build step.
-- [ ] AS integrations/plugins (assemblyscript.org/built-with);
-- [ ] potrace playground.
-- [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
+  - [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
+  - [x] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
+  - [x] template tag as a build tool — jz`code` in a Node script replaces a build step.
+  - [ ] AS integrations/plugins (assemblyscript.org/built-with);
+  - [ ] potrace playground.
+  - [x] dithering algorithms — `examples/dithering` (threshold/Bayer/Floyd–Steinberg/Atkinson over a shaded sphere).
+  - [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
 
+## Demos / visualizers: ideas for no-gpu graphical uses
 
-
-
+  - [ ] Instagram minimalism/etc renderers
+  - [ ] xor shaders
+  - [ ] Demoscene
+  - [ ] winamp visualizers
+  - [ ] Various (classic) audio visualizers
+  - [ ] Wave osc visualizers
+  - [ ] DAW play visualizers (pitch bend etc)
+  - [ ] Musical visgens (windchimes, physical etc)
+  - [ ] ASCII renderers
+  - [ ] SVG visualizer?
 
 
 
 ---
 
 ## Archive
+
+### Examples polish pass + 2 new demos + a per-pixel-color miscompile fix (2026-06-19)
+
+A sweep through the gallery for correctness, interaction and perception, plus the one real
+compiler bug it surfaced. Each example bit-exact JS⇆jz where applicable; browser-verified.
+
+* [x] **domain-color rendered solid black under jz** — root cause was a `tryPerPixelColor`
+  miscompile, NOT the example: `let fx=0; if(denom>ε){fx=…}` lifted `fx` to an f64x2 lane local
+  (splat 0) while the statement-form `if` landed in the SCALAR epilogue, so the lifted
+  `hypot(fx,…)` — emitted before the epilogue — read the stale splat(0) → all-zero. Fix:
+  `tryPerPixelColor` now bails to scalar when a lane local is re-written in the epilogue AND
+  consumed by another lane (`src/optimize/vectorize.js`); rewrote the kernel to an unconditional
+  safe-denominator divide (vectorizes correctly + poles flare white); de-vacuumed the example test
+  (it called `frame(0)` where both paths were coincidentally zero). Regression pinned in
+  `test/simd.js` (`COMPLEX_FIELD`, proven to fail without the bail).
+* [x] **Stale wasm** — fern / attractors / bifurcation shipped `.wasm` from before the last
+  compiler commit; rebuilt (fern is actually faster in jz). **bifurcation** also had auto-SIMD
+  *hurting* its memory-bound `Math.log` tonemap → replaced with a precomputed LUT (bit-exact, par
+  with V8, no harmful lift). **ising** "looked like noise" — dynamics were fine, the default T just
+  sat at/above Tc; retuned to start cold and breathe across Tc so domains nucleate visibly.
+* [x] **Fractal family pan/zoom** — julia drag→pan + c auto-morphs on the 0.7885 circle; newton
+  gained view params, drag-pan and an auto-swirling `a`; buddhabrot uses a decaying accumulator so
+  the nebula refines into the new view instead of flashing black; apollonian fixed a genuine
+  geometry bug (central Soddy circle's curvature wrongly folded in the outer circle → it *crossed*
+  the inner circles; now `k₁(3+2√3)`) + its dead pan (double-normalized `ptr.x`).
+* [x] **Misc** — cradle: positional rigid-chain constraint so dragging a middle ball *pushes* its
+  neighbours; phyllotaxis: smaller dots; ulam: re-walks the whole spiral per frame (meaningful ms,
+  ~30× faster reveal); wireworld: randomized layout from canonical parts, pure-black bg, **pencil
+  tool** (drag to draw per-pixel conductor wire, right-click sparks an electron); chladni: framed
+  with green x/y standing-wave strips (the components it superposes) + note readout.
+* [x] **Two new examples** — `dithering` (one shaded sphere, four 1-bit dithers) and `hydrogen`
+  (|ψₙₗₘ|² electron clouds in phase color, cross-dissolving 1s→…→4f). Registered in `examples.js`
+  with thumbs + wiki links.
 
 
 ## Marketing / landing-page — audience-driven (full research → `.work/marketing.md`)

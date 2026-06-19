@@ -373,6 +373,52 @@ for (const [label, mk] of [['value-form', TONE_VALUE], ['store-form', TONE_STORE
   })
 }
 
+// Per-pixel-color HAZARD (domain-color): a guarded conditional assignment `let fx=0; if(cond){fx=…}`
+// whose target later feeds a transcendental mirror (hypot/atan2). `fx=0` lifts to an f64x2 lane
+// local, but the statement-form `if` lands in the SCALAR epilogue — so the lifted `hypot(fx,…)`,
+// emitted BEFORE the epilogue, read the stale splat(0) and the SIMD frame went ALL-ZERO while the
+// scalar one was correct (domain-color rendered solid black). tryPerPixelColor now bails to scalar
+// when a lane local is re-written in the epilogue AND consumed by another lane. Mirrors the exact
+// four-Math field (hypot+atan2+|sin|) over domain-color's nested pixel-loop shape.
+const COMPLEX_FIELD = (d, guarded) => `
+  let W = ${d}, H = ${d}, px = new Uint32Array(${d * d})
+  export let main = () => {
+    let invW = 1.0/W, invH = 1.0/H, aspect = W*invH, j = 0, py = 0
+    while (py < H) {
+      let zy = (0.5 - py*invH) * 2.0
+      let qx = 0
+      while (qx < W) {
+        let zx = (qx*invW - 0.5) * 2.0 * aspect
+        let dr = zx*zx - zy*zy + 1.0, di = 2.0*zx*zy
+        let denom = dr*dr + di*di${guarded ? '' : ' + 1e-300'}
+        ${guarded
+          ? 'let fx = 0.0, fy = 0.0\n        if (denom > 1e-18) { fx = (zx*dr)/denom; fy = (zy*di)/denom }'
+          : 'let fx = (zx*dr)/denom, fy = (zy*di)/denom'}
+        let mag = Math.hypot(fx, fy), arg = Math.atan2(fy, fx)
+        let v = mag/(mag+1.0)
+        let g = (v * (0.55 + 0.45*Math.abs(Math.sin(2.0*arg))) * 255.0) | 0
+        px[j] = (255 << 24) | (g << 16) | (g << 8) | g
+        j++; qx++
+      }
+      py++
+    }
+    let s = 0, i = 0; while (i < ${d * d}) { s = (s + (px[i] & 255)) | 0; i++ }
+    return s
+  }`
+test('SIMD per-pixel-color - guarded assign into a transcendental stays bit-exact (domain-color)', () => {
+  // Positive control: the UNCONDITIONAL field really is a per-pixel-color candidate — it lifts to
+  // f64x2 through the hypot/atan2 mirrors. So the guarded variant below genuinely hits the hazard
+  // path (not a loop the vectorizer ignores), and the bail — not luck — is what keeps it correct.
+  const wu = wat(COMPLEX_FIELD(8, false), SPEED)
+  ok(/\$__ppc/.test(wu), 'unconditional field takes the per-pixel-color path')
+  ok(/\$math\.hypot_2/.test(wu) && /\$math\.atan2_2/.test(wu), 'unconditional field lifts hypot/atan2 mirrors')
+  for (const d of [8, 7, 3]) {     // even, odd-width tail, tiny
+    is(runVec(COMPLEX_FIELD(d, false), SPEED).main(), runVec(COMPLEX_FIELD(d, false), SPEED_SCALAR).main(), `unconditional d=${d}: SIMD === scalar`)
+    // Regression: pre-fix the SIMD frame was all-zero here (stale fx/fy shadow) ≠ scalar.
+    is(runVec(COMPLEX_FIELD(d, true), SPEED).main(), runVec(COMPLEX_FIELD(d, true), SPEED_SCALAR).main(), `guarded-assign + hypot d=${d}: SIMD === scalar`)
+  }
+})
+
 // === TypedArray type-aware indexing ===
 
 test('Int32Array - type-aware read/write', () => {

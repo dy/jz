@@ -95,20 +95,34 @@ export let frame = (t) => {
   while (s < 4) {
     let i = 0
     while (i < N) { if (i !== grabbed) { om[i] += -W0 * W0 * Math.sin(th[i]); th[i] += om[i] } i++ }
-    // resolve collisions between neighbours: overlap + closing → swap angular velocities
+    // Elastic collision: adjacent overlapping + closing → equal masses exchange angular velocity
+    // (this is what carries the kinetic energy through the row). Position is fixed up separately.
     i = 0
     while (i < N - 1) {
-      let xa = ballX(i), xb = ballX(i + 1)
-      if (xb - xa < 2.0 * R) {
-        let va = om[i] * L, vb = om[i + 1] * L          // linear speeds (∝ ω)
-        if (va > vb) {                                   // closing
-          let to = om[i]; om[i] = om[i + 1]; om[i + 1] = to
-          // separate so they rest just touching
-          let overlap = (2.0 * R - (xb - xa)) * 0.5
-          th[i] -= overlap / L; th[i + 1] += overlap / L
-        }
+      if (ballX(i + 1) - ballX(i) < 2.0 * R) {
+        let va = om[i], vb = om[i + 1]
+        if (va > vb) { om[i] = vb; om[i + 1] = va }       // closing → swap
       }
       i++
+    }
+    // Positional non-overlap — the balls are a rigid chain, never interpenetrate. Crucially this
+    // also makes DRAGGING a middle ball PUSH its neighbours instead of passing through them: a
+    // grabbed ball is pinned (yields nothing), so the overlap is taken entirely by the other ball,
+    // and N sweeps propagate that shove all the way down the row it pushes into.
+    let pass = 0
+    while (pass < N) {
+      i = 0
+      while (i < N - 1) {
+        let gap = ballX(i + 1) - ballX(i)
+        if (gap < 2.0 * R) {
+          let corr = (2.0 * R - gap) / L
+          if (i === grabbed) { th[i + 1] += corr }         // pinned left → push right neighbour
+          else if (i + 1 === grabbed) { th[i] -= corr }    // pinned right → push left neighbour
+          else { th[i] -= corr * 0.5; th[i + 1] += corr * 0.5 }
+        }
+        i++
+      }
+      pass++
     }
     s++
   }

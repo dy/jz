@@ -16,9 +16,13 @@ const demo = runDemo({
   size: { budget: 160000 },
   load: (e) => e.init?.(),
   frame: (e, t) => {
+    // Start COLD (below Tc) so ordered domains nucleate and coarsen on screen right away, then
+    // breathe slowly up across Tc (≈2.27) to melt into disorder and back — the order↔disorder
+    // transition made visible. The old default sat AT/above Tc, so the first thing you saw was
+    // paramagnetic noise. The periodic warm pass also un-sticks metastable stripe states.
     let T
     if (ptr.down) { T = 1.0 + ptr.y * 3.5; baseT = T; userSet = true }
-    else T = userSet ? baseT : 2.269 + 1.2 * Math.sin(t * 0.2)
+    else T = userSet ? baseT : 2.10 - 0.55 * Math.cos(t * 0.13)
     e.frame(t, T)
   },
 })

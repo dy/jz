@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<!-- orbital readout: top-center -->
+<div id="orb" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 16px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.06em;color:#fff;text-shadow:0 0 4px rgba(0,0,0,.95),0 0 1px rgba(0,0,0,.95),0 1px 2px rgba(0,0,0,.8);pointer-events:none"></div>
+
+<script type="module">
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
+
+// A continuous tour through the hydrogen eigenstates: `sel` ping-pongs 0…8…0 so it cross-dissolves
+// 1s → 2s → 2p → 3s → 3p → 3d → 4f and back, forever. Drag ↔ to scrub to a specific orbital.
+const NAMES = ["1s", "2s", "2pₓ", "2p_z", "3s", "3p_z", "3d_z²", "3d_xz", "4f_z³"]
+const NORB = NAMES.length
+let manual = false, manualAt = -10, nowT = 0, sel = 0
+const orbEl = document.getElementById("orb")
+const showName = () => { const i = Math.round(sel); orbEl.innerHTML = `<b style="font-weight:700">${NAMES[i] || ""}</b>` }
+
+const demo = runDemo({
+  name: "hydrogen",
+  hint: "Hydrogen orbitals — |ψ|² in phase color (warm ψ>0, cool ψ<0) · drag ↔ to scrub s→p→d→f",
+  size: { budget: 360000 },
+  load: () => showName(),
+  frame: (e, t) => {
+    nowT = t
+    if (manual && t - manualAt > 6) manual = false
+    if (!manual) sel = (NORB - 1) * (0.5 - 0.5 * Math.cos(t * 0.16))   // smooth ping-pong tour
+    e.frame(t, sel)
+    showName()
+  },
+})
+
+const ptr = trackPointer(demo.cv)
+const scrub = () => { manual = true; manualAt = nowT; sel = ptr.x * (NORB - 1); if (sel < 0) sel = 0; if (sel > NORB - 1) sel = NORB - 1 }
+demo.cv.addEventListener("pointerdown", scrub)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) scrub() })
+</script>
+</body>
+</html>

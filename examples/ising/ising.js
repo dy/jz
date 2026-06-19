@@ -62,7 +62,8 @@ let sweep = (T) => {
 }
 
 export let frame = (t, T) => {
-  // 3 sweeps per frame for visible evolution
+  // 4 sweeps per frame — coarsens fast enough to watch domains grow within a couple seconds
+  sweep(T)
   sweep(T)
   sweep(T)
   sweep(T)

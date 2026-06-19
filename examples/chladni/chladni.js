@@ -10,6 +10,9 @@
 let W = 0, H = 0, px, SC = 0, cx = 0, cy = 0   // uniform plate scale + viewport centre
 let nArr, mArr, NMODES = 0      // (n,m) mode pairs, ascending eigenfrequency √(n²+m²)
 let SHARP = 15.0                // nodal-line sharpness, pointer-controlled
+let curN = 0, curM = 0          // the mode (n,m) the last frame drew — so the host can plot its
+export let modeN = () => curN   // two component standing waves cos(nπ·) / cos(mπ·) alongside the
+export let modeM = () => curM   // plate (the x/y waves it's "taking"). Integers → jz-safe.
 
 export let resize = (w, h) => {
   // Map pixels to plate space with ONE uniform scale (no stretch): the unit plate [0,1]²
@@ -51,6 +54,7 @@ export let frame = (freq) => {
   if (t01 > 1.0) t01 = 1.0
   let idx = (t01 * (NMODES - 1) + 0.5) | 0
   let n = nArr[idx], m = mArr[idx]
+  curN = n; curM = m              // publish the mode so the host can draw its component waves
   let nP = n * PI, mP = m * PI
   let K = SHARP                   // nodal-line sharpness (≈ inverse half-width in f-units)
 

@@ -69,15 +69,16 @@ export let frame = (t, cx, cy, panX, panY) => {
       let numr = n1r * n2r - n1i * n2i
       let numi = n1r * n2i + n1i * n2r
 
-      // Step 5: denominator = (z²+c2) = (zx2+c2r, zy2+c2i)
+      // Step 5: denominator = (z²+c2) = (zx2+c2r, zy2+c2i). +ε keeps the divide finite AT a pole
+      // (denom→0), so the map is UNCONDITIONAL — it vectorizes through the f64x2 hypot/atan2 mirrors,
+      // where the old `if (denom>ε){…}` guard forced scalar (a lane local reassigned in the masked
+      // arm reads a stale shadow → all-black). Bonus: the pole now flares white (|f|→∞ ⇒ v→1)
+      // instead of the guard leaving a black dot at the singularity.
       let dr = zx2 + c2r, di = zy2 + c2i
-      let denom = dr * dr + di * di
+      let denom = dr * dr + di * di + 1e-300
 
-      let fx = 0.0, fy = 0.0
-      if (denom > 1e-18) {
-        fx = (numr * dr + numi * di) / denom
-        fy = (numi * dr - numr * di) / denom
-      }
+      let fx = (numr * dr + numi * di) / denom
+      let fy = (numi * dr - numr * di) / denom
 
       // Grayscale analytic landscape: zeros=black, poles=white, phase contours visible
       let mag = Math.hypot(fx, fy)

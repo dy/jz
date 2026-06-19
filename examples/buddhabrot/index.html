@@ -9,9 +9,10 @@
 <script type="module">
 import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-// The nebula accumulates in view coordinates, so any pan/zoom invalidates it — `reset()` wipes
-// the density buffer so it re-accumulates into the new view. Default frames the whole set
-// (centre −0.5, half-height 1.5). Drag to pan, scroll to zoom, double-click to reset.
+// The nebula is a DECAYING accumulator (see buddhabrot.js), so pan/zoom needs NO wipe: the old
+// view fades out over ~½s while the new one sharpens in place — quality is retained, never a
+// flash to black. Default frames the whole set (centre −0.5, half-height 1.5). Drag to pan,
+// scroll to zoom, double-click to reset the view.
 const home = { cx: -0.5, cy: 0, scale: 1.5 }
 const view = { ...home }
 const demo = runDemo({
@@ -20,8 +21,7 @@ const demo = runDemo({
   load: (e) => { if (e.init) e.init() },
   frame: (e, t) => { e.frame(t, view.cx, view.cy, view.scale) },
 })
-const reset = () => { if (demo.engine && demo.engine.clear) demo.engine.clear() }
-panZoom(demo.cv, view, home, reset)   // re-accumulate from scratch whenever the view moves
+panZoom(demo.cv, view, home, () => {})   // view moves freely; the decay handles the transition
 </script>
 </body>
 </html>

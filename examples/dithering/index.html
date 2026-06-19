@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<!-- algorithm readout: top-center, bare white text with a soft dark outline -->
+<div id="algo" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 15px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.05em;color:#fff;text-shadow:0 0 3px rgba(0,0,0,.9),0 0 1px rgba(0,0,0,.9),0 1px 2px rgba(0,0,0,.7);pointer-events:none"></div>
+
+<script type="module">
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
+
+// Four 1-bit dithers of the same shaded sphere — cycle automatically every few seconds, or drag
+// left↔right to pick. The pixelated backing keeps the dot pattern crisp at any window size.
+const NAMES = ["Threshold", "Ordered · Bayer 8×8", "Floyd–Steinberg", "Atkinson"]
+let mode = 0, manual = false, manualAt = -10, nowT = 0
+const algoEl = document.getElementById("algo")
+const setMode = (m) => { m = m < 0 ? 0 : m > 3 ? 3 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `${mode + 1}⁄4 &nbsp; <b style="font-weight:700">${NAMES[mode]}</b>` } }
+setMode(0)
+
+const demo = runDemo({
+  name: "dithering",
+  hint: "Dithering — 1-bit renderings of a smooth image · drag ↔ to pick the algorithm",
+  size: { budget: 420000 },          // a touch coarse so the dither dots read clearly
+  frame: (e, t) => {
+    nowT = t
+    if (manual && t - manualAt > 6) manual = false        // hand control back after 6s idle
+    if (!manual) setMode(Math.floor(t / 3.5) % 4)         // auto-cycle the four methods
+    e.frame(t, mode)
+  },
+})
+
+const ptr = trackPointer(demo.cv)
+const pick = () => { manual = true; manualAt = nowT; setMode((ptr.x * 4) | 0) }
+demo.cv.addEventListener("pointerdown", pick)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
+</script>
+</body>
+</html>

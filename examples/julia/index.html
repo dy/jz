@@ -7,33 +7,26 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer, panZoom } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-// c drifts gently; drag steers it and the new value is KEPT — afterwards it just drifts a
-// little around wherever you left it (never snaps back). Scroll zooms the view toward the
-// cursor and double-click resets it; drag stays reserved for steering c.
-let baseRe = -0.7, baseIm = 0.27, userSet = false
+// c morphs ON ITS OWN, tracing the classic radius-0.7885 circle through the c-plane — the set
+// flows through dendrites, spirals and disconnected dust without any input. That frees DRAG for
+// panning (and scroll for zoom), like every other brot: panning takes priority, the animation
+// supplies the morph. A tiny radius wobble keeps successive loops from repeating exactly.
 const home = { cx: 0, cy: 0, scale: 1.5 }
 const view = { ...home }
 const demo = runDemo({
   name: "julia",
-  hint: "the Julia set — drag to steer c · scroll to zoom",
+  hint: "the Julia set — c morphs on its own · drag to pan · scroll to zoom",
   frame: (e, t) => {
-    let cre, cim
-    if (ptr.down) {                       // drag → c in [-1.2,1.2], remember it
-      cre = (ptr.x * 2 - 1) * 1.2
-      cim = (ptr.y * 2 - 1) * 1.2
-      baseRe = cre; baseIm = cim; userSet = true
-    } else {                              // gentle drift around the retained c
-      const amp = userSet ? 0.03 : 0.18
-      cre = baseRe + Math.cos(t * 0.13) * amp
-      cim = baseIm + Math.sin(t * 0.11) * amp
-    }
+    const th = t * 0.075
+    const r = 0.7885 + 0.02 * Math.sin(t * 0.31)
+    const cre = r * Math.cos(th)
+    const cim = r * Math.sin(th)
     e.frame(t, cre, cim, view.cx, view.cy, view.scale)
   },
 })
-const ptr = trackPointer(demo.cv)
-panZoom(demo.cv, view, home, () => {}, { drag: false })   // zoom + dblclick-reset; drag steers c
+panZoom(demo.cv, view, home, () => {})   // drag → pan, scroll → zoom, double-click → reset
 </script>
 </body>
 </html>

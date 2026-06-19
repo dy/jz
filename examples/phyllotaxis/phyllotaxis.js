@@ -53,8 +53,8 @@ export let frame = (t, ang) => {
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
   let scale = minDim * 0.47 / Math.sqrt(N)
-  let dotR = scale * 0.44              // smaller than half the seed spacing → crisp, separated dots
-  if (dotR < 0.85) dotR = 0.85
+  let dotR = scale * 0.32              // well under half the seed spacing → smaller, crisper, more separated dots
+  if (dotR < 0.75) dotR = 0.75
 
   i = 0
   while (i < N) {
