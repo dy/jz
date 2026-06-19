@@ -1,15 +1,14 @@
 # jz — TODO
 
-Compiler core is done being the problem (audit-2026-05-29 frontier closed 2026-06-04;
-lattice + streamlining milestone — see Archive). Binding constraint now is
-**perception/proof + reach**, not compiler internals. Safety net for any change:
-`npm test`, opt{0..3}+wasi matrix, selfhost 11/11, `CI=1 node test/bench.js`, fuzzer.
+## V1
 
-Lens that unifies the reach work: **valid jz = valid JS** ⇒ the same source runs as JS
-and as jz-WASM, so every demo flips one switch to compare them honestly — show per-frame
-compute-ms, not a faked speedup (jz wins transcendental-heavy work; V8's JIT ties/wins
-pure-arithmetic loops). No other JS→WASM tool has that same-source toggle.
-
+* [ ] sourcemaps
+* [ ] jzify
+* [ ] floatbeat
+* [ ] color-space
+* [ ] audiojs
+* [ ] unplugin
+* [ ] compiler architecture perfection
 
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
