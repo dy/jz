@@ -356,8 +356,49 @@ across the rest of the corpus.
   3. `liftExprV` widens an f32 Float32Array load promoted to f64 (`f64.promote_f32(f32.load)` →
      `f64x2.promote_low_f32x4(v128.load64_zero)`); tryStencil's scan validates each load at its own
      element stride (f64=8, f32=4). schrodinger's potential `V` is a Float32Array.
-  `slime`/`diffusion` remain open (slime's box-blur shape; diffusion's toroidal-wrap conditional
-  index). The original (now-archived) diagnosis follows:
+  `slime`/`diffusion` remain open. **A full wrap-stencil pass was built and got `diffusion`
+  bit-exact (8→68 f64x2) — but `slime` mis-vectorized unisolably, so the whole pass was REVERTED**
+  (default-on feature ⇒ correctness over coverage; the example bit-exact test caught it). What the
+  build required + learned (all needed again for a clean re-attempt):
+  - `matchInc1` (gated `allowInlinedLi`): accept the O3-CSE'd increment `x = $t` where `$t` is a body
+    tee of `x+1` (slime folds the `xe = x+1` wrap into the increment).
+  - `matchBlockLoop` preamble (gated): accept ANY pure block-preamble `local.set` (slime hoists the
+    bound as `$_pg0`, not a `$__li` marker) — sound, block preambles are invariant by construction.
+  - `isWrapSelect` covering BOTH branch orders + guards `gt_s`/`lt_s`/`eqz`/`eq` (slime: `x>0?x-1:w-1`
+    → interior in branch 1; diffusion: `x===0?w-1:x-1` → interior in branch 2). Inline wrap-selects
+    (diffusion folds `xW` straight into the load address) need handling in `ivCoeff`, not just the
+    named-derived pre-scan; the pre-scan must RECURSE into nested tees.
+  - Boundary peel: scalar x=0 before the SIMD; **`simdBound = min(bound, …rightWrapBoundaries) -
+    (lanes-1)`** (a runtime `select`-min) — sound for ANY right boundary B without proving B==bound-1
+    (which may be LICM-hoisted out of reach). `f64.mul` added to `ivCoeff` for f64 row bases.
+  **The unresolved blocker:** with all the above, `slime`'s `frame` vectorizes **3** stencil loops
+  (not just the diffuse) and ≥1 produces wrong interior values. diffusion + four minimal repros
+  (3×3 float-row toroidal blur, flip-select ping-pong bases, multi-frame, float-W) are ALL bit-exact
+  — the over-recognition is specific to slime's full `frame` and was not isolated. **Next attempt:**
+  start from this list, but FIRST pin which of slime's 3 frame loops is mis-claimed (the agent
+  scatter / render map shouldn't match a wrap-stencil at all) and tighten the recognizer so only the
+  genuine diffuse loop fires; diffusion is the validated reference. (Prior deeper-tangle notes:)
+  1. **Toroidal-wrap conditional index** (both): `xw = (x>0 ? x-1 : w-1)` lowers to
+     `select(x±1, WRAPVAL, x{>,<}…)`. The interior `[1, w-2]` is stride-1; only the two boundary
+     columns wrap. The fix is recognizing the wrap-select as a coeff-1 derived IV + **boundary
+     peeling** (scalar x=0 before the SIMD via a guarded body clone; `simdBound = bound-lanes` so no
+     chunk touches x=w-1; the kept scalar tail finishes the right column). This part was prototyped
+     and works structurally.
+  2. **Nested-loop + float-derived row bases** (slime): the diffuse pass is a `y`-loop containing the
+     `x`-loop; the row bases `rn=yn*w`, `rs=ys*w` are computed in **f64** (like schrodinger's index)
+     AND there's a **Y-wrap** (`yn = y>0?y-1:h-1`) on top of the X-wrap. tryStencil first matches the
+     OUTER y-loop (whose loads live in the nested x-loop ⇒ not coeff-1-in-y ⇒ scan fails).
+  3. **The inner x-loop fails `matchInc1`** — after O3 its `x++` isn't the canonical
+     `(local.set x (i32.add x 1))` shape (fused/tee'd), so `matchBlockLoop` rejects it before any
+     stencil logic. This is the first thing to fix and is independent of stencils.
+  Also needed (prototyped): under gated `allowInlinedLi`, accept ANY pure block-preamble local.set
+  (slime hoists the bound as `$_pg0`, not a `$__li` marker) — sound (block preambles are invariant by
+  construction). **Next focused session:** (a) generalize `matchInc1`/the inner-loop match to the O3
+  increment shape, (b) ensure the post-order walk targets the inner x-loop, (c) land wrap-select +
+  boundary-peeling, (d) compose with the float-index path. diffusion is the same minus the f64 row
+  base (pure-i32 wrap stencil) — likely the cleaner first target once (a)–(c) land.
+
+  The original (now-archived) diagnosis follows:
 
   **`schrodinger`/`slime`/`diffusion` — corrected diagnosis (the earlier "fix it in inference" call
   was WRONG on soundness; see below).** Their grid-dim globals `W`/`H` are inferred **f64**, so the
