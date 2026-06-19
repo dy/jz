@@ -2042,6 +2042,29 @@ test('SIMD map-reduce - bit-exact f64 reduction (the n-body force loop)', () => 
   ok(/f64x2\.sqrt/.test(wat(nb(64), ON)), 'f64x2 map-reduce must fire on the n-body force loop')
 })
 
+test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the invariant into the base', () => {
+  // The index `off+i` lowers to (i32.shl (i32.add off i) 3), which matchLaneAddr rejects
+  // (the IV isn't the bare shift operand). tryReduceVectorize folds the loop-invariant
+  // `off` into the base — (base + (off+i)<<3) → ((base + off<<3) + i<<3) — so the offset
+  // is the bare IV the matcher/lifter accept; the byte address is unchanged ⇒ bit-exact.
+  // Small-int data keeps the product-sum exact in f64. This is the inner dot of a
+  // transposed matmul C = A·Bᵀ, the canonical offset-indexed reduction.
+  const mm = (N) => `export let main = () => {
+    const N=${N}, A=new Float64Array(N*N), B=new Float64Array(N*N), C=new Float64Array(N*N)
+    for(let i=0;i<N*N;i++){ A[i]=(i%13)-6; B[i]=((i*7)%11)-5 }
+    for(let i=0;i<N;i++){ const ai=i*N
+      for(let j=0;j<N;j++){ const bj=j*N
+        let s=0; for(let k=0;k<N;k++) s+=A[ai+k]*B[bj+k]; C[i*N+j]=s } }
+    let h=0; for(let i=0;i<N*N;i++) h=(h+(C[i]|0))|0; return h }`
+  const ON = { optimize: 'speed' }, O0 = { optimize: false }   // O0 = scalar ground truth
+  // N≥8 so the inner k-loop actually reaches the SIMD width; N≤4 is left to a
+  // separate, pre-existing watOptimize miscompile of tiny matmuls (unrelated to the
+  // fold — it reproduces with vectorizeLaneLocal:false).
+  for (const N of [8, 9, 16, 17, 32, 64])
+    is(runVec(mm(N), ON).main(), runVec(mm(N), O0).main(), `matmul N=${N} offset-dot bit-exact`)
+  ok(hasV128(wat(mm(16), ON)), 'offset-indexed dot must vectorize (INV folded into base)')
+})
+
 // ── Stencil vectorizer (tryStencil, experimental) ─────────────────────────────
 // Neighbour loads `a[i±1]` / 2-D `a[c±1]`, a[rn+x] (c = rc+x derived IV). The lift is
 // address-preserving (each f64.load → v128.load at the SAME address ⇒ the δ-shifted

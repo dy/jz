@@ -1360,6 +1360,41 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
     exprNode = rhs[2]
   } else return null
 
+  // Offset-indexed reductions (matmul `s += A[ai+k]*Bt[bj+k]`): the index `ai+k`
+  // lowers to `(i32.shl (i32.add ai i) K)`, which matchLaneAddr rejects (the IV is
+  // not the bare shift operand). Fold the loop-invariant part into the base —
+  //   (base + (INV+i)<<K)  →  ((base + INV<<K) + i<<K)
+  // so the offset is the bare IV the matcher/lifter already accept. The byte address
+  // is unchanged, so the v128.load reads the same consecutive pair → bit-exact. INV
+  // must be loop-invariant (not written in the loop) and IV-free (coefficient 1).
+  {
+    const writtenInLoop = new Set()
+    ;(function wr(n) { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writtenInLoop.add(n[1]); for (let i = 1; i < n.length; i++) wr(n[i]) })(loopNode)
+    const invFree = (n) => !isArr(n) || (!(n[0] === 'local.get' && (n[1] === incVar || writtenInLoop.has(n[1]))) && n.every((c, i) => i === 0 || invFree(c)))
+    let folded = false
+    const foldAddr = (n) => {
+      if (!isArr(n)) return n
+      if (n[0] === 'i32.add' && n.length === 3) {
+        for (const [base, off] of [[n[1], n[2]], [n[2], n[1]]]) {
+          if (isArr(off) && off[0] === 'i32.shl' && off.length === 3 && isArr(off[1]) && off[1][0] === 'i32.add' && off[1].length === 3) {
+            const k = constNum(off[2]), x = off[1][1], y = off[1][2]
+            const xIV = isLocalGet(x, incVar), yIV = isLocalGet(y, incVar)
+            if (k != null && k >= 0 && k <= 3 && xIV !== yIV) {
+              const inv = xIV ? y : x
+              if (invFree(inv)) {
+                folded = true
+                return ['i32.add', ['i32.add', foldAddr(base), ['i32.shl', inv, ['i32.const', k]]], ['i32.shl', ['local.get', incVar], ['i32.const', k]]]
+              }
+            }
+          }
+        }
+      }
+      return n.map(foldAddr)
+    }
+    const fe = foldAddr(exprNode)
+    if (folded) exprNode = fe
+  }
+
   // Accumulator's declared local type must match the lane element type.
   // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
   // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
