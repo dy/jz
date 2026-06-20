@@ -1,14 +1,14 @@
 // grid-life.js — the light theme's live demo: a slow Conway's Game of Life on the 8px minor-grid cells.
 //   • A calm field — a few canonical shapes (glider, blinker, toad, beacon, LWSS) at random starts; the
 //     field refreshes to a fresh few every so often so it never piles up.
-//   • ~3 generations/second; each live cell is a filled white square, crossfading in/out between generations.
+//   • ~3 generations/second; each live cell is a filled black square (~80% opaque), crossfading in/out.
 //   • Click = a pen: lights the cells under the cursor (drag to draw) + a white pulse burst.
 // One source, compiled in the page two ways (plain JS, and jz → wasm via dist/jz.js). Deterministic
 // (integer-hash seed + pure GoL) so the JS and wasm boards match for an honest A/B.
 // Interface matches grid-current: resize → pixel buffer · configure · frame · spawn · param (+ pen).
 
 let W = 0, H = 0, px
-let gx = 0, cell = 8, cols = 0, rows = 0   // cell = the 8px MINOR grid square
+let gx = 0, cellF = 8.0, cols = 0, rows = 0   // cellF = the 8px minor cell in device px (= 8 × scale), kept FLOAT so each cell edge snaps to the real grid line — rounding `cell` to an int drifts off the lines across the band
 let pumaj = 160, pumid = 80                          // pulse-burst units (80/40 grid × scale), full-scale
 let prev, cur, nxt                                   // Uint8Array boards (0/1): crossfade prev→cur, nxt = scratch
 let gen = 0
@@ -83,7 +83,7 @@ let drop = (s) => {
 let plant = (s) => {
   let n = cols * rows, i = 0
   while (i < n) { cur[i] = 0; i = i + 1 }
-  drop(s + 11); drop(s + 27); drop(s + 53); drop(s + 91)
+  drop(s + 11); drop(s + 27); drop(s + 53); drop(s + 91); drop(s + 131); drop(s + 173); drop(s + 211)
 }
 
 let seed = () => {
@@ -95,10 +95,10 @@ let seed = () => {
 
 export let configure = (gridX, scale) => {
   gx = gridX | 0
-  cell = Math.round(8.0 * scale); if (cell < 4) cell = 4
+  cellF = 8.0 * scale; if (cellF < 4.0) cellF = 4.0
   pumid = Math.round(40.0 * scale); pumaj = Math.round(80.0 * scale)
-  cols = Math.floor((W - gx) / cell) + 2
-  rows = Math.floor(H / cell) + 2
+  cols = Math.floor((W - gx) / cellF) + 2
+  rows = Math.floor(H / cellF) + 2
   seed()
 }
 
@@ -137,13 +137,14 @@ let step = () => {
 let ease = (p) => p * p * (3.0 - 2.0 * p)          // smoothstep
 
 let fillCell = (c, r, aa) => {
-  let x0 = gx + c * cell + 1, x1 = gx + (c + 1) * cell - 1   // 1px inset so the minor grid line peeks between cells
-  let y0 = r * cell + 1, y1 = (r + 1) * cell - 1
+  // edges snap to the real grid lines (round(c·cellF)) so cells never drift off them; 1px inset lets the line peek
+  let x0 = gx + Math.round(c * cellF) + 1, x1 = gx + Math.round((c + 1) * cellF) - 1
+  let y0 = Math.round(r * cellF) + 1, y1 = Math.round((r + 1) * cellF) - 1
   if (x0 < 0) x0 = 0
   if (y0 < 0) y0 = 0
   if (x1 > W) x1 = W
   if (y1 > H) y1 = H
-  let col = (aa << 24) | 0x00ffffff                // white, alpha aa
+  let col = (aa << 24) | 0x00000000                // black, alpha aa (peaks ~80% opaque — a touch transparent)
   let y = y0
   while (y < y1) {
     let row = y * W, x = x0
@@ -197,7 +198,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 255.0) | 0; if (aa > 255) aa = 255; fillCell(c, r, aa) }
+        if (f > 0.02) { let aa = (f * 204.0) | 0; if (aa > 204) aa = 204; fillCell(c, r, aa) }   // peak ~80% opacity
       }
       c = c + 1
     }
@@ -226,20 +227,11 @@ export let frame = (t) => {
   }
 }
 
-// pen: light the 2×2 cells under the cursor (drag to draw)
+// pen: light the single cell under the cursor (drag to draw a 1-cell line)
 export let pen = (nx, ny) => {
   if (cols === 0) return
-  let c0 = Math.floor((nx * W - gx) / cell), r0 = Math.floor(ny * H / cell)
-  let dr = 0
-  while (dr <= 1) {
-    let dc = 0
-    while (dc <= 1) {
-      let r = r0 + dr, c = c0 + dc
-      if (r >= 0 && r < rows && c >= 0 && c < cols) { cur[r * cols + c] = 1; prev[r * cols + c] = 1 }
-      dc = dc + 1
-    }
-    dr = dr + 1
-  }
+  let c = Math.floor((nx * W - gx) / cellF), r = Math.floor(ny * H / cellF)
+  if (r >= 0 && r < rows && c >= 0 && c < cols) { cur[r * cols + c] = 1; prev[r * cols + c] = 1 }
 }
 
 // click → draw (pen) + a white pulse burst from the nearest junction
