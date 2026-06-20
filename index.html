@@ -117,7 +117,7 @@ a { color: inherit; }
 .pleft { gap: 36px; }                            /* logo+title (160) → description; fixed 36px to seat the description level with the readout units on the right */
 .pright { gap: 40px; align-items: flex-start; }   /* fixed 40px gap on desktop; the metrics block (below) ends level with the logo, so the FPS/switch land at the description's level */
 .phead { display: flex; align-items: flex-start; gap: clamp(16px,2.2vw,32px); min-width: 0; }   /* logo + title top-aligned; the title's own padding-top (below) drops it to the height of the JZ letters */
-.metrics { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; margin-top: 70px; min-height: calc(2 * var(--U) - 70px); }   /* "Speed" + stats sit on the general line; min-height still ends the block at the logo bottom (2 units − the drop), so the FPS/switch below stay aligned with the description */
+.metrics { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; margin-top: 72px; min-height: calc(2 * var(--U) - 70px); }   /* "Speed" + stats sit on the general line; min-height still ends the block at the logo bottom (2 units − the drop), so the FPS/switch below stay aligned with the description */
 .mrow { display: flex; align-items: baseline; flex-wrap: wrap; gap: clamp(8px,1vw,16px); }   /* the three big speed numbers, sharing a baseline */
 .metrics .mstats { gap: 0; }                     /* each stat owns its own 120px square (3 mid-units) so the three numbers line up on the grid */
 .metrics .stat { width: 120px; }
@@ -594,7 +594,7 @@ const fitCurrent = () => {
   sizeBoth()
 }
 const loadCurrent = async () => {
-  try { src = await (await fetch('assets/grid-current.js')).text() } catch { return }
+  try { src = await (await fetch('assets/grid-life.js')).text() } catch { return }
   try { currentJz = jz(src, { optimize: 3 }).exports } catch {}           // jz → wasm
   fitCurrent()                                                            // start the grid the moment the wasm engine is ready — never wait on the JS fallback
   try {                                                                   // the SAME source as plain JS, only for the JS/JZ toggle. Safari can reject importing a blob: module (silently) — isolate it so it can't stop the wasm animation
@@ -665,7 +665,10 @@ document.querySelector('.hero').addEventListener('pointerdown', (e) => {
   if (e.target.closest('a, button, iframe')) return        // let the nav / switch handle their own clicks
   const r = currentCv.getBoundingClientRect()
   const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height
-  if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) { try { cur()?.spawn?.(nx, ny) } catch {} }
+  if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) {   // spawn on BOTH engines so their Life boards stay identical through a click (the toggle is an honest A/B)
+    try { currentJz?.spawn?.(nx, ny) } catch {}
+    try { currentJs?.spawn?.(nx, ny) } catch {}
+  }
 })
 
 // ── dev tuning panel: live sliders for the grid-current dials. HIDDEN unless the URL hash contains `tune`
@@ -720,11 +723,6 @@ addEventListener('hashchange', syncTunePanel); syncTunePanel()
     engineEl.style.cursor = 'default'
     engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
   }
-  // Light theme: the blueprint grid is bold white, so the (also-white) pulses need extra punch to read
-  // over it. Boost their brightness in light, restore the calmer default in dark; re-apply on toggle.
-  const applyPulseBrightness = () => setParam(4, document.documentElement.dataset.theme === 'light' ? 2 : 0.7)
-  applyPulseBrightness()
-  new MutationObserver(applyPulseBrightness).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })()
 requestAnimationFrame(loop)   // drive the grid regardless of how the JS-fallback import settles (it no-ops until an engine is ready)
 
