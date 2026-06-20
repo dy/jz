@@ -125,7 +125,7 @@ footer .legal .om { font-size: 15px; }
    definition, so the two pages can never drift. Each page supplies the palette tokens
    (--ink / --dim / --mute). Grouped into Speed / Size via .mgroup + .mlabel. ── */
 .mgroup { display: flex; flex-direction: column; gap: 12px; }
-.mlabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .2em; color: var(--mute); }
+.mlabel { font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: .02em; color: var(--dim); }   /* reuse the version chrome style — no bespoke micro-caps */
 .mstats { display: flex; align-items: flex-start; gap: clamp(14px, 1.7vw, 24px); flex-wrap: wrap; }
 .mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
 .mstats .stat b { font-size: 32px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }

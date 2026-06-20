@@ -5,19 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jz repl — JS → WASM, compiled in your browser</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
-<!-- ?embed (the landing iframes this) → drops the masthead and follows the landing's theme: the source
-     editor goes dark in the landing's dark theme, stays cassette-gray in light. Same-origin, so we read the
-     shared localStorage theme (and the `storage` event live-updates when the landing toggles). -->
-<script>(()=>{try{
-  const root=document.documentElement
-  if(!new URLSearchParams(location.search).has('embed'))return
-  root.classList.add('embed')
-  const resolve=()=>{let s=null;try{s=localStorage.getItem('theme')}catch(e){}return s||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')}
-  const apply=()=>{const light=resolve()==='light';root.classList.toggle('embed-light',light);root.classList.toggle('embed-dark',!light)}
-  apply()
-  addEventListener('storage',e=>{if(e.key==='theme')apply()})
-  matchMedia('(prefers-color-scheme: light)').addEventListener('change',apply)
-}catch(e){}})()</script>
+<!-- ?embed (the landing iframes this) → drops the masthead. The embedded editor is always dark (the
+     standalone repl page stays cassette-gray; only the embed flips), regardless of the landing theme. -->
+<script>new URLSearchParams(location.search).has('embed') && document.documentElement.classList.add('embed')</script>
 <style>
 /* ── Dark, to match the site (assets/site.css is color-scheme:dark). Geometric sans chrome,
    monospace code; one black REPL — editor (left) over a terminal (right), no white seam. ── */
@@ -257,18 +247,17 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
   .check input { width: 18px; height: 18px; }
 }
 
-/* ?embed: the landing iframes this — hide the brand (the landing shows it) and reclaim the logo's top
-   inset so the code starts at the top. The editor follows the landing theme: .embed-dark flips the whole
-   token block to dark (for the landing's dark theme); .embed-light keeps the standalone cassette-gray
-   editor (for the landing's light theme). The right (WAT/CLI) pane is dark either way. */
-html.embed { --code-top: 12px; }
-html.embed .brand { display: none; }
-html.embed.embed-dark {
+/* ?embed: the landing iframes this in its own section — flip the EDITOR theme to dark (one override of
+   the whole token block, always — independent of the landing theme), hide the brand (the landing shows
+   it), and reclaim the logo's top inset so the code starts at the top. The right pane is unchanged. */
+html.embed {
   --ink: #e6e6e6; --paper: #0b0b0b; --mid: #8a8a8a; --soft: #b3b3b3; --faint: #242424;
   --guide: #ffffff24; --gut-fg: #4e4e4e; --num: #c8c8c8; --active: #17181d; --sel: rgba(255,255,255,.20);
   --sb: #3a3a3a; --err: #ff5a5a; --drop-bg: rgba(20,20,26,.78);
+  --code-top: 12px;
   color-scheme: dark;
 }
+html.embed .brand { display: none; }
 </style>
 </head>
 <body>

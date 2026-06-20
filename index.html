@@ -71,14 +71,15 @@ a { color: inherit; }
    shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
 .hero::before {
   content: ''; position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
-  border-bottom: 1px solid light-dark(rgba(0,0,0,.22), rgba(255,255,255,.17));   /* a clean rule closing the cut band — inverts with the theme. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
+  border-bottom: 1px solid light-dark(rgba(255,255,255,.7), rgba(255,255,255,.17));   /* the band-closing rule — bold white on the gray, subtle on black. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
   background-image:
-    linear-gradient(light-dark(rgba(0,0,0,.10), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(0,0,0,.10), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(0,0,0,.08), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(0,0,0,.08), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(0,0,0,.045), rgba(255,255,255,.028)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(0,0,0,.045), rgba(255,255,255,.028)) 1px, transparent 1px);
+    linear-gradient(light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.35), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.35), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.14), rgba(255,255,255,.028)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.14), rgba(255,255,255,.028)) 1px, transparent 1px);
+  /* white grid both themes; light bumps the alpha so the lines read on the gray (major ~85%, sub-grids scaled down). Pulses stay full white from the kernel. */
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
   /* origin = this inset box's top-left (the 0 0 below is box-relative). A length, not a percentage: % in
      background-position resolves per layer against (area − image size), so the 8/40/80 tiles would each
@@ -97,10 +98,6 @@ a { color: inherit; }
 .hero-nav a:hover { opacity: 1; }
 .hero-nav .ver { text-transform: none; letter-spacing: .02em; opacity: .5; }
 .hero-nav .gh { display: flex; }
-/* light theme: the live pulses + the fps sparkline are drawn as white grayscale onto transparent canvases —
-   invert flips them dark so they read on the light hero (the static grid lines invert via the gradients above). */
-:root[data-theme="light"] .grid-current,
-:root[data-theme="light"] .fps-spark { filter: invert(1); }
 
 /* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
    Left: logo + title, then the description and npm CTA. Right: a "Speed" line and the live JS↔WASM switch.
@@ -143,7 +140,7 @@ a { color: inherit; }
 .pitch h1 { font-size: calc(var(--U) * 0.45); font-weight: 400; line-height: 1.06; letter-spacing: -.015em; padding-top: 68px;
   overflow-wrap: break-word; text-shadow: light-dark(none, 0 1px 12px rgba(0,0,0,.45)); }   /* padding-top drops the title to the JZ letters' height (letters start ~46% down the 158px mark); 2 lines via the <br>, column-constrained */
 .pitch h1 b { font-weight: 700; }
-.pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: clamp(14px,1.15vw,16.5px); line-height: 1.55; color: var(--soft); text-wrap: pretty; }   /* indented 1 mid-unit (40px) from the logo; max-width holds it to two lines */
+.pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: 14.5px; line-height: 1.66; color: var(--soft); text-wrap: pretty; }   /* body prose — same type as the FAQ answers; indented 1 mid-unit (40px) from the logo */
 .pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.2× faster than V8" unbroken */
 .pitch .sub .ref { font-size: .7em; vertical-align: super; line-height: 0; color: var(--dim); text-decoration: none; padding: 0 1px; transition: color .16s; }
 .pitch .sub .ref:hover { color: var(--ink); }
@@ -175,8 +172,8 @@ a { color: inherit; }
   border-radius: 999px; -webkit-appearance: none; appearance: none;
   background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
   box-shadow: inset 0 3px 6px rgba(0,0,0,.9), inset 0 -2px 3px rgba(255,255,255,.05),
-    inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06), 0 5px 18px rgba(0,0,0,.5),
-    0 0 0 1px rgba(255,255,255,.16); }   /* light outline so the switch reads on black */
+    inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06),
+    0 0 0 1px rgba(255,255,255,.16); }   /* no outer drop shadow (pointless on black, unwanted on gray); keep the milled insets + the 1px outline that lets it read on either bg */
 .engine .knob { position: absolute; top: 4px; left: 4px; width: 38px; height: 38px; border-radius: 999px; z-index: 1;
   background: linear-gradient(180deg, #fff 0%, #ededed 45%, #c4c4c8 100%);
   box-shadow: 0 3px 6px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5),
@@ -261,8 +258,8 @@ a { color: inherit; }
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
 .cli { background: var(--paper); padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
-.cli .install { font-size: clamp(14px,1.5vw,16px); background: #0c0e11; color: #e8e8ea;
-  border: 1px solid #20242a; border-radius: 9px; padding: 14px 22px; }   /* a mini-CLI: the command sits in its own little dark terminal, in both themes */
+.cli .install { font-size: clamp(14px,1.5vw,16px); width: 300px; max-width: 100%; justify-content: flex-start;
+  background: #0c0e11; color: #e8e8ea; border: 1px solid #20242a; border-radius: 0; padding: 14px 20px; }   /* a mini-CLI: square, fixed width — a terminal window doesn't autosize to its text */
 .cli .install .dollar { color: #6a6f78; }
 .cli .install.copied::after { color: #9aa0a8; }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
@@ -301,7 +298,7 @@ a { color: inherit; }
   gap: 24px; padding: clamp(16px,1.8vw,22px) 0; font-size: clamp(15px,1.5vw,18px); font-weight: 600; color: var(--ink);
   -webkit-tap-highlight-color: transparent; transition: color .16s; }
 .faq summary::-webkit-details-marker { display: none; }
-.faq summary:hover { color: #fff; }
+.faq summary:hover { color: light-dark(#000, #fff); }   /* brighten in dark, darken in light — never white on the gray */
 .faq summary .chev { flex: 0 0 auto; width: 17px; height: 17px; color: var(--dim);
   transition: transform .24s cubic-bezier(.34,.72,.28,1.3), color .16s; }
 .faq details[open] summary .chev { transform: rotate(180deg); color: var(--ink); }

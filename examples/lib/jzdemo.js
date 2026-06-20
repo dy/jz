@@ -16,6 +16,22 @@ import { EXAMPLES, byName, WIKI } from '../examples.js'
 export { EXAMPLES }
 const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 
+// Theme — example pages share the site's light/dark theme. Set data-theme before the chrome paints
+// (from localStorage, else the OS), live-toggle any injected .theme-toggle (event delegation, so it works
+// no matter when the masthead mounts), and follow the OS until the user makes an explicit choice.
+;(() => {
+  const root = document.documentElement
+  const stored = () => { try { return localStorage.getItem('theme') } catch { return null } }
+  const set = (t) => { root.dataset.theme = t }
+  if (!root.dataset.theme) set(stored() || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'))
+  addEventListener('click', (e) => {
+    if (!e.target.closest?.('.theme-toggle')) return
+    const next = root.dataset.theme === 'light' ? 'dark' : 'light'; set(next)
+    try { localStorage.setItem('theme', next) } catch {}
+  })
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => { if (!stored()) set(e.matches ? 'light' : 'dark') })
+})()
+
 // Embed mode (?embed) — strip ALL chrome (masthead, edge chevrons, palette, hint),
 // leaving just the demo canvas + the FPS/toggle HUD. The landing-page hero hosts an
 // example this way in an <iframe>; the parent owns prev/next + the "open" label.
@@ -48,14 +64,19 @@ const addMasthead = (name) => {
   }
   const header = document.createElement('header')
   header.className = 'masthead fixed'
-  // critical inline so the band never flashes unstyled before site.css resolves
-  header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#000'
+  // critical inline so the band never flashes unstyled before site.css resolves (transparent — it melds
+  // into the themed page like the other pages' headers, no separate band)
+  header.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:transparent'
   header.innerHTML = `
     <div class="brand"><a class="logo" href="../../"><img src="../../jz.svg" width="40" height="40" alt="jz"></a><a class="sub" href="../">examples</a></div>
     <nav>
       <a href="../../repl/">repl</a>
       <a href="../../bench/">bench</a>
       <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
+      <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
+      </button>
       <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
         <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
@@ -74,10 +95,9 @@ const addMasthead = (name) => {
     // is the symmetric inset that yields a `--jz-democol`-wide centered column.
     fit.textContent =
       ':root{--jz-democol:960px;--jz-demopad:max(24px,calc(50% - 480px))}'
-      // chrome-black page — centering creates side margins, so whichever example we frame (runDemo
-      // OR a custom-hud page like mandelbrot/zzfx with its own light body) shows black beside it.
-      // This style only exists on framed standalone pages (addMasthead), never in embed.
-      + 'html,body{background:#000!important}'
+      // themed page — centering creates side margins, so the bg beside the canvas melds with the theme
+      // (black in dark, cassette gray in light) instead of a hard frame. Only on framed standalone pages.
+      + 'html,body{background:var(--paper)!important}'
       + 'body > canvas:not(.gradient){position:fixed!important;top:80px!important;left:50%!important;'
       + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
       + 'height:calc(100vh - 144px)!important;object-fit:contain!important}'
@@ -310,13 +330,13 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   el.innerHTML = `
     <style>
       .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 64px; box-sizing: border-box;
-        display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: #000;
+        display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: var(--paper);
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
       html.jz-full .jz-bar { padding-inline: 24px; }
-      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: #8a8a93; letter-spacing: .01em;
+      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--dim); letter-spacing: .01em;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .jz-bar .jz-wiki { color: #e8e8ea; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
-      .jz-bar .jz-wiki:hover { color: #fff; }
+      .jz-bar .jz-wiki { color: var(--soft); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+      .jz-bar .jz-wiki:hover { color: var(--ink); }
       /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
          padding-x); labels inherit Futura from the bar (a bare <button> would otherwise fall back to
          the system UI font). */
@@ -340,14 +360,14 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-engine.js .lbl-js { color: #141414; }
       .jz-engine.jz .lbl-jz { color: #141414; }
       @media (prefers-reduced-motion: reduce) { .jz-engine .knob, .jz-pal .sw { transition: none; } }
-      .jz-fps { flex: none; display: inline-flex; align-items: center; gap: 12px; color: #f0f0f2; }
+      .jz-fps { flex: none; display: inline-flex; align-items: center; gap: 12px; color: var(--ink); }
       .jz-fps .spark { width: 56px; height: 24px; display: block; }
       .jz-fps .metric { display: inline-flex; align-items: baseline; gap: 3px; }
       /* fixed-width number cells (tabular-nums) so 2→3 digit fps / varying ms never change the
          group's width and jiggle the toggle to its left. 3ch fits up to "240"; 4ch fits "12.4". */
       .jz-fps .metric b { font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; display: inline-block; width: 3ch; text-align: right; }
       .jz-fps .metric.ms b { width: 4ch; }
-      .jz-fps .unit { font-size: 12px; color: #8a8a93; }
+      .jz-fps .unit { font-size: 12px; color: var(--dim); }
       /* palette: a square swatch (matches the modernist B&W frame); rotates on click */
       .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
       .jz-pal .sw { display: block; width: 100%; height: 100%; border-radius: 5px;
@@ -357,14 +377,14 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-pal.on .sw { transform: rotate(180deg); }
       /* fullscreen — two-angles expand icon; fills the viewport edge-to-edge (Esc / click to exit) */
       .jz-fs { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer;
-        -webkit-appearance: none; appearance: none; color: #8a8a93; display: inline-flex; align-items: center; justify-content: center; transition: color .18s; }
-      .jz-fs:hover { color: #f0f0f2; }
+        -webkit-appearance: none; appearance: none; color: var(--dim); display: inline-flex; align-items: center; justify-content: center; transition: color .18s; }
+      .jz-fs:hover { color: var(--ink); }
       .jz-fs svg { display: block; }
       /* code preview: a "code" link in the description + a panel that slides over the demo area
          (between the two bands, same column as the canvas) showing the kernel's own source. */
-      .jz-codelink { font: inherit; color: #e8e8ea; background: none; border: 0; padding: 0; cursor: pointer;
+      .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
         text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
-      .jz-codelink:hover, .jz-codelink.on { color: #fff; }
+      .jz-codelink:hover, .jz-codelink.on { color: var(--ink); }
       .jz-code-panel { position: fixed; top: 80px; bottom: 64px; left: 50%; transform: translateX(-50%);
         width: min(100vw, var(--jz-democol, 960px)); z-index: 140; background: rgba(6,6,9,.96);
         opacity: 0; visibility: hidden; transition: opacity .18s ease; }
@@ -438,13 +458,14 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     sctx.beginPath(); sctx.moveTo(0, h)
     for (let i = 0; i < n; i++) sctx.lineTo(xs(i), ys(hist[i]))
     sctx.lineTo(w, h); sctx.closePath()
+    const c = document.documentElement.dataset.theme === 'light' ? '20,21,23' : '255,255,255'   // ink, theme-aware so the line shows on the gray bar too
     const grad = sctx.createLinearGradient(0, 0, 0, h)
-    grad.addColorStop(0, 'rgba(255,255,255,.42)')
-    grad.addColorStop(1, 'rgba(255,255,255,.04)')
+    grad.addColorStop(0, `rgba(${c},.42)`)
+    grad.addColorStop(1, `rgba(${c},.04)`)
     sctx.fillStyle = grad; sctx.fill()
     sctx.beginPath()
     for (let i = 0; i < n; i++) { const x = xs(i), y = ys(hist[i]); if (i) sctx.lineTo(x, y); else sctx.moveTo(x, y) }
-    sctx.strokeStyle = 'rgba(255,255,255,.95)'; sctx.lineWidth = 1.25; sctx.stroke()
+    sctx.strokeStyle = `rgba(${c},.95)`; sctx.lineWidth = 1.25; sctx.stroke()
   }
   const toggle = el.querySelector('#jz-toggle')
   const paint = () => {
