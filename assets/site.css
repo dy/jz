@@ -28,13 +28,14 @@
      (the full-screen example demos, the repl) keep the dark default. The landing hero pins these back to
      their dark values (it's a fixed dark island over the live demo). ── */
   color-scheme: dark;
-  --ink:   light-dark(#16161a, #f0f0f2);   /* primary text */
-  --soft:  light-dark(#45454f, #b7b7c1);   /* secondary text */
-  --dim:   light-dark(#6c6c78, #7e7e8a);   /* tertiary / labels */
-  --mute:  light-dark(#9a9aa6, #50505a);   /* faintest text / separators */
-  --paper: light-dark(#ffffff, #000000);   /* page background */
-  --band:  light-dark(#f4f4f6, #000000);   /* chrome band (masthead) background */
-  --line:  light-dark(#e3e3e9, #1c1c25);   /* hairline borders / dividers */
+  /* light values share the repl's cassette gray — a cool washed light, not stark white */
+  --ink:   light-dark(#1b1c1e, #f0f0f2);   /* primary text */
+  --soft:  light-dark(#464a4e, #b7b7c1);   /* secondary text */
+  --dim:   light-dark(#585b5f, #7e7e8a);   /* tertiary / labels */
+  --mute:  light-dark(#8a8d91, #50505a);   /* faintest text / separators */
+  --paper: light-dark(#d5d8dc, #000000);   /* page background — cassette gray */
+  --band:  light-dark(#d5d8dc, #000000);   /* chrome blends with the page (header has no band) */
+  --line:  light-dark(#bbbec2, #1c1c25);   /* hairline — darker than the gray so it shows (never white) */
 
   /* ── ONE shared content column for every page (landing hero, bench, examples): content-left snapped
      to the 80px grid, width = cw. So the column lines up edge-to-edge as you move between pages. ── */
@@ -59,7 +60,7 @@
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 
 .masthead {
-  background: var(--band); color: var(--ink); flex: 0 0 auto;
+  background: transparent; color: var(--ink); flex: 0 0 auto;   /* no header band — blends into the page */
   display: flex; align-items: center; gap: 16px;
   min-height: 60px; margin-top: 20px; padding: 0 var(--mast-px);   /* 1 unit (80px) tall — matches the landing's hero-nav for a frictionless cross-page header */
   font-family: var(--font);

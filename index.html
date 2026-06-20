@@ -55,8 +55,8 @@ a { color: inherit; }
 /* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
    occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
 .hero { position: relative; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(8 * var(--U));
-  color: var(--ink); --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a; }   /* band = 8 units (640px) = the grid; the nav floats over its top, content sits on the grid. The hero is a fixed dark island (live demo + skeuomorphic switch + white grid pulses) — pin the text tokens to dark so the page theme never inverts it. */
+  align-items: center; background: var(--paper); overflow: hidden; min-height: var(--band-h); --band-h: calc(8 * var(--U));
+  color: var(--ink); }   /* band = 8 units (640px) = the grid; the nav floats over its top, content sits on the grid. The hero themes with the page — its blueprint lines (below) and its live pulses (inverted via a CSS filter) flip with the theme. */
 
 /* the live demo (grid-current.js's electron pulses) paints onto the grid band — exactly the grid's box */
 .grid-current { position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); z-index: 1; display: block;
@@ -71,14 +71,14 @@ a { color: inherit; }
    shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
 .hero::before {
   content: ''; position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
-  border-bottom: 1px solid rgba(255,255,255,.17);   /* a clean bright rule closing the cut band. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
+  border-bottom: 1px solid light-dark(rgba(0,0,0,.22), rgba(255,255,255,.17));   /* a clean rule closing the cut band — inverts with the theme. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
   background-image:
-    linear-gradient(rgba(255,255,255,.062) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.062) 1px, transparent 1px),
-    linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px),
-    linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+    linear-gradient(light-dark(rgba(0,0,0,.10), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(0,0,0,.10), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(0,0,0,.08), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(0,0,0,.08), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(0,0,0,.045), rgba(255,255,255,.028)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(0,0,0,.045), rgba(255,255,255,.028)) 1px, transparent 1px);
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
   /* origin = this inset box's top-left (the 0 0 below is box-relative). A length, not a percentage: % in
      background-position resolves per layer against (area − image size), so the 8/40/80 tiles would each
@@ -92,11 +92,15 @@ a { color: inherit; }
 .hero-nav { position: absolute; z-index: 2; top: 20px; left: 0; right: 0; max-width: var(--colw);
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;   /* the same content column as the pitch + every section */
   display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 60px; padding: 0 var(--padx); }   /* the menu floats over the grid (absolute, top:20) */
-.hero-nav a { color: #fff; opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
+.hero-nav a { color: var(--ink); opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
 .hero-nav .ver { text-transform: none; letter-spacing: .02em; opacity: .5; }
 .hero-nav .gh { display: flex; }
+/* light theme: the live pulses + the fps sparkline are drawn as white grayscale onto transparent canvases —
+   invert flips them dark so they read on the light hero (the static grid lines invert via the gradients above). */
+:root[data-theme="light"] .grid-current,
+:root[data-theme="light"] .fps-spark { filter: invert(1); }
 
 /* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
    Left: logo + title, then the description and npm CTA. Right: a "Speed" line and the live JS↔WASM switch.
@@ -137,7 +141,7 @@ a { color: inherit; }
           mask-composite: exclude;
   mix-blend-mode: screen; filter: drop-shadow(0 0 7px rgba(150,185,255,.55)) drop-shadow(0 0 15px rgba(120,150,255,.3)); }   /* softer, blurrier glow */
 .pitch h1 { font-size: calc(var(--U) * 0.45); font-weight: 400; line-height: 1.06; letter-spacing: -.015em; padding-top: 68px;
-  overflow-wrap: break-word; text-shadow: 0 1px 12px rgba(0,0,0,.45); }   /* padding-top drops the title to the JZ letters' height (letters start ~46% down the 158px mark); 2 lines via the <br>, column-constrained */
+  overflow-wrap: break-word; text-shadow: light-dark(none, 0 1px 12px rgba(0,0,0,.45)); }   /* padding-top drops the title to the JZ letters' height (letters start ~46% down the 158px mark); 2 lines via the <br>, column-constrained */
 .pitch h1 b { font-weight: 700; }
 .pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: clamp(14px,1.15vw,16.5px); line-height: 1.55; color: var(--soft); text-wrap: pretty; }   /* indented 1 mid-unit (40px) from the logo; max-width holds it to two lines */
 .pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.2× faster than V8" unbroken */
@@ -257,7 +261,10 @@ a { color: inherit; }
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
 .cli { background: var(--paper); padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
-.cli .install { font-size: clamp(14px,1.5vw,16px); }
+.cli .install { font-size: clamp(14px,1.5vw,16px); background: #0c0e11; color: #e8e8ea;
+  border: 1px solid #20242a; border-radius: 9px; padding: 14px 22px; }   /* a mini-CLI: the command sits in its own little dark terminal, in both themes */
+.cli .install .dollar { color: #6a6f78; }
+.cli .install.copied::after { color: #9aa0a8; }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
 .install .cmd { white-space: pre; }
 .install.caret-on .cmd::after { content: ''; display: inline-block; width: .58ch; height: 1.05em; margin-left: 2px; vertical-align: -.16em; background: currentColor; animation: caret-blink 1.06s step-end infinite; }
