@@ -34,7 +34,7 @@ export const SNAPSHOT_N = 22
 export const SNAPSHOT = [
   { label: 'jz', sub: '-O3', ratio: 1.00 },
   { label: 'native C', sub: 'clang -O3 · ref', ratio: 1.07 },
-  { label: 'C', sub: 'zig cc → wasm', ratio: 2.43 },
+  { label: 'C', sub: 'clang → wasm', ratio: 2.43 },
   { label: 'Rust', sub: 'rustc → wasm', ratio: 2.63 },
   { label: 'V8', sub: 'Node (JS)', ratio: 2.69 },
   { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.80 },

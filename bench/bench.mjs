@@ -572,7 +572,7 @@ const grid = {}
 // reference, never a beat-claim. A target with no data on a run is simply skipped.
 const SVG_TARGETS = [
   { id: 'jz', label: 'jz', sub: '-O3' },
-  { id: 'c-wasm', label: 'C', sub: 'zig cc → wasm' },
+  { id: 'c-wasm', label: 'C', sub: 'clang → wasm' },
   { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
   { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },

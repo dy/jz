@@ -115,7 +115,7 @@ correctly-rounded; cascade is the same algorithm.
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
 | `rust-wasm` | Rust → `wasm32-wasip1` (`rustc --target wasm32-wasip1 -C opt-level=3`), run in node's V8 — the apples-to-apples Rust rival |
 | `go-wasm` | Go → `wasm32-wasip1` (`GOOS=wasip1 GOARCH=wasm go build`), run in node's V8 |
-| `c-wasm` | C → `wasm32-wasi` (`zig cc -target wasm32-wasi -O3`, no emcc/wasi-sdk needed), run in node's V8 |
+| `c-wasm` | C → `wasm32-wasi` via clang/LLVM (`zig cc -target wasm32-wasi -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |

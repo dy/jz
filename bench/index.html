@@ -128,7 +128,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   <nav>
     <a href="../repl/">repl</a>
     <a href="../examples/">examples</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> experimental</a>
     <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -215,10 +215,10 @@ const TARGETS = {
   porf:  { label: 'Porffor', band: 'wasm' },
   'rust-wasm': { label: 'Rust', sub: 'rustc', band: 'wasm' },
   'go-wasm':   { label: 'Go', sub: 'gc', band: 'wasm' },
-  'c-wasm':    { label: 'C', sub: 'zig cc', band: 'wasm' },
+  'c-wasm':    { label: 'C', sub: 'clang', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm' },
   'jz-w2c': { label: 'JZ', sub: 'wasm2c', band: 'native', hatch: true },
-  nat:   { label: 'C', band: 'native', hatch: true },
+  nat:   { label: 'C (native)', band: 'native', hatch: true },
   natgcc:{ label: 'C', sub: 'gcc', band: 'native', hatch: true },
   rust:  { label: 'Rust', band: 'native', hatch: true },
   zig:   { label: 'Zig', band: 'native', hatch: true },
@@ -360,11 +360,11 @@ const renderGeomean = () => {
 // (assets/site.css). Stats deep-link to the corpus chart (the hero links to /bench/ → here).
 const STRIP = [
   ['Speed', [
-    ['v8', 'Node JS V8'],
+    ['v8', 'V8'],
     ['asspeed', 'AssemblyScript'],
     ['peak', 'V8 (peak SIMD)', 'Needs the WASM SIMD proposal — baseline in Chrome 91+, Firefox 89+, Safari 16.4+, Node 16+; pass noSimd for older engines.'],
     ['porf', 'Porffor'],
-    ['rust', 'Rust→wasm'],
+    ['rust', 'Rust (wasm)'],
   ]],
   ['Size', [
     ['assize', 'AssemblyScript'],
@@ -549,5 +549,6 @@ try {
   $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet — run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
 }
 </script>
+<script type="module" src="../assets/version.js"></script>
 </body>
 </html>

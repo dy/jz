@@ -30,7 +30,7 @@
     <line x1="174" y1="138" x2="174" y2="152" stroke="#ced4da" stroke-width="2"/>
     <line x1="650" y1="138" x2="650" y2="152" stroke="#ced4da" stroke-width="2"/>
     <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="#343a40">C</text>
-    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">zig cc → wasm</text>
+    <text x="156" y="156" text-anchor="end" font-size="10" fill="#aeb4ba">clang → wasm</text>
     <text x="662" y="149" font-size="13" font-weight="500" fill="#868e96">2.43×</text>
     <circle cx="182.0" cy="145" r="8" fill="#adb5bd">
       <animate attributeName="cx" dur="3.8880000000000003s" repeatCount="indefinite" calcMode="linear"

@@ -7,12 +7,16 @@
 <meta name="description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and faster than Rust, Go, and C compiled to WebAssembly — competitive with native C on numeric kernels.">
 <link rel="canonical" href="https://dy.github.io/jz/">
 <meta name="theme-color" content="#000000">
-<!-- social card — text-only for now; add a 1200×630 og:image for a rich preview -->
+<!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://dy.github.io/jz/">
 <meta property="og:title" content="JZ — JS→WASM compiler for numeric code (DSP, audio, math)">
 <meta property="og:description" content="JZ (javascript zero) compiles the numeric core of JavaScript — math, DSP, parsers, kernels — ahead-of-time to lean, GC-free WebAssembly. Valid JZ is valid JS: it runs in any engine, then compiles to portable WASM. Over 2× faster than the same code in V8, and faster than Rust, Go, and C compiled to WebAssembly — competitive with native C on numeric kernels.">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://dy.github.io/jz/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://dy.github.io/jz/assets/og.png">
 <link rel="icon" href="jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 <style>
@@ -238,7 +242,7 @@ a { color: inherit; }
 @media (max-width: 960px) { .try { margin-top: calc(-2 * var(--U)); } }   /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
-/* focused install command — a centred CLI line closing the FAQ, above the examples */
+/* focused install command — a centred CLI line before the FAQ */
 .cli { background: #000; padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
 .cli .install { font-size: clamp(14px,1.5vw,16px); }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
@@ -247,7 +251,7 @@ a { color: inherit; }
 @keyframes caret-blink { 50% { opacity: 0; } }
 .examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
 .ex-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* on the grid column (content-left = gx-pad) */
-.examples h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(18px,2.4vw,28px); }
+.examples h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(18px,2.4vw,28px) 40px; }
 .exrow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
 .exrow a { display: block; aspect-ratio: 1; overflow: hidden; }
 .exrow img { width: 100%; height: 100%; object-fit: cover; display: block;
@@ -329,7 +333,7 @@ footer .fcol a:hover { color: #fff; }
     <a href="examples/">examples</a>
     <a href="bench/">bench</a>
     <a href="repl/">repl</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0 experimental</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> experimental</a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -339,9 +343,9 @@ footer .fcol a:hover { color: #fff; }
     <div class="pcol pleft">
       <div class="phead">
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-        <h1>Computational JS, <br class="hb">compiled to WASM</h1>
+        <h1>Computational JS <br class="hb">at native speed</h1>
       </div>
-      <p class="sub">Plain JavaScript → WASM, ahead-of-time. Same source, <b><span :text="vsv8">more than 2×</span> faster</b>. For DSP, visuals, simulations and more.</p>
+      <p class="sub">Compile JS to WASM ahead of time: same source, <b><span :text="v8">2.5×</span> faster</b>.<br> For DSP, visuals, simulations and more.</p>
     </div>
 
     <div class="pcol pright">
@@ -353,7 +357,7 @@ footer .fcol a:hover { color: #fff; }
           <div class="mstats">
             <a class="stat" href="bench/"><b :text="v8">2.7×</b><span>V8</span></a>
             <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span>AssemblyScript</span></a>
-            <a class="stat" href="bench/"><b :text="rust">2.6×</b><span>Rust→wasm</span></a>
+            <a class="stat" href="bench/"><b :text="rust">2.6×</b><span>Rust (wasm)</span></a>
           </div>
         </div>
       </div>
@@ -378,13 +382,16 @@ footer .fcol a:hover { color: #fff; }
   </div>
 </section>
 
+<section class="cli">
+  <button class="install" id="install3" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
+</section>
+
 <section class="faq">
   <div class="faq-wrap">
 
     <details name="faq" open>
       <summary><span class="fq">What is JZ?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans"><p><b>Valid JZ is valid JS.</b> It’s the numeric core of JavaScript — Crockford’s “good parts” — compiled ahead-of-time to lean, no GC, no runtime, no annotations, SIMD-enabled, deterministic.
-        The same file runs as plain JS in any engine, or compiles unchanged to a lean, portable <code>.wasm</code>.</p>
+      <div class="ans"><p>It's ahead-of-time compiler for distilled JavaScript subset — Crockford’s “good parts”. No GC, no runtime, no annotations, SIMD-enabled, deterministic output. <b>Valid JZ is valid JS </b> – the same file runs as plain JS in any engine, or compiles unchanged to a fast, portable <code>.wasm</code>.</p>
         <p><b>Good for:</b> DSP & audio, image & video, simulation & physics, parsers & codecs, games & demoscene, numerical & scientific computing — any compute-bound hot loop.</p>
         <p></o><b>Not for:</b> async, server glue, DOM/UI, OOP/dynamic/polymorphic code, string-templating, allocation-heavy, I/O, anything not hot — compiling it adds zero gain, keep those in regular JS.</p>
       </div>
@@ -425,10 +432,6 @@ footer .fcol a:hover { color: #fff; }
       <div class="ans">One step in your build — the CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) — and out comes a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank" rel="noopener">Setup &amp; options →</a></div>
     </details>
   </div>
-</section>
-
-<section class="cli">
-  <button class="install" id="install3" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
 </section>
 
 <section class="examples">
@@ -475,6 +478,8 @@ footer .fcol a:hover { color: #fff; }
   </div>
 </footer>
 
+<script type="module" src="assets/version.js"></script>
+
 <script type="module">
 // One screen: the blueprint grid's electron pulses are a real jz program (assets/grid-current.js),
 // compiled HERE in the page. The JS/JZ switch flips between jz-compiled wasm and the same source run
@@ -491,12 +496,12 @@ const $ = id => document.getElementById(id)
 // which we fill from the fresh bench numbers so the row always reflects the latest run.
 ;(async () => {
   const m = sprae(document.querySelector('.pitch'),
-    { v8: '2.7×', asspeed: '2.8×', rust: '2.6×', vsv8: '2.7×, up to 13.5×' })   // hero stats + the V8 range (geomean→peak) for the sub
+    { v8: '2.5×', asspeed: '2.8×', rust: '2.6×', peak: '13.5×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
   try {
     const r = await (await fetch('bench/results.json')).json()
     const s = headlineStats(r)               // shared with the bench page → identical figures
-    if (s.v8) m.v8 = s.v8                     // same source, faster than V8
-    if (s.v8 && s.peak) m.vsv8 = s.v8 + ', up to ' + s.peak   // "2.7×, up to 13.5×" — typical (geomean), then peak SIMD
+    if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
+    if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
     if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
     if (s.rust) m.rust = s.rust              // jz vs Rust → wasm (apples-to-apples)
   } catch {}
