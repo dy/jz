@@ -20,9 +20,22 @@
 :root {
   --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --band: #000;          /* pure black chrome, site-wide */
   --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
-  color-scheme: dark;    /* native scrollbars + form controls render dark (matches the black UI; keeps code/wat bars identical) */
+
+  /* ── Themed palette — ONE set of tokens, each a light-dark(LIGHT, DARK) pair. A page opts into theming
+     by setting data-theme on <html> (the no-flash snippet does this from localStorage / the OS); the
+     toggle then flips `color-scheme` (below) and every token switches at once. Pages that DON'T opt in
+     (the full-screen example demos, the repl) keep the dark default. The landing hero pins these back to
+     their dark values (it's a fixed dark island over the live demo). ── */
+  color-scheme: dark;
+  --ink:   light-dark(#16161a, #f0f0f2);   /* primary text */
+  --soft:  light-dark(#45454f, #b7b7c1);   /* secondary text */
+  --dim:   light-dark(#6c6c78, #7e7e8a);   /* tertiary / labels */
+  --mute:  light-dark(#9a9aa6, #50505a);   /* faintest text / separators */
+  --paper: light-dark(#ffffff, #000000);   /* page background */
+  --band:  light-dark(#f4f4f6, #000000);   /* chrome band (masthead) background */
+  --line:  light-dark(#e3e3e9, #1c1c25);   /* hairline borders / dividers */
+
   /* ── ONE shared content column for every page (landing hero, bench, examples): content-left snapped
      to the 80px grid, width = cw. So the column lines up edge-to-edge as you move between pages. ── */
   --U: 80px;             /* major grid unit — also the rounding step for the shared inset */
@@ -31,6 +44,8 @@
   --colw: calc(var(--cw) + 2 * var(--padx));
   --gx-pad: var(--padx); /* grid-aligned side inset; snapped to --U just below */
 }
+:root[data-theme="light"] { color-scheme: light; }   /* explicit override; the toggle sets data-theme on <html> */
+:root[data-theme="dark"]  { color-scheme: dark; }
 @supports (padding: round(1px, 1px)) {
   :root { --gx-pad: max(var(--padx), round(calc((100vw - var(--cw)) / 2), var(--U))); }
 }
@@ -44,7 +59,7 @@
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 
 .masthead {
-  background: var(--band); color: #fff; flex: 0 0 auto;
+  background: var(--band); color: var(--ink); flex: 0 0 auto;
   display: flex; align-items: center; gap: 16px;
   min-height: 60px; margin-top: 20px; padding: 0 var(--mast-px);   /* 1 unit (80px) tall — matches the landing's hero-nav for a frictionless cross-page header */
   font-family: var(--font);
@@ -55,31 +70,43 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 
 /* brand: the jz.svg logo (links home) + the section label. The logo is the SVG FILE itself — never re-created in Futura text. */
 .masthead .brand { display: flex; align-items: baseline; gap: .55em; flex: 0 0 auto; margin-top: -16px; }   /* the label's baseline sits on the logo's bottom edge (logo lifted to it), not centered */
-.masthead .brand .sub { font-size: 19px; font-weight: 400; letter-spacing: -.02em; color: #8a8a8a; text-decoration: none; transition: color .18s; position: relative; top: -3px; }   /* lift the label so its baseline meets the JZ letters' baseline (not the logo's lower edge) */
-.masthead .brand a.sub:hover { color: #fff; }
-.masthead .tag { font-size: 12.5px; color: #8a8a8a; margin-left: 16px; }
+.masthead .brand .sub { font-size: 19px; font-weight: 400; letter-spacing: -.02em; color: var(--dim); text-decoration: none; transition: color .18s; position: relative; top: -3px; }   /* lift the label so its baseline meets the JZ letters' baseline (not the logo's lower edge) */
+.masthead .brand a.sub:hover { color: var(--ink); }
+.masthead .tag { font-size: 12.5px; color: var(--dim); margin-left: 16px; }
 
 .masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
-.masthead nav a { color: #fff; opacity: .7; text-decoration: none; font-size: 12px;
+.masthead nav a { color: var(--ink); opacity: .7; text-decoration: none; font-size: 12px;
   text-transform: uppercase; letter-spacing: .14em; transition: opacity .18s; }
 .masthead nav a:hover { opacity: 1; }
 .masthead .ver { text-transform: none; letter-spacing: .02em; opacity: .6; }
 .masthead .gh { display: flex; }
 
+/* ── Theme toggle — an icon-only button after the version; one sun/moon glyph that swaps via the
+   ::before content per theme. Shared by the masthead (bench/examples) and the landing hero-nav. ── */
+.theme-toggle { -webkit-appearance: none; appearance: none; background: none; border: 0; padding: 0;
+  margin: 0; cursor: pointer; color: inherit; opacity: .7; display: inline-flex; align-items: center;
+  justify-content: center; width: 20px; height: 20px; line-height: 0; transition: opacity .18s; }
+.theme-toggle:hover { opacity: 1; }
+.theme-toggle svg { width: 17px; height: 17px; display: block; }
+.theme-toggle .i-sun  { display: none; }
+.theme-toggle .i-moon { display: block; }
+:root[data-theme="light"] .theme-toggle .i-sun  { display: block; }   /* in light mode show the sun (click → dark) */
+:root[data-theme="light"] .theme-toggle .i-moon { display: none; }
+
 /* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; author (dy) over ॐ bottom-right. ─── */
-footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: #000; }
+footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
 footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
-footer .fcol a { text-decoration: none; color: #b7b7c1; font-size: 13.5px; padding: 4px 0; transition: color .16s; }
-footer .fcol a:hover { color: #fff; }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: #7e7e8a; }   /* author · ॐ inline, bottom-right */
-footer .legal .lic::before { content: '·'; margin-right: 7px; color: #50505a; }   /* middot separating dy and ॐ */
-footer .legal .by a { color: #b7b7c1; }
-footer .legal .by a:hover { color: #fff; }
-footer .legal a { color: #b7b7c1; text-decoration: none; }
-footer .legal a:hover { color: #fff; }
+footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
+footer .fcol a:hover { color: var(--ink); }
+footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: var(--dim); }   /* author · ॐ inline, bottom-right */
+footer .legal .lic::before { content: '·'; margin-right: 7px; color: var(--mute); }   /* middot separating dy and ॐ */
+footer .legal .by a { color: var(--soft); }
+footer .legal .by a:hover { color: var(--ink); }
+footer .legal a { color: var(--soft); text-decoration: none; }
+footer .legal a:hover { color: var(--ink); }
 footer .legal .om { font-size: 15px; }
 @media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } }   /* less side padding; brand · nav · author+license stay on ONE row — legal pinned right via margin-left:auto */
 

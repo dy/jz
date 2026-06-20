@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(()=>{try{const s=localStorage.getItem('theme');document.documentElement.dataset.theme=s||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')}catch(e){}})()</script>
 <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
 <meta name="description" content="Compile JavaScript's numeric core to GC-free WebAssembly, ahead-of-time. Valid JZ is valid JS — no rewrite. Over 2× faster than V8, near-native speed.">
 <link rel="canonical" href="https://dy.github.io/jz/">
@@ -24,8 +25,8 @@
 :root {
   --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a;
-  --band: #0a0a0a; --padx: 40px; --cw: 960px;   /* padx = a mid unit (40 = 5·8px) so the mobile/narrow side inset lands on the grid; cw = 12 big units wide, so the grid coincides */
+  /* colours come from assets/site.css as light-dark() tokens; the hero pins them back to dark (it stays a dark island) */
+  --padx: 40px; --cw: 960px;   /* padx = a mid unit (40 = 5·8px) so the mobile/narrow side inset lands on the grid; cw = 12 big units wide, so the grid coincides */
   --u: 8px; --u2: 40px; --U: 80px;   /* blueprint grid: 8px minor · 40px mid · 80px major (= the logo, nested) */
   --grid-over: clamp(var(--u2), calc(var(--gx-pad) - var(--U)), calc(2 * var(--U)));   /* blueprint bleed past the content column each side: ≥40px (always wider than the column), ≤160px. Snapped below to whole 80px steps (40 → 80 → 160, never the 120 half-bleed) so the grid width (cw + 2·over) stays a multiple of 80 — no half-cut cells. ≤1180px goes full-width. The grid is 8 units tall from the band top; the 1-unit nav overlays its top unit. */
   --colw: calc(var(--cw) + 2 * var(--padx));   /* hero/pitch column box */
@@ -46,15 +47,16 @@
   }
 }
 html, body { height: 100%; overflow-x: clip; }
-body { background: #000; color: var(--ink); font-family: var(--font);
+body { background: var(--paper); color: var(--ink); font-family: var(--font);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 a { color: inherit; }
-::selection { background: #fff; color: #000; }
+::selection { background: light-dark(#16161a, #fff); color: light-dark(#fff, #000); }
 
 /* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
    occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
 .hero { position: relative; display: flex; flex-direction: column;
-  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(8 * var(--U)); }   /* band = 8 units (640px) = the grid; the nav floats over its top (no header band above), content sits on the grid */
+  align-items: center; background: #000; overflow: hidden; min-height: var(--band-h); --band-h: calc(8 * var(--U));
+  color: var(--ink); --ink: #f0f0f2; --soft: #b7b7c1; --dim: #7e7e8a; --mute: #50505a; }   /* band = 8 units (640px) = the grid; the nav floats over its top, content sits on the grid. The hero is a fixed dark island (live demo + skeuomorphic switch + white grid pulses) — pin the text tokens to dark so the page theme never inverts it. */
 
 /* the live demo (grid-current.js's electron pulses) paints onto the grid band — exactly the grid's box */
 .grid-current { position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); z-index: 1; display: block;
@@ -247,20 +249,20 @@ a { color: inherit; }
    Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
 .try { position: relative; z-index: 3; margin-top: calc(-3 * var(--U)); padding: 0 var(--padx) clamp(40px,5vw,64px); pointer-events: none; }   /* rides up onto the grid band; no bg + click-through so the blueprint around the REPL (and its pulse shooter) stays clickable */
 .try-wrap { max-width: calc(var(--cw) + 1px); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* the shared content column (cw) + 1px so the panel's right border lands ON the content-right grid line and covers it (its left border already does) */
-.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid #1c1c25; background: #000; pointer-events: auto; }   /* re-enable clicks on the REPL itself (the .try section is click-through) */
+.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid var(--line); background: #000; pointer-events: auto; }   /* re-enable clicks on the REPL itself (the .try section is click-through) */
 /* stacked (≤800) hero is taller, so the REPL must ride up less or it covers the FPS/switch. Placed AFTER .try so it wins the cascade. */
 @media (max-width: 960px) { .try { margin-top: calc(-2 * var(--U)); } }   /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
 @media (max-width: 479px) { .try { padding-inline: 0; } }   /* code section spans edge to edge on the narrowest phones */
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
-.cli { background: #000; padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
+.cli { background: var(--paper); padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
 .cli .install { font-size: clamp(14px,1.5vw,16px); }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
 .install .cmd { white-space: pre; }
 .install.caret-on .cmd::after { content: ''; display: inline-block; width: .58ch; height: 1.05em; margin-left: 2px; vertical-align: -.16em; background: currentColor; animation: caret-blink 1.06s step-end infinite; }
 @keyframes caret-blink { 50% { opacity: 0; } }
-.examples { background: #000; padding: clamp(40px,6vw,72px) var(--padx); }
+.examples { background: var(--paper); padding: clamp(40px,6vw,72px) var(--padx); }
 .ex-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* on the grid column (content-left = gx-pad) */
 .examples h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(18px,2.4vw,28px) 40px; }
 .exrow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0; }
@@ -279,15 +281,15 @@ a { color: inherit; }
 }
 
 /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
-.faq { background: #000; padding: clamp(36px,5vw,60px) var(--padx) clamp(28px,4vw,48px); }   /* top = pitch bottom gap; the centred install command closes the section below */
+.faq { background: var(--paper); padding: clamp(36px,5vw,60px) var(--padx) clamp(28px,4vw,48px); }   /* top = pitch bottom gap; the centred install command closes the section below */
 .faq-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* shared content column (no extra inset) */
 @media (min-width: 721px) { .faq-wrap { padding-inline: 40px; } }   /* gentle side breathing room on tablet+ (none on phones) */
 @media (max-width: 479px) { .faq { padding-inline: 20px; } }   /* 20px only on the narrowest phones; ≥480 keeps the shared column inset (matches the examples header) */
 .faq summary .fq, .faq .ans { max-width: 720px; }   /* rows + dividers span the full container; only the text is capped to a readable width */
 .faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
-.faq details { border-top: 1px solid #1c1c25; }
+.faq details { border-top: 1px solid var(--line); }
 .faq details:first-of-type { border-top: 0; }
-.faq details:last-of-type { border-bottom: 1px solid #1c1c25; }
+.faq details:last-of-type { border-bottom: 1px solid var(--line); }
 .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
   gap: 24px; padding: clamp(16px,1.8vw,22px) 0; font-size: clamp(15px,1.5vw,18px); font-weight: 600; color: var(--ink);
   -webkit-tap-highlight-color: transparent; transition: color .16s; }
@@ -308,7 +310,7 @@ a { color: inherit; }
   .faq details[open]::details-content { block-size: auto; }
 }
 .faq .ans a { color: var(--ink); text-underline-offset: 2px; }
-.faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: rgba(255,255,255,.08); padding: .1em .4em; border-radius: 4px; white-space: nowrap; }
+.faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; border-radius: 4px; white-space: nowrap; }
 .faq .ans b { color: var(--ink); }   /* bold call-outs read white against the soft body */
 
 /* FOOTER — the shared footer (brand · nav columns · author+license) lives in assets/site.css, the ONE
@@ -336,6 +338,10 @@ a { color: inherit; }
     <a href="bench/">bench</a>
     <a href="repl/">repl</a>
     <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
+    <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
+      <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
+    </button>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -481,6 +487,7 @@ a { color: inherit; }
 </footer>
 
 <script type="module" src="assets/version.js"></script>
+<script type="module" src="assets/theme.js"></script>
 
 <script type="module">
 // One screen: the blueprint grid's electron pulses are a real jz program (assets/grid-current.js),
