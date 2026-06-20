@@ -71,6 +71,36 @@ export let init = () => {
   }
 }
 
+// Draw a fresh photon: superimpose a compact Gaussian wavepacket at (fx,fy ∈ 0..1) carrying
+// momentum (kx,ky) onto the existing ψ — so you can pepper the field with packets that propagate
+// and interfere through the slits, the way metaballs grows blobs under the cursor. Touches only a
+// local box around the centre (the rest of ψ keeps evolving).
+export let inject = (fx, fy, kx, ky) => {
+  let w = W, h = H
+  let x0 = (fx * w) | 0, y0 = (fy * h) | 0
+  let sig = w / 22.0
+  let sig2 = sig * sig * 2.0
+  let rad = (sig * 3.0) | 0
+  let yy = y0 - rad
+  while (yy <= y0 + rad) {
+    if (yy >= 0 && yy < h) {
+      let xx = x0 - rad
+      while (xx <= x0 + rad) {
+        if (xx >= 0 && xx < w) {
+          let dx = xx - x0, dy = yy - y0
+          let env = Math.exp(-(dx * dx + dy * dy) / sig2)
+          let ph = kx * xx + ky * yy
+          let idx = yy * w + xx
+          R[idx] = R[idx] + env * Math.cos(ph)
+          I[idx] = I[idx] + env * Math.sin(ph)
+        }
+        xx++
+      }
+    }
+    yy++
+  }
+}
+
 // Visscher step: update R using current I, then update I using new R
 let stepR = () => {
   let w = W, h = H, dt = DT

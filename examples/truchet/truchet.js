@@ -7,32 +7,23 @@
 let W = 0, H = 0, px
 
 let TILE = 22     // default tile size in pixels
-let MAXCELLS = 4096
 
-// Per-cell orientation: 0 or 1
-let cells = new Uint8Array(MAXCELLS)
-let gW = 0, gH = 0   // grid dimensions (integer, but stored as i32 via |0)
-
-// Float64Array for float state that must stay f64 in jz
-let st = new Float64Array(4) // [tileF, ...] tileF = runtime tile size as float
+// The random orientation grid is a FIXED large field (GRID×GRID), seeded once. Each frame draws a
+// screen-sized window into it at the current tile — so shrinking tiles always fill the whole canvas
+// (the old code fixed the cell count for 22px tiles, leaving smaller tiles short of the edges) and
+// the pattern stays put as you resize the tiles. GRID 300 covers any budgeted backing down to 8px.
+let GRID = 300
+let cells = new Uint8Array(GRID * GRID)
 
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  gW = (w / TILE) | 0
-  gH = (h / TILE) | 0
-  seed()
   return px
 }
 
 export let seed = () => {
-  let total = gW * gH
-  if (total > MAXCELLS) total = MAXCELLS
-  let i = 0
-  while (i < total) {
-    cells[i] = Math.random() < 0.5 ? 0 : 1
-    i++
-  }
+  let n = GRID * GRID, i = 0
+  while (i < n) { cells[i] = Math.random() < 0.5 ? 0 : 1; i++ }
 }
 
 export let init = () => {
@@ -89,12 +80,17 @@ export let frame = (t, tileSize) => {
 
   let arcR = ts * 0.5
 
+  // window into the fixed grid: enough cells to cover the screen at this tile (+1 to spill past
+  // the edge), clamped to the stored grid so we never read out of bounds.
+  let gW = (W / ts | 0) + 1, gH = (H / ts | 0) + 1
+  if (gW > GRID) gW = GRID
+  if (gH > GRID) gH = GRID
+
   let gy = 0
   while (gy < gH) {
     let gx = 0
     while (gx < gW) {
-      let idx = gy * gW + gx
-      let ori = idx < MAXCELLS ? cells[idx] : 0
+      let ori = cells[gy * GRID + gx]
 
       // Cell origin in screen pixels
       let ox = gx * ts, oy = gy * ts

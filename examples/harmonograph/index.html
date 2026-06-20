@@ -10,9 +10,21 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 let baseDetune = 0.038, basePhase = 0.0, userSet = false
+
+// A fresh figure on every reload: pick one curated frequency quadruple (small-integer ratios that
+// always read as a clean rosette, never a scribble) and random phase offsets. Chosen ONCE in the
+// host so JS and jz draw the same shape; re-applied in `load` after any resize / engine swap.
+const FIGURES = [
+  [2, 3, 3, 2], [3, 2, 2, 3], [2, 5, 3, 4], [4, 3, 3, 2],
+  [3, 4, 2, 5], [2, 3, 4, 3], [5, 4, 2, 3], [3, 5, 5, 3], [4, 5, 3, 2],
+]
+const fig = FIGURES[Math.floor(Math.random() * FIGURES.length)]
+const phs = Array.from({ length: 4 }, () => Math.random() * Math.PI * 2)
+
 const demo = runDemo({
   name: "harmonograph",
   hint: "Damped-pendulum harmonograph — drag to shift frequency detuning and phase",
+  load: (e) => e.setParams?.(fig[0], fig[1], fig[2], fig[3], phs[0], phs[1], phs[2], phs[3]),
   frame: (e, t) => {
     let detune, phaseShift
     if (ptr.down) {

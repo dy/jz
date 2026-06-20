@@ -7,22 +7,40 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-let lastDown = false
 const demo = runDemo({
   name: "schrodinger",
-  hint: "Schrödinger wavepacket — double-slit interference; click to relaunch",
+  hint: "Schrödinger wavepacket — double-slit interference · drag to draw photons · double-click to reset",
   size: { budget: 160000 },
   load: (e) => { e.init?.() },
-  frame: (e, t) => {
-    if (ptr.down && !lastDown) e.init?.()
-    lastDown = ptr.down
-    e.frame(t)
-  },
+  frame: (e, t) => { e.frame(t) },
 })
 
-const ptr = trackPointer(demo.cv)
+// Draw photons: each press/flick injects a wavepacket at the cursor heading in the swipe direction
+// (a plain click sends it rightward, toward the slits), so you can pepper the field and watch them
+// interfere — like growing blobs in metaballs.
+const cv = demo.cv
+const K = 0.55
+let drawing = false, lx = 0, ly = 0
+const norm = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height } }
+const launch = (x, y, dx, dy) => {
+  const m = Math.hypot(dx, dy)
+  const kx = m > 0.004 ? dx / m * K : K, ky = m > 0.004 ? dy / m * K : 0
+  demo.engine?.inject?.(x, y, kx, ky)
+}
+cv.addEventListener("pointerdown", e => {
+  const p = norm(e); drawing = true; lx = p.x; ly = p.y; launch(p.x, p.y, 0, 0)
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+})
+cv.addEventListener("pointermove", e => {
+  if (!drawing) return
+  const p = norm(e), dx = p.x - lx, dy = p.y - ly
+  if (Math.hypot(dx, dy) > 0.03) { launch(p.x, p.y, dx, dy); lx = p.x; ly = p.y }   // draw a stream
+})
+cv.addEventListener("pointerup", e => { drawing = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { drawing = false })
+cv.addEventListener("dblclick", () => demo.engine?.init?.())
 </script>
 </body>
 </html>

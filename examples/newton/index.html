@@ -14,12 +14,18 @@ import { runDemo, panZoom } from "../lib/jzdemo.js"
 // brots (the old drag-steers-a fought the pan). Double-click resets the view.
 const home = { cx: 0, cy: 0, scale: 1.6 }
 const view = { ...home }
+// Swirl off its own accumulator, rate = min(1, scale²) referenced to absolute scale 1: full lively
+// pace framed wide (home and zoomed-out), tapering hard below scale 1 to near-frozen deep in.
+let phase = 0, lastT = 0
 const demo = runDemo({
   name: "newton",
   hint: "Newton's method on z³−1 — the over-relaxation swirls on its own · drag to pan · scroll to zoom",
   frame: (e, t) => {
-    const are = 1.0 + Math.cos(t * 0.17) * 0.32
-    const aim = Math.sin(t * 0.13) * 0.32
+    const dt = t - lastT; lastT = t
+    const zoomRate = Math.min(1, view.scale * view.scale)
+    phase += dt * zoomRate
+    const are = 1.0 + Math.cos(phase * 0.17) * 0.32
+    const aim = Math.sin(phase * 0.13) * 0.32
     e.frame(t, are, aim, view.cx, view.cy, view.scale)
   },
 })

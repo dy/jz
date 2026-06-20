@@ -9,10 +9,11 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
+// The kernel exports setTheme, so the harness feeds it the page palette and re-tints on toggle.
 let baseTheta = 0.0, userSet = false
 const demo = runDemo({
   name: "lorenz",
-  hint: "Lorenz attractor — drag to spin the butterfly",
+  hint: "Lorenz attractor — glows in the page theme · drag to spin the butterfly",
   load: (e) => e.init(),
   frame: (e, t) => {
     let theta

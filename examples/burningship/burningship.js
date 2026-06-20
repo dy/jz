@@ -7,7 +7,11 @@
 //
 // Smooth coloring via fractional iteration (log-log trick) avoids banding.
 // Color: warm ember/fire palette — black→deep-red→orange→yellow→white.
-// frame(t, cx, cy, halfH) — cx/cy/halfH passed as f64 args (avoids i32 narrowing).
+// frame(t, cx, cy, halfH, rot) — cx/cy/halfH/rot passed as f64 args (avoids i32 narrowing).
+//
+// `rot` gives the ship LIFE without a free parameter to morph (unlike Julia's c): each squaring
+// w² is rotated by a tiny animated angle before adding c, so masts and reflection sway and the
+// rigging breaks and re-forms continuously. At rot=0 it's the exact classic Burning Ship.
 
 let W = 0, H = 0, px, invW = 0, invH = 0, aspect = 1
 let MAXIT = 200
@@ -18,19 +22,21 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (t, cx, cy, halfH) => {
+export let frame = (t, cx, cy, halfH, rot) => {
+  let ca = Math.cos(rot), sa = Math.sin(rot)   // twist applied to w² each iteration (once per frame)
   let j = 0, py = 0
   while (py < H) {
     let ry = (py * invH - 0.5) * 2.0 * halfH + cy
     let qx = 0
     while (qx < W) {
       let rx = (qx * invW - 0.5) * 2.0 * halfH * aspect + cx
-      // burning ship iteration
+      // burning ship iteration: w = |x|+i|y|, then z = rot·w² + c
       let x = 0.0, y = 0.0, it = 0
       while (it < MAXIT) {
-        let xt = x * x - y * y + rx
-        y = 2.0 * Math.abs(x * y) + ry
-        x = xt
+        let wr = x * x - y * y            // Re(w²)
+        let wi = 2.0 * Math.abs(x * y)    // Im(w²) = 2|x||y|
+        x = wr * ca - wi * sa + rx        // rotate w² by `rot`, then + c
+        y = wr * sa + wi * ca + ry
         if (x * x + y * y > 256.0) break
         it++
       }

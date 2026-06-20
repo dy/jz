@@ -7,18 +7,49 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
+// Drag to pan, scroll to zoom into the leaflets; the fern keeps swaying in the wind on its own.
+// View is in BACKING pixels (the kernel zooms about the screen centre), so cursor deltas are
+// converted from CSS px via the canvas box.
+const home = { panX: 0, panY: 0, zoom: 1 }
+const view = { ...home }
 const demo = runDemo({
   name: "fern",
-  hint: "Barnsley fern — chaos game IFS with wind sway",
+  hint: "Barnsley fern — chaos game IFS with wind sway · drag to pan · scroll to zoom",
   load: (e) => e.init(),
   frame: (e, t) => {
-    const sway = ptr.down ? (ptr.x * 2 - 1) * 0.1 : 0.03 * Math.sin(t * 0.7)
-    e.frame(t, sway)
+    const sway = 0.03 * Math.sin(t * 0.7)
+    e.frame(t, sway, view.panX, view.panY, view.zoom)
   },
 })
-const ptr = trackPointer(demo.cv)
+
+const cv = demo.cv
+const sx = () => cv.width / cv.getBoundingClientRect().width    // CSS px → backing px
+const sy = () => cv.height / cv.getBoundingClientRect().height
+let down = false, lx = 0, ly = 0
+cv.addEventListener("pointerdown", e => { down = true; lx = e.clientX; ly = e.clientY; try { cv.setPointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointermove", e => {
+  if (!down) return
+  view.panX += (e.clientX - lx) * sx(); view.panY += (e.clientY - ly) * sy()
+  lx = e.clientX; ly = e.clientY
+})
+cv.addEventListener("pointerup", e => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { down = false })
+cv.addEventListener("wheel", e => {
+  e.preventDefault()
+  const r = cv.getBoundingClientRect()
+  const Sx = (e.clientX - r.left) * sx(), Sy = (e.clientY - r.top) * sy()   // cursor in backing px
+  const z0 = view.zoom
+  let z1 = z0 * Math.exp(-e.deltaY * 0.0012)
+  if (z1 < 0.2) z1 = 0.2
+  if (z1 > 200) z1 = 200
+  // keep the point under the cursor pinned as zoom changes
+  view.panX = Sx - cv.width * 0.5 - (Sx - cv.width * 0.5 - view.panX) * z1 / z0
+  view.panY = Sy - cv.height * 0.5 - (Sy - cv.height * 0.5 - view.panY) * z1 / z0
+  view.zoom = z1
+}, { passive: false })
+cv.addEventListener("dblclick", () => { view.panX = home.panX; view.panY = home.panY; view.zoom = home.zoom })
 </script>
 </body>
 </html>

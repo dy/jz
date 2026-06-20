@@ -39,17 +39,18 @@ let hsv2rgb = (h, s, v) => {
 
 let TWO_PI = 6.283185307179586
 
-export let frame = (t, cx, cy, panX, panY) => {
+// scale = half-height of the viewport in world units (2.5 = the default whole-plane view); shrink
+// it to zoom in. panX/panY recentre. All f64 args so they stay fractional through jz.
+export let frame = (t, cx, cy, panX, panY, scale) => {
   // c2 is a fixed complex constant for the denominator pole pair
   let c2r = 1.0, c2i = 0.0
 
-  let scale = 2.5
   let invW = 1.0 / W, invH = 1.0 / H
   let aspect = W * invH
 
   let j = 0, py = 0
   while (py < H) {
-    let zy = (0.5 - py * invH) * 2.0 * scale + panY
+    let zy = (py * invH - 0.5) * 2.0 * scale + panY
     let qx = 0
     while (qx < W) {
       let zx = (qx * invW - 0.5) * 2.0 * scale * aspect + panX

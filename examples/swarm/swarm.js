@@ -22,6 +22,10 @@ let wvx = new Float64Array(MAXN)      // per-fly wander velocity (Ornstein–Uhl
 let wvy = new Float64Array(MAXN)
 let count = 0
 let cx = 0.5, cy = 0.5                // cursor (normalized)
+// theme palette: [paperR,G,B, inkR,G,B] — the harness feeds it; default = dark theme (black field,
+// light flies). In light theme it flips to dark flies on the page paper.
+let th = new Float64Array(6)
+th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
 
 let LERP = 0.008        // ease toward target (lazy approach — the swf drifts, never darts)
 let AREAF = 0.4         // AREA as a fraction of the smaller side
@@ -52,6 +56,7 @@ let spawn1 = (nx, ny) => {
 
 export let init = () => { count = 0; let i = 0; while (i < 20) { spawn1(0.5, 0.4); i++ } }   // MOOCHNUMBER = 20
 export let setTarget = (a, b) => { cx = a; cy = b }
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 export let addFlies = (a, b, n) => { let i = 0; while (i < n) { spawn1(a, b); i++ } }
 
 // filled triangle (tip in dir) via bounding-box point-in-triangle
@@ -82,12 +87,12 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
 }
 
 export let frame = (t) => {
-  let bg = 0xff000000                                   // black field (inverted to match boids)
+  let bg = (255 << 24) | ((th[2] | 0) << 16) | ((th[1] | 0) << 8) | (th[0] | 0)   // page paper
   let i = 0, n = W * H
   while (i < n) { px[i] = bg; i++ }
 
   let kick = (W < H ? W : H) * WKICK
-  let col = (255 << 24) | (235 << 16) | (235 << 8) | 235  // light-gray flies on black
+  let col = (255 << 24) | ((th[5] | 0) << 16) | ((th[4] | 0) << 8) | (th[3] | 0)  // page ink (flies)
   i = 0
   while (i < count) {
     tmr[i] -= 1.0

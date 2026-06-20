@@ -33,9 +33,11 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (t, r0, r1) => {
-  // use frame args if provided (they're f64), else fall back to st[]
+// (r0,r1) = horizontal growth-rate window; (x0,x1) = vertical orbit-value window. Both shrink to
+// zoom into the self-similar Feigenbaum cascade; panning slides the windows. All f64 args.
+export let frame = (t, r0, r1, x0, x1) => {
   let lo = r0, hi = r1
+  let invXspan = 1.0 / (x1 - x0)
   let n = W * H, i = 0
   while (i < n) { dens[i] = 0; i++ }
 
@@ -47,11 +49,11 @@ export let frame = (t, r0, r1) => {
     // warmup: let transients die
     let k = 0
     while (k < WARMUP) { x = r * x * (1.0 - x); k++ }
-    // plot: record where orbit dwells
+    // plot: record where orbit dwells (mapped through the visible x-window: x1 at top, x0 at bottom)
     k = 0
     while (k < PLOT) {
       x = r * x * (1.0 - x)
-      let row = ((1.0 - x) * H) | 0
+      let row = ((x1 - x) * invXspan * H) | 0
       if (row >= 0 && row < H) {
         let idx = row * W + col
         dens[idx] = dens[idx] + 1

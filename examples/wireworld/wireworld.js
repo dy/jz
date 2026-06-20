@@ -79,6 +79,41 @@ let placeLoop = (x0, y0, x1, y1, k) => {
 }
 
 let hwire = (x0, x1, y) => { let x = x0; while (x <= x1) { a[y * W + x] = 3; x++ } }
+let vwire = (x, y0, y1) => { let y = y0; while (y <= y1) { a[y * W + x] = 3; y++ } }
+
+// FAN-OUT COMB: a horizontal bus fed by a gun at its left end, with `teeth` vertical wires hanging
+// down at even intervals. Each electron streaming along the bus drips a copy down every tooth it
+// passes — the canonical clock-distribution / fan-out primitive. (A bus head turns each tooth's top
+// cell on as it passes; single-width wire + head→tail→conductor cycle stops any backflow.)
+let comb = (x0, x1, y, teeth, toothLen) => {
+  hwire(x0, x1, y)
+  let yend = y + toothLen; if (yend > H - 2) yend = H - 2
+  let span = x1 - x0, i = 0
+  while (i < teeth) {
+    let tx = x0 + ((span * (i + 1) / (teeth + 1)) | 0)
+    vwire(tx, y + 1, yend)
+    i++
+  }
+  addSrc(x0, y)
+}
+
+// SERPENTINE DELAY LINE: one long folded wire snaking back and forth across `rows`, fed by a gun at
+// the start. A single electron threads the whole maze — a delay line / shift register. Runs join at
+// alternating ends, the same L-corners the clock loops already turn cleanly.
+let serpentine = (x0, x1, y0, rows, gap) => {
+  let r = 0
+  while (r < rows) {
+    let yy = y0 + r * gap
+    if (yy > H - 2) break
+    hwire(x0, x1, yy)
+    if (r < rows - 1) {
+      let yn = y0 + (r + 1) * gap; if (yn > H - 2) yn = H - 2
+      vwire((r % 2 == 0) ? x1 : x0, yy, yn)   // link this run's far end down to the next
+    }
+    r++
+  }
+  addSrc(x0, y0)
+}
 
 // A Wireworld DIODE on a horizontal wire at row y, gate centred on column cx: a 3-cell cap
 // above the wire and a single stub below-left. Passes heads travelling → (left-to-right); a
@@ -94,35 +129,49 @@ let addSrc = (x, y) => { if (srcN < 64) { srcX[srcN] = x; srcY[srcN] = y; srcN =
 // layout below differs on every page load and every reseed.
 let rndi = (lo, span) => lo + ((Math.random() * span) | 0)
 
-// A fresh RANDOM tableau each load, composed ONLY of canonical Wireworld parts — a bank of
-// diode-gated wires (each fed from the left → passes, or the right → blocked at the gate) over a
-// row of circulating clock loops. Counts, rows, gate columns, loop sizes, electron trains and
-// feed sides are all randomized, so it never repeats yet always reads as real Wireworld, not noise.
+// A fresh RANDOM tableau each load, assembled from a VARIETY of canonical Wireworld machines —
+// fan-out combs (gun → bus → dripping teeth), one-way diodes, a serpentine delay line, and a
+// cluster of circulating clock loops of mixed periods. Positions, counts, sizes, electron trains
+// and feed directions are all randomized, so it never repeats yet always reads as real circuitry.
 export let seed = () => {
   clear()
   srcN = 0; tick = 0
   let mx = (W * 0.05) | 0; if (mx < 2) mx = 2
   let left = mx, right = W - 1 - mx
-  let jit = W >> 3                                 // gate-column jitter half-range
+  let mid = (W >> 1)
 
-  // ── bank of diode-gated wires across the upper band ──
-  let nW = rndi(4, 4)                              // 4..7 wires
-  let topY = (H * 0.08) | 0
-  let dy = ((H * 0.5) / nW) | 0; if (dy < 3) dy = 3
-  let i = 0
+  // ── top-left: 1–2 fan-out combs (gun bus dripping electrons down its teeth) ──
+  let combN = rndi(1, 2), ci = 0, cy = (H * 0.08) | 0
+  while (ci < combN) {
+    let cx1 = mid - rndi(4, 8)
+    comb(left, cx1, cy, rndi(3, 4), rndi(8, (H * 0.18) | 0))
+    cy = cy + rndi((H * 0.22) | 0, 6)
+    ci++
+  }
+
+  // ── top-right: a bank of diode-gated wires (each fed left→passes or right→blocked at the gate) ──
+  let nW = rndi(3, 3), i = 0, topY = (H * 0.08) | 0
+  let dwy = ((H * 0.42) / nW) | 0; if (dwy < 4) dwy = 4
+  let dleft = mid + rndi(6, 10)
   while (i < nW) {
-    let y = topY + i * dy
-    let gx = (W >> 1) - jit + rndi(0, 2 * jit)     // jittered gate column
-    if (gx < left + 3) gx = left + 3
+    let y = topY + i * dwy
+    let gx = (dleft + right) >> 1
+    gx = gx - rndi(0, 8) + rndi(0, 8)
+    if (gx < dleft + 3) gx = dleft + 3
     if (gx > right - 3) gx = right - 3
-    hwire(left, right, y)
+    hwire(dleft, right, y)
     diodeGate(gx, y)
-    if (Math.random() < 0.5) addSrc(left, y)       // fed from the left → passes the diode →
-    else addSrc(right, y)                           // fed from the right → blocked at the gate
+    if (Math.random() < 0.5) addSrc(dleft, y)
+    else addSrc(right, y)
     i++
   }
 
-  // ── a row of clock loops along the bottom, random sizes/trains/gaps ──
+  // ── middle-right: a serpentine delay line — one electron threads the whole maze ──
+  let spY = (H * 0.5) | 0, spRows = rndi(3, 3)
+  let spGap = rndi(5, 4)
+  serpentine(mid + rndi(8, 12), right, spY, spRows, spGap)
+
+  // ── bottom band: a row of clock loops, random sizes/trains/gaps (mixed-period oscillators) ──
   let baseY = (H * 0.66) | 0
   let maxH = (H * 0.28) | 0; if (maxH < 8) maxH = 8
   let lx = left, j = 0

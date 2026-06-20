@@ -6,6 +6,10 @@
 // resize(w,h) → Uint32Array; frame() steps + draws.
 
 let W = 0, H = 0, px
+let ink                                // Uint8Array — per-pixel trail ink (the orbit smears)
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = dark theme (black space, light orbits)
+let th = new Float64Array(6)
+th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
 
 let MAXN = 400
 let x = new Float64Array(MAXN)    // world coords in [0,1], toroidal
@@ -22,9 +26,12 @@ let G = 0.0000011, EPS = 0.0016, SUB = 1, DT = 0.25   // small timestep → slow
 
 export let resize = (w, h) => {
   W = w; H = h
+  ink = new Uint8Array(W * H)
   px = new Uint32Array(W * H)
   return px
 }
+
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
 export let init = () => {
   count = 0; held = -1
@@ -92,7 +99,6 @@ let disc = (fx, fy, rad, g) => {
   let cxi = fx | 0, cyi = fy | 0, ri = rad | 0
   if (ri < 1) ri = 1
   let r2 = rad * rad
-  let col = (255 << 24) | (g << 16) | (g << 8) | g
   let oy = -ri
   while (oy <= ri) {
     let iy = cyi + oy
@@ -100,7 +106,7 @@ let disc = (fx, fy, rad, g) => {
       let ox = -ri
       while (ox <= ri) {
         let ix = cxi + ox
-        if (ix >= 0 && ix < W) { if (ox * ox + oy * oy <= r2) px[iy * W + ix] = col }
+        if (ix >= 0 && ix < W) { if (ox * ox + oy * oy <= r2) ink[iy * W + ix] = g }
         ox++
       }
     }
@@ -112,9 +118,9 @@ export let frame = (t) => {
   let s = 0
   while (s < SUB) { step(); s++ }
 
-  // fade for smooth trails
+  // fade the ink for smooth trails
   let n = W * H, i = 0
-  while (i < n) { let g = (px[i] & 255) * 234 >> 8; px[i] = (255 << 24) | (g << 16) | (g << 8) | g; i++ }
+  while (i < n) { ink[i] = (ink[i] * 234) >> 8; i++ }
 
   let rscale = (W < H ? W : H) * 0.006
   i = 0
@@ -132,6 +138,19 @@ export let frame = (t) => {
       disc(fx, fy, rad, 255)
     }
     lx[i] = fx; ly[i] = fy
+    i++
+  }
+
+  // composite: every pixel = lerp(paper, ink, trail) → orbits in the page ink over the page paper,
+  // flipping with the light/dark theme.
+  let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
+  i = 0
+  while (i < n) {
+    let v = ink[i] / 255.0
+    let r = (pr + (ir - pr) * v) | 0
+    let g = (pg + (ig - pg) * v) | 0
+    let b = (pb + (ib - pb) * v) | 0
+    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     i++
   }
 }

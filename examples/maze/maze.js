@@ -21,6 +21,9 @@ let q, qh, qt           // BFS queue
 let phase = 0           // 0 generate · 1 solve · 2 backtrace · 3 done
 let waitc = 0
 let cur = 0             // backtrace cursor
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = dark theme (black ground, light maze)
+let th = new Float64Array(6)
+th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -156,6 +159,8 @@ let shadeCells = () => {
   }
 }
 
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
+
 export let frame = (t) => {
   // per-frame work scales with the (now finer) grid so generation stays a brisk ~2s and the
   // solve flood / backtrace keep pace — the 5px pitch has ~4× the cells of the old 10px one.
@@ -177,8 +182,11 @@ export let frame = (t) => {
     let brow = rowMap[y] * BW
     let x = 0
     while (x < W) {
-      let g = shade[brow + colMap[x]]
-      px[y * W + x] = (255 << 24) | (g << 16) | (g << 8) | g
+      let v = shade[brow + colMap[x]] / 255.0   // 0 = ground, 1 = bright wall/solution
+      let r = (th[0] + (th[3] - th[0]) * v) | 0
+      let g = (th[1] + (th[4] - th[1]) * v) | 0
+      let b = (th[2] + (th[5] - th[2]) * v) | 0
+      px[y * W + x] = (255 << 24) | (b << 16) | (g << 8) | r
       x++
     }
     y++

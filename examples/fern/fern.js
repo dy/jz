@@ -17,6 +17,11 @@ let st             // Float64Array[2] — current (x, y) of the chaos-game point
 // Fern bounding box: x∈[-2.2, 2.7], y∈[0, 10]. Tall, not wide — fit to height.
 // scaleX, scaleY, offX, offY map fern coords → pixel coords.
 let scaleY = 0.0, scaleX = 0.0, offX = 0.0, offY = 0.0
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed. The fern paints in the page ink over the
+// page paper (B&W by default — the palette button can still colorize it). Default = dark theme.
+let th = new Float64Array(6)
+th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -42,7 +47,9 @@ export let clear = () => {
   init()
 }
 
-export let frame = (t, sway) => {
+// panX/panY (backing pixels) + zoom give the fern a pan/zoom view; sway still bends it in the wind.
+export let frame = (t, sway, panX, panY, zoom) => {
+  let cxv = W * 0.5, cyv = H * 0.5   // zoom pivots about the screen centre
   // Redraw fresh every frame: zero the density first so the fern never accumulates a
   // ghost trail as the wind sway bends it (and so JS and jz render identically).
   let nc = W * H, c0 = 0
@@ -56,8 +63,13 @@ export let frame = (t, sway) => {
   let f2c = -0.04 - sway
   let f2d = 0.85
 
+  // Throw MORE points as you zoom in — the visible window holds a smaller slice of the fern, so a
+  // fixed budget thins out and the leaflets go transparent. Scale the budget with zoom (capped 4×)
+  // so the magnified detail actually fills in, not just brightens.
+  let zb = zoom; if (zb < 1.0) zb = 1.0; if (zb > 4.0) zb = 4.0
+  let iters = (220000.0 * zb) | 0
   let iter = 0
-  while (iter < 220000) {                 // enough points for a full fern in a single frame
+  while (iter < iters) {                  // enough points for a full fern in a single frame
     let r = Math.random()
     let nx = 0.0, ny = 0.0
     if (r < 0.01) {
@@ -79,9 +91,10 @@ export let frame = (t, sway) => {
     }
     x = nx; y = ny
 
-    // map fern coords to pixel
-    let px_ = (x * scaleX + offX) | 0
-    let py_ = (offY - y * scaleY) | 0
+    // map fern coords to pixel, then apply the pan/zoom view (zoom about screen centre + pan)
+    let bx = x * scaleX + offX, by = offY - y * scaleY
+    let px_ = ((bx - cxv) * zoom + cxv + panX) | 0
+    let py_ = ((by - cyv) * zoom + cyv + panY) | 0
 
     if (px_ >= 0 & px_ < W & py_ >= 0 & py_ < H) {
       let idx = py_ * W + px_
@@ -92,16 +105,24 @@ export let frame = (t, sway) => {
 
   st[0] = x; st[1] = y
 
-  // log tone-map: density → gray (white fern on black)
+  // tone-map: density → ink amount, composited paper→ink. The extra points above already restore
+  // most of the zoomed density; a residual brightness boost (zoom²/points, capped) covers the rest
+  // so the leaflets stay solid, not transparent, as you zoom in.
+  let boost = (zoom * zoom) / zb; if (boost < 1.0) boost = 1.0; if (boost > 16.0) boost = 16.0
+  let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
+  let pk = (255 << 24) | ((pb | 0) << 16) | ((pg | 0) << 8) | (pr | 0)   // packed paper
   let n = W * H, i = 0
   while (i < n) {
     let d = dens[i]
     if (d === 0) {
-      px[i] = 255 << 24
+      px[i] = pk                                            // bare ground = page paper
     } else {
-      let g = (Math.log(d + 1.0) * 44.0) | 0
-      if (g > 255) g = 255
-      px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+      let v = (Math.log(d * boost + 1.0) * 44.0) / 255.0    // density → 0..1
+      if (v > 1.0) v = 1.0
+      let r = (pr + (ir - pr) * v) | 0                      // paper → ink frond
+      let g = (pg + (ig - pg) * v) | 0
+      let b = (pb + (ib - pb) * v) | 0
+      px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     }
     i++
   }

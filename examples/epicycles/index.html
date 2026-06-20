@@ -9,12 +9,16 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
+// A fresh figure on every reload: heart, rose, star, figure-eight, spirograph or epicycloid.
+// Chosen ONCE in the host (so JS and jz deconstruct the same curve), re-applied in `load`.
+const SHAPES = ["a heart", "a rose", "a star", "a figure-eight", "a spirograph", "an epicycloid"]
+const shape = Math.floor(Math.random() * SHAPES.length)
 const demo = runDemo({
   name: "epicycles",
-  hint: "Fourier epicycles tracing a heart — each circle is one frequency component",
-  load: (e) => e.init(),
+  hint: `Fourier epicycles tracing ${SHAPES[shape]} — each circle is one frequency component`,
+  load: (e) => { e.setShape?.(shape); e.init() },
   frame: (e, t) => {
-    const phi = (t * 0.9) % (2 * Math.PI)   // ~7s per full heart — a watchable pen pace
+    const phi = (t * 0.9) % (2 * Math.PI)   // ~7s per full loop — a watchable pen pace
     e.frame(t, phi)
   },
 })

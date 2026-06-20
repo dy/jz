@@ -13,12 +13,16 @@
 // freezing the motion). resize(w,h) → Uint32Array; frame(t, mx, my, mdown) renders.
 
 let W = 0, H = 0, px
+let ink                                // Uint8Array — per-pixel ink amount (the murmuration trail)
 let MAXN = 1200
 let bx = new Float64Array(MAXN)        // position
 let by = new Float64Array(MAXN)
 let bvx = new Float64Array(MAXN)       // velocity
 let bvy = new Float64Array(MAXN)
 let count = 0
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = dark theme (black sky, light birds)
+let th = new Float64Array(6)
+th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
 
 // dimensionless steering gains (these transfer across canvas sizes unchanged)
 let CENTERING = 0.0009                 // cohesion pull
@@ -28,9 +32,12 @@ let SEED = 0
 
 export let resize = (w, h) => {
   W = w; H = h
+  ink = new Uint8Array(w * h)
   px = new Uint32Array(w * h)
   return px
 }
+
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
 // cheap deterministic PRNG so init() doesn't depend on Math.random's seeding
 let rnd = () => {
@@ -55,8 +62,8 @@ export let init = () => {
 }
 export let addBoids = (fx, fy, n) => { let i = 0; while (i < n) { spawn1(fx + (rnd() - 0.5) * 0.04, fy + (rnd() - 0.5) * 0.04); i++ } }
 
-// filled triangle facing (ux,uy), tip forward — bounding-box point-in-triangle (after swarm.js)
-let tri = (cxf, cyf, ux, uy, s, col) => {
+// filled triangle facing (ux,uy), tip forward — stamps full ink into the trail buffer
+let tri = (cxf, cyf, ux, uy, s) => {
   let pvx = -uy, pvy = ux
   let ax = cxf + ux * s, ay = cyf + uy * s
   let bxp = cxf - ux * s * 0.7 + pvx * s * 0.55, byp = cyf - uy * s * 0.7 + pvy * s * 0.55
@@ -75,7 +82,7 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
       let w1 = (dx2 - bxp) * (py - byp) - (dy2 - byp) * (pxx - bxp)
       let w2 = (ax - dx2) * (py - dy2) - (ay - dy2) * (pxx - dx2)
       if ((w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0))
-        px[py * W + pxx] = col
+        ink[py * W + pxx] = 255
       pxx++
     }
     py++
@@ -83,21 +90,14 @@ let tri = (cxf, cyf, ux, uy, s, col) => {
 }
 
 export let frame = (t, mx, my, mdown) => {
-  // fade the buffer toward black → motion trails (a starling murmuration smears the air)
+  // fade the ink toward zero → motion trails (a starling murmuration smears the air)
   let i = 0, n = W * H
-  while (i < n) {
-    let p = px[i]
-    let r = ((p & 0xff) * 205) >> 8
-    let g = ((p >> 8 & 0xff) * 205) >> 8
-    let b = ((p >> 16 & 0xff) * 205) >> 8
-    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
-    i++
-  }
+  while (i < n) { ink[i] = (ink[i] * 205) >> 8; i++ }
 
   let S = (W < H ? W : H)
   let VR = S * 0.09, VR2 = VR * VR        // visual range
   let PR = S * 0.022, PR2 = PR * PR       // protected (separation) range
-  let MAXS = S * 0.011, MINS = S * 0.005  // speed clamp
+  let MAXS = S * 0.0035, MINS = S * 0.0016  // speed clamp — a slow, lazy drift
   let MARGIN = S * 0.10, TURN = S * 0.0009
   let FLEE = S * 0.20, FLEE2 = FLEE * FLEE
   let size = S * 0.011
@@ -153,8 +153,20 @@ export let frame = (t, mx, my, mdown) => {
     bx[i] = xp + vx; by[i] = yp + vy
 
     let ux = vx / (sp + 0.0001), uy = vy / (sp + 0.0001)
-    let col = (255 << 24) | (235 << 16) | (235 << 8) | 235
-    tri(bx[i], by[i], ux, uy, size, col)
+    tri(bx[i], by[i], ux, uy, size)
+    i++
+  }
+
+  // composite: every pixel = lerp(paper, ink, trail) → birds in the page ink over the page paper,
+  // flipping with the light/dark theme.
+  let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
+  i = 0
+  while (i < n) {
+    let v = ink[i] / 255.0
+    let r = (pr + (ir - pr) * v) | 0
+    let g = (pg + (ig - pg) * v) | 0
+    let b = (pb + (ib - pb) * v) | 0
+    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     i++
   }
 }

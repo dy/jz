@@ -15,12 +15,20 @@ import { runDemo, panZoom } from "../lib/jzdemo.js"
 // supplies the morph. A tiny radius wobble keeps successive loops from repeating exactly.
 const home = { cx: 0, cy: 0, scale: 1.5 }
 const view = { ...home }
+// The morph runs off its own accumulator (not raw t) so its rate can track zoom. Rate = min(1,
+// scale²) referenced to ABSOLUTE scale 1: framed wide (scale ≥ 1, i.e. home and zoomed-out) it runs
+// at full lively pace; below scale 1 the square tapers it down fast — almost frozen deep in, where
+// you're inspecting a filament and don't want it sliding around.
+let phase = 0, lastT = 0
 const demo = runDemo({
   name: "julia",
   hint: "the Julia set — c morphs on its own · drag to pan · scroll to zoom",
   frame: (e, t) => {
-    const th = t * 0.075
-    const r = 0.7885 + 0.02 * Math.sin(t * 0.31)
+    const dt = t - lastT; lastT = t
+    const zoomRate = Math.min(1, view.scale * view.scale)
+    phase += dt * zoomRate
+    const th = phase * 0.075
+    const r = 0.7885 + 0.02 * Math.sin(phase * 0.31)
     const cre = r * Math.cos(th)
     const cim = r * Math.sin(th)
     e.frame(t, cre, cim, view.cx, view.cy, view.scale)

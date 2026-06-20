@@ -17,11 +17,14 @@ const demo = runDemo({
   frame: (e, t) => {
     let ang
     if (ptr.down) {
-      ang = GOLDEN_ANGLE + (ptr.x - 0.5) * 0.24
+      // a FINE slider: the whole screen width spans only ±0.025rad around golden — the packing
+      // reorganizes dramatically within a hair of the golden angle, so a coarse sweep blew past
+      // every interesting parastichy. Drag slowly to walk the spiral families one by one.
+      ang = GOLDEN_ANGLE + (ptr.x - 0.5) * 0.05
       baseAng = ang; userSet = true
     } else {
-      const amp = userSet ? 0.004 : 0.03
-      ang = baseAng + Math.sin(t * 0.028) * amp        // slow, gentle drift
+      const amp = userSet ? 0.004 : 0.02
+      ang = baseAng + Math.sin(t * 0.02) * amp         // slow, gentle drift
     }
     e.frame(t, ang)
   },

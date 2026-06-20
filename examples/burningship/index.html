@@ -9,15 +9,19 @@
 <script type="module">
 import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-// The kernel already takes (t, cx, cy, halfH) — centre + half-height — so pan/zoom is just a
-// matter of driving those from the shared panZoom: drag to pan, scroll to zoom into the masts
-// and reflection, double-click to reset to the whole ship.
+// The kernel takes (t, cx, cy, halfH, rot) — centre, half-height, and a tiny twist that morphs the
+// ship on its own. pan/zoom drives the view from the shared panZoom; the twist breathes by itself,
+// slowing as you zoom in so deep rigging sways gently instead of flickering.
 const home = { cx: -0.45, cy: -0.5, scale: 1.35 }
 const view = { ...home }
 const demo = runDemo({
   name: "burningship",
-  hint: "Burning Ship fractal — drag to pan · scroll to zoom",
-  frame: (e, t) => { e.frame(t, view.cx, view.cy, view.scale) },
+  hint: "Burning Ship fractal — the rigging sways on its own · drag to pan · scroll to zoom",
+  frame: (e, t) => {
+    const zoomRate = Math.max(0.12, Math.min(1, view.scale / home.scale))
+    const rot = 0.16 * Math.sin(t * 0.21 * zoomRate)   // gentle twist, calmer when zoomed in
+    e.frame(t, view.cx, view.cy, view.scale, rot)
+  },
 })
 panZoom(demo.cv, view, home, () => {})
 </script>

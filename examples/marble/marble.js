@@ -7,6 +7,11 @@
 let W = 0, H = 0, px
 let ink, tmp          // ink shade field (0 = paper)
 let shade = 0.25      // next drop's shade, cycles for contrast
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = light theme (native white paper /
+// dark ink). In dark theme it flips to light ink on dark paper.
+let th = new Float64Array(6)
+th[0] = 250.0; th[1] = 250.0; th[2] = 250.0; th[3] = 0.0; th[4] = 0.0; th[5] = 0.0
+export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -89,10 +94,11 @@ export let frame = (t) => {
   flowStep(t)
   let n = W * H, i = 0
   while (i < n) {
-    let v = ink[i]
-    let g = (255.0 - v * 255.0) | 0                       // white paper, dark ink
-    if (g < 0) g = 0
-    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+    let v = ink[i]; if (v > 1.0) v = 1.0; if (v < 0.0) v = 0.0   // ink amount: 0 = paper, 1 = full ink
+    let r = (th[0] + (th[3] - th[0]) * v) | 0
+    let g = (th[1] + (th[4] - th[1]) * v) | 0
+    let b = (th[2] + (th[5] - th[2]) * v) | 0
+    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     i++
   }
 }

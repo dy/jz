@@ -28,26 +28,71 @@ let sortedIdx = new Int32Array(N)
 let hx = new Float64Array(N)
 let hy = new Float64Array(N)
 
+// Which closed curve to deconstruct. The host rolls a fresh one on each reload (chosen there so
+// JS and jz sample the identical shape). i32 module global — safe to reassign across calls.
+let SHAPE = 0
+let ext = new Float64Array(1)   // max |coord| of the sampled curve → fit-scaling in frame()
+
+export let setShape = (id) => { SHAPE = id | 0 }
+
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
   return px
 }
 
-export let init = () => {
-  // Sample heart curve at N points (into the module-level hx/hy — no allocation here)
-  let PI2 = 6.283185307179586   // 2*PI
+// Sample the chosen closed curve into hx/hy. Every option closes onto itself over its sample set
+// (multi-loop spirographs sweep their full period), so the DFT reconstructs it cleanly and the pen
+// traces one full pass per 2π of phi.
+let sampleCurve = () => {
+  let PI2 = 6.283185307179586
   let n = 0
   while (n < N) {
-    let tau = PI2 * n / N
-    let s = Math.sin(tau)
-    hx[n] = 16.0 * s * s * s
-    // flip Y for screen coords (heart opens upward on math axes → downward on screen)
-    hy[n] = -(13.0 * Math.cos(tau) - 5.0 * Math.cos(2.0 * tau) - 2.0 * Math.cos(3.0 * tau) - Math.cos(4.0 * tau))
+    let u = n / N, x = 0.0, y = 0.0
+    if (SHAPE == 1) {                       // five-petal rose
+      let tau = PI2 * u, r = Math.cos(5.0 * tau) * 14.0
+      x = r * Math.cos(tau); y = r * Math.sin(tau)
+    } else if (SHAPE == 2) {                // five-lobed star
+      let tau = PI2 * u, r = (0.58 + 0.42 * Math.cos(5.0 * tau)) * 15.0
+      x = r * Math.cos(tau); y = r * Math.sin(tau)
+    } else if (SHAPE == 3) {                // figure-eight (Gerono lemniscate)
+      let tau = PI2 * u
+      x = 15.0 * Math.cos(tau)
+      y = 15.0 * Math.sin(tau) * Math.cos(tau)
+    } else if (SHAPE == 4) {                // spirograph hypotrochoid (a=5,b=3) — closes after 3 loops
+      let tau = PI2 * 3.0 * u
+      x = (2.0 * Math.cos(tau) + 5.0 * Math.cos(2.0 * tau / 3.0)) * 2.2
+      y = (2.0 * Math.sin(tau) - 5.0 * Math.sin(2.0 * tau / 3.0)) * 2.2
+    } else if (SHAPE == 5) {                // five-cusp epicycloid
+      let tau = PI2 * u
+      x = (6.0 * Math.cos(tau) - Math.cos(6.0 * tau)) * 2.4
+      y = (6.0 * Math.sin(tau) - Math.sin(6.0 * tau)) * 2.4
+    } else {                                // heart (default)
+      let tau = PI2 * u, s = Math.sin(tau)
+      x = 16.0 * s * s * s
+      // flip Y for screen coords (heart opens upward on math axes → downward on screen)
+      y = -(13.0 * Math.cos(tau) - 5.0 * Math.cos(2.0 * tau) - 2.0 * Math.cos(3.0 * tau) - Math.cos(4.0 * tau))
+    }
+    hx[n] = x; hy[n] = y
     n++
   }
+  // record the curve's max half-extent so frame() fits any shape to the canvas
+  let m = 1.0, k = 0
+  while (k < N) {
+    let ax = hx[k] < 0.0 ? -hx[k] : hx[k]
+    let ay = hy[k] < 0.0 ? -hy[k] : hy[k]
+    if (ax > m) m = ax
+    if (ay > m) m = ay
+    k++
+  }
+  ext[0] = m
+}
 
-  // Compute DFT: treat heart as complex z_n = hx[n] + i*hy[n]
+export let init = () => {
+  sampleCurve()
+
+  let PI2 = 6.283185307179586   // 2*PI
+  // Compute DFT: treat the curve as complex z_n = hx[n] + i*hy[n]
   // C[k] = (1/N) * sum_n( z_n * e^(-2*PI*i*k*n/N) )
   // C_re[k] = (1/N) * sum_n( hx[n]*cos(2*PI*k*n/N) + hy[n]*sin(2*PI*k*n/N) )
   // C_im[k] = (1/N) * sum_n( -hx[n]*sin(2*PI*k*n/N) + hy[n]*cos(2*PI*k*n/N) )
@@ -136,9 +181,9 @@ export let frame = (t, phi) => {
   let total = W * H, ci = 0
   while (ci < total) { px[ci] = (255 << 24); ci++ }
 
-  // Scale: heart spans ~x∈[-16,16], y∈[-17,17]. Fit 75% of half the smaller dimension.
+  // Fit whatever curve was sampled: 78% of the half-frame, normalized by its recorded extent.
   let halfMin = (W < H ? W : H) * 0.5
-  let scale = halfMin * 0.75 / 17.0
+  let scale = halfMin * 0.78 / ext[0]
 
   let cx = W * 0.5, cy = H * 0.5
 

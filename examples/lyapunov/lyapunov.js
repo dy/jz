@@ -29,15 +29,17 @@ export let setSeq = (bits, len) => {
   while (i < len) { seq[i] = (bits >> i) & 1; i++ }
 }
 
-export let frame = (t, ox, oy) => {
+// span = width of the [a,b] window (1.5 = the classic [2.5,4.0] view); shrink it to zoom in,
+// ox/oy pan the window. f64 args so they never narrow.
+export let frame = (t, ox, oy, span) => {
   let j = 0, py = 0
   while (py < H) {
-    // b maps y: screen y ∈ [2.5+oy, 4.0+oy]
-    let b = 2.5 + oy + (py * invH) * 1.5
+    // b maps y: screen y ∈ [2.5+oy, 2.5+oy+span]
+    let b = 2.5 + oy + (py * invH) * span
     let qx = 0
     while (qx < W) {
-      // a maps x: screen x ∈ [2.5+ox, 4.0+ox]
-      let a = 2.5 + ox + (qx * invW) * 1.5
+      // a maps x: screen x ∈ [2.5+ox, 2.5+ox+span]
+      let a = 2.5 + ox + (qx * invW) * span
 
       // logistic map — si continues across warmup into accumulation
       let x = 0.5

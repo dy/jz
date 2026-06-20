@@ -7,40 +7,56 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-// r window: default full view [2.5, 4.0]; drag to zoom toward Feigenbaum point ~3.5699
-let r0 = 2.5, r1 = 4.0
-let dragStartX = 0, dragR0 = 2.5, dragR1 = 4.0
+// Two independent gestures, like every other zoomable demo: DRAG pans the window, SCROLL zooms
+// toward the cursor. The cascade is self-similar, so zoom scales BOTH axes together (r horizontal,
+// orbit-value x vertical) — letting you dive into a period-doubling fork and see the same structure
+// repeat. Double-click resets. Windows are clamped to the full [2.5,4.0]×[0,1] diagram.
+const home = { r0: 2.5, r1: 4.0, x0: 0, x1: 1 }
+const view = { ...home }
 
 const demo = runDemo({
   name: "bifurcation",
-  hint: "Logistic map orbit diagram — drag to zoom into the Feigenbaum cascade",
-  frame: (e, t) => {
-    e.frame(t, r0, r1)
-  },
+  hint: "Logistic map orbit diagram — drag to pan · scroll to zoom into the Feigenbaum cascade",
+  frame: (e, t) => { e.frame(t, view.r0, view.r1, view.x0, view.x1) },
 })
 
-const ptr = trackPointer(demo.cv)
-
-demo.cv.addEventListener("pointerdown", (e) => {
-  dragStartX = e.clientX / innerWidth
-  dragR0 = r0; dragR1 = r1
+const cv = demo.cv
+const clamp = () => {
+  if (view.r1 - view.r0 > 1.5) { view.r0 = 2.5; view.r1 = 4.0 }
+  if (view.r0 < 2.5) { view.r1 += 2.5 - view.r0; view.r0 = 2.5 }
+  if (view.r1 > 4.0) { view.r0 -= view.r1 - 4.0; view.r1 = 4.0 }
+  if (view.x1 - view.x0 > 1.0) { view.x0 = 0; view.x1 = 1 }
+  if (view.x0 < 0) { view.x1 -= view.x0; view.x0 = 0 }
+  if (view.x1 > 1) { view.x0 -= view.x1 - 1; view.x1 = 1 }
+}
+let down = false, lx = 0, ly = 0
+cv.addEventListener("pointerdown", (e) => { down = true; lx = e.clientX; ly = e.clientY; try { cv.setPointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointermove", (e) => {
+  if (!down) return
+  const r = cv.getBoundingClientRect()
+  const dr = (e.clientX - lx) / r.width * (view.r1 - view.r0)   // pan in r (drag right → view left)
+  const dx = (e.clientY - ly) / r.height * (view.x1 - view.x0)  // pan in orbit-value (x increases upward)
+  view.r0 -= dr; view.r1 -= dr
+  view.x0 += dx; view.x1 += dx
+  lx = e.clientX; ly = e.clientY
+  clamp()
 })
-
-demo.cv.addEventListener("pointermove", (e) => {
-  if (!ptr.down) return
-  const cx = e.clientX / innerWidth
-  const span = dragR1 - dragR0
-  const dx = cx - dragStartX
-  const newSpan = span * Math.pow(0.3, dx * 2)
-  const center = dragR0 + dragStartX * span
-  r0 = center - dragStartX * newSpan
-  r1 = r0 + newSpan
-  // clamp to [2.5, 4.0]
-  if (r0 < 2.5) { r0 = 2.5; r1 = r0 + newSpan }
-  if (r1 > 4.0) { r1 = 4.0; r0 = r1 - newSpan }
-})
+cv.addEventListener("pointerup", (e) => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { down = false })
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault()
+  const r = cv.getBoundingClientRect()
+  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height
+  const rc = view.r0 + fx * (view.r1 - view.r0)            // r under cursor
+  const xc = view.x1 - fy * (view.x1 - view.x0)            // orbit-value under cursor (top = x1)
+  const f = Math.exp(e.deltaY * 0.0012)                    // >1 zoom out, <1 zoom in
+  view.r0 = rc - (rc - view.r0) * f; view.r1 = rc + (view.r1 - rc) * f
+  view.x0 = xc - (xc - view.x0) * f; view.x1 = xc + (view.x1 - xc) * f
+  clamp()
+}, { passive: false })
+cv.addEventListener("dblclick", () => { view.r0 = home.r0; view.r1 = home.r1; view.x0 = home.x0; view.x1 = home.x1 })
 </script>
 </body>
 </html>

@@ -10,16 +10,18 @@
 // "retain quality on zoom": detail is always present and continuously refining. dens is f64 so
 // the decay multiply stays smooth (a u32 histogram would quantise the fade to steps).
 let W = 0, H = 0, px, dens, aspect = 1.0
-let DECAY = 0.96
-let MAXIT = 200
+let DECAY = 0.985          // longer rolling window (~66 frames) → a smoother, deeper-exposed nebula
+let MAXIT = 320            // longer orbits resolve the fine filaments you see when zoomed in
 // trajectory scratch: store (x,y) pairs for up to MAXIT steps
 let traj  // Float64Array of length 2*MAXIT
+let pk = new Float64Array(1)   // smoothed normalization peak (EMA) — kills per-frame brightness flicker
 
 export let resize = (w, h) => {
   W = w; H = h; aspect = w / h
   dens = new Float64Array(w * h)
   px = new Uint32Array(w * h)
-  traj = new Float64Array(400)  // fixed size: 2*200
+  traj = new Float64Array(640)  // 2*MAXIT
+  pk[0] = 1.0
   return px
 }
 
@@ -38,7 +40,11 @@ export let frame = (t, vcx, vcy, vscale) => {
   let di = 0, dn = W * H
   while (di < dn) { dens[di] = dens[di] * DECAY; di++ }
 
-  let samples = 30000
+  // Concentrate more samples as you zoom in: the visible window catches a smaller slice of orbits,
+  // so a fixed count thins out and goes grainy. Scale with zoom depth (1.5 = the home half-height),
+  // capped, so a deep view keeps resolving the filaments instead of speckling.
+  let zf = 1.5 / vscale; if (zf < 1.0) zf = 1.0; if (zf > 3.0) zf = 3.0
+  let samples = (45000.0 * zf) | 0
   let halfW = vscale * aspect      // half-width of the view in world units (aspect-corrected)
   let s = 0
   while (s < samples) {
@@ -91,7 +97,11 @@ export let frame = (t, vcx, vcy, vscale) => {
   let i = 0, n = W * H
   let maxD = 1
   while (i < n) { if (dens[i] > maxD) maxD = dens[i]; i++ }
-  let inv = 1.0 / maxD
+  // Normalize by a SMOOTHED peak (EMA), not the instantaneous frame max — the random sampling makes
+  // the raw max jitter frame-to-frame, and dividing by it flickers the whole image. Smoothing holds
+  // the exposure steady so the nebula sharpens instead of strobing.
+  pk[0] = pk[0] * 0.9 + maxD * 0.1
+  let inv = 1.0 / pk[0]
   i = 0
   while (i < n) {
     let d = dens[i]

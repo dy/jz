@@ -32,6 +32,25 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => { if (!stored()) set(e.matches ? 'light' : 'dark') })
 })()
 
+// Resolve a theme token (--paper / --ink, possibly a light-dark() pair) to [r,g,b] by letting the
+// browser compute it on a throwaway element.
+const themeRGB = (prop) => {
+  const el = document.createElement('div')
+  el.style.cssText = 'position:absolute;left:-9999px'
+  el.style.color = `var(${prop})`
+  document.body.appendChild(el)
+  const m = getComputedStyle(el).color.match(/[\d.]+/g) || [0, 0, 0]
+  el.remove()
+  return [Math.round(+m[0] || 0), Math.round(+m[1] || 0), Math.round(+m[2] || 0)]
+}
+// Feed the live page palette to any kernel exporting setTheme(pr,pg,pb, ir,ig,ib): a grayscale demo
+// can then paint its background as the page paper and its ink as the page ink, flipping with the
+// light/dark toggle. A no-op for kernels without setTheme. runDemo calls this on load, on resize,
+// and whenever the theme changes — so opting in is just exporting setTheme.
+export const applyTheme = (engine) => {
+  if (engine && engine.setTheme) { const p = themeRGB('--paper'), k = themeRGB('--ink'); engine.setTheme(p[0], p[1], p[2], k[0], k[1], k[2]) }
+}
+
 // Embed mode (?embed) — strip ALL chrome (masthead, edge chevrons, palette, hint),
 // leaving just the demo canvas + the FPS/toggle HUD. The landing-page hero hosts an
 // example this way in an <iframe>; the parent owns prev/next + the "open" label.
@@ -341,8 +360,10 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: var(--paper);
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
       html.jz-full .jz-bar { padding-inline: 24px; }
-      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--dim); letter-spacing: .01em;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* up to two lines (fits the 64px bar at 13px/1.3) before ellipsing — a longer caption
+         can breathe onto a second line instead of being clipped mid-sentence. */
+      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em;
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
       .jz-bar .jz-wiki { color: var(--soft); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-bar .jz-wiki:hover { color: var(--ink); }
       /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
@@ -634,9 +655,12 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
     const my = ++gen
     const e = await loadEngine(kind, { js: `./${name}.js`, wasm: `./${wasm || name}.wasm` })
     if (my !== gen) return
-    engine = e; sizeTo(); load?.(engine, demo)
+    engine = e; sizeTo(); load?.(engine, demo); applyTheme(engine)
   }
-  addEventListener('resize', () => { if (engine) { sizeTo(); load?.(engine, demo) } })
+  addEventListener('resize', () => { if (engine) { sizeTo(); load?.(engine, demo); applyTheme(engine) } })
+  // theme-reactive kernels (those exporting setTheme) re-tint live when the light/dark theme flips
+  new MutationObserver(() => applyTheme(engine))
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
   const ui = hud({
     kind: 'jz', hint, palette, nav: name,

@@ -10,8 +10,9 @@
 
 let W = 0, H = 0, px
 
-// circle store: up to 6000 circles (cx, cy, cr each as f64)
-let MAX = 6000
+// circle store: up to 16000 circles (cx, cy, cr each as f64) — deep enough that zooming keeps
+// finding fresh generations instead of bottoming out on bare gaps
+let MAX = 16000
 let cx_ = new Float64Array(MAX)
 let cy_ = new Float64Array(MAX)
 let cr_ = new Float64Array(MAX)
@@ -19,8 +20,8 @@ let dep_ = new Float64Array(MAX)  // depth for coloring
 let ncircles = 0
 
 // stack for the recursion: each entry = a tangent QUADRUPLE (a,b,c,d) = 12 f64 (k,x,y per
-// circle) + 1 f64 depth = 13 f64 per entry.
-let SMAX = 260000
+// circle) + 1 f64 depth = 13 f64 per entry. Sized for the deeper recursion above.
+let SMAX = 700000
 let stk = new Float64Array(SMAX)
 let stk_sp = 0  // stack pointer (counts slots, each entry = 13)
 
@@ -106,9 +107,9 @@ let buildGasket = (R) => {
   spush(kc,0.0,0.0, k1,x0,y0, k1,x2,y2, k1,x1,y1, 2.0)   // center ∪ c0,c2  (away from c1)
 
   // Cutoff radius in NORMALIZED gasket units (outer radius = 1, scaled to screen at draw time).
-  // The gasket's circle count to radius ε grows like ε^-1.3, so 0.0016 yields a few thousand
-  // circles — sub-pixel at the thumbnail, crisp at full-screen — and the recursion ends on its own.
-  let minR = 0.0016
+  // The gasket's circle count to radius ε grows like ε^-1.3, so 0.0006 yields ~15k circles —
+  // still sub-pixel at the thumbnail, but a deep scroll-zoom keeps resolving fresh ones.
+  let minR = 0.0006
 
   while (stk_sp > 0 && ncircles < MAX) {
     stk_sp = stk_sp - 13

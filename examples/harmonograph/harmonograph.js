@@ -15,6 +15,18 @@ let A2 = 0.62         // amplitude of the *second* pendulum on each axis, smalle
                       // — a clean primary ellipse modulated by a secondary, the classic harmonograph
                       // (equal amplitudes summed to ±2R, overflowing the frame into a chord scribble)
 
+// Per-load figure: frequency quadruple + phase offsets. The host rolls a fresh (curated) set on
+// every page load and feeds it here, so JS and jz draw the identical shape. Defaults reproduce the
+// classic 2:3 rosette if setParams is never called.
+let cfg = new Float64Array(8)   // [f1, f2, f3, f4, p1, p2, p3, p4]
+cfg[0] = 2.0; cfg[1] = 3.0; cfg[2] = 3.0; cfg[3] = 2.0
+cfg[4] = 0.0; cfg[5] = 0.0; cfg[6] = 0.0; cfg[7] = 1.5707963267948966
+
+export let setParams = (f1, f2, f3, f4, q1, q2, q3, q4) => {
+  cfg[0] = f1; cfg[1] = f2; cfg[2] = f3; cfg[3] = f4
+  cfg[4] = q1; cfg[5] = q2; cfg[6] = q3; cfg[7] = q4
+}
+
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
@@ -53,20 +65,20 @@ export let frame = (t, detune, phaseShift) => {
   let minDim = W < H ? W : H
   let R = minDim * 0.26   // first-pendulum amplitude; max excursion R*(1+A2) ≈ 0.42·minDim stays in frame
 
-  // Frequency ratios 2:3 with slight detuning → figure precesses
-  let f1 = 2.0
-  let f2 = 3.0 + detune
-  let f3 = 3.0
-  let f4 = 2.0 + detune * 0.5
+  // Per-load frequency quadruple with slight detuning → the figure precesses
+  let f1 = cfg[0]
+  let f2 = cfg[1] + detune
+  let f3 = cfg[2]
+  let f4 = cfg[3] + detune * 0.5
 
   // Damping (inward spiral over TMAX → the figure starts wide and winds to the centre)
   let d1 = 0.012, d2 = 0.012, d3 = 0.012, d4 = 0.012
 
-  // Phase offsets (evolve with t for animation)
-  let p1 = phaseShift
-  let p2 = 0.0
-  let p3 = phaseShift * 0.7
-  let p4 = 1.5707963267948966  // π/2
+  // Phase offsets: per-load base + the drag/animation shift
+  let p1 = phaseShift + cfg[4]
+  let p2 = cfg[5]
+  let p3 = phaseShift * 0.7 + cfg[6]
+  let p4 = cfg[7]
 
   let dt = TMAX / STEPS
 

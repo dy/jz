@@ -7,25 +7,23 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-let panX = 0.0, panY = 0.0, userSet = false
+// The complex plane is a proper pan/zoom view now (drag to pan, scroll to zoom, double-click to
+// reset) — c keeps orbiting on its own so the zeros and poles drift through whatever you frame.
+const home = { cx: 0, cy: 0, scale: 2.5 }
+const view = { ...home }
 const demo = runDemo({
   name: "domain-color",
-  hint: "Domain coloring of f(z) = (z²−1)(z−c)/(z²+1) — drag to pan the complex plane",
+  hint: "Domain coloring of f(z) = (z²−1)(z−c)/(z²+1) — drag to pan · scroll to zoom",
   frame: (e, t) => {
     // c orbits slowly: zeros and poles drift
     const cx = Math.cos(t * 0.23) * 0.4
     const cy = Math.sin(t * 0.17) * 0.4
-    if (ptr.down) {
-      panX = (ptr.x - 0.5) * -2.0
-      panY = (ptr.y - 0.5) * 2.0
-      userSet = true
-    }
-    e.frame(t, cx, cy, panX, panY)
+    e.frame(t, cx, cy, view.cx, view.cy, view.scale)
   },
 })
-const ptr = trackPointer(demo.cv)
+panZoom(demo.cv, view, home, () => {})
 </script>
 </body>
 </html>

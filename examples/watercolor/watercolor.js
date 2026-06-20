@@ -10,6 +10,11 @@ let u, v, u0, v0     // velocity + scratch
 let dn, dn0          // ink density + scratch
 let pr, dv           // pressure, divergence
 let ITER = 20
+// theme palette: [paperR,G,B, inkR,G,B] — harness-fed; default = light theme (its native white
+// paper / black ink). In dark theme it flips to light ink on dark paper.
+let th = new Float64Array(6)
+th[0] = 250.0; th[1] = 250.0; th[2] = 250.0; th[3] = 6.0; th[4] = 6.0; th[5] = 6.0
+export let setTheme = (pr_, pg, pb, ir, ig, ib) => { th[0] = pr_; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -144,13 +149,15 @@ export let frame = (t) => {
     y2++
   }
 
-  // render: white paper, black ink
+  // render: paper → ink by ink density, in the page theme
   i = 0
   while (i < n) {
     let m = dn[i] * 1.9
     if (m > 1.0) m = 1.0
-    let g = (250.0 - m * 244.0) | 0
-    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+    let r = (th[0] + (th[3] - th[0]) * m) | 0
+    let g = (th[1] + (th[4] - th[1]) * m) | 0
+    let b = (th[2] + (th[5] - th[2]) * m) | 0
+    px[i] = (255 << 24) | (b << 16) | (g << 8) | r
     i++
   }
 }
