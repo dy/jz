@@ -86,7 +86,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
 #geomean .val { text-align: right; }   /* corpus rows carry only the multiplier — pin it to the right edge, no dead gap */
 .bar { height: 15px; position: relative; background: transparent; }
-.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--ink); background: var(--paper); min-width: 2px; }
+.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid light-dark(#b6b9be, var(--ink)); background: light-dark(#e7e9ec, var(--paper)); min-width: 2px; }   /* competitors: a faintly whitish fill + soft gray border in light (the solid black JZ bar still stands out); outline-only on black in dark */
 .bar i.solid { background: var(--ink); }
 .bar i.diff { border-color: var(--red); }
 .bar .cut { position: absolute; right: 8px; top: 0; bottom: 0; width: 7px; background: var(--paper);

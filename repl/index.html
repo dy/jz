@@ -120,7 +120,7 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }   /* min-width:0 l
 /* drop a file → the editor pane is the target; dashed overlay while dragging */
 .code.drag::after { content: 'drop a .js file to load it'; position: absolute; inset: 8px; z-index: 4;
   display: flex; align-items: center; justify-content: center; pointer-events: none;
-  border: 1.5px dashed var(--mid); border-radius: 6px; background: var(--drop-bg);
+  border: 1.5px dashed var(--mid); background: var(--drop-bg);
   color: var(--soft); font-family: var(--sans); font-size: 13px; letter-spacing: .04em; }
 
 /* ── terminal (right): controls float over the WAT · WAT (foldable) · console ── */
@@ -160,7 +160,7 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
 .menu .check { justify-content: flex-start; gap: 8px; color: var(--fg); }
 .menu .opt-field { display: flex; flex-direction: column; gap: 7px; }
 .menu .opt-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .14em; color: var(--dim); }
-.menu .opt-seg { display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.menu .opt-seg { display: flex; border: 1px solid var(--line); overflow: hidden; }
 .menu .opt-seg label { flex: 1; display: flex; position: relative; }
 .menu .opt-seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .menu .opt-seg span { flex: 1; text-align: center; padding: 5px 6px; font-size: 11px; color: var(--dim); white-space: nowrap; transition: background .12s, color .12s; }
@@ -222,7 +222,7 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
 /* hover tooltip explaining what "bench" does (uses the aria-label, so a11y + the visible tip share one source) */
 .prompt .bench::after { content: attr(aria-label); position: absolute; bottom: calc(100% + 8px); right: 0;
   width: max-content; max-width: 230px; white-space: normal; text-align: left; padding: 8px 10px;
-  background: #161616; color: #cfcfcf; border: 1px solid var(--line); border-radius: 5px;
+  background: #161616; color: #cfcfcf; border: 1px solid var(--line);
   font: 400 11px/1.45 var(--sans); text-transform: none; letter-spacing: normal;
   opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity .15s, transform .15s; z-index: 20; }
 .prompt .bench:hover::after, .prompt .bench:focus-visible::after { opacity: 1; transform: translateY(0); }

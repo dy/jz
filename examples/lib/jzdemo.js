@@ -134,20 +134,20 @@ const addEdgeNav = (name) => {
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
         display: flex; align-items: center; text-decoration: none; user-select: none;
-        -webkit-tap-highlight-color: transparent; color: #fff;
+        -webkit-tap-highlight-color: transparent; color: light-dark(#000, #fff);   /* black on the light (gray) frame, white on the dark */
         font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
       }
       .jz-edge-prev { left: 10px; }
       .jz-edge-next { right: 10px; flex-direction: row-reverse; }
       .jz-edge .chip {
         flex: none; display: flex; align-items: center; justify-content: center;
-        filter: drop-shadow(0 0 1px rgba(0,0,0,.9)) drop-shadow(0 1px 3px rgba(0,0,0,.6));
+        filter: drop-shadow(0 0 1px light-dark(rgba(255,255,255,.9), rgba(0,0,0,.9))) drop-shadow(0 1px 3px light-dark(rgba(255,255,255,.55), rgba(0,0,0,.6)));   /* halo flips with the theme so the chevron stays legible over the canvas too */
         transition: transform .2s;
       }
       .jz-edge .label {
         max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
         font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        opacity: 0; text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7);
+        opacity: 0; text-shadow: light-dark(0 0 2px rgba(255,255,255,.9), 0 0 2px rgba(0,0,0,.9)), light-dark(0 1px 2px rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.7));
         transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
       }
       .jz-edge a:hover .chip { transform: scale(1.15); }
@@ -370,7 +370,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-fps .unit { font-size: 12px; color: var(--dim); }
       /* palette: a square swatch (matches the modernist B&W frame); rotates on click */
       .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
-      .jz-pal .sw { display: block; width: 100%; height: 100%; border-radius: 5px;
+      .jz-pal .sw { display: block; width: 100%; height: 100%;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
         box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
       .jz-pal:hover .sw { transform: rotate(90deg); }
@@ -458,7 +458,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     sctx.beginPath(); sctx.moveTo(0, h)
     for (let i = 0; i < n; i++) sctx.lineTo(xs(i), ys(hist[i]))
     sctx.lineTo(w, h); sctx.closePath()
-    const c = document.documentElement.dataset.theme === 'light' ? '20,21,23' : '255,255,255'   // ink, theme-aware so the line shows on the gray bar too
+    const c = document.documentElement.dataset.theme === 'light' ? '0,0,0' : '255,255,255'   // black in light, white in dark
     const grad = sctx.createLinearGradient(0, 0, 0, h)
     grad.addColorStop(0, `rgba(${c},.42)`)
     grad.addColorStop(1, `rgba(${c},.04)`)
@@ -577,7 +577,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
 //   bg       page background behind the canvas (default '#000'; light demos pass e.g. '#eee')
 //   cursor   canvas cursor (default 'crosshair')
 //   palette  show the colormap button (default true)
-export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = '#000', cursor = 'crosshair', palette = true }) => {
+export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = 'var(--paper)', cursor = 'crosshair', palette = true }) => {
   document.title = `${titleOf(name)} - jz`
 
   // Shared page + canvas styling — one rule for every demo, no per-example <style>. In embed

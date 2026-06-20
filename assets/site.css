@@ -130,4 +130,4 @@ footer .legal .om { font-size: 15px; }
 .mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
 .mstats .stat b { font-size: 32px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .mstats .stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
-.mstats .stat:hover b { color: #fff; }
+.mstats .stat:hover b { color: light-dark(#000, #fff); }   /* darken in light, brighten in dark — never white on the gray */

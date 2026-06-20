@@ -71,15 +71,15 @@ a { color: inherit; }
    shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
 .hero::before {
   content: ''; position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
-  border-bottom: 1px solid light-dark(rgba(255,255,255,.7), rgba(255,255,255,.17));   /* the band-closing rule — bold white on the gray, subtle on black. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
+  border-bottom: 1px solid light-dark(rgba(255,255,255,.62), rgba(255,255,255,.17));   /* the band-closing rule. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
   background-image:
-    linear-gradient(light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(255,255,255,.35), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.35), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(255,255,255,.14), rgba(255,255,255,.028)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.14), rgba(255,255,255,.028)) 1px, transparent 1px);
-  /* white grid both themes; light bumps the alpha so the lines read on the gray (major ~85%, sub-grids scaled down). Pulses stay full white from the kernel. */
+    linear-gradient(light-dark(rgba(255,255,255,.62), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.62), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.28), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.28), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.12), rgba(255,255,255,.028)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.12), rgba(255,255,255,.028)) 1px, transparent 1px);
+  /* white grid both themes; light keeps the major line clearly visible on the gray but BELOW full white, so the boosted full-white pulses (which travel along the lines) still pop over it — at ~85% the line is near-white and white-on-white hides the pulses. */
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
   /* origin = this inset box's top-left (the 0 0 below is box-relative). A length, not a percentage: % in
      background-position resolves per layer against (area − image size), so the 8/40/80 tiles would each
@@ -115,7 +115,7 @@ a { color: inherit; }
    the metrics (dropped to the title level) → FPS+switch below them. */
 .pcol { display: flex; flex-direction: column; min-width: 0; }
 .pleft { gap: 36px; }                            /* logo+title (160) → description; fixed 36px to seat the description level with the readout units on the right */
-.pright { gap: clamp(28px,4vh,46px); align-items: flex-start; }   /* same gap as .pleft; the metrics block (below) ends level with the logo, so the FPS/switch land at the description's level */
+.pright { gap: 40px; align-items: flex-start; }   /* fixed 40px gap on desktop; the metrics block (below) ends level with the logo, so the FPS/switch land at the description's level */
 .phead { display: flex; align-items: flex-start; gap: clamp(16px,2.2vw,32px); min-width: 0; }   /* logo + title top-aligned; the title's own padding-top (below) drops it to the height of the JZ letters */
 .metrics { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; margin-top: 70px; min-height: calc(2 * var(--U) - 70px); }   /* "Speed" + stats sit on the general line; min-height still ends the block at the logo bottom (2 units − the drop), so the FPS/switch below stay aligned with the description */
 .mrow { display: flex; align-items: baseline; flex-wrap: wrap; gap: clamp(8px,1vw,16px); }   /* the three big speed numbers, sharing a baseline */
@@ -137,10 +137,10 @@ a { color: inherit; }
           mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
           mask-composite: exclude;
   mix-blend-mode: screen; filter: drop-shadow(0 0 7px rgba(150,185,255,.55)) drop-shadow(0 0 15px rgba(120,150,255,.3)); }   /* softer, blurrier glow */
-.pitch h1 { font-size: calc(var(--U) * 0.45); font-weight: 400; line-height: 1.06; letter-spacing: -.015em; padding-top: 68px;
+.pitch h1 { font-size: 40px; font-weight: 400; line-height: 1.06; letter-spacing: -.015em; padding-top: 68px;
   overflow-wrap: break-word; text-shadow: light-dark(none, 0 1px 12px rgba(0,0,0,.45)); }   /* padding-top drops the title to the JZ letters' height (letters start ~46% down the 158px mark); 2 lines via the <br>, column-constrained */
 .pitch h1 b { font-weight: 700; }
-.pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: 14.5px; line-height: 1.66; color: var(--soft); text-wrap: pretty; }   /* body prose — same type as the FAQ answers; indented 1 mid-unit (40px) from the logo */
+.pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: 14.5px; line-height: 1.66; color: var(--ink); text-wrap: pretty; }   /* body prose — same type as the FAQ answers; black body text; indented 1 mid-unit (40px) from the logo */
 .pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.2× faster than V8" unbroken */
 .pitch .sub .ref { font-size: .7em; vertical-align: super; line-height: 0; color: var(--dim); text-decoration: none; padding: 0 1px; transition: color .16s; }
 .pitch .sub .ref:hover { color: var(--ink); }
@@ -159,8 +159,8 @@ a { color: inherit; }
 /* stats (.mgroup/.mlabel/.mstats/.stat — number over a small label) now live in assets/site.css,
    the ONE shared definition reused by the bench strip so the two metric blocks can't drift. */
 
-.fps { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-family: var(--font); }   /* sizes to content; tight sparkline→number so the readout reads as one group */
-.fps-spark { width: 80px; height: 34px; display: block; }
+.fps { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 16px; color: var(--ink); font-family: var(--font); }   /* sparkline → number readout */
+.fps-spark { width: 80px; height: 34px; display: block; position: relative; top: -6px; }   /* lifted so it sits above the number's baseline, not centered on it */
 .fps .metric { display: inline-flex; align-items: baseline; gap: 4px; }   /* tight number↔unit */
 .fps .metric b { font-weight: 400; font-size: 20px; font-variant-numeric: tabular-nums;
   display: inline-block; min-width: 2.8ch; text-align: right; }            /* fixed width → no shifting */
@@ -168,8 +168,8 @@ a { color: inherit; }
 .fps .unit { font-size: 12px; color: var(--dim); }
 
 /* JS↔WASM engine switch — the main CTA: big, skeuomorphic (deep-milled track, raised metal knob), barely rounded */
-.engine { position: relative; top: -8px; flex: 0 0 auto; width: 88px; height: 46px; border: 0; padding: 0; cursor: pointer;
-  border-radius: 999px; -webkit-appearance: none; appearance: none;
+.engine { position: relative; top: -2px; left: -2px; flex: 0 0 auto; width: 88px; height: 46px; border: 0; padding: 0; cursor: pointer;
+  border-radius: 999px; -webkit-appearance: none; appearance: none;   /* the JS/JZ toggle keeps its pill shape (the one rounded element we keep) */
   background: linear-gradient(180deg, #050505, #1c1c1c 60%, #262626);
   box-shadow: inset 0 3px 6px rgba(0,0,0,.9), inset 0 -2px 3px rgba(255,255,255,.05),
     inset 0 0 0 1px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.06),
@@ -258,8 +258,8 @@ a { color: inherit; }
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
 .cli { background: var(--paper); padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
-.cli .install { font-size: clamp(14px,1.5vw,16px); width: 300px; max-width: 100%; justify-content: flex-start;
-  background: #0c0e11; color: #e8e8ea; border: 1px solid #20242a; border-radius: 0; padding: 14px 20px; }   /* a mini-CLI: square, fixed width — a terminal window doesn't autosize to its text */
+.cli .install { font-size: clamp(14px,1.5vw,16px); width: 250px; max-width: 100%; justify-content: flex-start;
+  background: light-dark(#0c0e11, transparent); color: #e8e8ea; border: 1px solid light-dark(#20242a, transparent); border-radius: 0; padding: 11px 18px; }   /* a mini-CLI: square, fixed width. The box only shows in light — on the black page it's invisible, just the command text */
 .cli .install .dollar { color: #6a6f78; }
 .cli .install.copied::after { color: #9aa0a8; }
 /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
@@ -302,7 +302,7 @@ a { color: inherit; }
 .faq summary .chev { flex: 0 0 auto; width: 17px; height: 17px; color: var(--dim);
   transition: transform .24s cubic-bezier(.34,.72,.28,1.3), color .16s; }
 .faq details[open] summary .chev { transform: rotate(180deg); color: var(--ink); }
-.faq .ans { padding: 0 8px clamp(20px,2.2vw,26px) 0; font-size: 14.5px; line-height: 1.66; color: var(--soft); }
+.faq .ans { padding: 0 8px clamp(20px,2.2vw,26px) 0; font-size: 14.5px; line-height: 1.66; color: var(--ink); }   /* black body text */
 .faq .ans p + p { margin-top: 0.7em; }   /* gentle gap between paragraphs within an answer */
 .faq details[open] .ans { animation: faq-reveal .3s cubic-bezier(.22,.6,.36,1); }
 @keyframes faq-reveal { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
@@ -314,7 +314,7 @@ a { color: inherit; }
   .faq details[open]::details-content { block-size: auto; }
 }
 .faq .ans a { color: var(--ink); text-underline-offset: 2px; }
-.faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; border-radius: 4px; white-space: nowrap; }
+.faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08)); padding: .1em .4em; white-space: nowrap; }
 .faq .ans b { color: var(--ink); }   /* bold call-outs read white against the soft body */
 
 /* FOOTER — the shared footer (brand · nav columns · author+license) lives in assets/site.css, the ONE
@@ -357,7 +357,7 @@ a { color: inherit; }
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
         <h1>Computational JS <br class="hb">at native speed</h1>
       </div>
-      <p class="sub">Compile JS to WASM ahead of time: same source, <b><span :text="v8">2.5×</span> faster</b>.<br> For DSP, visuals, simulation, physics.</p>
+      <p class="sub">Compile JS to WASM ahead of time. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span> For DSP, visuals, simulation, physics.</p>
     </div>
 
     <div class="pcol pright">
@@ -621,12 +621,13 @@ const drawFps = () => {
   fctx.beginPath(); fctx.moveTo(0, fpsH)
   for (let i = 0; i < n; i++) fctx.lineTo(xs(i), ys(fpsHist[i]))
   fctx.lineTo(fpsW, fpsH); fctx.closePath()
+  const c = document.documentElement.dataset.theme === 'light' ? '0,0,0' : '255,255,255'   // black sparkline in light, white in dark
   const grad = fctx.createLinearGradient(0, 0, 0, fpsH)
-  grad.addColorStop(0, 'rgba(255,255,255,.4)'); grad.addColorStop(1, 'rgba(255,255,255,.03)')
+  grad.addColorStop(0, `rgba(${c},.4)`); grad.addColorStop(1, `rgba(${c},.03)`)
   fctx.fillStyle = grad; fctx.fill()
   fctx.beginPath()
   for (let i = 0; i < n; i++) { const x = xs(i), y = ys(fpsHist[i]); i ? fctx.lineTo(x, y) : fctx.moveTo(x, y) }
-  fctx.strokeStyle = 'rgba(255,255,255,.95)'; fctx.lineWidth = 1.5; fctx.lineJoin = 'round'; fctx.stroke()
+  fctx.strokeStyle = `rgba(${c},.95)`; fctx.lineWidth = 1.5; fctx.lineJoin = 'round'; fctx.stroke()
 }
 const renderFps = () => {
   if (curFps <= 0) { msNum.textContent = '··'; return }
@@ -684,7 +685,7 @@ let tunePanel = null
 const buildTunePanel = () => {
   if (tunePanel) return tunePanel
   const p = document.createElement('div')
-  p.style.cssText = 'position:fixed;top:12px;right:12px;z-index:50;width:232px;padding:12px 14px;background:rgba(8,10,16,.92);border:1px solid rgba(150,185,255,.25);border-radius:10px;backdrop-filter:blur(6px);font:11px/1.5 ui-monospace,Menlo,monospace;color:#cdd9f2'
+  p.style.cssText = 'position:fixed;top:12px;right:12px;z-index:50;width:232px;padding:12px 14px;background:rgba(8,10,16,.92);border:1px solid rgba(150,185,255,.25);backdrop-filter:blur(6px);font:11px/1.5 ui-monospace,Menlo,monospace;color:#cdd9f2'
   p.innerHTML = '<div style="font-weight:600;letter-spacing:.08em;color:#9fb4e0;margin-bottom:6px">GRID‑CURRENT · TUNE</div>'
   for (const t of TUNABLES) {
     const row = document.createElement('label'); row.style.cssText = 'display:block;margin:7px 0'
@@ -719,6 +720,11 @@ addEventListener('hashchange', syncTunePanel); syncTunePanel()
     engineEl.style.cursor = 'default'
     engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
   }
+  // Light theme: the blueprint grid is bold white, so the (also-white) pulses need extra punch to read
+  // over it. Boost their brightness in light, restore the calmer default in dark; re-apply on toggle.
+  const applyPulseBrightness = () => setParam(4, document.documentElement.dataset.theme === 'light' ? 2 : 0.7)
+  applyPulseBrightness()
+  new MutationObserver(applyPulseBrightness).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })()
 requestAnimationFrame(loop)   // drive the grid regardless of how the JS-fallback import settles (it no-ops until an engine is ready)
 
