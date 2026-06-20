@@ -1,4 +1,4 @@
-<img src="jz.svg" alt="jz logo" width="120"/>
+<a href="https://dy.github.io/jz/"><img src="jz.svg" alt="jz logo" width="120"/></a>
 
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
@@ -11,7 +11,7 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
-**[repl](https://dy.github.io/jz/repl/)** · **[floatbeat](https://dy.github.io/jz/floatbeat/)** · **[examples](https://dy.github.io/jz/examples/)** · **[bench](https://dy.github.io/jz/bench/)**
+**[site](https://dy.github.io/jz/)** · **[repl](https://dy.github.io/jz/repl/)** · **[floatbeat](https://dy.github.io/jz/floatbeat/)** · **[examples](https://dy.github.io/jz/examples/)** · **[bench](https://dy.github.io/jz/bench/)**
 
 
 ## Why?
