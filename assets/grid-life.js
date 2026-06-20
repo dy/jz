@@ -72,7 +72,7 @@ let place = (pi, r0, c0, rot) => {
 
 let drop = (s) => {
   let pr = rnd(s * 4 + 1)
-  let pi = pr < 0.4 ? 0 : (pr < 0.62 ? 4 : 1 + Math.floor(rnd(s * 4 + 5) * 3))   // ~62% crawlers (glider / LWSS), the rest oscillators
+  let pi = pr < 0.5 ? 0 : (pr < 0.82 ? 4 : 1 + Math.floor(rnd(s * 4 + 5) * 3))   // ~82% movers (glider / LWSS), the rest oscillators
   let rr = rows - 9; if (rr < 1) rr = 1
   let cc = cols - 9; if (cc < 1) cc = 1
   let r0 = 3 + Math.floor(rnd(s * 4 + 2) * rr)   // off the edges so shapes evolve instead of clipping + dying
@@ -85,7 +85,7 @@ let seed = () => {
   let n = cols * rows, i = 0
   while (i < n) { prev[i] = 0; cur[i] = 0; nxt[i] = 0; i = i + 1 }
   let s = 0
-  while (s < 6) { drop(101 + s * 47); s = s + 1 }   // a handful of shapes to start
+  while (s < 20) { drop(101 + s * 47); s = s + 1 }   // a denser scatter of shapes to start; the field thins as movers leave
   gen = 0
 }
 
@@ -194,7 +194,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 36.0) | 0; if (aa > 36) aa = 36; fillCell(c, r, aa) }   // barely-there (peak ~14%) — quiet background decoration
+        if (f > 0.02) { let aa = (f * 76.0) | 0; if (aa > 76) aa = 76; fillCell(c, r, aa) }   // peak ~30% opacity — quiet background decoration
       }
       c = c + 1
     }

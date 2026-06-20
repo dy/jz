@@ -108,7 +108,7 @@ a { color: inherit; }
   display: grid; grid-template-columns: calc(7 * var(--U)) calc(5 * var(--U));
   column-gap: 0; align-items: start; align-content: start;   /* left 7 units (logo+title, description); right 5 units (400px) — the speed metrics + toggle, left-aligned. 7 + 5 = cw (12 units). */
   padding: var(--U) var(--padx) clamp(36px,5vw,60px);   /* 80px (1 unit) top gap above the logo */
-  pointer-events: none; }   /* clicks fall through to the live sim (add a body); links/switch re-enable below */
+  pointer-events: none; -webkit-user-select: none; user-select: none; }   /* clicks fall through to the live sim; text non-selectable so dragging on the band to draw never selects the intro */
 .pitch a, .pitch button { pointer-events: auto; }
 /* 4 quadrants on the band: logo+title (top-left) | metrics (top-right) ; description (bottom-left) | FPS+switch (bottom-right).
    Two independent columns: the left stacks logo+title (160px) → description right under it; the right stacks
