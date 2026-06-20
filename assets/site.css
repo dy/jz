@@ -74,17 +74,21 @@ footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: #b7b7c1; font-size: 13.5px; padding: 4px 0; transition: color .16s; }
 footer .fcol a:hover { color: #fff; }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #7e7e8a; }
+footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12.5px; color: #7e7e8a; }   /* author over license, bottom-right */
+footer .legal .by a { color: #b7b7c1; }
+footer .legal .by a:hover { color: #fff; }
 footer .legal a { color: #b7b7c1; text-decoration: none; }
 footer .legal a:hover { color: #fff; }
 footer .legal .om { font-size: 15px; }
-@media (max-width: 640px) { footer .fwrap { flex-wrap: wrap; gap: 28px 40px; } footer .legal { margin-left: 0; align-self: auto; flex-basis: 100%; } }
+@media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } }   /* less side padding; brand · nav · author+license stay on ONE row — legal pinned right via margin-left:auto */
 
 @media (max-width: 520px) {
-  .masthead { gap: 10px; padding: 0 18px; }
+  .masthead { gap: 10px; }
   .masthead .wordmark { font-size: 15px; }
   .masthead nav { gap: 14px; }
   .masthead nav a { font-size: 11px; }
+  .masthead .exp { display: none; }            /* hide the "experimental" tag — no room on phones */
+  .masthead .brand .sub { display: none; }     /* the section label beside the logo may drop on phones */
 }
 
 /* ── Shared headline metrics — the SAME block on the landing hero and the bench strip.

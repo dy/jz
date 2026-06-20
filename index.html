@@ -223,15 +223,25 @@ a { color: inherit; }
   .phead { align-items: flex-end; gap: 16px; }   /* logo + title side-by-side; title bottom-aligned to the JZ letters */
   .metrics .mstats .stat b { font-size: 24px; }   /* lighter speed numbers on mobile */
   .logo img { width: 80px; height: 80px; margin: 0; }   /* 80px mark on mobile (1 unit) */
-  .pitch h1 { font-size: 18px; padding-top: 0; position: relative; top: -8px; }   /* fixed small size on mobile; lifted 8px to sit at the JZ letters, not below */
+  .pitch h1 { font-size: 20px; padding-top: 0; position: relative; top: -4px; }   /* fixed small size on mobile; lifted to sit at the JZ letters, not below */
   .hero-nav { gap: 14px; padding: 12px var(--padx); }
   .hero-nav a.opt { display: none; }
 }
-/* ≥380 phones are wide enough that the indented metrics + FPS still fit — line them up under the description */
-@media (min-width: 380px) and (max-width: 720px) {
+/* ≥480 phones are wide enough that the indented metrics + FPS still fit — line them up under the description */
+@media (min-width: 480px) and (max-width: 720px) {
   .pright { margin-left: var(--u2); }
 }
-@media (max-width: 379px) { .pitch .sub { margin-left: 0; } }   /* below 380 the stats sit flush left — bring the description with them */
+/* <480 — tightened: logo sits 20px from the edge (halved inset); the description, metrics and FPS keep a
+   20px indent in from it; the header padding-x is halved; the "experimental" tag hides (no room). */
+@media (max-width: 479px) {
+  .pitch { padding-left: 20px; padding-right: 20px; }   /* logo now 20px from the edge */
+  .pitch .sub { margin-left: 20px; }                    /* description 20px in from the logo */
+  .pright { margin-left: 20px; }                        /* metrics + FPS indented to match the description */
+  .hero-nav { padding-inline: 20px; justify-content: flex-start; }   /* header padding-x halved; menu flush-left ONLY here, where "experimental" is hidden */
+  .hero-nav > a:first-of-type { margin-left: 20px; }    /* 20px gap before the first menu item (aligns with the description) */
+  .hero-nav .ver { margin-left: auto; }                 /* version + GitHub pushed to the right */
+  .hero-nav .ver .exp { display: none; }
+}
 
 /* ─────────── TRY — the real REPL embedded (chrome-stripped via ?embed): edit or paste source, hit
    Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
@@ -240,6 +250,7 @@ a { color: inherit; }
 .repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid #1c1c25; background: #000; pointer-events: auto; }   /* re-enable clicks on the REPL itself (the .try section is click-through) */
 /* stacked (≤800) hero is taller, so the REPL must ride up less or it covers the FPS/switch. Placed AFTER .try so it wins the cascade. */
 @media (max-width: 960px) { .try { margin-top: calc(-2 * var(--U)); } }   /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
+@media (max-width: 479px) { .try { padding-inline: 0; } }   /* code section spans edge to edge on the narrowest phones */
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
@@ -261,12 +272,17 @@ a { color: inherit; }
   text-decoration: none; color: var(--soft); font-size: clamp(11px,1.05vw,13px); letter-spacing: .01em; line-height: 1.35;
   transition: color .16s; }   /* last cell → the full gallery; stays black (transparent), only the text brightens on hover */
 .exrow .ex-all:hover { color: #fff; }
-@media (max-width: 720px) { .exrow { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 720px) { .exrow { grid-template-columns: repeat(4, 1fr); } .examples h2 { margin-left: 0; } }
+@media (max-width: 479px) {
+  .examples { padding-inline: 20px; }   /* halved side inset — keeps the title 20px from the edge */
+  .exrow { margin-inline: -20px; }      /* the image grid bleeds past it, full-width edge to edge */
+}
 
 /* ─────────────────────────── FAQ — native <details> accordion, narrow centred column ─────────────────────────── */
 .faq { background: #000; padding: clamp(36px,5vw,60px) var(--padx) clamp(28px,4vw,48px); }   /* top = pitch bottom gap; the centred install command closes the section below */
 .faq-wrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* shared content column (no extra inset) */
 @media (min-width: 721px) { .faq-wrap { padding-inline: 40px; } }   /* gentle side breathing room on tablet+ (none on phones) */
+@media (max-width: 479px) { .faq { padding-inline: 20px; } }   /* 20px only on the narrowest phones; ≥480 keeps the shared column inset (matches the examples header) */
 .faq summary .fq, .faq .ans { max-width: 720px; }   /* rows + dividers span the full container; only the text is capped to a readable width */
 .faq h2 { font-size: clamp(22px,3vw,32px); font-weight: 700; letter-spacing: -.015em; line-height: 1.06; margin: 0 0 clamp(20px,2.6vw,32px); }
 .faq details { border-top: 1px solid #1c1c25; }
@@ -295,22 +311,8 @@ a { color: inherit; }
 .faq .ans code { font-family: var(--mono); font-size: .85em; color: var(--ink); background: rgba(255,255,255,.08); padding: .1em .4em; border-radius: 4px; white-space: nowrap; }
 .faq .ans b { color: var(--ink); }   /* bold call-outs read white against the soft body */
 
-/* ─────────────────────────── FOOTER ─────────────────────────── */
-footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: #000; }
-.fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
-  display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }   /* brand (JZ + MIT under it) · two nav columns */
-.wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
-.wordmark img { width: 40px; height: 40px; display: block; }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12.5px; color: var(--dim); }
-footer .legal .by a { color: var(--soft); }
-footer .legal .by a:hover { color: #fff; }
-footer .legal a { color: var(--soft); text-decoration: none; }
-footer .legal a:hover { color: #fff; }
-footer .legal .om { font-size: 15px; }
-footer .fcol { display: flex; flex-direction: column; gap: 2px; }
-footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
-footer .fcol a:hover { color: #fff; }
-@media (max-width: 640px) { .fwrap { flex-wrap: wrap; gap: 28px 40px; } footer .legal { margin-left: 0; align-self: auto; flex-basis: 100%; align-items: flex-start; } }
+/* FOOTER — the shared footer (brand · nav columns · author+license) lives in assets/site.css, the ONE
+   definition reused on the landing, bench and examples so they can never drift. No copy here. */
 
 /* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
    The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
@@ -333,7 +335,7 @@ footer .fcol a:hover { color: #fff; }
     <a href="examples/">examples</a>
     <a href="bench/">bench</a>
     <a href="repl/">repl</a>
-    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> experimental</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
     <a class="gh" href="https://github.com/dy/jz" target="_blank" rel="noopener" aria-label="jz on GitHub">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
@@ -581,12 +583,13 @@ const fitCurrent = () => {
   sizeBoth()
 }
 const loadCurrent = async () => {
-  try {
-    src = await (await fetch('assets/grid-current.js')).text()
-    currentJz = jz(src, { optimize: 3 }).exports                          // jz → wasm
+  try { src = await (await fetch('assets/grid-current.js')).text() } catch { return }
+  try { currentJz = jz(src, { optimize: 3 }).exports } catch {}           // jz → wasm
+  fitCurrent()                                                            // start the grid the moment the wasm engine is ready — never wait on the JS fallback
+  try {                                                                   // the SAME source as plain JS, only for the JS/JZ toggle. Safari can reject importing a blob: module (silently) — isolate it so it can't stop the wasm animation
     const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
-    try { currentJs = await import(u) } finally { URL.revokeObjectURL(u) } // same source, plain JS
-    fitCurrent()
+    try { currentJs = await import(u) } finally { URL.revokeObjectURL(u) }
+    sizeBoth()                                                            // size the JS engine to the live canvas too
   } catch {}
 }
 
@@ -694,8 +697,19 @@ addEventListener('hashchange', syncTunePanel); syncTunePanel()
 ;(async () => {
   setEngineUI('jz')
   await loadCurrent()
-  requestAnimationFrame(loop)
+  // Safari/JSC canonicalizes NaN-boxed wasm→JS returns, so jz's reference returns are lost: resize()
+  // hands back NaN instead of its pixel buffer (numeric returns are fine; the wasm itself runs). When the
+  // wasm engine can't return a typed array, run the live demo on the SAME source as plain JS and lock the
+  // toggle to JS. (jz reference-return ABI vs JSC NaN canonicalization — to be fixed in the compiler.)
+  if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
+    currentJz = null
+    setEngineUI('js'); bindEngine()
+    engineEl.disabled = true
+    engineEl.style.cursor = 'default'
+    engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
+  }
 })()
+requestAnimationFrame(loop)   // drive the grid regardless of how the JS-fallback import settles (it no-ops until an engine is ready)
 
 // ── Logo reflection: the 1px bevel ring catches light. On a mouse the glare FACES the cursor and
 // sharpens/brightens as it nears — no autonomous spin; on touch / no pointer it's a gentle rotating
