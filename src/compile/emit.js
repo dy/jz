@@ -372,6 +372,27 @@ function tryI32Index(e) {
 }
 export const emitIndex = (idx) => tryI32Index(idx) ?? asI32(emit(idx))
 
+/**
+ * True when `e` is a pure integer `+`/`-`/`*` tree whose leaves are all i32-typed
+ * names/globals or integer literals — no calls, member reads, or indexed reads, so
+ * emitting it twice (or in a different rep) is side-effect-free. Used to recognise
+ * an i32-local initializer that `tryI32Index` can lower to native wrapping i32
+ * arithmetic instead of the f64 round-trip (`convert … f64.mul/add … trunc_sat`).
+ * The same residue-mod-2^32 argument as `tryI32Index`: ToInt32 of the exact integer
+ * value equals two's-complement wrapping i32, so for an i32 destination the two are
+ * bit-identical — even when an intermediate product overflows.
+ */
+function isI32ArithTree(e) {
+  if (typeof e === 'number') return Number.isInteger(e)
+  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32'
+  if (!Array.isArray(e)) return false
+  const op = e[0]
+  if (op == null) return isI32ArithTree(e[1])                 // literal wrapper [, v]
+  if ((op === '+' || op === '-' || op === '*') && e[2] != null)
+    return isI32ArithTree(e[1]) && isI32ArithTree(e[2])
+  return false
+}
+
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)
   const rightLit = stringLiteral(b)
@@ -1080,6 +1101,12 @@ export function emitDecl(...inits) {
         updateRep(name, { ptrAux: val.closureFuncIdx })
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
+    } else if (localType === 'i32' && val.type !== 'i32' && isI32ArithTree(init)) {
+      // Integer index feeder (`let idx = py*W + qx`) bound to an i32 local: compute
+      // it in native wrapping i32 instead of the f64 round-trip + trunc_sat. Bit-
+      // identical for an i32 destination (ToInt32 ≡ two's-complement wrap), and the
+      // i32.mul is hoistable when loop-invariant. Falls back to toI32 defensively.
+      coerced = tryI32Index(init) ?? toI32(val)
     } else {
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
     }

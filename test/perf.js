@@ -872,6 +872,75 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
   ok(n(/i32\.xor/g) >= 1 && n(/i32\.shl/g) >= 1, 'mix uses i32 bitwise ops')
 })
 
+test('codegen: f64 threshold in a recurrence lowers to a branchless select at speed', () => {
+  // `err = acc - (acc >= t)` emits `f64.sub(acc, f64.convert_i32_s(f64.ge …))`. That
+  // i32→f64 convert (cvtsi2sd) round-trips the comparison out of a GPR and back into
+  // an XMM register — a domain cross that sits ON the loop-carried critical path of an
+  // error-diffusion / scalar-IIR sweep, ~doubling per-step latency (V8 keeps the JS
+  // threshold in the FP domain). boolConvertToSelect (speed tier only) rewrites it to
+  // `select(acc-1, acc, acc>=t)`, never leaving the f64 domain. Pin: fires at speed,
+  // stays a convert at the default level, and the value is unchanged either way.
+  const src = `
+    let buf = new Float64Array(256)
+    export let sweep = (n) => {
+      let i = 0, acc = 0.3
+      while (i < (n | 0)) {
+        let on = acc >= 0.5 ? 1 : 0
+        acc = buf[i] + (acc - on) * 0.4375
+        i = i + 1
+      }
+      return acc
+    }`
+  const n = (w, re) => (w.match(re) || []).length
+  const watSpeed = compile(src, { wat: true, optimize: 'speed' })
+  const watDefault = compile(src, { wat: true })           // level 2 — pass off
+  ok(n(watSpeed, /\bselect\b/g) >= 1, 'speed: threshold lowered to a select')
+  is(n(watSpeed, /f64\.convert_i32_s/g), 0, 'speed: no i32→f64 convert left on the recurrence')
+  is(n(watDefault, /f64\.convert_i32_s/g), 1, 'default level keeps the convert (pass is speed-gated)')
+  // Same number either way (semantics-preserving rewrite).
+  const fast = jz(src, { optimize: 'speed' }).exports.sweep(200)
+  const base = jz(src, { optimize: 2 }).exports.sweep(200)
+  is(fast, base, 'select form computes the identical result')
+
+  // Guard: a PARAM reassigned once by a comparison is NOT treated as boolean — its
+  // incoming arg is unconstrained, so an earlier `f64 - param` read isn't `cond?1:0`.
+  // (Plain locals are safe: a pre-def read sees the zero-init 0 = false.) jz keeps such
+  // params f64 today so the convert-in-subtract shape doesn't even arise, but the pass
+  // stays correct for any IR — `param - p` must subtract the value, never select on it.
+  const psrc = `let buf = new Float64Array(64)
+    export let h = (k) => { let pre = buf[0] - k; k = buf[1] >= buf[2] ? 1 : 0; return buf[k] + pre }`
+  is(jz(psrc, { optimize: 'speed' }).exports.h(5), -5, 'param read subtracts its value, not select(param)')
+})
+
+test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32', () => {
+  // The per-pixel `let idx = py*W + qx` bound to an i32 index local used to emit the
+  // f64 round-trip `i32.trunc_sat_f64_s(f64.add(f64.mul(convert py, convert W), …))`
+  // + an Infinity-guard select — because exprType keeps a non-literal product f64
+  // (it may overflow i32). For an i32 destination, wrapping i32 arithmetic is bit-
+  // identical (ToInt32 ≡ two's-complement wrap), so emitDecl now lowers it natively.
+  const wat = compile(`
+    let img = new Float64Array(4096)
+    export let sum = (W, H) => {
+      let w = W | 0, h = H | 0, py = 0, s = 0.0
+      while (py < h) {
+        let qx = 0
+        while (qx < w) {
+          let idx = py * w + qx
+          s = s + img[idx]
+          qx = qx + 1
+        }
+        py = py + 1
+      }
+      return s
+    }`, { wat: true })
+  const at = wat.indexOf('(func $sum')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  const n = (re) => (fn.match(re) || []).length
+  is(n(/i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 truncation of the index')
+  is(n(/f64\.mul/g), 0, 'row offset py*w is an i32.mul, not f64.mul')
+  ok(n(/i32\.mul/g) >= 1, 'py*w computed with i32.mul')
+})
+
 test('codegen: unknown-receiver index with NUMBER key skips __is_str_key dispatch', () => {
   // `a[i]` on an untyped param `a` with a known-NUMBER index (loop counter) can
   // never be a string key — the runtime `__is_str_key` dispatch is statically

@@ -98,6 +98,7 @@ export const PASS_NAMES = [
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
+  'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
   'csePureExpr',
   'dropDeadZeroInit',
@@ -127,7 +128,9 @@ const LEVEL_PRESETS = Object.freeze({
   // force 'light' mode here (inline / inlineOnce / coalesce all off) to dodge the
   // W1a/W1b miscompiles; watr 4.6.9 fixes both, and the L2 default now runs the full
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
+  // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
+  // const + op per site) that only pays off on serial recurrences — speed-tier only.
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -149,6 +152,7 @@ const LEVEL_PRESETS = Object.freeze({
   size: Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
+    boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
@@ -399,12 +403,39 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
  * Must run AFTER fusedRewrite — relies on shl-distribution + assoc-lift +
  * foldMemargOffsets having normalized the base shape.
  */
+// Pure i32 ops whose value is a function of locals/consts alone — no memory read,
+// no call, no global. A subscript expression built only from these is invariant
+// between two sites as long as none of its local deps is rewritten between them,
+// so CSE-ing the WHOLE address (base + shl(idx)) is value-safe — even when `idx`
+// is a compound stencil offset like `(i32.sub (i32.add idx W) 1)` for `arr[idx+W-1]`.
+const PURE_I32_ADDR_OPS = new Set([
+  'i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_s', 'i32.shr_u',
+  'i32.and', 'i32.or', 'i32.xor', 'i32.wrap_i64',
+])
+// Serialize a pure-i32 subscript to a stable key, accumulating its local deps.
+// Returns null if any leaf isn't a local.get / i32.const / pure-i32 op (a load,
+// call, or global.get could change between sites — not CSE-safe by local tracking).
+function pureI32AddrKey(node, deps) {
+  if (!Array.isArray(node)) return null
+  const op = node[0]
+  if (op === 'local.get' && typeof node[1] === 'string') { deps.add(node[1]); return `$${node[1]}` }
+  if (op === 'i32.const' && typeof node[1] === 'number') return `#${node[1]}`
+  if (!PURE_I32_ADDR_OPS.has(op)) return null
+  let key = op + '('
+  for (let i = 1; i < node.length; i++) {
+    const sub = pureI32AddrKey(node[i], deps)
+    if (sub == null) return null
+    key += sub + ','
+  }
+  return key + ')'
+}
+
 export function hoistAddrBase(fn) {
   return regionTrackCSE(fn, {
     matchSite(node) {
       if (node[0] !== 'i32.add' || node.length !== 3) return null
       const a = node[1], b = node[2]
-      // Two orderings: (add (get A) (shl (get B) (const K))) or (add (shl …) (get A))
+      // Two orderings: (add (get A) (shl IDX (const K))) or (add (shl …) (get A))
       let baseGet, shlNode
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' &&
           Array.isArray(b) && b[0] === 'i32.shl' && b.length === 3) {
@@ -414,13 +445,87 @@ export function hoistAddrBase(fn) {
         baseGet = b; shlNode = a
       } else return null
       const idx = shlNode[1], shamt = shlNode[2]
-      if (!Array.isArray(idx) || idx[0] !== 'local.get' || typeof idx[1] !== 'string') return null
       if (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number') return null
-      return { key: `${baseGet[1]}|${idx[1]}|${shamt[1]}`, deps: [baseGet[1], idx[1]] }
+      // idx may be a plain `local.get` (the original biquad case) or any compound
+      // pure-i32 subscript (stencil neighbour `arr[idx+W-1]`); both CSE the same way.
+      const deps = new Set([baseGet[1]])
+      const idxKey = pureI32AddrKey(idx, deps)
+      if (idxKey == null) return null
+      return { key: `${baseGet[1]}|${idxKey}|${shamt[1]}`, deps: [...deps] }
     },
     localPrefix: 'ab',
     localType: 'i32',
   })
+}
+
+// wasm comparison ops — each yields an i32 that is exactly 0 or 1.
+const BOOL_RESULT_OPS = new Set([
+  'i32.eqz', 'i64.eqz',
+  'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.gt_s', 'i32.gt_u', 'i32.le_s', 'i32.le_u', 'i32.ge_s', 'i32.ge_u',
+  'i64.eq', 'i64.ne', 'i64.lt_s', 'i64.lt_u', 'i64.gt_s', 'i64.gt_u', 'i64.le_s', 'i64.le_u', 'i64.ge_s', 'i64.ge_u',
+  'f32.eq', 'f32.ne', 'f32.lt', 'f32.gt', 'f32.le', 'f32.ge',
+  'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
+])
+
+/**
+ * `f64 ± (cond ? 1 : 0)` → branchless f64 `select`, killing the i32↔f64 domain cross.
+ *
+ * `err = old - (old >= t)` and friends compile to `f64.sub(X, f64.convert_i32_s(cmp))`.
+ * The convert (cvtsi2sd) round-trips the comparison result out of a GPR back into an
+ * XMM register — a domain-crossing op that sits ON the value's def chain. In the
+ * per-pixel error-diffusion sweeps (Floyd–Steinberg / Atkinson / JJN) and scalar IIR
+ * thresholds this chain is the loop-carried critical path, so that one cross roughly
+ * doubles the per-step latency (V8 keeps the JS threshold entirely in the FP domain).
+ *
+ * `X - (B?1:0) ≡ (B ? X-1 : X) ≡ select(X-1, X, B)`  (likewise `+` → `select(X+1, X, B)`),
+ * which never leaves the f64 domain. `select` evaluates BOTH arms, so X must be a
+ * side-effect-free duplicable leaf (a `local.get`/const); B is the i32 condition,
+ * evaluated once (exactly as the convert did). A pure win on latency-bound recurrences;
+ * speed-gated (it adds a const + an arithmetic op — a size↔speed trade) — off at 'size'.
+ */
+function boolConvertToSelect(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  // Pass 1 — a local whose SOLE definition is a comparison carries a value ∈ {0,1};
+  // `err = old - on` (on reused by putBW) reaches us as `convert(local.get $on)`.
+  // A param is EXCLUDED even if reassigned once by a comparison: its incoming arg is
+  // unconstrained, so a read before the reassignment isn't 0/1. (A plain local read
+  // before its def is safe — wasm zero-inits it to 0 = false, which select preserves.)
+  const params = new Set()
+  for (let i = 2; i < fn.length; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'param') params.add(fn[i][1])
+  const defCount = new Map(), defIsCmp = new Map()
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      defCount.set(n[1], (defCount.get(n[1]) || 0) + 1)
+      const cmp = Array.isArray(n[2]) && BOOL_RESULT_OPS.has(n[2][0])
+      defIsCmp.set(n[1], (defIsCmp.has(n[1]) ? defIsCmp.get(n[1]) : true) && cmp)
+    }
+    for (let i = 1; i < n.length; i++) scan(n[i])
+  }
+  scan(fn)
+  const boolLocals = new Set()
+  for (const [name, c] of defCount) if (c === 1 && defIsCmp.get(name) && !params.has(name)) boolLocals.add(name)
+
+  const isBool01 = (n) => Array.isArray(n) &&
+    (BOOL_RESULT_OPS.has(n[0]) || (n[0] === 'local.get' && boolLocals.has(n[1])))
+  const isLeaf = (n) => Array.isArray(n) && (n[0] === 'local.get' || n[0].endsWith('.const'))
+  const dup = (n) => Array.isArray(n) ? n.map(dup) : n
+
+  // Pass 2 — bottom-up rewrite.
+  const rewrite = (n) => {
+    if (!Array.isArray(n)) return n
+    for (let i = 1; i < n.length; i++) n[i] = rewrite(n[i])
+    if ((n[0] === 'f64.sub' || n[0] === 'f64.add') && n.length === 3) {
+      const conv = (m) => Array.isArray(m) && (m[0] === 'f64.convert_i32_s' || m[0] === 'f64.convert_i32_u') && isBool01(m[1])
+      // `X - bool`, `X + bool`, or (add is commutative) `bool + X`.
+      let X = null, B = null
+      if (conv(n[2]) && isLeaf(n[1])) { X = n[1]; B = n[2][1] }
+      else if (n[0] === 'f64.add' && conv(n[1]) && isLeaf(n[2])) { X = n[2]; B = n[1][1] }
+      if (X) return ['select', [n[0], dup(X), ['f64.const', 1]], dup(X), B]
+    }
+    return n
+  }
+  rewrite(fn)
 }
 
 /**
@@ -2681,6 +2786,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
+  if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)

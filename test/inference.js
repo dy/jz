@@ -694,7 +694,12 @@ test('typed-array index with a literal term stays pure i32 (marble regression)',
   const fn = wat.slice(at, wat.indexOf('(func', at + 6))
   is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 index truncation in the gather')
   is(count(fn, /f64\.convert_i32_s/g), 0, 'index terms stay i32 — no i32→f64 widening')
-  ok(count(fn, /i32\.mul\b/g) >= 4, 'each row offset (j*W, (j+1)*W) computed with i32.mul')
+  // Row offsets are i32 muls, never the guarded f64.mul ToInt32 round-trip.
+  is(count(fn, /f64\.mul\b/g), 0, 'no f64 multiply on the index path')
+  // hoistAddrBase now CSEs the shared `j*W` base between the two same-row reads
+  // (`arr[j*W+i]` + `arr[j*W+i+1]` collapse to one base + offset=8), so the two
+  // distinct row offsets need ≥2 i32.muls — fewer than the un-CSE'd 4, still all i32.
+  ok(count(fn, /i32\.mul\b/g) >= 2, 'each distinct row offset (j*W, (j+1)*W) computed with i32.mul')
 })
 
 test('plain-array index with a literal term stays pure i32 (sibling of marble)', () => {
