@@ -62,6 +62,11 @@ const addMasthead = (name) => {
     link.rel = 'stylesheet'; link.href = SITE_CSS; link.dataset.jzSite = ''
     document.head.appendChild(link)
   }
+  if (!document.querySelector('script[data-jz-ver]')) {   // fill the version slot from package.json, same as every other page's header
+    const vs = document.createElement('script')
+    vs.type = 'module'; vs.src = new URL('../../assets/version.js', import.meta.url).href; vs.dataset.jzVer = ''
+    document.head.appendChild(vs)
+  }
   const header = document.createElement('header')
   header.className = 'masthead fixed'
   // critical inline so the band never flashes unstyled before site.css resolves (transparent — it melds
@@ -72,7 +77,7 @@ const addMasthead = (name) => {
     <nav>
       <a href="../../repl/">repl</a>
       <a href="../../bench/">bench</a>
-      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener">v0.6.0</a>
+      <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
       <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
         <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
         <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
@@ -147,7 +152,10 @@ const addEdgeNav = (name) => {
       .jz-edge .label {
         max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
         font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        opacity: 0; text-shadow: light-dark(0 0 2px rgba(255,255,255,.9), 0 0 2px rgba(0,0,0,.9)), light-dark(0 1px 2px rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.7));
+        opacity: 0; text-shadow:
+          light-dark(0 0 1px #fff, 0 0 2px rgba(0,0,0,.9)),
+          light-dark(0 0 2px #fff, 0 1px 2px rgba(0,0,0,.7)),
+          light-dark(0 0 4px #fff, 0 0 4px rgba(0,0,0,.4));   /* white outline in light (legible over the dark demo), dark halo in dark */
         transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
       }
       .jz-edge a:hover .chip { transform: scale(1.15); }

@@ -79,8 +79,13 @@ let put = (x, y, a) => {
   let p = iy * W + ix
   let old = (px[p] >>> 24) & 255
   let na = old + (a | 0)
-  if (na > 235) na = 235
-  let v = 198 + ((na * 44) >> 8)            // neutral grey→white — pulses stay b/w, no colour cast
+  // light mode (brightness pushed high) → fully-opaque PURE-WHITE pulses so they read over the gray band +
+  // the white grid lines they travel along; dark mode keeps the softer neutral grey→white.
+  let hi = F[_P_BRI] >= 1.5
+  let cap = hi ? 255 : 235
+  if (na > cap) na = cap
+  let v = hi ? (224 + ((na * 31) >> 8)) : (198 + ((na * 44) >> 8))   // hi: 224→255 (near-white core)
+  if (v > 255) v = 255
   px[p] = (na << 24) | (v << 16) | (v << 8) | v
 }
 
