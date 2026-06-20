@@ -194,7 +194,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 60.0) | 0; if (aa > 60) aa = 60; fillCell(c, r, aa) }   // very faint (peak ~24%) — secondary decoration, like the sparkline fill
+        if (f > 0.02) { let aa = (f * 36.0) | 0; if (aa > 36) aa = 36; fillCell(c, r, aa) }   // barely-there (peak ~14%) — quiet background decoration
       }
       c = c + 1
     }
