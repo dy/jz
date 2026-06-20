@@ -66,7 +66,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .masthead .ver { text-transform: none; letter-spacing: .02em; opacity: .6; }
 .masthead .gh { display: flex; }
 
-/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; MIT·ॐ bottom-right. ─── */
+/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; author (dy) over ॐ bottom-right. ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: #000; }
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
@@ -74,7 +74,8 @@ footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: #b7b7c1; font-size: 13.5px; padding: 4px 0; transition: color .16s; }
 footer .fcol a:hover { color: #fff; }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 12.5px; color: #7e7e8a; }   /* author over license, bottom-right */
+footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: #7e7e8a; }   /* author · ॐ inline, bottom-right */
+footer .legal .lic::before { content: '·'; margin-right: 7px; color: #50505a; }   /* middot separating dy and ॐ */
 footer .legal .by a { color: #b7b7c1; }
 footer .legal .by a:hover { color: #fff; }
 footer .legal a { color: #b7b7c1; text-decoration: none; }

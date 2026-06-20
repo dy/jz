@@ -544,4 +544,4 @@ Setup, code layout, and the bench/perf invariants are in [CONTRIBUTING.md](docs/
 the architecture & design rationale (NaN-boxing, type inference, native pipeline) in [DESIGN.md](docs/DESIGN.md).
 
 
-<p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>
+<p align=center><a href="https://github.com/dy">dy</a> • <a href="https://github.com/krishnized/license/">ॐ</a></p>
