@@ -384,7 +384,7 @@ export function ptrTypeIR(valIR, valType) {
 // op on it misdispatches; BigInt64Array/BigUint64Array views and
 // DataView.{get,set}BigUint64 are a legacy f64-value shim there. Strings are
 // tagged and survive every boundary; BigInt math happens only inside single
-// expressions. (Same contract as wat/optimize.js's i64 VALUE CONTRACT.)
+// expressions. (Same contract as watr/optimize's i64 VALUE CONTRACT.)
 const _F64_BITS_BUF = new ArrayBuffer(8)
 const _F64_BITS_F = new Float64Array(_F64_BITS_BUF)
 const _F64_BITS_U32 = new Uint32Array(_F64_BITS_BUF)  // LE halves: [0]=lo, [1]=hi

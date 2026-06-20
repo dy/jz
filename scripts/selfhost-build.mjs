@@ -17,7 +17,16 @@ const OUT = resolve(OUT_DIR, 'jz.wasm')
 const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
 console.log('resolving self-host graph…', Object.keys(g.modules).length, 'modules')
 const t0 = Date.now()
-const wasm = compile(g.code, { modules: g.modules, memory: 8192, optimize: false })
+// optimize:2 — full standard optimization. (Earlier this MISCOMPILED the compiler into
+// an infinite loop on its own code; root cause was `sourceInline` dropping a statement-
+// position callee's side-effecting return expression — the parser's `seek = n => idx = n`
+// stopped advancing `idx`, looping comment-skip forever. Fixed in src/compile/plan/inline.js.)
+// -O2, not -O3: the compiler is integer/string/pointer work with no float/SIMD compute, so
+// O3's extras (relaxedSimd, aggressive size-for-speed inline, reduceUnroll) don't help it —
+// the corpus-compile ratio is identical at O1/O2/O3 (the cost is the kernel NaN-box/string/
+// map tax, not the compiler's own code). Override with JZ_SELFHOST_OPT (e.g. =3, =false).
+const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '2'
+const wasm = compile(g.code, { modules: g.modules, memory: 8192, optimize: SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT) })
 console.log('compiled', wasm.byteLength, 'bytes in', Date.now() - t0, 'ms')
 new WebAssembly.Module(wasm)
 mkdirSync(OUT_DIR, { recursive: true })

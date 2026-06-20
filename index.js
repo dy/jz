@@ -43,7 +43,7 @@
 import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
-import watOptimize from "./src/wat/optimize.js";
+import watOptimize from "watr/optimize";
 import { appendLateStdlib } from './src/wat/assemble.js'
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
@@ -594,9 +594,13 @@ const jzCompileInner = (code, opts = {}) => {
   // cost of duplicating tiny bodies; level 2 (and the size budgets measured there)
   // stay untouched.
   if (cfg.inlineFns) {
-    if (watrOpts === true) watrOpts = { inline: true }
-    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = true
+    if (watrOpts === true) watrOpts = { inline: 'simd' }
+    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
   }
+  // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
+  // never matches it), so jz always enables it explicitly.
+  if (watrOpts === true) watrOpts = { guardRefine: true }
+  else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Stable-pointee module globals: resolve the __ptr_offset once per function.
   // Never-forwarding kinds — every PTR tag outside __ptr_offset's forwarding

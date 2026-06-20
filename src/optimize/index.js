@@ -66,7 +66,7 @@ const FALSE_BITS = atomNanHex(4)
  *   'speed' — full nested unroll + lane vectorization (= level 3).
  * The default (level 2) has no string name — omit `optimize` or pass `2`.
  *
- * # Two-layer contract (this file vs src/wat/optimize.js)
+ * # Two-layer contract (this file vs watr/optimize)
  * Both layers walk the same S-expression IR; the boundary is KNOWLEDGE, not
  * representation:
  *   - THIS layer owns every pass that needs jz semantics — NaN-box layout
@@ -74,7 +74,7 @@ const FALSE_BITS = atomNanHex(4)
  *     func nodes (cseScalarLoad's cseLoadBases whitelist), loop shapes as emit
  *     produces them (narrowLoopBound, hoistInvariantLoop, vectorizeLaneLocal),
  *     and ctx-derived module facts (hoistGlobalPtrOffset's typed-global set).
- *   - wat/optimize.js owns generic structural rewrites — const folding,
+ *   - watr/optimize owns generic structural rewrites — const folding,
  *     copy-prop, branch/DCE/vacuum, dedupe, treeshake, and inlineOnce. One
  *     deliberate exception: guardRefine lives there despite NaN-box knowledge,
  *     because the dead tag-dispatch shapes it folds only EXIST after that

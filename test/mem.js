@@ -518,3 +518,24 @@ test('pure scalar module exposes no memory and no allocator exports', () => {
   ok(!('_alloc' in r.instance.exports), 'no _alloc export')
   ok(!('_clear' in r.instance.exports), 'no _clear export')
 })
+
+test('_clear() rewinds to the post-init heap mark, preserving module-init state', () => {
+  // `table` is a heap-allocated typed array filled in __start; `probe` allocates a
+  // fresh scratch buffer per call. If _clear rewound below `table` (the old bug — it
+  // reset to the static-data end, into the module's own init allocations), the next
+  // probe's scratch would overwrite `table` and the sum would be wrong. This is the
+  // self-host arena-reuse corruption reduced to one module.
+  const { exports } = jz(`
+    let table = new Float64Array(5)
+    for (let i = 0; i < 5; i++) table[i] = (i + 1) * 10
+    export let probe = (n) => {
+      let scratch = new Float64Array(n)
+      for (let i = 0; i < n; i++) scratch[i] = i * 1.0
+      return table[0] + table[4]
+    }`, { optimize: false })
+  is(exports.probe(256), 60, 'baseline: 10 + 50')
+  exports._clear()
+  is(exports.probe(256), 60, 'table survives one _clear')
+  exports._clear(); exports.probe(256); exports._clear()
+  is(exports.probe(256), 60, 'table survives repeated _clear + alloc cycles')
+})

@@ -600,7 +600,7 @@ export function pullStdlib(sec) {
   // are pulled in on demand, never eagerly, so they're already minimal and never pruned
   // here (guarding against any reachability blind spot in a dotted-name template).
   for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
-  if (!needsAlloc) ctx.scope.globals.delete('__heap')
+  if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
       for (const fn of ['__alloc', '__alloc_hdr', '__clear']) ctx.core.includes.add(fn)
@@ -608,6 +608,20 @@ export function pullStdlib(sec) {
       // etc.) that the initial resolveIncludes did not yet see; re-resolve.
       // No-op when the alloc trio was already present.
       resolveIncludes()
+      // Record the post-init heap top into `__heap_reset` so `__clear` rewinds to
+      // just above this module's init-time heap state (e.g. the self-host compiler's
+      // GLOBALS/atom tables), not into it. Done here — where `__heap` is known to
+      // survive — as the last `__start` action before any non-returning timer loop.
+      // No `__start` ⇒ no init allocations ⇒ `__heap_reset`'s data-end seed is right.
+      if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
+        const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+        if (startFn) {
+          const capture = ['global.set', '$__heap_reset', ['global.get', '$__heap']]
+          const tail = startFn[startFn.length - 1]
+          if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, capture)
+          else startFn.push(capture)
+        }
+      }
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not
     // just the default 1 — otherwise a module whose constants exceed 64 KiB emits a data
@@ -706,14 +720,14 @@ export function optimizeModule(sec, profiler) {
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7
     // Non-shared memory always carries a $__heap global — start it past the
-    // static data so the bump allocator never overwrites a literal.
+    // static data so the bump allocator never overwrites a literal. `__heap_reset`
+    // seeds to the same data end (its runtime value is overwritten by `__start`'s
+    // tail capture for modules that init-allocate; this seed serves modules with no
+    // `__start`, where the data end IS the correct rewind point). `__clear` reads
+    // `$__heap_reset` directly, so no per-function constant patch is needed.
     declGlobal('__heap', 'i32', heapBase, { export: '__heap' })
+    if (ctx.scope.globals.has('__heap_reset')) declGlobal('__heap_reset', 'i32', heapBase)
     if (ctx.scope.globals.has('__heap_start')) declGlobal('__heap_start', 'i32', heapBase)
-    for (const s of sec.stdlib)
-      if (s[0] === 'func' && s[1] === '$__clear')
-        for (let i = 2; i < s.length; i++)
-          if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
-            s[i][2][1] = `${heapBase}`
   }
 }
 

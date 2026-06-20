@@ -55,6 +55,7 @@
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "bench:startup": "node scripts/bench-startup.mjs",
+    "bench:self": "node scripts/bench-selfhost.mjs",
     "bench:readme": "node scripts/bench-readme.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
@@ -73,7 +74,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "^10.4.17",
-    "watr": "^4.6.10"
+    "watr": "^4.7.0"
   },
   "keywords": [
     "javascript",

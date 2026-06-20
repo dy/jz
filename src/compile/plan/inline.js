@@ -163,13 +163,19 @@ const inlineInExpr = (node, candidates) => {
 
 const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   if (!Array.isArray(stmt)) return { node: stmt, changed: false }
-  // Statement-position call: discard return value, splice prefix in place.
+  // Statement-position call: the result is unused, but the callee's return
+  // EXPRESSION may still carry side effects — an expression-bodied arrow whose body
+  // is itself effectful (`seek = n => idx = n` inlines to the assignment `idx = i`;
+  // a one-liner that calls another fn) puts the effect in `value`, not `prefix`.
+  // Emit it as a trailing statement so the effect runs; a pure value is dropped
+  // later by vacuum/DCE. (Dropping it lost the parser's seek() idx-advance → ∞ loop.)
   if (isCandidateCall(stmt, candidates)) {
     const args = callArgs(stmt)
     const shape = args && inlinedBody(candidates.get(stmt[1]), args)
     if (shape) {
       const { hoisted, rest } = partitionInvariantPrefix(shape.prefix, loopVariantNames)
-      return { node: ['{}', [';', ...rest]], changed: true, splice: rest, hoisted }
+      const splice = shape.value !== null ? [...rest, shape.value] : rest
+      return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
     }
   }
   // `let/const X = call(...)` with single decl: inline as prefix + decl(value).

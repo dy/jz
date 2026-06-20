@@ -22,7 +22,7 @@ import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from '../src/compile/emit.js'
 import { resolveOptimize, optimizeFunc, collectVolatileGlobals } from '../src/optimize/index.js'
-import watOptimize from '../src/wat/optimize.js'
+import watOptimize from 'watr/optimize'
 import { appendLateStdlib } from '../src/wat/assemble.js'
 import jzify from '../jzify/index.js'
 
@@ -45,9 +45,13 @@ function optimizeTail(module, cfg) {
   }
   // Mirror index.js: SIMD-helper inlining on at the 'speed'/level-3 tier.
   if (cfg.inlineFns) {
-    if (watrOpts === true) watrOpts = { inline: true }
-    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = true
+    if (watrOpts === true) watrOpts = { inline: 'simd' }
+    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
   }
+  // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
+  // never matches it), so jz always enables it explicitly.
+  if (watrOpts === true) watrOpts = { guardRefine: true }
+  else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
   if (!cfg.watr) return module
   const optimized = watOptimize(module, watrOpts)
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null

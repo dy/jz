@@ -3727,7 +3727,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
 // vectorized reduce+horner, module/math.js:543) are BIT-EXACT per lane to the scalar core — so we
 // can lift the call straight to the *2 helper. Phase-2 adds pow/log/atan2 here (see PPC_CALL2).
 // NOTE: scalar targets here must be kept out of inlineOnce's single-caller inlining (SIMD_PROTECTED
-// in src/wat/optimize.js) — else the call node is gone before this lift runs.
+// in watr/optimize) — else the call node is gone before this lift runs.
 const PPC_CALL2 = {
   '$math.sin_core': '$math.sin2', '$math.cos_core': '$math.cos2',
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',

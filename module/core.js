@@ -255,12 +255,29 @@ export default (ctx) => {
       (call $__memgrow (local.get $next))
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
       (local.get $ptr))`
+    // NOTE: shared memory rewinds to the raw HEAP.START, NOT a post-init high-water
+    // mark — so a shared module whose `__start` heap-allocates (strPool memory.init,
+    // module-init state) loses that state on `_clear`. Pre-existing; unlike the owned
+    // path below it has no `__heap_reset` analogue because the rewind target would need
+    // a reserved low-memory cell (the [0,HEAP.START) region is already spoken for —
+    // clock at 0, heap ptr at HEAP.PTR_ADDR). Owned memory (the self-host + default
+    // case) is the one fixed below; revisit shared if a thread-pooled reset hits it.
     ctx.core.stdlib['__clear'] = `(func $__clear
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
   } else {
     // Own memory: heap offset in a global, exported so the JS-side adapter
     // (alloc:false, no `_alloc` export) shares the pointer.
     declGlobal('__heap', 'i32', HEAP.START, { export: '__heap' })
+    // `__clear` rewinds to the *post-module-init* high-water mark, not the static
+    // data end: a module whose top-level code heap-allocates (e.g. the self-host
+    // compiler building its GLOBALS/atom tables in `__start`) leaves live state
+    // above the data segment that a reset must preserve. `__heap_reset` is seeded
+    // to the data end (assemble.js heapBase patch) and overwritten by `__start`'s
+    // tail with the heap top after init runs (buildStartFn) — so for a module with
+    // no init allocations it equals the data end, and for self-host it spares the
+    // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
+    // which must stay at the data end or init-time heap objects misread as static.)
+    declGlobal('__heap_reset', 'i32', HEAP.START)
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
@@ -269,7 +286,7 @@ export default (ctx) => {
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
-      (global.set $__heap (i32.const ${HEAP.START})))`
+      (global.set $__heap (global.get $__heap_reset)))`
   }
 
   // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH

@@ -882,7 +882,7 @@ test('func-namespace SROA: escaping namespace keeps the dynamic path correct', (
   is(runHost(src).f(), 2)
 })
 
-// === call_indirect devirtualization (wat/optimize.js devirt) ===
+// === call_indirect devirtualization (watr/optimize devirt) ===
 // `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
 // each call site becomes a guarded direct-call chain with the original
 // call_indirect kept as the fallback arm (zero-init/unknown flows unchanged).

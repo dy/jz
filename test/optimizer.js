@@ -14,7 +14,7 @@ import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
 import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
-import { optimize as watOptimize } from '../src/wat/optimize.js'
+import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 
@@ -1693,7 +1693,7 @@ test('arenaRewind: an allocation that is returned must persist (no rewind)', () 
   is(ex.main(), 6)
 })
 
-// ── WAT copy-propagation (src/wat/optimize.js) ──────────────────────────────
+// ── WAT copy-propagation (watr/optimize) ──────────────────────────────
 // The value-model lowering leaves local round-trips `$b = $a; $b = f($b)`; copy-prop
 // rewrites the use to $a and the adjacent-dead-store pass drops the now-dead copy.
 const watStr = n => JSON.stringify(n)
@@ -2240,4 +2240,26 @@ test('unroll: flattened bodies re-init their accumulators (zero-init elided only
     let h = 0; for (let i = 0; i < N*N; i++) h = (h + (C[i]|0)) | 0; return h }`
   for (const N of [2, 3, 4])
     is(run(mm(N), { optimize: 'speed' }).main(), run(mm(N), { optimize: false }).main(), `matmul N=${N} bit-exact`)
+})
+
+test('sourceInline preserves side effects of an expr-bodied callee at statement position', () => {
+  // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect
+  // (the assignment). Called as a statement (`setS(7);`), the result is unused —
+  // but inlineHotInternalCalls used to splice only the prefix and DROP the value
+  // expression, losing the `s = v` write. (This is what froze the self-host parser:
+  // its `seek = n => idx = n` stopped advancing `idx`, so comment-skip looped
+  // forever.) The effect must survive inlining.
+  const setter = run(`
+    let s = 0
+    let setS = (v) => s = v
+    export const f = () => { setS(7); return s }`, { optimize: 2 })
+  is(setter.f(), 7, 'assignment in inlined expr-body must run')
+
+  // Same class via a one-liner that calls another fn for its effect.
+  const viacall = run(`
+    let n = 0
+    let bump = () => n = n + 1
+    let tick = () => bump()
+    export const g = () => { tick(); tick(); tick(); return n }`, { optimize: 2 })
+  is(viacall.g(), 3, 'nested effectful call in inlined expr-body must run')
 })
