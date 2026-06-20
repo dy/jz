@@ -14,10 +14,10 @@ const demo = runDemo({
   hint: "L-system fractals — Koch, Dragon, Sierpinski, Plant — click to cycle",
   size: { budget: 2600000, dpr: 2 },
   frame: (e, t) => {
-    const period = 16                            // slower: longer to watch each fractal grow
+    const period = 7                             // brisk: each fractal grows in, holds briefly, swaps
     const sysIdx = Math.floor(t / period) % 4
     const cycleT = (t % period) / period
-    const progress = Math.min(1, cycleT * 1.5)   // draw over the first ~2/3 of the period, then hold
+    const progress = Math.min(1, cycleT * 1.6)   // draw over the first ~2/3 of the period, then hold
     e.frame(t, sysIdx, progress)
   },
 })
