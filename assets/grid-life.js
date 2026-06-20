@@ -1,14 +1,14 @@
 // grid-life.js — the light theme's live demo: a slow Conway's Game of Life on the 8px minor-grid cells.
 //   • A calm field — a few canonical shapes (glider, blinker, toad, beacon, LWSS) at random starts; the
 //     field refreshes to a fresh few every so often so it never piles up.
-//   • ~3 generations/second; each live cell is a single 1px dot, crossfading in/out between generations.
+//   • ~3 generations/second; each live cell is a filled white square, crossfading in/out between generations.
 //   • Click = a pen: lights the cells under the cursor (drag to draw) + a white pulse burst.
 // One source, compiled in the page two ways (plain JS, and jz → wasm via dist/jz.js). Deterministic
 // (integer-hash seed + pure GoL) so the JS and wasm boards match for an honest A/B.
 // Interface matches grid-current: resize → pixel buffer · configure · frame · spawn · param (+ pen).
 
 let W = 0, H = 0, px
-let gx = 0, cell = 8, dot = 2, cols = 0, rows = 0   // cell = the 8px MINOR grid square; dot = 1px (× scale) nib
+let gx = 0, cell = 8, cols = 0, rows = 0   // cell = the 8px MINOR grid square
 let pumaj = 160, pumid = 80                          // pulse-burst units (80/40 grid × scale), full-scale
 let prev, cur, nxt                                   // Uint8Array boards (0/1): crossfade prev→cur, nxt = scratch
 let gen = 0
@@ -96,7 +96,6 @@ let seed = () => {
 export let configure = (gridX, scale) => {
   gx = gridX | 0
   cell = Math.round(8.0 * scale); if (cell < 4) cell = 4
-  dot = Math.round(scale); if (dot < 1) dot = 1                       // a 1px (× scale) nib per cell
   pumid = Math.round(40.0 * scale); pumaj = Math.round(80.0 * scale)
   cols = Math.floor((W - gx) / cell) + 2
   rows = Math.floor(H / cell) + 2
@@ -137,18 +136,19 @@ let step = () => {
 
 let ease = (p) => p * p * (3.0 - 2.0 * p)          // smoothstep
 
-let drawDot = (c, r, aa) => {
-  let x0 = gx + c * cell + ((cell - dot) >> 1)
-  let y0 = r * cell + ((cell - dot) >> 1)
-  let col = (aa << 24) | 0x001b1c1e                // dark ink dot, alpha aa — reads on the light gray + white grid (white-on-white can't)
-  let yy = 0
-  while (yy < dot) {
-    let Y = y0 + yy
-    if (Y >= 0 && Y < H) {
-      let row = Y * W, xx = 0
-      while (xx < dot) { let X = x0 + xx; if (X >= 0 && X < W) px[row + X] = col; xx = xx + 1 }
-    }
-    yy = yy + 1
+let fillCell = (c, r, aa) => {
+  let x0 = gx + c * cell + 1, x1 = gx + (c + 1) * cell - 1   // 1px inset so the minor grid line peeks between cells
+  let y0 = r * cell + 1, y1 = (r + 1) * cell - 1
+  if (x0 < 0) x0 = 0
+  if (y0 < 0) y0 = 0
+  if (x1 > W) x1 = W
+  if (y1 > H) y1 = H
+  let col = (aa << 24) | 0x00ffffff                // white, alpha aa
+  let y = y0
+  while (y < y1) {
+    let row = y * W, x = x0
+    while (x < x1) { px[row + x] = col; x = x + 1 }
+    y = y + 1
   }
 }
 
@@ -197,7 +197,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 255.0) | 0; if (aa > 255) aa = 255; drawDot(c, r, aa) }
+        if (f > 0.02) { let aa = (f * 255.0) | 0; if (aa > 255) aa = 255; fillCell(c, r, aa) }
       }
       c = c + 1
     }
