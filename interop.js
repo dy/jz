@@ -141,12 +141,14 @@ export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN :
 const decode = v => {
   if (v === v) return v  // fast path: non-NaN number
   _f64[0] = v
-  // STRING (type 4) + SSO bit: content is the low 32 bits, length the low aux bits.
+  // STRING (type 4) + SSO bit: 7-bit ASCII chars packed across the 47-bit payload
+  // (offset = low 32, aux = high 15), char i at payload bit i*7, len at bits 42-44.
   if (decodePtrType(_u32[1]) === 4) {
     const a = decodePtrAux(_u32[1])
     if (a & LAYOUT.SSO_BIT) {
-      const len = a & 0x7, off = _u32[0]; let s = ''
-      for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+      const len = (a >>> 10) & 7
+      const payload = (BigInt(a) << 32n) | BigInt(_u32[0] >>> 0); let s = ''
+      for (let i = 0; i < len; i++) s += String.fromCharCode(Number((payload >> BigInt(i * 7)) & 0x7fn))
       return s
     }
   }
@@ -297,10 +299,12 @@ export const memory = (src) => {
   }
 
   mem.String = (str) => {
-    if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
-      let packed = 0
-      for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return ptr(4, LAYOUT.SSO_BIT | str.length, packed)  // STRING + SSO_BIT
+    if (str.length <= 6 && /^[\x00-\x7f]*$/.test(str)) {
+      // 7-bit ASCII SSO: char i at payload bit i*7, len at bits 42-44 (see module/string.js codec).
+      let p = 0n
+      for (let i = 0; i < str.length; i++) p |= BigInt(str.charCodeAt(i)) << BigInt(i * 7)
+      p |= BigInt(str.length) << 42n
+      return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))  // STRING + SSO_BIT
     }
     const enc = TEXT_ENC.encode(str)
     const n = enc.length, raw = alloc(4 + n), m = dv()
@@ -413,8 +417,9 @@ export const memory = (src) => {
     if (t === 4) {  // STRING (aux SSO_BIT = inline, else heap)
       const a2 = aux(p)
       if (a2 & LAYOUT.SSO_BIT) {
-        const len = a2 & 0x7; let s = ''
-        for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+        const len = (a2 >>> 10) & 7
+        const payload = (BigInt(a2) << 32n) | BigInt(off >>> 0); let s = ''
+        for (let i = 0; i < len; i++) s += String.fromCharCode(Number((payload >> BigInt(i * 7)) & 0x7fn))
         return s
       }
       const len = dv().getInt32(off - 4, true)

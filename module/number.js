@@ -354,10 +354,11 @@ export default (ctx) => {
               (then
                 (local.set $b (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
                 (br_if $heap (i32.ge_u (local.get $b) (i32.const 0x80)))
-                (local.set $packed (i32.or (local.get $packed) (i32.shl (local.get $b) (i32.shl (local.get $i) (i32.const 3)))))
+                ;; 7-bit ASCII SSO: char i at bit i*7 (chars fit the offset for len ≤4); len at aux bits 10-12.
+                (local.set $packed (i32.or (local.get $packed) (i32.shl (local.get $b) (i32.mul (local.get $i) (i32.const 7)))))
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $pk))))
-          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $packed))))))
+          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $len) (i32.const 10))) (local.get $packed))))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))

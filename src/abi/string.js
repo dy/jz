@@ -94,9 +94,9 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan) {
   const rt = oobNan ? 'f64' : 'i32'
   let idx = iI32, spill = null
   if (!_isLeaf(iI32)) { spill = allocLocalI32(ctx, 'ci'); idx = ['local.get', `$${spill}`] }
-  const ssoByteExpr = ['i32.and',
-    ['i32.shr_u', ['local.get', `$${dec.base}`], ['i32.shl', idx, ['i32.const', 3]]],
-    ['i32.const', 0xFF]]
+  const ssoByteExpr = ['i32.wrap_i64', ['i64.and',
+    ['i64.shr_u', ['local.get', `$${dec.ptr64}`], ['i64.mul', ['i64.extend_i32_u', idx], ['i64.const', 7]]],
+    ['i64.const', '0x7f']]]
   const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], idx]]
   const ccByte = ['if', ['result', 'i32'],
     ['local.get', `$${dec.sso}`],
@@ -131,9 +131,8 @@ export function emitCharDecompPrologue(dec) {
     ['i64.const', 0]]
   const offMask = `0x${LAYOUT.OFFSET_MASK.toString(16).toUpperCase()}`
   const off = ['i32.wrap_i64', ['i64.and', ptr, ['i64.const', offMask]]]
-  const ssoLen = ['i32.and',
-    ['i32.wrap_i64', ['i64.shr_u', ptr, ['i64.const', LAYOUT.AUX_SHIFT]]],
-    ['i32.const', LAYOUT.SSO_BIT - 1]]
+  // SSO length lives at payload bits 42-44 (7-bit-codec layout; see module/string.js).
+  const ssoLen = ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ptr, ['i64.const', 42]], ['i64.const', 7]]]
   // Heap length is `i32.load(off - 4)`; guard against off<4 (corrupt/non-string
   // payload) so the load doesn't trap on a wrapped-negative address.
   const heapLen = ['if', ['result', 'i32'],
@@ -146,6 +145,7 @@ export function emitCharDecompPrologue(dec) {
       ['then',
         ['local.set', `$${dec.sso}`, ['i32.const', 1]],
         ['local.set', `$${dec.base}`, off],
+        ['local.set', `$${dec.ptr64}`, ptr],   // full payload: SSO chars are 7-bit, span into aux
         ['local.set', `$${dec.len}`, ssoLen],
         // SSO: route every per-iter load to address 0 (always valid, byte
         // discarded by the outer select).
@@ -256,11 +256,13 @@ export const sso = {
             // discards it). Pre-computing it in the prologue removes a
             // per-iter `select` and lets V8 fold the add into the load.
             const loadbase = `${name}$ccldb`
+            const ptr64 = `${name}$ccp64`
             ctx.func.locals.set(base, 'i32')
             ctx.func.locals.set(len, 'i32')
             ctx.func.locals.set(sso, 'i32')
             ctx.func.locals.set(loadbase, 'i32')
-            dec = { base, len, sso, loadbase, param: name }
+            ctx.func.locals.set(ptr64, 'i64')   // full SSO payload for 7-bit char extraction
+            dec = { base, len, sso, loadbase, ptr64, param: name }
             ctx.func.charDecomp.set(name, dec)
           }
           return emitDecompCharRead(dec, iI32, ctx, oobNan)
@@ -301,12 +303,10 @@ export const sso = {
       }
       const offMask = `0x${LAYOUT.OFFSET_MASK.toString(16).toUpperCase()}`
       const offExpr = () => ['i32.wrap_i64', ['i64.and', getPtr(), ['i64.const', offMask]]]
-      const ssoLen = ['i32.and',
-        ['i32.wrap_i64', ['i64.shr_u', getPtr(), ['i64.const', LAYOUT.AUX_SHIFT]]],
-        ['i32.const', LAYOUT.SSO_BIT - 1]]
-      const ssoByte = ['i32.and',
-        ['i32.shr_u', offExpr(), ['i32.mul', getIdx(), ['i32.const', 8]]],
-        ['i32.const', 0xFF]]
+      const ssoLen = ['i32.wrap_i64', ['i64.and', ['i64.shr_u', getPtr(), ['i64.const', 42]], ['i64.const', 7]]]
+      const ssoByte = ['i32.wrap_i64', ['i64.and',
+        ['i64.shr_u', getPtr(), ['i64.mul', ['i64.extend_i32_u', getIdx()], ['i64.const', 7]]],
+        ['i64.const', '0x7f']]]
       const ssoBranch = ['if', ['result', rt],
         ['i32.ge_u', getIdx(), ssoLen],
         ['then', mkOob()],

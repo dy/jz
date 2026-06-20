@@ -871,3 +871,52 @@ test('string: .replace(search, fn) invokes the callback', () => {
   is(run(`export let f = () => "ab".replace("a", (m) => m + m)`)(),
     'ab'.replace('a', m => m + m))                 // 'aab'
 })
+
+// === SSO 6-char / 7-bit codec (chars 4-5 span the offset/aux boundary) ===
+// Regression guard for the 7-bit ASCII small-string optimization: every string
+// producer and consumer must agree on the layout (char i at payload bit i*7, len at
+// bits 42-44). A missed site silently corrupts strings, so exercise each path on
+// 5- and 6-char ASCII (the aux-spanning range) plus the host boundary.
+test('SSO 7-bit: 6-char literal charCodeAt across the aux boundary', () => {
+  const f = run(`export let f = (i) => "abcdef".charCodeAt(i)`).f
+  for (let i = 0; i < 6; i++) is(f(i), 'abcdef'.charCodeAt(i))   // i=4,5 read from aux
+})
+test('SSO 7-bit: 5/6-char length', () => {
+  is(run(`export let f = () => "const".length`).f(), 5)
+  is(run(`export let f = () => "return".length`).f(), 6)
+})
+test('SSO 7-bit: literal === literal and heap === SSO-literal (mixed)', () => {
+  is(run(`export let f = () => "string" === "string" ? 1 : 0`).f(), 1)
+  is(run(`export let f = (s) => s.toUpperCase() === "ABCDEF" ? 1 : 0`).f('abcdef'), 1)  // heap === SSO-literal
+  is(run(`export let f = (s) => s.toUpperCase() === "ABCDEX" ? 1 : 0`).f('abcdef'), 0)
+  is(run(`export let f = (s) => ("ab" + s) === "abcdef" ? 1 : 0`).f('cdef'), 1)         // heap concat === SSO-literal
+})
+test('SSO 7-bit: materialized concat round-trips length + tail char (slow copy path)', () => {
+  // "lit" + param and accumulator both materialize the result and read it back
+  // (param + param has a separate, pre-existing concat bug, so it is avoided here).
+  is(run(`export let f = (s) => { let x = "re" + s; return x.length*1000 + x.charCodeAt(x.length-1) }`).f('turn'), 6000 + 'n'.charCodeAt(0))
+  is(run(`export let f = () => { let s = ""; s += "re"; s += "sult"; return s.length*1000 + s.charCodeAt(5) }`).f(), 6000 + 't'.charCodeAt(0))
+})
+test('SSO 7-bit: slice produces a correct 6-char SSO', () => {
+  is(run(`export let f = (s) => s.slice(0,6)`).f('returns'), 'return')
+  is(run(`export let f = (s) => s.slice(1,6).charCodeAt(4)`).f('xresult'), 'result'.charCodeAt(4))
+})
+test('SSO 7-bit: indexOf / startsWith / endsWith on 6-char', () => {
+  is(run(`export let f = (s) => s.indexOf("def")`).f('abcdef'), 3)
+  is(run(`export let f = (s) => s.startsWith("abc") ? 1 : 0`).f('abcdef'), 1)
+  is(run(`export let f = (s) => s.endsWith("def") ? 1 : 0`).f('abcdef'), 1)
+})
+test('SSO 7-bit: toUpperCase / toLowerCase on 5-6 char', () => {
+  is(run(`export let f = (s) => s.toUpperCase()`).f('hello'), 'HELLO')
+  is(run(`export let f = (s) => s.toLowerCase()`).f('STRING'), 'string')
+})
+test('SSO 7-bit: number→string concat keeps digits (itoa SSO path)', () => {
+  is(run(`export let f = (n) => "P:" + n`).f(5), 'P:5')
+  is(run(`export let f = () => { let s = ""; for (let i=0;i<4;i++) s += i; return s }`).f(), '0123')
+})
+test('SSO 7-bit: Set/Map with 6-char string keys (collection hash)', () => {
+  is(run(`export let f = () => { let s = new Set(); s.add("string"); s.add("result"); return (s.has("string") && s.has("result") && !s.has("absent")) ? 1 : 0 }`).f(), 1)
+})
+test('SSO 7-bit: JSON.parse 4-char key/value round-trips', () => {
+  is(run(`export let f = () => JSON.parse('{"name":"jdef"}').name`).f(), 'jdef')
+})

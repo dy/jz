@@ -746,13 +746,14 @@ export default (ctx) => {
     (if (i32.eqz (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT})))
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (local.set $len (i32.and (local.get $aux) (i32.const 7)))
+    (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
     (local.set $buf (call $__alloc (local.get $len)))
     (local.set $i (i32.const 0))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      ;; 7-bit ASCII SSO: char i at payload bit i*7 (read from the full i64 ptr; chars 4-5 span aux).
       (i32.store8 (i32.add (local.get $buf) (local.get $i))
-        (i32.and (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8))) (i32.const 0xFF)))
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
     (local.get $buf))`

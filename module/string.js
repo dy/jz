@@ -22,6 +22,38 @@ import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, STR_INTERN_BIT } from '../layo
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
 
+// === SSO codec — single source of truth for the inline-string bit layout ===
+// ASCII chars packed at 7 bits each into the NaN-box payload: char i at payload bit
+// i*7  (uniform `(ptr >> i*7) & 0x7f`), length at payload bits 42-44, SSO_BIT at bit 46
+// (SLICE_BIT at 45 stays 0). 6 chars fit (6*7=42, + 3-bit len). ASCII-only — a byte
+// ≥0x80 falls back to a heap string. The 7-bit-uniform layout makes equal short strings
+// content-bit-equal (so `op === 'tag'` is a bare i64.eq) and never touches memory.
+const MAX_SSO = 6
+const SSO_LEN_SHIFT = 10  // length occupies aux bits 10-12 (= payload bits 42-44)
+// JS: ASCII string → { aux, offset }, or null when ineligible (too long / non-ASCII).
+// BigInt-free (i32 ops only) so the self-hosted compiler — which runs this to encode
+// every string literal — stays on jz's numeric core. offset = payload bits 0-31, aux =
+// bits 32-46; char i at bit i*7 (chars 0-3 fit the offset, char 4 straddles, char 5 → aux).
+const ssoEncode = (str) => {
+  if (str.length > MAX_SSO || !/^[\x00-\x7f]*$/.test(str)) return null
+  let offset = 0, auxChars = 0
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i), bit = i * 7
+    if (bit <= 24) offset |= c << bit                 // chars 0-3 (bits 0-27), wholly in offset
+    else if (bit < 32) { offset |= (c & 0xF) << 28; auxChars |= c >> 4 }  // char 4: bits 28-34 straddle
+    else auxChars |= c << (bit - 32)                  // char 5: bits 35-41 → aux bits 3-9
+  }
+  return { aux: LAYOUT.SSO_BIT | (str.length << SSO_LEN_SHIFT) | auxChars, offset: offset >>> 0 }
+}
+// aux for an SSO string whose chars all fit in the offset (len ≤ 4: 4*7=28 ≤ 32 bits).
+const ssoAux = (len) => LAYOUT.SSO_BIT | (len << SSO_LEN_SHIFT)
+// WAT: char i (i32 expr) of SSO ptr (i64 expr) — 7-bit at payload bit i*7.
+const ssoCharWat = (ptr, i) => `(i32.wrap_i64 (i64.and (i64.shr_u ${ptr} (i64.mul (i64.extend_i32_u ${i}) (i64.const 7))) (i64.const 0x7f)))`
+// WAT: length (i32) of SSO ptr (i64 expr) — payload bits 42-44.
+const ssoLenWat = (ptr) => `(i32.wrap_i64 (i64.and (i64.shr_u ${ptr} (i64.const 42)) (i64.const 7)))`
+// WAT: length (i32) from an already-extracted aux (i32 expr).
+const ssoLenFromAux = (aux) => `(i32.and (i32.shr_u ${aux} (i32.const ${SSO_LEN_SHIFT})) (i32.const 7))`
+
 // WAT (no-locals expression): byte length of a heap STRING given its raw $-local
 // names for the offset and the i64 ptr. A view (SLICE_BIT) carries its length in
 // aux[12:0]; an own heap string reads the i32 header at off-4. Callers must have
@@ -43,26 +75,28 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 // bit-equal (SSO content IS the bits). Bails to the caller's heap path on a
 // non-ASCII byte (SSO is ASCII-only). Locals: $sb scratch byte, $sp packed.
 const sliceSsoPackWat = () => `
-    (if (i32.le_u (local.get $nlen) (i32.const 4))
+    (if (i32.le_u (local.get $nlen) (i32.const ${MAX_SSO}))
       (then (block $heap8
         (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
         (local.set $isSso (i32.wrap_i64 (i64.shr_u
           (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64}))
           (i64.const ${LAYOUT.AUX_SHIFT}))))
-        (local.set $i (i32.const 0)) (local.set $sp (i32.const 0))
-        (loop $pk8
+        (local.set $i (i32.const 0)) (local.set $sp64 (i64.const 0))
+        (loop $pk7
           (if (i32.lt_u (local.get $i) (local.get $nlen))
             (then
               (local.set $sb (if (result i32) (local.get $isSso)
-                (then (i32.and
-                  (i32.shr_u (local.get $srcOff) (i32.shl (i32.add (local.get $start) (local.get $i)) (i32.const 3)))
-                  (i32.const 0xFF)))
+                (then ${ssoCharWat('(local.get $ptr)', '(i32.add (local.get $start) (local.get $i))')})
                 (else (i32.load8_u (i32.add (i32.add (local.get $srcOff) (local.get $start)) (local.get $i))))))
               (br_if $heap8 (i32.ge_u (local.get $sb) (i32.const 0x80)))
-              (local.set $sp (i32.or (local.get $sp) (i32.shl (local.get $sb) (i32.shl (local.get $i) (i32.const 3)))))
+              (local.set $sp64 (i64.or (local.get $sp64)
+                (i64.shl (i64.extend_i32_u (local.get $sb)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $pk8))))
-        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $nlen)) (local.get $sp))))))`
+              (br $pk7))))
+        (return (f64.reinterpret_i64 (i64.or (i64.or
+          (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
+          (i64.shl (i64.extend_i32_u (local.get $nlen)) (i64.const 42)))
+          (local.get $sp64)))))))`
 
 // Probe the static intern index (buildInternTable, compile/index.js): a 5..32
 // byte slice whose content equals a static literal returns the CANONICAL
@@ -128,7 +162,7 @@ export default (ctx) => {
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
-    __str_idx: [],
+    __str_idx: ['__char1byte'],
     __str_eq: ['__str_eq_cold'],
     __str_eq_cold: ['__char_at', '__str_byteLen'],
     __str_cmp: ['__char_at', '__str_byteLen'],
@@ -162,11 +196,9 @@ export default (ctx) => {
   // === String literal: "abc" → SSO if ≤4 ASCII, else static data ===
 
   bind('str', (str) => {
-    const MAX_SSO = 4
-    if (ctx.features.sso && str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
-      let packed = 0
-      for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | str.length, packed)
+    if (ctx.features.sso) {
+      const sso = ssoEncode(str)
+      if (sso) return mkPtrIR(PTR.STRING, sso.aux, sso.offset)
     }
     const bytes = new TextEncoder().encode(str)
     const len = bytes.length
@@ -223,11 +255,7 @@ export default (ctx) => {
   // SSO/STRING ptrs never have forwarding pointers (only ARRAY does), so we extract
   // the raw offset directly instead of paying the __ptr_offset function-call overhead.
   wat('__sso_char', `(func $__sso_char (param $ptr i64) (param $i i32) (result i32)
-    (i32.and
-      (i32.shr_u
-        (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-        (i32.mul (local.get $i) (i32.const 8)))
-      (i32.const 0xFF)))`)
+    ${ssoCharWat('(local.get $ptr)', '(local.get $i)')})`)
 
   wat('__str_char', `(func $__str_char (param $ptr i64) (param $i i32) (result i32)
     (i32.load8_u (i32.add
@@ -254,16 +282,9 @@ export default (ctx) => {
       (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
         (if (result i32)
-          (i32.ge_u (local.get $i)
-            (i32.and
-              (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
-              (i32.const ${LAYOUT.SSO_BIT - 1})))
+          (i32.ge_u (local.get $i) ${ssoLenWat('(local.get $ptr)')})
           (then (i32.const 0))
-          (else (i32.and
-            (i32.shr_u
-              (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-              (i32.mul (local.get $i) (i32.const 8)))
-            (i32.const 0xFF)))))
+          (else ${ssoCharWat('(local.get $ptr)', '(local.get $i)')})))
       (else
         (if (result i32)
           (i32.ge_u (local.get $i)
@@ -301,9 +322,7 @@ export default (ctx) => {
       (i32.const ${LAYOUT.SSO_BIT})))
     (local.set $len
       (if (result i32) (local.get $isSso)
-        (then (i32.and
-          (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
-          (i32.const ${LAYOUT.SSO_BIT - 1})))
+        (then ${ssoLenWat('(local.get $ptr)')})
         (else
           (if (result i32)
             (i64.ne (i64.and (local.get $ptr) (i64.const ${SLICE_BIT_I64})) (i64.const 0))
@@ -318,14 +337,15 @@ export default (ctx) => {
       (i32.or (i32.lt_s (local.get $i) (i32.const 0)) (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (f64.reinterpret_i64
-          (i64.or
-            ;; mkptr(STRING, SSO_BIT|1, 0) = NAN_PREFIX | (STRING<<TAG_SHIFT) | ((SSO_BIT|1)<<AUX_SHIFT)
-            (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT | 1)})
-            (i64.extend_i32_u
-              (if (result i32) (local.get $isSso)
-                (then (i32.and (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8))) (i32.const 0xFF)))
-                (else (i32.load8_u (i32.add (local.get $off) (local.get $i)))))))))))`)
+        (if (result f64) (local.get $isSso)
+          ;; SSO source: chars are ASCII (<0x80) → inline 1-char SSO (hot path, no branch).
+          (then (f64.reinterpret_i64
+            (i64.or
+              (i64.const ${ptrNanHex(PTR.STRING, ssoAux(1))})
+              (i64.extend_i32_u ${ssoCharWat('(local.get $ptr)', '(local.get $i)')}))))
+          ;; Heap source: the byte may be ≥0x80 (non-ASCII), which can't be a 7-bit SSO,
+          ;; so __char1byte routes those to a heap 1-byte string.
+          (else (call $__char1byte (i32.load8_u (i32.add (local.get $off) (local.get $i)))))))))`)
 
   // Hot: ~53M calls in watr self-host. Bit-eq covers identity. SSO/SSO with !bit-eq
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
@@ -489,7 +509,7 @@ export default (ctx) => {
           (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
           (i32.const ${LAYOUT.AUX_MASK})))
         (if (result i32) (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
-          (then (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT - 1})))
+          (then ${ssoLenFromAux('(local.get $aux)')})
           (else
             (if (result i32) (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT}))
               ;; view: length lives in aux[12:0], not a header.
@@ -507,7 +527,7 @@ export default (ctx) => {
   // (single bulk op instead of nlen × __char_at).
   wat('__str_slice', () => `(func $__str_slice (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $nlen i32) (local $off i32) (local $i i32)
-    (local $srcOff i32) (local $isSso i32) (local $sb i32) (local $sp i32)
+    (local $srcOff i32) (local $isSso i32) (local $sb i32) (local $sp i32) (local $sp64 i64)
     (local $ip i32) (local $h i32) (local $j i32) (local $slot i32) (local $cand i32) (local $k i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.lt_s (local.get $start) (i32.const 0))
@@ -719,10 +739,10 @@ export default (ctx) => {
         (br_if $nomatch (i32.ge_s (local.get $j) (local.get $nlen)))
         (local.set $k (i32.add (local.get $i) (local.get $j)))
         (local.set $hb (if (result i32) (local.get $hsso)
-          (then (i32.and (i32.shr_u (local.get $hoff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+          (then ${ssoCharWat('(local.get $hay)', '(local.get $k)')})
           (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
         (local.set $nb (if (result i32) (local.get $nsso)
-          (then (i32.and (i32.shr_u (local.get $noff) (i32.shl (local.get $j) (i32.const 3))) (i32.const 0xFF)))
+          (then ${ssoCharWat('(local.get $ndl)', '(local.get $j)')})
           (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
         (if (i32.ne (local.get $hb) (local.get $nb))
           (then (local.set $match (i32.const 0)) (br $nomatch)))
@@ -771,10 +791,10 @@ export default (ctx) => {
         (br_if $nomatch (i32.ge_s (local.get $j) (local.get $nlen)))
         (local.set $k (i32.add (local.get $i) (local.get $j)))
         (local.set $hb (if (result i32) (local.get $hsso)
-          (then (i32.and (i32.shr_u (local.get $hoff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+          (then ${ssoCharWat('(local.get $hay)', '(local.get $k)')})
           (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
         (local.set $nb (if (result i32) (local.get $nsso)
-          (then (i32.and (i32.shr_u (local.get $noff) (i32.shl (local.get $j) (i32.const 3))) (i32.const 0xFF)))
+          (then ${ssoCharWat('(local.get $ndl)', '(local.get $j)')})
           (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
         (if (i32.ne (local.get $hb) (local.get $nb))
           (then (local.set $match (i32.const 0)) (br $nomatch)))
@@ -804,10 +824,10 @@ export default (ctx) => {
       (br_if $done (i32.ge_s (local.get $i) (local.get $plen)))
       (if (i32.ne
             (if (result i32) (local.get $ssso)
-              (then (i32.and (i32.shr_u (local.get $soff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (then ${ssoCharWat('(local.get $str)', '(local.get $i)')})
               (else (i32.load8_u (i32.add (local.get $soff) (local.get $i)))))
             (if (result i32) (local.get $psso)
-              (then (i32.and (i32.shr_u (local.get $poff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (then ${ssoCharWat('(local.get $pfx)', '(local.get $i)')})
               (else (i32.load8_u (i32.add (local.get $poff) (local.get $i))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -835,10 +855,10 @@ export default (ctx) => {
       (local.set $k (i32.add (local.get $off) (local.get $i)))
       (if (i32.ne
             (if (result i32) (local.get $ssso)
-              (then (i32.and (i32.shr_u (local.get $soff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+              (then ${ssoCharWat('(local.get $str)', '(local.get $k)')})
               (else (i32.load8_u (i32.add (local.get $soff) (local.get $k)))))
             (if (result i32) (local.get $fsso)
-              (then (i32.and (i32.shr_u (local.get $foff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (then ${ssoCharWat('(local.get $sfx)', '(local.get $i)')})
               (else (i32.load8_u (i32.add (local.get $foff) (local.get $i))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -860,9 +880,7 @@ export default (ctx) => {
       (then
         (block $dsso (loop $lsso
           (br_if $dsso (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (i32.and
-            (i32.shr_u (local.get $srcOff) (i32.shl (local.get $i) (i32.const 3)))
-            (i32.const 0xFF)))
+          (local.set $c ${ssoCharWat('(local.get $ptr)', '(local.get $i)')})
           (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
             (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
           (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
@@ -964,7 +982,7 @@ export default (ctx) => {
     ;; Array (type=1) → join(",") like JS Array.toString()
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then (return (i64.reinterpret_f64 (call $__str_join (local.get $val)
-        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 1}) (i32.const 44))))))))
+        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 44))))))))
     (local.get $val))`)
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
@@ -973,18 +991,15 @@ export default (ctx) => {
     (local $w i32)
     (if (i64.ne (i64.and (local.get $src) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
-        ;; SSO: up to 4 chars packed in low 32 bits (LE byte order). Unroll: write 1/2/3/4 bytes
-        ;; depending on len. (len > 4 is rare/disallowed in practice — fallback handles up to 4.)
-        (local.set $w (i32.wrap_i64 (local.get $src)))
-        (if (i32.ge_u (local.get $len) (i32.const 4))
-          (then (i32.store (local.get $dst) (local.get $w)))
-          (else
-            (if (i32.eq (local.get $len) (i32.const 0)) (then (return)))
-            (i32.store8 (local.get $dst) (local.get $w))
-            (if (i32.eq (local.get $len) (i32.const 1)) (then (return)))
-            (i32.store8 offset=1 (local.get $dst) (i32.shr_u (local.get $w) (i32.const 8)))
-            (if (i32.eq (local.get $len) (i32.const 2)) (then (return)))
-            (i32.store8 offset=2 (local.get $dst) (i32.shr_u (local.get $w) (i32.const 16))))))
+        ;; SSO: write $len ASCII chars, each 7-bit-packed at payload bit i*7 (chars 4-5
+        ;; span into aux, so read via the 7-bit codec, not the low 32 bits). $w = index.
+        (local.set $w (i32.const 0))
+        (loop $ssocp
+          (if (i32.lt_u (local.get $w) (local.get $len))
+            (then
+              (i32.store8 (i32.add (local.get $dst) (local.get $w)) ${ssoCharWat('(local.get $src)', '(local.get $w)')})
+              (local.set $w (i32.add (local.get $w) (i32.const 1)))
+              (br $ssocp)))))
       (else
         ;; Heap STRING: memory.copy directly from string data
         (memory.copy (local.get $dst)
@@ -1016,12 +1031,12 @@ export default (ctx) => {
       (then
         (return (call $__mkptr
           (i32.const ${PTR.STRING})
-          (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $total))
+          (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $total) (i32.const ${SSO_LEN_SHIFT})))
           (i32.or
             (i32.wrap_i64 (i64.and (local.get $a) (i64.const 0xFFFFFFFF)))
             (i32.shl
               (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF)))
-              (i32.shl (local.get $alen) (i32.const 3))))))))`
+              (i32.mul (local.get $alen) (i32.const 7))))))))`
 
   const concatFast = !ctx.memory.shared && ctx.transform.alloc !== false ? `
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -1086,19 +1101,17 @@ export default (ctx) => {
             (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT})))
             (i32.const ${LAYOUT.SSO_BIT})))
       (then
-        (local.set $alen (i32.and
-          (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT})))
-          (i32.const ${LAYOUT.SSO_BIT - 1})))
+        (local.set $alen ${ssoLenWat('(local.get $a)')})
         (if (i32.and
               (i32.lt_u (local.get $alen) (i32.const 4))
               (i32.lt_u (local.get $byte) (i32.const 0x80)))
           (then
             (return (call $__mkptr
               (i32.const ${PTR.STRING})
-              (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.add (local.get $alen) (i32.const 1)))
+              (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (i32.add (local.get $alen) (i32.const 1)) (i32.const ${SSO_LEN_SHIFT})))
               (i32.or
                 (local.get $aoff)
-                (i32.shl (local.get $byte) (i32.shl (local.get $alen) (i32.const 3))))))))))
+                (i32.shl (local.get $byte) (i32.mul (local.get $alen) (i32.const 7))))))))))
     ;; Slow path: allocate new heap STRING with original bytes + 1 new byte
     (local.set $alen (call $__str_byteLen (local.get $a)))
     (local.set $total (i32.add (local.get $alen) (i32.const 1)))
@@ -1379,11 +1392,11 @@ export default (ctx) => {
               (then
                 (local.set $sb (i32.load8_u (i32.add (local.get $off) (local.get $i))))
                 (br_if $heap (i32.ge_u (local.get $sb) (i32.const 0x80)))
-                (local.set $sp (i32.or (local.get $sp) (i32.shl (local.get $sb) (i32.shl (local.get $i) (i32.const 3)))))
+                (local.set $sp (i32.or (local.get $sp) (i32.shl (local.get $sb) (i32.mul (local.get $i) (i32.const 7)))))
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $pk))))
           (global.set $__heap (i32.sub (local.get $off) (i32.const 4)))
-          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $target)) (local.get $sp))))))` : ''}
+          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $target) (i32.const 10))) (local.get $sp))))))` : ''}
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
   // Base helpers (__sso_char/__str_char/__char_at/__str_byteLen) are referenced
@@ -1621,7 +1634,7 @@ export default (ctx) => {
 
   const padMethod = (start) => (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, 32)]
+    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, ssoAux(1), 32)]
     return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', start]], 'f64')
   }
   bind('.padStart', padMethod(1))
@@ -1688,14 +1701,17 @@ export default (ctx) => {
   // index; otherwise `oobIR`. Without the bounds check `__char_at` returns 0 for an
   // out-of-range index, which would wrap to a bogus `"\x00"` string (charAt → "",
   // at → undefined). `sLocal` is the receiver as an f64 local.
-  const charAtOr = (sLocal, iLocal, lenIR, oobIR) =>
+  const charAtOr = (sLocal, iLocal, lenIR, oobIR) => (
+    inc('__char1byte'),
     ['if', ['result', 'f64'],
       ['i32.and',
         ['i32.ge_s', ['local.get', iLocal], ['i32.const', 0]],
         ['i32.lt_s', ['local.get', iLocal], lenIR]],
-      ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1,
-        ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', sLocal]], ['local.get', iLocal]])],
-      ['else', oobIR]]
+      // __char_at yields a raw byte (≥0x80 for non-ASCII heap strings) → __char1byte
+      // builds an SSO byte when ASCII, else a heap 1-byte string.
+      ['then', ['call', '$__char1byte',
+        ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', sLocal]], ['local.get', iLocal]]]],
+      ['else', oobIR]])
   const emptyStr = mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
 
   // .charAt(i) → 1-char string at index i, or "" when out of range (JS spec: no
@@ -1742,13 +1758,27 @@ export default (ctx) => {
     return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
   })
 
+  // 1-byte string from a raw byte: SSO when ASCII (<0x80, fits the 7-bit codec),
+  // else a heap 1-byte string (the 7-bit SSO can't represent bytes ≥0x80).
+  wat('__char1byte', `(func $__char1byte (param $b i32) (result f64)
+    (local $off i32)
+    (local.set $b (i32.and (local.get $b) (i32.const 0xFF)))
+    (if (result f64) (i32.lt_u (local.get $b) (i32.const 0x80))
+      (then (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (local.get $b)))
+      (else
+        (local.set $off (call $__alloc (i32.const 8)))
+        (i32.store (local.get $off) (i32.const 1))
+        (i32.store8 (i32.add (local.get $off) (i32.const 4)) (local.get $b))
+        (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))`)
+
   // String.fromCharCode(...codes) — variadic; each arg is ToUint16(ToNumber(code))
   // → a 1-byte string, concatenated left to right (mirrors String.fromCodePoint).
   bind('String.fromCharCode', (...codes) => {
     if (codes.length === 0) return emit(['str', ''])
     // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
-    // argument, so a throwing valueOf/toString propagates per spec.
-    const one = (node) => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(toNumF64(node, emit(node))))
+    // argument, so a throwing valueOf/toString propagates per spec. A byte ≥0x80
+    // can't be a 7-bit-ASCII SSO, so __char1byte routes it to a heap 1-byte string.
+    const one = (node) => { inc('__char1byte'); return typed(['call', '$__char1byte', asI32(toNumF64(node, emit(node)))], 'f64') }
     let r = one(codes[0])
     for (let i = 1; i < codes.length; i++) {
       inc('__str_concat_raw')
@@ -1771,27 +1801,41 @@ export default (ctx) => {
     (local.set $cp (i32.trunc_sat_f64_s (local.get $cpf)))
     ;; ASCII: 1 byte SSO
     (if (i32.lt_u (local.get $cp) (i32.const 128))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 1}) (local.get $cp)))))
-    ;; 2-byte: 0x80-0x7FF → SSO
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (local.get $cp)))))
+    ;; multi-byte (cp ≥ 0x80): UTF-8 bytes are ≥0x80 → can't be 7-bit ASCII SSO, so
+    ;; build a heap STRING (len header at $off, bytes at $off+4). Over-alloc to 8 so the
+    ;; i32.store of the packed bytes never runs past the buffer; the len word bounds reads.
+    ;; 2-byte: 0x80-0x7FF
     (if (i32.lt_u (local.get $cp) (i32.const 0x800))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 2})
-        (i32.or
-          (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6)))
-          (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 8)))))))
-    ;; 3-byte: 0x800-0xFFFF → SSO (3 bytes fits)
+      (then
+        (local.set $off (call $__alloc (i32.const 8)))
+        (i32.store (local.get $off) (i32.const 2))
+        (i32.store (i32.add (local.get $off) (i32.const 4))
+          (i32.or
+            (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6)))
+            (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 8))))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))
+    ;; 3-byte: 0x800-0xFFFF
     (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 3})
-        (i32.or (i32.or
-          (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12)))
-          (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 8)))
-          (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 16)))))))
-    ;; 4-byte: 0x10000-0x10FFFF → SSO (4 bytes fits)
-    (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 4})
+      (then
+        (local.set $off (call $__alloc (i32.const 8)))
+        (i32.store (local.get $off) (i32.const 3))
+        (i32.store (i32.add (local.get $off) (i32.const 4))
+          (i32.or (i32.or
+            (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12)))
+            (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 8)))
+            (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 16))))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))
+    ;; 4-byte: 0x10000-0x10FFFF
+    (local.set $off (call $__alloc (i32.const 8)))
+    (i32.store (local.get $off) (i32.const 4))
+    (i32.store (i32.add (local.get $off) (i32.const 4))
       (i32.or (i32.or (i32.or
         (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18)))
         (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))) (i32.const 8)))
         (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 16)))
-        (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))))`)
+        (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))
+    (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4)))))`)
 
   // String.fromCodePoint(...codePoints) — variadic; each arg is ToNumber-coerced
   // then validated/encoded by __fromCodePoint, results concatenated left to right.

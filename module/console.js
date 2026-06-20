@@ -69,7 +69,7 @@ const setupWasi = (ctx) => {
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
       (then
-        (local.set $len (i32.and (local.get $aux) (i32.const 7)))
+        (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $off (i32.const 0))
         (block $done (loop $loop

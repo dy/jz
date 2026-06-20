@@ -711,12 +711,12 @@ export default (ctx) => {
           (local.set $len (i32.add (local.get $len) (i32.const 1)))
           ${ADV(2)})
         (else
-          ;; Pack first 4 bytes into SSO slot (used only when len ≤ 4).
+          ;; Pack first 4 bytes into SSO slot (used only when len ≤ 4): 7-bit ASCII, char at bit len*7.
           (if (i32.lt_u (local.get $len) (i32.const 4))
             (then (local.set $sso
               (i32.or (local.get $sso)
                 (i32.shl (i32.and (local.get $ch) (i32.const 0xFF))
-                  (i32.shl (local.get $len) (i32.const 3)))))))
+                  (i32.mul (local.get $len) (i32.const 7)))))))
           (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (local.get $ch) (i32.const 0xFF))) (i32.const 0x01000193)))
           (local.set $len (i32.add (local.get $len) (i32.const 1)))
           ${ADV(1)}))
@@ -735,7 +735,7 @@ export default (ctx) => {
     ;; SSO fast path: ≤4 ASCII chars, no escapes — bytes already packed inline.
     (if (i32.and (local.get $simple) (i32.le_u (local.get $len) (i32.const 4)))
       (then
-        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $sso)))))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $len) (i32.const 10))) (local.get $sso)))))
     ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
     ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
     (if (local.get $simple)

@@ -424,14 +424,15 @@ export default (ctx) => {
           (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))
       (else (i32.const 0))))`
 
-  // String length (UTF-8 byte count). Heap: [-4:len(i32)][chars...]; SSO: aux & 7.
+  // String length (UTF-8 byte count). Heap: [-4:len(i32)][chars...]; SSO (7-bit codec):
+  // len at aux bits 10-12 (= payload bits 42-44). See module/string.js codec.
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr i64) (result i32)
     (local $off i32) (local $aux i32)
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
       (then (return (i32.const 0))))
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
-      (then (return (i32.and (local.get $aux) (i32.const 7)))))
+      (then (return (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32) (i32.ge_u (local.get $off) (i32.const 4))
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))

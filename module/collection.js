@@ -877,12 +877,12 @@ export default (ctx) => {
     (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.shr_u (local.get $aux) (i32.const 14)))
       (then
-        (local.set $len (i32.and (local.get $aux) (i32.const 7)))
+        (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
         (block $ds (loop $ls
           (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
             (i32.xor (local.get $h)
-              (i32.and (i32.shr_u (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
             (i32.const 0x01000193)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $ls))))
