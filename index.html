@@ -71,14 +71,14 @@ a { color: inherit; }
    shares the SAME box + origin (gridX=0), so its pulses land on these lines. Hard-edged at the band bottom — no fade. */
 .hero::before {
   content: ''; position: absolute; top: 0; left: calc(var(--gx-pad) - var(--grid-over)); width: calc(var(--cw) + 2 * var(--grid-over) + 1px); height: calc(8 * var(--U)); z-index: 1; pointer-events: none;
-  border-bottom: 1px solid light-dark(rgba(255,255,255,.42), rgba(255,255,255,.17));   /* the band-closing rule. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
+  border-bottom: 1px solid light-dark(rgba(255,255,255,.7), rgba(255,255,255,.17));   /* the band-closing rule. The right ruler is NOT a border — the +1px width above lets the tiled gradient draw its final major line at the content edge, identical to every other vertical rule. */
   background-image:
-    linear-gradient(light-dark(rgba(255,255,255,.42), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.42), rgba(255,255,255,.062)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(255,255,255,.2), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.2), rgba(255,255,255,.05)) 1px, transparent 1px),
-    linear-gradient(light-dark(rgba(255,255,255,.085), rgba(255,255,255,.028)) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(rgba(255,255,255,.085), rgba(255,255,255,.028)) 1px, transparent 1px);
+    linear-gradient(light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.85), rgba(255,255,255,.062)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.38), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.38), rgba(255,255,255,.05)) 1px, transparent 1px),
+    linear-gradient(light-dark(rgba(255,255,255,.16), rgba(255,255,255,.028)) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(rgba(255,255,255,.16), rgba(255,255,255,.028)) 1px, transparent 1px);
   /* white grid both themes; light keeps the major line clearly visible on the gray but BELOW full white, so the boosted full-white pulses (which travel along the lines) still pop over it — at ~85% the line is near-white and white-on-white hides the pulses. */
   background-size: var(--U) var(--U), var(--U) var(--U), var(--u2) var(--u2), var(--u2) var(--u2), var(--u) var(--u), var(--u) var(--u);
   /* origin = this inset box's top-left (the 0 0 below is box-relative). A length, not a percentage: % in
