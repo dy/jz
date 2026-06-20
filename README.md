@@ -11,7 +11,7 @@ const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
 dist(3, 4) // 5
 ```
 
-**[site](https://dy.github.io/jz/)** · **[repl](https://dy.github.io/jz/repl/)** · **[floatbeat](https://dy.github.io/jz/floatbeat/)** · **[examples](https://dy.github.io/jz/examples/)** · **[bench](https://dy.github.io/jz/bench/)**
+**[site](https://dy.github.io/jz/)** · **[repl](https://dy.github.io/jz/repl/)**<!-- · **[floatbeat](https://dy.github.io/jz/floatbeat/)**--> · **[examples](https://dy.github.io/jz/examples/)** · **[bench](https://dy.github.io/jz/bench/)**
 
 
 ## Why?
