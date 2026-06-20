@@ -141,7 +141,7 @@ select { font-family: var(--sans); font-size: 12px; background: transparent; col
 select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
 
 /* icons (wasm · settings) — inherit the pane color, fade until hover */
-.ico { display: inline-flex; align-items: center; gap: 5px; padding: 6px 7px; border: 0;
+.ico { display: inline-flex; align-items: center; gap: 4px; padding: 6px 7px; border: 0;
   background: transparent; color: inherit; opacity: .62; cursor: pointer; font: inherit; transition: opacity .18s; }
 .ico:hover { opacity: 1; }
 .ico.wasm { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
@@ -241,6 +241,12 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
   .code { flex: 1 1 0; }                       /* ignore the persisted --lw; stack 50/50 */
   .divider { display: none; }
   .right { border-top: 1px solid var(--faint); }
+  /* soft-wrap code on touch — long lines stay readable without a horizontal scroll the finger
+     can't reach. The line-number gutter + active-line band assume one visual row per logical
+     line (gutter translateY, activeLine·LH), so drop them here; the textarea + overlay wrap in
+     lockstep (identical font/width/padding) and stay aligned. */
+  #guides, #hl, #editor { white-space: pre-wrap; overflow-wrap: break-word; padding-left: 16px; }
+  #gutter, #activeline { display: none; }
   /* ≥ 44px touch targets; 16px input so iOS doesn't zoom on focus */
   select { padding: 11px 13px; font-size: 14px; }
   .prompt input { font-size: 16px; }
