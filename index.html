@@ -415,8 +415,8 @@ a { color: inherit; }
     </details>
 
     <details name="faq">
-      <summary><span class="fq">Is it as fast as native C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans">Closer than you’d expect. Across the kernel corpus the same <code>.wasm</code> runs on par with native C — and about 2.4× faster than that same C compiled to WASM, because JZ auto-vectorizes where the C→wasm path doesn’t. Need a real binary? <code>jz → wasm2c → clang -O3</code> carries it the rest of the way to native. <a href="bench/">See the bench →</a></div>
+      <summary><span class="fq">Is it native fast?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="ans">Across the kernel corpus the same <code>.wasm</code> runs on par with native C — and about 2.4× faster than that same C compiled to WASM, because JZ auto-vectorizes where the C→wasm path doesn’t. Need a real binary? <code>jz → wasm2c → clang -O3</code> carries it the rest of the way to native. <a href="bench/">See the bench →</a></div>
     </details>
 
     <details name="faq">
@@ -593,15 +593,39 @@ const fitCurrent = () => {
   currentOut32 = new Uint32Array(currentImg.data.buffer)
   sizeBoth()
 }
-const loadCurrent = async () => {
-  try { src = await (await fetch('assets/grid-life.js')).text() } catch { return }
-  try { currentJz = jz(src, { optimize: 3 }).exports } catch {}           // jz → wasm
-  fitCurrent()                                                            // start the grid the moment the wasm engine is ready — never wait on the JS fallback
-  try {                                                                   // the SAME source as plain JS, only for the JS/JZ toggle. Safari can reject importing a blob: module (silently) — isolate it so it can't stop the wasm animation
+// The live demo depends on the theme: DARK = the electron pulses (grid-current — a dark sky of shooting
+// stars); LIGHT = the Game of Life (grid-life — lit cells read on the gray where white pulses can't).
+const demoSrc = () => document.documentElement.dataset.theme === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'
+let loading = false, pendingTheme = null
+const loadSource = async (path) => {
+  let text
+  try { text = await (await fetch(path)).text() } catch { return }
+  src = text
+  let jzEng = null, jsEng = null
+  try { jzEng = jz(src, { optimize: 3 }).exports } catch {}              // jz → wasm
+  try {                                                                   // the SAME source as plain JS, for the toggle. Safari can reject importing a blob: module — isolate it
     const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
-    try { currentJs = await import(u) } finally { URL.revokeObjectURL(u) }
-    sizeBoth()                                                            // size the JS engine to the live canvas too
+    try { jsEng = await import(u) } finally { URL.revokeObjectURL(u) }
   } catch {}
+  currentJz = jzEng; currentJs = jsEng; pxJz = null; pxJs = null
+  if (currentImg) sizeBoth(); else fitCurrent()                          // first load fits the canvas; a theme swap reuses it
+  // Safari/JSC canonicalizes NaN-boxed wasm→JS returns: jz's resize() comes back NaN, not a typed array.
+  // When the wasm engine can't return its buffer, run the demo on plain JS and lock the toggle; else keep wasm.
+  if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
+    currentJz = null; setEngineUI('js'); engineEl.disabled = true
+    engineEl.style.cursor = 'default'; engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
+  } else if (currentJz) {
+    engineEl.disabled = false; engineEl.style.cursor = ''; engineEl.removeAttribute('title')
+  }
+  bindEngine()
+}
+// re-entrant: a toggle mid-load is remembered and reloaded once the current load settles
+const loadCurrent = async () => {
+  if (loading) { pendingTheme = document.documentElement.dataset.theme; return }
+  loading = true
+  let want = document.documentElement.dataset.theme
+  do { pendingTheme = null; await loadSource(want === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'); want = pendingTheme } while (want)
+  loading = false
 }
 
 // ── fps sparkline — frames/sec the engine can COMPUTE (1000/frame-ms), uncapped by the display's 60Hz.
@@ -642,7 +666,7 @@ let msEMA = 0, sparkTick = 0
 const loop = (now) => {
   requestAnimationFrame(loop)
   const e = cur()
-  if (!e || !currentPx) return
+  if (loading || !e || !currentPx) return   // hold while the demo source is being (re)loaded on a theme swap
   const t0 = performance.now()
   try { e.frame(now * 0.001) } catch { return }
   const ms = performance.now() - t0; msEMA = msEMA ? msEMA * 0.9 + ms * 0.1 : ms
@@ -660,16 +684,20 @@ const engineEl = $('engine')
 const setEngineUI = (k) => { kind = k; engineEl.classList.toggle('jz', k === 'jz'); engineEl.classList.toggle('js', k === 'js'); engineEl.setAttribute('aria-checked', k === 'jz') }
 engineEl.onclick = () => { setEngineUI(kind === 'jz' ? 'js' : 'jz'); bindEngine() }
 
-// ── click anywhere on the band → spark a fresh pulse burst at that grid junction ──
-document.querySelector('.hero').addEventListener('pointerdown', (e) => {
+// ── pointer on the band: press = a white pulse burst (and, in Life, light the cell); drag = a pen that
+//    draws cells (a no-op on the pulse demo). Both engines get every call so their boards stay identical. ──
+const heroEl = document.querySelector('.hero')
+let drawing = false
+const heroXY = (e) => { const r = currentCv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] }
+const heroCall = (fn, nx, ny) => { if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return; try { currentJz?.[fn]?.(nx, ny) } catch {} ; try { currentJs?.[fn]?.(nx, ny) } catch {} }
+heroEl.addEventListener('pointerdown', (e) => {
   if (e.target.closest('a, button, iframe')) return        // let the nav / switch handle their own clicks
-  const r = currentCv.getBoundingClientRect()
-  const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height
-  if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) {   // spawn on BOTH engines so their Life boards stay identical through a click (the toggle is an honest A/B)
-    try { currentJz?.spawn?.(nx, ny) } catch {}
-    try { currentJs?.spawn?.(nx, ny) } catch {}
-  }
+  drawing = true
+  const [nx, ny] = heroXY(e); heroCall('spawn', nx, ny)
 })
+heroEl.addEventListener('pointermove', (e) => { if (drawing) { const [nx, ny] = heroXY(e); heroCall('pen', nx, ny) } })
+addEventListener('pointerup', () => { drawing = false })
+addEventListener('pointercancel', () => { drawing = false })
 
 // ── dev tuning panel: live sliders for the grid-current dials. HIDDEN unless the URL hash contains `tune`
 //    (open …/#tune to reveal, drop it to hide). Each slider calls param() on BOTH engines so the JS⇄JZ
@@ -708,23 +736,14 @@ const buildTunePanel = () => {
 const syncTunePanel = () => { if (/tune/.test(location.hash)) buildTunePanel().style.display = ''; else if (tunePanel) tunePanel.style.display = 'none' }
 addEventListener('hashchange', syncTunePanel); syncTunePanel()
 
-// ── boot: compile the sparkles both ways, fit to the band, start the loop ──
+// ── boot: compile the theme's demo both ways, fit to the band, start the loop (the Safari fallback now
+//    lives inside loadSource). Reload the demo whenever the theme flips — pulses (dark) ⇄ Life (light). ──
 ;(async () => {
   setEngineUI('jz')
   await loadCurrent()
-  // Safari/JSC canonicalizes NaN-boxed wasm→JS returns, so jz's reference returns are lost: resize()
-  // hands back NaN instead of its pixel buffer (numeric returns are fine; the wasm itself runs). When the
-  // wasm engine can't return a typed array, run the live demo on the SAME source as plain JS and lock the
-  // toggle to JS. (jz reference-return ABI vs JSC NaN canonicalization — to be fixed in the compiler.)
-  if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
-    currentJz = null
-    setEngineUI('js'); bindEngine()
-    engineEl.disabled = true
-    engineEl.style.cursor = 'default'
-    engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
-  }
 })()
 requestAnimationFrame(loop)   // drive the grid regardless of how the JS-fallback import settles (it no-ops until an engine is ready)
+new MutationObserver(loadCurrent).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
 // ── Logo reflection: the 1px bevel ring catches light. On a mouse the glare FACES the cursor and
 // sharpens/brightens as it nears — no autonomous spin; on touch / no pointer it's a gentle rotating
