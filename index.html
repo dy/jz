@@ -579,7 +579,7 @@ const fitCurrent = () => {
   const r = currentCv.getBoundingClientRect()       // the left-anchored band: min(--cw + 2·over, element − gx-pad + over)
   // Render near device resolution so the pulses are crisp 1px rules sitting ON the static hash grid.
   let scale = Math.min(devicePixelRatio || 1, 2)
-  const BUDGET = 2400000
+  const BUDGET = 4000000   // keep the backing at the display's exact device resolution (scale = dpr) so the canvas isn't resampled — a fractional scale slid the Life cells off the CSS grid lines
   const want = r.width * r.height * scale * scale
   if (want > BUDGET) scale *= Math.sqrt(BUDGET / want)
   const newW = Math.max(8, Math.round(r.width * scale) >> 1 << 1)

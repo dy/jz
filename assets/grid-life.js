@@ -1,7 +1,8 @@
 // grid-life.js — the light theme's live demo: a slow Conway's Game of Life on the 8px minor-grid cells.
-//   • A calm field — a few canonical shapes (glider, blinker, toad, beacon, LWSS) at random starts; the
-//     field refreshes to a fresh few every so often so it never piles up.
-//   • ~3 generations/second; each live cell is a filled black square (~80% opaque), crossfading in/out.
+//   • A calm field — a few canonical shapes (glider, blinker, toad, beacon, LWSS); a new one (often a
+//     crawler) drifts in every ~5s and nothing is ever reset, so hand-drawn cells persist.
+//   • ~3 generations/second; each cell is a faint black square (~40% opaque, like the sparkline fill),
+//     crossfading in/out — secondary decoration, not the focus.
 //   • Click = a pen: lights the cells under the cursor (drag to draw) + a white pulse burst.
 // One source, compiled in the page two ways (plain JS, and jz → wasm via dist/jz.js). Deterministic
 // (integer-hash seed + pure GoL) so the JS and wasm boards match for an honest A/B.
@@ -13,7 +14,7 @@ let pumaj = 160, pumid = 80                          // pulse-burst units (80/40
 let prev, cur, nxt                                   // Uint8Array boards (0/1): crossfade prev→cur, nxt = scratch
 let gen = 0
 let STEP = 0.34                            // ~3 generations/second
-let INJECT = 18                            // refresh a fresh few shapes every N generations (≈6s) — never piles up
+let INJECT = 15                            // drop ONE new shape every N generations (≈5s) — never clears the field
 let NPAT = 5
 
 // click bursts (white pulses)
@@ -70,7 +71,8 @@ let place = (pi, r0, c0, rot) => {
 }
 
 let drop = (s) => {
-  let pi = Math.floor(rnd(s * 4 + 1) * NPAT)
+  let pr = rnd(s * 4 + 1)
+  let pi = pr < 0.4 ? 0 : (pr < 0.62 ? 4 : 1 + Math.floor(rnd(s * 4 + 5) * 3))   // ~62% crawlers (glider / LWSS), the rest oscillators
   let rr = rows - 9; if (rr < 1) rr = 1
   let cc = cols - 9; if (cc < 1) cc = 1
   let r0 = 3 + Math.floor(rnd(s * 4 + 2) * rr)   // off the edges so shapes evolve instead of clipping + dying
@@ -79,17 +81,11 @@ let drop = (s) => {
   place(pi, r0, c0, rot)
 }
 
-// a fresh field of a few shapes (clears cur first; prev is left holding the previous board so it crossfades out)
-let plant = (s) => {
-  let n = cols * rows, i = 0
-  while (i < n) { cur[i] = 0; i = i + 1 }
-  drop(s + 11); drop(s + 27); drop(s + 53); drop(s + 91); drop(s + 131); drop(s + 173); drop(s + 211)
-}
-
 let seed = () => {
   let n = cols * rows, i = 0
-  while (i < n) { prev[i] = 0; nxt[i] = 0; i = i + 1 }
-  plant(7)
+  while (i < n) { prev[i] = 0; cur[i] = 0; nxt[i] = 0; i = i + 1 }
+  let s = 0
+  while (s < 6) { drop(101 + s * 47); s = s + 1 }   // a handful of shapes to start
   gen = 0
 }
 
@@ -131,7 +127,7 @@ let step = () => {
   }
   let t0 = prev; prev = cur; cur = nxt; nxt = t0   // rotate: old cur → prev (fade FROM), new gen → cur
   gen = gen + 1
-  if (gen % INJECT === 0) plant(gen)               // refresh: clear cur + a fresh few (prev still fades out)
+  if (gen % INJECT === 0) drop(gen + 1)            // a new shape drifts in; nothing is cleared (hand-drawn cells persist)
 }
 
 let ease = (p) => p * p * (3.0 - 2.0 * p)          // smoothstep
@@ -198,7 +194,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 204.0) | 0; if (aa > 204) aa = 204; fillCell(c, r, aa) }   // peak ~80% opacity
+        if (f > 0.02) { let aa = (f * 100.0) | 0; if (aa > 100) aa = 100; fillCell(c, r, aa) }   // faint (peak ~40%) — secondary decoration, like the sparkline fill
       }
       c = c + 1
     }

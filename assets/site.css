@@ -89,10 +89,10 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   justify-content: center; width: 20px; height: 20px; line-height: 0; transition: opacity .18s; }
 .theme-toggle:hover { opacity: 1; }
 .theme-toggle svg { width: 17px; height: 17px; display: block; }
-.theme-toggle .i-sun  { display: none; }
-.theme-toggle .i-moon { display: block; }
-:root[data-theme="light"] .theme-toggle .i-sun  { display: block; }   /* in light mode show the sun (click → dark) */
-:root[data-theme="light"] .theme-toggle .i-moon { display: none; }
+.theme-toggle .i-sun  { display: block; }   /* dark theme → show the sun */
+.theme-toggle .i-moon { display: none; }
+:root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
+:root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
 /* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; author (dy) over ॐ bottom-right. ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
@@ -127,7 +127,7 @@ footer .legal .om { font-size: 15px; }
 .mgroup { display: flex; flex-direction: column; gap: 12px; }
 .mlabel { font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: .02em; color: var(--dim); }   /* reuse the version chrome style — no bespoke micro-caps */
 .mstats { display: flex; align-items: flex-start; gap: clamp(14px, 1.7vw, 24px); flex-wrap: wrap; }
-.mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; text-decoration: none; color: inherit; }
+.mstats .stat { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-decoration: none; color: inherit; }
 .mstats .stat b { font-size: 32px; font-weight: 700; letter-spacing: -.01em; line-height: 1; font-variant-numeric: tabular-nums; }
 .mstats .stat span { font-size: 11.5px; line-height: 1.35; color: var(--dim); max-width: 15ch; }
 .mstats .stat:hover b { color: light-dark(#000, #fff); }   /* darken in light, brighten in dark — never white on the gray */
