@@ -140,7 +140,7 @@ let fillCell = (c, r, aa) => {
   if (y0 < 0) y0 = 0
   if (x1 > W) x1 = W
   if (y1 > H) y1 = H
-  let col = (aa << 24) | 0x00000000                // black, alpha aa (peaks ~80% opaque — a touch transparent)
+  let col = (aa << 24) | 0x00ffffff                // white, alpha aa (very faint)
   let y = y0
   while (y < y1) {
     let row = y * W, x = x0
