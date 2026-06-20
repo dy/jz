@@ -1766,6 +1766,23 @@ const inlCollectPinned = (n, pinned) => {
   for (const c of n) inlCollectPinned(c, pinned)
 }
 
+/** Pinned function names (export/start/ref.func/elem targets) across the module's
+ *  non-func nodes — a Set the inliner must never dissolve.
+ *
+ *  KEEP THIS EXTRACTED — do not inline back into inlineOnce. The self-host kernel
+ *  (jz compiling jz) mis-compiles this `new Set()` + scan when it lives inside the
+ *  oversized inlineOnce scope: the `pinned` value's pointer is zeroed, so the first
+ *  `pinned.add` traps in `__set_add` ("memory access out of bounds") on every L2
+ *  compile of a program with an inlinable helper. Building it in this small scope
+ *  keeps the local count under the threshold that triggers the miscompile. Pinned by
+ *  test/selfhost.js "level-2 inliner is sound". (Underlying large-function self-host
+ *  codegen bug is tracked separately; this is the surgical dodge.) */
+const inlBuildPinned = (ast) => {
+  const pinned = new Set()
+  for (const n of ast) if (!Array.isArray(n) || n[0] !== 'func') inlCollectPinned(n, pinned)
+  return pinned
+}
+
 // Parse a func node into { params, locals, inlResult } once, enforcing the
 // liftability contract (named params/locals, zero-init-able local types, ≤1
 // result, no inline export). Returns null if the func can't be lifted.
@@ -2245,7 +2262,7 @@ const inlineOnce = (ast) => {
   // Lift primitives are shared with `inline` (defined once above buildInline). inlineOnce
   // splices into a SINGLE caller (never duplicating); `inline` duplicates into every caller.
   const bodyStart = inlBodyStart, callsSelf = inlCallsSelf, unsafe = inlUnsafe, isBranch = inlIsBranch
-  const zeroFor = inlZeroFor, needsReset = inlNeedsReset, collectPinned = inlCollectPinned
+  const zeroFor = inlZeroFor, needsReset = inlNeedsReset
 
   for (let round = 0; round < MAX_INLINE_ROUNDS; round++) {
     const funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func')
@@ -2263,8 +2280,7 @@ const inlineOnce = (ast) => {
       for (let i = 1; i < n.length; i++) countRefs(n[i])
     }
     countRefs(ast)
-    const pinned = new Set()
-    for (const n of ast) if (!Array.isArray(n) || n[0] !== 'func') collectPinned(n, pinned)
+    const pinned = inlBuildPinned(ast)
     // a func may carry its own (export "name") — the signature scan below rejects those too
 
     // Pick a callee.

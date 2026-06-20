@@ -4371,8 +4371,14 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
   }
 
-  const ctx = { extraLocals: [], fail: false, failReason: null }   // only liftFail (fail/failReason) + freshMask (extraLocals) read it
   const newLanedLocals = new Map()       // origName → { laneName }
+  // SAME field set + ORDER as the ctx in tryVectorize / tryReduceVectorize / tryRampMap. The
+  // self-host kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
+  // liftExprV — so every ctx reaching it MUST have the identical shape, or the inferred layout is
+  // wrong for some and field reads corrupt (this is the exact regression 11657cf fixed; the
+  // tone-map's old 3-field ctx re-broke the ENTIRE self-host vectorizer). tryToneMap itself only
+  // reads fail/failReason/extraLocals, but the unused fields must still be present, in order.
+  const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
   const laned = (name) => { let r = newLanedLocals.get(name); if (!r) { r = { laneName: `${name}__v` }; newLanedLocals.set(name, r) } return r.laneName }
   const freshMask = () => { const mt = `$__mask${freshIdRef.next++}`; ctx.extraLocals.push(['local', mt, 'v128']); return mt }

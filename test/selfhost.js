@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
 import { instantiate } from '../interop.js'
+import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUILD = join(ROOT, 'scripts/selfhost-build.mjs')
@@ -93,3 +94,52 @@ for (const [label, src, expected] of SAMPLES) {
     is(inst.exports.main(), expected, `main() === ${expected}`)
   })
 }
+
+// The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON),
+// so they never reach watr's single-call inliner. This pins the LEVEL-2 inliner path:
+// inlineOnce grew large enough that the self-host kernel mis-compiled its `pinned` Set
+// local (pointer zeroed → __set_add trapped "memory access out of bounds" on every L2
+// compile of a program with an inlinable helper). The fix extracts inlBuildPinned to a
+// small scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-
+// call helper inlineOnce lifts, so this routes straight through the once-trapping path.
+test('selfhost: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
+  getSelf()  // ensure dist/jz.wasm built
+  const s = instantiate(readFileSync(SELF), { memory: 8192 })  // fresh instance, as a real self-host run does
+  const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'
+  const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
+  const bin = s.memory.read(out)
+  const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  ok(bytes.length > 8, 'level-2 self-host produced wasm bytes (no __set_add trap)')
+  is(instantiate(bytes, { memory: 256 }).exports.main(), 10, 'main() === 10 (1+2+3+4)')
+})
+
+// Pins the f64x2 lane vectorizer under self-host — it broke ENTIRELY two ways this regression hit:
+//  (1) tryToneMap built its `ctx` with a different field set than the other lifters; the kernel
+//      infers one struct layout per shared callee (liftFail), so the mismatched shape corrupted
+//      field reads and liftExprV returned null across the board (re-broke 11657cf), and
+//  (2) the kernel pipeline (scripts/self.js) omitted appendLateStdlib, so the 'post' vectorizer's
+//      injected `$math.log_v` body was never appended → "Unknown func $math.log_v" at instantiate.
+// A tone-map kernel lifts Math.log → f64x2.log_v, exercising both. Compile it SIMD ('speed') and
+// scalar (optimize:false) through the kernel; both must instantiate and yield the same checksum.
+test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
+  getSelf()
+  const TONE = `
+    let dens = new Uint32Array(64), px = new Uint32Array(64)
+    export let main = () => {
+      let i = 0
+      while (i < 64) { dens[i] = (i * 53) % 600; i++ }
+      i = 0
+      while (i < 64) { let v = dens[i], g = 0; if (v > 0) { let L = Math.log(v + 1.0) * 44.0; g = (L > 255.0 ? 255.0 : L) | 0 } px[i] = (255 << 24) | (g << 16) | (g << 8) | g; i++ }
+      let s = 0; i = 0; while (i < 64) { s = (s + px[i]) | 0; i++ }
+      return s
+    }`
+  const native = jz(TONE, { optimize: 'speed' }).exports.main()   // the correct checksum
+  const s = instantiate(readFileSync(SELF), { memory: 8192 })
+  // {level:'speed'} (object form, as the kernel-target always passes) → the f64x2 tone-map vectorizer
+  const out = s.exports.default(s.memory.String(TONE), 0, s.memory.String(JSON.stringify({ level: 'speed' })))
+  const bin = s.memory.read(out), bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  ok(bytes.length > 8, 'self-host produced wasm bytes (no ctx-shape malformed lift)')
+  // instantiate would throw "Unknown func $math.log_v" if appendLateStdlib were missing; the
+  // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
+  is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
+})

@@ -23,6 +23,7 @@ import {
 } from '../src/compile/emit.js'
 import { resolveOptimize, optimizeFunc, collectVolatileGlobals } from '../src/optimize/index.js'
 import watOptimize from '../src/wat/optimize.js'
+import { appendLateStdlib } from '../src/wat/assemble.js'
 import jzify from '../jzify/index.js'
 
 // Optimization tail, identical to index.js's host-facing compile(): watOptimize
@@ -53,6 +54,10 @@ function optimizeTail(module, cfg) {
   const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
   const volatileGlobals = collectVolatileGlobals(funcs)
   for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post')
+  // Mirror index.js: the 'post' lane vectorizer injects f64x2 stdlib mirrors ($math.log_v / cos2 / …)
+  // that weren't present when the stdlib was pulled + treeshaken — append any now-referenced helper
+  // body, else the self-host emits `call $math.log_v` with no matching func ("Unknown func $math.log_v").
+  appendLateStdlib(optimized)
   return optimized
 }
 

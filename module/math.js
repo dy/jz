@@ -528,8 +528,13 @@ export default (ctx) => {
       : `(f64x2.add ${splat(c)} (f64x2.mul (local.get ${v}) ${acc}))`, '')
   // fdlibm log's even/odd split, as f64x2 coefficient arrays (the scalar $math.log inlines them):
   // t1 = w·(L3 + w·(L5 + w·L7)), t2 = z·(L2 + w·(L4 + w·(L6 + w·L8))). Vectorized log_v reuses these.
-  const LOG_T1 = [0.3999999999940941908, 0.2222219843214978396, 0.1531383769920937332]
-  const LOG_T2 = [0.6666666666666735130, 0.2857142874366239149, 0.1818357216161805012, 0.1479819860511658591]
+  // STRING coefficients (not numbers): horner2 only ever interpolates them into the WAT
+  // (`(f64.const ${c})`), and under self-host that `${number}` goes through jz's shortest-repr
+  // __ftoa, which truncates to ~9 sig figs — so the kernel's log_v poly diverged from scalar
+  // $math.log (which inlines the exact literals). As strings, the full-precision decimal is
+  // embedded verbatim and watr parses it exactly, in both the host and the self-host kernel.
+  const LOG_T1 = ['0.3999999999940941908', '0.2222219843214978396', '0.1531383769920937332']
+  const LOG_T2 = ['0.6666666666666735130', '0.2857142874366239149', '0.1818357216161805012', '0.1479819860511658591']
   // Shared reduce → r ∈ [−π/2,π/2] in $r, quadrant parity in $q (branchless, 2 passes).
   const reduce2 = `
     (local.set $q (f64x2.nearest (f64x2.mul (local.get $x) ${splat(INV_PI)})))

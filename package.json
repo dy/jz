@@ -58,7 +58,7 @@
     "bench:readme": "node scripts/bench-readme.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
-    "prepublishOnly": "npm test && npm run test:self",
+    "prepublishOnly": "npm test && npm run build && npm run test:self && npm run test:wasm",
     "prepare": "npm run build"
   },
   "repository": {
