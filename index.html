@@ -345,7 +345,7 @@ footer .fcol a:hover { color: #fff; }
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
         <h1>Computational JS <br class="hb">at native speed</h1>
       </div>
-      <p class="sub">Compile JS to WASM ahead of time: same source, <b><span :text="v8">2.5×</span> faster</b>.<br> For DSP, visuals, simulations and more.</p>
+      <p class="sub">Compile JS to WASM ahead of time: same source, <b><span :text="v8">2.5×</span> faster</b>.<br> For DSP, visuals, simulation, physics.</p>
     </div>
 
     <div class="pcol pright">
@@ -391,9 +391,9 @@ footer .fcol a:hover { color: #fff; }
 
     <details name="faq" open>
       <summary><span class="fq">What is JZ?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
-      <div class="ans"><p>It's compiler of distilled JavaScript subset — Crockford’s “good parts”. No GC, no runtime, no annotations, SIMD-enabled, deterministic output. <b>Valid JZ is valid JS </b> – the same file runs as plain JS in any engine, or compiles unchanged to a fast, portable <code>.wasm</code>.</p>
+      <div class="ans"><p>It's a compiler for a distilled subset of JavaScript — Crockford’s “good parts”. <b>Valid JZ is valid JS:</b> the same file runs as plain JS in any engine, or compiles unchanged to a fast, portable <code>.wasm</code>. No runtime, no GC, no annotations — auto-vectorized, deterministic output.</p>
         <p><b>Good for:</b> DSP & audio, image & video, simulation & physics, parsers & codecs, games & demoscene, numerical & scientific computing — any compute-bound hot loop.</p>
-        <p></o><b>Not for:</b> async, server glue, DOM/UI, OOP/dynamic/polymorphic code, string-templating, allocation-heavy, I/O, anything not hot — compiling it adds zero gain, keep those in regular JS.</p>
+        <p><b>Not for:</b> async, server glue, DOM/UI, OOP/dynamic/polymorphic code, string-templating, allocation-heavy, I/O, anything not hot — compiling it adds zero gain, keep those in regular JS.</p>
       </div>
     </details>
 
