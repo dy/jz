@@ -92,7 +92,8 @@ a { color: inherit; }
 /* top bar — a 1-unit-tall header band above the grid; menu right-aligned to the content column */
 .hero-nav { position: absolute; z-index: 2; top: 20px; left: 0; right: 0; max-width: var(--colw);
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;   /* the same content column as the pitch + every section */
-  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 60px; padding: 0 var(--padx); }   /* the menu floats over the grid (absolute, top:20) */
+  display: flex; justify-content: flex-end; align-items: center; gap: 24px; height: 60px; padding: 0 var(--padx);
+  -webkit-user-select: none; user-select: none; }   /* the menu floats over the grid (absolute, top:20); non-selectable so a draw-drag doesn't select it */
 .hero-nav a { color: var(--ink); opacity: .72; text-decoration: none; font-size: 12px; text-transform: uppercase;
   letter-spacing: .14em; transition: opacity .18s; }
 .hero-nav a:hover { opacity: 1; }
