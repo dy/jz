@@ -7,8 +7,10 @@
 <link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon" />
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-  canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #eee; }
-  canvas.gradient { inset: 0 0 auto 0; height: 3px; z-index: 1; }
+  /* scope to DIRECT body children only — a bare `canvas` rule also hits the HUD's nested
+     sparkline <canvas> and pins it top-left. body > canvas matches just the demo + gradient. */
+  body > canvas { position: fixed; inset: 0; width: 100%; height: 100%; background: #eee; }
+  body > canvas.gradient { inset: 0 0 auto 0; height: 3px; z-index: 1; }
 </style>
 </head>
 <body>
