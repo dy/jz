@@ -32,6 +32,13 @@ const EXAMPLES = [
   { name: 'interference', frame: 'update ×1',
     make: (e) => { e.resize(320, 240); let tick = 0; return () => e.update(tick += 0.012) } },
 
+  // Pure-integer serial walk (no SIMD, no transcendentals): a spiral whose every step is i32
+  // index + sieve-lookup + scatter. V8 runs the spiral arithmetic as f64 JS; jz keeps it native
+  // i32 — that codegen edge alone wins ~1.6×. Pins the global-typed-array i32-narrowing fix
+  // (`ax = ax + DX[dir]`): before it, jz round-tripped that add through f64 and ran ~2× SLOWER.
+  { name: 'ulam', frame: 'frame (spiral 216k)',
+    make: (e) => { e.resize(540, 400); return () => e.frame(216000, 1) } },
+
   // `opt: true` marks a serial-recurrence / reduction kernel that ties or trails V8
   // (latency-bound, no cross-pixel ILP for jz to exploit). Reported, kept as a
   // compiler-optimization target — not held to the winners' regression floor.
