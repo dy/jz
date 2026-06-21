@@ -729,6 +729,22 @@ test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (
   ok((wat.match(/i32\.add/g) || []).length >= 1, 'accumulation lowers to native i32.add')
 })
 
+test('codegen: integer const-global folds to i32 — x % CONST_GLOBAL takes the integer path', () => {
+  // `const N = 16384` is an immutable integer constant. A counter bounded by it must stay
+  // i32, and `x % N` must lower to native i32.rem_s — not fold N to an f64 constant and route
+  // `%` through the software f64 remainder (the long-division the crc32/json outer loops paid).
+  // Pins both exprType (i32 typing) and readVar (i32.const emit) for const-int globals.
+  const wat = compile(`
+    const N = 16384
+    export let f = (iters) => {
+      let acc = 0
+      for (let it = 0; it < (iters | 0); it++) acc = (acc + (it % N)) | 0
+      return acc | 0
+    }`, { wat: true })
+  ok((wat.match(/i32\.rem_s/g) || []).length >= 1, 'x % CONST_GLOBAL lowers to i32.rem_s')
+  is((wat.match(/f64\.copysign/g) || []).length, 0, 'no software f64-remainder for the integer modulo')
+})
+
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
   // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
   // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType

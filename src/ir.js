@@ -1009,6 +1009,13 @@ export function readVar(name) {
     return typed(['f64.load', boxedAddr(name)], 'f64')
   }
   if (isGlobal(name)) {
+    // A module-level integer const (`const N = 16384`) is an immutable compile-time
+    // value: emit i32.const directly (when it fits i32) so `x % N` / `x & N` / `x / N`
+    // and counters bounded by N take the native integer path, instead of the global
+    // folding to an f64 constant and routing through the f64 round-trip. Value-preserving
+    // — an f64 consumer widens the i32.const via convert, which folds back to f64.const.
+    const ci = ctx.scope.constInts?.get?.(name)
+    if (ci != null && isI32(ci)) return typed(['i32.const', ci], 'i32')
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const node = typed(['global.get', dollar(name)], gt)
     const grep = repOfGlobal(name)
