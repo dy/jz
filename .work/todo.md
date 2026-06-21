@@ -2,13 +2,31 @@
 
 ## V1
 
+* [ ] Beat all bench cases, all examples - pinned
+  * [ ] 10 more bench cases - each area covered
+* [ ] compiler architecture perfection
+* [ ] jz.wasm beats v8
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
 * [ ] color-space
 * [ ] audiojs
 * [ ] unplugin
-* [ ] compiler architecture perfection
+
+## Floatbeat (what's a good name?)
+
+* I want an environment like codepen, codesandbox etc, but specifically for sharing floatbeats with different visualizations;
+* Search - to find floatbeats across different platforms (scraper? live pull? cache?)
+* Various visualizers (via JZ or shaders)
+  * Classic notes staff
+  * Xenakis
+  * log/mel spectrogram
+* Interactivity - synth, midi, randomization, simulations
+* An agent to help driving creation
+* Music theory integration
+* Audio metrics
+* Output mastering params (maybe drop into wavearea for fragment editing?)
+* Download a slice / fragment
 
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.

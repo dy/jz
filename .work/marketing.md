@@ -84,6 +84,12 @@ persona #1 (the best adopter); and one line in `<head>` actively repels skeptics
 - **Category:** AOT compiler for the *numeric core* of JavaScript.
 - **Awareness/sophistication (Schwartz):** solution-aware, high-sophistication, high-wear-out → relief first, proof-before-claims, never open on the speed number.
 - **Positioning sentence:** *For JS devs whose numeric hot paths stutter under GC — DSP, audio worklets, physics, image processing — jz is the AOT JS→WASM compiler that needs no new syntax, no type annotations, and creates zero lock-in, unlike AssemblyScript which demands a dialect that can't run as plain JS.*
+- **The effort ladder (group by *cost to adopt*, not by *target*):** the axis a visitor actually weighs isn't JS / WASM / Native (the target) — it's **rewrite vs no-rewrite** (the cost). Three rungs:
+  - **Keep your JS** (V8 / Bun / Deno) — zero effort · the floor
+  - **Compile your JS** (**jz**) — ~zero effort · *the entire pitch*
+  - **Rewrite it** (Rust / Go / C / Zig → wasm or native, AssemblyScript) — high effort · the ceiling
+
+  jz's USP in one line: **rewrite-tier speed at zero-rewrite effort.** jz stands *alone* in the cheap rung, sitting near the top of the expensive rung's performance range — the picture *is* the argument ("only jz gives you this for free"). It's the same no-rewrite relief as the lead claim, made visual and quantified. The bench page groups the corpus by this ladder so its structure argues the position; the per-case view stays an absolute-speed list (let the winner show) with a class tint, since by-case the entertaining question is "who won this kernel".
 
 ---
 
