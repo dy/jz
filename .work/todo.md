@@ -23,7 +23,7 @@
   - [x] JZ/JS switch with fps
   - [x] Minirepl
   - [x] Mobile version
-  - [ ] Light theme?
+  - [x] Light theme?
   - [ ] Sponsor call
   - [ ] Used by (projects list)
 - [ ] Examples

@@ -706,6 +706,41 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
   is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the nest')
 })
 
+test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (no f64 round-trip)', () => {
+  // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read +
+  // add must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert
+  // → f64.add → i32.trunc_sat. The global typed array's element type was invisible to
+  // exprType during analyze/emit (only locals/params were consulted), so the whole
+  // expression widened to f64 — the ulam spiral measured 2.2× SLOWER than V8; with the
+  // global typed-elem registry consulted it is ~1.6× faster. Pins both: emit and exprType.
+  const wat = compile(`
+    let DX = new Int32Array([1, 0, -1, 0])
+    let out = new Int32Array(1)
+    export let walk = () => {
+      let ax = 0, dir = 0, i = 0
+      while (i < 1000) { ax = ax + DX[dir]; dir = (dir + 1) & 3; i = i + 1 }
+      out[0] = ax
+    }`, { wat: true })
+  // Every `+` in the kernel is integer (ax, DX[dir], dir+1, i+1) so a correct lowering has
+  // NO f64 arithmetic at all. HEAD emits f64.add + f64.convert_i32_s on `ax + DX[dir]` — the
+  // round-trip — because the global Int32Array's element type was invisible to exprType.
+  is((wat.match(/f64\.add/g) || []).length, 0, 'no f64.add on the integer accumulation')
+  is((wat.match(/f64\.convert_i32_s/g) || []).length, 0, 'no i32→f64 convert feeding the accumulation')
+  ok((wat.match(/i32\.add/g) || []).length >= 1, 'accumulation lowers to native i32.add')
+})
+
+test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
+  // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
+  // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType
+  // flags a Uint32 read as unsigned so +/-/* widen to f64 (bitwise/store consumers stay i32).
+  const { exports } = jz(`
+    let U = new Uint32Array(4)
+    export let setup = () => { U[0] = 4294967295 }
+    export let add1 = () => U[0] + 1`, { optimize: 'speed' })
+  exports.setup()
+  is(exports.add1(), 4294967296, 'Uint32 read + 1 does not wrap at 2^32')
+})
+
 test('codegen: f64-strided index does NOT force its counter to i32', () => {
   // Guard against over-narrowing: when the index carries a genuinely-f64 operand
   // (here `w` is an exported-function param, fixed f64 by the host ABI), the access

@@ -76,6 +76,29 @@ const stringOps = (node) => {
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+// Peel an emitted operand back to its raw i32 value when it carries one: a value already
+// typed i32 (integer literals included — they emit as i32.const), or an integer read wrapped
+// in f64.convert_i32_s/u (typed-array / i32-global reads default to the f64 rep). Else null.
+const peelI32 = (v) =>
+  isI32Num(v) ? v
+    : (Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u'))
+      ? (Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1])
+      : null
+
+// Native wrapping i32 arithmetic for `+`/`-`/`*` whose result is consumed as i32. Peels the
+// f64.convert_i32_s/u that integer reads (`DX[i]`, a global Int32Array) wrap their load in, so
+// `ax = ax + DX[i]` (ax and DX[i] both i32) lowers to one i32.add instead of the
+// convert → f64.add → trunc_sat round-trip that doubled hot integer loops (ulam's spiral walk,
+// ring-buffer indexing). Bit-identical for an i32 result: ToInt32(exact) ≡ two's-complement wrap.
+// Gated on exprType(whole expr)==='i32' so an f64-consumed sum — or an unsigned-wide (uint32)
+// operand, which exprType already reports as f64 — still widens. Returns null when inapplicable.
+const tryI32Arith = (wasmOp, astOp, a, b, va, vb) => {
+  const pa = peelI32(va); if (pa == null) return null
+  const pb = peelI32(vb); if (pb == null) return null
+  if (exprType([astOp, a, b], ctx.func.locals) !== 'i32') return null
+  return typed([wasmOp, pa, pb], 'i32')
+}
+
 // f64 arithmetic that can MINT a sign-nondeterministic NaN (0/0, ∞−∞, 0·∞, x%0): on x86
 // these are 0xFFF8…, on arm 0x7FF8…. sqrt/min/max/neg are NOT here — they canon at their
 // own emit (math.js / unary `-`), so they reach canonNum already canonical.
@@ -2688,6 +2711,7 @@ export const emitter = {
     // op whose result can exceed i32, so `i32.add` would wrap (4294967295+1→0).
     // Widen to f64 — never wrap — matching spec. Only `>>>0`/`|0`/imul wrap.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.add', va, vb], 'i32')
+    const i32add = tryI32Arith('i32.add', '+', a, b, va, vb); if (i32add) return i32add
     return typed(['f64.add', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '-': (a, b) => {
@@ -2703,6 +2727,7 @@ export const emitter = {
     // Unsigned uint32 operand: JS `-` is float (can go negative / exceed i32),
     // so avoid the wrapping i32.sub fast-path. See `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.sub', va, vb], 'i32')
+    const i32sub = tryI32Arith('i32.sub', '-', a, b, va, vb); if (i32sub) return i32sub
     return typed(['f64.sub', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   'u+': a => {
@@ -2733,6 +2758,7 @@ export const emitter = {
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
+    const i32mul = tryI32Arith('i32.mul', '*', a, b, va, vb); if (i32mul) return i32mul
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '/': (a, b) => {

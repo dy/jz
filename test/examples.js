@@ -175,22 +175,30 @@ test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)',
 test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/newton/newton.js', import.meta.url), 'utf8');
     ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'newton vectorizes');
-    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0); return [...px]; };
+    // frame is (t, are, aim, vcx, vcy, vscale) — the gallery pan/zoom refactor added the view + the
+    // animated polynomial coefficient (are≈1.32, aim≈0 at the home phase). Driving frame(0) alone
+    // leaves are/aim/view undefined→NaN → an all-black field, which makes the bit-exact check vacuous
+    // (scalar-NaN == SIMD-NaN). Pass real args AND assert a real field so it can't silently degenerate.
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0, 1.32, 0.0, 0, 0, 1.6); return [...px]; };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
+    ok(simd.filter(v => v & 0xffffff).length > 1000, `newton renders a real field (${simd.filter(v => v & 0xffffff).length}/1536 lit), not blank`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'newton outcome-tracking bit-exact vs scalar (1536 px)');
 });
 
-// Standalone conditional store: lorenz's trail-fade loop is `if (p & 0xffffff) px[i] = fade(p)` — a
-// per-pixel i32 map with a no-else conditional (untouched pixels keep their value). The lift now folds
-// `if(c){…;store(addr,A)}[else{…;store(addr,B)}]` into one store of bitselect(A, B, mask(c)) — both
-// arms evaluated speculatively (lane-pure ⇒ trap-free), a missing else keeping the loaded value.
-test('example: lorenz conditional trail-fade vectorizes (i32x4 if-store) bit-exact', () => {
+// lorenz renders an f32 energy field then composites it paper→ink. It was refactored from a
+// conditional trail-fade store (`if (p & 0xffffff) px[i] = fade(p)`) to an UNCONDITIONAL opaque
+// composite (every pixel written = exactly the paper colour where dark, so no faded smudges linger
+// on a light theme). The standalone conditional-store→bitselect lift it used to exercise is now
+// unit-covered in test/simd.js ("conditional STORE form"); here we pin the refactored example's
+// correctness + scalar/SIMD agreement. NOTE: the unconditional composite (clamp f32 energy → lerp
+// → pack ARGB → store) does NOT vectorize yet — the per-pixel-color pass only lifts the u32-density
+// tonemap shape — so this is also the regression guard for vectorizing it (it must stay bit-exact).
+test('example: lorenz energy composite renders + stays bit-exact scalar↔SIMD', () => {
     const src = fs.readFileSync(new URL('../examples/lorenz/lorenz.js', import.meta.url), 'utf8');
-    const wat = jz.compile(src, { ...OPT, wat: true });
-    ok((wat.match(/v128\.bitselect/g) || []).length > 0, 'lorenz fade lifts to an if-store bitselect');
     const run = (opts) => { const { exports } = jz(src, { ...opts, randomSeed: 5 }); const px = exports.resize(80, 60); if (exports.init) exports.init(); for (let f = 0; f < 30; f++) exports.frame(f * 0.05, 0.3); return [...px]; };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
-    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz if-store bit-exact vs scalar (4800 px, 30 frames)');
+    ok(simd.filter(v => v & 0xffffff).length > 200, `lorenz renders a real attractor (${simd.filter(v => v & 0xffffff).length} lit px), not blank`);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz composite bit-exact vs scalar (4800 px, 30 frames)');
 });
 
 // Mixed-lane log-tonemap (tryToneMap): fern / attractors both end in a flat loop that
@@ -204,7 +212,9 @@ test('example: lorenz conditional trail-fade vectorizes (i32x4 if-store) bit-exa
 // so it no longer takes this path and isn't a case here.)
 test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-exact', () => {
     const cases = [
-        { name: 'fern',        w: 37, h: 49, drive: (e) => { const px = e.resize(37, 49); if (e.init) e.init(); for (let f = 0; f < 4; f++) e.frame(f, 0.2); return [...px]; } },
+        // fern is (t, sway, panX, panY, zoom) — the pan/zoom refactor added the last three; driving
+        // frame(f, 0.2) left them undefined→NaN → a blank field (bit-exact vacuously true). Pass the home view.
+        { name: 'fern',        w: 37, h: 49, drive: (e) => { const px = e.resize(37, 49); if (e.init) e.init(); for (let f = 0; f < 4; f++) e.frame(f, 0.2, 0, 0, 1); return [...px]; } },
         { name: 'attractors',  w: 45, h: 37, drive: (e) => { const px = e.resize(45, 37); for (let f = 0; f < 3; f++) e.frame(1.4, -2.3, 2.4, -2.1, 15000); return [...px]; } },
     ];
     for (const { name, drive } of cases) {
@@ -218,6 +228,7 @@ test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-e
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 7 }).exports);
         const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalToneMap: false });
         is(simd.length, scal.length);
+        ok(simd.filter(v => v & 0xffffff).length > 50, `${name} renders a real field (${simd.filter(v => v & 0xffffff).length} lit), not blank — bit-exact below isn't vacuous`);
         is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} mixed-lane tonemap bit-exact vs scalar (${cases.find(c => c.name === name).w * cases.find(c => c.name === name).h} px)`);
     }
 });
@@ -425,9 +436,11 @@ test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', (
     const wat = jz.compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 20, `domain-color vectorizes via the per-pixel-color pass (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok(/\$math\.atan2_2/.test(wat) && /\$math\.hypot_2/.test(wat), 'atan2 → $math.atan2_2, hypot → $math.hypot_2');
-    // Pass a REAL constant c (cx,cy ≠ 0) — frame(0) alone left every pixel 0 (cx=cy=0 is a degenerate
-    // field), so a SIMD-all-zero miscompile read "bit-exact" against scalar-all-zero and slipped through.
-    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0, 0.37, 0.21, 0, 0); return Array.from(px); };
+    // Pass a REAL constant c (cx,cy ≠ 0) AND a finite scale — frame(0) alone left every pixel 0
+    // (cx=cy=0 is a degenerate field), so a SIMD-all-zero miscompile read "bit-exact" against
+    // scalar-all-zero and slipped through. frame is (t, cx, cy, panX, panY, scale): omitting scale
+    // leaves it undefined→NaN, which also blacks the whole field (every mode), masking the real test.
+    const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); if (exports.frame) exports.frame(0, 0.37, 0.21, 0, 0, 1.5); return Array.from(px); };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
     is(simd.length, scal.length);
     ok(simd.filter(v => v & 0xffffff).length > 1400, `domain-color SIMD renders a real field, not all-black (${simd.filter(v => v & 0xffffff).length}/1536 lit)`);

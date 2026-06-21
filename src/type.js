@@ -362,9 +362,24 @@ export function isTerminator(body) {
   return false
 }
 
-const isUnsignedI32Expr = (e) => Array.isArray(e) && (
+// Resolve a name's typed-array element ctor: in-progress local overlay (analyzeBody) →
+// per-func map (post-analyze) → module-global registry. The global fallback matters during
+// analyzeBody/narrow when the per-func map is null, so a read of a *global* typed array
+// (`DX[i]` with `let DX = new Int32Array(...)` at module scope) resolves its element type
+// instead of defaulting to f64. Guard against local shadows / dynamic rewrites (cf. kind.js).
+const typedElemCtorOf = (name, locals) =>
+  ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.types.typedElem?.get(name)
+    ?? (!locals?.has?.(name) && !ctx.types?.dynWriteVars?.has?.(name)
+      ? ctx.scope?.globalTypedElem?.get(name) : undefined)
+
+// An expression whose i32 value carries the unsigned [0, 2^32) magnitude (not a signed i32):
+// `>>>`, an unsigned-result call, or a Uint32Array read (aux 5 — the only typed array whose
+// element can exceed signed-i32 range). The +/-/*/% rules widen these to f64 so `U[i] + 1`
+// near 2^32 doesn't wrap; bitwise/store consumers are ToInt32-exact and keep the i32 bits.
+const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
   e[0] === '>>>' ||
-  (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true)
+  (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true) ||
+  (e[0] === '[]' && typeof e[1] === 'string' && typedElemAux(typedElemCtorOf(e[1], locals)) === 5)
 )
 
 /**
@@ -411,7 +426,10 @@ export function exprType(expr, locals) {
   // localTypedElemsOverlay during analyzeBody; post-analyze passes read ctx.types.typedElem.
   if (op === '[]') {
     if (typeof args[0] === 'string') {
-      const ctor = ctx.func.localTypedElemsOverlay?.get(args[0]) ?? ctx.types.typedElem?.get(args[0])
+      // Resolve the element ctor across local overlay → per-func map → module-global registry
+      // (the global fallback is why `DX[i]` on a module-scope Int32Array types as i32 instead of
+      // f64-round-tripping integer accumulation like `ax = ax + DX[i]`). See typedElemCtorOf.
+      const ctor = typedElemCtorOf(args[0], locals)
       if (ctor) {
         const aux = typedElemAux(ctor)
         if (aux != null && (aux & 7) <= 5) return 'i32'
@@ -455,7 +473,7 @@ export function exprType(expr, locals) {
     // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
     // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
     // narrowing the result back to i32 would trunc_sat-saturate the f64 to INT32_MAX.
-    if (isUnsignedI32Expr(args[0]) || (args[1] != null && isUnsignedI32Expr(args[1]))) return 'f64'
+    if (isUnsignedI32Expr(args[0], locals) || (args[1] != null && isUnsignedI32Expr(args[1], locals))) return 'f64'
     return 'i32'
   }
   // `%` is i32 only when emit takes the i32.rem_s path: both operands i32, neither
@@ -465,7 +483,7 @@ export function exprType(expr, locals) {
   if (op === '%') {
     const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
-    if (isUnsignedI32Expr(args[0]) || isUnsignedI32Expr(args[1])) return 'f64'
+    if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     const dv = staticValue(args[1])
     return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
   }
@@ -478,7 +496,7 @@ export function exprType(expr, locals) {
     const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
-    if (isUnsignedI32Expr(args[0]) || isUnsignedI32Expr(args[1])) return 'f64'
+    if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
     const small = e => {
       const v = staticValue(e)
