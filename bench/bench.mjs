@@ -13,6 +13,10 @@ const ROOT = join(BENCH_DIR, '..')
 const LIB = join(BENCH_DIR, '_lib')
 const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
 const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2c'
+// wasm2c lowers v128/SIMD ops through the SIMDe header set (`#include <simde/wasm/simd128.h>`),
+// vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
+// jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
+const SIMDE_DIR = process.env.SIMDE_DIR || join(WABT_W2C_DIR, '..', 'third_party', 'simde')
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
@@ -493,7 +497,7 @@ const targets = {
       const host = join(caseBuild(c), `${c.id}-w2c-host.c`)
       execFileSync('wasm2c', [wasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
       writeFileSync(host, w2cHost(c, hFile))
-      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${WABT_W2C_DIR}`, host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${WABT_W2C_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2cBinPath(c)]),
   },
   jawsm: {
@@ -544,13 +548,17 @@ let selectedTargets = targetIds
 
 // --json[=path]: write bench/results.json (consumed by bench/index.html) plus
 // per-case browser wasm artifacts under bench/web/ for the live in-page runner.
+// --emit-web: write only bench/web/*.wasm (skip all measurement) — the cheap
+// path pages.yml runs to (re)build the live-runner artifacts at deploy time.
 let JSON_PATH = null
+let EMIT_WEB = false
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg.startsWith('--cases=')) selectedCases = arg.slice(8).split(',').filter(Boolean)
   else if (arg.startsWith('--workloads=')) selectedCases = arg.slice(12).split(',').filter(Boolean)
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
   else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
+  else if (arg === '--emit-web') EMIT_WEB = true
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
   // both a case (the self-host compiler workload) and a target — the case
   // wins; select the target via --targets=jz.
@@ -564,17 +572,33 @@ if (process.exitCode) process.exit(process.exitCode)
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
 for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case: ${id}`); process.exit(2) }
 
+// --emit-web: compile just the page's playable cases to bench/web/*.wasm and
+// stop — no measurement, no native/JS-engine toolchains. The cheap step
+// pages.yml runs to (re)build the live in-page runner's artifacts at deploy.
+// Self-host rows (jz/watr/jessie) are hidden from the page, so they're never
+// emitted — that's the multi-MB jz.wasm we keep out of the deploy entirely.
+if (EMIT_WEB) {
+  const { built } = emitWebWasm(selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid)))
+  console.log(`wrote bench/web/{${built.join(',')}}.wasm`)
+  process.exit(0)
+}
+
 // Per-(case, target) valid medians, collected to drive the geomean bench.svg.
 const grid = {}
-// The engines in bench/bench.svg — the WASM scope (apples-to-apples, all run in
-// node's V8): jz vs Rust/Go/C compiled to wasm, the JS→wasm field (AssemblyScript,
-// Porffor), and V8 (plain JS). native C is kept only as a labeled speed-of-light
-// reference, never a beat-claim. A target with no data on a run is simply skipped.
+// The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
+// (Rust/Go/C/Zig compiled to wasm, AssemblyScript, Porffor — all run in node's
+// V8, apples-to-apples with jz) and V8 (plain JS). native C is the lone non-wasm
+// row, kept as a labeled speed-of-light reference (the aggregate ceiling), never
+// a beat-claim. Per case (bench/index.html) native gets its OWN fair lane —
+// jz-w2c (jz → wasm2c → clang) vs the native toolchains — so a native binary
+// never races jz-wasm directly; this corpus headline keeps native C as the
+// ceiling. A target with no data on a run is simply skipped.
 const SVG_TARGETS = [
-  { id: 'jz', label: 'jz', sub: '-O3' },
+  { id: 'jz', label: 'JZ', sub: '-O3' },
   { id: 'c-wasm', label: 'C', sub: 'clang → wasm' },
   { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
   { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
+  { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf', label: 'Porffor', sub: 'JS → wasm' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
@@ -682,41 +706,24 @@ if (svgCases.every(cid => selectedCases.includes(cid))) {
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
     rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf' ? `runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
-  if (rows.length > 1 && rows.some(r => r.label === 'jz')) {
+  if (rows.length > 1 && rows.some(r => r.label === 'JZ')) {
     renderBenchSvg(rows, geoCases.length)
     console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
 }
 
-// ── --json: machine-readable snapshot + browser wasm artifacts ───────────────
-if (JSON_PATH) {
-  const ver = cmd => versionText(cmd).trim().split('\n')[0] || null
-  const usedTargets = new Set()
-  for (const c of Object.values(jsonOut.cases)) for (const tid of Object.keys(c.targets)) usedTargets.add(tid)
-  jsonOut.meta = {
-    date: new Date().toISOString().slice(0, 10),
-    commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { return null } })(),
-    host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
-    versions: Object.fromEntries(Object.entries({
-      jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
-      node: process.version,
-      asc: has('asc') && ver('asc'),
-      porffor: has(PORF_BIN) && ver(PORF_BIN),
-      bun: has(BUN_BIN) && ver(BUN_BIN),
-      deno: has(DENO_BIN) && ver(DENO_BIN),
-      clang: has('clang') && ver('clang'),
-    }).filter(([, v]) => v)),
-    invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
-  }
-
-  // Per-case wasm for the in-page runner: default js-host lowering, so
-  // jz/interop's instantiate() wires console/perf with zero custom imports.
-  // The compile is timed (median of 3) — the same number the page measures
-  // live in the visitor's tab; reference value for the compile-time stat.
+// Compile the page's playable cases to bench/web/<case>.wasm for the live
+// in-browser runner. Default js-host lowering, so jz/interop's instantiate()
+// wires console/perf with zero custom imports. The compile is timed (median of
+// 3) — the same number the page measures live in the visitor's tab. Returns
+// { built:[ids], compileMs:{id} }; callers pass the playable set, so the hidden
+// self-host rows' multi-MB wasm is never written.
+function emitWebWasm(caseIds) {
   const webDir = join(BENCH_DIR, 'web')
   mkdirSync(webDir, { recursive: true })
   const built = []
-  for (const cid of selectedCases) {
+  const compileMs = {}
+  for (const cid of caseIds) {
     const c = caseById[cid]
     try {
       const isWatr = c.id === 'watr'
@@ -741,12 +748,41 @@ if (JSON_PATH) {
         times.push(performance.now() - t0)
       }
       writeFileSync(join(webDir, `${c.id}.wasm`), wasm)
-      if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = +times.sort((a, b) => a - b)[1].toFixed(1)
+      compileMs[cid] = +times.sort((a, b) => a - b)[1].toFixed(1)
       built.push(cid)
     } catch (e) {
       console.error(`[web] ${cid}: ${String(e.message || e).split('\n')[0]}`)
     }
   }
+  return { built, compileMs }
+}
+
+// ── --json: machine-readable snapshot + browser wasm artifacts ───────────────
+if (JSON_PATH) {
+  const ver = cmd => versionText(cmd).trim().split('\n')[0] || null
+  const usedTargets = new Set()
+  for (const c of Object.values(jsonOut.cases)) for (const tid of Object.keys(c.targets)) usedTargets.add(tid)
+  jsonOut.meta = {
+    date: new Date().toISOString().slice(0, 10),
+    commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { return null } })(),
+    host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
+    versions: Object.fromEntries(Object.entries({
+      jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
+      node: process.version,
+      asc: has('asc') && ver('asc'),
+      porffor: has(PORF_BIN) && ver(PORF_BIN),
+      bun: has(BUN_BIN) && ver(BUN_BIN),
+      deno: has(DENO_BIN) && ver(DENO_BIN),
+      clang: has('clang') && ver('clang'),
+    }).filter(([, v]) => v)),
+    invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
+  }
+
+  // Per-case wasm for the in-page runner (playable cases only — the self-host
+  // rows are hidden from the page, so their multi-MB artifacts never ship).
+  // compileMs lands back on each case as the page's live compile-time reference.
+  const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid)))
+  for (const [cid, ms] of Object.entries(compileMs)) if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = ms
   writeFileSync(JSON_PATH, JSON.stringify(jsonOut, null, 1))
   console.log(`\nwrote ${JSON_PATH} + bench/web/{${built.join(',')}}.wasm`)
 }

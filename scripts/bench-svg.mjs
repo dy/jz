@@ -26,31 +26,39 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 // deterministically between runs.
 //   ratio = geomean(engine median / jz median) over the cases the engine ran
 //           (lower = faster; jz is the 1.00× baseline). These reproduce from the
-//           per-case table in README.md. native C is the lone non-wasm reference row.
+//           per-case table in README.md. The wasm rivals are the apples-to-apples
+//           field; native C is the lone non-wasm row, kept as a speed-of-light
+//           reference (jz holds geomean parity with it).
 // SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
 // Porffor denominator, so the offline render is internally consistent. The live
 // bench.mjs run passes its own current count (geoCases.length) instead.
 export const SNAPSHOT_N = 22
 export const SNAPSHOT = [
-  { label: 'jz', sub: '-O3', ratio: 1.00 },
-  { label: 'native C', sub: 'clang -O3 · ref', ratio: 1.07 },
-  { label: 'C', sub: 'clang → wasm', ratio: 2.43 },
-  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.63 },
-  { label: 'V8', sub: 'Node (JS)', ratio: 2.69 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.80 },
-  { label: 'Porffor', sub: `runs 3 / ${SNAPSHOT_N}`, ratio: 3.49 },
-  { label: 'Go', sub: 'gc → wasm', ratio: 4.91 },
+  { label: 'JZ', sub: '-O3', ratio: 1.00 },
+  { label: 'native C', sub: 'clang -O3 · ref', ratio: 1.05 },
+  { label: 'C', sub: 'clang → wasm', ratio: 2.41 },
+  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.64 },
+  { label: 'V8', sub: 'Node (JS)', ratio: 2.66 },
+  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.76 },
+  { label: 'Porffor', sub: `runs 3 / ${SNAPSHOT_N}`, ratio: 3.43 },
+  { label: 'Go', sub: 'gc → wasm', ratio: 4.90 },
 ]
 
 // native C (clang -O3, native binary) — the lone speed-of-light reference, the only
-// non-wasm row on the chart. Always drawn: on a box without clang its committed SNAPSHOT
-// ratio stands in (a stable ceiling, not a same-run measurement). Rust/Go/C race here as
-// wasm rivals (compiled to wasm32-wasi, run in V8) — competitors, not the reference.
+// non-wasm row on the chart. Always drawn: on a box without clang its committed
+// SNAPSHOT ratio stands in. Rust/Go/C race here as wasm rivals (wasm32-wasi, run in
+// V8) — competitors, not the reference. (Per case, native gets its own fair lane —
+// jz-w2c vs the native toolchains; this corpus headline keeps native C as the
+// ceiling — see bench/index.html.)
 export const REFERENCE = new Set(['native C'])
 
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
-const HERO = '#000000'   // jz — black accent (B&W identity)
-const GRAY = '#adb5bd'   // every other ball — minimal, one accent
+// Transparent chart that blends into either theme: every mark is `currentColor`, so it
+// inherits the host's text colour — the landing inlines it (→ follows the light/dark
+// toggle), and standalone/README falls back to the system text colour via `color-scheme`.
+// Opacity tiers replace the old fixed-gray hierarchy (jz = full ink, the one accent).
+const INK = 'currentColor'
+const O = { ball: 0.4, label: 0.82, sub: 0.46, num: 0.6, track: 0.1, tick: 0.3, scope: 0.72, cap: 0.5 }
 
 /** Build the animated SVG string from rows `[{ label, sub?, ratio }]`.
  *  `cases` (optional) = number of bench cases behind each geomean, for the caption. */
@@ -71,8 +79,8 @@ export function benchSvg(rows, cases) {
 
   const lane = (r, i) => {
     const cy = top + i * rowH + rowH / 2
-    const isJz = r.label === 'jz'
-    const color = isJz ? HERO : GRAY   // jz black, every other ball gray (native C/Rust included — labels carry the "native" cue)
+    const isJz = r.label === 'JZ'
+    const ballO = isJz ? 1 : O.ball   // jz at full ink, every other ball dimmed (native C/Rust included — labels carry the "native" cue)
     const dur = period(r.ratio)
     const bx0 = (trackX + ballR).toFixed(1)
     const bx1 = (trackRight - ballR).toFixed(1)
@@ -81,26 +89,25 @@ export function benchSvg(rows, cases) {
 
     return `
   <g font-family="${FONT}">
-    <rect x="${trackX}" y="${cy - 1.5}" width="${trackRight - trackX}" height="3" rx="1.5" fill="#edf0f2"/>
-    <line x1="${trackX}" y1="${tickT}" x2="${trackX}" y2="${tickB}" stroke="#ced4da" stroke-width="2"/>
-    <line x1="${trackRight}" y1="${tickT}" x2="${trackRight}" y2="${tickB}" stroke="#ced4da" stroke-width="2"/>
-    <text x="${labelW}" y="${cy - 4}" text-anchor="end" font-size="14" font-weight="${fw}" fill="${isJz ? HERO : '#343a40'}">${r.label}</text>
-    ${r.sub ? `<text x="${labelW}" y="${cy + 11}" text-anchor="end" font-size="10" fill="#aeb4ba">${r.sub}</text>` : ''}
-    <text x="${trackRight + 12}" y="${cy + 4}" font-size="13" font-weight="${fw}" fill="${isJz ? HERO : '#868e96'}">${fmt(r.ratio)}×</text>
-    <circle cx="${bx0}" cy="${cy}" r="${ballR}" fill="${color}">
+    <rect x="${trackX}" y="${cy - 1.5}" width="${trackRight - trackX}" height="3" rx="1.5" fill="${INK}" fill-opacity="${O.track}"/>
+    <line x1="${trackX}" y1="${tickT}" x2="${trackX}" y2="${tickB}" stroke="${INK}" stroke-opacity="${O.tick}" stroke-width="2"/>
+    <line x1="${trackRight}" y1="${tickT}" x2="${trackRight}" y2="${tickB}" stroke="${INK}" stroke-opacity="${O.tick}" stroke-width="2"/>
+    <text x="${labelW}" y="${cy - 4}" text-anchor="end" font-size="14" font-weight="${fw}" fill="${INK}" fill-opacity="${isJz ? 1 : O.label}">${r.label}</text>
+    ${r.sub ? `<text x="${labelW}" y="${cy + 11}" text-anchor="end" font-size="10" fill="${INK}" fill-opacity="${O.sub}">${r.sub}</text>` : ''}
+    <text x="${trackRight + 12}" y="${cy + 4}" font-size="13" font-weight="${fw}" fill="${INK}" fill-opacity="${isJz ? 1 : O.num}">${fmt(r.ratio)}×</text>
+    <circle cx="${bx0}" cy="${cy}" r="${ballR}" fill="${INK}" fill-opacity="${ballO}">
       <animate attributeName="cx" dur="${dur}s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="${bx0};${bx1};${bx0}" begin="-${phase(i).toFixed(2)}s"/>
     </circle>
   </g>`
   }
 
-  const caption = `geometric mean across ${cases ? `${cases} benchmark cases` : 'the bench corpus'} · lower is faster, jz = 1.00× baseline`
+  const caption = `geometric mean across ${cases ? `${cases} benchmark cases` : 'the bench corpus'} · lower is faster, JZ = 1.00× baseline`
   const scope = `every rival compiled to WebAssembly, run in V8 · native C = reference`
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="jz benchmark — ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
-  <rect width="${W}" height="${H}" rx="12" fill="#ffffff"/>
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark — ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
 ${rows.map(lane).join('')}
-  <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="#495057">${scope}</text>
-  <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="#868e96">${caption}</text>
+  <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${INK}" fill-opacity="${O.scope}">${scope}</text>
+  <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="${INK}" fill-opacity="${O.cap}">${caption}</text>
 </svg>
 `
 }

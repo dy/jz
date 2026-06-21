@@ -69,12 +69,20 @@ jobs:
       # Refresh the bench-page dataset: bench/index.html renders results.json and
       # instantiates bench/web/*.wasm for its live in-browser runner. Push-to-main
       # only; the paths-ignore above keeps the commit from re-triggering this
-      # workflow. clang/rustc/go are preinstalled on ubuntu runners, so native
-      # reference rows come from the same consistent machine as the JS/wasm rows.
+      # workflow. clang/rustc/go/zig are preinstalled on ubuntu runners, so every
+      # rival builds on the one consistent machine. The headline axis is wasm-in-V8
+      # (c-wasm/rust-wasm/go-wasm/zig-wasm — apples-to-apples with jz); native
+      # C/Rust/Go/Zig stay as a corpus reference band (the aggregate "what you give
+      # up by not rewriting" ceiling). Per case the page splits into a WASM lane and
+      # a Native lane (jz-w2c = jz lowered to native via wasm2c → clang, vs native
+      # toolchains). jz-w2c self-gates on wabt's wasm2c runtime + SIMDe headers
+      # (WABT_W2C_DIR / SIMDE_DIR); absent here, so it skips and the page's Native
+      # lane stays hidden until a wasm2c toolchain is wired into CI. Every target
+      # that runs lands in the dataset; index.html decides which lane shows it.
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,rust,zig,go,v8,deno,bun,as,porf,jz,wat,numpy --json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,zig-wasm,rust,zig,go,v8,deno,bun,as,porf,jz,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true

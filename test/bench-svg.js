@@ -2,12 +2,14 @@
 // Pure string assertions, no toolchain, so it runs in the default `npm test`.
 // Guards the two ways the chart used to mislead (.work/todo.md): a bare ratio
 // with no "geomean of N cases" caption, and jz labeled "→ wasm" (a pipeline)
-// while every rival showed its optimization tier (clang/rustc/asc -O3).
+// while every rival showed its optimization tier (clang/rustc/asc -O3). The
+// corpus headline keeps native C as the lone reference row; per-case cards drop
+// native (that filter is pinned in the page, not here).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { benchSvg, withReference, REFERENCE, SNAPSHOT, SNAPSHOT_N } from '../scripts/bench-svg.mjs'
 
-const rows = [{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
+const rows = [{ label: 'JZ', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
 
 test('bench-svg: caption names the geomean, case count, and the wasm-vs-wasm scope', () => {
   const svg = benchSvg(rows, 12)
@@ -28,7 +30,7 @@ test('bench-svg: jz is labeled by optimization tier, not a pipeline', () => {
   // lives in the chart's scope line + the rival subs, so jz's own label stays a tier.
   const svg = benchSvg(rows, 12)
   ok(svg.includes('>-O3<'), 'jz sub-label is -O3 (parallel to clang/rustc/asc -O3)')
-  is(SNAPSHOT.find(r => r.label === 'jz').sub, '-O3')
+  is(SNAPSHOT.find(r => r.label === 'JZ').sub, '-O3')
 })
 
 test('bench-svg: snapshot render is internally consistent (caption N = Porffor denominator)', () => {
@@ -55,9 +57,10 @@ test('bench-svg: native C is always shown (the lone speed-of-light reference)', 
   is(live.find(r => r.label === 'native C').ratio, 1.05, 'measured native C ratio kept over snapshot')
 })
 
-test('bench-svg: every non-jz ball (native C + wasm rivals) is the same gray; only jz is black', () => {
-  const svg = benchSvg([{ label: 'jz', sub: '-O3', ratio: 1 }, { label: 'native C', sub: 'clang -O3', ratio: 1.13 }], 12)
-  ok(!/fill="#ffffff"\s+stroke=/.test(svg), 'no hollow reference rings — every non-jz ball is the same gray')
-  ok(/<circle[^>]*fill="#adb5bd"/.test(svg), 'native C drawn as the gray competitor ball')
-  ok(/<circle[^>]*fill="#000000"/.test(svg), 'jz stays a solid black ball')
+test('bench-svg: transparent + currentColor — jz ball at full ink, every other ball uniformly dimmed', () => {
+  const svg = benchSvg([{ label: 'JZ', sub: '-O3', ratio: 1 }, { label: 'native C', sub: 'clang -O3', ratio: 1.13 }], 12)
+  ok(!/#fff(fff)?/i.test(svg) && !/<rect[^>]*\bwidth="720"/.test(svg), 'no opaque white background — the chart is transparent so it blends into the page')
+  ok(!/#[0-9a-f]{6}/i.test(svg), 'no hardcoded colours — every mark is currentColor, inheriting the page text colour')
+  ok(/<circle[^>]*fill="currentColor"[^>]*fill-opacity="1"/.test(svg), 'jz ball is full-ink currentColor')
+  ok(/<circle[^>]*fill="currentColor"[^>]*fill-opacity="0\.4"/.test(svg), 'native C (and every non-jz ball) is currentColor at the same dimmed opacity')
 })

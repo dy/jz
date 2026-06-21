@@ -17,6 +17,10 @@
   --mid: light-dark(#6c6c78, #8a8a93);     /* secondary text */
   --faint: light-dark(#e3e3e9, #1c1c25);   /* hairlines / bar tracks */
   --red: light-dark(#d61f1f, #ff5a5a);
+  /* class-glyph brand colour: JS = gold, WASM = violet (#654FF0). Native's terminal
+     glyph uses the neutral --mid gray (no brand), so no colour token for it. */
+  --cls-js: light-dark(#caa10a, #f0db4f);
+  --cls-wasm: light-dark(#654ff0, #9a8bf5);
   --padx: 40px;   /* matches the shared column in assets/site.css (which also gives --cw/--colw/--gx-pad) */
 }
 html { scroll-behavior: smooth; }
@@ -33,6 +37,7 @@ h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacin
 p { font-size: 14px; line-height: 1.55; max-width: 70ch; }
 p + p { margin-top: 10px; }
 #speed > p { margin: 0 0 22px; }   /* corpus note, sits under the heading above the bars */
+#cases > p { margin: 0 0 18px; }   /* cases note (wasm scope), above the filter chips */
 a { color: var(--ink); }
 .dim { color: var(--mid); }
 code, .mono { font-family: var(--mono); font-size: .92em; }
@@ -66,6 +71,7 @@ button {
 button:hover { background: var(--ink); color: var(--paper); }
 button:disabled { opacity: .4; cursor: default; }
 button:disabled:hover { background: var(--paper); color: var(--ink); }
+.theme-toggle:hover { background: none; color: inherit; }   /* icon-only toggle: no inverted-block hover (it's not an action button) */
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 #honest { margin-top: 0; padding: 96px 0 56px; text-align: center; }
 #honest p { max-width: none; }   /* full-width so the centered text lands on the column centre, aligned with the button */
@@ -81,6 +87,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* bar rows */
 .row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .lab .cico { vertical-align: -1.5px; margin-right: 4px; }   /* sits just before the label */
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
 .row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
@@ -89,6 +96,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid light-dark(#b6b9be, var(--ink)); background: light-dark(#e7e9ec, var(--paper)); min-width: 2px; }   /* competitors: a faintly whitish fill + soft gray border in light (the solid black JZ bar still stands out); outline-only on black in dark */
 .bar i.solid { background: var(--ink); }
 .bar i.diff { border-color: var(--red); }
+/* class glyph: before each per-row label and on the corpus group headers (.bandlab).
+   currentColor tint — JS gold, WASM violet, native a quiet gray terminal mark. */
+.cico { width: 11px; height: 11px; }
+.cico.cls-js { color: var(--cls-js); }
+.cico.cls-wasm { color: var(--cls-wasm); }
+.cico.cls-native { color: var(--mid); }
+.bandlab .cico { vertical-align: -1.5px; margin-right: 6px; }
 .bar .cut { position: absolute; right: 8px; top: 0; bottom: 0; width: 7px; background: var(--paper);
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
 .row.strong .lab, .row.strong .val { font-weight: 700; }
@@ -163,6 +177,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 
 <section id="cases">
   <h2>Cases</h2>
+  <p class="dim">Per kernel, every target ranked by raw speed — who won this one. The glyph marks the substrate: <b style="color:var(--cls-js)">JS</b>, <b style="color:var(--cls-wasm)">WebAssembly</b>, and a <span class="mono">&gt;_</span> terminal mark for native (jz's native row is its wasm via wasm2c → clang). The corpus above groups by class; here it's a straight race.</p>
   <div class="chips" id="chips"></div>
   <div class="cards" id="cards"></div>
 </section>
@@ -203,19 +218,19 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 import { headlineStats } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 
-// ── targets: band = which question the row answers ──────────────────────────
-// js: "is compiling worth it at all?"  wasm: "is jz the best JS→wasm route?"
-// native: "what do I give up by not rewriting?"
-// Invocation details live in the methodology table, not in row labels.
+// ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
+// The corpus groups by class. Per case it's one intermixed list sorted by
+// absolute speed ("who won this kernel"); a small class ICON before each label
+// marks the substrate, so the mixed rows stay legible at a glance.
 const BANDS = [
   ['js', 'JS'],
   ['wasm', 'WASM'],
   ['native', 'Native'],
 ]
 const TARGETS = {
-  v8:    { label: 'JS', sub: 'node', band: 'js' },
-  deno:  { label: 'JS', sub: 'deno', band: 'js' },
-  bun:   { label: 'JS', sub: 'bun', band: 'js' },
+  v8:    { label: 'Node', band: 'js' },
+  deno:  { label: 'Deno', band: 'js' },
+  bun:   { label: 'Bun', band: 'js' },
   spidermonkey: { label: 'SpiderMonkey', band: 'js', hatch: true },
   graaljs: { label: 'GraalJS', band: 'js', hatch: true },
   jz:    { label: 'JZ', band: 'wasm', strong: true },
@@ -226,13 +241,16 @@ const TARGETS = {
   'rust-wasm': { label: 'Rust', sub: 'rustc → wasm', band: 'wasm' },
   'go-wasm':   { label: 'Go', sub: 'gc → wasm', band: 'wasm' },
   'c-wasm':    { label: 'C', sub: 'clang → wasm', band: 'wasm' },
+  'zig-wasm':  { label: 'Zig', sub: 'zig → wasm', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm' },
-  'jz-w2c': { label: 'JZ', sub: 'wasm2c', band: 'native', hatch: true },
-  nat:   { label: 'C (native)', band: 'native', hatch: true },
-  natgcc:{ label: 'C', sub: 'gcc', band: 'native', hatch: true },
-  rust:  { label: 'Rust', band: 'native', hatch: true },
-  zig:   { label: 'Zig', band: 'native', hatch: true },
-  go:    { label: 'Go', band: 'native', hatch: true },
+  // Native reference rows (corpus geomean only). `native` sub disambiguates them
+  // from the wasm rows above — "C native" vs "C clang → wasm", "Rust native" vs
+  // "Rust rustc → wasm". The speed-of-light ceiling, never a per-case row.
+  nat:   { label: 'C', sub: 'native', band: 'native', hatch: true },
+  'jz-w2c': { label: 'JZ', sub: 'wasm2c → native', band: 'native', hatch: true },
+  rust:  { label: 'Rust', sub: 'native', band: 'native', hatch: true },
+  zig:   { label: 'Zig', sub: 'native', band: 'native', hatch: true },
+  go:    { label: 'Go', sub: 'native', band: 'native', hatch: true },
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
@@ -246,6 +264,14 @@ const HIDDEN = new Set(['watr', 'jessie', 'jz'])
 const ICO = {
   play: `<svg class="ico" viewBox="0 0 12 12" width="9" height="9" aria-hidden="true"><path fill="currentColor" d="M2.5 1.3v9.4l7-4.7z"/></svg>`,
   code: `<svg class="ico" viewBox="0 0 16 12" width="13" height="10" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M5 3.2 1.5 6 5 8.8M11 3.2 14.5 6 11 8.8"/></svg>`,
+}
+// substrate-class glyphs: JS + WebAssembly brand marks (Simple Icons); native is a
+// 2-stroke terminal prompt (>_, "runs as a native binary") — a different silhouette
+// from the two square brand marks, kept quiet (gray) since native is the reference.
+const CLS_ICO = {
+  js: `<svg class="cico cls-js" viewBox="0 0 24 24" aria-hidden="true"><title>JS</title><path fill="currentColor" d="M0 0h24v24H0V0zm22.034 18.276c-.175-1.095-.888-2.015-3.003-2.873-.736-.345-1.554-.585-1.797-1.14-.091-.33-.105-.51-.046-.705.15-.646.915-.84 1.515-.66.39.12.75.42.976.9 1.034-.676 1.034-.676 1.755-1.125-.27-.42-.404-.601-.586-.78-.63-.705-1.469-1.065-2.834-1.034l-.705.089c-.676.165-1.32.525-1.71 1.005-1.14 1.291-.811 3.541.569 4.471 1.365 1.02 3.361 1.244 3.616 2.205.24 1.17-.87 1.545-1.966 1.41-.811-.18-1.26-.586-1.755-1.336l-1.83 1.051c.21.48.45.689.81 1.109 1.74 1.756 6.09 1.666 6.871-1.004.029-.09.24-.705.074-1.65l.046.067zm-8.983-7.245h-2.248c0 1.938-.009 3.864-.009 5.805 0 1.232.063 2.363-.138 2.711-.33.689-1.18.601-1.566.48-.396-.196-.597-.466-.83-.855-.063-.105-.11-.196-.127-.196l-1.825 1.125c.305.63.75 1.172 1.324 1.517.855.51 2.004.675 3.207.405.783-.226 1.458-.691 1.811-1.411.51-.93.402-2.07.397-3.346.012-2.054 0-4.109 0-6.179l.004-.056z"/></svg>`,
+  wasm: `<svg class="cico cls-wasm" viewBox="0 0 24 24" aria-hidden="true"><title>WASM</title><path fill="currentColor" d="M14.745,0c0,0.042,0,0.085,0,0.129c0,1.52-1.232,2.752-2.752,2.752c-1.52,0-2.752-1.232-2.752-2.752 c0-0.045,0-0.087,0-0.129H0v24h24V0H14.745z M11.454,21.431l-1.169-5.783h-0.02l-1.264,5.783H7.39l-1.824-8.497h1.59l1.088,5.783 h0.02l1.311-5.783h1.487l1.177,5.854h0.02l1.242-5.854h1.561l-2.027,8.497H11.454z M20.209,21.431l-0.542-1.891h-2.861l-0.417,1.891 h-1.59l2.056-8.497h2.509l2.5,8.497H20.209z M17.812,15.028l-0.694,3.118h2.159l-0.796-3.118H17.812z"/></svg>`,
+  native: `<svg class="cico cls-native" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><title>native</title><path d="M4 17l6-6-6-6M12 19h8"/></svg>`,
 }
 
 const FAMILY = { biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio',
@@ -300,15 +326,22 @@ const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(
 const geo = xs => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length)
 const median = xs => { const a = [...xs].sort((x, y) => x - y); return a.length ? (a[a.length >> 1] + a[(a.length - 1) >> 1]) / 2 : null }
 const nCases = n => `${n} case${n === 1 ? '' : 's'}`
+// Strip the sub-label bits the class glyph now carries: a bare "native", any
+// "<tool> → wasm" pipeline, and the "→ native" tail of jz-w2c ("wasm2c → native" →
+// "wasm2c"). Informative subs (JS engine node/deno/bun, jz-wasmtime's "wasi") stay.
+const stripClassSub = (label, sub) =>
+  !sub || sub === 'native' || /→ wasm$/.test(sub) ? label : `${label} ${sub.replace(/ → native$/, '')}`
 
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size }) => {
+const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, cls }) => {
   const cut = rel > BREAK
   const w = cut ? 100 : (rel / maxLin * 100)
+  const barCls = `${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}`
+  const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   return `<div class="row${strong ? ' strong' : ''}">
-    <span class="lab">${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
-    <span class="bar"><i class="${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
+    <span class="lab">${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
+    <span class="bar"><i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
     <span class="val">${esc(text)}${size ? `<span class="sz">${esc(fmtB(size))}</span>` : ''}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
   </div>`
 }
@@ -333,14 +366,12 @@ const localGeo = () => {
 
 const renderGeomean = () => {
   const rows = []
-  for (const [band] of BANDS)
-    for (const [tid, t] of Object.entries(TARGETS)) {
-      if (t.band !== band) continue
-      const g = geoRatio(tid)
-      if (g) rows.push({ tid, band, ...t, ...g })
-    }
-  // your-browser rows fold into their bands as regular rows, sorted with the rest:
-  // JZ browser (your jz, = 1× like the reference JZ) and JS browser (your JS ÷ your jz).
+  for (const [tid, t] of Object.entries(TARGETS)) {
+    const g = geoRatio(tid)
+    if (g) rows.push({ tid, band: t.band, ...t, ...g })
+  }
+  // your-browser rows fold in as regular rows, sorted with the rest: JZ browser
+  // (your jz, = 1× like the reference JZ) and JS browser (your JS ÷ your jz).
   const yours = localGeo()
   if (yours) {
     rows.push({ tid: '__jzlive', band: 'wasm', label: 'JZ browser', geo: 1, n: yours.n, strong: true })
@@ -352,9 +383,11 @@ const renderGeomean = () => {
   for (const [band, lab] of BANDS) {
     const bandRows = rows.filter(r => r.band === band).sort((a, b) => a.geo - b.geo)
     if (!bandRows.length) continue
-    html += `<div class="bandlab">${lab}</div>`
+    // The class glyph rides the group header here (the group already names the class),
+    // so corpus rows stay icon-free — no redundant per-row glyph under the header.
+    html += `<div class="bandlab">${CLS_ICO[band] || ''}${lab}</div>`
     for (const r of bandRows)
-      html += rowHtml({ label: r.sub ? `${r.label} ${r.sub}` : r.label, sub: nCases(r.n),
+      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub: nCases(r.n),
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
   }
   $('geomean').innerHTML = html
@@ -399,19 +432,25 @@ const renderChips = () => {
     `<button data-f="${f}" class="${filter === f ? 'on' : ''}">${f}</button>`).join('')
 }
 
+// Per-case: ONE intermixed list of every target, sorted by absolute speed — the
+// fun "who won this kernel". The class glyph (cls = substrate) lets wasm / native /
+// JS rows mix legibly; labels are cleaned of the now-redundant "native" / "→ wasm"
+// tags (stripClassSub) since the glyph carries the class. jz stays the solid row.
 const cardRows = c => {
   const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid])
     .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r })).sort((a, b) => a.medianUs - b.medianUs)
-  // anchor = fastest browser-class row (≈ jz), so a freak-fast native row (zlib crc32)
-  // can't crush the scale; the printed × is vs this anchor too, so jz reads ≈ 1× and the
-  // bars, the ×, and the sort order all agree (native, being faster, shows a fraction).
   const ok = entries.filter(r => r.parity !== 'DIFF')
+  if (!ok.length) return ''
+  // anchor = fastest non-hatch row (≈ jz / browser-class), so a freak-fast native
+  // binary can't crush the scale; the printed × is vs this anchor too, so jz reads
+  // ≈ 1× and a faster native simply shows a fraction. Sort is by absolute time.
   const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
   const base = anchor < Infinity ? anchor : ok[0].medianUs
+  const lab = r => stripClassSub(r.label, r.sub)
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
   const lrows = l && (l.js || l.jzwasm)
-    ? [['jzwasm', 'JZ'], ['js', 'JS']].filter(([k]) => l[k]?.medianUs).map(([k, label]) => ({ k, label, ...l[k] }))
+    ? [['jzwasm', 'JZ', 'wasm'], ['js', 'JS', 'js']].filter(([k]) => l[k]?.medianUs).map(([k, label, cls]) => ({ k, label, cls, ...l[k] }))
     : []
   const lbase = lrows.length ? Math.min(...lrows.map(r => r.medianUs)) : 1
   // one shared scale across reference + local rows, so an equal ratio is an equal
@@ -422,10 +461,10 @@ const cardRows = c => {
   // independent), not dumped at the end. The raw µs differs by machine; the × is the compare.
   const all = [
     ...entries.map(r => ({ rel: r.medianUs / base, p: {
-      label: r.sub ? `${r.label} ${r.sub}` : r.label, rel: r.medianUs / base, maxLin,
+      label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
-      label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin,
+      label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity } })),
   ]
   return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('')
@@ -435,12 +474,14 @@ const renderCards = () => {
   let html = ''
   for (const c of CASES) {
     if (filter !== 'all' && FAMILY[c.id] !== filter) continue
+    const rows = cardRows(c)
+    if (!rows) continue
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
     const play = `<span class="actions"><button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}</span>`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
       <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
-      ${cardRows(c)}
+      ${rows}
     </div>`
   }
   $('cards').innerHTML = html
