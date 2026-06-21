@@ -75,6 +75,25 @@ const SPEED = {
   synth:          { v8: 'win',  as: 'tie',  porf: 'na'   },
   // blur: separable RGBA box blur; jz beats the JS field, native SIMDs the stencil.
   blur:           { v8: 'win',  as: 'win',  porf: 'na'   },
+  // ── codec / compression / hashing / ML showcase cases (cross-language, bit-exact) ──
+  // hash: MurmurHash3 x86_32 — table-free multiply/rotate/xor; jz ties V8 and sits
+  // at native-C parity (the integer mixing chain is jz's home turf). vs AS it's a
+  // parity-class race whose median straddles 1.0× run-to-run → `near` to stay non-flaky.
+  hash:           { v8: 'tie',  as: 'near', porf: 'todo' },
+  // base64: 3→4 byte codec, encode+decode round-trip; pure integer shifts/masks.
+  base64:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  // wav: PCM-16 encoder — per-sample clamp+quantize+pack; one f64 multiply (no FMA).
+  // jz ~ties AS (medians straddle 1.0–1.05×) → `near` to stay non-flaky.
+  wav:            { v8: 'win',  as: 'near', porf: 'todo' },
+  // conv2d: int8 quantized NN conv (i32 MAC + ReLU requant); jz beats the wasm
+  // field, native auto-vectorizes int8 (so it's not in NATIVE — honest).
+  conv2d:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  // lz: LZSS greedy match finder + inflate round-trip; branchy byte twiddling.
+  lz:             { v8: 'win',  as: 'tie',  porf: 'todo' },
+  // qoi: QOI image codec encode+decode; loop-carried run/index/diff/luma — no
+  // target can vectorize it, so it's a pure scalar-codegen race. jz lands within
+  // ~5% of AS (medians straddle 1.0–1.05× run-to-run), pinned `near` to stay non-flaky.
+  qoi:            { v8: 'win',  as: 'near', porf: 'todo' },
   // watr is the one large real-program case (jz compiling the watr WAT encoder —
   // string-tokenizing + byte-array emission). jz's linear-memory strings
   // structurally trail V8's native strings + JIT here, so it lands ~1.12-1.20× of
@@ -115,6 +134,10 @@ const NATIVE = {
   callback: 'tie',  mat4: 'win',     poly: 'win',  biquad: 'near',
   mandelbrot: 'tie', bitwise: 'tie', tokenizer: 'win', aos: 'tie',
   json: 'near',     sort: 'win',     crc32: 'tie', watr: 'na',
+  // hash ties native C (pure-integer mix). base64/wav/lz trail clang -O3's mature
+  // byte-twiddling backend, conv2d's int8 MAC is native-SIMD'd, and qoi trails by a
+  // codegen margin — none claim native parity, so they sit out the NATIVE geomean.
+  hash: 'tie', base64: 'na', wav: 'na', conv2d: 'na', lz: 'na', qoi: 'na',
   // jz beats `clang -O3 -ffp-contract=off` ~10× here: the multi-accumulator SIMD
   // reassociation extracts ILP the strict-fp serial sum can't. A genuine win (not
   // host-noise) — the margin dwarfs cross-substrate variance.
@@ -154,6 +177,15 @@ const SIZE = {
   // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
   // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
   blur:           { as: 'todo', porf: 'win' },
+  // Integer codec/hash/ML kernels: jz size-preset wasm is smaller than AS -Oz.
+  hash:           { as: 'win',  porf: 'win' },
+  base64:         { as: 'win',  porf: 'win' },
+  wav:            { as: 'win',  porf: 'win' },
+  conv2d:         { as: 'win',  porf: 'win' },
+  // lz/qoi carry larger match-finder / codec state machines than AS's lean -Oz
+  // output — honest `todo` (printed, unasserted), not a size-parity claim.
+  lz:             { as: 'todo', porf: 'win' },
+  qoi:            { as: 'todo', porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
@@ -184,6 +216,7 @@ const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
+  hash: 1500, base64: 2300, wav: 2050, conv2d: 3600, lz: 9200, qoi: 10500,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────
@@ -222,7 +255,7 @@ const runs = parseBenchOutput(speedOut)
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const recheckTargets = `v8,jz${natAvailable ? ',nat' : ''}`
-for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos']) {
+for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   if (runs[id].nat) s.nat = [runs[id].nat.medianUs]

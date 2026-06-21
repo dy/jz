@@ -55,6 +55,12 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`fft`](fft/fft.js) | radix-2 Cooley–Tukey FFT over a transcendental-free twiddle table; the canonical numeric/audio kernel |
 | [`synth`](synth/synth.js) | minisynth audio pipeline — polynomial oscillator + ADSR + biquad per sample; loop-carried f64 |
 | [`blur`](blur/blur.js) | separable box blur on an RGBA8 image; integer stencil with edge clamp, the canonical image pipeline |
+| [`conv2d`](conv2d/conv2d.js) | int8 quantized conv layer (Cin→Cout, 3×3, i32 MAC + ReLU requant); the spatial-convolution counterpart to dense `matmul`, the edge-ML inference kernel |
+| [`qoi`](qoi/qoi.js) | QOI lossless image codec encode + decode round-trip; loop-carried run/index/diff/luma ops that no target can vectorize — pure scalar-codegen race |
+| [`hash`](hash/hash.js) | MurmurHash3 x86_32 over a byte buffer; table-free multiply/rotate/xor mixing, a different ALU profile from `crc32` |
+| [`lz`](lz/lz.js) | LZSS compress + inflate round-trip; greedy sliding-window longest-match search — the match finder that dominates every LZ-family codec |
+| [`base64`](base64/base64.js) | Base64 encode + decode round-trip; table-driven 3→4 byte packing, the canonical codec / serialization kernel |
+| [`wav`](wav/wav.js) | PCM-16 WAV encoder; per-sample clamp + int16 quantization behind a RIFF/WAVE header, the audio serialization kernel |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
