@@ -1,0 +1,26 @@
+name: release
+# On every published GitHub release, rebuild dist/jz.wasm from the tagged source
+# and attach it as a release asset. This keeps
+#   https://github.com/dy/jz/releases/latest/download/jz.wasm
+# resolving to the newest build (the homepage FAQ links there). The selfhost gate
+# already validates the wasm on push; here we just rebuild it from the tag and upload.
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  attach-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: build dist/jz.wasm
+        run: npm run build
+      - name: attach jz.wasm to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/jz.wasm --clobber
