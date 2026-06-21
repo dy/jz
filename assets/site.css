@@ -59,6 +59,10 @@
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 
+/* One selection highlight site-wide (else pages without their own fall back to the browser blue):
+   ink-on-white in light, white-on-black in dark. */
+::selection { background: light-dark(#16161a, #fff); color: light-dark(#fff, #000); }
+
 .masthead {
   background: transparent; color: var(--ink); flex: 0 0 auto;   /* no header band — blends into the page */
   display: flex; align-items: center; gap: 16px;
@@ -72,7 +76,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 /* brand: the jz.svg logo (links home) + the section label. The logo is the SVG FILE itself — never re-created in Futura text. */
 .masthead .brand { display: flex; align-items: baseline; gap: .55em; flex: 0 0 auto; margin-top: -16px; }   /* the label's baseline sits on the logo's bottom edge (logo lifted to it), not centered */
 .masthead .brand .sub { font-size: 19px; font-weight: 400; letter-spacing: -.02em; color: var(--dim); text-decoration: none; transition: color .18s; position: relative; top: -3px; }   /* lift the label so its baseline meets the JZ letters' baseline (not the logo's lower edge) */
-.masthead .brand a.sub:hover { color: var(--ink); }
+.masthead .brand a.sub:hover { color: light-dark(#000, #fff); }
 .masthead .tag { font-size: 12.5px; color: var(--dim); margin-left: 16px; }
 
 .masthead nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
@@ -101,13 +105,13 @@ footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; 
 footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
-footer .fcol a:hover { color: var(--ink); }
+footer .fcol a:hover { color: light-dark(#000, #fff); }
 footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: var(--dim); }   /* author · ॐ inline, bottom-right */
 footer .legal .lic::before { content: '·'; margin-right: 7px; color: var(--mute); }   /* middot separating dy and ॐ */
 footer .legal .by a { color: var(--soft); }
-footer .legal .by a:hover { color: var(--ink); }
+footer .legal .by a:hover { color: light-dark(#000, #fff); }
 footer .legal a { color: var(--soft); text-decoration: none; }
-footer .legal a:hover { color: var(--ink); }
+footer .legal a:hover { color: light-dark(#000, #fff); }
 footer .legal .om { font-size: 15px; }
 @media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } }   /* less side padding; brand · nav · author+license stay on ONE row — legal pinned right via margin-left:auto */
 

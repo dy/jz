@@ -194,7 +194,7 @@ export let frame = (t) => {
       let a0 = prev[p], a1 = cur[p]
       if (a0 !== 0 || a1 !== 0) {
         let f = a0 + (a1 - a0) * e
-        if (f > 0.02) { let aa = (f * 76.0) | 0; if (aa > 76) aa = 76; fillCell(c, r, aa) }   // peak ~30% opacity — quiet background decoration
+        if (f > 0.02) { let aa = (f * 128.0) | 0; if (aa > 128) aa = 128; fillCell(c, r, aa) }   // peak 50% opacity — quiet background decoration
       }
       c = c + 1
     }

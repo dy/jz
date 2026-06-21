@@ -50,7 +50,7 @@ html, body { height: 100%; overflow-x: clip; }
 body { background: var(--paper); color: var(--ink); font-family: var(--font);
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 a { color: inherit; }
-::selection { background: light-dark(#16161a, #fff); color: light-dark(#fff, #000); }
+/* ::selection lives in assets/site.css now — one shared highlight across all pages */
 
 /* ─────────────────────────── HERO — the live demo (grid-current's electron pulses) + blueprint grid
    occupy a fixed 9-unit (720px) band; the logo, title, description, live FPS/switch and metrics all sit ON it. */
@@ -144,7 +144,7 @@ a { color: inherit; }
 .pitch .sub { margin-left: var(--u2); max-width: 32em; font-size: 14.5px; line-height: 1.66; color: var(--ink); text-wrap: pretty; }   /* body prose — same type as the FAQ answers; black body text; indented 1 mid-unit (40px) from the logo */
 .pitch .sub b { color: var(--ink); font-weight: 700; white-space: nowrap; }   /* keep "2.2× faster than V8" unbroken */
 .pitch .sub .ref { font-size: .7em; vertical-align: super; line-height: 0; color: var(--dim); text-decoration: none; padding: 0 1px; transition: color .16s; }
-.pitch .sub .ref:hover { color: var(--ink); }
+.pitch .sub .ref:hover { color: light-dark(#000, #fff); }
 .pitch .sub .nb { white-space: nowrap; }   /* "runs the same source 2.4× faster" stays one line */
 
 /* the FPS readout + JS↔JZ switch (bottom-right quadrant). Fixed FPS width so a changing
@@ -192,7 +192,7 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) { .engine .knob { transition: none; } }
 /* <1080 — a slightly smaller switch; the full-size one reads too big once the layout tightens */
 @media (max-width: 1080px) {
-  .engine { width: 76px; height: 40px; top: -6px; }
+  .engine { width: 76px; height: 40px; top: -2px; }
   .engine .knob { width: 32px; height: 32px; }
   .engine.jz .knob { transform: translateX(36px); }
   .engine .lbl-js, .engine .lbl-jz { width: 38px; font-size: 12px; }
@@ -221,7 +221,8 @@ a { color: inherit; }
 @media (max-width: 720px) {
   /* one column: the left stack (logo+title, description) then the right stack (metrics, FPS/switch) */
   .pitch { grid-template-columns: 1fr; row-gap: clamp(22px,4vh,40px); }
-  .pright { margin-top: 0; }   /* no title-level drop once stacked */
+  .pright { margin-top: 0; margin-left: 0; gap: 20px; }   /* no title-level drop once stacked; flush-left (drop the 40px indent); tighter gap */
+  .pitch .sub { margin-left: 0; }   /* description, speed metrics + op/s sit flush with the logo on mobile (−40px) */
   .cta-live { gap: 14px; }   /* tighter readout↔toggle so the cta fits within the indent */
   .metrics .mstats { gap: 10px; }   /* tighter so the 3 stats stay on one line when indented */
   .phead { align-items: flex-end; gap: 16px; }   /* logo + title side-by-side; title bottom-aligned to the JZ letters */
@@ -231,16 +232,11 @@ a { color: inherit; }
   .hero-nav { gap: 14px; padding: 12px var(--padx); }
   .hero-nav a.opt { display: none; }
 }
-/* ≥480 phones are wide enough that the indented metrics + FPS still fit — line them up under the description */
-@media (min-width: 480px) and (max-width: 720px) {
-  .pright { margin-left: var(--u2); }
-}
-/* <480 — tightened: logo sits 20px from the edge (halved inset); the description, metrics and FPS keep a
-   20px indent in from it; the header padding-x is halved; the "experimental" tag hides (no room). */
+/* <480 — tightened: logo sits 20px from the edge (halved inset); the header padding-x is halved; the
+   "experimental" tag hides (no room). Description / metrics / op/s stay flush with the logo (margin-left 0
+   from the ≤720 rule above). */
 @media (max-width: 479px) {
   .pitch { padding-left: 20px; padding-right: 20px; }   /* logo now 20px from the edge */
-  .pitch .sub { margin-left: 20px; }                    /* description 20px in from the logo */
-  .pright { margin-left: 20px; }                        /* metrics + FPS indented to match the description */
   .hero-nav { padding-inline: 20px; justify-content: flex-start; }   /* header padding-x halved; menu flush-left ONLY here, where "experimental" is hidden */
   .hero-nav > a:first-of-type { margin-left: 20px; }    /* 20px gap before the first menu item (aligns with the description) */
   .hero-nav .ver { margin-left: auto; }                 /* version + GitHub pushed to the right */
@@ -251,14 +247,14 @@ a { color: inherit; }
    Run, read the WAT + console, race it “js vs wasm”. The standalone REPL lives at /repl/. ─────────── */
 .try { position: relative; z-index: 3; margin-top: calc(-3 * var(--U)); padding: 0 var(--padx) clamp(40px,5vw,64px); pointer-events: none; }   /* rides up onto the grid band; no bg + click-through so the blueprint around the REPL (and its pulse shooter) stays clickable */
 .try-wrap { max-width: calc(var(--cw) + 1px); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; }   /* the shared content column (cw) + 1px so the panel's right border lands ON the content-right grid line and covers it (its left border already does) */
-.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid var(--line); background: #000; pointer-events: auto; }   /* re-enable clicks on the REPL itself (the .try section is click-through) */
+.repl-embed { display: block; width: 100%; height: clamp(440px,66vh,640px); border: 1px solid light-dark(rgba(255,255,255,.35), #1c1c25); background: #000; pointer-events: auto; }   /* a gently-transparent white frame on the gray in light (like the faint grid lines), subtle dark on black in dark; re-enable clicks on the REPL (the .try section is click-through) */
 /* stacked (≤800) hero is taller, so the REPL must ride up less or it covers the FPS/switch. Placed AFTER .try so it wins the cascade. */
 @media (max-width: 960px) { .try { margin-top: calc(-2 * var(--U)); } }   /* stacked hero is short, so the REPL still rides ~160px up onto the grid (clear of the FPS/switch) */
 @media (max-width: 479px) { .try { padding-inline: 0; } }   /* code section spans edge to edge on the narrowest phones */
 
 /* ─────────────────────────── EXAMPLES — 8 square previews on the centred content column, no gaps, no labels ─────────────────────────── */
 /* focused install command — a centred CLI line before the FAQ */
-.cli { background: var(--paper); padding: clamp(64px,9vw,104px) var(--padx); text-align: center; }   /* big, symmetric breathing room around the lone install chip */
+.cli { background: var(--paper); padding: 40px var(--padx); text-align: center; }   /* tight, symmetric breathing room around the lone install chip */
 .cli .install { font-size: clamp(14px,1.5vw,16px); width: 250px; max-width: 100%; justify-content: flex-start;
   background: light-dark(#0c0e11, transparent); color: #e8e8ea; border: 1px solid light-dark(#20242a, transparent); border-radius: 0; padding: 11px 18px; }   /* a mini-CLI: square, fixed width. The box only shows in light — on the black page it's invisible, just the command text */
 .cli .install .dollar { color: #6a6f78; }
@@ -278,7 +274,7 @@ a { color: inherit; }
 .exrow .ex-all { display: flex; align-items: center; justify-content: center; padding: 8px; text-align: center;
   text-decoration: none; color: var(--soft); font-size: clamp(11px,1.05vw,13px); letter-spacing: .01em; line-height: 1.35;
   transition: color .16s; }   /* last cell → the full gallery; stays black (transparent), only the text brightens on hover */
-.exrow .ex-all:hover { color: #fff; }
+.exrow .ex-all:hover { color: light-dark(#000, #fff); }   /* darken in light, brighten in dark */
 @media (max-width: 720px) { .exrow { grid-template-columns: repeat(4, 1fr); } .examples h2 { margin-left: 0; } }
 @media (max-width: 479px) {
   .examples { padding-inline: 20px; }   /* halved side inset — keeps the title 20px from the edge */
@@ -358,7 +354,7 @@ a { color: inherit; }
         <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
         <h1>Computational JS <br class="hb">at native speed</h1>
       </div>
-      <p class="sub">Compile JS to WASM ahead of time. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span> For DSP, visuals, simulation, physics.</p>
+      <p class="sub">Compile JS to WASM ahead of time. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span><br> For DSP, visuals, simulation, physics.</p>
     </div>
 
     <div class="pcol pright">
