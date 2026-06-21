@@ -149,6 +149,8 @@ examples/**/build/
 # Built example wasm — produced by `npm run build:examples`, served from the
 # pages.yml build artifact, not committed.
 examples/**/*.wasm
+# Debug WAT dumps alongside example kernels (inspection output, regenerable)
+examples/**/*.wat
 /.playwright-mcp
 /.vscode
 *.swf
