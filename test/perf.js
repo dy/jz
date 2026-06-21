@@ -928,7 +928,7 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
     }`
   const n = (w, re) => (w.match(re) || []).length
   const watSpeed = compile(src, { wat: true, optimize: 'speed' })
-  const watDefault = compile(src, { wat: true })           // level 2 — pass off
+  const watDefault = compile(src, { wat: true, optimize: 2 })  // pin level 2 (pass off) — JZ_TEST_OPTIMIZE must not flip the gated half of this codegen pin
   ok(n(watSpeed, /\bselect\b/g) >= 1, 'speed: threshold lowered to a select')
   is(n(watSpeed, /f64\.convert_i32_s/g), 0, 'speed: no i32→f64 convert left on the recurrence')
   is(n(watDefault, /f64\.convert_i32_s/g), 1, 'default level keeps the convert (pass is speed-gated)')
