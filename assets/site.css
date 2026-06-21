@@ -63,6 +63,10 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
    ink-on-white in light, white-on-black in dark. */
 ::selection { background: light-dark(#16161a, #fff); color: light-dark(#fff, #000); }
 
+/* One themed keyboard-focus ring everywhere (else links/buttons fall back to the inconsistent browser
+   default). :where() keeps specificity at zero so a page's own focus styles still win. */
+:where(a, button, summary):focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
 .masthead {
   background: transparent; color: var(--ink); flex: 0 0 auto;   /* no header band — blends into the page */
   display: flex; align-items: center; gap: 16px;
