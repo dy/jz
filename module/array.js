@@ -13,7 +13,7 @@ import { inBoundsArrIdx } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
-import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey } from '../src/static.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, intLiteralValue } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
@@ -657,6 +657,14 @@ export default (ctx) => {
   // === Index read ===
 
   ctx.core.emit['[]'] = (arr, idx) => {
+    // A literal NEGATIVE index is always out of range → undefined (JS semantics), never a
+    // raw `payload + (-1)*8` load that reads heap before the allocation. A side-effecting
+    // receiver still evaluates. Mirrors VT['[]'] returning null for the same case.
+    { const li = intLiteralValue(idx)
+      if (li != null && li < 0)
+        return typeof arr === 'string'
+          ? undefExpr()
+          : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }
     // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
     // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
     // otherwise re-execute the source expression per use at runtime.

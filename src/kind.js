@@ -162,6 +162,10 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // Index access:  `arr[i]` → ['[]', arr, i].
 VT['[]'] = (args) => {
   if (args.length < 2) return VAL.ARRAY
+  // A literal NEGATIVE index is always out of range → reads undefined, not the
+  // element type. Returning a numeric elem type here would let `a[-1] === undefined`
+  // fold to false (a NUMBER can't be undefined), silently dropping the guard.
+  { const li = intLiteralValue(args[1]); if (li != null && li < 0) return null }
   // SRoA flat-array slot read: `a[k]` (static index) where `a` dissolved into
   // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its
   // element literal's — same numeric-binding as the `VT['.']` object case, so

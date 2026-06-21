@@ -909,3 +909,20 @@ test('module-scope: local shadows global', () => {
   is(f(), 3)
   is(g(), 7)  // global x unchanged
 })
+
+test('Regression: negative literal index reads undefined, not heap (array + typed)', () => {
+  // `a[-1]` once fell through the non-negative-literal fast path to a raw
+  // `payload + (-1)*8` load that read heap *before* the allocation (a silent
+  // info leak). A literal negative index is out of range → undefined (JS).
+  // valTypeOf returns null for it too, so `=== undefined` isn't folded to false.
+  const { arr, ta, deep, inb } = run(`
+    export let arr = () => { let a = [10, 20, 30]; return a[-1] === undefined ? 7 : 9 }
+    export let ta = () => { let a = new Float64Array(4); a[0] = 1.5; return a[-1] === undefined ? 7 : 9 }
+    export let deep = () => { let a = [10, 20, 30]; return a[-3] === undefined ? 7 : 9 }
+    export let inb = () => { let a = [10, 20, 30]; return a[1] }
+  `)
+  is(arr(), 7)
+  is(ta(), 7)
+  is(deep(), 7)
+  is(inb(), 20)  // in-bounds read unchanged
+})
