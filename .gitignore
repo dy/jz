@@ -144,6 +144,9 @@ assets/sprae.js
 __pycache__
 /test/test262/
 /bench/*.bak
+# Built bench-page wasm — produced by `node bench/bench.mjs --emit-web` (or via
+# `--json`), served from the pages.yml build artifact, not committed.
+/bench/web/
 
 examples/**/build/
 # Built example wasm — produced by `npm run build:examples`, served from the

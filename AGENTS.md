@@ -50,8 +50,10 @@ smoke test and `test:self` for the bundle. Edit source, not output.
   `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
   self-host artifact — never served, never published.
 
-`bench/results.json` + `bench/web/*.wasm` *are* committed (the `bench` workflow
-produces them; the bench page reads them from the tracked files).
+`bench/results.json` (+ the geomean `bench/bench.svg`) *is* committed — measured
+data the `bench` workflow refreshes. `bench/web/*.wasm` is **not**: like `dist/`
+and the example wasm, it's build output that `pages.yml` rebuilds from source at
+deploy (`node bench/bench.mjs --emit-web`) and serves from the Pages artifact.
 
 ## Git
 

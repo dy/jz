@@ -39,8 +39,9 @@ jobs:
       - run: npm ci
       - name: build compiler bundle + example wasm
         run: |
-          npm run build           # dist/jz.js + dist/interop.js — the repl/playground import these
-          npm run build:examples  # examples/**/*.wasm
+          npm run build                    # dist/jz.js + dist/interop.js — the repl/playground import these
+          npm run build:examples           # examples/**/*.wasm
+          node bench/bench.mjs --emit-web  # bench/web/*.wasm — the live in-page bench runner (cheap, no measurement)
       - name: assemble _site (tracked files + freshly-built artifacts only)
         run: |
           rm -rf _site && mkdir _site
@@ -56,6 +57,8 @@ jobs:
           find examples -name '*.wasm' -not -path '*/build/*' | while read -r f; do
             mkdir -p "_site/$(dirname "$f")" && cp "$f" "_site/$f"
           done
+          # bench/web/*.wasm — built above (gitignored), feeds bench/index.html's live runner.
+          mkdir -p _site/bench/web && cp bench/web/*.wasm _site/bench/web/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

@@ -13,7 +13,6 @@ on:
       - 'LICENSE'
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
-      - 'bench/web/**'
   pull_request:
     paths-ignore:
       - '**/*.md'
@@ -23,11 +22,10 @@ on:
       - 'LICENSE'
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
-      - 'bench/web/**'
 jobs:
   bench:
     runs-on: ubuntu-latest
-    # The publish step commits bench/results.json + bench/web back to main;
+    # The publish step commits bench/results.json + bench.svg back to main;
     # the default GITHUB_TOKEN is read-only and 403s that push without this.
     permissions:
       contents: write
@@ -66,10 +64,12 @@ jobs:
           porf --version || true
           wasm-opt --version || true
       - run: npm run test:bench
-      # Refresh the bench-page dataset: bench/index.html renders results.json and
-      # instantiates bench/web/*.wasm for its live in-browser runner. Push-to-main
+      # Refresh the bench-page dataset (results.json + bench.svg). Push-to-main
       # only; the paths-ignore above keeps the commit from re-triggering this
-      # workflow. clang/rustc/go/zig are preinstalled on ubuntu runners, so every
+      # workflow. The page's live in-browser runner loads bench/web/*.wasm, which
+      # is NOT committed: pages.yml rebuilds it from source at deploy time
+      # (node bench/bench.mjs --emit-web) — same model as dist/ and example wasm.
+      # clang/rustc/go/zig are preinstalled on ubuntu runners, so every
       # rival builds on the one consistent machine. The headline axis is wasm-in-V8
       # (c-wasm/rust-wasm/go-wasm/zig-wasm — apples-to-apples with jz); native
       # C/Rust/Go/Zig stay as a corpus reference band (the aggregate "what you give
@@ -86,10 +86,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true
-          # Only the bench dataset is committed here; dist/ is built + deployed by
-          # pages.yml (no longer committed). bench/web/*.wasm + results.json feed the
-          # live bench page, which pages.yml serves from these tracked files.
-          git add bench/results.json bench/bench.svg bench/web
-          git diff --cached --quiet || git commit -m 'bench: refresh results.json + web artifacts [skip ci]'
+          # Only the measured dataset is committed here (results.json + the geomean
+          # SVG). dist/ and bench/web/*.wasm are build output — pages.yml rebuilds
+          # and serves them from the deploy artifact, never from tracked files.
+          git add bench/results.json bench/bench.svg
+          git diff --cached --quiet || git commit -m 'bench: refresh results.json + bench.svg [skip ci]'
           # a push landing mid-run rejects ours — rebase once and retry
           git push || (git pull --rebase origin main && git push)
