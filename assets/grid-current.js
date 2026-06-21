@@ -55,7 +55,7 @@ let rnd = (n) => {
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  F[_T0] = -1.0                     // start-time anchor (the first frame stamps it 9s in the past → the grid opens already populated)
+  F[_T0] = 1e30                     // "unanchored" sentinel — the first frame stamps the real start anchor. Must be OUT of the valid anchor range (a valid anchor is t−9, which is NEGATIVE for t<9): a −1 sentinel collided with that, so `F[_T0] < 0` re-fired every early frame and froze tt at 9 (static field, bursts that never travelled).
   let i = 0; while (i < BMAX) { bT[i] = -1.0; i = i + 1 }   // no click bursts live
   return px
 }
@@ -175,7 +175,7 @@ export let spawn = (nx, ny) => {
 
 export let frame = (t) => {
   let major = F[_MAJ], mid = F[_MID]
-  if (F[_T0] < 0.0) F[_T0] = t - 9.0            // anchor 9s in the past on the first frame → the grid opens already mid-stream (pulses spread across it), not empty/edge-waking
+  if (F[_T0] > 1e29) F[_T0] = t - 9.0           // anchor 9s in the past on the FIRST frame only → grid opens already mid-stream (pulses spread across it), then keeps flowing. The >1e29 test fires once (a t−9 anchor is never that large), where the old `<0` test re-fired while t<9 and froze the field.
   let tt = t - F[_T0]; if (tt < 0.0) tt = 0.0
 
   let n = W * H, i = 0
