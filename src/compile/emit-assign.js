@@ -224,6 +224,16 @@ export function emitElementAssign(arr, idx, val) {
   const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
   const arrVT = knownArrVT || VAL.OBJECT
 
+  // 7b. Known-OBJECT receiver with a non-static key. The schema-slot (step 2) and
+  //     string-key (step 4) fast paths already returned, so the key here is a numeric
+  //     or runtime-unknown expression. A raw indexed f64.store (steps 8–9 / the default
+  //     below) would compute `ptrOffset(o) + i*8` into an allocation sized for schema
+  //     slots only — silent slot corruption at small i, an out-of-bounds memory trap at
+  //     large i. Route to __dyn_set (the per-OBJECT propsPtr hash sidecar), mirroring
+  //     emitPropertyAssign's OBJECT dot-write path; __dyn_get reads it back. This closes
+  //     the `o.prop=v` vs `o[expr]=v` asymmetry that faulted the self-host.
+  if (knownArrVT === VAL.OBJECT) return dynSetCall(arr, keyExpr, valueExpr)
+
   // 8. Polymorphic + runtime key dispatch — key kind unknown AND receiver shape
   //    possibly TypedArray (or fully opaque). Numeric branch forks on __ptr_type.
   //    Deliberately a 2-fork (TYPED vs else) rather than reusing

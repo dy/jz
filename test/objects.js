@@ -322,6 +322,25 @@ test('Regression: dynamic key write updates existing fixed-shape object slot', (
   is(noFold(), 18)
 })
 
+test('Regression: numeric runtime key write on fixed-shape object preserves schema slots (no OOB)', () => {
+  // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw
+  // array-style `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and
+  // trapping (memory access out of bounds) at large i. It now routes to __dyn_set (the
+  // per-OBJECT propsPtr sidecar), mirroring `o.prop = v`. This is the exact fault that
+  // broke the self-host when the dispatch table gained integer keys; runs under test:wasm.
+  const { slot, loop, big, compound } = run(`
+    export let slot = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
+    export let loop = () => { let o = { x: 1, y: 2 }; for (let i = 0; i < 3; i++) o[i] = 9; return o.x * 10 + o.y }
+    export let big = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
+    export let compound = (i) => { let o = { x: 5 }; o[i] += 1; return o.x }
+  `)
+  is(slot(0), 1)     // i=0 overlaps slot-0 position — must not corrupt o.x
+  is(slot(1), 1)     // adjacent heap — must not corrupt
+  is(loop(), 12)     // x=1, y=2 unchanged; no trap across iterations
+  is(big(8000), 1)   // large i — must not trap (out of bounds)
+  is(compound(0), 5) // undefined+1=NaN to sidecar; slot 0 (o.x) untouched
+})
+
 test('Regression: literal numeric string array assignment updates element storage', () => {
   const { f } = run(`export let f = () => {
     let a = [1]
