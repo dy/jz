@@ -1,4 +1,4 @@
-# Contributing to jz
+# Contributing to JZ
 
 ## Quick start
 
@@ -69,10 +69,10 @@ Discipline (non-negotiable — these run in the default `speed` build that ships
   are ulp-divergent → gate at `optimize≥2`; per-lane maps/reductions reorder nothing and are exact.
 - **Ratchet +0.** `npm run test:ratchet` must stay byte-identical — recognize only the intended shape;
   don't widen the default corpus path.
-- **Run `npm run test:self`.** The dev suite runs on V8, but the self-host build compiles jz *with jz*.
+- **Run `npm run test:self`.** The dev suite runs on V8, but the self-host build compiles JZ *with JZ*.
   A recognizer can be bit-exact on V8 yet make `dist/jz.wasm` fail validation
   (`i64.reinterpret_f64 expected f64, found i32`) — **the V8 suite will not catch this.**
-  - *Cause & fix:* a top-level **self-recursive** helper taking the `ctx` object as a param — jz's
+  - *Cause & fix:* a top-level **self-recursive** helper taking the `ctx` object as a param — JZ's
     signature narrowing can't prove the recursive call passes an i32 pointer, so it leaves that one
     function's `ctx` boxed (`f64`) while every other has `ctx:i32`, and callers emit a bad reinterpret.
     Define ctx-using *recursive* lifters as **nested `function` declarations that capture `ctx`** (take
@@ -88,7 +88,7 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 ## Principles
 
 - **Don't optimize the compiler source itself.** Readability > cleverness in `src/`. The compiler doesn't need to be fast — the output does.
-- **Valid jz = valid JS.** Any jz program must parse and run as standard JavaScript.
+- **Valid JZ = valid JS.** Any JZ program must parse and run as standard JavaScript.
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No runtime.** Compiled WASM has no jz-specific runtime — just WASM + WASI.
 
@@ -108,23 +108,23 @@ node test/strings.js
 
 ## Performance & size invariant
 
-jz makes a load-bearing promise: **on the bench corpus, jz wasm is at least as
+JZ makes a load-bearing promise: **on the bench corpus, JZ wasm is at least as
 fast and at least as small as the alternatives.** Concretely, enforced by
 `test/bench.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
 
-- **Speed** (`-O` speed-tuned build): jz median ≤ V8, AssemblyScript (`asc -O3`)
+- **Speed** (`-O` speed-tuned build): JZ median ≤ V8, AssemblyScript (`asc -O3`)
   and Porffor on every comparable case, and ≤ them on geomean.
 - **Native parity** *(asserted only when `clang` is on PATH — i.e. locally; CI
-  runners have no clang, so this pin is printed but not gated there)*: jz wasm runs
+  runners have no clang, so this pin is printed but not gated there)*: JZ wasm runs
   at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
-  (jz *beats* native C on `poly`, `mat4`, `aos`, `tokenizer`, `sort`, ties
+  (JZ *beats* native C on `poly`, `mat4`, `aos`, `tokenizer`, `sort`, ties
   `mandelbrot`). Two cases trail native and are pinned `near`, not as a parity
   claim: `biquad` is wasm-v1 ISA-bound (no scalar `fma` — hand-written WAT ties
   it too) and `json` is string-carrier bound. The geomean ceiling is the
   guarantee; the `near` per-case pins are regression backstops.
-- **Size** (`optimize: 'size'` build): jz wasm ≤ AssemblyScript (`asc -Oz --converge`)
+- **Size** (`optimize: 'size'` build): JZ wasm ≤ AssemblyScript (`asc -Oz --converge`)
   and ≤ Porffor on every comparable case, and ≤ them on geomean.
-- **Codegen slack**: `wasm-opt -Oz` should find little to remove in jz's own
+- **Codegen slack**: `wasm-opt -Oz` should find little to remove in JZ's own
   output — whatever it shrinks is latent size headroom. Gated with margin today
   (`WASMOPT_SLACK_MIN=0.70` in `test/bench.js` — ~25–30% slack on size builds);
   target is 0.95+, ratcheted down as codegen tightens.
@@ -141,7 +141,7 @@ npm run bench            # just the speed harness
 
 **Ratchet, don't backslide.** `bench.js` carries per-case `win`/`tie`/`near`/`todo`
 claims (against each competitor and against native C) and geomean ceilings. When
-you make jz beat a `todo` or close a `near` gap, promote it to `win`/`tie` in the
+you make JZ beat a `todo` or close a `near` gap, promote it to `win`/`tie` in the
 same PR; when you shrink codegen, tighten the relevant geomean ceiling and the
 `wasm-opt` slack budget. A PR may not move any claim backward. If a change trades size for speed (or vice-versa) deliberately — e.g.
 the unrolled/vectorized hot kernels — say so in the commit and adjust the
@@ -149,7 +149,7 @@ the unrolled/vectorized hot kernels — say so in the commit and adjust the
 
 ### Adding a bench case
 
-1. `mkdir bench/<name>/` and add `bench/<name>/<name>.js` — valid jz that
+1. `mkdir bench/<name>/` and add `bench/<name>/<name>.js` — valid JZ that
    `import`s `{ ... }` from `../_lib/benchlib.js`, exports `main`, and ends with
    `printResult(medianUs(samples), checksum, …)`. Use an existing case as a template.
 2. For a fair size/speed comparison, add a self-contained `bench/<name>/<name>.as.ts`
@@ -159,7 +159,7 @@ the unrolled/vectorized hot kernels — say so in the commit and adjust the
    default to `todo` / `na`), and a `SIZE_BUDGET` backstop.
 4. `npm run bench -- --cases=<name>` and `npm run bench:size -- <name>` to see where it lands.
 
-Prefer cases that mirror real jz target workloads (numeric/DSP/parsing/wasm-utils) —
+Prefer cases that mirror real JZ target workloads (numeric/DSP/parsing/wasm-utils) —
 the corpus *is* the guarantee, so widen it toward the code you actually ship.
 
 ## Commits

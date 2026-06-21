@@ -1,8 +1,8 @@
-<a href="https://dy.github.io/jz/"><img src="jz.svg" alt="jz logo" width="120"/></a>
+<a href="https://dy.github.io/jz/"><img src="jz.svg" alt="JZ logo" width="120"/></a>
 
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
-**jz** (_javascript zero_) is **minimal functional JS** that compiles to performant WASM.
+**JZ** (_javascript zero_) is **minimal functional JS** that compiles to performant WASM.
 
 ```js
 import jz from 'jz'
@@ -151,7 +151,7 @@ Options:
 
 ## Language
 
-jz is a **strict modern JS subset**. Built-in jzify transform extends support to legacy patterns.
+JZ is a **strict modern JS subset**. Built-in jzify transform extends support to legacy patterns.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -200,12 +200,12 @@ Not supported
 <details>
 <summary><strong>Can I use existing npm packages or JS libraries?</strong></summary>
 
-Only the ones that fit the jz subset. There's no runtime, so packages touching the DOM, `async`/`Promise`, the network, or Node APIs won't compile — but pure numeric/algorithmic source does.
+Only the ones that fit the JZ subset. There's no runtime, so packages touching the DOM, `async`/`Promise`, the network, or Node APIs won't compile — but pure numeric/algorithmic source does.
 
 - **Relative imports** (`./dep.js`) bundle at compile time.
-- **Bare specifiers** (`import { x } from "pkg"`) resolve through Node module resolution only with the `--resolve` CLI flag, or by passing the source yourself via `{ modules }`. The package's source still has to be valid jz.
+- **Bare specifiers** (`import { x } from "pkg"`) resolve through Node module resolution only with the `--resolve` CLI flag, or by passing the source yourself via `{ modules }`. The package's source still has to be valid JZ.
 
-jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecosystem.
+JZ is for compiling *your* numeric/DSP/parser code, not for running the npm ecosystem.
 
 </details>
 
@@ -249,7 +249,7 @@ jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
 <details>
 <summary><strong>Can I interpolate values (template literals)?</strong></summary>
 
-`jz` is a tagged template — interpolated values are baked into the source at compile time. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
+`jz` is a tagged template — interpolated values are baked into the source at compile time. Numbers and booleans inline directly; strings, arrays, and objects compile as JZ literals:
 
 ```js
 jz`export let f = () => ${'hello'}.length`               // 5
@@ -293,15 +293,15 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 </details>
 
 <details>
-<summary><strong>Do I need jz at runtime?</strong></summary>
+<summary><strong>Do I need JZ at runtime?</strong></summary>
 
 The compiler runs at build time. At runtime you ship the `.wasm` and, at most, a small bridge — never the compiler, the parser, or a language runtime.
 
-- **Pure-number modules — nothing but the `.wasm`.** Instantiate with raw `WebAssembly`, zero jz dependency: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop the `_alloc`/`_clear` exports too.
+- **Pure-number modules — nothing but the `.wasm`.** Instantiate with raw `WebAssembly`, zero JZ dependency: `(await WebAssembly.instantiate(wasmBytes)).instance.exports.dist(3, 4)`. Compile with `{ alloc: false }` to drop the `_alloc`/`_clear` exports too.
 - **Heap values (strings, arrays, objects) — the `.wasm` plus `jz/interop`.** `import { instantiate } from 'jz/interop'` adds a ~6 KB-gzipped bridge (no compiler, no parser) that builds the same `Module`+`Instance` you'd build by hand and wires the allocator and the `memory` codec from the previous question (plus WASI / `wasm:js-string` imports if the module uses them).
 - **No JavaScript host at all** — compile with `host: 'wasi'`; see the next question.
 
-For contrast, Rust (`wasm-bindgen`), Go (TinyGo), and C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime. jz keeps the ABI fixed and the optional bridge ~6 KB gzipped.
+For contrast, Rust (`wasm-bindgen`), Go (TinyGo), and C/Zig (Emscripten/WASI-libc) emit per-build generated glue and usually bundle a language runtime. JZ keeps the ABI fixed and the optional bridge ~6 KB gzipped.
 
 </details>
 
@@ -311,7 +311,7 @@ For contrast, Rust (`wasm-bindgen`), Go (TinyGo), and C/Zig (Emscripten/WASI-lib
 There's two possible `host` targets:
 
 - **`js`** (default) — runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
-- **`wasi`** — runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). jz emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand.
+- **`wasi`** — runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). JZ emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand.
 
 Either way the `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`). The difference is only in how a few runtime services are serviced:
 
@@ -327,7 +327,7 @@ Either way the `.wasm` carries at most one import namespace (none, `env`, or `wa
 <details>
 <summary><strong>How does memory work?</strong></summary>
 
-jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 — the first 1 KB holds static data (string/array literals laid out from offset 0, plus the bump pointer itself at byte 1020 when memory is shared across threads). It grows the WASM memory automatically when full, and if the literals overflow that 1 KB the heap simply starts past them.
+JZ uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 — the first 1 KB holds static data (string/array literals laid out from offset 0, plus the bump pointer itself at byte 1020 when memory is shared across threads). It grows the WASM memory automatically when full, and if the literals overflow that 1 KB the heap simply starts past them.
 Memory is never reclaimed implicitly — a long-running program that allocates per call grows without bound. Reset between independent batches:
 
 ```js
@@ -373,7 +373,7 @@ No runtime, no GC — a module is your code plus a small bump allocator. The geo
 - **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
 - **`host: 'wasi'`** — no JS-host import shims (the debug `name` section is already off unless you set `names: true`).
 
-Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
+Hand-written WAT is still ~3–8× smaller on tight kernels — JZ carries generic allocator and stdlib helpers a specialist omits; closing that gap is ongoing. Size budgets are gated in CI alongside speed ([full table](bench/README.md)).
 
 </details>
 
@@ -381,7 +381,7 @@ Hand-written WAT is still ~3–8× smaller on tight kernels — jz carries gener
 <details>
 <summary><strong>Which optimizations are applied?</strong></summary>
 
-Ordinary JS is already fast — jz infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
+Ordinary JS is already fast — JZ infers the right machine type for your numbers, so you write plain JS. What it does, all on at the default `optimize: 2` (each line is also the habit that triggers it):
 
 - **Type narrowing** — parameters/results pinned to `i32`/`f64`/bool/typed-array elements from their call sites, off the boxed path. A `Float64Array`/`Int32Array` is direct memory access; a plain `[]` works too, with a little more overhead.
 - **Escape analysis & arena rewind** — fixed-shape arrays/objects/typed-arrays become WASM locals; scratch a function doesn't return is freed on exit (no manual cleanup).
@@ -396,7 +396,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 <details>
 <summary><strong>How do I inspect or debug the output?</strong></summary>
 
-- **Semantics** — valid jz is valid JS: run the same source under Node and diff results (mind the [documented divergences](#faq)); `console.log` works inside compiled modules too.
+- **Semantics** — valid JZ is valid JS: run the same source under Node and diff results (mind the [documented divergences](#faq)); `console.log` works inside compiled modules too.
 - **Codegen** — `jz program.js --wat` (API: `compile(src, { wat: true })`) shows the emitted WAT: grep `v128` to confirm a loop vectorized, `__dyn_get`/`__ext_call` to spot dynamic fallbacks inference couldn't narrow. `--why-not-simd` (API: `whyNotSimd: true`) goes further — for each loop the auto-vectorizer declined it reports the first blocking op (e.g. `i32.rem_s: no lane-pure SIMD mapping`), so you don't have to grep the WAT to find what's one op away.
 - **Dynamic fallbacks** — compile with `strict: true` to turn every fallback (`obj[k]`, `for-in`, unknown receiver method) into a compile error pointing at the site.
 - **Profiling** — `--names` (API: `names: true`) emits a wasm `name` section so DevTools profilers and disassemblers show real function names; `--stats` (API: the `profile` sink) collects per-stage compile timings.
@@ -405,7 +405,7 @@ Codegen also adapts to the target: `host: 'js'` lowers `console`/timers to tiny 
 </details>
 
 <details>
-<summary><strong>How does jz work?</strong></summary>
+<summary><strong>How does JZ work?</strong></summary>
 
 A source string flows through six stages into wasm bytes — no IR leaves the process, the whole thing is one pass per `compile()`:
 
@@ -429,7 +429,7 @@ Each stage lives in its own place: parsing in [`subscript`](https://github.com/d
 <details>
 <summary><strong>Why no type annotations?</strong></summary>
 
-Because `let x: i32` isn't valid JS — annotations would break the promise that valid jz runs and tests as plain JS. So jz reads the types from signals you already write:
+Because `let x: i32` isn't valid JS — annotations would break the promise that valid JZ runs and tests as plain JS. So JZ reads the types from signals you already write:
 
 ```js
 export let bits = (a, b) => a | b   // i32 — a bitwise op pins both operands
@@ -442,7 +442,7 @@ Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is us
 
 
 <details>
-<summary><strong>Is jz production-ready?</strong></summary>
+<summary><strong>Is JZ production-ready?</strong></summary>
 
 It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
 
@@ -458,9 +458,9 @@ Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), 
 
 
 <details>
-<summary><strong>Can jz compile itself?</strong></summary>
+<summary><strong>Can JZ compile itself?</strong></summary>
 
-Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is jz compiled by jz.
+Yes — fully. JZ compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is JZ compiled by JZ.
 
 `npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
 
@@ -468,7 +468,7 @@ Yes — fully. jz compiles its own **entire** source to `dist/jz.wasm`: the whol
 
 
 <details>
-<summary><strong>Can I compile jz to C?</strong></summary>
+<summary><strong>Can I compile JZ to C?</strong></summary>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
@@ -479,9 +479,9 @@ wasm2c program.opt.wasm -o program.c
 cc -O3 program.c -o program
 ```
 
-The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lowers to standalone native code that beats V8 on the watr example corpus (19/21 wins, 2 ties, M4 Max). Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
+The full native pipeline (JZ → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lowers to standalone native code that beats V8 on the watr example corpus (19/21 wins, 2 ties, M4 Max). Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
 
-[Static Hermes](https://github.com/facebook/hermes) reaches native the same way from the other end — full JS through C/LLVM, with sound type annotations for speed; jz keeps the source plain JS and gets its types by inference.
+[Static Hermes](https://github.com/facebook/hermes) reaches native the same way from the other end — full JS through C/LLVM, with sound type annotations for speed; JZ keeps the source plain JS and gets its types by inference.
 
 </details>
 
@@ -490,7 +490,7 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 
 ## Performance
 
-<img src="bench/bench.svg?v=6" alt="jz vs alternatives — geometric-mean speed across the bench corpus, every rival compiled to WebAssembly and run in V8 (apples-to-apples); native C is the lone reference, jz = 1.00× baseline" width="720">
+<img src="bench/bench.svg?v=8" alt="JZ vs alternatives — geometric-mean speed across the bench corpus, every rival compiled to WebAssembly and run in V8 (apples-to-apples); native C is the lone reference, JZ = 1.00× baseline" width="720">
 
 
 See [bench →](https://dy.github.io/jz/bench/)
@@ -534,8 +534,8 @@ Small & fast JS subset → full JS spec & bundled engine:
 
 ## Built with
 
-* [**subscript**](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs. Jessie subset keeps the grammar small and deterministic.
-* [**watr**](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into valid `.wasm`.
+* [**subscript**](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST JZ needs. Jessie subset keeps the grammar small and deterministic.
+* [**watr**](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Binary encoding, validation, and peephole optimization. JZ emits WAT text, watr turns it into valid `.wasm`.
 
 
 ## Contributing

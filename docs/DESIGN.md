@@ -1,6 +1,6 @@
-# jz — design & architecture
+# JZ — design & architecture
 
-The decided architecture and design rationale behind jz: representation, allocator,
+The decided architecture and design rationale behind JZ: representation, allocator,
 type inference, the native pipeline, and the principles that fix them. Status markers
 in headings: **[x]** = decided / reflected in the code, **[ ]** = designed or deferred.
 
@@ -12,7 +12,7 @@ this document is the technical record.
 
 ## [x] Vision & goal
 
-> **jz = JS as it should have been → WASM**
+> **JZ = JS as it should have been → WASM**
 
 > Crockford's Good Parts realized. Explicit > implicit. Functional > OOP. Compile-time > runtime. Native speed.
 
@@ -26,7 +26,7 @@ Anyone who uses JZ gets access to world of low-level machinery (gateway through 
 
 **What would be paradigm shift that would unlock a new value?**
 Functional JS subset → minimal WASM. Fits in a browser, compiles in real-time.
-Excludes JS misfeatures (coercions, hoisting, `this`, classes). Valid jz = valid JS. No linter needed — bad patterns don't parse.
+Excludes JS misfeatures (coercions, hoisting, `this`, classes). Valid JZ = valid JS. No linter needed — bad patterns don't parse.
 Errors fail early with actionable messages.
 Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
@@ -65,7 +65,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 ## [x] Paradigm shift -> WASM as live medium, not build artifact
 
   Current WASM workflow: write Rust/C → compile offline → load binary → deploy.
-  jz workflow: write JS → compile in browser → instant native code.
+  JZ workflow: write JS → compile in browser → instant native code.
 
   * WASM as interaction medium, not deployment format
   * Live-coding native audio/visuals in JS
@@ -74,7 +74,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * WASM as REPL target
   * Scripting = compiling (same act)
 
-## [x] Anti-goals (what jz refuses to be)
+## [x] Anti-goals (what JZ refuses to be)
 
   * Not a general-purpose language — no DOM, no async, no event loop
   * Not a JS runtime — no eval, no dynamic import, no reflection
@@ -88,22 +88,22 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Compilation < 1ms in browser for typical module
   * Output smaller than equivalent C via emscripten
   * Compiler < 2K lines, zero dependencies
-  * Any jz program runs identically as JS (within documented divergences)
+  * Any JZ program runs identically as JS (within documented divergences)
   * Audio worklet: zero GC pauses, stable real-time output
   * Cold start: parse + compile + instantiate < 5ms
 
-## [x] Positioning (why jz, not alternatives)
+## [x] Positioning (why JZ, not alternatives)
 
-  Others compile JS (or JS-like) to WASM. jz is different in kind, not degree:
-  * **vs porffor/jawsm**: they target full JS semantics → runtime overhead, GC. jz targets a subset → zero runtime.
-  * **vs assemblyscript**: separate language with JS-like syntax. jz code IS valid JS.
-  * **vs javy**: embeds QuickJS interpreter in WASM. Interpreter overhead. jz compiles to native WASM ops.
-  * **vs emscripten**: C/C++ toolchain. Different language, massive output. jz is JS-native.
-  * The argument: jz trades JS completeness for something no alternative offers — zero-overhead WASM from JS syntax, compilable in the browser, in real-time.
+  Others compile JS (or JS-like) to WASM. JZ is different in kind, not degree:
+  * **vs porffor/jawsm**: they target full JS semantics → runtime overhead, GC. JZ targets a subset → zero runtime.
+  * **vs assemblyscript**: separate language with JS-like syntax. JZ code IS valid JS.
+  * **vs javy**: embeds QuickJS interpreter in WASM. Interpreter overhead. JZ compiles to native WASM ops.
+  * **vs emscripten**: C/C++ toolchain. Different language, massive output. JZ is JS-native.
+  * The argument: JZ trades JS completeness for something no alternative offers — zero-overhead WASM from JS syntax, compilable in the browser, in real-time.
 
-## [x] Name -> jz
+## [x] Name -> JZ
 
-  * jz
+  * JZ
     + java zcript
     + js zero
     + jazz
@@ -113,10 +113,10 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * _Lightweight_ – embed anywhere, from websites to microcontrollers.
   * _Fast_ – compiles to WASM faster than `eval` parses.
   * _Tiny output_ – no runtime, no heap, no wrappers.
-    * jz output ≤ hand-written. Pure scalar = identical. Loops = ≤5% overhead.
+    * JZ output ≤ hand-written. Pure scalar = identical. Loops = ≤5% overhead.
   * _Zero overhead_ – no runtime type checks, monomorphized per call-site.
   * _JS interop_ – export/import, preserve func signatures at WASM boundary.
-  * _JS compat_ – any jz is valid js with limitations.
+  * _JS compat_ – any JZ is valid js with limitations.
   * Simple, but extensible (like subscript)
   * Lightweight, but versatile
   * Transparent, but clever
@@ -143,7 +143,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   | emscripten | C/C++→WASM | JS glue |
   | grain/kotlin/moonbit | Lang→WASM GC | Native GC interop |
 
-  jz differentiator: minimal core (<2K lines), zero runtime, pure functional subset, module-extensible.
+  JZ differentiator: minimal core (<2K lines), zero runtime, pure functional subset, module-extensible.
 
 ## [x] Closures -> Capture by value + explicit env param
 
@@ -235,7 +235,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   - ATOM/STRING_SSO need zero memory allocation
   - 4 free slots remaining for future (Promise, Iterator, BigInt, etc)
 
-  **vs Go/Rust**: Go/Rust are statically typed — no runtime type bits needed. jz needs them
+  **vs Go/Rust**: Go/Rust are statically typed — no runtime type bits needed. JZ needs them
   because a single f64 param could be number/array/string/object (JS polymorphism).
   NaN-boxing is the cheapest way to pay it.
 
@@ -300,11 +300,11 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [ ] Metacircular (jz.wasm) -> WASI
 
-  Future: jz compiling itself to WASM. Requires jz to be expressive enough to self-host.
+  Future: JZ compiling itself to WASM. Requires JZ to be expressive enough to self-host.
 
-  * jz compiling itself to WASM
+  * JZ compiling itself to WASM
   * Uses WASI for I/O (fd_read/write for source, fd_write for output)
-  * Future goal — requires jz to be expressive enough to self-host
+  * Future goal — requires JZ to be expressive enough to self-host
 
 ## [x] Pluggable architecture -> Modules extending ctx.emit
 
@@ -441,10 +441,10 @@ when*. Read it before adding a new consumer.
 > *"Nothing takes place in the universe in which some rule of maximum or minimum does not appear."* — Euler
 > *"Premature optimization is the root of all evil."* — Knuth
 
-**The bet.** jz's whole value is the *guarantee* that, for every JS syntax
+**The bet.** JZ's whole value is the *guarantee* that, for every JS syntax
 construct / pattern / design case, it emits the **simplest, most minimal
 theoretical WASM** for it — wasm a careful hand-writer would produce, or better
-(branch hints, SIMD, whole-program devirt). If jz only *ties* V8, there is no
+(branch hints, SIMD, whole-program devirt). If JZ only *ties* V8, there is no
 reason to choose it: a tie is a loss. So the metric is concrete and binary:
 **jessie.wasm (parser only) must beat jessie.js under warmed-up V8.**
 
