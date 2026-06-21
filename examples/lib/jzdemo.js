@@ -117,14 +117,18 @@ const addMasthead = (name) => {
     // edge-to-edge. The two bands inset to the same column so the logo + controls align with the
     // demo's edges. The fullscreen button (⛶) drops the cap so it fills the viewport. `--jz-demopad`
     // is the symmetric inset that yields a `--jz-democol`-wide centered column.
+    // --jz-barh is the bottom-bar height — one source of truth shared by the bar, the canvas
+    // height (below) and the code panel; a single media query trims it on phones (≤480px) and the
+    // canvas reclaims the space automatically. Top band stays a fixed 80px.
     fit.textContent =
-      ':root{--jz-democol:960px;--jz-demopad:max(24px,calc(50% - 480px))}'
+      ':root{--jz-democol:960px;--jz-demopad:max(24px,calc(50% - 480px));--jz-barh:64px}'
+      + '@media (max-width:480px){:root{--jz-barh:44px}}'
       // themed page — centering creates side margins, so the bg beside the canvas melds with the theme
       // (black in dark, cassette gray in light) instead of a hard frame. Only on framed standalone pages.
       + 'html,body{background:var(--paper)!important}'
       + 'body > canvas:not(.gradient){position:fixed!important;top:80px!important;left:50%!important;'
       + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
-      + 'height:calc(100vh - 144px)!important;object-fit:contain!important}'
+      + 'height:calc(100vh - 80px - var(--jz-barh))!important;object-fit:contain!important}'
       + '.masthead.fixed{padding-inline:var(--jz-demopad)!important}'
       + 'html.jz-full body > canvas:not(.gradient){width:100vw!important}'
       + 'html.jz-full .masthead.fixed{padding-inline:24px!important}'
@@ -356,7 +360,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: 64px; box-sizing: border-box;
+      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: var(--jz-barh, 64px); box-sizing: border-box;
         display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: var(--paper);
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
       html.jz-full .jz-bar { padding-inline: 24px; }
@@ -414,7 +418,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
         text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-codelink:hover, .jz-codelink.on { color: var(--ink); }
-      .jz-code-panel { position: fixed; top: 80px; bottom: 64px; left: 50%; transform: translateX(-50%);
+      .jz-code-panel { position: fixed; top: 80px; bottom: var(--jz-barh, 64px); left: 50%; transform: translateX(-50%);
         width: min(100vw, var(--jz-democol, 960px)); z-index: 140; background: rgba(6,6,9,.96);
         opacity: 0; visibility: hidden; transition: opacity .18s ease; }
       .jz-code-panel.on { opacity: 1; visibility: visible; }
