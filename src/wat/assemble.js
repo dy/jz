@@ -221,6 +221,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // table holding only empty schemas is pure dead weight there. __json_obj has
   // no such guard — it must read the table whenever stringify is in play.
   const tblConsumed = hasStringify ||
+    ctx.core.includes.has('__obj_clone') ||
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
     ctx.core.includes.has('__dyn_get_t_h') ||

@@ -790,11 +790,17 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       else allKnown = false
     } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
   }
-  // Single unknown spread `{ ...opts }` → alias the source directly. Safe for
-  // read-only use; mutation would affect the source (a true clone takes the
-  // dynamic-merge path below).
-  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...')
-    return typed(asF64(emit(props[0][1])), 'f64')
+  // Single unknown spread `{ ...src }` → shallow-clone src at runtime, preserving
+  // its type (OBJECT→OBJECT, HASH→HASH). Aliasing src (the old shortcut) leaked
+  // every later write to the result back into the source — a real correctness bug
+  // (jz's own narrow.js had to hand-route around it). __obj_clone keys off the
+  // box's runtime schemaId, so it copies static-segment sources too; the schema
+  // table it reads must exist, so declare + force it (assemble.js).
+  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
+    inc('__obj_clone')
+    if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
+    return typed(['call', '$__obj_clone', asF64(emit(props[0][1]))], 'f64')
+  }
   if (!allKnown) return emitDynamicSpread(props)
 
   const schemaId = ctx.schema.register(allNames)

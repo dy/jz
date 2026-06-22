@@ -1347,15 +1347,15 @@ export function specializeBimorphicTyped(programFacts) {
       while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
 
       // Build cloneSig with clean, fully-formed object literals — never by spreading a
-      // live object and then overriding/extending its keys. The self-host (jz.wasm)
-      // miscompiles two such moves: (1) a full-override spread of a sig (`{...func.sig,
-      // params, results}`) corrupts the sig's schema → a later `sig.params` read faults
-      // out of bounds; (2) post-mutating a `{...p}` param copy to ADD ptrKind/ptrAux
-      // extends its schema → the clone reads its param as untyped and emits wrong code
-      // (silent garbage result). So: a sig is exactly { params, results } (spread is pure
-      // redundancy here anyway), and each bimorphic param is constructed with its pointer
-      // ABI baked in. Output is unchanged on the host; this is what round-trips through
-      // jz.wasm. Same hazard the rest-param clone in plan/inline.js documents.
+      // live object and then overriding/extending its keys. A MULTI-prop spread of a
+      // member-access source (`{ ...func.sig, params, results }`) takes the static
+      // allKnown OBJECT-merge path, which trusts func.sig's COMPILE-TIME schema; sig
+      // objects are polymorphic (some carry result/ptrKind/unsignedResult), so that
+      // schema can be a subset of the runtime shape and the slot-copy then faults a
+      // later `sig.params` read out of bounds in the self-host. (The single-unknown
+      // `{ ...x }` clone is fixed at the root — __obj_clone — but the allKnown merge
+      // path is a separate hazard.) Constructing each param with its pointer ABI baked
+      // in sidesteps it; output is unchanged on the host.
       const cloneSig = {
         params: func.sig.params.map((p, idx) => {
           const bi = bimorphic.indexOf(idx)
@@ -1372,16 +1372,16 @@ export function specializeBimorphicTyped(programFacts) {
 
       // Mirror per-param reps under the clone's name with mono ctors at bimorphic
       // positions. emitFunc's preseed reads typedCtor → seeds typedElem map →
-      // `arr[i]` lowers to direct typed load.
-      // Mirror each rep with the bimorphic positions pinned to their mono ctor — in ONE
-      // literal per rep, NOT copy-then-post-mutate. In the self-host a `{...r}` spread shares
-      // the source's backing, so a later `cloneReps.get(k).typedCtor = …` mutates the shared
-      // rep and every clone ends up with the last ctor (silent garbage). A spread-with-override
-      // literal allocates a fresh, correctly-keyed rep per clone (partial override is safe).
+      // `arr[i]` lowers to direct typed load. Each `{ ...r }` is a true clone, so
+      // pinning typedCtor on it leaves the source rep untouched (__obj_clone).
       const cloneReps = new Map()
-      for (const [k, r] of reps) {
-        const bi = bimorphic.indexOf(k)
-        cloneReps.set(k, bi < 0 ? { ...r } : { ...r, typedCtor: cmb[bi], val: VAL.TYPED })
+      for (const [k, r] of reps) cloneReps.set(k, { ...r })
+      for (let i = 0; i < bimorphic.length; i++) {
+        const k = bimorphic[i]
+        const r = cloneReps.get(k) || {}
+        r.typedCtor = cmb[i]
+        r.val = VAL.TYPED
+        cloneReps.set(k, r)
       }
       paramReps.set(cloneName, cloneReps)
 

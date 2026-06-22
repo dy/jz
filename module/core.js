@@ -41,6 +41,7 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
     __coll_order: ['__alloc'],
+    __obj_clone: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -492,6 +493,56 @@ export default (ctx) => {
     (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
     (memory.fill (i32.add (local.get $ptr) (i32.const 16)) (i32.const 0) (i32.mul (local.get $cap) (local.get $stride)))
     (i32.add (local.get $ptr) (i32.const 16)))`
+
+  // Shallow clone of an OBJECT or HASH, preserving its runtime type — the copy
+  // semantics of a single unknown spread `{ ...src }` (module/object.js). Without
+  // this, `{ ...src }` aliases src, so any later write to the result mutates the
+  // source (a real bug: jz's own narrow.js had to route around it). Per JS spread,
+  // the clone is SHALLOW: scalar slots are copied by value; nested object/string
+  // pointers are shared (immutable strings; nested objects are aliased as in V8).
+  //
+  //  - OBJECT: alloc a fresh header'd object with the same schemaId and copy its N
+  //    schema slots (N = key count of __schema_tbl[sid], robust to static-segment
+  //    sources that carry no len/cap header). Then deep-copy the per-instance
+  //    dyn-props HASH (base-16) so `o[k]=v` keys added before the spread carry over
+  //    independently — heap objects only; static-segment objects have no header.
+  //  - HASH: copy header + every probe slot wholesale (entries hold immutable
+  //    string keys + scalar/pointer values — a byte copy is an independent dict).
+  //  - anything else (primitive): nothing to clone, return as-is.
+  ctx.core.stdlib['__obj_clone'] = `(func $__obj_clone (param $v f64) (result f64)
+    (local $bits i64) (local $t i32) (local $sid i32) (local $n i32) (local $cap i32)
+    (local $src i32) (local $dst i32) (local $props i64)
+    (local.set $bits (i64.reinterpret_f64 (local.get $v)))
+    (local.set $t (call $__ptr_type (local.get $bits)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+      (then
+        (local.set $sid (call $__ptr_aux (local.get $bits)))
+        (local.set $src (call $__ptr_offset (local.get $bits)))
+        (local.set $n (i32.const 0))
+        (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
+          (then (local.set $n (call $__len
+            (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))))
+        (local.set $cap (i32.add (local.get $n) (i32.eqz (local.get $n))))
+        (local.set $dst (call $__alloc_hdr (i32.const 0) (local.get $cap)))
+        (memory.copy (local.get $dst) (local.get $src) (i32.shl (local.get $n) (i32.const 3)))
+        (if (i32.ge_u (local.get $src) (global.get $__heap_start))
+          (then
+            (local.set $props (i64.load (i32.sub (local.get $src) (i32.const 16))))
+            (if (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH}))
+              (then (i64.store (i32.sub (local.get $dst) (i32.const 16))
+                (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props)))))))))
+        (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $dst)))))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then
+        (local.set $cap (call $__cap (local.get $bits)))
+        (local.set $src (call $__ptr_offset (local.get $bits)))
+        (local.set $dst (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const 24)))
+        (memory.copy
+          (i32.sub (local.get $dst) (i32.const 16))
+          (i32.sub (local.get $src) (i32.const 16))
+          (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const 24))))
+        (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dst)))))
+    (local.get $v))`
 
   // Allocator + exports are deferred: only included when memory is actually needed.
   // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.

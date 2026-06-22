@@ -57,21 +57,20 @@ compiling any bimorphic typed-array function (`sum(Float64Array)+sum(Int32Array)
 in `specializeBimorphicTyped`'s clone construction; all FIXED by building clones as fresh,
 fully-formed object literals with unique loop-var names. Monomorphic typed arrays were always fine.
 
-| Pattern | Self-host failure | Fix |
+| Pattern | Self-host failure | Status |
 |---|---|---|
-| **Full-override object spread** `{ ...x, ...allKeysOfX }` (e.g. `{ ...func.sig, params, results }` where a sig is exactly `{params,results}`) | corrupts the result's object schema → a later prop read (`sig.params`) faults OOB | construct directly, no spread (a *partial*-override spread like `{...func, name, sig}` is fine) |
-| **Repeated-name block scoping** — a `for (… of …)` loop var whose name collides with an earlier same-name decl in the function (`combo` ×3, `key` ×2) | the loop var isn't rebound per iteration; it aliases the prior binding → stuck at the last value → every clone got the same (wrong) element ctor | unique loop-var names |
-| **Spread-copy then mutate** — `m.set(k, {...r})` then `m.get(k).typedCtor = …` | the `{...r}` copy shares its backing → the mutation leaks → every clone got the last value | one spread-with-override literal per object, no post-mutation |
+| **Single-unknown spread-copy then mutate** — `{ ...r }` (r's schema unknown) then a write to the copy (`c.typedCtor = …`, `c.x = 9`, add a new key) | the copy ALIASED r's backing → the write leaked into the source | **FIXED at root** — `{ ...x }` now emits a true shallow clone (`module/core.js __obj_clone`, keyed off the box schemaId; copies static-segment sources; preserves OBJECT/HASH type). narrow.js's `cloneReps` uses the natural `{...r}` then-mutate form again. Pinned: `test/objects.js` → "spread copy: …" (6 cases, host+kernel). |
+| **Full-override object spread** `{ ...x, k1, k2 }` where the source is a member access whose runtime schema is polymorphic (e.g. `{ ...func.sig, params, results }`) | the static allKnown OBJECT-merge path trusts the source's COMPILE-TIME schema; when the runtime shape is a superset/different layout, the slot-copy faults a later `sig.params` read OOB | **OPEN (separate hazard)** — distinct from the alias bug above; `__obj_clone` only covers the single-unknown path. narrow.js's `cloneSig` keeps the explicit-literal workaround. Robust fix: route uncertain (member-access-inferred) spread sources through runtime-key enumeration instead of the compile-time schema. |
+| **Repeated-name block scoping** — a `for (… of …)` loop var whose name collides with an earlier same-name decl in the function (`combo` ×3, `key` ×2) | the loop var isn't rebound per iteration; it aliases the prior binding → stuck at the last value → every clone got the same (wrong) element ctor | **OPEN** — neutralized by unique loop-var names (narrow.js keeps `cmb`/`dkey`). |
 
 Pinned by `test/types.js` → "bimorphic typed-array param specializes, compiles + runs (self-host
-regression)", which runs through the kernel under `test:wasm`. A *harmless* instance of the scoping
-bug remains in `analyzeFuncForEmit` (`for (const [name, vt] of …)` shadows the outer `name`, but
-`name` isn't read after — no output impact). `plan/inline.js` already documents + avoids the
-full-override-spread hazard for its rest-param clone.
+regression)" + `test/objects.js` → "spread copy: …", all through the kernel under `test:wasm`. A
+*harmless* instance of the scoping bug remains in `analyzeFuncForEmit` (`for (const [name, vt] of …)`
+shadows the outer `name`, but `name` isn't read after — no output impact). `plan/inline.js` documents
+the full-override-spread hazard for its rest-param clone.
 
-**ROOT (latent, NOT fixed here):** the self-host codegen mishandles (a) object spread-copy/override
-schemas and (b) alpha-renaming of shadowed declarations. The fixes above only neutralize the known
-triggers. Durable follow-up: fix the codegen, plus a self-host *conformance* suite that exercises
-spread + override + shadowing through `jz.wasm` (these are exactly where host↔wasm diverge). A
-finer-grained host-vs-wasm parity gate (bisect which compiler fn diverges) would localize the next
-one instantly. `test:wasm` currently gates all tested behavior paths.
+**ROOT status:** (a) object spread-copy of an unknown source is now **fixed** (`__obj_clone`) — the
+single-unknown `{ ...x }` alias was the spread-alias bug; (a′) the *full-override allKnown merge* and
+(b) alpha-renaming of shadowed declarations remain latent, neutralized at their known triggers.
+Durable follow-up: fix (a′) + (b) in codegen, and a finer-grained host-vs-wasm parity gate (bisect
+which compiler fn diverges) to localize the next one. `test:wasm` gates all tested behavior paths.

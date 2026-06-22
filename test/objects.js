@@ -1154,3 +1154,100 @@ test('schema binding intact: single-shape literal still resolves props', () => {
   `)
   is(r.go(), 56)
 })
+
+// ── Spread copy semantics ─────────────────────────────────────────────────
+// `{ ...src }` where src's schema is unknown at compile time (a param, an array
+// element, a member access, a HASH) must SHALLOW-COPY src, never alias it — every
+// later write to the result would otherwise leak back into the source. The runtime
+// clone (module/core.js __obj_clone) keys off the box's schemaId, so it copies
+// static-segment sources too, and preserves the source type (OBJECT/HASH). These
+// run on both the host and the jz.wasm kernel legs (test:wasm) — the bug was a
+// self-host miscompile in jz's own narrow.js before this fix.
+
+test('spread copy: mutating the copy of an unknown source never touches the source', () => {
+  const r = run(`
+    export let go = () => {
+      let mut = (o) => { let c = { ...o }; c.val = 9; return c.val }
+      let s = { val: 1 }
+      let r = mut(s)
+      return s.val * 10 + r   // 19: s untouched; alias bug → 99
+    }
+  `)
+  is(r.go(), 19)
+})
+
+test('spread copy: adding a new key to the copy does not leak into the source', () => {
+  const r = run(`
+    export let go = () => {
+      let mut = (o) => { let c = { ...o }; c.extra = 7; return c.extra }
+      let s = { name: 5 }
+      let r = mut(s)
+      return (s.extra || 0) * 10 + r   // 7: s gains no extra; alias bug → 77
+    }
+  `)
+  is(r.go(), 7)
+})
+
+test('spread copy: read-after-copy with no mutation resolves slots correctly', () => {
+  const r = run(`
+    export let go = () => {
+      let a = [{ x: 5, y: 6 }]
+      let c = { ...a[0] }
+      return c.x * 10 + c.y   // 56
+    }
+  `)
+  is(r.go(), 56)
+})
+
+test('spread copy: {...a[0]} then mutate leaves the array element intact', () => {
+  const r = run(`
+    export let go = () => {
+      let a = [{ x: 5, y: 6 }]
+      let c = { ...a[0] }
+      c.x = 9
+      return a[0].x * 10 + c.x   // 59: a[0] untouched; alias bug → 99
+    }
+  `)
+  is(r.go(), 59)
+})
+
+test('spread copy: cloning a HASH (dynamic-keyed) source is independent', () => {
+  const r = run(`
+    export let go = () => {
+      let mk = () => { let o = {}; let k = 'a'; o[k] = 1; return o }
+      let s = mk()
+      let c = { ...s }
+      let k = 'a'
+      c[k] = 9
+      return s[k] * 10 + c[k]   // 19: s.a stays 1
+    }
+  `)
+  is(r.go(), 19)
+})
+
+test('spread copy: multi-prop override of an unknown source reads back (narrow.js clone shape)', () => {
+  const r = run(`
+    export let go = () => {
+      let clone = (sig) => { let cs = { ...sig, params: [7], results: [1] }; return cs.params[0] }
+      return clone({ params: [3], results: [4] })   // 7
+    }
+  `)
+  is(r.go(), 7)
+})
+
+test('spread copy: dynamically-added props on the source carry over, independently', () => {
+  // __obj_clone deep-copies the per-instance dyn-props hash, so a computed-key prop
+  // added before the spread is present on the copy AND severed from the source.
+  const r = run(`
+    export let go = () => {
+      let addDyn = (o, k) => { o[k] = 99; return o }
+      let mk = () => { let o = { x: 1 }; return addDyn(o, 'y') }
+      let s = mk()
+      let c = { ...s }
+      let k = 'y'
+      c[k] = 7
+      return c.x * 1000 + c.y * 10 + (s.y || 0)   // 1000 + 70 + 99 = 1169
+    }
+  `)
+  is(r.go(), 1169)
+})
