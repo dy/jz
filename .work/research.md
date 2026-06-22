@@ -153,7 +153,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Slight divergence from JS (documented)
   * Sufficient for functional patterns (currying, callbacks)
 
-## [ ] Floating point precision -> Compile-time rational simplification
+## [x] Floating point precision -> Compile-time rational simplification
 
   * Zero runtime cost
   * Exact arithmetic for constant expressions (`1/3 * 3 = 1`, `1/10 + 2/10 = 0.3`)
@@ -275,7 +275,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [x] Pointers -> i32 internal, boundary wraps (see Data representation above)
 
-## [ ] Host APIs -> WASI + shim
+## [x] Host APIs -> WASI + shim
 
   | JS API | WASI Function |
   |--------|---------------|
@@ -283,7 +283,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   | Date.now() | clock_time_get(realtime) |
   | performance.now() | clock_time_get(monotonic) |
 
-## [ ] Native binary -> WASM is the IR
+## [x] Native binary -> WASM is the IR
 
   ```
   JS → jz → .wasm → wasm2c/w2c2 → .c → gcc/clang → native
@@ -298,7 +298,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   | **wasm2c** (WABT) | WASM → C99 | Official, well-tested |
   | **wasmer create-exe** | WASM → native | One command, cross-compile |
 
-## [ ] Metacircular (jz.wasm) -> WASI
+## [x] Metacircular (jz.wasm) -> WASI
 
   Future: JZ compiling itself to WASM. Requires JZ to be expressive enough to self-host.
 
@@ -311,7 +311,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   Modules register on ctx: `ctx.emit[name]` (emitters), `ctx.stdlib[name]` (WAT),
   `ctx.includes` (lazy inclusion). Core stays minimal, capabilities grow through modules.
 
-## [ ] Representation -> per-site, inferred (not a user ABI knob)
+## [x] Representation -> per-site, inferred (not a user ABI knob)
 
   The compiler picks the carrier for each value the way a human reader infers
   type from JS: from name, operators, member access, `typeof`, assignments,
@@ -386,7 +386,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
      types are obvious (or annotate). No promise of stable *internal* rep across
      versions for the same source.
 
-## [ ] Inference -> collect before compile
+## [x] Inference -> collect before compile
 
 All shape/flow facts are produced by **analysis passes that run before
 emit**, never by ad-hoc inference inside the emit path. The emit phase
@@ -424,7 +424,7 @@ The phase chronology in `src/infer.js` (above the paramReps lattice
 primitives, ~line 84) is the canonical reference for *what's valid
 when*. Read it before adding a new consumer.
 
-## [ ] Stdlib sources
+## [x] Stdlib sources
 
   * [Metallic](https://github.com/jdh8/metallic), [Piezo](https://github.com/dy/piezo/blob/main/src/stdlib.js), [AS musl](https://github.com/AssemblyScript/musl/tree/master)
 
@@ -436,7 +436,7 @@ when*. Read it before adding a new consumer.
   * NaN-boxing pointer kinds (7 types)
   * Compile-time rational simplification
 
-## [ ] Optimization principle — minimal theoretical WASM, or no value
+## [x] Optimization principle — minimal theoretical WASM, or no value
 
 > *"Nothing takes place in the universe in which some rule of maximum or minimum does not appear."* — Euler
 > *"Premature optimization is the root of all evil."* — Knuth
