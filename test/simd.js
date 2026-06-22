@@ -138,6 +138,15 @@ test('SIMD f32x4 - scaled result correct at speed', () => {
   }`, { optimize: 'speed' }).exports.m(), 72) // 2*(1+2+…+8)
 })
 
+test('SIMD - f32 reduction widens to f64x2 accumulate, bit-identical', () => {
+  // `s += f32arr[i]` accumulates in f64; vectorize as f64x2 over promote_low_f32x4
+  // (2 f32 per chunk). Single-accumulator (half-width loads don't fit multi-acc).
+  const src = `export let f = (n) => { let a = new Float32Array(n); let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }`
+  ok(/f64x2\.add/.test(wat(src, SPEED)) && /promote_low_f32x4/.test(wat(src, SPEED)), 'f32 sum → f64x2 widening reduction')
+  // sum 1..16 over a Float32Array == 136, exact in f64 accumulation
+  is(jz(`export let m = () => { let a = new Float32Array(16); for (let i=0;i<16;i++) a[i]=i+1; let s=0; for (let i=0;i<16;i++) s+=a[i]; return s }`, { optimize: 'speed' }).exports.m(), 136)
+})
+
 // === SIMD Int32Array (i32x4 — 4 elements per vector) ===
 
 test('SIMD i32x4 - map multiply', () => {

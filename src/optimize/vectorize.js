@@ -1440,15 +1440,22 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
   const stride = LANE_INFO[laneType].stride
   const addrLocals = new Map()
   const offsetTees = new Map()
-  let loadCount = 0
+  let loadCount = 0, sawWidenF32 = false
   function scanExpr(node) {
     if (!isArr(node)) return true
     const op = node[0]
     if (LOAD_OPS[op]) {
-      if (LOAD_OPS[op] !== laneType) return false
+      // f32→f64 widening reduction (`s += f32arr[i]`, acc f64): liftExprV promotes
+      // the f32.load to f64x2.promote_low_f32x4, so accept it under an f64 lane and
+      // validate at the f32 element stride (4) — the loop still steps `lanes` (2)
+      // elements, advancing the f32 address by 8 bytes (the load64_zero the lift reads).
+      const ltw = LOAD_OPS[op]
+      const widenF32 = ltw === 'f32' && laneType === 'f64'
+      if (ltw !== laneType && !widenF32) return false
+      if (widenF32) sawWidenF32 = true
       const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
-      if ((1 << m.strideLog2) !== stride) return false
+      if ((1 << m.strideLog2) !== (widenF32 ? 4 : stride)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadCount++
@@ -1509,7 +1516,9 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
   // the same kind the existing 2-lane fold already does, identical on every engine.
   // Restricted to the plain horizontal-fold FP path (not min/max-select, the
   // narrow-widening sums, or NaN-canon — those have their own fold shapes).
-  const plainReduce = !reduceEntry.minmaxSelect && !widen && canonC == null
+  // The f32→f64 widening sum uses half-width load64_zero loads; the multi-accumulator
+  // offsetLoads/laneBytes logic assumes full v128 loads, so keep it single-accumulator.
+  const plainReduce = !reduceEntry.minmaxSelect && !widen && !sawWidenF32 && canonC == null
   const NACC = (multiAcc && plainReduce && (laneType === 'f64' || laneType === 'f32')) ? 4 : 1
   const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
   const laneBytes = lanes * stride
