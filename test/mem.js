@@ -2,33 +2,12 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64, f64ToI64 } from '../interop.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { i64ToF64 } from '../interop.js'
+import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 
 async function run(code, opts) {
   const r = await WebAssembly.instantiate(compile(code, opts))
   return { module: r.module, instance: { exports: adaptI64(r.module, r.instance.exports) } }
-}
-
-// Adapt raw exports back to f64 ABI so legacy tests see NaN-box pointers.
-function adaptI64(mod, raw) {
-  const i64Exp = new Map()
-  const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
-  if (sec.length) try { for (const e of JSON.parse(new TextDecoder().decode(sec[0]))) i64Exp.set(e.name, e) } catch {}
-  if (!i64Exp.size) return raw
-  const out = {}
-  for (const [name, fn] of Object.entries(raw)) {
-    if (typeof fn !== 'function') { out[name] = fn; continue }
-    const sig = i64Exp.get(name)
-    if (!sig) { out[name] = fn; continue }
-    const piSet = new Set(sig.p), r = sig.r
-    out[name] = (...args) => {
-      const a = piSet.size ? args.map((x, i) => piSet.has(i) ? f64ToI64(x) : x) : args
-      const ret = fn(...a)
-      return r ? i64ToF64(ret) : ret
-    }
-  }
-  return out
 }
 
 // ============================================
@@ -61,7 +40,7 @@ test('mem.Array: write + read roundtrip', async () => {
   `)
   const m = jz.memory(r)
   const ptr = m.Array([10, 20, 30])
-  ok(isNaN(ptr))
+  ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.get(ptr, 0), 10)
   is(r.instance.exports.get(ptr, 1), 20)
   is(r.instance.exports.get(ptr, 2), 30)
@@ -108,7 +87,7 @@ test('mem.String: SSO roundtrip', async () => {
   const r = await run(`export let len = (s) => s.length`)
   const m = jz.memory(r)
   const ptr = m.String('hi')
-  ok(isNaN(ptr))
+  ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.len(ptr), 2)
 })
 
@@ -116,7 +95,7 @@ test('mem.String: heap roundtrip', async () => {
   const r = await run(`export let len = (s) => s.length`)
   const m = jz.memory(r)
   const ptr = m.String('hello world')
-  ok(isNaN(ptr))
+  ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.len(ptr), 11)
 })
 
@@ -153,7 +132,7 @@ test('mem.Object: auto schema lookup', async () => {
   `)
   const m = jz.memory(r)
   const ptr = m.Object({ x: 3, y: 4 })
-  ok(isNaN(ptr))
+  ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.getX(ptr), 3)
   is(r.instance.exports.getY(ptr), 4)
 })
@@ -218,7 +197,9 @@ test('shared memory: no static string collision', async () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
   const memory = new WebAssembly.Memory({ initial: 1 })
   const a = jz('export let f = () => "hello"', { memory })
-  const aPtr = a.instance.exports.f()
+  // Raw instance export returns the i64 box (string is a NaN-box → i64 carrier);
+  // reinterpret to the f64 pointer for memory.read (a.exports.f() would decode to "hello").
+  const aPtr = i64ToF64(a.instance.exports.f())
   const aVal = a.memory.read(aPtr)
   is(aVal, 'hello')
 
@@ -262,7 +243,7 @@ test('mem.Float64Array: write + read roundtrip', async () => {
   `)
   const m = jz.memory(r)
   const ptr = m.Float64Array([1.1, 2.2, 3.3])
-  ok(isNaN(ptr))
+  ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   almost(r.instance.exports.get(ptr, 0), 1.1)
   almost(r.instance.exports.get(ptr, 1), 2.2)
   is(r.instance.exports.len(ptr), 3)

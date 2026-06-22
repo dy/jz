@@ -4,8 +4,8 @@ import { onWasi, onKernel } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 
-function run(code) {
-  return new WebAssembly.Instance(new WebAssembly.Module(compile(code))).exports
+function run(code, opts) {
+  return jz(code, opts).exports
 }
 
 const throws = (code, match, msg, opts) => {

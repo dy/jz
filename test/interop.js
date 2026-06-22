@@ -132,8 +132,26 @@ test('interop: ptr/offset/type/aux codec round-trips', () => {
 })
 
 test('interop: i64ToF64 / f64ToI64 are bit-cast inverses', () => {
-  const original = interop.ptr(6, 3, 1024)
-  const asI64 = interop.f64ToI64(original)
-  is(typeof asI64, 'bigint')
-  is(interop.i64ToF64(asI64), original)
+  // ptr() now yields the i64 carrier directly (a BigInt) — no NaN-box ever materializes as f64.
+  const box = interop.ptr(6, 3, 1024)
+  is(typeof box, 'bigint')
+  // i64→f64→i64 round-trips the bits losslessly (the f64 form is intact on V8).
+  is(interop.f64ToI64(interop.i64ToF64(box)), box)
+  // and the plain-number direction is a clean inverse.
+  is(interop.i64ToF64(interop.f64ToI64(3.5)), 3.5)
+})
+
+test('interop: boxes carry as i64 BigInt, never an f64 NaN-box (JSC-safe codec)', () => {
+  // The Safari fix in one assertion: a box must never become a JS number (f64), or JSC
+  // canonicalizes its NaN payload mid-decode. Every box-producing codec entry yields a BigInt,
+  // and numbers stay numbers. (Reverting the codec to an f64 representation fails this.)
+  is(typeof interop.ptr(4, 0, 1024), 'bigint')
+  for (const atom of [interop.NULL_NAN, interop.UNDEF_NAN, interop.TRUE_NAN, interop.FALSE_NAN]) is(typeof atom, 'bigint')
+  const { memory, exports } = interop.instantiate(compile('export let f = () => "hello world"'))
+  is(typeof memory.String('hello world'), 'bigint')
+  is(typeof memory.Array([1, 2, 3]), 'bigint')
+  is(typeof memory.Uint8Array([1, 2]), 'bigint')
+  is(typeof interop.coerce(null), 'bigint')      // null/undefined coerce to atom boxes
+  is(interop.coerce(1.5), 1.5)                   // a number is left a number
+  is(exports.f(), 'hello world')                 // and the boxed result still decodes correctly
 })

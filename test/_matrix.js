@@ -20,6 +20,46 @@
  * @module test/_matrix
  */
 
+import { f64ToI64, i64ToF64, coerce } from '../interop.js'
+
+// i64 bits for an arg: a box (BigInt, incl. coerce's null/undef sentinels) passes through;
+// a number / f64 NaN-box reinterprets to its bits (intact on V8, where tests run).
+const argBits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
+
+/**
+ * Adapt RAW wasm exports back to the f64 NaN-box ABI for tests that instantiate
+ * directly (bypassing `jz/interop` wrap()). The i64 boundary carrier (Safari NaN-
+ * canonicalization dodge) makes boxed params/results cross as i64/BigInt; this
+ * reinterprets BigInt↔f64 at exactly the positions the `jz:i64exp` custom section
+ * marks, so a legacy `run(code).f(x)` keeps seeing/passing f64 NaN-boxes & numbers.
+ *
+ * `mod` is the WebAssembly.Module (for the custom section), `raw` its instance
+ * exports. With no i64 exports the raw object is returned untouched.
+ */
+export function adaptI64(mod, raw) {
+  const i64Exp = new Map()
+  const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
+  if (sec.length) try { for (const e of JSON.parse(new TextDecoder().decode(sec[0]))) i64Exp.set(e.name, e) } catch { /* ignore */ }
+  if (!i64Exp.size) return raw
+  const out = {}
+  for (const [name, fn] of Object.entries(raw)) {
+    if (typeof fn !== 'function') { out[name] = fn; continue }
+    const sig = i64Exp.get(name)
+    if (!sig) { out[name] = fn; continue }
+    const piSet = new Set(sig.p), r = sig.r
+    out[name] = (...args) => {
+      // Pad to the wasm arity: an i64 param requires a BigInt, so a missing arg must be a
+      // box (UNDEF_NAN) — `undefined` throws "Cannot convert undefined to a BigInt". coerce
+      // maps null/undefined → atom box; a number / f64 NaN-box reinterprets to its bits.
+      while (args.length < fn.length) args.push(undefined)
+      const a = args.map((x, i) => piSet.has(i) ? argBits(coerce(x)) : x)
+      const ret = fn(...a)
+      return r ? i64ToF64(ret) : ret
+    }
+  }
+  return out
+}
+
 const env = process.env.JZ_TEST_OPTIMIZE
 
 /** Resolved optimize level for this run. Mirrors index.js TEST_ENV_DEFAULTS:

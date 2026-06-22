@@ -6,9 +6,7 @@ import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 
 function run(code, opts) {
-  const wasm = compile(code, opts)
-  const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return jz(code, opts).exports
 }
 
 function hasSection(wasm, code) {

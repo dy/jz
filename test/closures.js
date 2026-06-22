@@ -7,9 +7,7 @@ import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
 // Raw instantiation — proves the test path needs no host imports.
 function run(code, opts) {
-  const wasm = compile(code, opts)
-  const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return jz(code, opts).exports
 }
 
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
@@ -261,13 +259,11 @@ test('closure: returned closure with rest', () => {
 // === Top-level higher-order functions ===
 
 test('HOF: top-level function as argument', async () => {
-  const wasm = compile('let k = () => 7; let use = (g) => g(); export let f = () => use(k)')
-  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 7)
+  is(jz('let k = () => 7; let use = (g) => g(); export let f = () => use(k)').exports.f(), 7)
 })
 
 test('HOF: top-level function with args', async () => {
-  const wasm = compile('let add = (a, b) => a + b; let apply = (g, x, y) => g(x, y); export let f = () => apply(add, 3, 4)')
-  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 7)
+  is(jz('let add = (a, b) => a + b; let apply = (g, x, y) => g(x, y); export let f = () => apply(add, 3, 4)').exports.f(), 7)
 })
 
 // === Method dispatch (closure stored as object property, called as o.m(args)) ===

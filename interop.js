@@ -106,75 +106,68 @@ const sectionReader = (bytes) => {
 
 // ── NaN-box codec ───────────────────────────────────────────────────────────
 
-// NaN-boxing encode/decode — shared 8-byte scratch buffer
+// NaN-box codec — integer / BigInt based. A box NEVER becomes a JS number: JSC (Safari)
+// canonicalizes a NaN payload the instant it materializes as f64 (boundary return,
+// Float64Array read, getFloat64), so a box is carried in JS-land as a BigInt (the i64
+// bits) and decoded with integer ops. Only genuine (non-NaN) numbers ever touch f64.
+const MASK32 = 0xffffffffn
+// Reinterpret for GENUINE numbers (and freshly-built boxes leaving JS): `_f64` only ever
+// holds a real number here, never a live NaN-box, so there is nothing for JSC to purify.
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
-// Cross-typed-array view for i64↔f64 reinterpretation. Used at every wasm↔JS
-// boundary that carries a NaN-boxed pointer as i64 bits — V8 may canonicalize
-// f64 NaN payloads at the boundary, so the carrier is BigInt and reinterpret
-// runs once on each side. Separate buffer so it never aliases _u32/_f64.
-const _bi64 = (() => {
-  const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
-  return {
-    i64ToF64: (big) => { bi[0] = big; return fv[0] },
-    f64ToI64: (f) => { fv[0] = f; return bi[0] },
-  }
-})()
-export const i64ToF64 = _bi64.i64ToF64
-export const f64ToI64 = _bi64.f64ToI64
+export const f64ToI64 = (n) => { _f64[0] = n; return (BigInt(_u32[1]) << 32n) | BigInt(_u32[0] >>> 0) }
+export const i64ToF64 = (b) => { _u32[0] = Number(b & MASK32); _u32[1] = Number((b >> 32n) & MASK32); return _f64[0] }
 
-// Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
-// Distinct from 0, JS NaN (payload=0), and all pointers.
-_u32[1] = ATOM_HI[ATOM.NULL]; _u32[0] = 0; export const NULL_NAN = _f64[0]
-_u32[1] = ATOM_HI[ATOM.UNDEF]; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
-_u32[1] = ATOM_HI[ATOM.FALSE]; _u32[0] = 0; export const FALSE_NAN = _f64[0]
-_u32[1] = ATOM_HI[ATOM.TRUE]; _u32[0] = 0; export const TRUE_NAN = _f64[0]
+const hi32 = (b) => Number((b >> 32n) & MASK32)
+// A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix.
+const isBox = (b) => (hi32(b) & 0x7FF80000) === 0x7FF80000
+// i64 bits for a wrapVal result (BigInt box, or number → its f64 bits): memory staging + i64 params.
+const bits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
 
-// Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
+// Reserved atoms (type=ATOM, offset=0): aux 1/2/4/5 → null/undefined/false/true. BigInt boxes.
+export const NULL_NAN = BigInt(ATOM_HI[ATOM.NULL]) << 32n
+export const UNDEF_NAN = BigInt(ATOM_HI[ATOM.UNDEF]) << 32n
+export const FALSE_NAN = BigInt(ATOM_HI[ATOM.FALSE]) << 32n
+export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
+
+// Coerce JS null/undefined → boxed atom (BigInt); everything else passes through.
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
 
-// Memory-free decode of an f64 boundary value: numbers pass through, the reserved
-// atoms become null/undefined/false/true, and an SSO string unpacks its ≤4 inline
-// ASCII bytes straight from the NaN payload. These are exactly the value forms a
-// *memoryless* module can carry across the boundary — a heap string/array/object
-// would need linear memory to exist, so it can't reach here. Heap-carrying modules
-// route through `mem.read` instead (which also handles these, via memory).
+// Accept either the i64 carrier (BigInt, canonical) or a legacy f64 NaN-box (intact on V8 —
+// e.g. an adaptI64 result, or user code holding a pre-i64 pointer) — normalize before decode.
+const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
+export const ptr = (type, aux, offset) => (BigInt(encodePtrHi(type, aux)) << 32n) | BigInt(offset >>> 0)
+export const offset = (p) => Number(asBits(p) & MASK32)
+export const type = (p) => decodePtrType(hi32(asBits(p)))
+export const aux = (p) => decodePtrAux(hi32(asBits(p)))
+
+// SSO string decode from i64 bits: 7-bit ASCII, char i at payload bit i*7, len at bits 42-44.
+const decodeSSO = (b) => {
+  const a = decodePtrAux(hi32(b)), len = (a >>> 10) & 7
+  const payload = (BigInt(a) << 32n) | BigInt(Number(b & MASK32))
+  let s = ''
+  for (let i = 0; i < len; i++) s += String.fromCharCode(Number((payload >> BigInt(i * 7)) & 0x7fn))
+  return s
+}
+
+// Memory-free decode of an i64-bits boundary value: numbers pass through, a box becomes
+// its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
+// memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
 const decode = v => {
-  if (v === v) return v  // fast path: non-NaN number
-  _f64[0] = v
-  // STRING (type 4) + SSO bit: 7-bit ASCII chars packed across the 47-bit payload
-  // (offset = low 32, aux = high 15), char i at payload bit i*7, len at bits 42-44.
-  if (decodePtrType(_u32[1]) === 4) {
-    const a = decodePtrAux(_u32[1])
-    if (a & LAYOUT.SSO_BIT) {
-      const len = (a >>> 10) & 7
-      const payload = (BigInt(a) << 32n) | BigInt(_u32[0] >>> 0); let s = ''
-      for (let i = 0; i < len; i++) s += String.fromCharCode(Number((payload >> BigInt(i * 7)) & 0x7fn))
-      return s
-    }
+  if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
+  else if (typeof v !== 'bigint') return v     // already-decoded JS value
+  if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
+  if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
+  if (offset(v) === 0) {
+    if (v === NULL_NAN) return null
+    if (v === UNDEF_NAN) return undefined
+    if (v === FALSE_NAN) return false
+    if (v === TRUE_NAN) return true
   }
-  if (_u32[0] !== 0) return v
-  if (_u32[1] === ATOM_HI[ATOM.NULL]) return null
-  if (_u32[1] === ATOM_HI[ATOM.UNDEF]) return undefined
-  if (_u32[1] === ATOM_HI[ATOM.FALSE]) return false
-  if (_u32[1] === ATOM_HI[ATOM.TRUE]) return true
-  return v
+  return i64ToF64(v)                            // canonical NaN-number / unknown
 }
 
-// Decode a boundary value that arrives as i64 bits (BigInt carrier) into a JS
-// value. Heap-carrying modules go through `mem.read`; a memoryless module's value
-// is a number/atom/SSO string, decodable from the bits alone.
-const readArgBits = (state, big) => {
-  const f = i64ToF64(big)
-  return state.mem ? state.mem.read(f) : decode(f)
-}
-
-export const ptr = (type, aux, offset) => {
-  _u32[1] = encodePtrHi(type, aux)
-  _u32[0] = offset >>> 0; return _f64[0]
-}
-export const offset = (p) => { _f64[0] = p; return _u32[0] }
-export const type = (p) => { _f64[0] = p; return decodePtrType(_u32[1]) }
-export const aux = (p) => { _f64[0] = p; return decodePtrAux(_u32[1]) }
+// Decode a boundary value arriving as i64 bits (BigInt). Heap modules go through mem.read.
+const readArgBits = (state, big) => state.mem ? state.mem.read(big) : decode(big)
 
 // Typed element metadata: [elemId, byteStride, DataView getter, DataView setter]
 const ELEMS = {
@@ -292,7 +285,7 @@ export const memory = (src) => {
     // NaN-payload doubles to HOLEY_DOUBLE_ELEMENTS, which canonicalizes the NaN
     // payload to 0x7FF8000000000000 — destroying the type/offset bits.
     const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = f64ToI64(mem.wrapVal(data[i]))
+    for (let i = 0; i < n; i++) wrapped[i] = bits(mem.wrapVal(data[i]))
     const dst = new BigInt64Array(mem.buffer, off, n)
     for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(1, 0, off)
@@ -327,9 +320,10 @@ export const memory = (src) => {
     if (v === null || v === undefined) return coerce(v)
     if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
     if (typeof v === 'string') return mem.String(v)
-    // BigInt as a data value crosses the boundary as a decimal-string; wasm-side
-    // numeric parsers accept string form.
-    if (typeof v === 'bigint') return mem.String(v.toString())
+    // A BigInt that is a NaN-box (jz's i64 carrier — e.g. a value pre-built via memory.String/
+    // ptr) passes straight through. A plain bigint *value* crosses as a decimal-string (wasm
+    // numeric parsers accept it).
+    if (typeof v === 'bigint') return isBox(v) ? v : mem.String(v.toString())
     if (Array.isArray(v)) return mem.Array(v)
     if (v instanceof ArrayBuffer) return mem.Buffer(v)
     if (v instanceof DataView) return mem.Buffer(v.buffer)
@@ -370,7 +364,7 @@ export const memory = (src) => {
       if (v === null || v === undefined) v = coerce(v)
       else if (typeof v === 'string') v = mem.String(v)
       else if (Array.isArray(v)) v = mem.Array(v)
-      wrapped[i] = f64ToI64(v)
+      wrapped[i] = bits(v)
     }
     const dst = new BigInt64Array(mem.buffer, raw, n)
     for (let i = 0; i < n; i++) dst[i] = wrapped[i]
@@ -379,8 +373,15 @@ export const memory = (src) => {
 
   mem.read = function(p) {
     if (Array.isArray(p)) return p.map(v => mem.read(v))  // multi-value tuple
-    if (p === p) return p  // regular number passthrough (NaN fails ===)
-    const t = type(p), a = aux(p), off = offset(p)
+    if (typeof p === 'number') {
+      if (p === p) return p              // genuine number passthrough (NaN fails ===)
+      p = f64ToI64(p)                    // f64 NaN-box (intact on V8) → bits; decode below
+    } else if (typeof p !== 'bigint') {
+      return p                           // already a decoded JS value (string/object/…) — passthrough
+    }
+    // p is now i64 bits (BigInt). Decode with integer ops — never materialize as f64.
+    if (!isBox(p)) return i64ToF64(p)    // non-NaN bits → genuine number
+    const m = dv(), t = type(p), a = aux(p), off = offset(p)
     if (t === 0 && off === 0) {
       if (a === 1) return null
       if (a === 2) return undefined
@@ -389,19 +390,18 @@ export const memory = (src) => {
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 1) {  // ARRAY
-      let m = dv(), aOff = off
+      let aOff = off
       // Follow forwarding pointers (cap === -1 means array was reallocated)
       while (m.getInt32(aOff - 4, true) === -1) aOff = m.getInt32(aOff - 8, true)
       const len = m.getInt32(aOff - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = mem.read(m.getFloat64(aOff + i * 8, true))
+      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(aOff + i * 8, true))
       return out
     }
     if (t === 3) {  // TYPED
-      const a2 = aux(p), elem = a2 & 7
+      const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
       const Ctor = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
-      const m = dv()
-      if (a2 & 8) {
+      if (a & 8) {
         const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
         return new Ctor(mem.buffer, dataOff, byteLen / stride)
       }
@@ -409,62 +409,47 @@ export const memory = (src) => {
       return new Ctor(mem.buffer, off, byteLen / stride)
     }
     if (t === 2) {  // BUFFER
-      const byteLen = dv().getInt32(off - 8, true)
+      const byteLen = m.getInt32(off - 8, true)
       const out = new ArrayBuffer(byteLen)
       new Uint8Array(out).set(new Uint8Array(mem.buffer, off, byteLen))
       return out
     }
     if (t === 4) {  // STRING (aux SSO_BIT = inline, else heap)
-      const a2 = aux(p)
-      if (a2 & LAYOUT.SSO_BIT) {
-        const len = (a2 >>> 10) & 7
-        const payload = (BigInt(a2) << 32n) | BigInt(off >>> 0); let s = ''
-        for (let i = 0; i < len; i++) s += String.fromCharCode(Number((payload >> BigInt(i * 7)) & 0x7fn))
-        return s
-      }
-      const len = dv().getInt32(off - 4, true)
+      if (a & LAYOUT.SSO_BIT) return decodeSSO(p)
+      const len = m.getInt32(off - 4, true)
       return TEXT_DEC.decode(new Uint8Array(mem.buffer, off, len))
     }
     if (t === 6) {  // OBJECT
-      const m = dv(), sid = aux(p), keys = mem.schemas[sid]
+      const keys = mem.schemas[a]
       if (!keys) return p
       const obj = {}
-      for (let i = 0; i < keys.length; i++) obj[keys[i]] = mem.read(m.getFloat64(off + i * 8, true))
+      for (let i = 0; i < keys.length; i++) obj[keys[i]] = mem.read(m.getBigInt64(off + i * 8, true))
       return obj
     }
     if (t === 7) {  // HASH
-      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-      const obj = {}
+      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), obj = {}
       for (let i = 0, found = 0; i < cap && found < size; i++) {
-        const hash = m.getFloat64(off + i * 24, true)
-        if (hash !== 0) {
-          const key = mem.read(m.getFloat64(off + i * 24 + 8, true))
-          obj[key] = mem.read(m.getFloat64(off + i * 24 + 16, true))
+        if (m.getBigInt64(off + i * 24, true) !== 0n) {
+          obj[mem.read(m.getBigInt64(off + i * 24 + 8, true))] = mem.read(m.getBigInt64(off + i * 24 + 16, true))
           found++
         }
       }
       return obj
     }
     if (t === 8) {  // SET
-      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-      const set = new Set()
-      for (let i = 0; i < cap && set.size < size; i++) {
-        const hash = m.getFloat64(off + i * 16, true)
-        if (hash !== 0) set.add(mem.read(m.getFloat64(off + i * 16 + 8, true)))
-      }
+      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), set = new Set()
+      for (let i = 0; i < cap && set.size < size; i++)
+        if (m.getBigInt64(off + i * 16, true) !== 0n) set.add(mem.read(m.getBigInt64(off + i * 16 + 8, true)))
       return set
     }
     if (t === 9) {  // MAP
-      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-      const map = new Map()
-      for (let i = 0; i < cap && map.size < size; i++) {
-        const hash = m.getFloat64(off + i * 24, true)
-        if (hash !== 0) map.set(mem.read(m.getFloat64(off + i * 24 + 8, true)), mem.read(m.getFloat64(off + i * 24 + 16, true)))
-      }
+      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), map = new Map()
+      for (let i = 0; i < cap && map.size < size; i++)
+        if (m.getBigInt64(off + i * 24, true) !== 0n)
+          map.set(mem.read(m.getBigInt64(off + i * 24 + 8, true)), mem.read(m.getBigInt64(off + i * 24 + 16, true)))
       return map
     }
-    if (t === 10) return p  // CLOSURE
-    return p
+    return i64ToF64(p)  // canonical NaN-number / CLOSURE / unknown — reinterpret to f64
   }
 
   mem.write = function(p, data) {
@@ -473,7 +458,7 @@ export const memory = (src) => {
       const cap = m.getInt32(off - 4, true)
       if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
       m.setInt32(off - 8, data.length, true)
-      for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, coerce(data[i]), true)
+      for (let i = 0; i < data.length; i++) m.setBigInt64(off + i * 8, bits(coerce(data[i])), true)
     } else if (t === 3) {
       const a2 = aux(p), elem = a2 & 7
       const [, stride, , setter] = ELEM_BY_ID[elem]
@@ -493,7 +478,7 @@ export const memory = (src) => {
       if (!schema) throw Error(`write: unknown schema`)
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
-        if (i >= 0) m.setFloat64(off + i * 8, coerce(data[k]), true)
+        if (i >= 0) m.setBigInt64(off + i * 8, bits(coerce(data[k])), true)
       }
     } else {
       throw Error(`write: unsupported type ${t}`)
@@ -566,16 +551,24 @@ export const wrap = (memSrc, inst) => {
       }
     } catch { /* ignore */ }
   }
+  // i64-carrier map: per export, which param positions ride i64 (BigInt) and whether the
+  // result does. The boxed (NaN-box) carrier crosses as i64 so JSC can't canonicalize the
+  // payload; we reinterpret BigInt↔f64 by bits at exactly those positions. A bigint result
+  // has no entry — its BigInt already IS the value. (Mirror of the test/data.js adapter.)
+  const i64Exp = new Map()
+  const i64Bytes = customSection(mod, 'jz:i64exp')
+  if (i64Bytes) {
+    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r }) }
+    catch { /* ignore */ }
+  }
   const mem = memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
     if (!(error instanceof WebAssembly.Exception) || !lastErrBits) throw error
-    const bits = lastErrBits.value
-    _u32[0] = Number(bits & 0xffffffffn)
-    _u32[1] = Number((bits >> 32n) & 0xffffffffn)
+    const errBits = lastErrBits.value  // i64 bits (BigInt)
     // Memoryless module: the thrown value is a number/atom/SSO string — decode it
     // from bits. (A heap Error/string can only exist when the module has memory.)
-    const value = mem ? mem.read(_f64[0]) : decode(_f64[0])
+    const value = mem ? mem.read(errBits) : decode(errBits)
     if (value instanceof Error) throw value
     const wrapped = new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
@@ -587,21 +580,34 @@ export const wrap = (memSrc, inst) => {
   // value straight through — `mem.wrapVal` would NaN-box it — substituting a
   // jsstring literal default for a missing arg. Every other slot marshals via
   // `box`: `coerce` for pure-scalar modules, `mem.wrapVal` for heap modules.
-  // Quiet-NaN ABI: every export value is f64, so there is no per-position i64
-  // carrier — args flow straight to the wasm call, results straight to decode/read.
   const wrapArgAt = (ext, i, x, box) =>
     ext?.has(i) ? (x === undefined && ext.def?.has(i) ? ext.def.get(i) : x) : box(x)
+  // Per-position arg marshaller: box the value, then for an i64-carrier param (per
+  // jz:i64exp) pass its i64 bits (a boxed value is already a BigInt; a numeric arg to a
+  // dynamic i64 param → its f64 bits). The box never materializes as f64, so JSC can't
+  // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
+  const i64Arg = (ie, ext, box) => (x, i) => {
+    const w = wrapArgAt(ext, i, x, box)
+    if (ie && ie.p.has(i)) return bits(w)              // i64 param: pass the box bits
+    // f64 position: a box (BigInt) must reinterpret to f64. Happens for an un-wrapped export
+    // (e.g. a multi-value result skips wrapping) whose boxed param keeps the legacy f64 carrier
+    // — intact on V8; that path is inherently JSC-limited for boxed lanes anyway.
+    return typeof w === 'bigint' ? i64ToF64(w) : w
+  }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
   if (!mem || mem.scalar) {
     for (const [name, fn] of Object.entries(realInst.exports)) {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const ext = extExp.get(name)
+      const ie = i64Exp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          return decode(fn(...args.map((x, i) => wrapArgAt(ext, i, x, coerce))))
+          const ret = fn(...args.map(i64Arg(ie, ext, coerce)))
+          // A bigint-value result returns raw; a boxed i64 result or an f64/number result decodes.
+          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret)
         } catch (e) { decodeThrown(e) }
       }
     }
@@ -612,23 +618,28 @@ export const wrap = (memSrc, inst) => {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
       const ext = extExp.get(name)
+      const ie = i64Exp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map((x, i) => wrapArgAt(ext, i, x, memWrapVal))
-        while (a.length < fixed) a.push(UNDEF_NAN)
-        a.push(mem.Array(args.slice(fixed)))
+        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal))
+        while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
+        const restArr = mem.Array(args.slice(fixed))   // BigInt box (i64 carrier)
+        a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
         try {
-          return mem.read(fn.apply(null, a))
+          const ret = fn.apply(null, a)
+          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret)
         } catch (error) {
           decodeThrown(error)
         }
       }
     } else if (typeof fn === 'function') {
       const ext = extExp.get(name)
+      const ie = i64Exp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          return mem.read(fn.apply(null, args.map((x, i) => wrapArgAt(ext, i, x, memWrapVal))))
+          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal)))
+          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret)
         } catch (error) {
           decodeThrown(error)
         }
@@ -648,23 +659,22 @@ const prepareInterop = (opts) => {
   // wrapped back to BigInt so the wasm side reinterprets a non-canonicalized
   // bit pattern.
   opts._interp.__ext_prop = (objBig, propBig) => {
-    const objPtr = i64ToF64(objBig), propPtr = i64ToF64(propBig)
-    const obj = state.extMap[offset(objPtr)]
-    const prop = state.mem.read(propPtr)
-    return f64ToI64(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
+    const obj = state.extMap[offset(objBig)]
+    const prop = state.mem.read(propBig)
+    return bits(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
   }
   opts._interp.__ext_has = (objBig, propBig) => {
-    return (state.mem.read(i64ToF64(propBig)) in state.extMap[offset(i64ToF64(objBig))]) ? 1 : 0
+    return (state.mem.read(propBig) in state.extMap[offset(objBig)]) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    state.extMap[offset(i64ToF64(objBig))][state.mem.read(i64ToF64(propBig))] = state.mem.read(i64ToF64(valBig))
+    state.extMap[offset(objBig)][state.mem.read(propBig)] = state.mem.read(valBig)
     return 1
   }
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
-    const obj = state.extMap[offset(i64ToF64(objBig))]
-    const prop = state.mem.read(i64ToF64(propBig))
-    const args = state.mem.read(i64ToF64(argsBig))
-    return f64ToI64(state.mem.wrapVal(obj[prop].apply(obj, args)))
+    const obj = state.extMap[offset(objBig)]
+    const prop = state.mem.read(propBig)
+    const args = state.mem.read(argsBig)
+    return bits(state.mem.wrapVal(obj[prop].apply(obj, args)))
   }
   return state
 }
@@ -821,14 +831,11 @@ const buildImports = (mod, opts, state) => {
       const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
       if (typeof fn === 'function')
         imports[modName][name] = (...args) => {
-          // i64 carrier: reinterpret BigInt bits → f64 NaN-box. Pure-scalar modules
-          // have no memory so skip mem.read; the f64 IS the JS number for numerics.
-          const decoded = args.map(a => {
-            const f = typeof a === 'bigint' ? i64ToF64(a) : a
-            return state.mem ? state.mem.read(f) : decode(f)
-          })
+          // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
+          // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
+          const decoded = args.map(a => state.mem ? state.mem.read(a) : decode(a))
           const ret = fn.call(fns, ...decoded)
-          return f64ToI64(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
+          return bits(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
         }
     }
   }
@@ -851,7 +858,7 @@ const buildImports = (mod, opts, state) => {
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
         let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, f64ToI64(ptr(11, 0, id)))
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, ptr(11, 0, id))
       }
     }
   }

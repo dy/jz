@@ -267,7 +267,7 @@ Interpolated functions become host calls. Non-serializable values (host objects,
 <details>
 <summary><strong>How to pass numbers, strings, arrays, objects JS ↔ WASM?</strong></summary>
 
-**Numbers cross natively** as `f64`/`i32`. **Heap values** — strings, arrays, objects, typed arrays — cross as NaN-boxed `f64` pointers into linear memory, allocated through the module's `_alloc`/`_clear` exports. That pointer-plus-allocator convention *is* the whole ABI (a few hundred bytes, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js)). The one shortcut: arrays of ≤ 8 elements come back as plain JS arrays via WASM multi-value.
+**Numbers cross natively** as `f64`/`i32`. **Heap values** — strings, arrays, objects, typed arrays — plus the `null`/`undefined`/boolean atoms cross as the **i64 NaN-box carrier** (a `BigInt` on the JS side) holding a tagged pointer into linear memory, allocated through the module's `_alloc`/`_clear` exports. i64 rather than f64 so the NaN payload survives JSC/Safari, which canonicalizes f64 NaN bits at the boundary; numbers stay f64 (free). That carrier-plus-allocator convention *is* the whole ABI (a few hundred bytes, documented in [`layout.js`](layout.js) with a worked example in [`test/abi.js`](test/abi.js)); a per-export [`jz:i64exp`](interop.js) custom section maps which params/results ride i64, and the signature itself is self-describing for non-JS hosts. The one shortcut: arrays of ≤ 8 numeric elements come back as plain JS arrays via WASM multi-value.
 
 The `memory` codec — returned by `jz()` and by `jz/interop`'s `instantiate()` — handles both directions: it marshals arguments in, decodes pointer returns out, and turns a wasm `throw` into a real `Error`:
 
@@ -360,7 +360,7 @@ Pass an existing `WebAssembly.Memory` to wrap it: `jz.memory(new WebAssembly.Mem
 Each compiled module exposes two call surfaces:
 
 - **`.exports`** — the JS-wrapped surface: it marshals JS arguments into the heap and decodes pointer return values back to JS values (and turns a wasm `throw` into an `Error`). Use it by default — it's also how you hand a value from one module to another, as in the example above (the value is re-marshaled through the shared memory).
-- **`.instance.exports`** — the raw `WebAssembly.Instance` exports: numbers pass through untouched, and a pointer return comes back as a raw NaN-boxed handle. Decode it on the host with `memory.read(ptr)`. Don't pass a raw pointer back *in* as an argument, though — the JS↔wasm `f64` boundary canonicalizes its NaN payload and the pointer is lost; let `.exports` marshal across instead.
+- **`.instance.exports`** — the raw `WebAssembly.Instance` exports: numbers pass through untouched, and a boxed return (string/array/object/atom) comes back as its raw i64 carrier (a `BigInt`). Decode it on the host with `memory.read(ptr)`, and pass it straight back *in* as an argument — the i64 carrier preserves the NaN payload across the boundary on every engine (including JSC/Safari), so no value is lost.
 
 </details>
 

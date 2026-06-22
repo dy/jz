@@ -9,8 +9,7 @@ import jz, { compile } from '../index.js'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 function run(code) {
-  const wasm = compile(code)
-  return new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports
+  return jz(code).exports
 }
 
 const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }

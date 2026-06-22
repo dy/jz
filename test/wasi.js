@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
+import { adaptI64 } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
@@ -65,9 +66,11 @@ test('WASI polyfill: fd_read returns stdin bytes via opts.read', () => {
     write: (fd, text) => captured.push(text),
   })
   const wasm = compile(`export let f = () => { console.log(readStdin()); return 1 }`, { host: 'wasi' })
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  is(inst.exports.f(), 1)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const e0 = adaptI64(mod, inst.exports)
+  imports._setMemory(e0.memory)
+  is(e0.f(), 1)
   is(captured.join('').trim(), fixture)
 })
 
@@ -86,19 +89,23 @@ test('WASI polyfill: readStdin returns input beyond the initial buffer size', ()
     },
   })
   const wasm = compile(`export let f = () => readStdin().length`, { host: 'wasi' })
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
 
-  is(inst.exports.f(), fixture.length)
+  is(exps.f(), fixture.length)
 })
 
 test('WASI polyfill: custom write receives output', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push([fd, text]) })
   const wasm = compile(`export let f = () => { console.log("custom"); console.warn("err"); return 1 }`, { host: 'wasi' })
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  is(inst.exports.f(), 1)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  is(exps.f(), 1)
   is(captured.map(x => x[1]).join(''), 'custom\nerr\n')
   is(captured.filter(x => x[1] === 'custom')[0][0], 1)
   is(captured.filter(x => x[1] === 'err')[0][0], 2)
@@ -108,10 +115,12 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push(text) })
   const wasm = compile(`export let f = () => { let o = {}; o.b = false; console.log(o.b); return 1 }`, { host: 'wasi' })
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
 
-  is(inst.exports.f(), 1)
+  is(exps.f(), 1)
   is(captured.join(''), 'false\n')
 })
 
@@ -128,9 +137,11 @@ function runWithCapturedFallback(processValue, source) {
     console.warn = msg => warned.push(msg)
     const imports = wasi()
     const wasm = compile(source, { host: 'wasi' })
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-    imports._setMemory(inst.exports.memory)
-    result = inst.exports.f()
+    const mod = new WebAssembly.Module(wasm)
+    const inst = new WebAssembly.Instance(mod, imports)
+    const exps = adaptI64(mod, inst.exports)
+    imports._setMemory(exps.memory)
+    result = exps.f()
   } finally {
     Object.defineProperty(globalThis, 'process', { value: originalProcess, configurable: true })
     console.log = originalLog
@@ -178,7 +189,8 @@ test('EdgeJS smoke: scalar module has no imports', () => {
   const mod = new WebAssembly.Module(wasm)
   is(WebAssembly.Module.imports(mod).length, 0)
   const inst = new WebAssembly.Instance(mod)
-  is(inst.exports.f(9), 81)
+  const exps = adaptI64(mod, inst.exports)
+  is(exps.f(9), 81)
 })
 
 // === WASI guardrails for unsupported host-bound constructs ===
@@ -255,8 +267,10 @@ test('WASI: parseFloat lowers without env imports', () => {
     (Number.parseFloat(".5") === 0.5) +
     isNaN(parseFloat(""))`, { host: 'wasi' })
   is(envImports(wasm).length, 0)
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), {})
-  is(inst.exports.f(), 5)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, {})
+  const exps = adaptI64(mod, inst.exports)
+  is(exps.f(), 5)
 })
 
 test('WASI: parseInt lowers without env imports', () => {
@@ -267,8 +281,10 @@ test('WASI: parseInt lowers without env imports', () => {
     (parseInt("-123") === -123) +
     (Number.parseInt("11", 2) === 3)`, { host: 'wasi' })
   is(envImports(wasm).length, 0)
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), {})
-  is(inst.exports.f(), 5)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, {})
+  const exps = adaptI64(mod, inst.exports)
+  is(exps.f(), 5)
 })
 
 test('WASI: prop assignment on unknown-type receiver — no env imports', () => {
@@ -296,8 +312,10 @@ test('WASI: typed-fallback method dispatch returns undefined on non-callable', (
       return r === undefined ? 1 : 0
     }
   `, { host: 'wasi' })
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), wasi())
-  is(inst.exports.f(), 1)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, wasi())
+  const exps = adaptI64(mod, inst.exports)
+  is(exps.f(), 1)
 })
 
 // === WASI native runtime tests ===
@@ -309,9 +327,11 @@ test('WASI: command-mode entry returns void', () => {
     const captured = []
     const imports = wasi({ write: (fd, text) => captured.push(text) })
     const wasm = compile(`export let ${name} = () => { console.log("hi"); return 42 }`, { host: 'wasi' })
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-    imports._setMemory(inst.exports.memory)
-    is(inst.exports[name](), undefined, `${name}() should return undefined`)
+    const mod = new WebAssembly.Module(wasm)
+    const inst = new WebAssembly.Instance(mod, imports)
+    const exps = adaptI64(mod, inst.exports)
+    imports._setMemory(exps.memory)
+    is(exps[name](), undefined, `${name}() should return undefined`)
     is(captured.join(''), 'hi\n', `${name} body should still execute`)
   }
 })
@@ -321,9 +341,11 @@ test('WASI: command-mode entry returns void through export alias', () => {
     const captured = []
     const imports = wasi({ write: (fd, text) => captured.push(text) })
     const wasm = compile(`const main = () => { console.log("hi"); return 42 }; export { main as ${name} }`, { host: 'wasi' })
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-    imports._setMemory(inst.exports.memory)
-    is(inst.exports[name](), undefined, `${name} alias should return undefined`)
+    const mod = new WebAssembly.Module(wasm)
+    const inst = new WebAssembly.Instance(mod, imports)
+    const exps = adaptI64(mod, inst.exports)
+    imports._setMemory(exps.memory)
+    is(exps[name](), undefined, `${name} alias should return undefined`)
     is(captured.join(''), 'hi\n', `${name} alias body should still execute`)
   }
 })
@@ -333,26 +355,32 @@ test('WASI: parametric run/_start keeps direct export', () => {
   // direct f64-returning export survives (caller needs a host that supplies args).
   const wasm = compile(`export let run = (n) => (n | 0) + 1`, { host: 'wasi' })
   const imports = wasi()
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  is(inst.exports.run(7), 8)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  is(exps.run(7), 8)
 })
 
 test('WASI: parametric run alias keeps direct export', () => {
   const wasm = compile(`const main = (n) => (n | 0) + 1; export { main as run }`, { host: 'wasi' })
   const imports = wasi()
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  is(inst.exports.run(7), 8)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  is(exps.run(7), 8)
 })
 
 test('WASI: non-entry exports keep their f64 return', () => {
   const wasm = compile(`export let run = () => 1; export let helper = (x) => x * 2`, { host: 'wasi' })
   const imports = wasi()
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  is(inst.exports.run(), undefined)
-  is(inst.exports.helper(21), 42)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  is(exps.run(), undefined)
+  is(exps.helper(21), 42)
 })
 
 test('WASI: wasmtime native', () => {

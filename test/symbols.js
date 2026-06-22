@@ -2,11 +2,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-
 function run(code) {
-  const wasm = compile(code)
-  const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return jz(code).exports
 }
 
 // === Basic Symbol creation ===

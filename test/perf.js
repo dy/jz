@@ -1032,7 +1032,10 @@ test('compile profile.names emits wasm function name section', () => {
 
   const named = compile(src, { profile: { names: true } })
   const names = functionNames(named).map(([, name]) => name)
-  ok(names.includes('add'), 'exported function name should be present')
+  // `add` has a dynamic (i64) param so it's boundary-wrapped: the exported entry is the
+  // `$add$exp` thunk (the inner single-use body inlines into it). Either name proves the
+  // export is present in the name section.
+  ok(names.includes('add') || names.includes('add$exp'), 'exported function name should be present')
   ok(names.includes('helper'), 'internal function name should be present')
 })
 
@@ -1399,9 +1402,13 @@ golden('closure-heavy parser', `export let f = (s) => {
 // dominating `tag==K` guard, so the generic helpers inlineOnce splices into
 // `new Float64Array(x)`'s ARRAY arm drop their impossible tag-dispatch arms
 // (typed/hash/set/map branches of the inlined __len, the __typed_shift call).
+// 873→930: i64 boundary carrier. `arr` is a boxed (NaN-box) param, so the export thunk now
+// takes it as i64 (Safari NaN-canonicalization dodge) and a `jz:i64exp` custom section records
+// the carrier map for interop.js. Custom-section metadata + the i64 param signature — zero
+// runtime cost (sections aren't executed); the numeric result still rides plain f64.
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 873)
+}`, 930)

@@ -2,34 +2,10 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64, f64ToI64 } from '../interop.js'
+import { adaptI64 } from './_matrix.js'
 
-const interp = { __ext_prop:()=>0n, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0n }
 function run(code) {
-  const mod = new WebAssembly.Module(compile(code))
-  const inst = new WebAssembly.Instance(mod, { env: interp })
-  return adaptI64(mod, inst.exports)
-}
-
-// Adapt raw exports back to f64 ABI so legacy tests see NaN-box pointers.
-function adaptI64(mod, raw) {
-  const i64Exp = new Map()
-  const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
-  if (sec.length) try { for (const e of JSON.parse(new TextDecoder().decode(sec[0]))) i64Exp.set(e.name, e) } catch {}
-  if (!i64Exp.size) return raw
-  const out = {}
-  for (const [name, fn] of Object.entries(raw)) {
-    if (typeof fn !== 'function') { out[name] = fn; continue }
-    const sig = i64Exp.get(name)
-    if (!sig) { out[name] = fn; continue }
-    const piSet = new Set(sig.p), r = sig.r
-    out[name] = (...args) => {
-      const a = piSet.size ? args.map((x, i) => piSet.has(i) ? f64ToI64(x) : x) : args
-      const ret = fn(...a)
-      return r ? i64ToF64(ret) : ret
-    }
-  }
-  return out
+  return jz(code).exports
 }
 
 // === Object destruct alias ===
@@ -260,11 +236,12 @@ test('Map: literal numeric get uses prehashed lookup', () => {
 })
 
 test('Map: get missing returns nullish', () => {
-  const { f } = run(`export let f = () => {
+  const r = jz(`export let f = () => {
     let m = new Map()
     m = m.set(1, 100)
     return m.get(99)
   }`)
+  const { f } = adaptI64(r.module, r.instance.exports)
   ok(Number.isNaN(f()))
 })
 
@@ -312,7 +289,7 @@ test('Map: size', () => {
 // === instanceof (jzify transforms to typeof / Array.isArray) ===
 
 function runJzify(code) {
-  return new WebAssembly.Instance(new WebAssembly.Module(compile(code, { jzify: true })), { env: interp }).exports
+  return jz(code, { jzify: true }).exports
 }
 
 test('instanceof jzify: Array → Array.isArray', () => {

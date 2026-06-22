@@ -1,15 +1,14 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, adaptI64 } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 // Helper: compile and run
 function run(code) {
   const wasm = compile(code)
   const mod = new WebAssembly.Module(wasm)
-  const inst = new WebAssembly.Instance(mod)
-  return inst.exports
+  return adaptI64(mod, new WebAssembly.Instance(mod).exports)
 }
 
 // Named imports
@@ -313,15 +312,17 @@ test('import: unknown export errors', () => {
 
 test('export default: arrow function', () => {
   const wasm = compile('export default (x) => x + 1')
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
-  is(inst.exports.default(41), 42)
+  const mod = new WebAssembly.Module(wasm)
+  const exports = adaptI64(mod, new WebAssembly.Instance(mod).exports)
+  is(exports.default(41), 42)
 })
 
 test('export default: alias existing function', () => {
   const wasm = compile('export let add = (a, b) => a + b; export default add')
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
-  is(inst.exports.default(20, 22), 42)
-  is(inst.exports.add(1, 2), 3)
+  const mod = new WebAssembly.Module(wasm)
+  const exports = adaptI64(mod, new WebAssembly.Instance(mod).exports)
+  is(exports.default(20, 22), 42)
+  is(exports.add(1, 2), 3)
 })
 
 test('import default: bundled module', () => {

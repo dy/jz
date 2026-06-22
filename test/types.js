@@ -15,19 +15,7 @@ import { repOf, updateRep, VAL } from '../src/reps.js'
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
 function run(code, opts) {
-  const wasm = compile(code, opts)
-  const mod = new WebAssembly.Module(wasm)
-  const raw = new WebAssembly.Instance(mod).exports
-  const wrapped = {}
-  for (const [k, v] of Object.entries(raw)) {
-    if (typeof v === 'function') {
-      wrapped[k] = (...a) => {
-        while (a.length < v.length) a.push(undefined)
-        return v.apply(null, a.map(coerce))
-      }
-    } else wrapped[k] = v
-  }
-  return wrapped
+  return jz(code, opts).exports
 }
 
 // jz()-based — needed by slot/typed-narrow tests that use full host wiring.
@@ -198,7 +186,7 @@ test('constant: false', () => {
 })
 
 test('constant: null', () => {
-  ok(isNaN(run('export let f = () => null').f()), 'null is NaN-boxed')
+  is(run('export let f = () => null').f(), null)
 })
 
 test('constant: NaN', () => {
@@ -754,8 +742,11 @@ test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => { let a = mk(); return a[i] }
   `
+  // 900→930: the index param `i` rides the i64 boundary carrier (its numericity isn't proven
+  // before `a`'s typed-ness is known), so `f` gets a boundary thunk + a jz:i64exp section —
+  // metadata, zero runtime cost. Headroom kept for the narrowing/fusedRewrite regression guard.
   const bytes = jz.compile(src).length
-  ok(bytes <= 900, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>900b)`)
+  ok(bytes <= 930, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>930b)`)
 })
 
 test('typed-narrow: escape via store does not break narrowed helper', () => {

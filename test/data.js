@@ -3,38 +3,11 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64, f64ToI64 } from '../interop.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, adaptI64 } from './_matrix.js'
 
-function run(code) {
-  const wasm = compile(code)
-  const mod = new WebAssembly.Module(wasm)
-  const interp = { __ext_prop:()=>0n, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0n }
-  const inst = new WebAssembly.Instance(mod, { env: interp })
-  return adaptI64(mod, inst.exports)
-}
-
-// Adapt raw exports back to f64 ABI so legacy tests see NaN-box pointers.
-// Reads the jz:i64exp custom section to find which export positions are i64
-// and reinterprets BigInt↔f64 at exactly those positions.
-function adaptI64(mod, raw) {
-  const i64Exp = new Map()
-  const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
-  if (sec.length) try { for (const e of JSON.parse(new TextDecoder().decode(sec[0]))) i64Exp.set(e.name, e) } catch {}
-  if (!i64Exp.size) return raw
-  const out = {}
-  for (const [name, fn] of Object.entries(raw)) {
-    if (typeof fn !== 'function') { out[name] = fn; continue }
-    const sig = i64Exp.get(name)
-    if (!sig) { out[name] = fn; continue }
-    const piSet = new Set(sig.p), r = sig.r
-    out[name] = (...args) => {
-      const a = piSet.size ? args.map((x, i) => piSet.has(i) ? f64ToI64(x) : x) : args
-      const ret = fn(...a)
-      return r ? i64ToF64(ret) : ret
-    }
-  }
-  return out
+function run(code, opts) {
+  const { module, instance } = jz(code, opts)
+  return adaptI64(module, instance.exports)
 }
 
 // ============================================

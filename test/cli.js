@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync } from 
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, adaptI64 } from './_matrix.js'
 
 const CLI = new URL('../cli.js', import.meta.url).pathname
 
@@ -93,7 +93,7 @@ test('cli: compile .js → .wasm', () => {
   // Validate it runs
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
-  is(inst.exports.add(3, 4), 7)
+  is(adaptI64(mod, inst.exports).add(3, 4), 7)
 
   unlinkSync(output)
 })
@@ -199,7 +199,7 @@ test('cli: --resolve resolves bare modules from input directory', () => {
   const wasm = readFileSync(outFile)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
-  is(inst.exports.f(), 42)
+  is(adaptI64(mod, inst.exports).f(), 42)
 })
 
 test('cli: --memory / --max-memory set the memory type', () => {
@@ -232,8 +232,9 @@ test('cli: -D / --define injects a compile-time constant', () => {
   const output = join(tmp, 'def-const.wasm')
   writeFileSync(input, 'export let f = () => N')
   cli(input, '-D', 'N=42', '-o', output)
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(output)))
-  is(inst.exports.f(), 42)
+  const mod = new WebAssembly.Module(readFileSync(output))
+  const inst = new WebAssembly.Instance(mod)
+  is(adaptI64(mod, inst.exports).f(), 42)
   unlinkSync(output)
 })
 

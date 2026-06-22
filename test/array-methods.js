@@ -2,11 +2,11 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 
 function run(code) {
-  const wasm = compile(code)
-  return new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports
+  const { module, instance } = jz(code)
+  return adaptI64(module, instance.exports)
 }
 
 // jz()-based helper for regression tests that need full host wiring.

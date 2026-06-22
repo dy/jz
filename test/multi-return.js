@@ -1,12 +1,10 @@
 // Phase 2: Multi-value return tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz from '../index.js'
 
 function run(code, opts) {
-  const wasm = compile(code, opts)
-  const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return jz(code, opts).exports
 }
 
 // Multi-value just works — no profile needed

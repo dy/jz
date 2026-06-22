@@ -3,6 +3,7 @@ import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
 import { evaluate } from './util.js'
 import jz, { compile } from '../index.js'
+import { adaptI64 } from './_matrix.js'
 
 /** Compile + run, read result via jz.memory (for string-returning expressions) */
 function evalStr(code) {
@@ -10,7 +11,7 @@ function evalStr(code) {
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
   const m = jz.memory({ module: mod, instance: inst })
-  return m.read(inst.exports.main())
+  return m.read(adaptI64(mod, inst.exports).main())
 }
 
 // === Parser tests ===
@@ -355,8 +356,9 @@ test('regex: str.replace(str, str) fallback through __str_replace', () => {
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
   const m = jz.memory({ module: mod, instance: inst })
-  is(m.read(inst.exports.a()), 'hello there')
-  is(m.read(inst.exports.b()), 'abc-def')
+  const exports = adaptI64(mod, inst.exports)
+  is(m.read(exports.a()), 'hello there')
+  is(m.read(exports.b()), 'abc-def')
 })
 
 test('regex: str.split(regex)', async () => {
