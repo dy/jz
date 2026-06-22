@@ -206,6 +206,8 @@ export default (ctx) => {
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc'],
+    __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n'],
     // __str_join uses __typed_idx when typedarray is loaded (plain arrays promoted to
     // Int32Array by promoteIntArrayLiterals can produce PTR.TYPED results via .map()).
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
@@ -265,6 +267,72 @@ export default (ctx) => {
           (then (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0)
                   (i32.load (i32.add (local.get $off) (i32.const 8)))))
           (else (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $off)))))))`
+
+  // __subarray(ptr, begin, end, useEnd) — runtime-dispatched `.subarray(...)` for
+  // when the receiver's elem type / view-ness isn't statically known (a binding
+  // reassigned owned→view: `let c = new T(d); c = c.subarray(n)`). Reads elem type
+  // and the view bit off the aux byte, so it is correct whether `ptr` is an owned
+  // typed array or an existing view. Mirrors the static `.typed:subarray` emitter:
+  // builds the 16-byte descriptor [byteLen][dataOff][rootOff] and tags TYPED|view.
+  // Cold path (slicing, not per-element) — correctness over speed.
+  ctx.core.stdlib['__subarray'] = `(func $__subarray (param $ptr i64) (param $begin i32) (param $end i32) (param $useEnd i32) (result f64)
+    (local $aux i32) (local $shift i32) (local $off i32) (local $data i32) (local $root i32)
+    (local $len i32) (local $lo i32) (local $hi i32) (local $n i32) (local $desc i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $shift (call $__typed_shift (i32.and (local.get $aux) (i32.const 7))))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $data (call $__typed_data (local.get $ptr)))
+    (local.set $root
+      (if (result i32) (i32.and (local.get $aux) (i32.const 8))
+        (then (i32.load (i32.add (local.get $off) (i32.const 8))))
+        (else (local.get $off))))
+    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $lo (local.get $begin))
+    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.add (local.get $lo) (local.get $len)))))
+    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.const 0))))
+    (if (i32.gt_s (local.get $lo) (local.get $len)) (then (local.set $lo (local.get $len))))
+    (if (local.get $useEnd)
+      (then
+        (local.set $hi (local.get $end))
+        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.add (local.get $hi) (local.get $len)))))
+        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.const 0))))
+        (if (i32.gt_s (local.get $hi) (local.get $len)) (then (local.set $hi (local.get $len)))))
+      (else (local.set $hi (local.get $len))))
+    (local.set $n (select (i32.sub (local.get $hi) (local.get $lo)) (i32.const 0) (i32.gt_s (local.get $hi) (local.get $lo))))
+    (local.set $desc (call $__alloc (i32.const 16)))
+    (i32.store (local.get $desc) (i32.shl (local.get $n) (local.get $shift)))
+    (i32.store (i32.add (local.get $desc) (i32.const 4)) (i32.add (local.get $data) (i32.shl (local.get $lo) (local.get $shift))))
+    (i32.store (i32.add (local.get $desc) (i32.const 8)) (local.get $root))
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.or (local.get $aux) (i32.const 8)) (local.get $desc)))`
+
+  // __typed_slice_rt(ptr, begin, end, useEnd) — runtime-dispatched `.slice(...)` for
+  // a receiver whose elem type / view-ness isn't statically known. Unlike subarray
+  // this returns a fresh OWNED copy (bit-exact memory.copy, so bigint-safe too). Reads
+  // elem type + data address off the aux byte. Cold path — correctness over speed.
+  ctx.core.stdlib['__typed_slice_rt'] = `(func $__typed_slice_rt (param $ptr i64) (param $begin i32) (param $end i32) (param $useEnd i32) (result f64)
+    (local $aux i32) (local $et i32) (local $shift i32) (local $src i32)
+    (local $len i32) (local $lo i32) (local $hi i32) (local $n i32) (local $byteLen i32) (local $dst i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $et (i32.and (local.get $aux) (i32.const 7)))
+    (local.set $shift (call $__typed_shift (local.get $et)))
+    (local.set $src (call $__typed_data (local.get $ptr)))
+    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $lo (local.get $begin))
+    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.add (local.get $lo) (local.get $len)))))
+    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.const 0))))
+    (if (i32.gt_s (local.get $lo) (local.get $len)) (then (local.set $lo (local.get $len))))
+    (if (local.get $useEnd)
+      (then
+        (local.set $hi (local.get $end))
+        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.add (local.get $hi) (local.get $len)))))
+        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.const 0))))
+        (if (i32.gt_s (local.get $hi) (local.get $len)) (then (local.set $hi (local.get $len)))))
+      (else (local.set $hi (local.get $len))))
+    (local.set $n (select (i32.sub (local.get $hi) (local.get $lo)) (i32.const 0) (i32.gt_s (local.get $hi) (local.get $lo))))
+    (local.set $byteLen (i32.shl (local.get $n) (local.get $shift)))
+    (local.set $dst (call $__alloc_hdr_n (local.get $byteLen) (local.get $byteLen) (i32.const 1)))
+    (memory.copy (local.get $dst) (i32.add (local.get $src) (i32.shl (local.get $lo) (local.get $shift))) (local.get $byteLen))
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.and (local.get $aux) (i32.const 23)) (local.get $dst)))`
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
@@ -644,8 +712,25 @@ export default (ctx) => {
   const dvIndexChecked = (offNode, size, viewSize) => {
     ctx.runtime.throws = true
     const idxT = tempI32('dvb')
+    const offIR = emit(offNode)
+    // Fast path: a proven-i32 byte offset (a loop-advanced `p`, `i*2`, a `|0` value)
+    // carries no fraction/NaN/negative-from-ToNumber surprise, so it skips the f64
+    // ToIndex round-trip and the `__dv_index` CALL — the dominant per-sample cost in
+    // DataView-based codec loops. An i32 range (`<0`) + bounds (`>viewSize-size`)
+    // check is all the spec needs here; this lowers `dv.getInt16(p,true)` to one
+    // `i32.load16_s`, matching the explicit-typed-view path.
+    if (offIR.type === 'i32') {
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${idxT}`, offIR],
+        ['if', ['i32.or',
+            ['i32.lt_s', ['local.get', `$${idxT}`], ['i32.const', 0]],
+            ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]]],
+          ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+        ['local.get', `$${idxT}`]], 'i32')
+    }
+    inc('__dv_index')
     return typed(['block', ['result', 'i32'],
-      ['local.set', `$${idxT}`, dvIndex(offNode)],
+      ['local.set', `$${idxT}`, typed(['call', '$__dv_index', toNumF64(offNode, offIR)], 'i32')],
       ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]],
         ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
       ['local.get', `$${idxT}`]], 'i32')
@@ -1714,7 +1799,17 @@ export default (ctx) => {
   // Bulk copy via `memory.copy`.
   ctx.core.emit['.typed:slice'] = (arr, start, end) => {
     const r = resolveElem(arr)
-    if (!r || r.isBigInt) return null
+    if (!r) {
+      // Elem type / view-ness not statically known (owned→view reassigned binding).
+      // Dispatch off the runtime aux byte instead of crashing on empty IR.
+      inc('__typed_slice_rt')
+      return typed(['call', '$__typed_slice_rt',
+        ['i64.reinterpret_f64', asF64(emit(arr))],
+        start == null ? ['i32.const', 0] : asI32(emit(start)),
+        end == null ? ['i32.const', 0] : asI32(emit(end)),
+        ['i32.const', end == null ? 0 : 1]], 'f64')
+    }
+    if (r.isBigInt) return null
     const { et, isView } = r
     const arrLoc = temp('tsa'), srcPtr = tempI32('tssp'), srcLen = tempI32('tssl')
     const lo = tempI32('tslo'), hi = tempI32('tshi'), n = tempI32('tsn')
@@ -1810,7 +1905,16 @@ export default (ctx) => {
   // TYPED ptr with aux|view, exactly like new TypedArray(buffer, byteOffset, length).
   ctx.core.emit['.typed:subarray'] = (arr, begin, end) => {
     const r = resolveElem(arr)
-    if (!r) return null
+    if (!r) {
+      // Elem type / view-ness not statically known (owned→view reassigned binding).
+      // Dispatch off the runtime aux byte instead of crashing on empty IR.
+      inc('__subarray')
+      return typed(['call', '$__subarray',
+        ['i64.reinterpret_f64', asF64(emit(arr))],
+        begin == null ? ['i32.const', 0] : asI32(emit(begin)),
+        end == null ? ['i32.const', 0] : asI32(emit(end)),
+        ['i32.const', end == null ? 0 : 1]], 'f64')
+    }
     const { et, isView, isBigInt } = r
     const shift = SHIFT[et]
     const viewAux = et | 8 | (isBigInt ? 16 : 0)

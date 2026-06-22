@@ -648,3 +648,66 @@ test('subview — view-of-view via .buffer reconstructs root', () => {
   `)
   is(exports.main(), 77)
 })
+
+// === owned→view reassignment: `c = c.subarray()/.slice()` ===
+// A typed-array binding reassigned from an owned array to a VIEW (different
+// view-ness for the same elem type) is poisoned by the narrower (can't pick one
+// static view-ness for element access). The `.subarray`/`.slice` emitters must
+// then dispatch off the runtime aux byte instead of crashing on empty IR
+// (regression: "compiler internal: expected emitted IR value … got empty value").
+
+test('subarray — owned→view self-reassign compiles + indexes correctly', () => {
+  const { exports } = jz(`
+    export let main = (b) => {
+      let c = new Uint8Array(b)   // owned
+      c = c.subarray(2)           // now a VIEW
+      return c[0] * 100 + c[1] * 10 + c.length
+    }
+  `)
+  // input [10,20,30,40,50] → c = [30,40,50] → 30*100+40*10+3 = 3403
+  is(exports.main(new Uint8Array([10, 20, 30, 40, 50])), 3403)
+})
+
+test('subarray — chained view→view + negative/OOB/empty clamping', () => {
+  const { exports } = jz(`
+    export let main = (b) => {
+      let c = new Uint8Array(b)
+      c = c.subarray(1)           // [20,30,40,50,60]
+      let d = c.subarray(-2)      // negative → [50,60]
+      let e = c.subarray(2, 99)   // OOB end clamps → [40,50,60]
+      let f = c.subarray(4, 1)    // hi<lo → empty
+      return d.length * 1000 + d[1] * 10 + e.length * 100 + f.length
+    }
+  `)
+  // input [10..60]; c=[20,30,40,50,60]; d=[50,60] len2 d[1]=60; e len3; f len0
+  // 2*1000 + 60*10 + 3*100 + 0 = 2000+600+300 = 2900
+  is(exports.main(new Uint8Array([10, 20, 30, 40, 50, 60])), 2900)
+})
+
+test('slice — owned→view self-reassign yields an owned copy (independent of source)', () => {
+  const { exports } = jz(`
+    export let main = (b) => {
+      let c = new Uint8Array(b)
+      c = c.subarray(1)           // VIEW [20,30,40,50]
+      let cp = c.slice()          // owned copy of the view
+      cp[0] = 99                  // mutate copy
+      return cp[0] * 1000 + cp.length * 10 + c[0]   // c[0] unchanged (20)
+    }
+  `)
+  // cp=[20,30,40,50]→[99,...] len4; c[0]=20 → 99*1000+4*10+20 = 99060
+  is(exports.main(new Uint8Array([10, 20, 30, 40, 50])), 99060)
+})
+
+test('slice — Int16Array owned→view self-reassign (non-byte stride)', () => {
+  const { exports } = jz(`
+    export let main = (b) => {
+      let s = new Int16Array(b.buffer, b.byteOffset, b.byteLength >> 1)
+      s = s.subarray(1)           // VIEW skipping one i16
+      let cp = s.slice(0, 2)
+      return cp[0] * 1000 + cp[1] + cp.length
+    }
+  `)
+  const u = new Uint8Array(8); new DataView(u.buffer).setInt16(2, 111, true); new DataView(u.buffer).setInt16(4, 222, true)
+  // s = i16 view over [_, 111, 222, _]; s.subarray(1) = [111,222,_]; cp=[111,222] → 111000+222+2
+  is(exports.main(u), 111224)
+})

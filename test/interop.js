@@ -155,3 +155,40 @@ test('interop: boxes carry as i64 BigInt, never an f64 NaN-box (JSC-safe codec)'
   is(interop.coerce(1.5), 1.5)                   // a number is left a number
   is(exports.f(), 'hello world')                 // and the boxed result still decodes correctly
 })
+
+// ── zero-copy I/O: allocTyped + Uint8Array memcpy ───────────────────────────
+
+test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)', () => {
+  // Regression: the inbound TypedArray path gated the fast `.set` memcpy on stride>=2,
+  // so a Uint8Array (stride 1, e.g. a whole audio file) fell to a per-byte DataView
+  // loop — slow, and a silent miscompile would surface here as a wrong sum.
+  const { exports } = interop.instantiate(compile(`
+    export let sum = (b) => { let n = b.length, s = 0; for (let i = 0; i < n; i++) s += b[i]; return s }
+  `))
+  const data = new Uint8Array(1000)
+  for (let i = 0; i < data.length; i++) data[i] = i & 0xff
+  let expect = 0; for (let i = 0; i < data.length; i++) expect += i & 0xff
+  is(exports.sum(data), expect)
+})
+
+test('interop: memory.allocTyped gives a live view + box for zero-copy input', () => {
+  const { exports, memory } = interop.instantiate(compile(`
+    export let dec = (b) => { let n = b.length, o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = b[i] / 255; return o }
+  `))
+  const { view, box } = memory.allocTyped(Uint8Array, 4)
+  ok(view instanceof Uint8Array, 'view is a Uint8Array')
+  ok(view.buffer === memory.buffer, 'view aliases wasm memory (zero-copy)')
+  ok(typeof box === 'bigint', 'box is an i64 carrier')
+  view.set([0, 64, 128, 255])               // fill the wasm-memory region directly
+  const out = exports.dec(box)              // decoder reads in place — no 2nd copy
+  ok(out.buffer === memory.buffer, 'result is a zero-copy view over wasm memory')
+  is(out[0], 0); is(Math.round(out[3] * 255), 255)
+  // matches the ordinary marshaled path
+  const out2 = exports.dec(new Uint8Array([0, 64, 128, 255]))
+  is(out2[2], out[2])
+})
+
+test('interop: allocTyped rejects an unsupported ctor', () => {
+  const { memory } = interop.instantiate(compile('export let f = () => 1'))
+  throws(() => memory.allocTyped(Array, 4))
+})

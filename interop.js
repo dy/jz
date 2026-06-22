@@ -503,7 +503,9 @@ export const memory = (src) => {
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
     mem[name] = (data) => {
       const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
-      if (stride >= 2 && TA[elemId] && data instanceof TA[elemId]) {
+      // Same-type source → native memcpy via `.set` (incl. stride-1 Uint8Array:
+      // a multi-MB file copied byte-by-byte through DataView dominates decode).
+      if (TA[elemId] && data instanceof TA[elemId]) {
         new TA[elemId](mem.buffer, off, n).set(data)
       } else {
         const m = dv()
@@ -511,6 +513,24 @@ export const memory = (src) => {
       }
       return ptr(3, elemId, off)
     }
+  }
+
+  // Zero-copy input: reserve a typed-array region in wasm memory and return BOTH
+  // a live `view` over it and the NaN-box `box` pointer to pass as an argument.
+  // The caller fills `view` directly (one I/O-side copy, no second JS→wasm copy)
+  // and hands `box` to the export, which reads the bytes in place. Decoded typed
+  // arrays already come back as views (mem.read), so a decode can be copy-free
+  // end-to-end. LIFETIME: `view` is detached by any mem.grow() (alloc past the
+  // current buffer) and clobbered by mem.reset()/the next decode — re-derive a
+  // fresh view with mem.read(box) after growth, or copy out what must persist.
+  // Back the module with a shared memory (WebAssembly.Memory{shared:true}) to
+  // keep views valid across grow and to hand them to a worker/AudioWorklet.
+  mem.allocTyped = (Ctor, n) => {
+    const meta = ELEMS[Ctor?.name]
+    if (!meta) throw Error(`allocTyped: unsupported type ${Ctor?.name ?? Ctor}`)
+    const [elemId, stride] = meta
+    const bytes = n * stride, off = hdr(bytes, bytes, bytes)
+    return { view: new Ctor(mem.buffer, off, n), box: ptr(3, elemId, off) }
   }
 
   _enhanced.add(mem)
