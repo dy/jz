@@ -47,3 +47,31 @@ Conventions to match when fixing: turn each silent raw-OOB into either correct b
 the existing `__dyn_set` / `__dyn_get` hash path) or a clean fail-fast via `ensureDynSetAllowed`
 (warn in `strict:false`, throw in `strict:true`) — never a silent trap. Pin every fix with a test
 that runs under `JZ_TEST_TARGET=jz.wasm` so the self-host boundary is held.
+
+## Second class — self-host *codegen* miscompiles (object construction / scoping)
+
+Distinct from the dynamic-access class above: here jz.wasm miscompiles its OWN source constructs
+(V8 runs the identical JS correctly — so every one is a host↔wasm divergence). Surfaced
+root-causing the **poly trap**: jz.wasm crashed, then (once the crash was fixed) emitted *garbage*,
+compiling any bimorphic typed-array function (`sum(Float64Array)+sum(Int32Array)`). All three lived
+in `specializeBimorphicTyped`'s clone construction; all FIXED by building clones as fresh,
+fully-formed object literals with unique loop-var names. Monomorphic typed arrays were always fine.
+
+| Pattern | Self-host failure | Fix |
+|---|---|---|
+| **Full-override object spread** `{ ...x, ...allKeysOfX }` (e.g. `{ ...func.sig, params, results }` where a sig is exactly `{params,results}`) | corrupts the result's object schema → a later prop read (`sig.params`) faults OOB | construct directly, no spread (a *partial*-override spread like `{...func, name, sig}` is fine) |
+| **Repeated-name block scoping** — a `for (… of …)` loop var whose name collides with an earlier same-name decl in the function (`combo` ×3, `key` ×2) | the loop var isn't rebound per iteration; it aliases the prior binding → stuck at the last value → every clone got the same (wrong) element ctor | unique loop-var names |
+| **Spread-copy then mutate** — `m.set(k, {...r})` then `m.get(k).typedCtor = …` | the `{...r}` copy shares its backing → the mutation leaks → every clone got the last value | one spread-with-override literal per object, no post-mutation |
+
+Pinned by `test/types.js` → "bimorphic typed-array param specializes, compiles + runs (self-host
+regression)", which runs through the kernel under `test:wasm`. A *harmless* instance of the scoping
+bug remains in `analyzeFuncForEmit` (`for (const [name, vt] of …)` shadows the outer `name`, but
+`name` isn't read after — no output impact). `plan/inline.js` already documents + avoids the
+full-override-spread hazard for its rest-param clone.
+
+**ROOT (latent, NOT fixed here):** the self-host codegen mishandles (a) object spread-copy/override
+schemas and (b) alpha-renaming of shadowed declarations. The fixes above only neutralize the known
+triggers. Durable follow-up: fix the codegen, plus a self-host *conformance* suite that exercises
+spread + override + shadowing through `jz.wasm` (these are exactly where host↔wasm diverge). A
+finer-grained host-vs-wasm parity gate (bisect which compiler fn diverges) would localize the next
+one instantly. `test:wasm` currently gates all tested behavior paths.

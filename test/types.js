@@ -688,6 +688,25 @@ test('typed-narrow: ?: with mixed elemType does NOT narrow (still correct)', () 
   is(f(1, 1), 20)
 })
 
+test('typed-narrow: bimorphic typed-array param specializes, compiles + runs (self-host regression)', () => {
+  // `sum` is called with BOTH Float64Array and Int32Array, so specializeBimorphicTyped clones
+  // it once per concrete element ctor. The clone sig was built with a redundant `...func.sig`
+  // spread (`{ ...func.sig, params, results }`) — and spreading an object then overriding its
+  // keys in the same literal corrupts the result's object schema in the self-host kernel, so a
+  // later `sig.params` read faults out of bounds (memory access out of bounds) at -O0. This pins
+  // that bimorphic-typed specialization compiles AND runs through the jz.wasm kernel (test:wasm),
+  // not just the JS host (the poly bench was the original repro).
+  const { main } = runHost(`
+    let sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+    export let main = () => {
+      let f = new Float64Array([1.5, 2.5, 3.0])
+      let g = new Int32Array([10, 20, 30])
+      return sum(f) + sum(g)
+    }
+  `)
+  is(main(), 67)   // (1.5 + 2.5 + 3.0) + (10 + 20 + 30)
+})
+
 test('typed-narrow: codegen — narrowed helper return type is i32', () => {
   const w = wat(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
