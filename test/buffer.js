@@ -711,3 +711,27 @@ test('slice — Int16Array owned→view self-reassign (non-byte stride)', () => 
   // s = i16 view over [_, 111, 222, _]; s.subarray(1) = [111,222,_]; cp=[111,222] → 111000+222+2
   is(exports.main(u), 111224)
 })
+
+// === array-of-typed-arrays element ctor inference (ch[c][i] = …) ===
+// `ch[c][i] = v` where ch is an Array of typed arrays must inline to a direct
+// store (not a per-element __typed_set_idx runtime dispatch). The element ctor is
+// inferred from every construction form: Array.from, array literal, push, index-fill.
+
+import { compile as _compile } from '../index.js'
+const noRuntimeScatter = (src) => !/call \$__typed_set_idx/.test(_compile(src, { wat: true }))
+
+test('channelData scatter inlines — Array.from / push / index-fill', () => {
+  const arrFrom = `export let f = (nc, m) => { let ch = Array.from({length:nc}, () => new Float32Array(m)); for (let i=0;i<m;i++) for (let c=0;c<nc;c++) ch[c][i] = i; return ch }`
+  const push = `export let f = (nc, m) => { let ch = []; for (let c=0;c<nc;c++) ch.push(new Float32Array(m)); for (let i=0;i<m;i++) for (let c=0;c<nc;c++) ch[c][i] = i; return ch }`
+  const fill = `export let f = (nc, m) => { let ch = new Array(nc); for (let c=0;c<nc;c++) ch[c] = new Float32Array(m); for (let i=0;i<m;i++) for (let c=0;c<nc;c++) ch[c][i] = i; return ch }`
+  ok(noRuntimeScatter(arrFrom), 'Array.from channelData inlines')
+  ok(noRuntimeScatter(push), 'push channelData inlines')
+  ok(noRuntimeScatter(fill), 'index-fill channelData inlines')
+})
+
+test('channelData scatter — correct values across construction forms', () => {
+  for (const ctor of ['Array.from({length:2},()=>new Float32Array(3))', '[new Float32Array(3), new Float32Array(3)]']) {
+    const { exports } = jz(`export let f = () => { let ch = ${ctor}; for (let i=0;i<3;i++) for (let c=0;c<2;c++) ch[c][i] = (c+1)*10+i; return ch[0][2]*100 + ch[1][0] }`)
+    is(exports.f(), 12 * 100 + 20) // ch[0][2]=12, ch[1][0]=20
+  }
+})

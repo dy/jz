@@ -509,7 +509,18 @@ export function analyzeBody(body) {
         }
         observeArrSchema(arr, exprSchemaId(a, localSchemaMap))
         observeArrValType(arr, exprElemSourceVal(a))
+        // `ch.push(new Float32Array(m))` — track the element ctor so `ch[c][i]`
+        // inlines, same as the Array.from / array-literal forms.
+        if (exprElemSourceVal(a) === VAL.TYPED) observeArrTypedCtor(arr, elemTypedCtorOf(a))
       }
+    }
+
+    // `ch[c] = new Float32Array(m)` — index-fill construction of a typed-array-of-
+    // arrays (`let ch = new Array(n); for(c) ch[c] = new T(m)`). Mirror push.
+    if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3
+        && typeof node[1][1] === 'string' && valTypeOf(node[2]) === VAL.TYPED) {
+      observeArrValType(node[1][1], VAL.TYPED)
+      observeArrTypedCtor(node[1][1], elemTypedCtorOf(node[2]))
     }
 
     // `=` reassignment — locals widen, valTypes/typedElems track,
