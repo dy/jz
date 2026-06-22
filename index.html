@@ -1313,21 +1313,21 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">What's supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><span class="fq">What is supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>A minimal modern <b>strict</b> sync functional JS subset with <b>compat</b> layer is supported.</p>
+            <p>A minimal modern functional JS subset – no async, dynamic constructs or OOP. Compat layer enables some legacy APIs.</p>
             <div class="subset">
               <div class="ring out">
                 <span class="rl">Not supported</span>
-                <span class="t">async/await</span><span class="t">Promise</span><span class="t">generators</span><span class="t">eval</span><span class="t">Proxy · Reflect</span><span class="t">defineProperty</span><span class="t">getters/setters</span><span class="t">DOM · fetch</span><span class="t">Node · Intl</span>
+                <span class="t">async/await</span><span class="t">Promise</span><span class="t">generators</span><span class="t">eval</span><span class="t">Proxy Reflect</span><span class="t">defineProperty</span><span class="t">getters/setters</span><span class="t">DOM fetch</span><span class="t">Node Intl</span>
                 <div class="ring mid">
                   <span class="rl">Compat</span>
-                  <span class="t">var</span><span class="t">function</span><span class="t">switch</span><span class="t">class · extends</span><span class="t">this · super</span><span class="t">#private</span><span class="t">== · !=</span><span class="t">instanceof</span>
+                  <span class="t">var</span><span class="t">function</span><span class="t">switch</span><span class="t">class extends</span><span class="t">this super</span><span class="t">#private</span><span class="t">== !=</span><span class="t">instanceof</span>
                   <div class="ring in">
                     <span class="rl">Strict</span>
-                    <span class="t">let/const</span><span class="t">=&gt;</span><span class="t">…spread</span><span class="t">destructuring</span><span class="t">import/export</span><span class="t">if/for/while</span><span class="t">try/catch</span><span class="t">numbers</span><span class="t">strings</span><span class="t">arrays · objects</span><span class="t">typed arrays</span><span class="t">Math · JSON · RegExp</span><span class="t">Map · Set</span>
+                    <span class="t">let/const</span><span class="t">=&gt;</span><span class="t">…spread</span><span class="t">destructuring</span><span class="t">import/export</span><span class="t">if/for/while</span><span class="t">try/catch</span><span class="t">numbers</span><span class="t">strings</span><span class="t">arrays objects</span><span class="t">typed arrays</span><span class="t">Math JSON RegExp</span><span class="t">Map Set</span>
                   </div>
                 </div>
               </div>
@@ -1350,7 +1350,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>AssemblyScript is a TypeScript dialect — a new language that can’t run in a JS engine. Porffor chases the whole JS spec and carries heavier compat layer that affects performance.</p>
+            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec that affects performance.</p>
           </div>
         </details>
 
@@ -1359,7 +1359,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>Existing JS compiles to WASM (or <a href="#native">native</a>) competitive with Rust, Go, and C — without a second language or a port to keep in sync.</p>
+            <p>A matter of preference, JS is more portable. If you can compile it to WASM or <a href="#native">native</a> with comparable performance — why second language to keep in sync?</p>
           </div>
         </details>
 
@@ -1380,7 +1380,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>Yes. Run it through <code>jz → wasm2c → clang -O3</code> and out comes a standalone native binary. The <a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">full pipeline</a> (<code>+ wasm-opt -O3</code>, <code>-flto</code>, PGO) beats V8 on 19 of 21 cases on the corpus.</p>
+            <p><code>jz → wasm2c → clang -O3</code> produces a standalone native binary. See <a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">full pipeline →</a>.</p>
           </div>
         </details>
 
@@ -1388,7 +1388,7 @@
           <summary><span class="fq">Can it compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/download/jz.wasm" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and CI passes self-compiled build the full test suite. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
+          <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and CI passes self-compiled build the full test suite. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
               rel="noopener" aria-label="self-host CI status"><img src="https://github.com/dy/jz/actions/workflows/selfhost.yml/badge.svg" alt="self-host CI status" style="height:18px;vertical-align:middle"></a></div>
         </details>
 
