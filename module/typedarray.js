@@ -675,7 +675,18 @@ export default (ctx) => {
       (f64.reinterpret_i64 (i64.const ${_NAN_BITS}))
       (local.get $v)
       (f64.ne (local.get $v) (local.get $v))))`
-  const canonNaN = (vIR) => { inc('__canon_nan'); return typed(['call', '$__canon_nan', vIR], 'f64') }
+  // Inline the NaN-canonicalization select rather than a call — a DataView float
+  // read runs this per sample in codec loops, and the inlined `(select nan v (v≠v))`
+  // is the exact idiom the auto-vectorizer recognizes (vs an opaque call).
+  const canonNaN = (vIR) => {
+    const t = temp('cn')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, vIR],
+      ['select',
+        ['f64.reinterpret_i64', ['i64.const', _NAN_BITS]],
+        ['local.get', `$${t}`],
+        ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+  }
 
   // ToIndex for DataView byte offsets (spec 25.1.2.x getViewValue/setViewValue):
   // ToIntegerOrInfinity then reject negatives and >2^53-1 with a RangeError. The
