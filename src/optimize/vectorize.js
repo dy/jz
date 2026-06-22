@@ -67,9 +67,16 @@ const isSplatConst = (n, constOp) =>
 function matchCanonSelect(sel, laneType) {
   if (!isArr(sel) || sel[0] !== 'select') return null
   const C = sel[1], val = sel[2], cond = sel[3]
-  const neOp = laneType === 'f32' ? 'f32.ne' : 'f64.ne'
-  if (!isSplatConst(C, LANE_INFO[laneType].constOp)) return null
-  if (!(isArr(cond) && cond[0] === neOp && exprEq(cond[1], val) && exprEq(cond[2], val))) return null
+  // f32 lane: jz computes the value in f64, so `Math.min/max` (and any NaN-canon'd
+  // f32 result) emit the canon with `f64.ne` + an f64 NaN const. Accept that
+  // alongside the native f32 form; liftCanon splats the const as f32.
+  const f64Canon = laneType === 'f32' && isArr(C) && C[0] === 'f64.const' && isArr(cond) && cond[0] === 'f64.ne'
+  if (!f64Canon) {
+    const neOp = laneType === 'f32' ? 'f32.ne' : 'f64.ne'
+    if (!isSplatConst(C, LANE_INFO[laneType].constOp)) return null
+    if (!(isArr(cond) && cond[0] === neOp)) return null
+  }
+  if (!(exprEq(cond[1], val) && exprEq(cond[2], val))) return null
   return { val, C }
 }
 
@@ -1789,7 +1796,10 @@ function getOrAllocLanedLocal(name, ctx) {
 // Otherwise we materialize a fresh v128 temp so the core evaluates once.
 function liftCanon(coreV, C, ctx, info) {
   const laneNe = ctx.laneType === 'f32' ? 'f32x4.ne' : 'f64x2.ne'
-  const splatC = [info.splat, C]
+  // The f32-via-f64 canon carries an f64 NaN const — splat it as f32 (demote is
+  // exact for the canonical NaN, and the lane value coreV is already f32x4).
+  const cF = ctx.laneType === 'f32' && isArr(C) && C[0] === 'f64.const' ? ['f32.const', C[1]] : C
+  const splatC = [info.splat, cF]
   if (isArr(coreV) && coreV[0] === 'local.get') {
     return ['v128.bitselect', splatC, coreV, [laneNe, coreV, coreV]]
   }

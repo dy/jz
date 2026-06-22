@@ -81,6 +81,7 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
     'f32 gain':            `export let f=(n,k)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
     'f32 mix a*x+b*y':     `export let f=(n,x,y)=>{let a=new Float32Array(n);let b=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*x+b[i]*y;return o}`,
     'f32 clamp (nested ?)':`export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++){let v=a[i];o[i]=v>1?1:(v<-1?-1:v)}return o}`,
+    'f32 clamp (Math.min/max)':`export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=Math.min(1,Math.max(-1,a[i]));return o}`,
     'f32 abs via cond':    `export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++){let v=a[i];o[i]=v<0?0-v:v}return o}`,
     'f32 sqrt':            `export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=Math.sqrt(a[i]);return o}`,
     'f32 RMS reduction':   `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i]*a[i];return s}`,
