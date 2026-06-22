@@ -60,7 +60,7 @@ fully-formed object literals with unique loop-var names. Monomorphic typed array
 | Pattern | Self-host failure | Status |
 |---|---|---|
 | **Single-unknown spread-copy then mutate** — `{ ...r }` (r's schema unknown) then a write to the copy (`c.typedCtor = …`, `c.x = 9`, add a new key) | the copy ALIASED r's backing → the write leaked into the source | **FIXED at root** — `{ ...x }` now emits a true shallow clone (`module/core.js __obj_clone`, keyed off the box schemaId; copies static-segment sources; preserves OBJECT/HASH type). narrow.js's `cloneReps` uses the natural `{...r}` then-mutate form again. Pinned: `test/objects.js` → "spread copy: …" (6 cases, host+kernel). |
-| **Full-override object spread** `{ ...x, k1, k2 }` where the source is a member access whose runtime schema is polymorphic (e.g. `{ ...func.sig, params, results }`) | the static allKnown OBJECT-merge path trusts the source's COMPILE-TIME schema; when the runtime shape is a superset/different layout, the slot-copy faults a later `sig.params` read OOB | **OPEN (separate hazard)** — distinct from the alias bug above; `__obj_clone` only covers the single-unknown path. narrow.js's `cloneSig` keeps the explicit-literal workaround. Robust fix: route uncertain (member-access-inferred) spread sources through runtime-key enumeration instead of the compile-time schema. |
+| **Multi-prop spread of an OBJECT consumed as an OBJECT** — `{ ...objSrc, k1, k2 }` (e.g. `{ ...func.sig, params, results }`) | NOT the allKnown merge path (instrumentation shows that path is never reached — `shapeOf(func.sig)` returns null). It routes to `emitDynamicSpread`, which ALWAYS builds a **HASH**. But the compiler types sigs as **OBJECT** everywhere else (static slot reads), so the HASH `cloneSig` misdispatches when a later `clone.sig.params` reads it as an OBJECT → OOB in the self-host. The root is the **OBJECT-vs-HASH result-type** of multi-prop spread. | **OPEN — workaround is the right fix.** narrow.js's `cloneSig` builds the OBJECT literal directly (no `...func.sig`), keeping it OBJECT-typed. A general fix (type-preserving multi-prop spread: `__obj_clone(src)` + apply overrides, OBJECT→OBJECT) is entangled with the `...(cond && {...})` pattern (26 sites) whose source can be FALSY and *needs* the HASH/runtime-key path — so it can't unconditionally clone. Disproportionate + risky vs the one narrow trigger; not pursued. |
 | **Repeated-name block scoping** — a `for (… of …)` loop var whose name collides with an earlier same-name decl in the function (`combo` ×3, `key` ×2) | the loop var isn't rebound per iteration; it aliases the prior binding → stuck at the last value → every clone got the same (wrong) element ctor | **OPEN** — neutralized by unique loop-var names (narrow.js keeps `cmb`/`dkey`). |
 
 Pinned by `test/types.js` → "bimorphic typed-array param specializes, compiles + runs (self-host
@@ -70,7 +70,10 @@ shadows the outer `name`, but `name` isn't read after — no output impact). `pl
 the full-override-spread hazard for its rest-param clone.
 
 **ROOT status:** (a) object spread-copy of an unknown source is now **fixed** (`__obj_clone`) — the
-single-unknown `{ ...x }` alias was the spread-alias bug; (a′) the *full-override allKnown merge* and
-(b) alpha-renaming of shadowed declarations remain latent, neutralized at their known triggers.
-Durable follow-up: fix (a′) + (b) in codegen, and a finer-grained host-vs-wasm parity gate (bisect
-which compiler fn diverges) to localize the next one. `test:wasm` gates all tested behavior paths.
+single-unknown `{ ...x }` alias was the spread-alias bug; (a′) multi-prop spread's OBJECT-vs-HASH
+result type and (b) alpha-renaming of shadowed declarations remain latent, neutralized at their known
+triggers (direct OBJECT literal / unique loop-var names). (a′) was investigated to root (it is NOT
+the allKnown path — that's never reached) and consciously left to the workaround: a general fix is
+entangled with falsy `&&`-guarded spread sources. Durable follow-up: a finer-grained host-vs-wasm
+parity gate (bisect which compiler fn diverges) to localize the next one. `test:wasm` gates all tested
+behavior paths.
