@@ -72,6 +72,26 @@ test('SIMD f64x2 - odd length (remainder)', () => {
   }`).main(), 15)
 })
 
+// === SIMD breadth matrix — pins generic DSP patterns against regression ===
+// These are GENERIC shapes (not the specific kernels the recognizers were written
+// for); each must keep vectorizing. A regression here means a vectorizer change
+// narrowed coverage. SPEED enables relaxedSimd (f32 arithmetic precision).
+test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
+  const cases = {
+    'f32 gain':            `export let f=(n,k)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
+    'f32 mix a*x+b*y':     `export let f=(n,x,y)=>{let a=new Float32Array(n);let b=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*x+b[i]*y;return o}`,
+    'f32 clamp (nested ?)':`export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++){let v=a[i];o[i]=v>1?1:(v<-1?-1:v)}return o}`,
+    'f32 abs via cond':    `export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++){let v=a[i];o[i]=v<0?0-v:v}return o}`,
+    'f32 sqrt':            `export let f=(n)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=Math.sqrt(a[i]);return o}`,
+    'f32 RMS reduction':   `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i]*a[i];return s}`,
+    'f32 sum (widening)':  `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i];return s}`,
+    'u8 normalize':        `export let f=(n)=>{let a=new Uint8Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*0.5;return o}`,
+    'i16 normalize':       `export let f=(n)=>{let a=new Int16Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*0.5;return o}`,
+    'f64 still vectorizes':`export let f=(n,k)=>{let a=new Float64Array(n);let o=new Float64Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
+  }
+  for (const [name, src] of Object.entries(cases)) ok(hasV128(wat(src, SPEED)), `${name} vectorizes`)
+})
+
 // === SIMD Float32Array (f32x4 — 4 elements per vector) ===
 
 test('SIMD f32x4 - map multiply', () => {
