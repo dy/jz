@@ -745,6 +745,28 @@ test('codegen: integer const-global folds to i32 — x % CONST_GLOBAL takes the 
   is((wat.match(/f64\.copysign/g) || []).length, 0, 'no software f64-remainder for the integer modulo')
 })
 
+test('codegen: sound load-CSE — reuse arr[idx] across a disjoint-index store, never across a same-index one', () => {
+  const loads = (src, opt) => (compile(src, { wat: true, ...opt }).match(/f64\.load/g) || []).length
+  // fft butterfly shape over module-global typed arrays (so the reads are direct f64.load):
+  // `RE[a]` is read twice across stores at `RE[b]`/`IM[b]` (b = a+half, half ≥ 1 inside `for(j<half)`),
+  // so the indices are PROVABLY disjoint — the second `RE[a]` load is CSE-eliminated.
+  const bf = `let RE=new Float64Array(2048), IM=new Float64Array(2048)
+    export let f=(n)=>{ let half=n>>1; for(let len=2;len<=n;len<<=1){ for(let i=0;i<n;i+=len){
+      for(let j=0;j<half;j++){ let a=i+j,b=a+half; let tr=RE[a]*0.5; let ti=IM[a]*0.5;
+        RE[b]=RE[a]-tr; IM[b]=IM[a]-ti; RE[a]=RE[a]+tr; IM[a]=IM[a]+ti } } } }`
+  ok(loads(bf, { optimize: 'speed' }) < loads(bf, { optimize: { level: 'speed', loadCSE: false } }),
+    'butterfly RE[a] reload is CSE-eliminated (disjoint index b = a+half)')
+  // UNSAFE: a store at the SAME index between the two reads must NOT be CSE'd (would miscompile).
+  const same = `let A=new Float64Array(64)
+    export let g=(n)=>{ let s=0.0; for(let i=0;i<n;i++){ let x=A[i]; A[i]=x*2.0+1.0; let y=A[i]; s+=x+y } return s }`
+  is(loads(same, { optimize: 'speed' }), loads(same, { optimize: { level: 'speed', loadCSE: false } }),
+    'same-index store between reads blocks CSE (no load eliminated)')
+  // Semantics-preserving: identical result with the pass on vs off (also covers the run path).
+  const onR = jz(same, { optimize: 'speed' }).exports.g(16)
+  const offR = jz(same, { optimize: { level: 'speed', loadCSE: false } }).exports.g(16)
+  is(onR, offR, 'load-CSE preserves the result')
+})
+
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
   // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
   // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType

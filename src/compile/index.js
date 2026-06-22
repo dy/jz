@@ -40,6 +40,11 @@ import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { peelClampedStencil } from './peel-stencil.js'
+import { cseLoads } from './cse-load.js'
+
+// Monotonic across all functions so a CSE temp never collides (even after later inlining).
+let __cseCtr = 0
+const freshCseName = () => `${T}cse${__cseCtr++}`
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -444,6 +449,12 @@ function analyzeFuncForEmit(func, programFacts) {
         updateRep(p.name, { val: VAL.NUMBER })
     }
   }
+  // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening
+  // store writes a provably-different element (idx2 ≠ idx). Recovers the fft butterfly's redundant
+  // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
+  if (_o && _o.loadCSE !== false && block && ctx.types.typedElem?.size)
+    cseLoads(body, n => ctx.types.typedElem.has(n), freshCseName)
+
   if (block) {
     seedLocalIntConsts(body)
   }
