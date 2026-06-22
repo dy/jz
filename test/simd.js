@@ -92,6 +92,33 @@ test('SIMD f32x4 - map with remainder', () => {
   }`).main(), 81) // 11+12+13+14+15+16
 })
 
+// f32 arithmetic loops: jz computes Float32Array math in f64 (promote→f64 op→
+// demote). Lifting to f32x4 drops the f64 intermediate to f32 (sub-ulp, inaudible
+// for audio/DSP) — NOT bit-exact, so gated on relaxedSimd (speed). A pure copy has
+// no arithmetic; promote(load)+demote round-trips losslessly → vectorizes always.
+
+test('SIMD f32x4 - contiguous scale vectorizes at speed, scalar below it', () => {
+  const src = `export let s = (n, k) => { let a = new Float32Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * k; return o }`
+  ok(/f32x4\.mul/.test(wat(src, SPEED)), 'f32 scale → f32x4.mul under relaxedSimd (speed)')
+  ok(!/f32x4\.mul/.test(wat(src, SIMD_OPT)), 'f32 scale stays scalar without relaxedSimd (bit-exact default)')
+})
+
+test('SIMD f32x4 - pure copy vectorizes bit-exactly without relaxedSimd', () => {
+  const src = `export let c = (n) => { let a = new Float32Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i]; return o }`
+  ok(hasV128(wat(src, SIMD_OPT)), 'f32 copy lifts to v128 (promote/demote round-trip is lossless)')
+})
+
+test('SIMD f32x4 - scaled result correct at speed', () => {
+  is(jz(`export let m = () => {
+    let a = new Float32Array(8)
+    for (let i = 0; i < 8; i++) a[i] = i + 1
+    let o = new Float32Array(8)
+    for (let i = 0; i < 8; i++) o[i] = a[i] * 2
+    let s = 0; for (let i = 0; i < 8; i++) s += o[i]
+    return s
+  }`, { optimize: 'speed' }).exports.m(), 72) // 2*(1+2+…+8)
+})
+
 // === SIMD Int32Array (i32x4 — 4 elements per vector) ===
 
 test('SIMD i32x4 - map multiply', () => {

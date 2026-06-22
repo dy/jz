@@ -366,6 +366,14 @@ const LANE_PURE = {
   ]),
 }
 
+// f64 scalar op → f32x4 SIMD op, for Float32Array arithmetic jz computes in f64
+// (promote→f64 op→demote). Used only in f32-lane context under relaxedSimd, since
+// the f64→f32 intermediate-precision drop is not bit-exact (see _relaxF32).
+const F64_TO_F32X4 = {
+  'f64.add': 'f32x4.add', 'f64.sub': 'f32x4.sub', 'f64.mul': 'f32x4.mul', 'f64.div': 'f32x4.div',
+  'f64.min': 'f32x4.min', 'f64.max': 'f32x4.max', 'f64.neg': 'f32x4.neg', 'f64.abs': 'f32x4.abs', 'f64.sqrt': 'f32x4.sqrt',
+}
+
 // Horizontal reductions: associative+commutative ops applied to one
 // loop-carried accumulator. Each entry maps the SCALAR op (which is also
 // the op used to combine the SIMD result back into the accumulator at the
@@ -916,7 +924,7 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → { laneName, simdType }
   const extraLocals = []  // canon temps allocated during lift
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -1218,7 +1226,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
 
   // Lift through the shared lifter (addresses kept verbatim; loads → v128.load).
   const newLanedLocals = new Map(), extraLocals = []
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -1477,7 +1485,7 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
   for (const name of addrLocals.keys()) localKind.set(name, 'addr')
   for (const name of offsetTees.keys()) localKind.set(name, 'addr')
 
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)
   if (ctx.fail) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
@@ -1771,6 +1779,16 @@ function liftCanon(coreV, C, ctx, info) {
 let _whyNotActive = false
 let _whyNotReason = null
 
+// Precision-relaxed f32 SIMD. jz computes Float32Array arithmetic in f64
+// (`f32.demote_f64 (f64.mul (f64.promote_f32 …) …)`); lifting that chain to
+// `f32x4.mul` over `v128.load` changes the intermediate from f64 to f32 — a
+// sub-ulp difference at f32 precision (inaudible for audio/DSP, the canonical
+// f32-SIMD trade every audio engine makes), but NOT bit-exact, so it is gated
+// on the same `relaxedSimd` opt-in that enables relaxed-FMA. The promote/demote
+// *strip* for a pure f32 copy (no arithmetic) round-trips losslessly and stays
+// on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
+let _relaxF32 = false
+
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
 // overwriting, so the reason names the actual blocking op, not a wrapper.
@@ -1914,6 +1932,29 @@ function liftExprV(expr, ctx) {
     return ['f64x2.promote_low_f32x4', addr]
   }
 
+  // f32-lane: jz computes Float32Array arithmetic in f64, wrapping the f32 load in
+  // `f64.promote_f32` and the result in `f32.demote_f64`. The promote/demote are
+  // lane-space identities — strip them (a promote-of-load + demote round-trips
+  // losslessly: a pure `b[i]=a[i]` copy vectorizes bit-exactly, always). The f64
+  // arithmetic op and any f64 constant map to their f32x4 forms only under
+  // relaxedSimd, since computing in f32 (vs f64-then-demote) drops sub-ulp precision.
+  if (ctx.laneType === 'f32') {
+    if (op === 'f64.promote_f32') return liftExprV(expr[1], ctx)
+    if (op === 'f32.demote_f64') return liftExprV(expr[1], ctx)
+    if (op === 'f64.const') {
+      if (!_relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedSimd (f32 round of the constant)')
+      return ['f32x4.splat', ['f32.const', expr[1]]]
+    }
+    const f32op = F64_TO_F32X4[op]
+    if (f32op) {
+      if (!_relaxF32) return liftFail(ctx, `${op}: f32 SIMD computes in f32 not f64 (sub-ulp) — needs relaxedSimd`)
+      const a = liftExprV(expr[1], ctx); if (ctx.fail) return null
+      if (expr.length === 2) return [f32op, a]                 // unary: neg / abs / sqrt
+      const b = liftExprV(expr[2], ctx); if (ctx.fail) return null
+      return [f32op, a, b]
+    }
+  }
+
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
     if (LOAD_OPS[op] !== ctx.laneType) return liftFail(ctx, `${op}: load type ≠ lane type ${ctx.laneType}`)
@@ -1946,6 +1987,14 @@ function liftExprV(expr, ctx) {
       return ['local.get', laneName]
     }
     if (kind === 'invariant') {
+      // An invariant whose wasm type ≠ the lane element type needs a scalar
+      // convert before the splat. The common case: an f64 multiplier/gain splat
+      // into an f32 lane (`out[i] = in[i] * k`). Demoting k to f32 is the same
+      // precision relaxation as the f32 arithmetic itself, so gate it on relaxedSimd.
+      if (ctx.laneType === 'f32' && ctx.fnLocals?.get(name) === 'f64') {
+        if (!_relaxF32) return liftFail(ctx, `${name}: f64 invariant in f32 lane needs relaxedSimd`)
+        return [info.splat, ['f32.demote_f64', ['local.get', name]]]
+      }
       return [info.splat, ['local.get', name]]
     }
     if (kind === 'addr' || name === ctx.incVar) {
@@ -4650,8 +4699,10 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
     }
   }
   _whyNotActive = whyNot
+  _relaxF32 = relaxedFma
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
   _whyNotActive = false
+  _relaxF32 = false
 
   if (newLocalDeclsAll.length) {
     // Sibling loops (and the straight-line dot pass) can each lift the SAME source
