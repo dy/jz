@@ -2026,9 +2026,31 @@ function liftExprV(expr, ctx) {
   if (ctx.laneType === 'f64' || ctx.laneType === 'f32') {
     if (op === 'select') {
       const m = matchCanonSelect(expr, ctx.laneType)
-      if (!m) return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
-      const coreV = liftExprV(m.val, ctx)
-      return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+      if (m) {
+        const coreV = liftExprV(m.val, ctx)
+        return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+      }
+      // General `select(X, Y, COND)` (wasm: X if COND else Y) — jz lowers a value
+      // ternary `COND ? X : Y` to this when both arms are cheap/pure. Lift to
+      // v128.bitselect(X, Y, mask) like the `if` form below. COND is a comparison
+      // (f64.* in an f32 lane → f32x4). Both arms are lane-pure (recursion forbids
+      // stores/sets) and trap-free, so evaluating both then selecting is sound.
+      if (expr.length === 4) {
+        const cond = expr[3]
+        const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
+        const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+        if (!cmpSimd) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
+        const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
+        const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
+        const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
+        const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+        const mtmp = `$__mask${ctx.freshIdRef.next++}`
+        ctx.extraLocals.push(['local', mtmp, 'v128'])
+        return ['block', ['result', 'v128'],
+          ['local.set', mtmp, [cmpSimd, ca, cb]],
+          ['v128.bitselect', x, y, ['local.get', mtmp]]]
+      }
+      return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
     }
     if (op === 'block') {
       const m = matchCanonBlock(expr, ctx.laneType)
@@ -2047,13 +2069,21 @@ function liftExprV(expr, ctx) {
   // evaluates X,Y before its 3rd operand, but any address `local.tee` lives in
   // COND and must run before the branches read it (matching scalar order).
   if (op === 'if') {
-    if (!isArr(expr[1]) || expr[1][0] !== 'result' || expr[1][1] !== ctx.laneType) return liftFail(ctx, 'conditional without lane-typed result')
+    // jz lowers `cond ? X : Y` to (if (result T) COND (then X)(else Y)). In an f32
+    // lane it computes in f64 (promote/demote around the store), so the `if` carries
+    // `(result f64)` and COND is an `f64.*` compare — accept both, mapping to f32x4.
+    // The branch values are f32-mapped by recursion; gated by relaxedSimd via those.
+    const resTy = isArr(expr[1]) && expr[1][0] === 'result' ? expr[1][1] : null
+    if (resTy !== ctx.laneType && !(ctx.laneType === 'f32' && resTy === 'f64')) return liftFail(ctx, 'conditional without lane-typed result')
     const thenN = expr[3], elseN = expr[4]
     if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) return liftFail(ctx, 'malformed conditional then-branch')
     if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) return liftFail(ctx, 'malformed conditional else-branch')
     let cond = expr[2]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]  // strip `!= 0`
-    const cmpSimd = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
+    // f32 lane: operands were promoted, so the compare is `f64.*` — use its f32x4 form
+    // (operands are exact f32→f64 promotions, so the lane comparison is unchanged).
+    const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
+    const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
     if (!cmpSimd) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
     const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
     const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null

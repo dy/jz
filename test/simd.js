@@ -108,6 +108,25 @@ test('SIMD f32x4 - pure copy vectorizes bit-exactly without relaxedSimd', () => 
   ok(hasV128(wat(src, SIMD_OPT)), 'f32 copy lifts to v128 (promote/demote round-trip is lossless)')
 })
 
+test('SIMD f32x4 - conditional (ternary/select) vectorizes + correct', () => {
+  // `v < 0 ? a : b` lowers to a `select` (cheap arms) or `if`; both lift to
+  // v128.bitselect. The f64 comparison maps to f32x4 (operands are exact promotions).
+  const src = `export let f = (n) => { let a = new Float32Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) { let v = a[i]; o[i] = v < 0 ? v * 0.5 : v * 0.25 } return o }`
+  ok(/v128\.bitselect/.test(wat(src, SPEED)), 'f32 conditional → bitselect at speed')
+  is(jz(`export let m = () => {
+    let a = new Float32Array(4); a[0]=-2; a[1]=4; a[2]=-8; a[3]=16
+    let o = new Float32Array(4); for (let i=0;i<4;i++){ let v=a[i]; o[i]= v<0 ? v*0.5 : v*0.25 }
+    return o[0]*1000 + o[1]*100 + o[2]*10 + o[3]
+  }`, { optimize: 'speed' }).exports.m(), (-1)*1000 + 1*100 + (-4)*10 + 4) // -1,1,-4,4
+})
+
+test('SIMD f64x2 - general conditional select vectorizes (bit-exact)', () => {
+  // relu `v>0?v:0` — a general value-select, lifts to bitselect with no precision
+  // change (f64 lane needs no relaxedSimd).
+  const src = `export let f = (n) => { let a = new Float64Array(n); let o = new Float64Array(n); for (let i = 0; i < n; i++) { let v = a[i]; o[i] = v > 0 ? v : 0 } return o }`
+  ok(hasV128(wat(src, SIMD_OPT)), 'f64 relu conditional vectorizes (no relaxedSimd needed)')
+})
+
 test('SIMD f32x4 - scaled result correct at speed', () => {
   is(jz(`export let m = () => {
     let a = new Float32Array(8)
