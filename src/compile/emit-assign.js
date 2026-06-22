@@ -186,8 +186,13 @@ export function emitElementAssign(arr, idx, val) {
   if (keyType === VAL.STRING) return dynSetCall(arr, keyExpr, valueExpr)
 
   // 5. Typed-array receiver → __typed_set_idx (or per-ctor element write).
-  if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
-      lookupValType(arr) === 'typed') {
+  //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
+  //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
+  //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
+  const nestedElemTypedCtor = Array.isArray(arr) && arr[0] === '[]' && arr.length === 3 &&
+    typeof arr[1] === 'string' ? repOf(arr[1])?.arrayElemTypedCtor : null
+  if (ctx.core.emit['.typed:[]='] &&
+      ((typeof arr === 'string' && lookupValType(arr) === 'typed') || nestedElemTypedCtor)) {
     const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
     if (r) return r
     // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx

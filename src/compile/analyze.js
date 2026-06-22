@@ -168,7 +168,7 @@ export function analyzeBody(body) {
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
     locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(),
-    arrElemValTypes: new Map(), typedElems: new Map(), escapes: new Map(),
+    arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), escapes: new Map(),
     flatObjects: new Map(),
   }
   const hit = _bodyFactsCache.get(body)
@@ -184,6 +184,10 @@ export function analyzeBody(body) {
   // so `chord[j]` is a Number and skips __to_num. Single-level only — enough for the
   // 2-D table pattern without a general nested-type lattice.
   const arrElemElemValTypes = new Map()
+  // `name`'s elements are all typed arrays of one ctor ('new.Float32Array'), e.g.
+  // `Array.from(nCh, () => new Float32Array(n))` (codec channelData). Lets `arr[i]`
+  // resolve as that typed array so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
+  const arrElemTypedCtors = new Map()
   const typedElems = new Map()
   const escapes = new Map() // name → bool: local holds allocation, true if it escapes
 
@@ -222,6 +226,22 @@ export function analyzeBody(body) {
     const repVt = ctx.func.localReps?.get(name)?.arrayElemValType
     if (repVt) return repVt
     return arrElemValTypes.get(name) || null
+  }
+
+  // Disagreement → null poison, like observeArrValType. Records the common
+  // TypedArray ctor of an array's elements.
+  const observeArrTypedCtor = (arr, ctor) => {
+    if (typeof arr !== 'string') return
+    if (arrElemTypedCtors.get(arr) === null) return
+    if (!ctor) { arrElemTypedCtors.set(arr, null); return }
+    if (!arrElemTypedCtors.has(arr)) arrElemTypedCtors.set(arr, ctor)
+    else if (arrElemTypedCtors.get(arr) !== ctor) arrElemTypedCtors.set(arr, null)
+  }
+  // The ctor a `new XxxArray(...)` element expr produces ('new.Float32Array'), if any.
+  const elemTypedCtorOf = (expr) => {
+    const c = typedElemCtor(expr)
+    // typed-array views/buffers only — exclude ArrayBuffer/DataView (no element index).
+    return c && !c.includes('ArrayBuffer') && !c.includes('DataView') ? c : null
   }
 
   const exprElemSourceVal = (expr) => {
@@ -315,6 +335,14 @@ export function analyzeBody(body) {
             if (exprElemSourceVal(elems[k]) !== common) common = null
           }
           if (common != null) observeArrValType(name, common)
+          // Array-of-typed-arrays literal (`[new Float32Array(n), …]`): record the
+          // common element ctor so `name[i]` is a known typed array.
+          if (common === VAL.TYPED) {
+            let ctor = elemTypedCtorOf(elems[0])
+            for (let k = 1; k < elems.length && ctor != null; k++)
+              if (elemTypedCtorOf(elems[k]) !== ctor) ctor = null
+            observeArrTypedCtor(name, ctor)
+          }
           // Array-of-arrays literal: record the common element-of-element kind so a
           // later `x = name[i]` binds `x`'s element type one level down.
           if (common === VAL.ARRAY) {
@@ -340,6 +368,18 @@ export function analyzeBody(body) {
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
       const f = ctx.func.map?.get(rhs[1])
       if (f?.arrayElemValType) observeArrValType(name, f.arrayElemValType)
+    }
+    // `Array.from(arg, () => new XxxArray(...))` — codec channelData and per-row
+    // typed-array tables. The map-callback's returned ctor is every element's type.
+    // Post-prepare AST: `['()', 'Array.from', [',', arg, callback]]` (args in a comma node).
+    if (Array.isArray(rhs) && rhs[0] === '()' && rhs[1] === 'Array.from' && Array.isArray(rhs[2])) {
+      const args = rhs[2][0] === ',' ? rhs[2].slice(1) : [rhs[2]]
+      const fn = args[1]
+      const body = Array.isArray(fn) && fn[0] === '=>' ? fn[2] : null
+      const ret = Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === 'return'
+        ? body[1][1] : body
+      const ctor = ret && elemTypedCtorOf(ret)
+      if (ctor) { observeArrValType(name, VAL.TYPED); observeArrTypedCtor(name, ctor) }
     }
     if (typeof rhs === 'string') {
       const v = elemValOf(rhs)
@@ -485,6 +525,7 @@ export function analyzeBody(body) {
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
       if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
+      if (arrElemTypedCtors.has(name) && !isArrayProducingRhs(rhs)) observeArrTypedCtor(name, null)
       return
     }
 
@@ -573,7 +614,7 @@ export function analyzeBody(body) {
   // Never-relocated array bindings — reads may skip the realloc-forwarding follow.
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, arrElemTypedCtors, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
   _bodyFactsCache.set(body, result)
   return result
 }
@@ -704,6 +745,11 @@ export function analyzeValTypes(body) {
   const arrElems = facts.arrElemSchemas
   for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
+  }
+  // Array-of-typed-arrays element ctor → rep, so `arr[i]` resolves as a typed array
+  // and `arr[i][j]` / `let o = arr[i]; o[j]` inline (codec channelData scatter).
+  for (const [name, ctor] of facts.arrElemTypedCtors) {
+    if (ctor != null) updateRep(name, { arrayElemTypedCtor: ctor })
   }
   // Construct-then-fill numeric arrays (`let a = Array(n); a[i] = expr`) carry no
   // element evidence at their decl, so the walk above leaves them untyped. scanNumericFill

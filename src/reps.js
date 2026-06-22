@@ -57,6 +57,9 @@ export const VAL = {
  * @property {number}  [arrayElemSchema]  element object-schema id for arrays.
  * @property {string}  [arrayElemValType] element VAL.* kind for arrays.
  * @property {string}  [arrayElemElemValType] nested element VAL.* kind (`X[i][j]`) for arrays of arrays.
+ * @property {string}  [arrayElemTypedCtor] element TypedArray ctor (`new.Float32Array`) for an
+ *   array whose elements are all typed arrays of one ctor (`Array.from(n,()=>new Float32Array())`),
+ *   so `arr[i]` is a known typed array and `arr[i][j]` inlines instead of runtime aux-dispatch.
  * @property {string}  [carrier]          abi carrier id override (e.g. 'jsstring').
  * @property {boolean} [unsigned]         i32 carries an unsigned value (`>>>` result).
  * @property {*}       [jsonShape]        inferred shape for the JSON.stringify fast path.
@@ -68,7 +71,7 @@ export const VAL = {
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
-  'arrayElemSchema', 'arrayElemValType', 'arrayElemElemValType', 'carrier', 'unsigned', 'jsonShape',
+  'arrayElemSchema', 'arrayElemValType', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape',
   'typedCtor', 'wasm', 'nullable', 'neverGrown',
 ])
 

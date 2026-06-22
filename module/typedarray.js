@@ -944,7 +944,14 @@ export default (ctx) => {
       receiver = receiver[1][1]
       chainOutput = true
     }
-    const ctor = typeof receiver === 'string' && ctx.types.typedElem?.get(receiver)
+    // Nested receiver `arr[i]` where `arr`'s elements are typed arrays of a known
+    // ctor (`Array.from(n, () => new Float32Array())` — codec channelData). The i-th
+    // element IS that owned typed array; emit(receiver) already loads its pointer, so
+    // the standard typedDataAddr path inlines `arr[i][j]` to a direct load/store.
+    const ctor = (Array.isArray(receiver) && receiver[0] === '[]' && receiver.length === 3 && typeof receiver[1] === 'string'
+        ? ctx.func.localReps?.get(receiver[1])?.arrayElemTypedCtor
+        : null)
+      || (typeof receiver === 'string' && ctx.types.typedElem?.get(receiver))
     if (!ctor) return null
     const isView = viewOutput || (!chainOutput && ctor.endsWith('.view'))
     const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
