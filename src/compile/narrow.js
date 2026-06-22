@@ -1334,23 +1334,34 @@ export function specializeBimorphicTyped(programFacts) {
 
     // Build one clone per distinct combo.
     const cloneByKey = new Map()
-    for (const [key, combo] of distinct) {
-      const suffix = combo.map(c => c.replace(/^new\./, '').replace(/\./g, '_')).join('$')
+    for (const [dkey, cmb] of distinct) {
+      // NB: this loop variable must NOT reuse the name `combo` (declared twice above, at the
+      // site loop and the distinct-building loop). The self-host miscompiles a for-of loop
+      // variable whose name collides with an earlier block-scoped declaration — it aliases the
+      // prior binding instead of rebinding per iteration, so `combo` would stay stuck at the
+      // last site's ctor and every clone would get the same (wrong) element type → silent
+      // garbage. A unique name gets a clean per-iteration binding.
+      const suffix = cmb.map(c => c.replace(/^new\./, '').replace(/\./g, '_')).join('$')
       let cloneName = `${func.name}$${suffix}`
       let n = 0
       while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
 
-      // Build cloneSig directly — NOT `{...func.sig, params, results}` then post-mutating the
-      // param copies to add ptrKind/ptrAux. That spread-and-extend construction faults in the
-      // self-host (a later `sig.params` read goes out of bounds). Constructing each param as a
-      // literal with its pointer ABI already baked in sidesteps it. (plan/inline.js builds its
-      // rest-param clone sig the same way, for the same reason.)
+      // Build cloneSig with clean, fully-formed object literals — never by spreading a
+      // live object and then overriding/extending its keys. The self-host (jz.wasm)
+      // miscompiles two such moves: (1) a full-override spread of a sig (`{...func.sig,
+      // params, results}`) corrupts the sig's schema → a later `sig.params` read faults
+      // out of bounds; (2) post-mutating a `{...p}` param copy to ADD ptrKind/ptrAux
+      // extends its schema → the clone reads its param as untyped and emits wrong code
+      // (silent garbage result). So: a sig is exactly { params, results } (spread is pure
+      // redundancy here anyway), and each bimorphic param is constructed with its pointer
+      // ABI baked in. Output is unchanged on the host; this is what round-trips through
+      // jz.wasm. Same hazard the rest-param clone in plan/inline.js documents.
       const cloneSig = {
         params: func.sig.params.map((p, idx) => {
           const bi = bimorphic.indexOf(idx)
           return bi < 0
             ? { ...p }
-            : { name: p.name, type: 'i32', ptrKind: VAL.TYPED, ptrAux: typedElemAux(combo[bi]) }
+            : { name: p.name, type: 'i32', ptrKind: VAL.TYPED, ptrAux: typedElemAux(cmb[bi]) }
         }),
         results: [...func.sig.results],
       }
@@ -1362,18 +1373,19 @@ export function specializeBimorphicTyped(programFacts) {
       // Mirror per-param reps under the clone's name with mono ctors at bimorphic
       // positions. emitFunc's preseed reads typedCtor → seeds typedElem map →
       // `arr[i]` lowers to direct typed load.
+      // Mirror each rep with the bimorphic positions pinned to their mono ctor — in ONE
+      // literal per rep, NOT copy-then-post-mutate. In the self-host a `{...r}` spread shares
+      // the source's backing, so a later `cloneReps.get(k).typedCtor = …` mutates the shared
+      // rep and every clone ends up with the last ctor (silent garbage). A spread-with-override
+      // literal allocates a fresh, correctly-keyed rep per clone (partial override is safe).
       const cloneReps = new Map()
-      for (const [k, r] of reps) cloneReps.set(k, { ...r })
-      for (let i = 0; i < bimorphic.length; i++) {
-        const k = bimorphic[i]
-        const r = cloneReps.get(k) || {}
-        r.typedCtor = combo[i]
-        r.val = VAL.TYPED
-        cloneReps.set(k, r)
+      for (const [k, r] of reps) {
+        const bi = bimorphic.indexOf(k)
+        cloneReps.set(k, bi < 0 ? { ...r } : { ...r, typedCtor: cmb[bi], val: VAL.TYPED })
       }
       paramReps.set(cloneName, cloneReps)
 
-      cloneByKey.set(key, clone)
+      cloneByKey.set(dkey, clone)
     }
 
     // Rewrite each site's call AST to point at the matching clone.
