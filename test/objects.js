@@ -1154,3 +1154,53 @@ test('schema binding intact: single-shape literal still resolves props', () => {
   `)
   is(r.go(), 56)
 })
+
+// Spread must COPY, never alias. `{...src}` returns an independent object;
+// mutating the result must not bleed into `src`. jz previously aliased a single
+// unknown-schema spread (`module/object.js` emitObjectSpread) — a silent
+// correctness bug: `let c = {...m.get(k)}; c.x = …` mutated the map entry. These
+// pin copy semantics across every source shape, on host AND the jz.wasm kernel.
+test('spread copy: {...a[0]} is independent of the array element', () => {
+  const { f } = run(`export let f = () => {
+    let a = [{x: 1, y: 2}]
+    let c = {...a[0]}
+    c.x = 9
+    return a[0].x * 10 + c.x   // 19 if copied, 99 if aliased
+  }`)
+  is(f(), 19)
+})
+
+test('spread copy: {...m.get(k)} is independent of the map entry', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map(); m.set(0, {x: 1})
+    let c = {...m.get(0)}
+    c.x = 9
+    return m.get(0).x * 10 + c.x
+  }`)
+  is(f(), 19)
+})
+
+test('spread copy: {...loopConst} is fresh each iteration', () => {
+  const { f } = run(`export let f = () => {
+    let out = 0
+    for (const r of [{x: 1}]) { let c = {...r}; c.x = 9; out = r.x }
+    return out   // 1 if copied, 9 if aliased
+  }`)
+  is(f(), 1)
+})
+
+test('spread copy: {...localVar} is independent (control — already worked)', () => {
+  const { f } = run(`export let f = () => {
+    let o = {x: 1, y: 2}; let c = {...o}; c.x = 9
+    return o.x * 10 + c.x
+  }`)
+  is(f(), 19)
+})
+
+test('spread copy: array [...src] is independent of the source array', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]; let b = [...a]; b[0] = 9
+    return a[0] * 10 + b[0]   // 19 if copied, 99 if aliased
+  }`)
+  is(f(), 19)
+})

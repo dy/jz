@@ -790,11 +790,12 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       else allKnown = false
     } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
   }
-  // Single unknown spread `{ ...opts }` → alias the source directly. Safe for
-  // read-only use; mutation would affect the source (a true clone takes the
-  // dynamic-merge path below).
-  if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...')
-    return typed(asF64(emit(props[0][1])), 'f64')
+  // Any unknown-schema source takes the dynamic-merge path, which builds a fresh
+  // HASH and copies every key. We deliberately do NOT alias a single `{ ...x }`
+  // to the source: spread must COPY (JS semantics), so `let c = {...x}; c.k = …`
+  // must not mutate `x`. The old single-unknown-spread fast path returned the
+  // source by reference — fast for read-only use, but a silent corruption the
+  // moment the result was written (e.g. `{...m.get(k)}` then a field assign).
   if (!allKnown) return emitDynamicSpread(props)
 
   const schemaId = ctx.schema.register(allNames)
