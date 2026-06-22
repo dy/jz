@@ -138,6 +138,21 @@ test('SIMD f32x4 - scaled result correct at speed', () => {
   }`, { optimize: 'speed' }).exports.m(), 72) // 2*(1+2+…+8)
 })
 
+test('SIMD - int→f32 widening map (Int16Array → Float32Array normalize)', () => {
+  // `o[i] = i16[i] * k` — decode/normalize. Widen: load 4 i16, extend to i32x4,
+  // f32x4.convert, f32x4.mul. i8/i16/u8 are exact in f32 → bit-identical to scalar.
+  const src = `export let f = (n) => { let s = new Int16Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = s[i] * 0.5; return o }`
+  const w = wat(src, SPEED)
+  ok(/f32x4\.convert_i32x4_s/.test(w) && /extend_low_i16x8_s/.test(w), 'i16→f32 widening chain')
+  // correctness: i16 values exact in f32, *0.5 exact → identical to scalar
+  is(jz(`export let m = () => {
+    let s = new Int16Array(8); for (let i=0;i<8;i++) s[i] = (i-4) * 1000
+    let o = new Float32Array(8); for (let i=0;i<8;i++) o[i] = s[i] * 0.5
+    let t = 0; for (let i=0;i<8;i++) t += o[i]
+    return t
+  }`, { optimize: 'speed' }).exports.m(), -2000) // sum((i-4)*1000*0.5), i=0..7 = -2000
+})
+
 test('SIMD - f32 reduction widens to f64x2 accumulate, bit-identical', () => {
   // `s += f32arr[i]` accumulates in f64; vectorize as f64x2 over promote_low_f32x4
   // (2 f32 per chunk). Single-accumulator (half-width loads don't fit multi-acc).

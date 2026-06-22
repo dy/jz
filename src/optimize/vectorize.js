@@ -366,6 +366,20 @@ const LANE_PURE = {
   ]),
 }
 
+// Integer-load → f32x4 widening, for `out[i] = intArr[i] (* k)` (Int16Array →
+// Float32Array decode/normalize, the canonical audio/image map). jz emits the
+// scalar as `f64.convert_i32_{s,u}(<intload>(addr))`; lift to: load `lanes` ints,
+// widen to i32x4, then f32x4.convert. `steps` are applied innermost-first.
+// `lossy`: i32→f32 rounds (the scalar converts via exact f64 then demotes — double
+// rounding differs by ≤1 ulp), so it needs relaxedSimd; i8/i16 are exact in f32.
+const INT_WIDEN_F32 = {
+  'i32.load':     { load: 'v128.load',        steps: [],                                                  cvt: 's', lossy: true },
+  'i32.load16_s': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_s'],                        cvt: 's', lossy: false },
+  'i32.load16_u': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_u'],                        cvt: 'u', lossy: false },
+  'i32.load8_s':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s'], cvt: 's', lossy: false },
+  'i32.load8_u':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u'], cvt: 'u', lossy: false },
+}
+
 // f64 scalar op → f32x4 SIMD op, for Float32Array arithmetic jz computes in f64
 // (promote→f64 op→demote). Used only in f32-lane context under relaxedSimd, since
 // the f64→f32 intermediate-precision drop is not bit-exact (see _relaxF32).
@@ -819,15 +833,21 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
     if (!isArr(node)) return true
     const op = node[0]
     if (LOAD_OPS[op]) {
+      const lt = LOAD_OPS[op]
+      // int→f32 widening map (`out[i] = intArr[i] (*k)`): an integer load feeding a
+      // Float32Array store. Accept under the f32 lane and validate at the int element
+      // stride (the loop steps `lanes` f32 = 4 elements; load64_zero/load32_zero read
+      // exactly 4 ints). liftExprV widens via INT_WIDEN_F32.
+      const widenInt = laneType === 'f32' && lt !== 'f32' && INT_WIDEN_F32[op]
       if (laneType == null) {
-        laneType = LOAD_OPS[op]
+        laneType = lt
         stride = LANE_INFO[laneType].stride
-      } else if (LOAD_OPS[op] !== laneType) {
+      } else if (lt !== laneType && !widenInt) {
         return false
       }
       const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
-      if ((1 << m.strideLog2) !== stride) return false
+      if ((1 << m.strideLog2) !== (widenInt ? LANE_INFO[lt].stride : stride)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'load' })
@@ -1950,6 +1970,16 @@ function liftExprV(expr, ctx) {
   if (ctx.laneType === 'f32') {
     if (op === 'f64.promote_f32') return liftExprV(expr[1], ctx)
     if (op === 'f32.demote_f64') return liftExprV(expr[1], ctx)
+    // int→f32 widening load: `f64.convert_i32_{s,u}(<intload>(addr))` → load 4 ints,
+    // widen to i32x4, f32x4.convert. i8/i16 are exact in f32; i32 rounds (gated).
+    if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && isArr(expr[1]) && INT_WIDEN_F32[expr[1][0]]) {
+      const ld = expr[1], w = INT_WIDEN_F32[ld[0]]
+      if (w.lossy && !_relaxF32) return liftFail(ctx, `${ld[0]}→f32 SIMD rounds (i32 exceeds f32 mantissa) — needs relaxedSimd`)
+      const addr = typeof ld[1] === 'string' && ld[1].startsWith('offset=') ? [w.load, ld[1], ld[2]] : [w.load, ld[1]]
+      let v = addr
+      for (const step of w.steps) v = [step, v]
+      return [w.cvt === 'u' ? 'f32x4.convert_i32x4_u' : 'f32x4.convert_i32x4_s', v]
+    }
     if (op === 'f64.const') {
       if (!_relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedSimd (f32 round of the constant)')
       return ['f32x4.splat', ['f32.const', expr[1]]]
