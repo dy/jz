@@ -611,6 +611,10 @@ export default (ctx) => {
   // We treat `undefined`/`null`/`0`/`''` as falsy (BE) per ToBoolean.
   const staticLE = (node) => {
     if (node === undefined) return false                              // arg omitted → BE
+    // Prepare lowers a literal `true`/`false` endianness flag to `['bool', 0|1]`;
+    // fold it so `dv.getInt16(p, true)` is one native load (no per-access LE branch
+    // + dead byte-swap arm — the dominant overhead in DataView codec loops).
+    if (Array.isArray(node) && node[0] === 'bool') return !!node[1]
     if (Array.isArray(node) && node[0] == null) {
       // [] → undefined, [null, x] → literal x
       if (node.length === 1) return false
