@@ -65,6 +65,11 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`noise`](noise/noise.js) | 2-D Perlin gradient noise summed over 5 fBm octaves; the canonical procedural-generation kernel — integer permutation-table hashing interleaved with f64 smoothstep interpolation |
 | [`radixsort`](radixsort/radixsort.js) | LSD radix sort (4 × 8-bit counting passes) over u32 keys; histogram → prefix-sum → scatter with buffer ping-pong, the gather/scatter integer-sort counterpart to compare-swap `sort` |
 | [`levenshtein`](levenshtein/levenshtein.js) | Levenshtein edit-distance rolling-row dynamic program; the canonical sequence-alignment / fuzzy-match kernel — a branch- and min-reduction-heavy DP with a diagonal data dependency no target vectorizes |
+| [`nqueens`](nqueens/nqueens.js) | bitmask N-Queens solution counter (board sizes drawn from a runtime array so the recursion can't be constant-folded); deep backtracking recursion + per-node bitmask branch — the call/recursion-codegen probe |
+| [`dict`](dict/dict.js) | open-addressing hash table (build + probe) with linear probing; multiply-shift hash scatter + dependent-load gather + unpredictable probe-chain branches — the associative-container kernel |
+| [`sieve`](sieve/sieve.js) | Sieve of Eratosthenes over a byte array; pure strided scatter (j = i², i²+i, …) guarded by an outer branch — a non-contiguous write pattern |
+| [`vm`](vm/vm.js) | tiny bytecode interpreter — a fetch-decode-dispatch loop (if/else opcode chain + indirect code-array loads) running an integer recurrence; the canonical VM/regex-engine inner loop |
+| [`spmv`](spmv/spmv.js) | sparse matrix×vector in CSR form; the MAC inner loop gathers `x[col[k]]` through a column-index array — the data-dependent gather dense codegen handles worst (exact-integer f64, bit-identical everywhere) |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
@@ -352,18 +357,50 @@ everywhere).
 | **radixsort** — LSD u32 sort | **2.75 ms** | **1.21×** | **1.19×** | trails (clang 1.5×) | 1.6 kB |
 | **noise** — Perlin fBm (5 oct) | **6.59 ms** | **1.36×** | 0.23× | trails (Rust 5.2×) | 8.0 kB |
 | **raytrace** — sphere render | **2.00 ms** | **1.07×** | 0.89× | trails (Rust 1.9×) | 4.8 kB |
-| **levenshtein** — edit-distance DP | 5.52 ms | 0.90× | 0.35× | trails (clang 3.4×) | 7.5 kB |
+| **levenshtein** — edit-distance DP | ~6 ms | ~1.0× | 0.35× | trails (clang ~3×) | 7.5 kB |
 
 These are the honest mixed bag — and the point. JZ beats raw V8 on three of four
 (and the smallest wasm of the whole field on `radixsort`, 1.6 kB), but it only
 beats AssemblyScript on `radixsort`; it **trails AS** on `noise` (~4.3×) and
-`levenshtein` (~2.9×), and **loses to V8 itself** on `levenshtein` (0.90×). The
-two AS gaps localize the next codegen work: `noise`'s nested permutation-table
-indirection (`perm[perm[X]+Y]`) and `levenshtein`'s branchy `min`-reduction DP
-over a rolling typed-array row are exactly the scalar/gather shapes JZ does not yet
-lower as tightly as AS's `asc -O3`. They sit out the curated regression gate
-(`test/bench.js`) — like `heat`/`matmul`/`nbody`/`particle`/`lorenz` — until JZ
-closes the gap and they ratchet in as wins.
+`levenshtein` (~2.5–2.9×), and only **ties V8** on `levenshtein` (the median
+straddles 1.0× run-to-run). The two AS gaps localize the next codegen work:
+`noise`'s nested permutation-table indirection (`perm[perm[X]+Y]`) and
+`levenshtein`'s branchy `min`-reduction DP over a rolling typed-array row are
+exactly the scalar/gather shapes JZ does not yet lower as tightly as AS's
+`asc -O3`. They sit out the curated regression gate (`test/bench.js`) — like
+`heat`/`matmul`/`nbody`/`particle`/`lorenz` — until JZ closes the gap and they
+ratchet in as wins.
+
+### Control-flow & gather/scatter kernels — recursion, hashing, sieve, VM, sparse
+
+A second probe set, aimed squarely at the patterns the first batch flagged —
+recursion, branchy probe chains, scatter, and indirect gather — to map where JZ's
+general (non-SIMD) codegen actually stands. All bit-identical across every target
+(`spmv` is f64 over exact small integers, so even Go-native FMA agrees; `nqueens`
+draws its board sizes from a runtime array so clang/rustc can't fold the recursion
+to a constant).
+
+| case | JZ | vs V8 | vs AS | vs native C | what it probes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| **vm** — bytecode dispatch | **7.30 ms** | **1.55×** | **2.20×** | **1.13×** | if/else opcode dispatch + indirect fetch |
+| **spmv** — sparse A·x (CSR) | **2.67 ms** | **1.78×** | **1.25×** | 0.90× | indirect gather `x[col[k]]` |
+| **sieve** — Eratosthenes | **7.18 ms** | **1.53×** | **1.30×** | 0.80× | strided scatter + outer branch |
+| **nqueens** — backtracking | **6.05 ms** | **1.29×** | 0.93× | 0.78× | deep recursion + bitmask branch |
+| **dict** — hash table | 4.11 ms | 0.78× | 0.81× | 0.39× | hash scatter + probe-chain gather |
+
+The split is sharp and informative. **JZ is excellent at dense dispatch and
+in-cache gather**: it wins `vm` against the *entire* field — including native
+`clang -O3` (the if/else interpreter loop lowers to tight branches with no
+NaN-box overhead, where AS pays per-access bounds checks), and wins `spmv`/`sieve`
+over the JS field while sitting near native. But it **loses `dict` to both V8
+(1.28×) and AS (1.24×)** — open-addressing's hash-scatter + dependent-load probe
+chain is the same gather/branch shape as `noise` and `levenshtein`, and the
+clearest, most reproducible deficiency the suite has surfaced. `nqueens` is a
+near-tie with AS on recursion. Together the nine new cases triangulate it: JZ's
+gap to the AS/native frontier is concentrated in **scatter-heavy hashing and
+dependent-gather / branchy-DP** kernels, not in dense scalar or dispatch loops.
+Like the batch above, these stay bench-only (out of `test/bench.js`) until the gap
+closes.
 
 ### watr — WAT-to-wasm compiler on small corpus
 
