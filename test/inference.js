@@ -994,15 +994,15 @@ test('i32-offset: a fractional-derived index truncates at access, not earlier', 
 test('param i32-narrowing: scalar param fed integer typed-array elements narrows to i32', () => {
   if (onWasi()) return  // wasi run-reserved locals rename; types are the portable assertion
   // dict-shaped: key `k` from src[i] (direct arg), threaded through Math.imul + === keys[h].
+  // (hash folded inline so the assertion isolates `k`'s narrowing, not a separate helper's.)
   const dictWat = jz.compile(`
-    let hash = (k) => (Math.imul(k, 0x9e3779b1) >>> 0) & 1023
-    let probe = (keys, k) => { let h = hash(k); while (keys[h] !== k && keys[h] !== -1) h = (h+1)&1023; return h }
+    let probe = (keys, k) => { let h = (Math.imul(k, 0x9e3779b1) >>> 0) & 1023; while (keys[h] !== k && keys[h] !== -1) h = (h+1)&1023; return h }
     let run = (keys, src, n) => { let s = 0, i = 0; while (i < n) { s = (s + probe(keys, src[i]) + probe(keys, src[i]+1)) | 0; i++ } return s }
     export let main = () => { let keys = new Int32Array(1024), src = new Int32Array(512); return run(keys, src, 512) }
-  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
   const probe = dictWat.match(/\(func \$probe\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$k i32\)/.test(probe), 'probe key param narrows to i32 (fed int typed-array elements)')
-  ok(!/f64\.eq|f64\.ne/.test(probe), 'no f64 compare in the probe loop')
+  ok(!/f64\.eq|f64\.ne|trunc_sat/.test(probe), 'no f64 compare / trunc round-trip in the probe loop')
 
   // noise-shaped: hash from a LOCAL `aa = perm[…]` (typed-pointer param element) → grad(aa,…).
   const noiseWat = jz.compile(`
@@ -1010,7 +1010,7 @@ test('param i32-narrowing: scalar param fed integer typed-array elements narrows
     let perlin = (perm, x, y) => { let X = (x|0)&255; let aa = perm[perm[X]+1]; let ba = perm[perm[X+1]+1]; return grad(aa, x, y) + grad(ba, x-1.0, y) }
     let run = (perm, n) => { let s = 0.0, i = 0; while (i < n) { s = s + perlin(perm, i*0.1, i*0.2); i++ } return s }
     export let main = () => { let perm = new Int32Array(512); return run(perm, 256) }
-  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
   const grad = noiseWat.match(/\(func \$grad\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$hash i32\)/.test(grad), 'grad hash param narrows to i32 (fed a local bound to an Int32 param element)')
 })
@@ -1032,7 +1032,7 @@ test('param i32-narrowing: recursive identity arg does not poison the i32 consen
     }
     let countN = (n) => solve((1<<n)-1, 0, 0, 0)
     export let main = () => { let s = 0, i = 0; while (i < 6) { s = (s + countN(8 + (i&3))) | 0; i++ } return s }
-  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
   const solve = wat.match(/\(func \$solve\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$all i32\)/.test(solve), 'recursive identity param `all` narrows to i32')
   ok(!/convert_i32_s|trunc_sat/.test(solve), 'no f64↔i32 round-trip in the recursive bitmask loop')

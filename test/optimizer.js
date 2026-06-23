@@ -812,6 +812,33 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
   is(main(), 61)
 })
 
+test('sourceInline: nested calls flatten — lerp(grad(a), grad(b), t) fully inlines', () => {
+  if (belowOpt(2)) return
+  // A call whose args are THEMSELVES candidate calls (noise's `lerp(grad(aa,…), grad(ba,…), u)`)
+  // must flatten end-to-end: non-simple args bind to temps (no duplication), then a follow-up
+  // pass folds the inner candidate into the temp decl. `grad` is a branchy leaf (`?:`), so this
+  // also exercises pureFlattenExpr accepting conditionals + comparisons. Result: the per-pixel
+  // kernel `perlin` carries zero helper calls.
+  const src = `
+    const grad = (h, x, y) => { const g = h & 3; const u = (g & 1) === 0 ? x : -x; const v = (g & 2) === 0 ? y : -y; return u + v }
+    const lerp = (a, b, t) => a + t * (b - a)
+    const perlin = (perm, x, y) => {
+      const X = (x | 0) & 255
+      const aa = perm[(perm[X] + 1) & 511], ba = perm[(perm[(X + 1) & 511] + 1) & 511]
+      return lerp(grad(aa, x, y), grad(ba, x - 1.0, y), x)
+    }
+    const run = (perm) => { let s = 0.0; for (let i = 0; i < 256; i++) s = s + perlin(perm, i * 0.1, i * 0.2); return s }
+    export const main = () => { const perm = new Int32Array(512); for (let i = 0; i < 512; i++) perm[i] = (i * 31) & 255; return run(perm) }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$grad\b/.test(wat) && !/\(call \$lerp\b/.test(wat), 'nested grad/lerp calls fully inlined (perlin flattens)')
+  ok(!/\(func \$grad\b/.test(wat) && !/\(func \$lerp\b/.test(wat), 'inlined leaves treeshake away')
+  // Bit-exact: inlining + temp-binding must not change the result.
+  const fast = run(src).main()
+  const slow = jz(src, { optimize: { level: 2, sourceInline: false } }).exports.main()
+  is(fast, slow, 'inlined result identical to un-inlined')
+})
+
 test('sourceInline: trailing-return helper inlines into indexed `out[i] = call(...)`', () => {
   const src = `
     export let beat = (t) => Math.sin(t * 6.28)

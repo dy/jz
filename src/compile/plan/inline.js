@@ -39,12 +39,25 @@ import {
 // expression — null if void or no trailing return value.
 const inlinedBody = (func, args) => {
   const params = func.sig.params
-  if (args.length !== params.length || !args.every(isSimpleArg)) return null
+  if (args.length !== params.length) return null
   const paramNames = new Set(params.map(p => p.name))
   if (mutatesAny(func.body, paramNames)) return null
 
+  // A simple arg (ident / literal / arithmetic) is cheap to substitute directly, even when its
+  // param is used several times. A NON-simple arg (a call, `?:`, indexed load) is bound to a fresh
+  // temp evaluated ONCE in call order — preserving evaluation count + left-to-right order, and
+  // never duplicating the expression. This lets nested calls inline: `lerp(grad(a), grad(b), u)`
+  // binds `t0 = grad(a); t1 = grad(b)` and substitutes the body with t0/t1; a later inliner pass
+  // then folds grad into those temp decls (the fixpoint in inlineHotInternalCalls).
   const subst = new Map()
-  for (let i = 0; i < params.length; i++) subst.set(params[i].name, args[i])
+  const argPrefix = []
+  for (let i = 0; i < params.length; i++) {
+    const arg = args[i]
+    if (isSimpleArg(arg)) { subst.set(params[i].name, arg); continue }
+    const tmp = `${T}inarg${ctx.func.uniq++}`
+    argPrefix.push(['const', ['=', tmp, arg]])
+    subst.set(params[i].name, tmp)
+  }
 
   const locals = new Set()
   collectBindings(func.body, locals)
@@ -56,13 +69,13 @@ const inlinedBody = (func, args) => {
   const stmts = blockStmts(func.body)
   // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
   // *is* the return value. Treat as zero-prefix + value.
-  if (!stmts) return { prefix: [], value: cloneWithSubst(func.body, subst, rename) }
+  if (!stmts) return { prefix: argPrefix, value: cloneWithSubst(func.body, subst, rename) }
   const last = stmts.length ? stmts[stmts.length - 1] : null
   const isTrailingReturn = Array.isArray(last) && last[0] === 'return'
   const prefixSrc = isTrailingReturn ? stmts.slice(0, -1) : stmts
   const prefix = prefixSrc.map(stmt => cloneWithSubst(stmt, subst, rename))
   const value = isTrailingReturn && last.length > 1 ? cloneWithSubst(last[1], subst, rename) : null
-  return { prefix, value }
+  return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
 const stmtDeclName = (stmt) => {
@@ -109,7 +122,14 @@ const isCandidateCall = (node, candidates) =>
 // arithmetic>`, substituting the decls into the return value turns it into a
 // zero-prefix expression. Duplicated subtrees (`dx` used twice → `x1-x2`
 // twice) are pure, and the watr-layer CSE collapses the copies.
-const PURE_FLATTEN_OPS = new Set(['+', '-', '*', '/', '%', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>'])
+const PURE_FLATTEN_OPS = new Set([
+  '+', '-', '*', '/', '%', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>',
+  // pure value-producing ops with no side effects — safe to duplicate (CSE collapses copies):
+  // comparisons, logical, bit-not, and the conditional. Lets a branchy leaf like noise's
+  // `grad(h,x,y) => { …; u = (h&1)===0 ? x : -x; … }` flatten to an expression so it inlines
+  // into its multi-call caller `perlin` — `lerp(grad(a), grad(b), u)` then collapses end to end.
+  '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '!', '~', '?:',
+])
 const pureFlattenExpr = (n) => {
   if (typeof n === 'number' || typeof n === 'string') return true  // literal or ident
   if (!Array.isArray(n)) return false
@@ -342,7 +362,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
     const hasLoop = some(func.body, n => LOOP_OPS.has(n[0]))
     const isTinyLeaf = !hasLoop && nodeSize(func.body) <= 15
-    if (!sites || sites.length < 1 || (!isTinyLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
+    // A small leaf (no loop, ≤40 nodes) is cheap to splice even when called several times — its
+    // per-call overhead + lost cross-call fusion dwarfs the ≤8× duplication, and temp-binding +
+    // flattenPrefix keep the spliced body bounded (no arg re-evaluation, CSE collapses copies).
+    // The 2-site non-tiny-leaf cap would otherwise outline a hot helper like noise's `grad`
+    // (~30 nodes, called 4× from perlin) and freeze the call overhead per pixel.
+    const isSmallLeaf = !hasLoop && nodeSize(func.body) <= 48
+    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
@@ -373,7 +399,10 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // to ≤2 sites, so the spliced duplication is at most ~2× a bounded body.
       const allSitesInLoop = sites.every(site =>
         site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false))
-      if (nodeSize(func.body) > (allSitesInLoop ? 200 : 30)) continue
+      // Non-in-loop cap is 40 (not 30) so a small leaf called from a straight-line but
+      // transitively-hot caller still inlines (noise's grad is called from perlin, which has
+      // no loop of its own but is itself the per-pixel kernel). Still tightly bounded.
+      if (nodeSize(func.body) > (allSitesInLoop ? 200 : 48)) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -442,20 +471,26 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // Route those through inlineInExpr so the call is replaced by the inlined
     // value expression instead.
     const isExprBody = !Array.isArray(func.body) || func.body[0] !== '{}'
-    const r = isExprBody
-      ? inlineInExpr(func.body, activeCandidates)
-      : inlineInStmt(func.body, activeCandidates)
-    let body = r.changed ? r.node : func.body
-    let bodyChanged = r.changed
-    // Expression-position pass. Exported callers take the leaf-safe subset —
-    // the same tier-up rationale as the statement path (leaves into exports
-    // are fine; relocated kernels are not).
+    // Expression-position pass takes the leaf-safe subset for exports — the same tier-up
+    // rationale as the statement path (leaves into exports are fine; relocated kernels are not).
     const exprActive = func.exported
       ? new Map([...exprOnlyCandidates].filter(([n]) => exportedCandidates.has(n)))
       : exprOnlyCandidates
-    if (exprActive.size) {
-      const e = inlineInExpr(body, exprActive)
-      if (e.changed) { body = e.node; bodyChanged = true }
+    // Iterate to a (bounded) fixpoint: inlining a call whose args are themselves candidate calls
+    // binds those args to temps (`t0 = grad(a)`); the next pass folds the candidate into the temp
+    // decl. Depth is bounded by call nesting (a small constant), capped here so a pathological
+    // chain can't loop unbounded.
+    let body = func.body, bodyChanged = false
+    for (let iter = 0; iter < 4; iter++) {
+      let iterChanged = false
+      const r = isExprBody ? inlineInExpr(body, activeCandidates) : inlineInStmt(body, activeCandidates)
+      if (r.changed) { body = r.node; iterChanged = true }
+      if (exprActive.size) {
+        const e = inlineInExpr(body, exprActive)
+        if (e.changed) { body = e.node; iterChanged = true }
+      }
+      if (!iterChanged) break
+      bodyChanged = true
     }
     if (bodyChanged) { func.body = body; changed = true }
   }
