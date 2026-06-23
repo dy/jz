@@ -2846,6 +2846,17 @@ function toI32(n) {
     const a = toI32(n[1]), b = toI32(n[2])
     if (a && b) return [op === 'f64.add' ? 'i32.add' : 'i32.sub', a, b]
   }
+  // ToInt32 distributes through a conditional: ToInt32(if C A B) == if(result i32) C
+  // ToInt32(A) ToInt32(B). Recursive — a nested integer `?:` like `((3<a)?(2&a):((7<a)?a:1))|0`
+  // narrows whole to i32 (each arm folded by toI32, incl. nested ifs), so the lane vectorizer
+  // lifts it as i32x4 bitselect instead of bailing on the f64 result. Only reached from
+  // ToInt32 sinks (the select idiom / toI32 recursion), so the i32 result is always wanted.
+  if (op === 'if' && Array.isArray(n[1]) && n[1][0] === 'result' && n[1][1] === 'f64'
+      && Array.isArray(n[3]) && n[3][0] === 'then' && n[3].length === 2
+      && Array.isArray(n[4]) && n[4][0] === 'else' && n[4].length === 2) {
+    const t = toI32(n[3][1]), e = toI32(n[4][1])
+    if (t && e) return ['if', ['result', 'i32'], n[2], ['then', t], ['else', e]]
+  }
   return null
 }
 
@@ -3077,14 +3088,8 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64) {
     if (Array.isArray(v) && v[0] === 'i32.wrap_i64' && Array.isArray(v[1]) && v[1][0] === 'i64.trunc_sat_f64_s' && v[1].length === 2) {
       let inner = v[1][1]
       if (Array.isArray(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]
-      // ToInt32(if (result f64) C A B) → if (result i32) C toI32(A) toI32(B), when both arms are integer-valued.
-      if (Array.isArray(inner) && inner[0] === 'if' && Array.isArray(inner[1]) && inner[1][0] === 'result' && inner[1][1] === 'f64'
-          && Array.isArray(inner[3]) && inner[3][0] === 'then' && inner[3].length === 2
-          && Array.isArray(inner[4]) && inner[4][0] === 'else' && inner[4].length === 2) {
-        const t = toI32(inner[3][1]), e = toI32(inner[4][1])
-        if (t && e) return ['if', ['result', 'i32'], inner[2], ['then', t], ['else', e]]
-      }
-      // ToInt32(integer-valued f64 expr) → its i32 form (covers (i32±i32)|0 sums and nests).
+      // ToInt32(integer-valued f64 expr) → its i32 form: covers (i32±i32)|0 sums AND the
+      // conditional `?:` (toI32 distributes through `(if result f64)`, recursively).
       const i = toI32(inner)
       if (i) return i
     }

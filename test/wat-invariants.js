@@ -124,17 +124,14 @@ for (const [name, gen] of [
   })
 }
 
-// typed-int has a DOCUMENTED narrowing gap, ratcheted (not hidden): a nested
-// integer conditional (`?:` ≥2 levels) under the vectorizer (array length ≥32)
-// bails to a scalar `(if (result f64))` with per-branch `f64.convert_i32_s`
-// instead of `(if (result i32))`, round-tripping the integer result through f64.
-// Minimal repro (clean at N<32, deopts at N≥32):
-//   const a = new Int32Array(32)
-//   for (let i=0;i<32;i++) a[i] = ((3<a[i]) ? (2&a[i]) : ((7<a[i]) ? a[i] : 1)) | 0
-// Fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar
-// fallback). Tracked in .work/todo.md. An INCREASE = a new lost-narrowing deopt;
-// a DECREASE = the gap shrank — re-baseline DOWN to lock the win.
-const TYPED_INT_F64_BASELINE = 13
+// typed-int nested-conditional narrowing: mostly CLOSED (13→2). A nested integer
+// `?:` (`((3<a)?(2&a):((7<a)?a:1))|0`) used to bail to a scalar `(if (result f64))`
+// with per-branch `f64.convert_i32_s`; toI32 now distributes ToInt32 through
+// `(if result f64)` recursively (src/optimize/index.js), so the whole tree narrows
+// to `(if result i32)` and the lane vectorizer lifts it as i32x4 bitselect. The
+// residual 2 are deeper/odd shapes left to track. An INCREASE = a new lost-narrowing
+// deopt regressed the compiler; a DECREASE = re-baseline DOWN to lock the win.
+const TYPED_INT_F64_BASELINE = 2
 test(`sweep: typed-int f64-in-loop ≤ ${TYPED_INT_F64_BASELINE} (ratchet — nested-conditional narrowing gap)`, () => {
   const n = countLoopF64(typedIntSource)
   ok(n <= TYPED_INT_F64_BASELINE,
