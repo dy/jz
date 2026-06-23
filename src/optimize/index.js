@@ -2816,6 +2816,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       outerStrip: cfg.experimentalOuterStrip !== false,
       pureFuncMap: cfg._pureFuncMap || null,
       toneMap: cfg.experimentalToneMap !== false,
+      slp: cfg.experimentalSlp !== false,  // SLP default-on (testing single-use fix)
     })
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)

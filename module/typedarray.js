@@ -340,6 +340,7 @@ export default (ctx) => {
       // and tags the TYPED ptr with aux=elemType|8. Reads/writes alias the parent,
       // .buffer reconstructs the root BUFFER, .byteOffset = dataOff - parentOff.
       if (offsetExpr != null && lenExpr2 != null) {
+        ctx.features.typedView = true  // subview aliases the parent buffer — SLP must not assume disjoint bases
         const src = temp('tvs')
         const parentOff = tempI32('tvp')
         const byteLen = tempI32('tvb')
@@ -365,9 +366,12 @@ export default (ctx) => {
       // TYPED retagged at the same offset — the byteLen header is shared with the parent.
       // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
+        ctx.features.typedView = true  // zero-copy reinterpret aliases the source — SLP must not pack across it
         return mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
+        ctx.features.typedView = true  // unknown arg: runtime may take the buffer/typed zero-copy-view branch
+
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
         const src = temp('ts')
         const len = tempI32('tl')
@@ -1854,6 +1858,7 @@ export default (ctx) => {
   // NOT a copy). Builds the 16-byte descriptor [byteLen][dataOff][parentOff] and tags the
   // TYPED ptr with aux|view, exactly like new TypedArray(buffer, byteOffset, length).
   ctx.core.emit['.typed:subarray'] = (arr, begin, end) => {
+    ctx.features.typedView = true  // zero-copy view aliases the receiver — covers inline `a.subarray(1)[i]=…` the bound-decl path in analyze.js misses
     const r = resolveElem(arr)
     if (!r) {
       // Elem type / view-ness not statically known (owned→view reassigned binding).

@@ -118,6 +118,11 @@ const makeTypedTracker = (get, set, del) => {
     if (poison.has(name)) return
     const setOrInvalidate = (c) => {
       if (c === MIXED_CTORS) return invalidate(name)
+      // Module-level alias fact: a `.view` ctor (subarray / buffer-backed) is the ONLY
+      // way two typed-array bindings can overlap. Recording that the program creates
+      // ANY view lets memory-reordering passes (SLP) stay sound by bailing when set —
+      // with no view, distinct typed bases own disjoint allocations.
+      if (typeof c === 'string' && c.endsWith('.view')) ctx.features.typedView = true
       const prev = get(name)
       if (prev && prev !== c) invalidate(name)
       else set(name, c)

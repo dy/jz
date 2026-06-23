@@ -1,5 +1,5 @@
 import { findBodyStart } from '../ir.js'
-import { warn } from '../ctx.js'
+import { warn, ctx } from '../ctx.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -276,6 +276,147 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
       ['local.set', b.out, ['f64x2.extract_lane', 1, ['local.get', v]]],
     )
     i += prefix.length + 3
+  }
+}
+
+// =============================================================================
+// SLP (superword-level parallelism): pack two ADJACENT isomorphic f64 element
+// stores into one f64x2 store — the WITHIN-iteration 2-lane class the loop
+// vectorizer (which packs ACROSS iterations) structurally cannot reach.
+//
+// Soundness rests on one module fact: no typed-array VIEW exists
+// (`ctx.features.typedView` false, checked at the dispatch). A view (subarray /
+// buffer-backed ctor) is the only way two typed bases can overlap; without one,
+// distinct typed bases own disjoint allocations and a same-base store is an
+// in-place SAME-INDEX map — neither can reorder-hazard the packed reads/write.
+// The pack is admitted ONLY when overhead-free (adjacent loads → v128.load,
+// identical pure scalar → splat, matching op → recurse); anything that would
+// need a per-lane `replace_lane` build bails, which makes the rewrite both
+// PROFITABLE and unable to grow code. Every f64x2 lane op is bit-identical to its
+// scalar f64 op (IEEE element-wise), so the result is byte-equal to the scalar form.
+// =============================================================================
+const F64X2_BIN = { 'f64.add': 'f64x2.add', 'f64.sub': 'f64x2.sub', 'f64.mul': 'f64x2.mul', 'f64.div': 'f64x2.div', 'f64.min': 'f64x2.min', 'f64.max': 'f64x2.max' }
+const F64X2_UN = { 'f64.neg': 'f64x2.neg', 'f64.abs': 'f64x2.abs', 'f64.sqrt': 'f64x2.sqrt' }
+
+// No memory load anywhere in the subtree → broadcasting it once (splat) equals
+// re-evaluating it per lane (the two source statements are adjacent: no store or
+// reassignment runs between them, so a pure tree yields one value for both lanes).
+const slpPureNoLoad = (n) => !isArr(n) || (!LOAD_OPS[n[0]] && n[0] !== 'f64.load' && n[0] !== 'i32.load' && n.every((c, i) => i === 0 || slpPureNoLoad(c)))
+
+// Decompose a load/store node, normalizing the optional `offset=K` attribute jz
+// folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
+const slpMem = (n) => {
+  if (!isArr(n)) return null
+  if (typeof n[1] === 'string' && n[1].startsWith('offset=')) return { off: +n[1].slice(7), addr: n[2], val: n[3] }
+  return { off: 0, addr: n[1], val: n[2] }
+}
+// The two accesses (x = low/first, y = high/second) provably address the SAME base
+// pointer. Sound shapes only — `y` must read what `x` produced, never redefine it:
+//   • x = (local.tee $X e), y = (local.get $X)  — x defines the shared ptr, y reuses it
+//   • x = (local.get $X),   y = (local.get $X)  — both read the same already-set local
+//   • exprEq(x, y) with NEITHER a tee            — identical side-effect-free addresses
+// REJECTS `(local.tee $X eA), (local.tee $X eB)` (y redefines $X to a different address
+// → the high lane would write the wrong place) and `(get $X), (tee $X e)` — the watr.js
+// self-host miscompile came from accepting those by name alone.
+const slpSameBase = (x, y) => {
+  if (!isArr(x) || !isArr(y)) return false
+  if (x[0] === 'local.tee' && y[0] === 'local.get' && typeof x[1] === 'string' && x[1] === y[1]) return true
+  if (x[0] === 'local.get' && y[0] === 'local.get' && typeof x[1] === 'string' && x[1] === y[1]) return true
+  return x[0] !== 'local.tee' && y[0] !== 'local.tee' && exprEq(x, y)
+}
+
+// Pack two isomorphic f64 trees [lo, hi] into an f64x2 value, or null if it isn't
+// overhead-free (adjacent loads → v128.load, identical pure scalar → splat, matching
+// op → recurse). The overhead-free restriction is what makes it both profitable and
+// unable to grow code; every f64x2 lane op is bit-identical to its scalar f64 op.
+const slpPackF64x2 = (lo, hi) => {
+  if (!isArr(lo) || !isArr(hi)) return null
+  if (lo[0] === 'f64.load' && hi[0] === 'f64.load') {
+    const a = slpMem(lo), b = slpMem(hi)
+    if (b.off - a.off !== 8 || !slpSameBase(a.addr, b.addr)) return null
+    return a.off ? ['v128.load', `offset=${a.off}`, a.addr] : ['v128.load', a.addr]
+  }
+  if (exprEq(lo, hi) && slpPureNoLoad(lo)) return ['f64x2.splat', lo]
+  if (lo[0] === hi[0]) {
+    const bin = F64X2_BIN[lo[0]]
+    if (bin && lo.length === 3 && hi.length === 3) {
+      const x = slpPackF64x2(lo[1], hi[1]); if (!x) return null
+      const y = slpPackF64x2(lo[2], hi[2]); return y ? [bin, x, y] : null
+    }
+    const un = F64X2_UN[lo[0]]
+    if (un && lo.length === 2 && hi.length === 2) {
+      const x = slpPackF64x2(lo[1], hi[1]); return x ? [un, x] : null
+    }
+  }
+  return null
+}
+
+// Resolve the element store at `stmts[i]` to { off, addr, value, lo, hi } — the f64
+// value to pack and the inclusive statement span it occupies. jz emits an element
+// store in three shapes, all handled here so SLP fires both pre- and post-watr:
+//   • inline           (f64.store addr V)                                  → span [i,i]
+//   • flat tee'd        (local.set $t V) ; (f64.store addr (local.get $t)) → span [i-1,i]
+//   • block-wrapped     (block (local.set $t V) (f64.store addr (local.get $t)))
+// The tee'd value to pack is V (the definition), not the `(local.get $t)`.
+const slpUnitAt = (stmts, i, getCounts) => {
+  const s = stmts[i]
+  if (!isArr(s)) return null
+  if (s[0] === 'block' && s.length === 3
+      && isArr(s[1]) && s[1][0] === 'local.set' && isArr(s[2]) && s[2][0] === 'f64.store') {
+    const m = slpMem(s[2])
+    if (m && isArr(m.val) && m.val[0] === 'local.get' && m.val[1] === s[1][1]) return { off: m.off, addr: m.addr, value: s[1][2], lo: i, hi: i }
+    return null
+  }
+  if (s[0] !== 'f64.store') return null
+  const m = slpMem(s)
+  if (!m) return null
+  // Flat tee'd: `(local.set $t V) ; (f64.store … (local.get $t))`. Resolving the value
+  // to V and dropping the set is sound ONLY if $t is used nowhere else — otherwise a
+  // later `(local.get $t)` reads a value we deleted (the watr.js self-host miscompile).
+  if (isArr(m.val) && m.val[0] === 'local.get' && typeof m.val[1] === 'string'
+      && i > 0 && isArr(stmts[i - 1]) && stmts[i - 1][0] === 'local.set' && stmts[i - 1][1] === m.val[1]
+      && getCounts.get(m.val[1]) === 1)
+    return { off: m.off, addr: m.addr, value: stmts[i - 1][2], lo: i - 1, hi: i }
+  return { off: m.off, addr: m.addr, value: m.val, lo: i, hi: i }
+}
+
+// Count `(local.get NAME)` occurrences across the function, so the flat-tee'd
+// resolution above can confirm a store value's temp is single-use before removing it.
+const slpGetCounts = (fn) => {
+  const counts = new Map()
+  const walk = (n) => {
+    if (!isArr(n)) return
+    if (n[0] === 'local.get' && typeof n[1] === 'string') counts.set(n[1], (counts.get(n[1]) || 0) + 1)
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(fn)
+  return counts
+}
+
+// Rewrite two back-to-back element stores one f64 apart with isomorphic values into a
+// single v128 store. The packed value is computed into a fresh v128 local FIRST, then
+// stored — preserving jz's value-before-address evaluation order (the store address can
+// read a `local.tee` the value defines, e.g. the shared `i<<3` offset). base is the LOW
+// store's address (its tee that defines the shared pointer is kept); the high store +
+// its value dissolve into the high lane. Sound only under the no-view gate at dispatch.
+const slpStorePairsIn = (node, fnLocals, freshIdRef, newLocalDecls, getCounts) => {
+  if (!isArr(node)) return
+  for (let i = 0; i < node.length; i++) if (isArr(node[i])) slpStorePairsIn(node[i], fnLocals, freshIdRef, newLocalDecls, getCounts)
+  for (let i = 0; i < node.length; i++) {
+    const u0 = slpUnitAt(node, i, getCounts)
+    if (!u0) continue
+    const u1 = slpUnitAt(node, u0.hi + 1, getCounts)
+    if (!u1 || u1.lo !== u0.hi + 1) continue
+    if (u1.off - u0.off !== 8 || !slpSameBase(u0.addr, u1.addr)) continue
+    const packed = slpPackF64x2(u0.value, u1.value)
+    if (!packed) continue
+    const t = `$__slp${freshIdRef.next++}`
+    newLocalDecls.push(['local', t, 'v128']); fnLocals.set(t, 'v128')
+    const store = u0.off
+      ? ['v128.store', `offset=${u0.off}`, u0.addr, ['local.get', t]]
+      : ['v128.store', u0.addr, ['local.get', t]]
+    node.splice(u0.lo, u1.hi - u0.lo + 1, ['local.set', t, packed], store)
+    i = u0.lo
   }
 }
 
@@ -5148,7 +5289,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
 //   multiAcc, relaxedFma, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
-    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false } = opts
+    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -5170,6 +5311,9 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   const newLocalDeclsAll = []
 
   vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
+  // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
+  // in the module (else a shifted view could reorder-hazard the packed read/write).
+  if (slp && !ctx.features.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
 
   // Walk body recursively. Process inner-most matches first (post-order)
   // so we don't try to vectorize an outer loop whose inner is the lane-local one.

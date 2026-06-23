@@ -26,6 +26,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
+import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import {
@@ -224,14 +225,11 @@ const foldConst = (va, vb, fn, guard) =>
 
 // JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
 // Those agree under a ToInt32/ToUint32 sink (and as plain numbers) while the
-// exact product stays f64-exact, i.e. |product| <= 2^53. Two i32 operands can
-// reach 2^62, so `i32.mul` is sound only when one side is bounded small enough
-// that, against the full i32 range (2^31) of the other, the product holds within
-// 2^53 — i.e. its magnitude <= 2^22. A literal qualifies directly; so does a
-// masked operand (`x & 63`, `x >>> k`) whose value is provably bounded. Keeps
-// index arithmetic (`i*4`) and bitwise-masked scales (bytebeat's `t*(m&63)`) on
-// `i32.mul` while routing hash-mix-scale products to `f64.mul`.
-const FITS_I32_MAX = 0x400000  // 2^22 — see derivation above
+// exact product stays f64-exact. A literal qualifies directly; so does a masked
+// operand (`x & 63`, `x >>> k`) whose value is provably bounded. Keeps index
+// arithmetic (`i*4`) and bitwise-masked scales (bytebeat's `t*(m&63)`) on
+// `i32.mul` while routing hash-mix-scale products to `f64.mul`. The FITS_I32_MAX
+// threshold (and the soundness contract with type.js exprType) lives in widen.js.
 const mulFitsI32 = (va, vb) =>
   (isLit(va) && Math.abs(litVal(va)) <= FITS_I32_MAX) ||
   (isLit(vb) && Math.abs(litVal(vb)) <= FITS_I32_MAX) ||

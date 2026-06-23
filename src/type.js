@@ -12,6 +12,7 @@
  */
 import { isI32, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
+import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
@@ -493,9 +494,13 @@ export function exprType(expr, locals) {
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
+    // Shared FITS_I32_MAX threshold (widen.js) keeps this in lock-step with emit's
+    // `mulFitsI32`. exprType only proves the static-literal case — a strict SUBSET of
+    // emit's i32 verdict (emit also admits masked-bound operands), which is the safe
+    // direction: never claim i32 where emit might widen to f64.
     const small = e => {
       const v = staticValue(e)
-      return v !== NO_VALUE && typeof v === 'number' && Math.abs(v) <= 0x400000
+      return v !== NO_VALUE && typeof v === 'number' && Math.abs(v) <= FITS_I32_MAX
     }
     return small(args[0]) || small(args[1]) ? 'i32' : 'f64'
   }
