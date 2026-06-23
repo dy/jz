@@ -4,6 +4,30 @@ Operational guide for AI agents working in this repo. Architecture, code layout,
 conventions live in [CONTRIBUTING.md](docs/CONTRIBUTING.md) — read it first. This file is
 only the things that bite automated edits.
 
+## Performance claims (the bar every change is held to)
+
+These are the product's promises. They are CI-gated (`test/bench.js`), not aspirations:
+
+1. **Fastest wasm.** On every bench case, jz's wasm is the fastest among wasm producers —
+   ahead of `clang→wasm`, `rustc→wasm`, `tinygo→wasm`, AssemblyScript, Porffor. Native
+   `clang -O3` is the only thing allowed to be faster (and we aim within its parity band).
+   A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
+   until jz takes the lead — never silently accepted.
+2. **Faster than any JIT.** jz beats V8 (Node), and any other JIT (JSC, SpiderMonkey) on
+   the same source.
+
+What this implies for HOW we optimize:
+
+- **General techniques, never per-bench tweaks.** The other wasm producers win where they
+  win because they have *general* passes (loop autovectorization, SLP, alias-based load
+  CSE). To match them, each jz optimization must eradicate a whole CLASS of cases — phrase
+  the fix as "any program shaped like X," prove it on a minimal kernel, and pin that kernel
+  (not the bench). If a fix only helps one named bench, it's the wrong fix.
+- **The compiler reasons; the source gives no hints.** jz must infer integer-ness, ranges,
+  shapes and aliasing on its own. Do NOT make a kernel faster by editing its source (adding
+  `|0`, splitting arrays, hoisting by hand). If a var needs a `|0` to narrow, the inference
+  is too weak — fix the inference. Bench sources are fixed inputs, identical across targets.
+
 ## Verify before claiming done
 
 - `npm test` — core suite (in-process compiler). Run it before reporting any change.

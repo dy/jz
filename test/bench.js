@@ -219,11 +219,32 @@ const SIZE_BUDGET = {
   hash: 1500, base64: 2300, wav: 2050, conv2d: 3600, lz: 9200, qoi: 10500,
 }
 
+// ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────
+// jz must be the fastest WASM producer on every case — ahead of clang→wasm, rustc→wasm,
+// tinygo→wasm, AssemblyScript, Porffor (native clang -O3 is the only allowed-faster target).
+// WASM_RIVALS are the wasm-emitting competitors; for each case jz's median must be ≤ the BEST
+// rival's (within tolerance) UNLESS the case is in WASM_TODO — the explicit, shrinking gap list.
+// A case that leaves the lead set (regresses below a rival) trips the gate; closing a WASM_TODO
+// case (jz takes the lead) should delete it here. This is the ratchet behind the headline claim.
+const wasmRivalAvail = { 'c-wasm': natAvailable, 'rust-wasm': have('rustc'), 'go-wasm': have('tinygo'), as: ascAvailable, porf: porfAvailable }
+const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'as', 'porf'].filter(t => wasmRivalAvail[t])
+// Cases where a wasm rival is currently faster than jz — the gap to close (general techniques,
+// not per-bench tweaks; see AGENTS.md). Each notes who leads and why; delete on overtake.
+const WASM_TODO = {
+  noise:    'SLP-vectorize the 4 independent corner gradients (straight-line, not a loop) — rustc/clang do',
+  raytrace: 'autovectorize the 8-sphere intersection loop — clang→wasm does',
+  nqueens:  'recursion call-overhead; rivals keep the bitmask backtrack in registers',
+  mat4:     'param-distinctness: prove a,out are distinct buffers → hoist/CSE a[r*4+k] across the out[] store (rustc does)',
+  qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1×',
+}
+const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
+
 // ── Run the speed harness ───────────────────────────────────────────────────
-const speedCases = Object.keys(SPEED)
-const speedTargets = ['v8', 'jz', ...(natAvailable ? ['nat'] : []), ...(ascAvailable ? ['as'] : []), ...(porfAvailable ? ['porf'] : [])]
-console.log(`bench: speed — ${speedCases.length} cases × {${speedTargets.join(',')}}…`)
-const speedOut = execFileSync('node', [BENCH, `--cases=${speedCases.join(',')}`, `--targets=${speedTargets.join(',')}`], { encoding: 'utf8', cwd: ROOT })
+// Full corpus (no --cases): the fastest-wasm claim is gated on EVERY case, not a curated
+// subset. The per-target v8/as/porf SPEED table + its geomean stay scoped to their own keys.
+const speedTargets = ['v8', 'jz', ...(natAvailable ? ['nat'] : []), ...WASM_RIVALS]
+console.log(`bench: speed — full corpus × {${speedTargets.join(',')}}…`)
+const speedOut = execFileSync('node', [BENCH, `--targets=${speedTargets.join(',')}`], { encoding: 'utf8', cwd: ROOT, maxBuffer: 64 * 1024 * 1024 })
 
 const SIZE_UNIT = { B: 1, kB: 1024, MB: 1024 * 1024 }
 const TARGET_BY_NAME = {
@@ -249,6 +270,9 @@ function parseBenchOutput(text) {
   return parsed
 }
 const runs = parseBenchOutput(speedOut)
+// Cases that actually ran (full corpus minus whatever the harness skipped). The fastest-wasm
+// gate iterates these; the curated v8/as/porf SPEED table iterates its own keys (∩ runs).
+const speedCases = Object.keys(runs)
 
 // These cases' medians are noisy run-to-run — take the median of a few extra
 // samples so the gate reflects steady-state, not whichever scheduler hiccup
@@ -287,7 +311,7 @@ const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[clai
 console.log('\nbench snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
 console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C        spd.as       spd.porf     ${'jz_sz'.padStart(7)}  sz.AS        sz.porf      slack`)
 console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  -----------  ------`)
-for (const id of speedCases) {
+for (const id of Object.keys(SPEED)) {   // curated v8/as/porf/native/size table (the fastest-wasm gate covers the full corpus below)
   const r = runs[id] || {}, sz = sizes[id] || {}
   const slack = sz.jz && sz.jzOpt ? `${((sz.jzOpt / sz.jz) * 100).toFixed(0)}%` : '  — '
   console.log(`  ${id.padEnd(13)}  ${fmtMs(r.jz?.medianUs)}  ` +
@@ -301,7 +325,7 @@ for (const id of speedCases) {
 }
 
 const geomean = xs => xs.length ? Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length) : null
-const geoSpeed = tid => geomean(speedCases
+const geoSpeed = tid => geomean(Object.keys(SPEED)
   .map(id => runs[id]).filter(r => r?.jz && r?.[tid] && r.jz.checksum === r[tid].checksum)
   .map(r => r.jz.medianUs / r[tid].medianUs))
 // Native-parity geomean is scoped to the cases that CLAIM parity (NATIVE keys).
@@ -349,6 +373,33 @@ for (const tid of ['v8', 'as', 'porf']) {
   test(`bench: speed geomean jz/${tid} ≤ ${SPEED_GEOMEAN_MAX[tid]}×`, () => {
     ok(g <= SPEED_GEOMEAN_MAX[tid], `geomean jz/${tid} = ${g.toFixed(3)}× > ${SPEED_GEOMEAN_MAX[tid]}×`)
   })
+}
+
+// ── Assertions: jz is the fastest WASM, per case (the headline claim) ────────
+// THE bar (AGENTS.md §Performance claims): on EVERY case jz must lead every available wasm
+// rival (within microbench jitter). No allowlist — a rival faster anywhere FAILS the gate.
+// WASM_TODO doesn't excuse a case; it only annotates the failure with the general technique
+// that closes it, so a red gate reads as a work list. Delete a WASM_TODO entry once it leads.
+{
+  const bestRival = (id) => {
+    let best = null, who = null
+    for (const t of WASM_RIVALS) {
+      const r = runs[id]?.[t]
+      if (!r || r.checksum !== runs[id]?.jz?.checksum) continue   // unavailable / different checksum → not comparable
+      if (best == null || r.medianUs < best) { best = r.medianUs; who = t }
+    }
+    return best == null ? null : { us: best, who }
+  }
+  for (const id of speedCases) {
+    const jz = runs[id]?.jz; if (!jz) continue
+    const br = bestRival(id); if (br == null) continue   // no comparable wasm rival ran (e.g. self-host rows)
+    test(`bench: fastest-wasm ${id} (jz ≤ every wasm rival)`, () => {
+      const ratio = jz.medianUs / br.us
+      const limit = WASM_LEAD_TOL * CI_SPEED_JITTER
+      const why = WASM_TODO[id] ? ` [known gap → ${WASM_TODO[id]}]` : ''
+      ok(ratio <= limit, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${limit.toFixed(3)}× — not the fastest wasm.${why}`)
+    })
+  }
 }
 
 // ── Native-C parity (the headline guarantee) ────────────────────────────────
