@@ -1036,4 +1036,20 @@ test('param i32-narrowing: recursive identity arg does not poison the i32 consen
   const solve = wat.match(/\(func \$solve\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$all i32\)/.test(solve), 'recursive identity param `all` narrows to i32')
   ok(!/convert_i32_s|trunc_sat/.test(solve), 'no f64↔i32 round-trip in the recursive bitmask loop')
+  ok(/\(result i32\)/.test(solve) && /\(local \$cnt i32\)/.test(solve), 'recursive i32 result narrows (cnt + return stay i32, not f64)')
+})
+
+// Recursive result cycle narrows to i32. A recursive integer function whose result feeds its own
+// returns (`cnt = cnt + sumTo(n-1); return cnt`) is stuck f64 unless the result narrowing breaks
+// the cycle optimistically (assume i32, re-analyze, keep iff self-consistent). Without it `cnt` and
+// the return widen to f64, so an i32 consumer of the result pays a convert.
+test('result i32-narrowing: a recursive integer result narrows to i32 (optimistic cycle break)', () => {
+  if (onWasi()) return
+  const wat = jz.compile(`
+    let sumTo = (n) => { if (n <= 0) return 0; let s = 0; let i = 0; while (i < n) { s = s + sumTo((n - 1 - i) | 0); i++ } return s & 0x3ffffff }
+    export let main = () => sumTo(7) | 0
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  const sumTo = wat.match(/\(func \$sumTo\b[\s\S]*?\n  \)/)[0]
+  ok(/\(result i32\)/.test(sumTo), 'recursive sumTo result narrows to i32')
+  ok(!/f64\./.test(sumTo), 'no f64 ops in the recursive integer body (result + accumulator stay i32)')
 })

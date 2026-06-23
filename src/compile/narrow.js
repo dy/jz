@@ -292,6 +292,19 @@ function narrowI32Results(funcs) {
     e[0] === '>>>' ||
     (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true)
   )
+  const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
+  // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
+  const evalTails = (func, body, exprs) => {
+    const savedCurrent = ctx.func.current
+    ctx.func.current = func.sig
+    const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
+    for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
+    const allV128 = exprs.every(e => exprType(e, locals) === 'v128')
+    const allI32 = !allV128 && exprs.every(e => exprType(e, locals) === 'i32')
+    const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
+    ctx.func.current = savedCurrent
+    return r
+  }
   let changed = true
   while (changed) {
     changed = false
@@ -301,22 +314,33 @@ function narrowI32Results(funcs) {
       if (isBlockBody(body) && hasBareReturn(body)) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
-      const savedCurrent = ctx.func.current
-      ctx.func.current = func.sig
-      const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
-      for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
-      const allV128 = exprs.every(e => exprType(e, locals) === 'v128')
-      const allI32 = !allV128 && exprs.every(e => exprType(e, locals) === 'i32')
-      const anyUnsigned = exprs.some(isUnsignedTail)
-      const allUnsigned = exprs.every(isUnsignedTail)
-      ctx.func.current = savedCurrent
+      let r = evalTails(func, body, exprs)
+      // Recursive result cycle: a self-call in a return tail — or feeding a returned local
+      // (nqueens' `cnt = cnt + solve(…); return cnt`) — reads solve's own not-yet-narrowed
+      // f64 result, so `cnt` widens to f64 and the i32 narrowing never fires. Break the cycle
+      // optimistically: tentatively assume the i32 result, re-analyze, and keep it ONLY if every
+      // tail is then i32 (else revert). Sound — committed only when self-consistent.
+      if (!r.allI32 && !r.allV128 && callsSelf(body, func.name)) {
+        const saved = func.sig.results
+        func.sig.results = ['i32']
+        invalidateLocalsCache(body)
+        const opt = evalTails(func, body, exprs)
+        if (opt.allI32 && (!opt.anyUnsigned || opt.allUnsigned)) {
+          if (opt.allUnsigned) func.sig.unsignedResult = true
+          changed = true
+          continue
+        }
+        func.sig.results = saved
+        invalidateLocalsCache(body)
+        r = evalTails(func, body, exprs)
+      }
       // SIMD: every tail returns a lane vector → v128 result.
-      if (allV128) {
+      if (r.allV128) {
         func.sig.results = ['v128']
         changed = true
-      } else if (allI32 && (!anyUnsigned || allUnsigned)) {   // sign-consistent i32 tails
+      } else if (r.allI32 && (!r.anyUnsigned || r.allUnsigned)) {   // sign-consistent i32 tails
         func.sig.results = ['i32']
-        if (allUnsigned) func.sig.unsignedResult = true
+        if (r.allUnsigned) func.sig.unsignedResult = true
         changed = true
       }
     }
