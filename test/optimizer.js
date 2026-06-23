@@ -967,6 +967,33 @@ test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 roun
   is(jz(SRC).exports.main(), ((((3 * 31) & 0xff) * 7) & 0xff), 'byte transform result correct (table[src[3]])')
 })
 
+test('integer === integer compares in i32 — no f64.eq widen', () => {
+  // `a[i] === b[j]` (two u8 reads) and `intLocal === b[j]` (the levenshtein DP cell) materialize
+  // operands as f64 under the universal value model, but the equality must lower to i32.eq, not
+  // widen both to f64 and `f64.eq`. General: any integer-backed === / == / !==. Bit-exact.
+  const SRC = `
+    const eqcount = (a, b, n) => {
+      let c = 0
+      for (let i = 1; i <= n; i++) { const ai = a[i - 1]; if (ai === b[i - 1]) c++ }   // i32 local vs u8 read (mixed sign)
+      for (let i = 0; i < n; i++) if (a[i] === b[i]) c++                                 // u8 read vs u8 read (same sign)
+      return c
+    }
+    export const main = () => {
+      const a = new Uint8Array(16), b = new Uint8Array(16)
+      for (let i = 0; i < 16; i++) { a[i] = (i * 7) & 7; b[i] = (i * 5) & 7 }
+      return eqcount(a, b, 16) + eqcount(a, b, 16)
+    }
+  `
+  const wat = jz.compile(SRC, { wat: true })   // eqcount is called twice → stays its own function
+  const start = wat.indexOf('(func $eqcount')
+  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  is(/f64\.eq|f64\.ne/.test(body), false, 'no f64 equality — integer operands compare in i32')
+  ok(/i32\.eq/.test(body), 'lowers to i32.eq')
+  const ref = (() => { const a = [], b = []; for (let i = 0; i < 16; i++) { a[i] = (i * 7) & 7; b[i] = (i * 5) & 7 }
+    let f = (n) => { let c = 0; for (let i = 1; i <= n; i++) if (a[i - 1] === b[i - 1]) c++; for (let i = 0; i < n; i++) if (a[i] === b[i]) c++; return c }; return f(16) + f(16) })()
+  is(jz(SRC).exports.main(), ref, 'eqcount result bit-exact vs JS')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

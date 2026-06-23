@@ -1444,6 +1444,33 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 const nullableOperand = (n) =>
   typeof n === 'string' && !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
 
+// An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
+// `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
+// two integer-backed operands directly in i32 instead of widening both to f64.
+const peelIntCmp = (v) => {
+  if (Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u'))
+    return { src: Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1], sign: v[0] === 'f64.convert_i32_u' ? 'u' : 's' }
+  if (v && v.type === 'i32') return { src: v, sign: 's' }
+  return null
+}
+// The value's top bit is provably 0 (so its signed and unsigned readings agree): a u8/u16 load,
+// `>>>` (always clears the sign bit), `& m` with m a non-negative small const, or a small const.
+const i32TopBitClear = (n) => {
+  if (typeof n === 'number') return n >= 0 && n < 0x80000000
+  if (!Array.isArray(n)) return false
+  if (n[0] == null) return typeof n[1] === 'number' && n[1] >= 0 && n[1] < 0x80000000
+  if (n[0] === 'i32.load8_u' || n[0] === 'i32.load16_u') return true
+  if (n[0] === 'i32.const') return typeof n[1] === 'number' ? (n[1] >= 0 && n[1] < 0x80000000) : false
+  if (n[0] === 'i32.shr_u' || n[0] === '>>>') return true
+  if (n[0] === 'i32.and' || n[0] === '&') return i32TopBitClear(n[1]) || i32TopBitClear(n[2])
+  return false
+}
+// i32.eq/ne over the peeled sources equals the f64-widened compare when the signs match, or — for
+// a mixed signed/unsigned pair — when the unsigned-read source is top-bit-clear (then both readings
+// of equal bits agree, and unequal bits stay unequal under both).
+const i32EqSound = (pa, pb) => pa.sign === pb.sign ||
+  i32TopBitClear((pa.sign === 'u' ? pa : pb).src)
+
 function emitLooseEq(a, b, negate) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -1462,6 +1489,12 @@ function emitLooseEq(a, b, negate) {
   const tc = emitTypeofCmp(a, b, eqOp); if (tc) return tc
   const va = emit(a), vb = emit(b)
   if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${eqOp}`, va, vb], 'i32')
+  // Both operands integer-backed (e.g. an i32 local vs a `b[j]` u8 read materialized as f64):
+  // compare the i32 sources directly, skipping the per-op widen to f64. Recovers `intElem ===
+  // intElem` in hot loops (levenshtein's DP cell, where `a[i-1] === b[j-1]` was an f64.eq + 2
+  // converts every iteration). Sound only when the widen can't change the answer (see i32EqSound).
+  const pa = peelIntCmp(va), pb = peelIntCmp(vb)
+  if (pa && pb && i32EqSound(pa, pb)) return typed([`i32.${eqOp}`, pa.src, pb.src], 'i32')
   // Either side known-pure NUMBER (literal or typed) → f64.eq/ne is correct regardless
   // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
   // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
