@@ -772,6 +772,17 @@ export const fuzzTypedByteScan = (opts) => {
   return findings
 }
 
+// Source generators — exported so the STRUCTURAL-invariant verifier
+// (test/wat-invariants.js) sweeps the SAME seeded programs the correctness
+// fuzzer runs, but checks the optimized WAT for absence-of-overhead (no f64
+// round-trip in an integer loop, no per-iteration pointer decode, …) rather
+// than just value parity. Same population, two oracles: correctness + waste.
+export {
+  genProgram as genScalarProgram, toSource as scalarSource,
+  typedSource, typedMapSource, typedIntSource, typedIntMinMaxSource,
+  typedIVSRSource, typedByteScanSource,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
 // Exploratory long runs go through the CLI below.

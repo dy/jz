@@ -57,6 +57,7 @@
     "bench:startup": "node scripts/bench-startup.mjs",
     "bench:self": "node scripts/bench-selfhost.mjs",
     "bench:readme": "node scripts/bench-readme.mjs",
+    "audit:as": "node scripts/audit-assemblyscript.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
     "prepublishOnly": "npm test && npm run build && npm run test:self && npm run test:wasm",

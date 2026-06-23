@@ -66,7 +66,10 @@ const ARGS = [N, 1.5, 2.7, 0.3]
 const run = () => {
   console.log(`perf-fuzz: ${COUNT} programs/category, n=${N}, ${ITERS} calls/batch × ${BATCHES} batches\n`)
   const summary = {}
-  for (const cat of Object.keys(CATEGORIES)) {
+  // Only the scalar `f(n,p0,p1,p2)→number` categories are timed here; the
+  // structural shapes (buf/nest/…) are `callable:false` and gated by the
+  // machine-independent codegen ratchet (test/perf-ratchet.js) instead.
+  for (const cat of Object.keys(CATEGORIES).filter(c => CATEGORIES[c].callable !== false)) {
     const ratios = []          // jz / v8  (< 1 means jz faster)
     let wins = 0, ties = 0, losses = 0, skipped = 0
     const worst = []
@@ -145,6 +148,7 @@ if (fails.length) {
   process.exit(1)
 }
 console.log('PASS: per-category geomean within floor + no blow-up (jz firm on float; int/mixed at the documented V8 wasm-tier floor).')
-// TODO(perf): add a jz-vs-jz throughput ratchet (compare against a committed
-// baseline of jz-wasm ns/op per category) — that's the machine-independent way to
-// catch a codegen regression on the int/mixed shapes where jz-vs-V8 is hardware noise.
+// The machine-independent companion to this timing gate is test/perf-ratchet.js:
+// it compiles the SAME shared corpus (scripts/perf-corpus.mjs) and ratchets the
+// loop-body op count per category — catching a codegen regression on the int/mixed
+// (and structural buf/nest) shapes where jz-vs-V8 wall-clock is hardware noise.
