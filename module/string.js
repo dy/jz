@@ -392,9 +392,12 @@ export default (ctx) => {
     (local $ta i32) (local $tb i32)
     (local $offA i32) (local $offB i32)
     (local $ssoA i32) (local $ssoB i32)
-    (local $axA i32) (local $axB i32)
-    (if (i64.eq (local.get $a) (local.get $b))
-      (then (return (i32.const 1))))
+    ;; Sole caller is __str_eq, which already returned for bit-equal pointers, both-SSO
+    ;; (bit-ne ⇒ content-ne), both-canonical-interned (bit-ne ⇒ content-ne) and both-plain-
+    ;; heap length mismatch. Re-testing them here is dead work on every cold call — skip to
+    ;; the byte walk. (__str_eq/__str_eq_cold are ~14% of self-host runtime; this trims the
+    ;; per-call fixed cost.) The heap/mixed paths below still decide every case correctly
+    ;; on their own, so this stays correct even if a future caller skips the prelude.
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $offA (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -405,22 +408,6 @@ export default (ctx) => {
     (local.set $ssoB (i32.and
       (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT})))
       (i32.const ${LAYOUT.SSO_BIT})))
-    ;; Both SSO with !bit-eq ⇒ content differs (high 32 bits hold tag+aux; both equal here).
-    (if (i32.and (local.get $ssoA) (local.get $ssoB))
-      (then (return (i32.const 0))))
-    ;; Both CANONICAL interned heap strings (STR_INTERN_BIT, SSO/SLICE clear):
-    ;; canonicals are deduped, so bit-ne ⇒ content-ne — the V8 pointer-compare
-    ;; equivalent. This is the dominant unequal case in tag-dispatch chains
-    ;; (op === 'literal' ladders over static literals).
-    (local.set $axA (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))))
-    (local.set $axB (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))))
-    (if (i32.and
-          (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                   (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
-          (i32.and
-            (i32.eq (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))
-            (i32.eq (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))))
-      (then (return (i32.const 0))))
     ;; Both heap STRING fast path: inline len from header. Chunk by 4 bytes via unaligned
     ;; i32.load (wasm guarantees unaligned-OK), then byte-tail. Most string comparisons fail
     ;; early on the first 4-byte word, so this collapses the per-byte branch overhead into a
