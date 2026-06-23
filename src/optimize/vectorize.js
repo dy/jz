@@ -836,6 +836,26 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   // pointers (map loops over distinct arrays). Soundness re-checked post-scan.
   const offsetTees = new Map()
 
+  // The compute/lane type is the WIDEST FLOAT among all loads+stores. A narrower
+  // float/int LOAD is then a widening read (INT_WIDEN_F32 / f32→f64), a narrower
+  // float/int STORE a narrowing write (demote / trunc+wrap) — both sub-width memory
+  // ops around the float lane. Pinning it up front (vs whichever op the recursive
+  // scan hits first) is what lets a narrowing map `i16[i] = f32arr[i]*k` keep the
+  // f32 compute lane instead of locking onto the i16 store. No float → integer lane
+  // (set by the scan below, unchanged).
+  const isNarrowStore = (lane, sty) => (lane === 'f32' && (sty === 'i16' || sty === 'i8'))
+    || (lane === 'f64' && (sty === 'f32' || sty === 'i32'))
+  let preFloat = null
+  const scanFloatWidth = (n) => {
+    if (!isArr(n)) return
+    const t = LOAD_OPS[n[0]] || STORE_OPS[n[0]]
+    if (t === 'f64') preFloat = 'f64'
+    else if (t === 'f32' && preFloat == null) preFloat = 'f32'
+    for (let i = 1; i < n.length; i++) scanFloatWidth(n[i])
+  }
+  for (const s of body) scanFloatWidth(s)
+  if (preFloat) { laneType = preFloat; stride = LANE_INFO[preFloat].stride }
+
   function scanForLoadsStores(node, parent, pi) {
     if (!isArr(node)) return true
     const op = node[0]
@@ -862,11 +882,15 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
     }
     if (STORE_OPS[op]) {
       const sty = STORE_OPS[op]
-      if (laneType != null && sty !== laneType) return false
+      // narrowing store: a narrower element under a wider float lane (`o[i]=narrow(f(x))`,
+      // codec encode / downsample). Validate the store address at the narrow element stride
+      // (the loop steps `lanes` of the float lane; the partial store writes that many).
+      const narrowing = laneType != null && sty !== laneType && isNarrowStore(laneType, sty)
+      if (laneType != null && sty !== laneType && !narrowing) return false
       if (laneType == null) { laneType = sty; stride = LANE_INFO[laneType].stride }
       const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
-      if ((1 << m.strideLog2) !== stride) return false
+      if ((1 << m.strideLog2) !== (narrowing ? LANE_INFO[sty].stride : stride)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'store' })
@@ -1868,14 +1892,26 @@ function liftStmt(stmt, ctx) {
   }
 
   if (STORE_OPS[op]) {
-    const simdStore = 'v128.store'
     const addr = stmt[1]  // we leave addresses as-is (scalar i32 expressions)
-    const val = liftExprV(stmt[2], ctx)
-    if (ctx.fail) return null
     // Handle memarg if present (last positional after addr/val): unlikely in
     // pre-watr IR for this shape; bail if more than 3 children.
     if (stmt.length !== 3) return liftFail(ctx, `${op} with memarg`)
-    return [simdStore, addr, val]
+    const sty = STORE_OPS[op]
+    // Narrowing store: a narrower element written from a wider float lane (`o[i] =
+    // narrow(f(x))` — codec encode / downsample). The scalar store value carries a
+    // conversion (f32.demote_f64, or the float→int ToInt32 idiom); peel it, lift the
+    // inner float expr, and let narrowStore apply the SIMD narrow + low-byte store.
+    if (sty !== ctx.laneType) {
+      const inner = peelNarrowConv(stmt[2], sty)
+      if (!inner) return liftFail(ctx, `narrowing store ${ctx.laneType}->${sty}: unrecognized conversion`)
+      const innerV = liftExprV(inner, ctx)
+      if (ctx.fail) return null
+      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx)
+      return ns || liftFail(ctx, `no narrowing ${ctx.laneType}->${sty}`)
+    }
+    const val = liftExprV(stmt[2], ctx)
+    if (ctx.fail) return null
+    return ['v128.store', addr, val]
   }
 
   // (block (result T) STMTS... TAIL_EXPR) followed by sibling "drop" — we get
@@ -2867,6 +2903,45 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
 // `storeOp` at scalar address `addr`. i32.store is the full vector; i32.store8
 // truncates (low byte of each lane) via i8x16.shuffle — exactly matching scalar
 // store8, with no value-range assumption (shuffle selects, never saturates).
+// Narrowing-map store: pack a wider float lane vector `val` down to a narrower
+// store element and write the low bytes (extract_lane 0 + scalar store, like
+// buildRampStore). f64→f32 demotes (bit-exact vs scalar); f64→i32 truncates;
+// f32→i16/i8 truncate to i32x4 then WRAP via i8x16.shuffle (low bytes = scalar
+// store{8,16}, never saturates). Returns the store stmt or null (unsupported).
+// Peel the scalar narrowing conversion off a store value, returning the inner float
+// expr to lift (narrowStore then applies the SIMD narrow). f32 store: f32.demote_f64(X).
+// int store: the ToInt32 idiom `i32.wrap_i64(X<0 ? trunc_sat_f64_s X : trunc_sat_f64_u X)`
+// (or a bare trunc_sat). The inner X is the f64/f32 lane value computed before the cast.
+function peelNarrowConv(val, sty) {
+  if (!isArr(val)) return null
+  if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null
+  // int element (i8/i16/i32): peel ToInt32.
+  if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'if') {
+    const iff = val[1], thenA = iff[3], elseA = iff[4]
+    const s = isArr(thenA) && isArr(thenA[1]) && thenA[1][0] === 'i64.trunc_sat_f64_s' ? thenA[1][1] : null
+    const u = isArr(elseA) && isArr(elseA[1]) && elseA[1][0] === 'i64.trunc_sat_f64_u' ? elseA[1][1] : null
+    if (s && u && exprEq(s, u)) return s
+  }
+  if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]
+  return null
+}
+
+function narrowStore(addr, val, laneType, sty, ctx) {
+  const tmp = `$__nv${ctx.freshIdRef.next++}`
+  ctx.extraLocals.push(['local', tmp, 'v128'])
+  const g = ['local.get', tmp]
+  const sh = (idx) => ['i8x16.shuffle', ...idx.map(String), g, g]
+  let pre, lane8, store
+  if (laneType === 'f64' && sty === 'f32') { pre = ['f32x4.demote_f64x2_zero', val]; lane8 = g; store = 'i64.store' }
+  else if (laneType === 'f64' && sty === 'i32') { pre = ['i32x4.trunc_sat_f64x2_s_zero', val]; lane8 = g; store = 'i64.store' }
+  else if (laneType === 'f32' && sty === 'i16') { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh([0, 1, 4, 5, 8, 9, 12, 13, 0, 0, 0, 0, 0, 0, 0, 0]); store = 'i64.store' }
+  else if (laneType === 'f32' && sty === 'i8')  { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh([0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); store = 'i32.store' }
+  else return null
+  // 8-byte stores extract an i64 lane; the 4-byte i8 pack extracts an i32 lane.
+  const packed = store === 'i64.store' ? ['i64x2.extract_lane', 0, lane8] : ['i32x4.extract_lane', 0, lane8]
+  return ['block', ['local.set', tmp, pre], [store, addr, packed]]
+}
+
 function buildRampStore(storeOp, addr, vval, ctx) {
   if (storeOp === 'i32.store') return ['v128.store', addr, vval]   // 4 i32 lanes → 16 bytes
   // i32.store8: hoist vval to a temp so the shuffle reads it once; low byte of

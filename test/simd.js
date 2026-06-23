@@ -95,9 +95,22 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
     'f32 sum (widening)':  `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i];return s}`,
     'u8 normalize':        `export let f=(n)=>{let a=new Uint8Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*0.5;return o}`,
     'i16 normalize':       `export let f=(n)=>{let a=new Int16Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*0.5;return o}`,
+    'f64→f32 narrow':      `export let f=(n,k)=>{let a=new Float64Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
+    'f32→i16 encode':      `export let f=(n)=>{let a=new Float32Array(n);let o=new Int16Array(n);for(let i=0;i<n;i++)o[i]=a[i]*32767;return o}`,
+    'f32→i8 narrow':       `export let f=(n)=>{let a=new Float32Array(n);let o=new Int8Array(n);for(let i=0;i<n;i++)o[i]=a[i]*127;return o}`,
     'f64 still vectorizes':`export let f=(n,k)=>{let a=new Float64Array(n);let o=new Float64Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
   }
   for (const [name, src] of Object.entries(cases)) ok(hasV128(wat(src, SPEED)), `${name} vectorizes`)
+})
+
+test('SIMD narrowing - encode/downsample bit-identical to scalar (incl. clipping)', () => {
+  // f32→i16 encode must WRAP exactly like scalar Int16Array store, even past ±1
+  // (the SIMD packs low bytes via shuffle, never saturates). Compare O3 SIMD to O2 scalar.
+  const enc = `export let f = (n) => { let a = new Float32Array(n); for (let i=0;i<n;i++) a[i] = Math.sin(i)*1.5; let o = new Int16Array(n); for (let i=0;i<n;i++) o[i] = a[i]*32767; let s=0; for (let i=0;i<n;i++) s += o[i]; return s }`
+  is(jz(enc, { optimize: 'speed' }).exports.f(64), jz(enc, { optimize: 2 }).exports.f(64))
+  // f64→f32 downsample is a plain demote — bit-exact at any level.
+  const ds = `export let f = (n) => { let a = new Float64Array(n); for (let i=0;i<n;i++) a[i] = i*0.1; let o = new Float32Array(n); for (let i=0;i<n;i++) o[i] = a[i]*0.5; let s=0; for (let i=0;i<n;i++) s += o[i]; return s }`
+  is(jz(ds, { optimize: 'speed' }).exports.f(40), jz(ds, { optimize: 2 }).exports.f(40))
 })
 
 // === SIMD Float32Array (f32x4 — 4 elements per vector) ===
