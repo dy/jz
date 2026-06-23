@@ -200,10 +200,17 @@ const emitNeg = (a) => {
   // flipped NaN reads as a tagged value (truthy / not-NaN). Fold any NaN result back
   // to canonical — the same invariant math.sqrt/min/max keep via `canon` (module/math.js).
   const t = temp('ng')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, ['f64.neg', toNumF64(a, v)]],
+  const raw = ['f64.neg', toNumF64(a, v)]
+  const ir = typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, raw],
     ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
       ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+  // Tag the un-canon'd `f64.neg` so a NaN-propagating consumer (f64.add/sub/mul/div, which
+  // canon-ize on their OWN escape) strips this redundant inner canon — same contract as the
+  // sqrt/min/max canons in math.js. A bare `x * -y` / `a - -b` then drops the per-neg
+  // select + f64.ne instead of carrying it into the multiply/add.
+  ir.canonOf = raw
+  return ir
 }
 
 /** Try constant-folding binary arith: returns emitNum(result) or null. */

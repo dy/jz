@@ -737,6 +737,18 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   for (const [a, c] of [[10, 3], [100, 7], [5, 0]]) is(exports.vardiv(a, c), ((a * 1.0 / c) | 0), `vardiv(${a},${c}) ≡ JS |0 (guard kept: ${c === 0 ? '∞→0' : 'finite'})`)
 })
 
+test('codegen: unary negation feeding arithmetic drops its redundant NaN-canon', () => {
+  // `-x` canon-izes (f64.neg flips a NaN's sign bit → non-canonical number-NaN). But when the
+  // negation feeds f64 arithmetic — `x * -y`, `a - -b` — the consumer propagates the NaN and
+  // re-canon-izes on its own escape, so the inner per-neg `select + f64.ne` is dead. Tagging the
+  // neg with canonOf lets the arithmetic strip it (same contract as the sqrt/min/max canons).
+  const wat = compile('export let f = (a, b) => a * (-b) + (-a) * b', { optimize: 'speed', wat: true })
+  is((wat.match(/f64\.const nan/g) || []).length, 0, 'inline negation in arithmetic carries no NaN-canon')
+  // Correctness across NaN/±0/finite: the value is identical with or without the canon here.
+  const { exports } = jz('export let f = (a, b) => a * (-b) + (-a) * b', { optimize: 'speed' })
+  for (const [a, b] of [[3, 4], [-2.5, 1.5], [0, 7]]) is(exports.f(a, b), a * (-b) + (-a) * b, `neg-arith f(${a},${b})`)
+})
+
 test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (no f64 round-trip)', () => {
   // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read +
   // add must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert
