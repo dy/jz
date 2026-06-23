@@ -230,12 +230,16 @@ const wasmRivalAvail = { 'c-wasm': natAvailable, 'rust-wasm': have('rustc'), 'go
 const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'as', 'porf'].filter(t => wasmRivalAvail[t])
 // Cases where a wasm rival is currently faster than jz — the gap to close (general techniques,
 // not per-bench tweaks; see AGENTS.md). Each notes who leads and why; delete on overtake.
+// Root causes below are MEASURED, not assumed — each was verified against the emitted WAT, and the
+// once-obvious fixes (param-distinctness for mat4, etc.) were ruled out by experiment. These are the
+// genuinely-hard tail; each needs a new vectorizer pass or has no jz-side fix. Don't re-chase the
+// disproven hypotheses.
 const WASM_TODO = {
-  noise:    'SLP-vectorize the 4 independent corner gradients (straight-line, not a loop) — rustc/clang do',
-  raytrace: 'autovectorize the 8-sphere intersection loop — clang→wasm does',
-  nqueens:  'recursion call-overhead; rivals keep the bitmask backtrack in registers',
-  mat4:     'param-distinctness: prove a,out are distinct buffers → hoist/CSE a[r*4+k] across the out[] store (rustc does)',
-  qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1×',
+  noise:    'needs SLP: the 4 independent Perlin corner gradients are isomorphic straight-line trees that should pack into f64x2 lanes (rustc/clang do). jz codegen is otherwise clean scalar — no f64/dispatch leak.',
+  raytrace: 'needs data-dependent loop autovectorization of the 8-sphere intersection loop (clang→wasm does).',
+  nqueens:  'NO jz codegen fix: solve() is already optimal i32 (clean tail recursion, 0 f64, tight bitmask loop). Gap is LLVM/rustc interprocedural recursion opts (tail-duplication/inlining) jz does not do.',
+  mat4:     'NOT aliasing (param-distinctness measured: zero effect) and NOT memory I/O (arrays are fully scalarized to register slots, loads hoisted to a prologue). Already FMA-vectorized; residual is ~48 f64x2.splat/iter re-broadcasting the scalar slots — the scalarize-then-revectorize tension. Needs vectors kept end-to-end.',
+  qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1× (within CI jitter band).',
 }
 const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
 
