@@ -684,10 +684,20 @@ export default function narrowSignatures(programFacts, ast) {
       const state = siteState(callSites[s])
       if (!state) continue
       const { func, argList } = state
+      const recursive = state.callee === state.callerFunc?.name
       for (let k = 0; k < func.sig.params.length; k++) {
         const r = ensureParamRep(paramReps, state.callee, k)
         if (k >= argList.length) { for (const rule of rules) rule.missing(r, k, state); continue }
-        for (const rule of rules) rule.apply(r, argList[k], k, state)
+        const arg = argList[k]
+        // Recursive identity arg — `f(…, p, …)` calling itself with its own param p threaded
+        // through at the same position — is a fixpoint identity: it carries whatever type p
+        // settles to, so it constrains nothing. Skip it, else exprType(p) reads p's not-yet-
+        // narrowed f64 and the meet poisons the type the non-recursive call sites would prove
+        // (nqueens' `solve(all, …)` — `all` stuck f64 while cols/d1/d2, passed as i32 bitwise
+        // exprs, narrowed fine).
+        const pname = func.sig.params[k].name
+        if (recursive && (arg === pname || (Array.isArray(arg) && arg[0] === 'local.get' && arg[1] === pname))) continue
+        for (const rule of rules) rule.apply(r, arg, k, state)
       }
     }
   }

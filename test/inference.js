@@ -1014,3 +1014,26 @@ test('param i32-narrowing: scalar param fed integer typed-array elements narrows
   const grad = noiseWat.match(/\(func \$grad\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$hash i32\)/.test(grad), 'grad hash param narrows to i32 (fed a local bound to an Int32 param element)')
 })
+
+// Recursive identity arg doesn't poison i32-narrowing. nqueens' `solve(all, cols, d1, d2)` is
+// recursive; `all` threads through unchanged (`solve(all, …)`) while the others recur as i32
+// bitwise exprs. The self-call's bare `all` arg must be treated as a fixpoint identity (no
+// constraint), else exprType reads `all`'s not-yet-narrowed f64 and the meet poisons the i32 the
+// non-recursive caller (`solve((1<<n)-1, …)`) proves — leaving `all` an f64 bitmask paying
+// convert/trunc per recursion.
+test('param i32-narrowing: recursive identity arg does not poison the i32 consensus', () => {
+  if (onWasi()) return
+  const wat = jz.compile(`
+    let solve = (all, cols, d1, d2) => {
+      if (cols === all) return 1
+      let cnt = 0, avail = all & ~(cols | d1 | d2)
+      while (avail !== 0) { let b = avail & (-avail); avail = avail - b; cnt = cnt + solve(all, cols|b, (d1|b)<<1, (d2|b)>>1) }
+      return cnt
+    }
+    let countN = (n) => solve((1<<n)-1, 0, 0, 0)
+    export let main = () => { let s = 0, i = 0; while (i < 6) { s = (s + countN(8 + (i&3))) | 0; i++ } return s }
+  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  const solve = wat.match(/\(func \$solve\b[\s\S]*?\n  \)/)[0]
+  ok(/\(param \$all i32\)/.test(solve), 'recursive identity param `all` narrows to i32')
+  ok(!/convert_i32_s|trunc_sat/.test(solve), 'no f64↔i32 round-trip in the recursive bitmask loop')
+})
