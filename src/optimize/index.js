@@ -1364,12 +1364,12 @@ export function cseScalarLoad(fn) {
 // the two passes cover deliberately different op sets.
 const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
 
-// Calls expensive enough that hoisting a loop-invariant occurrence out of the loop
-// pays for the extra local — the gate that arms csePureExprLoop. The whole class of
-// transcendental math helpers (each a multi-instruction polynomial approximation,
-// all pure → CSE is bit-exact): a loop-invariant `exp(k)`/`pow(x,2)` hoists the same
-// way trig does. CSE only fires on genuinely-redundant pure subexprs, so a loop with
-// no repeat is left byte-identical — gating on the class, not a benchmark shape.
+// Presence of one of these arms csePureExprLoop (it CSEs redundant pure f64/i32
+// arithmetic within the loop; the gate is just "is this loop expensive enough to
+// be worth the pass"). The whole class of transcendental helpers qualifies — each
+// is a multi-instruction polynomial approximation, so a loop built around exp/log/
+// pow deserves the same arithmetic-CSE a trig loop already got. Gating on the class,
+// not a benchmark shape; the CSE itself is bit-exact (pure-subexpr dedup only).
 const LOOP_CSE_EXPENSIVE = new Set([
   '$math.sin', '$math.cos', '$math.tan', '$math.sin_core', '$math.cos_core',
   '$math.exp', '$math.expm1', '$math.log', '$math.log2', '$math.log10', '$math.log1p',
