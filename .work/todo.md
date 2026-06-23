@@ -127,7 +127,7 @@ correctness risk for zero measured benefit:
 - [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
   wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
   builtin actually appearing in a kernel. Owner: module/math.js (+ siblings), test/math.js.
-- [ ] **Representation carriers** (design: docs/DESIGN.md) — jsstring internal-locals flow;
+- [ ] **Representation carriers** (design: .work/research.md) — jsstring internal-locals flow;
   boundary string cache (interop.js, by identity); schema-object field packing (i32/ptr, not
   f64-tag); typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32
   cell, not nanbox). Each blocked on a converging carrier fact + no current workload;
@@ -138,6 +138,36 @@ correctness risk for zero measured benefit:
   (watr-off only fires when optimize==null; vectorize is L2-default + opt-out-able). Size
   reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic ≈1.5–2× with
   `alloc:false`+`optimize:'size'`, NOT byte-parity.
+
+### Verifier-surfaced deopts (absence-of-overhead gates, not benches)
+The structural-invariant verifier (`test/wat-invariants.js`) sweeps the fuzzer's
+i32-disciplined sublanguage and flags any f64 / un-hoisted pointer op inside a loop —
+waste the net-output bench can't see. Two real gaps it surfaced, now ratcheted so they
+can't worsen and visibly shrink when fixed:
+- [ ] **Nested-conditional int narrowing** — a `?:` ≥2 levels deep over integer leaves,
+  under the vectorizer (array len ≥32), bails to a scalar `(if (result f64))` with
+  per-branch `f64.convert_i32_s` instead of `(if (result i32))`, round-tripping the
+  integer result through f64. Clean at N<32, deopts at N≥32. Minimal repro:
+  `const a=new Int32Array(32); for(i<32) a[i]=((3<a[i])?(2&a[i]):((7<a[i])?a[i]:1))|0`.
+  Fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar fallback).
+  Gate: `test/wat-invariants.js` typed-int ratchet (baseline 13/200) + perf-ratchet `cond`.
+- [ ] **Param typed-array base re-decode** — a typed array passed as a PARAM
+  (`(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`, JZ's flagship DSP shape) re-decodes its
+  NaN-box base offset every iteration (`__ptr_offset`/`__typed_idx` in-loop, 200/200),
+  where a module-GLOBAL array hoists cleanly (`hoistGlobalPtrOffset`). The base is
+  loop-invariant; the self-store makes LICM bail conservatively. Fix: extend the
+  invariant-pointer hoist to params whose only loop write is an element store (no base
+  reassign). Gate: perf-ratchet `buf` op count (baseline 3861 — drops when this lands).
+- [ ] **narrowLoopBound only handles `i < n`** — surfaced by the AS-canon bias audit
+  (`scripts/audit-assemblyscript.mjs`): factorial's `i <= n` and sieve's inner
+  `for(j=i*2; j<n; …)` keep a per-iteration `f64.le/lt(convert(i), n)` because the pass
+  matches only `<`/`>` with a const-init, const-step counter. `<=`/`>`/`>=` and
+  non-const counters (provably ≥0 but not by the current check) fall through.
+  NOT a trivial fix: `i <= n` narrows to `i <= floor(n)`, but `floor(NaN)→trunc_sat→0`
+  would make `i <= 0` wrongly true at i=0 for `n = NaN` (JS runs 0 iters) — and the
+  fuzzer uses CONSTANT bounds, so it wouldn't catch it. Needs a non-NaN bound proof (or
+  a NaN-preserving snap) before extending. First harden the fuzzer with param-bound
+  loops over NaN/Inf inputs, THEN narrow. Gate: the audit (run on demand).
 
 ## Future
 - [ ] Component interface (wit).
@@ -743,7 +773,7 @@ Supersedes the former Deferred › "Boolean ATOM tag" entry. Suite: 1813 → 182
 ### Representation carriers — foundation + done workstreams (2026-05-19/20)
 
 Per-site carrier inference. Design narrative (user surface, evidence ladder,
-what-ships-vs-what-drops, open policy questions) moved to `docs/DESIGN.md` ›
+what-ships-vs-what-drops, open policy questions) moved to `.work/research.md` ›
 "Representation -> per-site, inferred". Open carriers stay live under `#### Representation`.
 
 * [x] **Narrowing investigation (primary).** Survey (`.work/narrow-survey.mjs`,

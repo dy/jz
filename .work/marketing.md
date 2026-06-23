@@ -13,7 +13,7 @@ proof-credibility / discoverability) → synthesis → adversarial stress-test �
 
 **Canonical:** this doc is the project's single source of truth for audience & personas (§1).
 Sibling docs: [`ecosystem.md`](ecosystem.md) = expansion / integration / channel map;
-[`../docs/DESIGN.md`](../docs/DESIGN.md) = technical design record.
+[`../.work/research.md`](../.work/research.md) = technical design record.
 
 ---
 
