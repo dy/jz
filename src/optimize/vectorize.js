@@ -5171,7 +5171,13 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
       // recognizers (divergent-escape, ramp-map, blur, channel-reduce, per-pixel)
       // do their own matching on the raw node. Order is preserved exactly — it is
       // load-bearing (first match wins).
-      const bl = matchBlockLoop(node, { allowPreamble: true })
+      // allowInlinedLi: accept an inlined LICM preamble (`$__inl*___li*`) too — jz's
+      // LICM hoists ToInt32/casts of loop-invariant params just before the loop (e.g.
+      // `a[i] & m` with a runtime `m`), and after inlining the snap is renamed off the
+      // bare `$__li*` form. The preamble is pure & loop-invariant by construction
+      // (hasSideEffect-guarded) and cloned ahead of the SIMD block, so this only widens
+      // which loops the recognizers see, never changes a lifted result.
+      const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef)

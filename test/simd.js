@@ -91,6 +91,8 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
     'f32 RMS reduction':   `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i]*a[i];return s}`,
     'i32 bitwise & const': `export let f=(n)=>{let a=new Int32Array(n);let o=new Int32Array(n);for(let i=0;i<n;i++)o[i]=(a[i]&255)>>1;return o}`,
     'i32 add arrays':      `export let f=(n)=>{let a=new Int32Array(n);let b=new Int32Array(n);let o=new Int32Array(n);for(let i=0;i<n;i++)o[i]=a[i]+b[i];return o}`,
+    'i32 mask by param':   `export let f=(n,m)=>{let a=new Int32Array(n);let o=new Int32Array(n);for(let i=0;i<n;i++)o[i]=a[i]&m;return o}`,
+    'f32 scale by 1/param':`export let f=(n,k)=>{let a=new Float32Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*(1/k);return o}`,
     'f32 FIR stencil':     `export let f=(n,b0,b1)=>{let x=new Float32Array(n);let o=new Float32Array(n);for(let i=1;i<n;i++)o[i]=b0*x[i]+b1*x[i-1];return o}`,
     'f32 sum (widening)':  `export let f=(n)=>{let a=new Float32Array(n);let s=0;for(let i=0;i<n;i++)s+=a[i];return s}`,
     'u8 normalize':        `export let f=(n)=>{let a=new Uint8Array(n);let o=new Float32Array(n);for(let i=0;i<n;i++)o[i]=a[i]*0.5;return o}`,
