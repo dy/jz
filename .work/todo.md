@@ -284,7 +284,7 @@ Next — repo:
   tables are still an OLDER snapshot (mostly UNDERSTATE current jz). Best fixed by a generator
   (`scripts/bench-readme.mjs` reading results.json): `npm run bench` would DROP zig/go (not installed)
   and degrade results.json, so regenerate the doc FROM results.json, don't re-run the bench.
-- [ ] **GitHub social-preview image** (manual upload via repo Settings → every shared link unfurls with the pitch).
+- [x] **GitHub social-preview image** (manual upload via repo Settings → every shared link unfurls with the pitch).
 - [x] Stop hardcoding the speed multiple in static copy — meta fixed; in-page metric prefills are
   live-bound from results.json (self-correct), so left as-is.
 
