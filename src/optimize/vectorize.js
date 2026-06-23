@@ -2257,41 +2257,44 @@ function liftExprV(expr, ctx) {
   // it). Both the flattened `select` form and the un-flattened `block` form
   // lift to a per-lane v128.bitselect — canonical value in NaN lanes, X
   // elsewhere — exactly reproducing the scalar canonicalization lane-by-lane.
-  if (ctx.laneType === 'f64' || ctx.laneType === 'f32') {
-    if (op === 'select') {
+  if (op === 'select') {
+    // NaN-canonicalization idiom `(select C X (T.ne X X))` — FLOAT lanes only (an
+    // integer lane never carries it, since no i32 value is NaN).
+    if (ctx.laneType === 'f64' || ctx.laneType === 'f32') {
       const m = matchCanonSelect(expr, ctx.laneType)
       if (m) {
         const coreV = liftExprV(m.val, ctx)
         return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
       }
-      // General `select(X, Y, COND)` (wasm: X if COND else Y) — jz lowers a value
-      // ternary `COND ? X : Y` to this when both arms are cheap/pure. Lift to
-      // v128.bitselect(X, Y, mask) like the `if` form below. COND is a comparison
-      // (f64.* in an f32 lane → f32x4). Both arms are lane-pure (recursion forbids
-      // stores/sets) and trap-free, so evaluating both then selecting is sound.
-      if (expr.length === 4) {
-        const cond = expr[3]
-        const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-        const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
-        if (!cmpSimd) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
-        const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
-        const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
-        const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
-        const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
-        const mtmp = `$__mask${ctx.freshIdRef.next++}`
-        ctx.extraLocals.push(['local', mtmp, 'v128'])
-        return ['block', ['result', 'v128'],
-          ['local.set', mtmp, [cmpSimd, ca, cb]],
-          ['v128.bitselect', x, y, ['local.get', mtmp]]]
-      }
-      return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
     }
-    if (op === 'block') {
-      const m = matchCanonBlock(expr, ctx.laneType)
-      if (!m) return liftFail(ctx, 'non-canonical value-block')
-      const coreV = liftExprV(m.core, ctx)
-      return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+    // General `select(X, Y, COND)` (wasm: X if COND else Y) — jz lowers a value
+    // ternary `COND ? X : Y` to this when both arms are cheap/pure. Lift to
+    // v128.bitselect(X, Y, mask) like the `if` form below — valid for EVERY lane type
+    // (i32 included: COND maps via LANE_COMPARE[laneType], NaN is irrelevant). Both
+    // arms are lane-pure (recursion forbids stores/sets) and trap-free, so evaluating
+    // both then selecting is sound. f32 lane promotes operands → f64.* compare → f32x4.
+    if (expr.length === 4) {
+      const cond = expr[3]
+      const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
+      const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+      if (!cmpSimd) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
+      const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
+      const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
+      const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
+      const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+      const mtmp = `$__mask${ctx.freshIdRef.next++}`
+      ctx.extraLocals.push(['local', mtmp, 'v128'])
+      return ['block', ['result', 'v128'],
+        ['local.set', mtmp, [cmpSimd, ca, cb]],
+        ['v128.bitselect', x, y, ['local.get', mtmp]]]
     }
+    return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
+  }
+  if ((ctx.laneType === 'f64' || ctx.laneType === 'f32') && op === 'block') {
+    const m = matchCanonBlock(expr, ctx.laneType)
+    if (!m) return liftFail(ctx, 'non-canonical value-block')
+    const coreV = liftExprV(m.core, ctx)
+    return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
   }
 
   // Conditional select — jz lowers `cond ? X : Y` to (if (result LT) COND (then X)
