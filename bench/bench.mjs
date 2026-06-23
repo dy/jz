@@ -46,6 +46,10 @@ const CASE_NAMES = {
   lz: 'LZSS compress + inflate',
   base64: 'Base64 encode + decode',
   wav: 'WAV PCM-16 encode',
+  raytrace: 'sphere ray tracer (closest-hit + Lambert)',
+  noise: 'Perlin fBm noise field',
+  radixsort: 'LSD radix sort (u32 keys)',
+  levenshtein: 'Levenshtein edit-distance DP',
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-host)',
@@ -649,7 +653,7 @@ for (const cid of selectedCases) {
   // FMADDD — no flag to disable it — so its recurrence/butterfly rounding differs
   // by the last ulp; still IEEE-correct, same algorithm). One alternate checksum
   // per case, measured on arm64.
-  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448, nbody: 587496398, lorenz: 1903597547 }
+  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448, nbody: 587496398, lorenz: 1903597547, raytrace: 2776628753 }
   const fmaCs = fmaChecksums[c.id]
 
   const csCounts = {}

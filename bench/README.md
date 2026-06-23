@@ -61,6 +61,10 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`lz`](lz/lz.js) | LZSS compress + inflate round-trip; greedy sliding-window longest-match search — the match finder that dominates every LZ-family codec |
 | [`base64`](base64/base64.js) | Base64 encode + decode round-trip; table-driven 3→4 byte packing, the canonical codec / serialization kernel |
 | [`wav`](wav/wav.js) | PCM-16 WAV encoder; per-sample clamp + int16 quantization behind a RIFF/WAVE header, the audio serialization kernel |
+| [`raytrace`](raytrace/raytrace.js) | minimal sphere ray tracer — primary ray + closest-hit + Lambert/ambient shading to an f64 framebuffer; the canonical 3-D render kernel, a branchy loop-carried scalar `sqrt` pipeline no target vectorizes |
+| [`noise`](noise/noise.js) | 2-D Perlin gradient noise summed over 5 fBm octaves; the canonical procedural-generation kernel — integer permutation-table hashing interleaved with f64 smoothstep interpolation |
+| [`radixsort`](radixsort/radixsort.js) | LSD radix sort (4 × 8-bit counting passes) over u32 keys; histogram → prefix-sum → scatter with buffer ping-pong, the gather/scatter integer-sort counterpart to compare-swap `sort` |
+| [`levenshtein`](levenshtein/levenshtein.js) | Levenshtein edit-distance rolling-row dynamic program; the canonical sequence-alignment / fuzzy-match kernel — a branch- and min-reduction-heavy DP with a diagonal data dependency no target vectorizes |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
@@ -333,6 +337,33 @@ codegen with no NaN-box overhead wins outright. The two stateless integer kernel
 embarrassingly-parallel loop JZ emits as scalar — native is the floor there, but
 JZ still beats the JS field by 3.7–9.4× there. (Numbers: darwin/arm64, Apple M4 Max; the live snapshot
 is [results.json](results.json).)
+
+### General-codegen kernels — 3-D render, procedural, sort, sequence DP
+
+Four kernels added to probe JZ's **general** scalar/branch/gather-scatter codegen,
+beyond the SIMD-friendly reductions and stencils above — the cases a graphics,
+procedural, data, or text workload actually hits. All bit-identical across targets
+(`raytrace`/`noise` are transcendental-free f64, so Go's arm64 auto-FMA is the
+documented `fma` class; `radixsort`/`levenshtein` are pure integer, exact
+everywhere).
+
+| case | JZ | vs V8 | vs AS | vs fastest native | JZ wasm |
+| --- | ---: | ---: | ---: | --- | ---: |
+| **radixsort** — LSD u32 sort | **2.75 ms** | **1.21×** | **1.19×** | trails (clang 1.5×) | 1.6 kB |
+| **noise** — Perlin fBm (5 oct) | **6.59 ms** | **1.36×** | 0.23× | trails (Rust 5.2×) | 8.0 kB |
+| **raytrace** — sphere render | **2.00 ms** | **1.07×** | 0.89× | trails (Rust 1.9×) | 4.8 kB |
+| **levenshtein** — edit-distance DP | 5.52 ms | 0.90× | 0.35× | trails (clang 3.4×) | 7.5 kB |
+
+These are the honest mixed bag — and the point. JZ beats raw V8 on three of four
+(and the smallest wasm of the whole field on `radixsort`, 1.6 kB), but it only
+beats AssemblyScript on `radixsort`; it **trails AS** on `noise` (~4.3×) and
+`levenshtein` (~2.9×), and **loses to V8 itself** on `levenshtein` (0.90×). The
+two AS gaps localize the next codegen work: `noise`'s nested permutation-table
+indirection (`perm[perm[X]+Y]`) and `levenshtein`'s branchy `min`-reduction DP
+over a rolling typed-array row are exactly the scalar/gather shapes JZ does not yet
+lower as tightly as AS's `asc -O3`. They sit out the curated regression gate
+(`test/bench.js`) — like `heat`/`matmul`/`nbody`/`particle`/`lorenz` — until JZ
+closes the gap and they ratchet in as wins.
 
 ### watr — WAT-to-wasm compiler on small corpus
 
