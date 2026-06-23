@@ -182,6 +182,55 @@ const narrowI32 = (x, isRoot) => {
   return null
 }
 
+// Conservative VALUE-RANGE for a pure f64 expression tree: returns { lo, hi } bounding
+// every value the node can take, or null when unknown. SOUND by construction — each rule
+// over-approximates using the SAME f64 ops the runtime uses (f64 +/−/× are monotone in
+// each argument, so combining endpoint-bounds with plain JS doubles yields bounds that
+// contain the true value). A null/non-finite endpoint anywhere collapses to null, so a
+// non-null result also PROVES the value is finite (never NaN, never ±∞). Used by toI32 to
+// drop the +∞-guard `select` (and the i64 round-trip when the value fits i32) — the guard
+// exists only to remap +∞→0, so a proof of finiteness retires it.
+const fin = (lo, hi) => (Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi) ? { lo, hi } : null
+// Range of the i32 that feeds an `f64.convert_i32_*`, refined by a narrowing load width.
+const convRange = (child, signed) => {
+  if (Array.isArray(child)) {
+    const o = child[0]
+    if (o === 'i32.load8_u') return { lo: 0, hi: 255 }
+    if (o === 'i32.load8_s') return { lo: -128, hi: 127 }
+    if (o === 'i32.load16_u') return { lo: 0, hi: 65535 }
+    if (o === 'i32.load16_s') return { lo: -32768, hi: 32767 }
+    if (o === 'i32.const' && typeof child[1] === 'number') return signed ? { lo: child[1] | 0, hi: child[1] | 0 } : { lo: child[1] >>> 0, hi: child[1] >>> 0 }
+  }
+  return signed ? { lo: I32_MIN, hi: I32_MAX } : { lo: 0, hi: 4294967295 }
+}
+export const f64Range = (n) => {
+  if (!Array.isArray(n)) return null
+  const op = n[0]
+  if (op === 'f64.const') return typeof n[1] === 'number' ? fin(n[1], n[1]) : null   // `nan:…`/Inf literal strings → null
+  if (op === 'f64.convert_i32_s') return convRange(n[1], true)
+  if (op === 'f64.convert_i32_u') return convRange(n[1], false)
+  if (op === 'f64.neg') { const a = f64Range(n[1]); return a && fin(-a.hi, -a.lo) }
+  if (op === 'f64.abs') { const a = f64Range(n[1]); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
+  if (op === 'f64.sqrt') { const a = f64Range(n[1]); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
+  if (op === 'f64.add') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
+  if (op === 'f64.sub') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
+  if (op === 'f64.mul') {
+    const a = f64Range(n[1]), b = f64Range(n[2]); if (!a || !b) return null
+    const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
+    return fin(Math.min(...p), Math.max(...p))
+  }
+  if (op === 'f64.div') {
+    const c = Array.isArray(n[2]) && n[2][0] === 'f64.const' && typeof n[2][1] === 'number' ? n[2][1] : null
+    if (c == null || c === 0) return null               // variable / zero divisor → may be ±∞
+    const a = f64Range(n[1]); if (!a) return null
+    const p = [a.lo / c, a.hi / c]
+    return fin(Math.min(...p), Math.max(...p))
+  }
+  if (op === 'f64.min') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
+  if (op === 'f64.max') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
+  return null
+}
+
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
  *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
@@ -204,6 +253,20 @@ export const toI32 = n => {
   // computes in i32 (mod-2^32 ring) — no trunc/guard at all.
   const nw = narrowI32(n, true)
   if (nw) return nw.node
+  // Value-range narrowing: a NON-integer f64 tree (e.g. `10 + 200·(u8[i]/255)`) the ring
+  // path rejects, but whose value is PROVABLY FINITE — so the +∞-guard `select` is dead.
+  // When the value also provably fits i32, a single `i32.trunc_sat_f64_s` IS exact ToInt32
+  // (no saturation can fire in-range, no NaN, no ±∞) — dropping the i64 round-trip AND the
+  // guard. Pervasive in pixel/colour packing: `(base + scale·v)|0`.
+  const rng = f64Range(n)
+  if (rng) {
+    if (rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
+    // Finite and within (−2^63, 2^63): keep the mod-2^32 wrap, drop the (now-dead) +∞ guard.
+    // i64.trunc_sat does not saturate in this window, so wrap_i64 == ToInt32. Beyond ±2^63 we
+    // fall through to the guarded path (which already saturates there — the documented boundary).
+    if (rng.lo >= -9223372036854775808 && rng.hi < 9223372036854775808)
+      return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
+  }
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   const isLeaf = Array.isArray(n) && n.length <= 2 &&
     (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')

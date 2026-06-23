@@ -706,6 +706,37 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
   is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the nest')
 })
 
+test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard select', () => {
+  // `(expr)|0` (ToInt32) normally lowers to `select(i32.wrap(i64.trunc_sat_f64_s X), 0, X≠∞)` —
+  // the select exists ONLY to remap +∞→0 (trunc_sat+wrap gives −1 there). When value-range
+  // analysis PROVES X finite & within i32 (here a u8 load /255 scaled into [10,210]), the guard
+  // is dead and the i64 round-trip unnecessary: a single `i32.trunc_sat_f64_s` IS exact ToInt32.
+  // Pervasive in colour-packing / coordinate truncation. (Range analysis is structural — it sees an
+  // INLINED finite expression; a value CSE'd into an f64 local stays guarded, by design.) Pin both:
+  // the guard is gone AND the result still equals JS ToInt32 across in-range, wrap-boundary, ±∞.
+  // `set` owns the byte STORE (its own param→u8 coercion); `pack`/`wide` read the byte via a load,
+  // so their function bodies contain ONLY the |0 truncation under test — no confounding coercion.
+  const src = `let n=4; let u8=new Uint8Array(n);
+    export let set = (i,b) => { u8[i]=b }
+    export let pack = (i) => (10.0+200.0*(u8[i]/255.0))|0
+    export let wide = (i) => (u8[i]*10000000.0)|0
+    export let vardiv = (a,c) => (a*1.0/c)|0`
+  const wat = compile(src, { optimize: 'speed', wat: true })
+  const pack = wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0]
+  ok(/i32\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/i64\.trunc_sat/.test(pack),
+    'in-range |0 is a bare i32.trunc_sat_f64_s — no +∞-guard select, no i64 round-trip')
+  const wide = wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0]
+  ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
+  const { exports } = jz(src, { optimize: 'speed' })
+  const u = (i, b) => { exports.set(i, b); return i }
+  // First branch — proven in-range [10,210]: bare trunc, exact ToInt32.
+  for (const b of [0, 1, 127, 200, 255]) is(exports.pack(u(0, b)), (10.0 + 200.0 * (b / 255.0)) | 0, `pack(${b}) ≡ JS |0`)
+  // Second branch — proven finite but [0, 2.55e9] exceeds i32: 255·1e7 wraps negative; must match JS.
+  for (const b of [0, 100, 215, 255]) is(exports.wide(u(1, b)), (b * 10000000.0) | 0, `wide(${b}) ≡ JS |0 (wrap)`)
+  // Variable divisor ⇒ value may be ±∞ (a/0); range unknown ⇒ the guard MUST stay (∞→0, not −1).
+  for (const [a, c] of [[10, 3], [100, 7], [5, 0]]) is(exports.vardiv(a, c), ((a * 1.0 / c) | 0), `vardiv(${a},${c}) ≡ JS |0 (guard kept: ${c === 0 ? '∞→0' : 'finite'})`)
+})
+
 test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (no f64 round-trip)', () => {
   // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read +
   // add must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert
