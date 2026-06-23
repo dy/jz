@@ -105,11 +105,13 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
 // adjacent pixels strip-mine to f64x2 lanes: x/λ recurrences per-lane, seq/counters scalar, the
 // rate-select a v128-typed branch, the log via $math.log_v, the conditional accumulate a bitselect.
 // BIT-EXACT — per-lane IEEE arithmetic + the log_v mirror reorder nothing. (Flips a 1.4× warm-V8
-// LOSS into a ~1.6× win — the inner reduction is latency-bound, unlike a cheap pixel map.)
+// LOSS into a ~1.6× win — the inner reduction is latency-bound, unlike a cheap pixel map.) Isolated
+// via the experimentalOuterStrip toggle (the iterated-reduce gate).
 test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
+    const base = (jz.compile(src, { ...OPT, experimentalOuterStrip: false, wat: true }).match(/f64x2\./g) || []).length;
     const wat = jz.compile(src, { ...OPT, wat: true });
-    ok(/f64x2\./.test(wat) && /\$math\.log_v/.test(wat), `lyapunov vectorizes with log_v (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
+    ok((wat.match(/f64x2\./g) || []).length > base && /\$math\.log_v/.test(wat), `lyapunov iterated-reduce adds f64x2 + log_v (${base} → ${(wat.match(/f64x2\./g) || []).length})`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(96, 64);
@@ -119,6 +121,7 @@ test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalOuterStrip: false });
     is(simd.length, scal.length);
+    ok(simd.filter(v => v & 0xffffff).length > 50, `lyapunov renders a real field (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lyapunov iterated-reduce bit-exact vs scalar (6144 px, 10 frames)');
 });
 
