@@ -4562,6 +4562,140 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- Integer convolution column-strip-mine (tryConvColumn, experimental) ---------------------
+//
+// The int8 quantized convolution / dense-MAC kernel (conv2d): an OUTER output-pixel loop (ox)
+// whose body — after the inner receptive-field loops fully unroll at speed — is a straight-line
+// f64 reduction  acc = bias + Σ inp[…+ox]·wt[…]  over int8 taps, then requantize (acc>>SHIFT),
+// ReLU-clamp, and store one uint8. jz accumulates in f64, but every product is int8×int8 (≤ 16129)
+// and the sum fits i32, so the f64 carries an EXACT integer. That lets us strip-mine the column
+// loop 8-wide as pure integer SIMD: 8 adjacent outputs (ox..ox+7) in lanes. Per tap, the per-pixel
+// input gather inp[base+ox] is 8 CONTIGUOUS bytes — `v128.load64_zero` + `i16x8.extend_low_i8x16`
+// — and the (pixel-invariant) weight broadcasts via `i16x8.splat`; `i16x8.mul` forms 8 products
+// (each fits i16), widened (`i32x4.extend_low/high_i16x8_s`) into two i32x4 accumulators so 36 taps
+// never overflow. Requant + clamp + store run scalar per lane; the kept scalar loop is the <8 tail.
+//
+// BIT-EXACT: integer arithmetic reorders nothing — each lane's i32 sum equals the scalar f64's exact
+// integer, and ToInt32(acc)>>SHIFT == lane>>SHIFT. Gated behind cfg.experimentalOuterStrip. ~5×
+// over the scalar reduction (the serial f64 add-chain is latency-bound; 8 columns hide it).
+function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled) {
+  if (!enabled) return null
+  const outer = matchOuterPixelLoop(blockNode)
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+  if (pivType.get(pxVar) !== 'i32') return null                 // strip-mine an integer column
+  for (const s of obody) if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return null  // body must be unrolled (no inner loop)
+  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
+  if (obody.some(impureCall)) return null
+  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+
+  // Locals whose value depends on the column IV (transitively) — these address the per-pixel gather.
+  const oxDep = new Set([pxVar])
+  const allSets = []
+  const collectSets = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allSets.push([n[1], n[2]]); for (const c of n.slice(1)) collectSets(c) }
+  obody.forEach(collectSets)
+  for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsName(rhs, d))) { oxDep.add(name); changed = true } }
+  const isGatherAddr = (addr) => [...oxDep].some(d => readsName(addr, d))
+
+  // A byte tap operand: convert_i32_{s,u}(i32.load8_{s,u}(addr)). Returns { load, addr, signed }.
+  const matchByteLoad = (n) => {
+    if (!isArr(n) || (n[0] !== 'f64.convert_i32_s' && n[0] !== 'f64.convert_i32_u') || !isArr(n[1])) return null
+    const ld = n[1]
+    if (ld[0] !== 'i32.load8_s' && ld[0] !== 'i32.load8_u') return null
+    const addr = (typeof ld[1] === 'string' && ld[1].startsWith('offset=')) ? ld[2] : ld[1]
+    return { load: ld, addr, signed: ld[0] === 'i32.load8_s' }
+  }
+  const load64 = (ld) => (typeof ld[1] === 'string' && ld[1].startsWith('offset=')) ? ['v128.load64_zero', ld[1], ld[2]] : ['v128.load64_zero', ld[1]]
+  // Lift a single product addend `inp·wt` (exactly one side gathers on ox) to an i16x8 of 8 products.
+  const liftProduct = (prod) => {
+    if (!isArr(prod) || prod[0] !== 'f64.mul') return null
+    const a = matchByteLoad(prod[1]), b = matchByteLoad(prod[2])
+    if (!a || !b) return null
+    const ag = isGatherAddr(a.addr), bg = isGatherAddr(b.addr)
+    const g = ag && !bg ? a : bg && !ag ? b : null            // exactly one per-pixel gather
+    if (!g) return null
+    const inv = g === a ? b : a
+    const gI16 = [g.signed ? 'i16x8.extend_low_i8x16_s' : 'i16x8.extend_low_i8x16_u', load64(g.load)]
+    return ['i16x8.mul', gI16, ['i16x8.splat', inv.load]]      // splat the invariant weight (fits i16)
+  }
+
+  // THE accumulator: an f64 local written as `acc = acc + product` (either operand order). Its FIRST
+  // write is the init — a plain invariant `acc = bias`, or (bias folded into the first tap by the
+  // reassociator) `acc = bias + product`.
+  const macAddend = (rhs, name) => (isArr(rhs) && rhs[0] === 'f64.add') ? (isLocalGet(rhs[1], name) ? rhs[2] : isLocalGet(rhs[2], name) ? rhs[1] : null) : null
+  let accName = null
+  for (const [name, rhs] of allSets) if (fnLocals.get(name) === 'f64' && macAddend(rhs, name) != null) { if (accName && accName !== name) return null; accName = name }
+  if (!accName) return null
+  const accIdx = []
+  for (let i = 0; i < obody.length; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && s[1] === accName && s.length === 3) accIdx.push(i) }
+  if (accIdx.length < 4) return null
+  const initIdx = accIdx[0], initRhs = obody[initIdx][2]
+  if (readsName(initRhs, accName)) return null                   // first write must not read acc
+
+  const id = freshIdRef.next++
+  const nm = (s) => `$__cv${id}_${s}`
+  const loV = nm('lo'), hiV = nm('hi'), pV = nm('p')
+  const splatI32 = (e) => ['i32x4.splat', (isArr(e) && (e[0] === 'f64.convert_i32_s' || e[0] === 'f64.convert_i32_u')) ? e[1] : ['i32.trunc_sat_f64_s', e]]
+  const accStmts = (prod) => [
+    ['local.set', pV, prod],
+    ['local.set', loV, ['i32x4.add', ['local.get', loV], ['i32x4.extend_low_i16x8_s', ['local.get', pV]]]],
+    ['local.set', hiV, ['i32x4.add', ['local.get', hiV], ['i32x4.extend_high_i16x8_s', ['local.get', pV]]]],
+  ]
+  // Init → lo/hi seeded to the invariant bias, plus the folded first tap (if the bias was fused in).
+  const initStmts = () => {
+    if (isArr(initRhs) && initRhs[0] === 'f64.add') {
+      const pA = liftProduct(initRhs[1]), pB = liftProduct(initRhs[2])
+      const bias = pA && !pB ? initRhs[2] : pB && !pA ? initRhs[1] : null
+      const prod = pA && !pB ? pA : pB && !pA ? pB : null
+      if (!prod || isGatherAddr(bias)) return null
+      return [['local.set', loV, splatI32(bias)], ['local.set', hiV, splatI32(bias)], ...accStmts(prod)]
+    }
+    if (isGatherAddr(initRhs)) return null                       // plain seed must be loop-invariant
+    return [['local.set', loV, splatI32(initRhs)], ['local.set', hiV, splatI32(initRhs)]]
+  }
+
+  // Build the SIMD body: keep scalar address setup; init→lo/hi seed; each MAC→i16x8 product → lo/hi.
+  const lastMac = accIdx[accIdx.length - 1]
+  const laneCompute = []
+  for (let i = 0; i <= lastMac; i++) {
+    const s = obody[i]
+    if (i === initIdx) { const init = initStmts(); if (!init) return null; laneCompute.push(...init); continue }
+    if (isArr(s) && s[0] === 'local.set' && s[1] === accName) {
+      const addend = macAddend(s[2], accName)
+      if (addend == null) return null                            // an acc write that isn't acc+product
+      const prod = liftProduct(addend); if (!prod) return null
+      laneCompute.push(...accStmts(prod)); continue
+    }
+    if (readsName(s, accName)) return null                       // scalar setup must not touch acc
+    laneCompute.push(s)
+  }
+
+  // Epilogue (requant + clamp + store) runs scalar per lane: acc ← the lane's i32 column sum.
+  const epilogue = obody.slice(lastMac + 1)
+  let hasStore = false
+  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
+  epilogue.forEach(findStore)
+  if (!hasStore) return null
+  const bump = (n, k) => k === 0 ? n
+    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
+    : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const epiLane = (k) => [
+    ['local.set', accName, ['f64.convert_i32_s', ['i32x4.extract_lane', k & 3, ['local.get', k < 4 ? loV : hiV]]]],
+    ...epilogue.map(s => bump(s, k)),
+  ]
+
+  const newLocalDecls = [['local', loV, 'v128'], ['local', hiV, 'v128'], ['local', pV, 'v128']]
+  const sOut = nm('ob'), sOl = nm('ol')
+  // Guard requires 8 columns available (ox+7 < width); the kept scalar loop finishes the <8 tail.
+  const simdOuter = ['block', sOut, ['loop', sOl,
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 7), widthBound]]],
+    ...laneCompute, ...epiLane(0), ...epiLane(1), ...epiLane(2), ...epiLane(3), ...epiLane(4), ...epiLane(5), ...epiLane(6), ...epiLane(7),
+    ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 8]]]),
+    ['br', sOl]]]
+  const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
 //
 // Vectorizes the log-tonemap TAIL shared by fern / bifurcation / attractors:
@@ -4976,6 +5110,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip)
         ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip)
+        ?? tryConvColumn(node, fnLocals, freshIdRef, outerStrip)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most

@@ -2405,3 +2405,38 @@ test('SIMD inline - small v128 helpers fold into every caller at speed, bit-exac
   is((wat(INLINE_SRC, { optimize: 2 }).match(/call \$(len|sdf)/g) || []).length, 3, 'level 2 keeps the 3 multi-caller sdf calls')
   is((wat(INLINE_SRC, { optimize: 'speed' }).match(/call \$(len|sdf)/g) || []).length, 0, 'speed inlines the whole SIMD helper chain → 0 calls')
 })
+
+// Integer convolution column-strip-mine (tryConvColumn): the int8 conv2d / dense-MAC kernel. After
+// the K×K receptive-field loops unroll at speed, the output-column loop is a straight-line f64
+// reduction `acc = bias + Σ inp[…+ox]·wt[…]` over int8 taps → requantize (>>SHIFT), ReLU-clamp,
+// store uint8. Every product is int8×int8 so the f64 acc is an EXACT integer; the column loop
+// strip-mines 8-wide as pure integer SIMD — `v128.load64_zero`+`i16x8.extend` gather, `i16x8.splat`
+// weight, `i16x8.mul`, widened into two i32x4 accumulators; requant+store scalar per lane; the kept
+// scalar loop is the <8 tail. BIT-EXACT (integer reorders nothing). OW=13 exercises the 8-lane body
+// AND the 5-wide scalar tail. (~2.8× on bench/conv2d — jz overtakes clang→wasm, second only to native.)
+const CONV_SRC = `
+  const CIN=3, COUT=2, H=9, W=13, K=3, OH=7, OW=11, SHIFT=6
+  let inp=new Int8Array(CIN*H*W), wt=new Int8Array(COUT*CIN*K*K), bias=new Int32Array(COUT), out=new Uint8Array(COUT*OH*OW)
+  export let fill=()=>{ let x=0x1234abcd|0,i=0
+    while(i<inp.length){x=(Math.imul(x,1103515245)+12345)|0; inp[i]=x>>24; i++}
+    i=0; while(i<wt.length){x=(Math.imul(x,1103515245)+12345)|0; wt[i]=x>>24; i++}
+    i=0; while(i<bias.length){x=(Math.imul(x,1103515245)+12345)|0; bias[i]=(x>>20)&255; i++} }
+  export let conv=()=>{
+    for(let oc=0;oc<COUT;oc++){ const b=bias[oc]; const ocBase=oc*OH*OW
+      for(let oy=0;oy<OH;oy++){ for(let ox=0;ox<OW;ox++){ let acc=b
+        for(let ic=0;ic<CIN;ic++){ const inCh=ic*H*W; const wCh=((oc*CIN)+ic)*K*K
+          for(let ky=0;ky<K;ky++){ const irow=inCh+(oy+ky)*W+ox; const wrow=wCh+ky*K
+            for(let kx=0;kx<K;kx++){ acc += inp[irow+kx]*wt[wrow+kx] } } }
+        let q=acc>>SHIFT; if(q<0)q=0; if(q>127)q=127; out[ocBase+oy*OW+ox]=q } } } }
+  export let cs=()=>{ let h=0x811c9dc5|0; for(let i=0;i<out.length;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }`
+const CV_ON = { optimize: 'speed' }, CV_NO = { optimize: { level: 'speed', experimentalOuterStrip: false } }
+
+test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact + vectorized', () => {
+  const on = runVec(CONV_SRC, CV_ON), no = runVec(CONV_SRC, CV_NO)
+  on.fill(); no.fill(); on.conv(); no.conv()
+  is(on.cs() >>> 0, no.cs() >>> 0, 'int8 conv2d column strip-mine bit-exact vs scalar (8-wide body + scalar tail)')
+  if (onKernel()) return  // op-shape is a host-codegen assertion; bit-exactness above is the portable gate
+  const w = wat(CONV_SRC, CV_ON)
+  ok(/i16x8\.mul/.test(w) && /v128\.load64_zero/.test(w), `conv2d column loop vectorizes (${(w.match(/i16x8\.mul/g) || []).length} i16x8.mul, ${(w.match(/v128\.load64_zero/g) || []).length} gathers)`)
+  ok(!/i16x8\.mul/.test(wat(CONV_SRC, CV_NO)), 'experimentalOuterStrip:false leaves it scalar (isolates the pass)')
+})
