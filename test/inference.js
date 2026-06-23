@@ -982,3 +982,35 @@ test('i32-offset: a fractional-derived index truncates at access, not earlier', 
   `)
   is(ex.f(), 42, 'j = 3.0 truncates at the access → reads a[3]')
 })
+
+// Param i32-narrowing from integer typed-array element args. A helper whose scalar param is
+// fed ONLY integer typed-array elements — directly `probe(keys, src[i])` and via a local
+// `aa = perm[i]; grad(aa,…)` — is an i32 value (the element is a 32-bit int in i32 range), so
+// the param narrows to i32 and its probe/hash loop stays native i32: no f64 compare, no
+// convert/trunc round-trip. Two fixes feed this: the wasm-consensus sees an int-typed-array
+// element ARG as i32 (caller typedCtor overlay), and the narrow-phase callerLocals type a LOCAL
+// bound to a typed-pointer-param element as i32 (mirrors emit's typedElem seeding). Drives the
+// dict / noise / levenshtein gains.
+test('param i32-narrowing: scalar param fed integer typed-array elements narrows to i32', () => {
+  if (onWasi()) return  // wasi run-reserved locals rename; types are the portable assertion
+  // dict-shaped: key `k` from src[i] (direct arg), threaded through Math.imul + === keys[h].
+  const dictWat = jz.compile(`
+    let hash = (k) => (Math.imul(k, 0x9e3779b1) >>> 0) & 1023
+    let probe = (keys, k) => { let h = hash(k); while (keys[h] !== k && keys[h] !== -1) h = (h+1)&1023; return h }
+    let run = (keys, src, n) => { let s = 0, i = 0; while (i < n) { s = (s + probe(keys, src[i]) + probe(keys, src[i]+1)) | 0; i++ } return s }
+    export let main = () => { let keys = new Int32Array(1024), src = new Int32Array(512); return run(keys, src, 512) }
+  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  const probe = dictWat.match(/\(func \$probe\b[\s\S]*?\n  \)/)[0]
+  ok(/\(param \$k i32\)/.test(probe), 'probe key param narrows to i32 (fed int typed-array elements)')
+  ok(!/f64\.eq|f64\.ne/.test(probe), 'no f64 compare in the probe loop')
+
+  // noise-shaped: hash from a LOCAL `aa = perm[…]` (typed-pointer param element) → grad(aa,…).
+  const noiseWat = jz.compile(`
+    let grad = (hash, x, y) => { let h = hash & 3; let u = (h&1)===0 ? x : -x; let v = (h&2)===0 ? y : -y; return u+v }
+    let perlin = (perm, x, y) => { let X = (x|0)&255; let aa = perm[perm[X]+1]; let ba = perm[perm[X+1]+1]; return grad(aa, x, y) + grad(ba, x-1.0, y) }
+    let run = (perm, n) => { let s = 0.0, i = 0; while (i < n) { s = s + perlin(perm, i*0.1, i*0.2); i++ } return s }
+    export let main = () => { let perm = new Int32Array(512); return run(perm, 256) }
+  `, { wat: true, optimize: { level: 'speed', inlineFns: false } })
+  const grad = noiseWat.match(/\(func \$grad\b[\s\S]*?\n  \)/)[0]
+  ok(/\(param \$hash i32\)/.test(grad), 'grad hash param narrows to i32 (fed a local bound to an Int32 param element)')
+})

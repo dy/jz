@@ -223,6 +223,7 @@ function enrichCallerValTypesFromPointerParams(callerCtx) {
 }
 
 function refreshCallerLocals(callerCtx) {
+  const prevTE = ctx.types.typedElem
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
     // Seed pointer-narrowed params' val-kind so analyzeBody recognises e.g.
@@ -232,13 +233,24 @@ function refreshCallerLocals(callerCtx) {
     // (heapsort→siftDown's `end`). analyzeFuncForEmit re-seeds + re-invalidates at
     // emit time, so this transient localReps doesn't leak past narrowing.
     ctx.func.localReps = new Map()
-    for (const p of func.sig.params) if (p.ptrKind != null) ctx.func.localReps.set(p.name, { val: p.ptrKind })
+    // Seed the typedElem overlay with this func's TYPED-pointer params (element ctor from
+    // ptrAux), exactly as analyzeFuncForEmit does at emit time. Without it, a local bound to
+    // an integer typed-array PARAM element — `aa = perm[perm[X]+Y]` (noise), perm an Int32
+    // pointer param — types f64 here, so a callee fed it (`grad(aa,…)`, used only as `aa&3`)
+    // never narrows its param to i32. Mirrors emit so narrow-time callerLocals agree with it.
+    const te = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : new Map()
+    for (const p of func.sig.params) {
+      if (p.ptrKind != null) ctx.func.localReps.set(p.name, { val: p.ptrKind })
+      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) { const c = ctorFromElemAux(p.ptrAux); if (c != null) te.set(p.name, c) }
+    }
+    ctx.types.typedElem = te
     invalidateLocalsCache(func.body)
     const fresh = analyzeBody(func.body).locals
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
   ctx.func.localReps = null
+  ctx.types.typedElem = prevTE
 }
 
 function resetParamWasmFacts(paramReps) {
@@ -743,6 +755,26 @@ export default function narrowSignatures(programFacts, ast) {
       mergeParamFact(r, field, v)
     },
   })
+  // WASM type of a call arg. exprType resolves most shapes, but an INTEGER typed-array
+  // element read `intArr[idx]` (and arithmetic over it, `intArr[idx]+1`) types f64 here:
+  // exprType's `[]` rule reads the typedElem OVERLAY, which doesn't see a typedCtor-narrowed
+  // PARAM array at fixpoint time — yet the element is a 32-bit machine integer. Install the
+  // caller's resolved param-typedCtors (+ module globals) as that overlay for the duration
+  // of the type query, so a param fed only such integer elements (dict's key `k` ← src[i],
+  // threaded through Math.imul / === keys[h] / keys[h]=k) narrows to i32 instead of paying
+  // convert + f64-compare + trunc round-trips through its probe loop.
+  const argWasmType = (arg, state) => {
+    if (!state._teOverlay) {
+      const m = new Map(ctx.scope.globalTypedElem || [])
+      const pf = state.callerParamFacts('typedCtor')
+      if (pf) for (const [name, ctor] of pf) if (ctor != null) m.set(name, ctor)
+      state._teOverlay = m
+    }
+    const prev = ctx.func.localTypedElemsOverlay
+    ctx.func.localTypedElemsOverlay = state._teOverlay
+    try { return exprType(arg, state.callerLocals) }
+    finally { ctx.func.localTypedElemsOverlay = prev }
+  }
   const runFixpoint = () => runCallsiteLattice([
     // val runs SOFT (monotone): a TYPED param's val only becomes inferable after the
     // typedCtor fixpoint + pointer-ABI enrichment, so an early hard merge would
@@ -754,7 +786,7 @@ export default function narrowSignatures(programFacts, ast) {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {
         if (r.wasm === null) return
-        const wt = exprType(arg, state.callerLocals)
+        const wt = argWasmType(arg, state)
         if (r.wasm === undefined) r.wasm = wt
         else if (r.wasm !== wt) r.wasm = null
       },
