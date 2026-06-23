@@ -176,7 +176,9 @@ export default (ctx) => {
     n[0] === 'f64.const' ? (typeof n[1] === 'number' && n[1] >= 0) : false
   const sqrtIR = (a) => { const ir = f('f64.sqrt', a); return nonNegF64(ir[1]) ? ir : canon(ir) }
 
-  // Constants
+  // Constants — each folds to its `(f64.const …)` inline (no stdlib dep, hence
+  // direct emit rather than reg). Written out (not a `Math[name]` loop) because the
+  // self-host subset can't resolve dynamic access on the `Math` compile-time namespace.
   ctx.core.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
   ctx.core.emit['math.E'] = () => typed(['f64.const', Math.E], 'f64')
   ctx.core.emit['math.LN2'] = () => typed(['f64.const', Math.LN2], 'f64')

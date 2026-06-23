@@ -28,6 +28,12 @@ const STORE = [
   'i32.store8', 'i32.store8', 'i32.store16', 'i32.store16',
   'i32.store', 'i32.store', 'f32.store', 'f64.store',
 ]
+// f64 value → this element's stored representation (paired with STORE). Signed
+// kinds trunc_s, unsigned trunc_u, f32 demotes, f64 stores as-is (null = identity).
+const FROM_F64 = [
+  'i32.trunc_f64_s', 'i32.trunc_f64_u', 'i32.trunc_f64_s', 'i32.trunc_f64_u',
+  'i32.trunc_f64_s', 'i32.trunc_f64_u', 'f32.demote_f64', null,
+]
 
 // SIMD: vector width per element type (elements per v128)
 const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
@@ -287,16 +293,10 @@ export default (ctx) => {
         (then (i32.load (i32.add (local.get $off) (i32.const 8))))
         (else (local.get $off))))
     (local.set $len (call $__len (local.get $ptr)))
-    (local.set $lo (local.get $begin))
-    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.add (local.get $lo) (local.get $len)))))
-    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.const 0))))
-    (if (i32.gt_s (local.get $lo) (local.get $len)) (then (local.set $lo (local.get $len))))
+    (local.set $lo (call $__clamp_idx (local.get $begin) (local.get $len)))
     (if (local.get $useEnd)
       (then
-        (local.set $hi (local.get $end))
-        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.add (local.get $hi) (local.get $len)))))
-        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.const 0))))
-        (if (i32.gt_s (local.get $hi) (local.get $len)) (then (local.set $hi (local.get $len)))))
+        (local.set $hi (call $__clamp_idx (local.get $end) (local.get $len))))
       (else (local.set $hi (local.get $len))))
     (local.set $n (select (i32.sub (local.get $hi) (local.get $lo)) (i32.const 0) (i32.gt_s (local.get $hi) (local.get $lo))))
     (local.set $desc (call $__alloc (i32.const 16)))
@@ -317,16 +317,10 @@ export default (ctx) => {
     (local.set $shift (call $__typed_shift (local.get $et)))
     (local.set $src (call $__typed_data (local.get $ptr)))
     (local.set $len (call $__len (local.get $ptr)))
-    (local.set $lo (local.get $begin))
-    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.add (local.get $lo) (local.get $len)))))
-    (if (i32.lt_s (local.get $lo) (i32.const 0)) (then (local.set $lo (i32.const 0))))
-    (if (i32.gt_s (local.get $lo) (local.get $len)) (then (local.set $lo (local.get $len))))
+    (local.set $lo (call $__clamp_idx (local.get $begin) (local.get $len)))
     (if (local.get $useEnd)
       (then
-        (local.set $hi (local.get $end))
-        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.add (local.get $hi) (local.get $len)))))
-        (if (i32.lt_s (local.get $hi) (i32.const 0)) (then (local.set $hi (i32.const 0))))
-        (if (i32.gt_s (local.get $hi) (local.get $len)) (then (local.set $hi (local.get $len)))))
+        (local.set $hi (call $__clamp_idx (local.get $end) (local.get $len))))
       (else (local.set $hi (local.get $len))))
     (local.set $n (select (i32.sub (local.get $hi) (local.get $lo)) (i32.const 0) (i32.gt_s (local.get $hi) (local.get $lo))))
     (local.set $byteLen (i32.shl (local.get $n) (local.get $shift)))
@@ -912,16 +906,11 @@ export default (ctx) => {
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
       const id = ctx.func.uniq++
-      const storeExpr = elemType === 7 ? ['f64.store',
-          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
-          ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]
-        : elemType === 6 ? ['f32.store',
-          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
-          ['f32.demote_f64', ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
-        : [store,
-          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
-          [(elemType & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s',
-            ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
+      const conv = FROM_F64[elemType]
+      const srcF64 = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+      const storeExpr = [store,
+        ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
+        conv ? [conv, srcF64] : srcF64]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
@@ -994,65 +983,6 @@ export default (ctx) => {
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
-  // Factory — collapses to ARRAY-only f64 indexing when no TYPED pointer can reach here.
-  // Identical factory in array.js; whichever module loads last wins the registration.
-  ctx.core.stdlib['__typed_idx'] = () => {
-    if (!ctx.features.typedarray && !ctx.features.external) {
-      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
-    (local $len i32)
-    (local.set $len (call $__len (local.get $ptr)))
-    (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (local.get $len)))
-      (then (f64.const nan:${UNDEF_NAN}))
-      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
-    }
-    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
-    (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
-    ;; ARRAY fast path: __ptr_offset already followed any forwarding — read header len + f64.load, no $__len call.
-    (if (i32.and (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY})) (i32.ge_u (local.get $off) (i32.const 8)))
-      (then (return (if (result f64)
-        (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
-        (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-        (else (f64.const nan:${UNDEF_NAN}))))))
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
-    (if
-      (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-        (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
-      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (local.get $ptr)))
-    (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (local.get $len)))
-      (then (f64.const nan:${UNDEF_NAN}))
-      (else
-        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-          (then
-            (local.set $et (i32.and (local.get $aux) (i32.const 7)))
-            (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
-              (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-                (then (if (result f64) (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
-                  (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
-                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
-                (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-              (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
-                (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                  (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
-                  (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-                (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-                  (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                    (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
-                  (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                    (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
-                    (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
-          (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
-  }
-
   ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
@@ -1089,12 +1019,8 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_fill'] = `(func $__typed_fill (param $ptr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $i i32)
     (local.set $len (call $__len (local.get $ptr)))
-    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
-    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))
-    (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
-    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
-    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.const 0))))
-    (if (i32.gt_s (local.get $end) (local.get $len)) (then (local.set $end (local.get $len))))
+    (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
+    (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
     (local.set $i (local.get $start))
     (block $done (loop $fill
       (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
@@ -1154,15 +1080,9 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_copyWithin'] = `(func $__typed_copyWithin (param $ptr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $count i32) (local $k i32)
     (local.set $len (call $__len (local.get $ptr)))
-    (if (i32.lt_s (local.get $target) (i32.const 0)) (then (local.set $target (i32.add (local.get $len) (local.get $target)))))
-    (if (i32.lt_s (local.get $target) (i32.const 0)) (then (local.set $target (i32.const 0))))
-    (if (i32.gt_s (local.get $target) (local.get $len)) (then (local.set $target (local.get $len))))
-    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
-    (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))
-    (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
-    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
-    (if (i32.lt_s (local.get $end) (i32.const 0)) (then (local.set $end (i32.const 0))))
-    (if (i32.gt_s (local.get $end) (local.get $len)) (then (local.set $end (local.get $len))))
+    (local.set $target (call $__clamp_idx (local.get $target) (local.get $len)))
+    (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
+    (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
     (local.set $count (i32.sub (local.get $end) (local.get $start)))
     (if (i32.gt_s (local.get $count) (i32.sub (local.get $len) (local.get $target)))
       (then (local.set $count (i32.sub (local.get $len) (local.get $target)))))

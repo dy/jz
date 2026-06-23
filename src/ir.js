@@ -21,8 +21,8 @@
  */
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
-import { ptrBoxPrefixBigInt, atomNanHex, nanPrefixHex } from '../layout.js'
-import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef } from './ast.js'
+import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex } from '../layout.js'
+import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf } from './kind.js'
 import { T } from './ast.js'
@@ -268,14 +268,12 @@ export const toI32 = n => {
       return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
   }
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
-  const isLeaf = Array.isArray(n) && n.length <= 2 &&
-    (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')
   // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (the
   // overwhelming common range), maps NaN/−∞→0, and +∞ is guarded to 0 by the
   // select. For |x| ≥ 2^63 it saturates rather than wrapping mod 2^32 — a
   // deliberately-allowed asm.js-style boundary (no per-`|0` helper/guard cost).
   const wrap = x => typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], 'i32')
-  if (isLeaf) {
+  if (isLeaf(n)) {
     return typed(['select', wrap(n), ['i32.const', 0], ['f64.ne', n, ['f64.const', Infinity]]], 'i32')
   }
   const t = temp('inf')
@@ -380,13 +378,7 @@ export const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splic
 const litI32 = n => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number' ? n[1] : null
 
 /** Pack (type, aux, offset) into the f64 NaN-box bit pattern as a hex string. */
-function packPtrBits(type, aux, offset) {
-  const bits = LAYOUT.NAN_PREFIX_BITS
-    | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
-    | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
-    | (BigInt(offset >>> 0) & BigInt(LAYOUT.OFFSET_MASK))
-  return '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
-}
+const packPtrBits = (type, aux, offset) => i64Hex(ptrBits(type, aux, offset))
 
 /** Build `__mkptr(type, aux, offset)` IR. Folds to `(f64.const nan:0x...)` — 9 bytes
  *  vs 12 for `f64.reinterpret_i64 (i64.const ...)` — when all args are i32 literals.

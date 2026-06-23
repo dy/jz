@@ -182,19 +182,24 @@ const matchDotStore = (n, acc) => {
   return null
 }
 
+// Unroll width this dot-product recognizer expects: a `acc=0` reset, exactly this
+// many `acc += L[k]*R[k]` steps, then the store. Tied to the emitter's 4-wide dot
+// unroll — matchDotStore / f64x2Pair / dotPairExpr below are hardwired to it.
+const DOT_UNROLL = 4
+
 const matchF64DotSeq = (stmts, i) => {
   const reset = stmts[i]
   if (!isArr(reset) || reset[0] !== 'local.set' || typeof reset[1] !== 'string' || !f64Zero(reset[2])) return null
   const acc = reset[1]
   const left = [], right = []
-  for (let k = 0; k < 4; k++) {
+  for (let k = 0; k < DOT_UNROLL; k++) {
     const pair = matchAccumStep(stmts[i + 1 + k], acc)
     if (!pair) return null
     left.push(pair[0])
     right.push(pair[1])
   }
-  const store = matchDotStore(stmts[i + 5], acc)
-  return store ? { end: i + 6, acc, left, right, ...store } : null
+  const store = matchDotStore(stmts[i + 1 + DOT_UNROLL], acc)
+  return store ? { end: i + 2 + DOT_UNROLL, acc, left, right, ...store } : null
 }
 
 const f64x2Pair = (lo, hi) => ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', lo]], ['local.get', hi]]
@@ -250,7 +255,7 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
       addend = ['local.get', tmp]
     }
     const pairs = []
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < DOT_UNROLL; k++) {
       const key = `${a.right[k]}\0${b.right[k]}`
       let tmp = pairTemps.get(key)
       if (!tmp) {
@@ -2926,6 +2931,12 @@ function peelNarrowConv(val, sty) {
   return null
 }
 
+// i8x16.shuffle masks that pack a 4×i32 vector down to the low bytes of each lane
+// (truncating-wrap = scalar store{8,16}), tail zero-filled: _I16 keeps the low 2
+// bytes of each lane (→ 8 bytes / i64.store), _I8 the low byte (→ 4 bytes / i32.store).
+const PACK_I32_TO_I16 = [0, 1, 4, 5, 8, 9, 12, 13, 0, 0, 0, 0, 0, 0, 0, 0]
+const PACK_I32_TO_I8 = [0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
 function narrowStore(addr, val, laneType, sty, ctx) {
   const tmp = `$__nv${ctx.freshIdRef.next++}`
   ctx.extraLocals.push(['local', tmp, 'v128'])
@@ -2934,8 +2945,8 @@ function narrowStore(addr, val, laneType, sty, ctx) {
   let pre, lane8, store
   if (laneType === 'f64' && sty === 'f32') { pre = ['f32x4.demote_f64x2_zero', val]; lane8 = g; store = 'i64.store' }
   else if (laneType === 'f64' && sty === 'i32') { pre = ['i32x4.trunc_sat_f64x2_s_zero', val]; lane8 = g; store = 'i64.store' }
-  else if (laneType === 'f32' && sty === 'i16') { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh([0, 1, 4, 5, 8, 9, 12, 13, 0, 0, 0, 0, 0, 0, 0, 0]); store = 'i64.store' }
-  else if (laneType === 'f32' && sty === 'i8')  { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh([0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); store = 'i32.store' }
+  else if (laneType === 'f32' && sty === 'i16') { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh(PACK_I32_TO_I16); store = 'i64.store' }
+  else if (laneType === 'f32' && sty === 'i8')  { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh(PACK_I32_TO_I8); store = 'i32.store' }
   else return null
   // 8-byte stores extract an i64 lane; the 4-byte i8 pack extracts an i32 lane.
   const packed = store === 'i64.store' ? ['i64x2.extract_lane', 0, lane8] : ['i32x4.extract_lane', 0, lane8]

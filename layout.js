@@ -46,6 +46,24 @@ export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
  *  tests membership in one shl+and, replacing a 4-way tag-equality OR. */
 export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP)
 
+// BigInt views of the NaN-box fields — the carrier is 64-bit, JS bit-ops are 32-bit.
+const TAG_SHIFT = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK = BigInt(LAYOUT.TAG_MASK)
+const AUX_SHIFT = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK = BigInt(LAYOUT.AUX_MASK)
+const OFFSET_MASK = BigInt(LAYOUT.OFFSET_MASK)
+
+/** Format an i64 BigInt as a zero-padded `0x…` hex literal for WAT/IR templates. */
+export const i64Hex = bits => '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
+
+/** Pack (type, aux, offset) into the i64 NaN-box carrier — the single source of
+ *  truth for pointer bit layout. Compiler IR (`packPtrBits`/`mkPtrIR`), the
+ *  `$__mkptr` inline specializer, and the interop high-word encoder all derive
+ *  from this. `offset` defaults to 0 to yield the box prefix (offset OR'd later). */
+export const ptrBits = (type, aux = 0, offset = 0) =>
+  LAYOUT.NAN_PREFIX_BITS
+  | ((BigInt(type) & TAG_MASK) << TAG_SHIFT)
+  | ((BigInt(aux) & AUX_MASK) << AUX_SHIFT)
+  | (BigInt(offset >>> 0) & OFFSET_MASK)
+
 // =============================================================================
 // PTR.TYPED element-type aux codec — which typed-array flavor lives in the aux
 // field of a PTR.TYPED box. Pure (no compiler state) → lives with the NaN-box
@@ -94,20 +112,19 @@ export function ctorFromElemAux(aux) {
   return isView ? `new.${name}.view` : `new.${name}`
 }
 
-/** Host-side high u32 word for NaN-boxed f64 pointer encoding (interop). */
+/** Host-side high u32 word for NaN-boxed f64 pointer encoding (interop) — the
+ *  top 32 bits of `ptrBits(type, aux)` (offset lives in the low word). */
 export const encodePtrHi = (type, aux) =>
-  (0x7FF80000 | ((type & 0xF) << 15) | (aux & 0x7FFF)) >>> 0
+  ((LAYOUT.NAN_PREFIX << 16) | ((type & LAYOUT.TAG_MASK) << (LAYOUT.TAG_SHIFT - 32)) | (aux & LAYOUT.AUX_MASK)) >>> 0
 
-export const decodePtrType = hi => (hi >>> 15) & 0xF
-export const decodePtrAux = hi => hi & 0x7FFF
+export const decodePtrType = hi => (hi >>> (LAYOUT.TAG_SHIFT - 32)) & LAYOUT.TAG_MASK
+export const decodePtrAux = hi => hi & LAYOUT.AUX_MASK
 
 /** i64 NaN-prefix OR-mask for WAT `(i64.const …)` templates. */
-export const nanPrefixHex = () =>
-  '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
+export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)
 
 /** Atom sentinel as i64 hex (compiler WAT templates). */
-export const atomNanHex = atomId =>
-  '0x' + (LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const atomNanHex = atomId => i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << AUX_SHIFT))
 
 /** STRING aux bit 0 on a PLAIN-HEAP string (SSO and SLICE clear): this is a
  *  CANONICAL interned string — the static-pool copy (or an intern-table hit
@@ -120,22 +137,16 @@ export const atomNanHex = atomId =>
 export const STR_INTERN_BIT = 0x1
 
 /** Pre-shifted STRING SSO aux bit as i64 hex. */
-export const ssoBitI64Hex = () =>
-  '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+export const ssoBitI64Hex = () => i64Hex(BigInt(LAYOUT.SSO_BIT) << AUX_SHIFT)
 
 /** Pre-shifted STRING slice/view aux bit as i64 hex. */
-export const sliceBitI64Hex = () =>
-  '0x' + (BigInt(LAYOUT.SLICE_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+export const sliceBitI64Hex = () => i64Hex(BigInt(LAYOUT.SLICE_BIT) << AUX_SHIFT)
 
 /** Full i64 NaN-box hex for `(i64.const …)` — ptr type + aux, offset OR'd separately. */
-export const ptrNanHex = (ptrType, aux = 0) =>
-  '0x' + ptrBoxPrefixBigInt(ptrType, aux).toString(16).toUpperCase().padStart(16, '0')
+export const ptrNanHex = (ptrType, aux = 0) => i64Hex(ptrBits(ptrType, aux))
 
 /** Compile-time i64 prefix for mkPtrIR (before offset OR). */
-export const ptrBoxPrefixBigInt = (ptrType, aux = 0) =>
-  (0x7FF8n << 48n)
-  | ((BigInt(ptrType) & 0xFn) << 47n)
-  | ((BigInt(aux) & 0x7FFFn) << 32n)
+export const ptrBoxPrefixBigInt = (ptrType, aux = 0) => ptrBits(ptrType, aux)
 
 /** Host-side atom sentinel high-u32 values (interop f64 decode). */
 export const ATOM_HI = {

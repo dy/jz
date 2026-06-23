@@ -66,6 +66,11 @@ export const isBlockBody = (body) =>
 export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
 export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNames.has(node)
 
+/** A value-leaf IR instruction — `local.get`/`global.get`/any `*.const`. Cheap and
+ *  side-effect-free, so safe to duplicate without spilling to a temp. The one
+ *  source of truth for "is this trivially duplicatable" across ir/abi/optimize. */
+export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'global.get' || n[0].endsWith('.const'))
+
 // === Assignment / reassignment ===
 
 /** Assignment operators — shared across analyze, plan, emit, abi. */

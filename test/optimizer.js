@@ -1016,8 +1016,9 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
   const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
   ok(/\bselect\b/.test(fn), 'guarded update lowered to select at speed tier')
   is(/\(if\b/.test(fn), false, 'no branch left for the guarded update')
-  // Default tier keeps the branch (select is speed-only).
-  const fnD = grab(jz.compile(SRC, { wat: true }))
+  // Default tier keeps the branch (select is speed-only). Pin level 2 so
+  // JZ_TEST_OPTIMIZE=3 can't flip this half to speed (cf. test/perf.js threshold pin).
+  const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
   ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
   // Bit-exact regardless of tier.
   const ref = (() => { const xs = []; let s = 12345 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }

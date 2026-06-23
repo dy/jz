@@ -14,6 +14,7 @@ import { isI32, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf } from './kind.js'
+import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue } from './static.js'
 import { typedElemAux } from '../layout.js'
 
@@ -441,30 +442,20 @@ export function exprType(expr, locals) {
     }
     return 'f64'
   }
-  // `.length` on a known sized receiver returns i32 directly (__len/__str_byteLen
-  // both return i32). Letting it stay i32 lets analyzeBody keep the counter
-  // local i32 too, eliminating the per-iteration `f64.convert_i32_s` widen and
-  // the matching `i32.trunc_sat_f64_s` truncs at every `arr[i]` / `i*k` site.
-  // Only safe when receiver type is statically known to expose an integer length.
+  // A sized built-in property on a statically-known receiver (`.length` on
+  // STRING/ARRAY/TYPED, `.size` on SET/MAP, `.byteLength`/`.byteOffset` on
+  // TYPED/BUFFER) returns i32 directly (`__len`/`__str_byteLen` return i32).
+  // Keeping it i32 lets analyzeBody keep the counter local i32, eliminating the
+  // per-iteration `f64.convert_i32_s` widen and matching `arr[i]`/`i*k` truncs.
+  // The membership lives in one place — `propValType` (src/kind-traits.js).
   if (op === '.') {
-    if (args[1] === 'length' && typeof args[0] === 'string') {
-      const vt = lookupValType(args[0])
-      if (vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER) return 'i32'
-    }
-    if (args[1] === 'size' && typeof args[0] === 'string') {
-      const vt = lookupValType(args[0])
-      if (vt === VAL.SET || vt === VAL.MAP) return 'i32'
-    }
-    if (args[1] === 'byteLength' && typeof args[0] === 'string') {
-      const vt = lookupValType(args[0])
-      if (vt === VAL.BUFFER || vt === VAL.TYPED) return 'i32'
-    }
+    if (typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER) return 'i32'
     return 'f64'
   }
   // Comparisons, logical-not, and unsigned shift always yield an i32 — a boolean,
   // or a ToUint32 result. True even on BigInt operands (`>>>` throws on bigint, so
   // it never reaches here with one).
-  if (['>', '<', '>=', '<=', '==', '!=', '!', '>>>'].includes(op)) return 'i32'
+  if (CMP_OPS.has(op) || op === '>>>') return 'i32'
   // Bitwise & signed-shift: i32 on numbers, but f64 when operands are BigInt — the
   // result is a bigint carried in the i64-bits-as-f64 ABI, not a 32-bit int.
   if (['&', '|', '^', '~', '<<', '>>'].includes(op))
@@ -553,7 +544,6 @@ export function exprType(expr, locals) {
 // === Integer-certainty fixpoint (shared by analyzeIntCertain + program-facts) ===
 
 const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
-const INT_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!==', '!'])
 const INT_CLOSED_OPS = new Set(['+', '-', '*'])  // `%` handled separately — int only for nonzero divisor
 const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
 
@@ -574,7 +564,7 @@ function collectIntDefs(body) {
     } else if (op === '=' && typeof args[0] === 'string') {
       pushDef(args[0], args[1])
     } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
-               !INT_CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
+               !CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
       pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
     } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
       pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
@@ -600,18 +590,9 @@ function makeIsIntExpr(intCertain) {
       if (typeof v === 'boolean') return true
       return false
     }
-    if (INT_BIT_OPS.has(op) || INT_CMP_OPS.has(op)) return true
-    if (op === '.') {
-      if ((args[1] === 'length' || args[1] === 'byteLength') && typeof args[0] === 'string') {
-        const vt = lookupValType(args[0])
-        return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
-      }
-      if (args[1] === 'size' && typeof args[0] === 'string') {
-        const vt = lookupValType(args[0])
-        return vt === VAL.SET || vt === VAL.MAP
-      }
-      return false
-    }
+    if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return true
+    if (op === '.')
+      return typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER
     if (INT_CLOSED_OPS.has(op)) {
       const a = isIntExpr(args[0])
       const b = args[1] != null ? isIntExpr(args[1]) : a

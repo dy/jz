@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr } from '../src/ir.js'
-import { emit, spread, deps } from '../src/bridge.js'
+import { emit, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
@@ -143,6 +143,79 @@ export default (ctx) => {
         (i64.or
           (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const ${LAYOUT.AUX_MASK})) (i64.const ${LAYOUT.AUX_SHIFT}))
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const ${LAYOUT.OFFSET_MASK})))))))`
+
+  // Relative-index clamp to `[0, len]` — the JS `RelativeIndex`/`ToIntegerOrInfinity`
+  // bounds dance shared by slice/subarray/fill/copyWithin (string + typed + array).
+  // Single shared body so N method bodies don't each inline the same six branches.
+  wat('__clamp_idx', `(func $__clamp_idx (param $v i32) (param $len i32) (result i32)
+    (if (i32.lt_s (local.get $v) (i32.const 0)) (then (local.set $v (i32.add (local.get $v) (local.get $len)))))
+    (if (i32.lt_s (local.get $v) (i32.const 0)) (then (local.set $v (i32.const 0))))
+    (if (i32.gt_s (local.get $v) (local.get $len)) (then (local.set $v (local.get $len))))
+    (local.get $v))`)
+
+  // Polymorphic element read for any heap-indexable (ARRAY or TYPED). The one
+  // home for `arr[i]` lowering: ARRAY and typed reads both route here, plain-array
+  // programs get the ARRAY-only collapse, typed programs the full elem dispatch.
+  ctx.core.stdlib['__typed_idx'] = () => {
+    if (!ctx.features.typedarray && !ctx.features.external) {
+      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $len i32)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.const nan:${UNDEF_NAN}))
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
+    }
+    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $ptr.
+    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ;; ARRAY fast path: follow forwarding inline, bounds-check against header len, f64.load — no $__len call.
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.ge_u (local.get $off) (i32.const 8)))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (return (if (result f64)
+          (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+          (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (else (f64.const nan:${UNDEF_NAN}))))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (if
+      (i32.and
+        (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+        (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
+      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.const nan:${UNDEF_NAN}))
+      (else
+        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+          (then
+            (local.set $et (i32.and (local.get $aux) (i32.const 7)))
+            (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
+              (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
+                (then (if (result f64) (i32.and (local.get $aux) (i32.const 16))
+                  (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
+                (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+              (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
+                (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                  (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+                  (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+                (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
+                  (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
+                  (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
+                    (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
+          (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
+  }
 
   ctx.core.stdlib['__ptr_offset_fwd'] = ptrOffsetFwdWat()
 

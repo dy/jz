@@ -38,11 +38,11 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // |-----------|----------|---------------------------------|---------------------------|
 // | core      | compile  | reset, modules, inc(), emit*    | emit, compile, modules    |
 // | module    | compile  | prepare, index.js               | prepare, compile, emit    |
-// | scope     | compile  | analyze, compile, plan, modules | compile, emit             |
-// | func      | function | compile, narrow                 | emit, modules             |
+// | scope     | compile  | analyze, compile, plan, modules, assemble | compile, emit   |
+// | func      | function | compile, narrow, assemble       | emit, modules             |
 // | types     | function | analyze, plan                   | emit, modules             |
 // | schema    | compile  | prepare, analyze, compile       | prepare, analyze, emit    |
-// | closure   | init     | modules (fn plugin)             | emit, compile             |
+// | closure   | init     | modules (fn plugin), plan, emit | emit, compile             |
 // | runtime   | compile  | emit, modules                   | emit, compile             |
 // | memory    | compile  | index.js                        | compile                   |
 // | error     | compile  | prepare, compile, emit          | err()                     |
@@ -63,6 +63,11 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // narrow-phase writers: narrowSignatures (under plan) temporarily swaps
 //   ctx.func.{localReps, locals, current} per-function with save/restore
 //   so per-call-site signature inference sees the right scope.
+// assemble-phase writers: buildStartFn (wat/assemble.js) re-owns the ctx.func frame
+//   (locals/stack/refinements/…) to emit the module-init `start` fn, save/restoring
+//   around it; the data pass also const-folds ctx.scope.globals (mut→false) and
+//   declares the __heap* globals. emit seeds ctx.closure.{paramTypes,paramTypedCtors}
+//   at direct-call sites (read by emitClosureBody); plan sets ctx.closure.{floor,width}.
 export const ctx = {
   core: {},       // emitter table + stdlib registry (seeded by reset + modules)
   module: {},     // module graph: imports, resolved sources, module-init blocks
@@ -234,6 +239,10 @@ export function reset(proto, globals, bridge) {
     globalTypedElem: null,
     globalReps: null, // Map<name, ValueRep> — module-level pointer reps (TYPED const globals stored as raw i32 offset, etc.)
     consts: null,
+    constInts: null,      // Map<name, int> — module const folded to an integer literal (prepare/plan seed; static/ir read)
+    constStrs: null,      // Map<name, string> — module const folded to a string literal
+    shapeStrs: null,      // Map<expr, string> / shapeStrArrays: Map<name, string[]> — schema-shape string folds
+    shapeStrArrays: null,
   }
 
   ctx.func = {
@@ -324,6 +333,8 @@ export function reset(proto, globals, bridge) {
     minArgc: null,        // Map<closureBodyName, number> — fewest args any direct call passed.
                           // A slot at index ≥ minArgc is omitted by some call (→ may be undefined),
                           // so it must NOT be typed NUMBER, else `x === undefined` mis-folds to false.
+    floor: null,          // min closure-table arity (modules: fn/timer/typedarray/array; read in plan). null ⇒ 0.
+    width: null,          // closure call/make signature width (plan/scope sets; emit/assemble read). null ⇒ MAX_CLOSURE_ARITY.
   }
 
   ctx.runtime = {

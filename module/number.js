@@ -647,6 +647,9 @@ export default (ctx) => {
 
   // === Number constants ===
 
+  // Each folds to inline (f64.const …), no stdlib dep. Written out (not a table
+  // loop) to stay within the self-host subset. `NaN` uses the `nan` token (not raw
+  // NaN) so it survives self-host IR marshalling — see emitNum.
   ctx.core.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
   ctx.core.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
   ctx.core.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
@@ -654,7 +657,7 @@ export default (ctx) => {
   ctx.core.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
   ctx.core.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
   ctx.core.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
-  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', 'nan'], 'f64')  // `nan` token, not raw NaN (survives self-host IR marshalling — see emitNum)
+  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', 'nan'], 'f64')
 
   // === Number static methods ===
 

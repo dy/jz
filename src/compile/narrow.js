@@ -169,9 +169,10 @@ function refreshCallerValTypes(callerCtx) {
 // it is the same single typed-array ctor (scope.js invalidates on any conflict),
 // so it can't denote a different kind at the call site.
 function callerTypedElemsFor(func, globalTE) {
-  const local = analyzeBody(func.body).typedElems
+  const facts = analyzeBody(func.body)
+  const local = facts.typedElems
   if (!globalTE.size) return local
-  const shadowed = new Set(analyzeBody(func.body).locals.keys())
+  const shadowed = new Set(facts.locals.keys())
   for (const p of func.sig?.params || []) shadowed.add(p.name)
   const merged = new Map()
   for (const [k, v] of globalTE) if (!shadowed.has(k)) merged.set(k, v)

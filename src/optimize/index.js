@@ -33,9 +33,9 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
-import { T } from '../ast.js'
+import { T, isLeaf } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
-import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
+import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
@@ -508,7 +508,6 @@ function boolConvertToSelect(fn) {
 
   const isBool01 = (n) => Array.isArray(n) &&
     (BOOL_RESULT_OPS.has(n[0]) || (n[0] === 'local.get' && boolLocals.has(n[1])))
-  const isLeaf = (n) => Array.isArray(n) && (n[0] === 'local.get' || n[0].endsWith('.const'))
   const dup = (n) => Array.isArray(n) ? n.map(dup) : n
 
   // Pass 2 — bottom-up rewrite.
@@ -1365,6 +1364,12 @@ export function cseScalarLoad(fn) {
 // the two passes cover deliberately different op sets.
 const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
 
+// Calls expensive enough that hoisting a loop-invariant occurrence out of the loop
+// pays for the extra local — the gate that arms csePureExprLoop. Trig is the
+// measured-beneficial set; extend with perf validation (exp/log/pow/atan2 are
+// candidates but unverified — adding them changes loop codegen, so gate on a bench).
+const LOOP_CSE_EXPENSIVE = new Set(['$math.sin', '$math.cos', '$math.sin_core', '$math.cos_core'])
+
 export function csePureExpr(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -1505,8 +1510,7 @@ export function csePureExprLoop(fn) {
   const scanShape = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === 'loop') hasLoop = true
-    if (n[0] === 'call' && (n[1] === '$math.sin' || n[1] === '$math.cos'
-        || n[1] === '$math.sin_core' || n[1] === '$math.cos_core')) hasTrigCall = true
+    if (n[0] === 'call' && LOOP_CSE_EXPENSIVE.has(n[1])) hasTrigCall = true
     for (let i = 1; i < n.length; i++) scanShape(n[i])
   }
   for (let i = bodyStart; i < fn.length; i++) scanShape(fn[i])
@@ -2205,15 +2209,8 @@ function inferTypeFromContext(fn, gName, bodyStart) {
           }
           if (pOp === 'i32.store' && idx === 2) { inferred = 'i32'; return }  // addr
           if (pOp === 'f64.store' && idx === 2) { inferred = 'f64'; return }  // addr can be i32, but value is f64
-          if (pOp === 'i32.eq' || pOp === 'i32.ne' || pOp === 'i32.lt_s' || pOp === 'i32.lt_u' ||
-              pOp === 'i32.gt_s' || pOp === 'i32.gt_u' || pOp === 'i32.le_s' || pOp === 'i32.le_u' ||
-              pOp === 'i32.ge_s' || pOp === 'i32.ge_u') {
-            // Comparison — could be i32, but in jz NaN-boxing scheme most globals are f64
-            // Only if we can confirm from local.set context
-          }
-          if (pOp === 'local.set' && idx === 0) {
-            // Can't determine local type from here easily
-          }
+          // i32 comparisons already matched the `i32.` prefix above; a `local.set`
+          // parent tells us nothing here — both fall through to the f64 default.
         }
       }
       // Default: f64 (the NaN-boxing carrier)
@@ -2374,9 +2371,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     // $__mkptr inline fast path: bake (type, aux) literals into i64.const template.
     if (target === '$__mkptr' && spec.inline && parts[0].startsWith('L:') && parts[1].startsWith('L:')) {
       const type = +parts[0].slice(2), aux = +parts[1].slice(2)
-      const tmpl = LAYOUT.NAN_PREFIX_BITS
-        | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
-        | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
+      const tmpl = ptrBits(type, aux)  // box prefix (offset OR'd in at runtime below)
       // Third arg (offset) may also be literal — emit (f64.const nan:…) then.
       if (parts[2].startsWith('L:')) {
         // Fully literal: all sites can be f64.const — no helper needed, handled in rewrite below.
@@ -2418,11 +2413,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
     if (target === '$__mkptr' && parts[0].startsWith('L:') && parts[1].startsWith('L:') && parts[2].startsWith('L:')) {
       const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
-      const bits = LAYOUT.NAN_PREFIX_BITS
-        | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
-        | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
-        | (BigInt(off >>> 0) & BigInt(LAYOUT.OFFSET_MASK))
-      const n = ['f64.const', 'nan:0x' + bits.toString(16).toUpperCase().padStart(16, '0')]
+      const n = ['f64.const', 'nan:' + i64Hex(ptrBits(type, aux, off))]
       n.type = 'f64'
       parent[idx] = n
       continue

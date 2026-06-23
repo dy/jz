@@ -56,7 +56,7 @@
 // take. Kept as a one-liner so each op reads as a single `call`.
 const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 
-import { isReassigned } from '../ast.js'
+import { isReassigned, isLeaf } from '../ast.js'
 import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
 
 /** Pre-shifted SSO discriminator — layout.js is cycle-free; memoized at first use. */
@@ -79,10 +79,6 @@ const allocLocalI32 = (ctx, tag) => {
   return name
 }
 
-const _isLeaf = (n) => Array.isArray(n) &&
-  (n[0] === 'local.get' || n[0] === 'global.get' ||
-   n[0] === 'i32.const' || n[0] === 'i64.const' ||
-   n[0] === 'f64.const' || n[0] === 'f32.const')
 
 /** Per-use cheap form of `charCodeAt` against a pre-decomposed param receiver
  *  (shape 1): a bounds check plus a 2-arm SSO/heap byte select reading the four
@@ -93,7 +89,7 @@ const _isLeaf = (n) => Array.isArray(n) &&
 function emitDecompCharRead(dec, iI32, ctx, oobNan) {
   const rt = oobNan ? 'f64' : 'i32'
   let idx = iI32, spill = null
-  if (!_isLeaf(iI32)) { spill = allocLocalI32(ctx, 'ci'); idx = ['local.get', `$${spill}`] }
+  if (!isLeaf(iI32)) { spill = allocLocalI32(ctx, 'ci'); idx = ['local.get', `$${spill}`] }
   const ssoByteExpr = ['i32.wrap_i64', ['i64.and',
     ['i64.shr_u', ['local.get', `$${dec.ptr64}`], ['i64.mul', ['i64.extend_i32_u', idx], ['i64.const', 7]]],
     ['i64.const', '0x7f']]]
@@ -279,9 +275,6 @@ export const sso = {
       // so we MUST spill anything that isn't side-effect-free to a local
       // before referencing it more than once. Leaves (`local.get`, `*.const`,
       // `global.get`) are safe to duplicate; everything else is spilled.
-      const isLeaf = (n) => Array.isArray(n) &&
-        (n[0] === 'local.get' || n[0] === 'global.get' ||
-         n[0] === 'i32.const' || n[0] === 'i64.const' || n[0] === 'f64.const' || n[0] === 'f32.const')
       const sLeaf = isLeaf(sF64)
       const iLeaf = isLeaf(iI32)
       const ptrI64Expr = ssoI64(sF64)

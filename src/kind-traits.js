@@ -5,9 +5,13 @@
 
 import { VAL } from './reps.js'
 
-export const BOOL_OPS = new Set([
-  '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', 'in', 'instanceof',
-])
+// Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
+// source of truth for "this operator yields a boolean": valTypeOf reads it as
+// VAL.BOOL, exprType/isIntExpr read it as integer-certain. `in`/`instanceof` also
+// yield a boolean but are membership ops, kept out of the integer-certainty set
+// (they throw on BigInt operands and never reach numeric analysis).
+export const CMP_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+export const BOOL_OPS = new Set([...CMP_OPS, 'in', 'instanceof'])
 
 export const NUMERIC_BINARY_OPS = ['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>']
 export const NUMERIC_UNARY_OPS = new Set(['**', '++', '--', '~', '>>>', 'u+'])
