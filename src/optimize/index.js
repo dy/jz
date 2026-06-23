@@ -1365,10 +1365,17 @@ export function cseScalarLoad(fn) {
 const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
 
 // Calls expensive enough that hoisting a loop-invariant occurrence out of the loop
-// pays for the extra local — the gate that arms csePureExprLoop. Trig is the
-// measured-beneficial set; extend with perf validation (exp/log/pow/atan2 are
-// candidates but unverified — adding them changes loop codegen, so gate on a bench).
-const LOOP_CSE_EXPENSIVE = new Set(['$math.sin', '$math.cos', '$math.sin_core', '$math.cos_core'])
+// pays for the extra local — the gate that arms csePureExprLoop. The whole class of
+// transcendental math helpers (each a multi-instruction polynomial approximation,
+// all pure → CSE is bit-exact): a loop-invariant `exp(k)`/`pow(x,2)` hoists the same
+// way trig does. CSE only fires on genuinely-redundant pure subexprs, so a loop with
+// no repeat is left byte-identical — gating on the class, not a benchmark shape.
+const LOOP_CSE_EXPENSIVE = new Set([
+  '$math.sin', '$math.cos', '$math.tan', '$math.sin_core', '$math.cos_core',
+  '$math.exp', '$math.expm1', '$math.log', '$math.log2', '$math.log10', '$math.log1p',
+  '$math.pow', '$math.atan', '$math.asin', '$math.acos', '$math.atan2',
+  '$math.sinh', '$math.cosh', '$math.tanh', '$math.cbrt', '$math.hypot',
+])
 
 export function csePureExpr(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
@@ -1506,15 +1513,15 @@ export function csePureExprLoop(fn) {
   if (bodyStart < 0) return
 
   let hasLoop = false
-  let hasTrigCall = false
+  let hasExpensiveCall = false
   const scanShape = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === 'loop') hasLoop = true
-    if (n[0] === 'call' && LOOP_CSE_EXPENSIVE.has(n[1])) hasTrigCall = true
+    if (n[0] === 'call' && LOOP_CSE_EXPENSIVE.has(n[1])) hasExpensiveCall = true
     for (let i = 1; i < n.length; i++) scanShape(n[i])
   }
   for (let i = bodyStart; i < fn.length; i++) scanShape(fn[i])
-  if (!hasLoop || !hasTrigCall) return
+  if (!hasLoop || !hasExpensiveCall) return
 
   let snapId = nextLocalId(fn, 'pe')
   const newLocals = []
@@ -2800,7 +2807,16 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
     if (runVectorizer) foldStrDispatchF64(fn)
-    if (runVectorizer) vectorizeLaneLocal(fn, cfg.reduceUnroll === true, cfg.relaxedSimd === true, cfg.blurMultiPixel !== false, cfg.whyNotSimd === true, cfg.experimentalStencil !== false, cfg.experimentalOuterStrip !== false, cfg._pureFuncMap || null, cfg.experimentalToneMap !== false)
+    if (runVectorizer) vectorizeLaneLocal(fn, {
+      multiAcc: cfg.reduceUnroll === true,
+      relaxedFma: cfg.relaxedSimd === true,
+      blurMP: cfg.blurMultiPixel !== false,
+      whyNot: cfg.whyNotSimd === true,
+      stencil: cfg.experimentalStencil !== false,
+      outerStrip: cfg.experimentalOuterStrip !== false,
+      pureFuncMap: cfg._pureFuncMap || null,
+      toneMap: cfg.experimentalToneMap !== false,
+    })
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies

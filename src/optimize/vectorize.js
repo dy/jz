@@ -5143,7 +5143,12 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
  * Walk a function looking for vectorizable (block (loop)) pairs, in-place.
  * Adds new locals to the function header.
  */
-export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false, stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false) {
+// opts gates the recognizer set + lift variants (all default-safe so a bare
+// `vectorizeLaneLocal(fn)` is the conservative scalar-preserving pass):
+//   multiAcc, relaxedFma, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
+export function vectorizeLaneLocal(fn, opts = {}) {
+  const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
+    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
