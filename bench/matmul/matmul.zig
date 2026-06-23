@@ -2,17 +2,11 @@
 // Small-integer data keeps every product-sum exact in f64, so the checksum matches
 // every target with no parity class.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const N: usize = 256;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -64,11 +58,7 @@ fn matmul(a: []const f64, bt: []const f64, c: []f64) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const a = try allocator.alloc(f64, N * N);
@@ -84,10 +74,9 @@ pub fn main(proc: std.process.Init) !void {
     while (i < N_WARMUP) : (i += 1) matmul(a, bt, c);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         matmul(a, bt, c);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(c), N * N * N, 2, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumF64(c), N * N * N, 2, N_RUNS);
 }

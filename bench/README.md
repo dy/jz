@@ -91,15 +91,27 @@ shape. External unknown-shape JSON still uses the generic runtime parser.
 Native-language rows are intentionally per case. NumPy rows are used only
 where a vectorized array implementation is a meaningful Python convention.
 
-Pure interpreters (CPython, QuickJS, Hermes, Javy's embedded-QuickJS) are not
-benchmarked: this suite measures compiled-code quality, and an interpreter row
-inflates JZ's lead for free without answering a question a user actually has.
-The headline field is wasm-vs-wasm, apples-to-apples: JZ against the other
-languages compiled to the same target — WebAssembly run in V8 — i.e. Rust, Go,
-C, and Zig (`wasm32-wasi`), AssemblyScript, and Porffor, plus the JS JITs it
-replaces (V8/Bun/Deno/SpiderMonkey/GraalJS). Native C/Rust/Zig/Go and NumPy's
+Pure interpreters (CPython, QuickJS, Hermes) stay out of the **headline**
+geomean: it measures compiled-code quality, and an interpreter row inflates JZ's
+lead for free without answering a question a user actually has. Javy
+(embedded-QuickJS) is wired as a **fenced reference** — it appears per case as a
+hatched row so the cost of the "ship a JS interpreter in wasm" approach is
+visible, but it is excluded from `SVG_TARGETS` so it never moves the headline
+number. The headline field is wasm-vs-wasm, apples-to-apples: JZ against the
+other languages compiled to the same target — WebAssembly run in V8 — i.e. Rust,
+Go, C, and Zig (`wasm32-wasi`), AssemblyScript, Porffor, and MoonBit (the last on
+moonrun, MoonBit's V8 wasm runner), plus the JS JITs it replaces
+(V8/Bun/Deno/SpiderMonkey/GraalJS). Native C/Rust/Zig/Go and NumPy's
 vectorized C are the corpus reference band — the aggregate "what you give up by
 not rewriting", with native C the speed-of-light ceiling.
+
+**Coverage is reported, not hidden.** A target that is present but cannot compile
+or run a case (Porffor OOMs on most typed-array kernels; TinyGo's stdlib subset
+rejects some `.go`) records a `{ status: 'fail', reason }` entry in
+`results.json`, and the page renders it as a muted row with the reason — and as a
+`ran / attempted` count on the headline row. The geomean still averages only the
+cases a target completed correctly (you cannot ratio a run that never produced a
+number), but the gap is no longer invisible.
 
 The **per-case** view splits into two **same-class lanes**, so every bar in a
 card is a fair peer:
@@ -147,7 +159,10 @@ correctly-rounded; cascade is the same algorithm.
 | `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf` | Porffor (`porf run`) when installed |
-| `jawsm` | jawsm when installed |
+| `jawsm` | jawsm (JS → WasmGC) when installed |
+| `javy` | Javy (`javy build` — JS in embedded QuickJS) when installed — fenced interpreter reference, never in the headline geomean |
+| `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
+| `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
 
 The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced

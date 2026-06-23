@@ -14,7 +14,7 @@
 // Reports: median ms across N_RUNS, throughput in steps/µs, FNV-1a checksum over
 // the per-iteration program results.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 // Opcodes: LOADI=0, MULI=1, ADDI=2, XORSHR=3, DEC=4, JNZ=5, HALT=6. Each
 // instruction is three i32 cells: [op, a, b] (a=register, b=immediate/target).
@@ -23,12 +23,6 @@ const NINSTR: usize = 8;           // instructions in the program
 const N_ITERS: usize = 64;         // program runs per kernel pass
 const N_RUNS: usize = 21;
 const N_WARMUP: usize = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -109,11 +103,7 @@ fn runKernel(code: []i32, reg: []i32) u32 {
     return h;
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const code = try allocator.alloc(i32, NINSTR * 3);
@@ -130,14 +120,9 @@ pub fn main(init_args: std.process.Init) !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         cs = runKernel(code, reg);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{
-        medianUs(&samples), cs,
-        @as(usize, @intCast(STEPS)) * N_ITERS,
-        NINSTR, N_RUNS,
-    });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, @as(usize, @intCast(STEPS)) * N_ITERS, NINSTR, N_RUNS);
 }

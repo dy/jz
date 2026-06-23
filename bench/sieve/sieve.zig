@@ -11,18 +11,12 @@
 // Reports: median ms across N_RUNS, throughput in numbers/µs, FNV-1a checksum over
 // the composite bitmap.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const LIMIT: usize = 1 << 20;
 const N_ITERS: usize = 6;
 const N_RUNS: usize = 21;
 const N_WARMUP: usize = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn medianUs(samples: *[N_RUNS]f64) u64 {
     var i: usize = 1;
@@ -64,11 +58,7 @@ fn runKernel(comp: []u8) void {
     while (it < N_ITERS) : (it += 1) sieve(comp);
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const comp = try allocator.alloc(u8, LIMIT);
@@ -80,12 +70,11 @@ pub fn main(init_args: std.process.Init) !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         runKernel(comp);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
 
     const cs = checksumU8(comp);
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, LIMIT * N_ITERS, 1, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, LIMIT * N_ITERS, 1, N_RUNS);
 }

@@ -1,12 +1,11 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 const N: usize = 1024;
 const STEPS: usize = 8;
 const DT: f64 = 0.01;
 const EPS2: f64 = 0.05;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-fn nowMs() f64 { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts); return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0; }
 fn mix(h: u32, x: u32) u32 { return (h ^ x) *% 0x01000193; }
 fn checksumF64(o: []const f64) u32 {
     var h: u32 = 0x811c9dc5; var i: usize = 0;
@@ -36,11 +35,9 @@ fn step() void {
     }
     i = 0; while (i < N) : (i += 1) { px[i]+=vx[i]*DT; py[i]+=vy[i]*DT; pz[i]+=vz[i]*DT; }
 }
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io; var buf: [256]u8 = undefined; var w = Io.File.stdout().writer(io, &buf); const out = &w.interface;
+pub fn main() !void {
     var samples = [_]f64{0} ** N_RUNS;
     var i: usize = 0; while (i < N_WARMUP) : (i += 1) { seed(); var s: usize = 0; while (s < STEPS) : (s += 1) step(); }
-    i = 0; while (i < N_RUNS) : (i += 1) { seed(); const t0 = nowMs(); var s: usize = 0; while (s < STEPS) : (s += 1) step(); samples[i] = nowMs() - t0; }
-    try out.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(&px) ^ checksumF64(&vx), N*N*STEPS, STEPS, N_RUNS });
-    try out.flush();
+    i = 0; while (i < N_RUNS) : (i += 1) { seed(); const t0 = bench.nowMs(); var s: usize = 0; while (s < STEPS) : (s += 1) step(); samples[i] = bench.nowMs() - t0; }
+    bench.printResult(medianUs(&samples), checksumF64(&px) ^ checksumF64(&vx), N*N*STEPS, STEPS, N_RUNS);
 }

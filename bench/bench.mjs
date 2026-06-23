@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +17,13 @@ const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2
 // vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
 // jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
 const SIMDE_DIR = process.env.SIMDE_DIR || join(WABT_W2C_DIR, '..', 'third_party', 'simde')
+// Shared zig timing/print helper (the zig sibling of _lib/bench.h). zig 0.16
+// forbids `@import` outside the root file's directory, so the .zig cases reach it
+// as a named module via `--dep bench -Mbench=…` rather than a relative path.
+const ZIG_LIB = join(LIB, 'bench.zig')
+const zigModuleArgs = src => ['--dep', 'bench', `-Mroot=${src}`, `-Mbench=${ZIG_LIB}`]
+// Shared MoonBit timing/checksum helper, compiled into each case's `src` package.
+const MOONBIT_LIB = join(LIB, 'bench.mbt')
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
@@ -121,6 +128,7 @@ const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
       rs: existsSync(join(dir, `${d.name}.rs`)) ? join(dir, `${d.name}.rs`) : null,
       go: existsSync(join(dir, `${d.name}.go`)) ? join(dir, `${d.name}.go`) : null,
       zig: existsSync(join(dir, `${d.name}.zig`)) ? join(dir, `${d.name}.zig`) : null,
+      mbt: existsSync(join(dir, `${d.name}.mbt`)) ? join(dir, `${d.name}.mbt`) : null,
       as: existsSync(join(dir, `${d.name}.as.ts`)) ? join(dir, `${d.name}.as.ts`) : null,
       npy: existsSync(join(dir, `${d.name}.npy.py`)) ? join(dir, `${d.name}.npy.py`) : null,
       wat: existsSync(join(dir, `${d.name}.wat`)) ? join(dir, `${d.name}.wat`) : null,
@@ -303,6 +311,10 @@ int main(void) {
 
 const watWasmPath = c => join(caseBuild(c), `${c.id}-wat.wasm`)
 const jawsmWasmPath = c => join(caseBuild(c), `${c.id}-jawsm.wasm`)
+const javyWasmPath = c => join(caseBuild(c), `${c.id}.javy.wasm`)
+const tinygoWasmPath = c => join(caseBuild(c), `${c.id}.tinygo.wasm`)
+const moonbitProjDir = c => join(caseBuild(c), 'mbt')
+const moonbitWasmPath = c => join(moonbitProjDir(c), '_b', 'wasm', 'release', 'build', 'src', 'src.wasm')
 const w2cBinPath = c => join(caseBuild(c), `${c.id}-w2c`)
 const natBinPath = c => join(caseBuild(c), `${c.id}-nat`)
 const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
@@ -372,7 +384,7 @@ const targets = {
       const zigGlobalCache = build('zig-global-cache')
       mkdirSync(zigCache, { recursive: true })
       mkdirSync(zigGlobalCache, { recursive: true })
-      execFileSync('zig', ['build-exe', c.zig, '-O', 'ReleaseFast', '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, '-femit-bin=' + zigPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['build-exe', '-O', 'ReleaseFast', '-femit-bin=' + zigPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [zigPath(c)]),
   },
   numpy: {
@@ -472,9 +484,10 @@ const targets = {
       execFileSync('go', ['build', '-ldflags=-s -w', '-o', goWasmPath(c), c.go], { cwd: BENCH_DIR, stdio: 'pipe', env: { ...process.env, GOOS: 'wasip1', GOARCH: 'wasm', GOCACHE: goCache } })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), goWasmPath(c)]),
   },
-  // DEFERRED: zig 0.16's new std.process.Init / Io.File stdout path exits 71 under
-  // node:wasi (compiles clean, emits nothing). Wired and ready for when that lands;
-  // meanwhile it's out of SVG_TARGETS and the default corpus run.
+  // zig 0.16's std.Io / Io.File.stdout writer is silent under node:wasi, and so is
+  // wasi-libc (`-lc`) — both swallow stdout. So the cases time via the WASI
+  // clock_time_get import and print via fd_write directly (shared _lib/bench.zig),
+  // and the wasm build links NO libc. Verified under node:wasi AND wasmtime.
   'zig-wasm': {
     name: 'Zig → wasm (V8)',
     available: c => !!c.zig && has('zig'),
@@ -484,7 +497,7 @@ const targets = {
       const zigGlobalCache = build('zig-global-cache')
       mkdirSync(zigCache, { recursive: true })
       mkdirSync(zigGlobalCache, { recursive: true })
-      execFileSync('zig', ['build-exe', c.zig, '-target', 'wasm32-wasi', '-O', 'ReleaseFast', '-lc', '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, '-femit-bin=' + zigWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['build-exe', '-target', 'wasm32-wasi', '-O', 'ReleaseFast', '-femit-bin=' + zigWasmPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), zigWasmPath(c)]),
   },
   'c-wasm': {
@@ -523,6 +536,50 @@ const targets = {
       execFileSync('jawsm', [c.js, '-o', jawsmWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-wasm.mjs'), jawsmWasmPath(c)]),
   },
+  // Javy — JS→wasm by embedding QuickJS. A FENCED reference, never in the headline
+  // geomean (SVG_TARGETS): it ships a full interpreter, so it answers "JS in a wasm
+  // interpreter" — a different question from the compiled-code field jz competes in
+  // (see bench/README.md). Runs the same flat source the JS engines do.
+  javy: {
+    name: 'Javy (QuickJS-in-wasm)',
+    available: () => has('javy'),
+    bin: javyWasmPath,
+    run: c => tryRun('javy', c, () => {
+      writeFlat(c)
+      execFileSync('javy', ['compile', flatPath(c), '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-javy.mjs'), javyWasmPath(c)]),
+  },
+  // TinyGo — the same .go sources as `go`/`go-wasm`, through LLVM instead of the gc
+  // runtime: a much smaller/leaner wasm than `GOOS=wasip1`. A real wasm-band rival
+  // (reuses the Go corpus, no new sources). Limited stdlib — cases it can't compile
+  // surface as honest coverage misses.
+  tinygo: {
+    name: 'TinyGo → wasm (V8)',
+    available: c => !!c.go && has('tinygo'),
+    bin: tinygoWasmPath,
+    run: c => tryRun('tinygo', c, () => {
+      execFileSync('tinygo', ['build', '-target=wasip1', '-opt=2', '-no-debug', '-o', tinygoWasmPath(c), c.go], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), tinygoWasmPath(c)]),
+  },
+  // MoonBit — its own wasm-first language, compiled to the linear-memory `wasm`
+  // backend and run on moonrun (MoonBit's V8-based wasm runner, which supplies the
+  // monotonic clock the timing uses — like jz-wasmtime runs on wasmtime). The case
+  // .mbt drops into a generated single-package project alongside the shared
+  // _lib/bench.mbt helper; `moon build --release` emits the standalone wasm.
+  moonbit: {
+    name: 'MoonBit → wasm (moonrun)',
+    available: c => !!c.mbt && has('moon') && has('moonrun'),
+    bin: moonbitWasmPath,
+    run: c => tryRun('moonbit', c, () => {
+      const proj = moonbitProjDir(c)
+      mkdirSync(join(proj, 'src'), { recursive: true })
+      writeFileSync(join(proj, 'moon.mod'), 'name = "bench/case"\nversion = "0.1.0"\n')
+      writeFileSync(join(proj, 'src', 'moon.pkg'), 'import {\n  "moonbitlang/core/bench" @bench,\n}\noptions(\n  "is-main": true,\n)\n')
+      copyFileSync(MOONBIT_LIB, join(proj, 'src', 'bench.mbt'))
+      copyFileSync(c.mbt, join(proj, 'src', 'main.mbt'))
+      execFileSync('moon', ['build', '--target', 'wasm', '--release', '--target-dir', join(proj, '_b')], { cwd: proj, stdio: 'pipe' })
+    }, ['moonrun', moonbitWasmPath(c)]),
+  },
 }
 
 // Exact invocation per target — emitted into results.json meta so the bench
@@ -533,7 +590,7 @@ const TARGET_CMDS = {
   natgcc: 'gcc -O3 -ffp-contract=off <case>.c',
   rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
   go: 'go build -ldflags="-s -w" <case>.go',
-  zig: 'zig build-exe <case>.zig -O ReleaseFast',
+  zig: 'zig build-exe <case>.zig -O ReleaseFast (shared _lib/bench.zig)',
   numpy: 'python3 <case>.npy.py',
   wat: 'wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)',
   v8: 'node run-v8.mjs <case>.js',
@@ -547,11 +604,14 @@ const TARGET_CMDS = {
   as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
-  'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast -lc <case>.zig → node (V8 wasm)',
+  'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
   'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
+  javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',
+  tinygo: 'tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)',
+  moonbit: 'moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)',
 }
 
 const allCases = discoverCases()
@@ -614,6 +674,7 @@ const SVG_TARGETS = [
   { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
   { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
   { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
+  { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf', label: 'Porffor', sub: 'JS → wasm' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
@@ -624,6 +685,10 @@ for (const cid of selectedCases) {
   const c = caseById[cid]
   console.log(`\n# ${c.name} (${c.id})`)
   const results = []
+  // Targets that were AVAILABLE (toolchain present + source exists) but failed to
+  // compile or run — the honest "did not compile" signal. Distinct from a skip
+  // (toolchain absent / no source for this case), which is simply not measured.
+  const failures = []
   for (const tid of selectedTargets) {
     const t = targets[tid]
     if (!t.available(c)) {
@@ -632,7 +697,7 @@ for (const cid of selectedCases) {
     }
     process.stdout.write(`[run]  ${tid.padEnd(targetIdWidth)} ${t.name} … `)
     const r = t.run(c)
-    if (r.error) { console.log(`FAIL — ${r.error}`); continue }
+    if (r.error) { console.log(`FAIL — ${r.error}`); failures.push({ id: tid, reason: r.error }); continue }
     console.log(`${r.medianUs} µs  cs=${r.checksum}`)
     results.push(r)
   }
@@ -678,11 +743,16 @@ for (const cid of selectedCases) {
       name: c.name,
       samples: results[0].samples, stages: results[0].stages, runs: results[0].runs,
       ref: refCs,
-      targets: Object.fromEntries(results.map(r => [r.id, {
-        medianUs: r.medianUs,
-        bytes: r.bytes ?? null,
-        parity: r.checksum === refCs ? 'ok' : r.checksum === fmaCs ? 'fma' : 'DIFF',
-      }])),
+      targets: Object.fromEntries([
+        ...results.map(r => [r.id, {
+          medianUs: r.medianUs,
+          bytes: r.bytes ?? null,
+          parity: r.checksum === refCs ? 'ok' : r.checksum === fmaCs ? 'fma' : 'DIFF',
+        }]),
+        // Attempted-but-failed targets carry their reason (no medianUs) so the page
+        // can render coverage honestly instead of silently dropping the row.
+        ...failures.map(f => [f.id, { status: 'fail', reason: f.reason }]),
+      ]),
     }
   }
 

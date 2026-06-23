@@ -2,7 +2,7 @@
 // heat.js. On arm64 Zig may fuse `c + K*lap` to an FMA; the field then rounds in the
 // last ulp → reported as `fma` parity, not DIFF.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const W: usize = 258;
 const H: usize = 258;
@@ -10,12 +10,6 @@ const STEPS: usize = 100;
 const K: f64 = 0.125;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -76,11 +70,7 @@ fn run(a: []f64, b: []f64) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const a = try allocator.alloc(f64, W * H);
@@ -99,10 +89,9 @@ pub fn main(proc: std.process.Init) !void {
     while (i < N_RUNS) : (i += 1) {
         seed(a);
         seed(b);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         run(a, b);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(a), (W - 2) * (H - 2) * STEPS, 6, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumF64(a), (W - 2) * (H - 2) * STEPS, 6, N_RUNS);
 }

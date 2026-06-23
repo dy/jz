@@ -1,17 +1,11 @@
 // json.zig — general JSON parser (std.json.parseFromSlice + ArenaAllocator) for benchmark.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const SRC = "{\"items\":[{\"id\":1,\"kind\":2,\"value\":10},{\"id\":2,\"kind\":3,\"value\":20},{\"id\":3,\"kind\":5,\"value\":30}],\"meta\":{\"scale\":7,\"bias\":11}}";
 const N_ITERS = 512;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -66,11 +60,7 @@ fn parseAndWalk(arena: *std.heap.ArenaAllocator) !u32 {
     return h;
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -82,10 +72,9 @@ pub fn main(init_args: std.process.Init) !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         cs = try parseAndWalk(&arena);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, N_ITERS, 4, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, N_ITERS, 4, N_RUNS);
 }

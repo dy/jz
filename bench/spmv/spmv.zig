@@ -16,7 +16,7 @@
 // Reports: median ms across N_RUNS, throughput in nonzeros/µs, FNV-1a checksum
 // over the result vector.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const ROWS: usize = 4096;
 const NPR: usize = 16; // nonzeros per row
@@ -24,12 +24,6 @@ const NNZ: usize = ROWS * NPR;
 const N_ITERS: usize = 80; // SpMV passes per kernel run
 const N_RUNS: usize = 21;
 const N_WARMUP: usize = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn medianUs(samples: *[N_RUNS]f64) u64 {
     var i: usize = 1;
@@ -123,11 +117,7 @@ fn checksumF64(y: []const f64) u32 {
     return @bitCast(h);
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const rowPtr = try allocator.alloc(i32, ROWS + 1);
@@ -152,12 +142,11 @@ pub fn main(init_args: std.process.Init) !void {
     var i: usize = 0;
     while (i < N_RUNS) : (i += 1) {
         build(rowPtr, colIdx, values, x);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         runKernel(rowPtr, colIdx, values, x, y);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
 
     const cs = checksumF64(y);
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, NNZ * N_ITERS, 2, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, NNZ * N_ITERS, 2, N_RUNS);
 }

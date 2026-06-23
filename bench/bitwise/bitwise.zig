@@ -1,16 +1,10 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const N = 65536;
 const N_ROUNDS = 128;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -57,11 +51,7 @@ fn runKernel(state: []u32) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const state = try allocator.alloc(u32, N);
@@ -76,10 +66,9 @@ pub fn main(proc: std.process.Init) !void {
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         init(state);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         runKernel(state);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumU32(state), N * N_ROUNDS, 3, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumU32(state), N * N_ROUNDS, 3, N_RUNS);
 }

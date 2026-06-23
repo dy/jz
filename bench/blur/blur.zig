@@ -1,5 +1,5 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const W: i32 = 512;
 const H: i32 = 512;
@@ -8,12 +8,6 @@ const WIN: i32 = 2 * R + 1;
 const N: usize = @as(usize, W * H * 4);
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -109,11 +103,7 @@ fn vblur(src: []const u8, dst: []u8, w: i32, h: i32, r: i32) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const img = try allocator.alloc(u8, N);
@@ -132,11 +122,10 @@ pub fn main(proc: std.process.Init) !void {
     }
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         hblur(img, tmp, W, H, R);
         vblur(tmp, out, W, H, R);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumU8(out), W * H, WIN, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumU8(out), W * H, WIN, N_RUNS);
 }

@@ -13,7 +13,7 @@ export function headlineStats(results) {
   const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
-  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt] && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt] && t[tgt].status !== 'fail' && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
   let peak = 0
   for (const c of cases) { const t = c.targets; if (t.jz && t.v8 && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
   const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }

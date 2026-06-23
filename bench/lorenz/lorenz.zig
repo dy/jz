@@ -1,11 +1,10 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 const N_SAMPLES: usize = 1 << 16;
 const SUBSTEPS: usize = 16;
 const DT: f64 = 0.002;
 const SIGMA: f64 = 10.0; const RHO: f64 = 28.0; const BETA: f64 = 8.0 / 3.0;
 const N_RUNS = 21; const N_WARMUP = 5;
-fn nowMs() f64 { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts); return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0; }
 fn mix(h: u32, x: u32) u32 { return (h ^ x) *% 0x01000193; }
 fn checksumF64(o: []const f64) u32 { var h: u32 = 0x811c9dc5; var i: usize = 0; while (i < o.len*2) : (i += 256) { const b: u64 = @bitCast(o[i/2]); const w: u32 = if ((i&1)==0) @truncate(b) else @truncate(b>>32); h = mix(h, w); } return h; }
 fn medianUs(s: *[N_RUNS]f64) u64 { var i: usize=1; while (i<s.len):(i+=1){const v=s[i];var j=i;while(j>0 and s[j-1]>v):(j-=1)s[j]=s[j-1];s[j]=v;} return @intFromFloat(s[(s.len-1)>>1]*1000.0); }
@@ -28,11 +27,9 @@ fn integrate() void {
     xs[s]=x+y+z;
   }
 }
-pub fn main(proc: std.process.Init) !void {
-  const io=proc.io; var buf:[256]u8=undefined; var w=Io.File.stdout().writer(io,&buf); const out=&w.interface;
+pub fn main() !void {
   var samples=[_]f64{0}**N_RUNS;
   var i: usize=0; while(i<N_WARMUP):(i+=1)integrate();
-  i=0; while(i<N_RUNS):(i+=1){const t0=nowMs();integrate();samples[i]=nowMs()-t0;}
-  try out.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n",.{medianUs(&samples),checksumF64(&xs),N_SAMPLES*SUBSTEPS,SUBSTEPS,N_RUNS});
-  try out.flush();
+  i=0; while(i<N_RUNS):(i+=1){const t0=bench.nowMs();integrate();samples[i]=bench.nowMs()-t0;}
+  bench.printResult(medianUs(&samples),checksumF64(&xs),N_SAMPLES*SUBSTEPS,SUBSTEPS,N_RUNS);
 }

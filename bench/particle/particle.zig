@@ -1,5 +1,5 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const N: usize = 1 << 16;
 const STEPS: usize = 256;
@@ -7,12 +7,6 @@ const DT: f64 = 0.015625;
 const G: f64 = -9.8;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -70,11 +64,7 @@ fn medianUs(samples: *[N_RUNS]f64) u64 {
     return @as(u64, @intFromFloat(samples[(samples.len - 1) >> 1] * 1000.0));
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const px = try allocator.alloc(f64, N);
@@ -95,11 +85,10 @@ pub fn main(proc: std.process.Init) !void {
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         seedState(px, py, vx, vy);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         run(px, py, vx, vy);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
     const cs = checksumF64(py) ^ checksumF64(px);
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, N * STEPS, STEPS, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, N * STEPS, STEPS, N_RUNS);
 }

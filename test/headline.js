@@ -30,6 +30,14 @@ test('headline: a WRONG-result (parity DIFF) run is excluded from the ratio', ()
   is(headlineStats(r).asspeed, '3×')   // only case `a`; the DIFF run is dropped
 })
 
+test('headline: an attempted-but-failed run ({status:"fail"}) is excluded, never NaN', () => {
+  const r = { cases: {
+    a: C({ medianUs: 100, parity: 'ok' }, { porf: { medianUs: 300, parity: 'ok' } }),
+    b: C({ medianUs: 100, parity: 'ok' }, { porf: { status: 'fail', reason: 'memory access out of bounds' } }),  // didn't run → must not count, must not NaN
+  } }
+  is(headlineStats(r).porf, '3×')   // only case `a`; the failed run is dropped, not pushed as undefined/jz
+})
+
 test('headline: null when a target is absent (never NaN/Infinity)', () => {
   const s = headlineStats({ cases: { a: C({ medianUs: 100, parity: 'ok' }, { v8: { medianUs: 200, parity: 'ok' } }) } })
   is(s.asspeed, null)    // no AssemblyScript target anywhere

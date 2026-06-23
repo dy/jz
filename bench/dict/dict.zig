@@ -13,7 +13,7 @@
 // Reports: median ms across N_RUNS, throughput in ops/µs, FNV-1a checksum over
 // the probe results.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const CAP: usize = 1 << 14;    // slot count (power of two) → mask = CAP-1
 const MASK: u32 = CAP - 1;
@@ -22,12 +22,6 @@ const EMPTY: i32 = -1;         // sentinel; keys are forced non-negative so neve
 const N_ITERS: usize = 60;     // build+probe passes per kernel run
 const N_RUNS: usize = 21;
 const N_WARMUP: usize = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 // FNV-1a mix — wrapping i32 multiply matching Math.imul semantics, result reinterpreted as i32
 fn mix(h: i32, x: i32) i32 {
@@ -114,11 +108,7 @@ fn runKernel(keys: []i32, vals: []i32, src: []i32) u32 {
     return @bitCast(h);
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const keys = try allocator.alloc(i32, CAP);
@@ -137,11 +127,10 @@ pub fn main(init_args: std.process.Init) !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         cs = runKernel(keys, vals, src);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
     // printResult(medianUs, cs, NKEYS * N_ITERS, 2, N_RUNS)
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, NKEYS * N_ITERS, 2, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, NKEYS * N_ITERS, 2, N_RUNS);
 }

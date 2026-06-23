@@ -1,15 +1,9 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const N_ITERS = 200000;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -66,11 +60,7 @@ fn multiplyMany(a: *[16]f64, b: *[16]f64, out: *[16]f64, iters: usize) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     var a = [_]f64{0} ** 16;
     var b = [_]f64{0} ** 16;
@@ -82,10 +72,9 @@ pub fn main(proc: std.process.Init) !void {
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         init(&a, &b);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         multiplyMany(&a, &b, &out, N_ITERS);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(&out), N_ITERS * 16, 4, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumF64(&out), N_ITERS * 16, 4, N_RUNS);
 }

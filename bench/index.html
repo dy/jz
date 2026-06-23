@@ -107,6 +107,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
 .row.strong .lab, .row.strong .val { font-weight: 700; }
 .row .par { font-family: var(--mono); font-size: 10px; color: var(--red); margin-left: 6px; }
+/* attempted-but-failed target — muted, no bar; the reason rides a hover tooltip */
+.row.fail { opacity: .5; }
+.row.fail .val { color: var(--mid); font-style: italic; cursor: help; }
+.row.fail .bar::after { content: ''; position: absolute; inset: 50% 0 auto 0; border-top: 1px dotted var(--mid); }
 .bandlab { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--mid); margin: 14px 0 4px; }
 .subdiv { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--mid); margin: 12px 0 4px; }
 
@@ -241,7 +245,10 @@ const TARGETS = {
   'go-wasm':   { label: 'Go', sub: 'gc → wasm', band: 'wasm' },
   'c-wasm':    { label: 'C', sub: 'clang → wasm', band: 'wasm' },
   'zig-wasm':  { label: 'Zig', sub: 'zig → wasm', band: 'wasm' },
-  jawsm: { label: 'jawsm', band: 'wasm' },
+  tinygo: { label: 'Go', sub: 'TinyGo → wasm', band: 'wasm' },
+  moonbit: { label: 'MoonBit', sub: 'moonrun', band: 'wasm' },
+  jawsm: { label: 'jawsm', band: 'wasm', hatch: true },
+  javy:  { label: 'Javy', sub: 'QuickJS in wasm', band: 'wasm', hatch: true },
   // Native reference rows (corpus geomean only). `native` sub disambiguates them
   // from the wasm rows above — "C native" vs "C clang → wasm", "Rust native" vs
   // "Rust rustc → wasm". The speed-of-light ceiling, never a per-case row.
@@ -345,12 +352,43 @@ const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, c
   </div>`
 }
 
+// A target that was present but couldn't compile/run this case. Reason → a short
+// class for the row; the full message rides the tooltip.
+const failKind = reason => {
+  const r = reason || ''
+  if (/out of bounds|RangeError|offset|memory/i.test(r)) return 'memory error'
+  if (/is not defined|not a function|not implemented|unsupported|SyntaxError|TypeError/i.test(r)) return 'unsupported'
+  if (/timeout/i.test(r)) return 'timeout'
+  if (/exit \d|RuntimeError|Error/i.test(r)) return 'runtime error'
+  return 'did not run'
+}
+const failRow = (label, sub, cls, reason) => {
+  const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
+  return `<div class="row fail" tabindex="0" data-tip="${esc(reason || 'did not compile/run')}">
+    <span class="lab">${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
+    <span class="bar"></span>
+    <span class="val">${esc(failKind(reason))}</span>
+  </div>`
+}
+// Per-target corpus coverage: of the cases it was tried on, how many ran. Surfaces
+// the gap (Porffor runs a third of the kernels) instead of hiding the misses.
+const coverage = tid => {
+  let ran = 0, attempted = 0
+  for (const c of CORPUS) {
+    const r = c.targets[tid]
+    if (!r) continue
+    attempted++
+    if (r.status !== 'fail') ran++
+  }
+  return { ran, attempted }
+}
+
 // ── headline: banded geomeans, normalized to the fastest row ─────────────────
 const geoRatio = tid => {
   const rs = []
   for (const c of CORPUS) {
     const r = c.targets[tid], j = c.targets.jz
-    if (r && j && r.parity !== 'DIFF') rs.push(r.medianUs / j.medianUs)
+    if (r && j && r.status !== 'fail' && j.status !== 'fail' && r.parity !== 'DIFF') rs.push(r.medianUs / j.medianUs)
   }
   return rs.length ? { geo: geo(rs), n: rs.length } : null
 }
@@ -385,9 +423,12 @@ const renderGeomean = () => {
     // The class glyph rides the group header here (the group already names the class),
     // so corpus rows stay icon-free — no redundant per-row glyph under the header.
     html += `<div class="bandlab">${CLS_ICO[band] || ''}${lab}</div>`
-    for (const r of bandRows)
-      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub: nCases(r.n),
+    for (const r of bandRows) {
+      const cov = r.tid && coverage(r.tid)
+      const sub = cov && cov.attempted > cov.ran ? `${cov.ran} / ${cov.attempted} ran` : nCases(r.n)
+      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub,
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
+    }
   }
   $('geomean').innerHTML = html
 }
@@ -437,8 +478,11 @@ const renderChips = () => {
 // tags (stripClassSub) since the glyph carries the class. jz stays the solid row.
 const cardRows = c => {
   const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid])
-    .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r })).sort((a, b) => a.medianUs - b.medianUs)
-  const ok = entries.filter(r => r.parity !== 'DIFF')
+    .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r }))
+  // split attempted-but-failed targets out of the speed math — they have no median
+  const failed = entries.filter(r => r.status === 'fail')
+  const ran = entries.filter(r => r.status !== 'fail').sort((a, b) => a.medianUs - b.medianUs)
+  const ok = ran.filter(r => r.parity !== 'DIFF')
   if (!ok.length) return ''
   // anchor = fastest non-hatch row (≈ jz / browser-class), so a freak-fast native
   // binary can't crush the scale; the printed × is vs this anchor too, so jz reads
@@ -454,19 +498,23 @@ const cardRows = c => {
   const lbase = lrows.length ? Math.min(...lrows.map(r => r.medianUs)) : 1
   // one shared scale across reference + local rows, so an equal ratio is an equal
   // bar length everywhere in the card (each ratio is relative to its group's fastest)
-  const maxLin = Math.max(...[...entries.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
+  const maxLin = Math.max(...[...ran.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
   // reference + your-browser rows in ONE list, sorted by bar ratio — so the just-measured
   // rows land in their proper place (each ratio is vs its group's fastest ≈ jz, machine-
   // independent), not dumped at the end. The raw µs differs by machine; the × is the compare.
   const all = [
-    ...entries.map(r => ({ rel: r.medianUs / base, p: {
+    ...ran.map(r => ({ rel: r.medianUs / base, p: {
       label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity } })),
   ]
-  return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('')
+  // attempted-but-failed targets close the card as muted rows (reason in tooltip),
+  // so a missing competitor reads as "tried, couldn't" — not silently absent.
+  const failHtml = failed.sort((a, b) => lab(a).localeCompare(lab(b)))
+    .map(r => failRow(lab(r), r.sub, r.band, r.reason)).join('')
+  return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('') + failHtml
 }
 
 const renderCards = () => {
@@ -592,8 +640,11 @@ const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).re
 try {
   DATA = await fetch('./results.json').then(r => { if (!r.ok) throw 0; return r.json() })
   const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c })).filter(c => !HIDDEN.has(c.id))
-  CORPUS = all.filter(c => c.targets.jz)
-  CASES = CORPUS.concat(all.filter(c => !c.targets.jz))
+  // CORPUS = cases where jz actually RAN (a {status:'fail'} jz entry is present but
+  // carries no median, so it must not seed the geomeans).
+  const jzRan = c => c.targets.jz && c.targets.jz.status !== 'fail'
+  CORPUS = all.filter(jzRan)
+  CASES = CORPUS.concat(all.filter(c => !jzRan(c)))
   renderMeta(); renderChips(); renderAll()
 } catch {
   $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet — run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'

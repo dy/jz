@@ -1,16 +1,10 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const N_SAMPLES = 480000;
 const N_STAGES = 8;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -89,11 +83,7 @@ fn processCascade(x: []const f64, coeffs: []const f64, state: []f64, nStages: us
     }
 }
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const x = try allocator.alloc(f64, N_SAMPLES);
@@ -117,10 +107,9 @@ pub fn main(init: std.process.Init) !void {
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         @memset(state, 0);
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         processCascade(x, coeffs, state, N_STAGES, out);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS);
 }

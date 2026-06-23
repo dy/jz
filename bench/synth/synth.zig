@@ -1,5 +1,5 @@
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const SR: f64 = 44100.0;
 const N_NOTES = 64;
@@ -21,12 +21,6 @@ const A1: f64 = -1.143;
 const A2: f64 = 0.412;
 
 const FREQS = [_]f64{ 261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25 };
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
@@ -93,11 +87,7 @@ fn render(out: []f64) void {
     }
 }
 
-pub fn main(proc: std.process.Init) !void {
-    const io = proc.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const out = try allocator.alloc(f64, N);
@@ -108,10 +98,9 @@ pub fn main(proc: std.process.Init) !void {
     while (i < N_WARMUP) : (i += 1) render(out);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         render(out);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(out), N, N_NOTES, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), checksumF64(out), N, N_NOTES, N_RUNS);
 }

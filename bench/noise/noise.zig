@@ -17,19 +17,13 @@
 // Reports: median ms across N_RUNS, throughput in samples/µs, FNV-1a checksum over
 // the generated field.
 const std = @import("std");
-const Io = std.Io;
+const bench = @import("bench");
 
 const W = 256;
 const H = 256;
 const OCT = 5;
 const N_RUNS = 21;
 const N_WARMUP = 5;
-
-fn nowMs() f64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
-}
 
 fn medianUs(samples: *[N_RUNS]f64) u64 {
     var i: usize = 1;
@@ -136,11 +130,7 @@ fn render(perm: []const i32, field: []f64) void {
     }
 }
 
-pub fn main(init_args: std.process.Init) !void {
-    const io = init_args.io;
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const perm = try allocator.alloc(i32, 512);
@@ -156,12 +146,11 @@ pub fn main(init_args: std.process.Init) !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = nowMs();
+        const t0 = bench.nowMs();
         render(perm, field);
-        samples[i] = nowMs() - t0;
+        samples[i] = bench.nowMs() - t0;
     }
 
     const cs = checksumF64(field);
-    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, W * H, OCT, N_RUNS });
-    try stdout.flush();
+    bench.printResult(medianUs(&samples), cs, W * H, OCT, N_RUNS);
 }
