@@ -10,7 +10,7 @@ this document is the technical record.
 
 ---
 
-## [x] Vision & goal
+## [x] Vision
 
 > **JZ = JS as it should have been → WASM**
 
@@ -32,7 +32,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [x] Uniqueness
 
-> The uniqueness is already real and measured: type inference from plain JS (no annotations — AS can't say this), auto-SIMD, single-digit-kB output, a pure synchronous compiler that runs in the browser in milliseconds (Porffor fundamentally can't compile-on-the-fly like this), self-hosting, and the native pipeline that beats V8. Nobody else has that combination.
+> type inference from plain JS (no annotations — AS can't say this), auto-SIMD, single-digit-kB output, a pure synchronous compiler that runs in the browser in milliseconds (Porffor fundamentally can't compile-on-the-fly like this), self-hosting, and the native pipeline that beats V8. Nobody else has that combination.
 
 ## [x] Mission
 
@@ -55,12 +55,27 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [x] Values (what matters most)
 
-  1. **Performance without ceremony** — native speed from plain JS knowledge. No annotations, no toolchains.
+  1. **Predictable proven performance** — native speed from plain JS knowledge. No annotations, no toolchains. Any case is guaranteed worst case be faster than V8/JSC. *(Split this: "predictable" is provable structurally; "faster than V8/JSC on every case" is evidenced, not provable — the provable surrogate is "no waste". See §"Proof architecture".)*
   2. **Correctness by design** — bad patterns don't compile. The language is the linter.
   3. **Transparency** — no hidden allocations, no implicit copies. What you write is what runs.
   4. **Immediacy** — compilation is interactive, not a build step.
   5. **Tiny footprint** — kilobytes, not megabytes. No runtime, no wrappers.
-  6. **Elegance** — compiler itself is minimal and clean. <2K lines.
+  6. **Elegance** — the compiler stays clean and layered: a pure core that reads pre-computed facts, with type/stdlib breadth pushed to swappable modules. Dependency-light (two first-party libs: subscript, watr).
+
+## [x] Goals / claims
+
+* Produced WASM is faster conceptually and practically on all possible bench classes than the other WASM targets: if other compilers can optimize random source that way, it means they have a class of optimization, not specific case;
+* Produced WASM is faster than V8, JSC on all bench cases: if JIT understands source well to be able to reduce it to efficient bytecode, so should JZ
+* Produced WASM size is smaller than AssemblyScript
+* Compiled wasm2c or w2c2 is faster than any of the alternatives
+
+> **Status — the enforced bar, ratcheted, not yet universally met.** CI-gates the claim in
+> [`test/bench.js`](../test/bench.js): `WASM_TODO` is the explicit shrinking list of cases where a
+> wasm rival still leads (a non-listed regression fails the gate; closing a case deletes its entry).
+> Current gaps against the live corpus: 3/31 cases trail V8 (mandelbrot, wav, jessie); 17/31 are
+> larger than AssemblyScript (lz, qoi worst). Treat these as targets to ratchet, not facts to assert
+> in public copy — the README already hedges to "on par with AssemblyScript".
+
 
 ## [x] Paradigm shift -> WASM as live medium, not build artifact
 
@@ -80,14 +95,14 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Not a JS runtime — no eval, no dynamic import, no reflection
   * Not aiming for 100% JS compat — subset by design, divergences documented
   * Not a build tool — no bundling, no tree-shaking, no source maps
-  * Not an optimizing compiler — direct translation, WASM engine optimizes
+  * Not a speculative optimizer — sound static lowering only (narrowing, SIMD, CSE, escape analysis, const-fold); no profile-guided or runtime reopt, the engine handles the rest
   * Not a type system — types inferred from usage, never annotated
 
 ## [x] Success criteria (how we know it works)
 
   * Compilation < 1ms in browser for typical module
   * Output smaller than equivalent C via emscripten
-  * Compiler < 2K lines, zero dependencies
+  * Compiler stays small and dependency-light (two first-party deps: subscript, watr)
   * Any JZ program runs identically as JS (within documented divergences)
   * Audio worklet: zero GC pauses, stable real-time output
   * Cold start: parse + compile + instantiate < 5ms
@@ -148,9 +163,12 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 ## [x] Closures -> Capture by value + explicit env param
 
   * Capture by value: zero runtime cost for immutable captures
-  * Mutable captures disallowed (compile error)
+  * Mutable captures **supported** — the captured cell lives in the closure env (verified: an
+    in-body `() => n = n + 1` mutating a captured `n` compiles and runs). (Was once disallowed;
+    no longer.)
   * Implementation: funcIdx + env pointer (call_indirect with env as first param)
-  * Slight divergence from JS (documented)
+  * Boundary caveat: a closure *returned to JS* comes back as a boxed value (callable via the
+    interop layer), not as a bare JS function
   * Sufficient for functional patterns (currying, callbacks)
 
 ## [x] Floating point precision -> Compile-time rational simplification
@@ -181,6 +199,13 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
   Both sides of the boundary (JS and WASM) follow the same convention: read/write memory
   at the offset encoded in the NaN payload. JS uses typed array views on exported memory.
+
+  **Boundary wire type — i64, not f64.** Internally a box is an f64 NaN. *Crossing* JS↔wasm it
+  rides as an **i64** (a `BigInt` on the JS side): JSC/Safari canonicalizes f64 NaN payloads at the
+  boundary, erasing the box. Plain numbers stay f64 (free); only boxed values pay the i64 carrier.
+  A per-export `jz:i64exp` custom section records which params/results ride i64. See
+  [`layout.js`](../layout.js) and [`interop.js`](../interop.js). So "f64 everywhere" holds for
+  *internal* representation; the *boundary* is the one mixed signature.
 
   ### WASM GC: not viable for JS boundary
 
@@ -243,12 +268,13 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
   | Strategy | Alloc | Free | Best for |
   |----------|-------|------|----------|
-  | **Bump** (default) | Increment pointer | `_reset()` all | DSP, batch processing |
-  | **Free list** | malloc | free(ptr) | Mixed lifetimes |
-  | **Refcount** | alloc | auto on rc=0 | Shared structures |
-  | **External** | Host provides | Host frees | Embedded, plugins |
+  | **Bump** (default — **the only one shipped**) | Increment pointer | `_clear()` resets the arena | DSP, batch processing |
+  | **Free list** *(designed, deferred)* | malloc | free(ptr) | Mixed lifetimes |
+  | **Refcount** *(designed, deferred)* | alloc | auto on rc=0 | Shared structures |
+  | **External** *(designed, deferred)* | Host provides | Host frees | Embedded, plugins |
 
-  Contract: `_alloc(bytes) → i32`, `_reset()` or `_free(ptr)`. Implementation swappable.
+  Contract: `_alloc(bytes) → i32` and `_clear()` (arena reset); a `_free(ptr)` hook is reserved for the
+  deferred free-list/refcount strategies. Implementation swappable — today only bump ships.
 
 ## [x] Imports -> Pre-bundled source + primitives-only linking
 
@@ -263,7 +289,8 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   - Primary: bundle into single WASM (shared memory, full types)
   - Optional: primitives-only linking (for numeric leaf modules like DSP kernels)
   - Circular imports: prohibited (Jessie-style)
-  - Exports: named + re-export, no default exports
+  - Exports: named + re-export; `export default …` also compiles (yields a `default` export),
+    though named exports are the convention
   - Bare specifiers: importmap (CLI), relative paths required in source
 
 ## [x] Types -> i32/f64 by operator, monomorphic
@@ -300,16 +327,16 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [x] Metacircular (jz.wasm) -> WASI
 
-  Future: JZ compiling itself to WASM. Requires JZ to be expressive enough to self-host.
+  Shipped: JZ compiles its own entire source to `dist/jz.wasm` — the whole pipeline runs inside wasm.
 
-  * JZ compiling itself to WASM
+  * `dist/jz.wasm` *is* JZ compiled by JZ (built via [`scripts/selfhost-build.mjs`](../scripts/selfhost-build.mjs))
   * Uses WASI for I/O (fd_read/write for source, fd_write for output)
-  * Future goal — requires JZ to be expressive enough to self-host
+  * CI-gated: `npm run test:self` round-trips real programs through the in-wasm compiler and runs the output
 
 ## [x] Pluggable architecture -> Modules extending ctx.emit
 
-  Modules register on ctx: `ctx.emit[name]` (emitters), `ctx.stdlib[name]` (WAT),
-  `ctx.includes` (lazy inclusion). Core stays minimal, capabilities grow through modules.
+  Modules register on ctx: `ctx.core.emit[name]` (emitters), `ctx.core.stdlib[name]` (WAT),
+  `ctx.core.includes` (lazy inclusion). Core stays minimal, capabilities grow through modules.
 
 ## [x] Representation -> per-site, inferred (not a user ABI knob)
 
@@ -467,3 +494,73 @@ developer adjusts nothing):
   - WASM/watr branch hints, native tail calls, SIMD where provable
   - whole-program devirtualization, SRoA, const-fold, i32/f64 narrowing
   - README *performance hints* — documentation only, advisory, never required
+
+## [x] Proof architecture — what's provable vs what's evidenced
+
+"Predictable proven performance" (Values §1) fuses two claims that need different
+machinery. Conflating them is the standing risk — and the reason a 39-case bench
+can never close the goal.
+
+**Predictable is provable, structurally, today.** AOT + no deopt + no tiering + no
+GC ⇒ bounded variance: no warmup cliff, no deopt cliff, no GC pause. This follows
+from the architecture, not a benchmark, and it is the guarantee V8/JSC *cannot*
+make. Lead with variance, not mean.
+
+**Fast — "faster than V8/JSC on every case" — is NOT provable**, only *evidenced*:
+induction over a sample, against a moving, adaptive, machine-dependent JIT.
+Asserting it as a guarantee is the overclaim (and already locally false: size-vs-AS
+in aggregate; crc32/mandelbrot/AoS floors). The provable surrogate is **no waste** —
+the output contains none of the overhead the optimizer claims to remove. A negative,
+statically checkable property of the WAT, independent of any competitor or stopwatch.
+You cannot prove "fast"; you can prove "no waste", and that is stronger than any
+benchmark win because it does not erode when V8 ships a new tier next quarter.
+
+**The guarantee ladder** (increasing strength, decreasing reach):
+  0. **Predictable** — structural, proven by construction.
+  1. **Waste-free** — a machine-checked verifier asserts each absence-of-overhead
+     invariant over emitted WAT, swept over the fuzzer's generated *sublanguage* (a
+     proof over the language, not a sample). This is the engineering target.
+  2. **Locally optimal** — output is a fixpoint of the peephole+watr rewrite system
+     (no missed local rewrite) = "minimal theoretical WASM per construct", checkably.
+     Partial today (watr vacuums); a fixpoint assertion is the next step.
+  3. **Globally optimal** — undecidable in general; reachable per-construct only via a
+     bounded superoptimizer, offline, as a one-shot proof artifact. Never a live gate.
+
+**The speed claim becomes a partition, not a universal:**
+  { cases the verifier proves minimal } ∪ { cases at a documented structural floor
+  that bounds EVERY wasm producer — crc32 `clmul`, mandelbrot `fma`, AoS AVX2 }.
+A documented floor is a *stronger* statement than a benchmark win: "no wasm producer
+beats this on this target" outlives the next JIT; "we won by 1.05× today" does not.
+
+**The infra, mapped to the ladder** (the OUTPUT-side twin of `src/infer.js`'s
+named-fact/named-pass discipline — every opt now also has a named output invariant
+and a check with teeth):
+  - **absence-of-overhead invariants** — `test/wat-invariants.js`: per-pass *ablation*
+    (overhead present with the pass off, absent with it on — proves the check sees the
+    pattern AND that the named pass removes it) + per-sublanguage *population sweep*
+    over the fuzzer generators (hard-zero where clean; ratcheted where a gap is
+    documented). The structural twin of the value-correctness fuzzer.
+  - **machine-independent regression gate** — `test/perf-ratchet.js`: loop-body op
+    count over the shared corpus (`scripts/perf-corpus.mjs`), now including adversarial
+    whitelist-defeating shapes (`cond` nested-conditional, `buf` param-array, `nest`
+    nested-loop). The portable "did codegen get wasteful" signal; no stopwatch.
+  - **selection-bias audit** — `scripts/audit-assemblyscript.mjs` (`npm run audit:as`):
+    the AssemblyScript canon, annotation-free, checked for the two *sound* waste
+    signals (counter-compared-in-f64, per-iteration pointer decode). Third-party shapes
+    the in-house corpus never tuned for. (It deliberately does NOT flag body f64 from
+    bare `*`/`+`/`%` — that is the integer-overflow contract, not a deopt.)
+
+**Surfaced by building this** (now ratcheted, can't worsen, shrink when fixed; see
+`.work/todo.md`): nested-conditional int → f64 round-trip under the vectorizer;
+param typed-array base re-decoded per iteration (the flagship DSP shape); narrowLoopBound
+handling only `i < n` (not `<=`/`>`/`>=` or non-const counters). None were visible to
+the net-output bench — exactly why the proof lives at the construct level, not the
+program level.
+
+**Restated headline (honest, and the real moat):** JZ emits provably waste-free,
+predictable WASM from plain JS — no warmup, no deopt, no GC — and on every case is
+either proven minimal or at a floor no wasm producer can beat. Benchmarks are
+*evidence* the contract correlates with wall-clock wins; the verifier is the *proof*
+the contract holds; the perf-fuzzer and bias audit find the invariants not yet
+formalized. "We win benchmarks" is induction against a moving target; "we emit
+waste-free locally-optimal code with bounded variance" is deduction.

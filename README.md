@@ -454,6 +454,8 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 
 Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds, fast enough to do on the fly. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
 
+Because compiling is that cheap, WASM becomes a *live medium*, not just a build artifact: hot-swap a compute kernel without a reload, recompile user-supplied source on the fly, or treat compiling as part of scripting — not a deploy step.
+
 </details>
 
 
@@ -540,8 +542,8 @@ Small & fast JS subset → full JS spec & bundled engine:
 
 ## Contributing
 
-Setup, code layout, and the bench/perf invariants are in [CONTRIBUTING.md](docs/CONTRIBUTING.md);
-the architecture & design rationale (NaN-boxing, type inference, native pipeline) in [DESIGN.md](docs/DESIGN.md).
+Setup, code layout, and the bench/perf invariants are in [CONTRIBUTING.md](CONTRIBUTING.md);
+the architecture & design rationale (NaN-boxing, type inference, native pipeline) in [research.md](.work/research.md).
 
 
 <p align=center><a href="https://github.com/dy">dy</a> • <a href="https://github.com/krishnized/license/">ॐ</a></p>

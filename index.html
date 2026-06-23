@@ -1230,7 +1230,7 @@
             <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
             <h1>Computational JS <br class="hb">at native speed</h1>
           </div>
-          <p class="sub">Compile JS to WASM ahead of time. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span><br> For DSP, visuals, simulation, physics.</p>
+          <p class="sub">Compile your JS to WASM ahead of time. No rewrite, no lock-in. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span> For DSP, visuals, numerics and more.</p>
         </div>
 
         <div class="pcol pright">
@@ -1277,8 +1277,7 @@
             </svg></summary>
           <div class="ans">
             <p>A compiler for a distilled JavaScript subset — Crockford’s “good parts”. </p>
-            <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles to <code>.wasm</code> – sandboxed, portable, memory-safe.</p>
-            <p>No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
+            <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
             <table>
               <thead>
                 <tr>
@@ -1305,6 +1304,10 @@
                 </tr>
                 <tr>
                   <td>Scientific, numeric, ML</td>
+                  <td>Security crypto, big-ints</td>
+                </tr>
+                <tr>
+                  <td>Hashing, checksums, RNG</td>
                   <td>Glue, plumbing, orchestration</td>
                 </tr>
               </tbody>
@@ -1350,7 +1353,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec that affects performance.</p>
+            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec that affects performance and cannot compile itself yet.</p>
           </div>
         </details>
 
@@ -1359,7 +1362,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>A matter of preference, JS is more portable. If you can compile it to WASM or <a href="#native">native</a> with comparable performance — why second language to keep in sync?</p>
+            <p>A matter of preference. JS is more common – if you can compile it to WASM or <a href="#native">native</a> with comparable performance — why second language to keep in sync?</p>
           </div>
         </details>
 
@@ -1369,7 +1372,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>Same source <b>2.7× faster than V8</b>, <b>2.6× faster than Rust→wasm</b>, and <b>on par with native C</b>. JZ auto-vectorizes (SIMD) where the Rust/C→wasm paths don’t. Certain cases Rust native auto-vectorizes better – that's limitation of WASM.</p>
+            <p>Same source, <b>over 2× faster than V8</b> at <b>near-native speed</b> — geomean across the bench corpus (chart below; per-case numbers on the <a href="bench/">bench page</a>), also ahead of Rust→wasm and AssemblyScript→wasm. JZ auto-vectorizes (SIMD) where the Rust/C→wasm paths don’t; a few cases Rust native vectorizes better — a limitation of WASM.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
