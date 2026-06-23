@@ -1471,6 +1471,21 @@ const i32TopBitClear = (n) => {
 const i32EqSound = (pa, pb) => pa.sign === pb.sign ||
   i32TopBitClear((pa.sign === 'u' ? pa : pb).src)
 
+// A memory-free, trap-free, side-effect-free expression — safe to evaluate UNCONDITIONALLY (as a
+// `select` arm does) and cheap enough that doing so never loses to a branch. Locals/consts and
+// arithmetic/bitwise/compare/logical over them. Excludes loads (`[]`, may read OOB when the guard
+// was protecting the access), calls, `.`/`?.` (dispatch), `/` `%` (int trap on 0), assignments.
+const CHEAP_PURE_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~',
+  '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '!', '?:'])
+const isCheapPureVal = (n) => {
+  if (typeof n === 'string' || typeof n === 'number') return true
+  if (!Array.isArray(n)) return false
+  if (n[0] == null) return true                              // boxed literal [, v]
+  if (n[0] === 'local.get') return true
+  if (CHEAP_PURE_OPS.has(n[0])) { for (let i = 1; i < n.length; i++) if (!isCheapPureVal(n[i])) return false; return true }
+  return false
+}
+
 function emitLooseEq(a, b, negate) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -3167,6 +3182,17 @@ export const emitter = {
       if (truthy) return emitVoid(then)
       if (els != null) return emitVoid(els)
       return null
+    }
+    // If-conversion (speed tier): `if (cond) x = <cheap pure value>` (no else) → `x = cond ? value
+    // : x`, which lowers to a branchless `select`. Removes the data-dependent branch (and its
+    // misprediction) from min/max/clamp reductions — e.g. levenshtein's `if (ins < m) m = ins`,
+    // ~27% faster. Gated to the same speed tier as boolConvertToSelect (the select latency/size
+    // trade). Restricted to a plain assignment of a memory-/trap-free expr to a simple local, so
+    // the unconditional false-case eval is free and identical in effect.
+    if (els == null && ctx.transform.optimize?.boolConvertToSelect && isCheapPureVal(cond)) {
+      const asg = Array.isArray(then) && then[0] === ';' && then.length === 2 ? then[1] : then
+      if (Array.isArray(asg) && asg[0] === '=' && typeof asg[1] === 'string' && isCheapPureVal(asg[2]))
+        return emitVoid(['=', asg[1], ['?:', cond, asg[2], asg[1]]])   // cond cheap-pure → re-emit is free
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.

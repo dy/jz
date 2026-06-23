@@ -994,6 +994,38 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   is(jz(SRC).exports.main(), ref, 'eqcount result bit-exact vs JS')
 })
 
+test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier)', () => {
+  // A data-dependent guarded scalar update (min/max/clamp reduction) becomes a `select` instead
+  // of a branch — kills misprediction in hot loops (levenshtein's DP min, ~27% faster). General:
+  // any no-else `if (cheapCond) local = cheapPureExpr`. Only at the speed tier (select is a
+  // latency/size trade, like boolConvertToSelect). Bit-exact vs the branchy form.
+  const SRC = `
+    const reduce = (xs, n) => {
+      let m = xs[0]
+      for (let i = 1; i < n; i++) { const v = xs[i]; if (v < m) m = v; if (v > 1000) m = m + 1 }
+      return m
+    }
+    export const main = () => {           // call twice so reduce stays its own function to inspect
+      const xs = new Int32Array(64)
+      let s = 12345 | 0
+      for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }
+      return (reduce(xs, 64) + reduce(xs, 64)) | 0
+    }
+  `
+  const grab = (wat) => wat.slice(wat.indexOf('(func $reduce'), wat.indexOf('\n  (func ', wat.indexOf('(func $reduce') + 10) + 1 || undefined)
+  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  ok(/\bselect\b/.test(fn), 'guarded update lowered to select at speed tier')
+  is(/\(if\b/.test(fn), false, 'no branch left for the guarded update')
+  // Default tier keeps the branch (select is speed-only).
+  const fnD = grab(jz.compile(SRC, { wat: true }))
+  ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
+  // Bit-exact regardless of tier.
+  const ref = (() => { const xs = []; let s = 12345 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }
+    let m = xs[0]; for (let i = 1; i < 64; i++) { const v = xs[i]; if (v < m) m = v; if (v > 1000) m = m + 1 } return (m + m) | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'speed-tier result bit-exact')
+  is(jz(SRC).exports.main(), ref, 'default-tier result bit-exact')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
