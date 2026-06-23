@@ -940,6 +940,33 @@ test('typed-array assignment statement does not materialize assigned value', () 
   is(/\(block\s+\(result f64\)/.test(storePrefix), false)
 })
 
+test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 round-trip', () => {
+  // An integer typed-array element READ materializes as `f64.convert_i32_*(load8_u …)`, but when
+  // its only consumer is an integer typed-array STORE the value is integer-backed: store the i32
+  // low bits via `store8` and skip the sign-branch + i64-trunc + wrap. Eradicates the f64 detour
+  // on every byte/codec transform (base64/qoi/wav). General: any `dst[i] = src[j]` of int elements.
+  // xform is INTERNAL (its array params are typed Uint8Array via main's `new Uint8Array` call sites)
+  // and called twice so it survives as a function to inspect. The store value `table[src[i]]` is a
+  // Uint8 read (materialized f64.convert) whose only consumer is the Uint8 store → i32.store8 directly.
+  const SRC = `
+    const xform = (src, table, out, n) => { for (let i = 0; i < n; i++) out[i] = table[src[i]] }
+    export const main = () => {
+      const src = new Uint8Array(8), table = new Uint8Array(256), out = new Uint8Array(8)
+      for (let i = 0; i < 256; i++) table[i] = (i * 7) & 0xff
+      for (let i = 0; i < 8; i++) src[i] = (i * 31) & 0xff
+      xform(src, table, out, 8); xform(src, table, out, 8)
+      return out[3] | 0
+    }
+  `
+  const wat = jz.compile(SRC, { wat: true })
+  // xform inlines into main$exp; the whole user function (transform + fills) is integer-only.
+  const start = wat.indexOf('(func $main')
+  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  ok(/i32\.store8/.test(body), 'stores the byte directly via i32.store8')
+  is(/i64\.trunc_sat|f64\.lt/.test(body), false, 'no f64→i32 trunc / sign-branch in the byte transform')
+  is(jz(SRC).exports.main(), ((((3 * 31) & 0xff) * 7) & 0xff), 'byte transform result correct (table[src[3]])')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

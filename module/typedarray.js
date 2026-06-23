@@ -1345,20 +1345,28 @@ export default (ctx) => {
         ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float32Array
     }
-    // Integer store: when the source is already i32-typed (bitwise ops, |0,
-    // typed-array load, known-i32 var), store it directly — skip the f64
-    // detour that costs a sign branch + i64 trunc + i32 wrap on every write.
-    if (valIR.type === 'i32') {
-      const cheap = Array.isArray(valIR) &&
-        ((valIR[0] === 'local.get' && typeof valIR[1] === 'string') ||
-         (valIR[0] === 'i32.const' && (typeof valIR[1] === 'number' || typeof valIR[1] === 'string')))
-      if (void_ && cheap) return typed([STORE[et], off, valIR], 'void')
+    // Integer store: when the source is already i32-typed (bitwise ops, |0, known-i32 var) —
+    // OR an `f64.convert_i32_*` that peels back to i32 (an Int8/Uint8/Int16/… element READ
+    // materialized as f64 by the universal value model) — store the i32 low bits directly,
+    // skipping the f64 detour that costs a sign branch + i64 trunc + i32 wrap on every write.
+    // This eradicates the f64 round-trip on byte/typed-array TRANSFORMS — `out[i] = table[in[j]]`
+    // and `dst[i] = src[j]` (base64, qoi, wav, blur) — where both sides are integer elements.
+    // `store8/16` mask the low bits, so storing the convert's i32 source is bit-identical; the
+    // non-void result reboxes that i32 to f64 (the assignment's RHS value, in element range here).
+    const i32Backed = valIR.type === 'i32' ||
+      (Array.isArray(valIR) && (valIR[0] === 'f64.convert_i32_s' || valIR[0] === 'f64.convert_i32_u'))
+    if (i32Backed) {
+      const vi = asI32(valIR)
+      const cheap = Array.isArray(vi) &&
+        ((vi[0] === 'local.get' && typeof vi[1] === 'string') ||
+         (vi[0] === 'i32.const' && (typeof vi[1] === 'number' || typeof vi[1] === 'string')))
+      if (void_ && cheap) return typed([STORE[et], off, vi], 'void')
       const v32 = tempI32('tw')
       return typed(void_ ? ['block',
-        ['local.set', `$${v32}`, valIR],
+        ['local.set', `$${v32}`, vi],
         [STORE[et], off, ['local.get', `$${v32}`]]]
         : ['block', ['result', 'f64'],
-        ['local.set', `$${v32}`, valIR],
+        ['local.set', `$${v32}`, vi],
         [STORE[et], off, ['local.get', `$${v32}`]],
         [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
