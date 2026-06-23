@@ -1045,11 +1045,15 @@ test('param i32-narrowing: recursive identity arg does not poison the i32 consen
 // the return widen to f64, so an i32 consumer of the result pays a convert.
 test('result i32-narrowing: a recursive integer result narrows to i32 (optimistic cycle break)', () => {
   if (onWasi()) return
+  // No `|0` crutch: jz reasons that `n` and the result are integers on its own. The recursive arg
+  // `n - 1 - i` is a param/local integer expression (i32 iff n is i32) — optimistic recursive
+  // narrowing breaks the cycle so `n` narrows from the non-recursive `sumTo(7)` site.
   const wat = jz.compile(`
-    let sumTo = (n) => { if (n <= 0) return 0; let s = 0; let i = 0; while (i < n) { s = s + sumTo((n - 1 - i) | 0); i++ } return s & 0x3ffffff }
+    let sumTo = (n) => { if (n <= 0) return 0; let s = 0; let i = 0; while (i < n) { s = s + sumTo(n - 1 - i); i++ } return s & 0x3ffffff }
     export let main = () => sumTo(7) | 0
   `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
   const sumTo = wat.match(/\(func \$sumTo\b[\s\S]*?\n  \)/)[0]
+  ok(/\(param \$n i32\)/.test(sumTo), 'recursive param `n` narrows to i32 (no |0 hint — decreasing-recursion cycle broken)')
   ok(/\(result i32\)/.test(sumTo), 'recursive sumTo result narrows to i32')
-  ok(!/f64\./.test(sumTo), 'no f64 ops in the recursive integer body (result + accumulator stay i32)')
+  ok(!/f64\./.test(sumTo), 'no f64 ops in the recursive integer body (param + result + accumulator all i32)')
 })

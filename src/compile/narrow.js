@@ -28,6 +28,10 @@ import {
 } from './infer.js'
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+// Integer-preserving ops: an expr over integers stays integer (ToInt32-consistent) through these.
+// Excludes /, %, ** (fractional). Used to recognize a recursive arg whose i32-ness follows from
+// its inputs' i32-ness (`f(n - 1)`), so it carries no independent type evidence.
+const RECUR_INT_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~'])
 
 
 function filterLiveCallSites(callSites, valueUsed) {
@@ -797,7 +801,27 @@ export default function narrowSignatures(programFacts, ast) {
   // of the type query, so a param fed only such integer elements (dict's key `k` ← src[i],
   // threaded through Math.imul / === keys[h] / keys[h]=k) narrows to i32 instead of paying
   // convert + f64-compare + trunc round-trips through its probe loop.
+  // A value built ONLY from the callee's own params + already-i32 locals + integer constants via
+  // integer-preserving ops. Its i32-ness follows from its inputs' — for a recursive self-call it
+  // carries no INDEPENDENT evidence about whether the params are i32. Used for the optimism below.
+  const isRecurIntExpr = (n, pnames, callerLocals) => {
+    if (typeof n === 'string') return pnames.has(n) || callerLocals?.get?.(n) === 'i32'
+    if (typeof n === 'number') return Number.isInteger(n)
+    if (!Array.isArray(n)) return false
+    if (n[0] == null) return typeof n[1] === 'number' && Number.isInteger(n[1])           // boxed int literal
+    if (n[0] === 'local.get') return pnames.has(n[1]) || callerLocals?.get?.(n[1]) === 'i32'
+    if (RECUR_INT_OPS.has(n[0])) return n.slice(1).every(c => isRecurIntExpr(c, pnames, callerLocals))
+    return false
+  }
   const argWasmType = (arg, state) => {
+    // Recursive self-call: an arg built only from the callee's own params + already-i32 locals +
+    // int constants (`f(n - 1)`, `f(n - 1 - i)`) is i32 IFF those params are i32 — a fixpoint
+    // identity carrying no INDEPENDENT type evidence. Optimistically type it i32 so the NON-
+    // recursive call sites decide: all i32 ⇒ the param narrows; any f64 ⇒ the meet still poisons
+    // it. Lets a plain decreasing recursion narrow with no `|0` source crutch. (The bare-identity
+    // arg `f(n)` is already skipped wholesale in runCallsiteLattice.)
+    if (state.callee === state.callerFunc?.name &&
+        isRecurIntExpr(arg, new Set(state.func.sig.params.map(p => p.name)), state.callerLocals)) return 'i32'
     if (!state._teOverlay) {
       const m = new Map(ctx.scope.globalTypedElem || [])
       const pf = state.callerParamFacts('typedCtor')
