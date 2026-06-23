@@ -4265,13 +4265,19 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
   // accumulator seeds (→ splat), scalar inner-IV init. MUST run before the inner-body lift so the
   // per-pixel coord lanes are registered when the inner loop references them. ----
   const laneInit = []
+  const seededAccs = new Set()
   for (let i = 0; i < innerIdx; i++) {
     const s = obody[i]
     if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) { laneInit.push(s); continue }
     const name = s[1]
     if (accNames.has(name)) {                       // accumulator seed → splat
+      // The seed must be a FRESH per-pixel value, independent of the accumulator's own carry.
+      // A seed that reads `name` (e.g. `acc = acc * decay`) propagates the previous pixel's
+      // running value across pixels — that's a loop-carried recurrence, not a per-pixel reset.
+      if (readsName(s[2], name)) return null
       const seed = liftOS(s[2])
       if (!seed) return null
+      seededAccs.add(name)
       laneInit.push(['local.set', laneMap.get(name), seed]); continue
     }
     if (fnLocals.get(name) === 'f64' && readsName(s[2], pxVar)) {   // per-pixel coord (cx = xi/W) → ramp lane
@@ -4283,6 +4289,14 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
     }
     laneInit.push(s)                                // scalar (inner IV init `b=0`, invariant setup)
   }
+
+  // LEGALITY: every accumulator must be FRESHLY SEEDED inside the outer-loop body. An accumulator
+  // with no per-pixel seed is live-in — carried across outer iterations (a recurrence like the
+  // lorenz `x = x + S·(…)` evolving over the sample loop). The two pixel lanes are then DEPENDENT:
+  // lane xi+1 must continue from lane xi's final value, not restart from a splat of the shared
+  // carry. Strip-mining it runs both lanes from the same seed in lockstep — halving the real work
+  // and producing a wrong result (a bogus speedup on a serial recurrence). Reject.
+  for (const a of accNames) if (!seededAccs.has(a)) return null
 
   // ---- lift the inner-loop body: temp f64 lane locals + accumulate into the acc shadows; the
   // inner IV bump stays scalar. Per-pixel coords now resolve via laneMap. ----
@@ -4335,6 +4349,205 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
   const iLabelB = innerBlock[1], iLabelL = innerLoopNode[1]
   const innerSimd = ['block', iLabelB, ['loop', iLabelL, iExit, ...liftedInner, iInc, ['br', iLabelL]]]
   const laneCompute = [...laneInit, innerSimd]
+  const epiLane = (k) => [
+    ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
+    ...epilogue.map(s => bump(s, k)),
+  ]
+  const sOut = nm('ob'), sOl = nm('ol')
+  const simdOuter = ['block', sOut, ['loop', sOl,
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ...laneCompute, ...epiLane(0), ...epiLane(1),
+    ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
+    ['br', sOl]]]
+  const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
+  return { wrapper, newLocalDecls }
+}
+
+// ---- Per-pixel iterated-map reduction (tryIteratedReduce, experimental) ----------------------
+//
+// Generalizes the outer-strip to the ITERATED-MAP fractal shape — lyapunov, bifurcation, smooth-
+// escape attractors — whose per-pixel value runs a recurrence many times and accumulates a
+// transcendental. Beyond tryOuterStrip (one inner loop, a plain additive accumulator) it handles:
+//   • MULTIPLE inner loops carrying per-pixel f64 state between them (lyapunov warmup → accumulate),
+//   • loop-carried f64 RECURRENCES   x = r·x·(1−x)   (not just acc = acc + …),
+//   • lane-invariant scalar bookkeeping kept SCALAR — integer counters with wraparound and the
+//     forcing-sequence gather seq[si] (same index for both lanes → one scalar load),
+//   • a scalar-condition select   seq[si]<1 ? a : b   (a ramps per lane, b splats) → a scalar
+//     `if (result v128)`, and a per-lane conditional accumulate   if(d>0) L += log(d)   → bitselect.
+// Two adjacent pixels (xi, xi+1) run as f64x2 lanes; the colour pack+store runs scalar per lane,
+// and the original scalar loop, kept as the tail, finishes the odd last pixel.
+//
+// BIT-EXACT: f64x2 arithmetic is per-lane IEEE-identical, $math.log_v/exp_v are the per-lane mirrors
+// of the scalar polys, and the conditional accumulate adds bitselect(f(x), 0, mask) — exactly the
+// scalar add-or-skip. The speculatively-evaluated transcendental of a masked-out lane is discarded
+// (the helpers never trap). Gated behind cfg.experimentalOuterStrip; only fires when an inner loop
+// carries a transcendental (the latency-bound work SIMD actually accelerates — cheap-arithmetic
+// pixel loops are left to the scalar JIT, which already pipelines independent iterations).
+function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled) {
+  if (!enabled) return null
+  const outer = matchOuterPixelLoop(blockNode)
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+
+  const innerIdxs = []
+  for (let i = 0; i < obody.length; i++) {
+    const s = obody[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) innerIdxs.push(i)
+  }
+  if (!innerIdxs.length) return null
+  const lastInner = innerIdxs[innerIdxs.length - 1]
+  const innerSet = new Set(innerIdxs)
+
+  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
+  if (obody.some(impureCall)) return null
+
+  const id = freshIdRef.next++
+  const nm = (s) => `$__ir${id}_${s}`
+  const laneMap = new Map()       // f64 per-pixel local → its v128 shadow
+  const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
+  let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
+
+  const bump = (n, k) => k === 0 ? n
+    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
+    : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const rampOf = (piv) => pivType.get(piv) === 'f64'
+    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
+    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+  // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
+  const laneInvariant = (n) => !isArr(n) ? true
+    : n[0] === 'local.get' ? !(laneMap.has(n[1]) || pivType.has(n[1]))
+    : n.slice(1).every(laneInvariant)
+
+  // Build the f64x2 form of `cond ? x : y` from already-lifted arms `x`,`y` and the raw `cond`.
+  // A lane-INVARIANT cond (same both lanes — e.g. seq[si]<1) → a v128-typed scalar branch; a
+  // per-lane f64 compare → bitselect (x where cond, y elsewhere).
+  const liftSelect = (x, y, cond) => {
+    if (!x || !y) return null
+    if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+    if (laneInvariant(cond)) return ['if', ['result', 'v128'], cond, ['then', x], ['else', y]]
+    const cmp = isArr(cond) && cond.length === 3 ? CMP_LANE[cond[0]] : null
+    if (!cmp) return null
+    const ca = lift(cond[1]), cb = lift(cond[2])
+    return (ca && cb) ? ['v128.bitselect', x, y, [cmp, ca, cb]] : null
+  }
+  // Lift an f64 expression to f64x2 (null = not liftable).
+  const lift = (n) => {
+    if (!isArr(n)) return null
+    const op = n[0]
+    if (op === 'f64.const') return ['f64x2.splat', n]
+    if (op === 'local.get') {
+      const v = n[1]
+      if (laneMap.has(v)) return ['local.get', laneMap.get(v)]
+      if (pivType.get(v) === 'f64') return rampOf(v)
+      if (writesName(loopNode, v)) return null
+      return ['f64x2.splat', n]
+    }
+    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampOf(n[1][1])
+    if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
+    if (LOAD_OPS[op] === 'f64') {
+      const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
+      if (readsName(addr, pxVar) || [...laneMap.keys()].some(lv => readsName(addr, lv))) return null   // per-lane gather: unsupported
+      return ['f64x2.splat', n]
+    }
+    if (op === 'call') {
+      const v2 = PPC_CALL2[n[1]]
+      if (!v2) return null
+      if (n.length === 3) { const a = lift(n[2]); if (!a) return null; sawHeavy = true; return ['call', v2, a] }
+      if (n.length === 4) { const a = lift(n[2]), b = lift(n[3]); if (!a || !b) return null; sawHeavy = true; return ['call', v2, a, b] }
+      return null
+    }
+    if (op === 'if') {
+      if (!isArr(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null
+      const thenN = n[3], elseN = n[4]
+      if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) return null
+      if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) return null
+      let cond = n[2]
+      if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+      return liftSelect(lift(thenN[1]), lift(elseN[1]), cond)
+    }
+    // jz lowers `cond ? A : B` to a `select` (A if cond else B). Same two cases as the `if` form:
+    // lane-invariant cond → a scalar v128-typed branch; per-lane f64 compare → bitselect.
+    if (op === 'select' && n.length === 4) return liftSelect(lift(n[1]), lift(n[2]), n[3])
+    if (LANE_PURE.f64.has(op)) {
+      const ks = n.slice(1).map(lift)
+      return ks.some(k => k === null) ? null : [LANE_PURE.f64.get(op).simd, ...ks]
+    }
+    return null
+  }
+
+  // Lift one inner-loop body statement → its lifted form(s), or null to bail.
+  const liftInnerStmt = (s, innerIV) => {
+    if (matchInc1(s) === innerIV || matchIncN(s)?.name === innerIV) return [s]   // IV bump: scalar
+    if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3) {
+      const name = s[1], rhs = s[2]
+      if (fnLocals.get(name) !== 'f64') return laneInvariant(rhs) ? [s] : null   // scalar i32 counter
+      const lifted = lift(rhs)   // recurrence (rhs reads name) resolves to the shadow — fine
+      return lifted ? [['local.set', shadowOf(name), lifted]] : null
+    }
+    // Lane-invariant scalar `if` (counter wraparound `if(si>=N) si=0`) → keep scalar.
+    if (isArr(s) && s[0] === 'if' && laneInvariant(s[1]) &&
+        s.slice(2).every(arm => isArr(arm) && (arm[0] === 'then' || arm[0] === 'else') &&
+          arm.slice(1).every(st => isArr(st) && st[0] === 'local.set' && fnLocals.get(st[1]) !== 'f64'))) return [s]
+    // Per-lane conditional accumulate `if(cond) acc = acc + E` → acc += bitselect(liftE, 0, mask).
+    if (isArr(s) && s[0] === 'if' && s.length === 3 && isArr(s[2]) && s[2][0] === 'then' && s[2].length === 2) {
+      const st = s[2][1]
+      if (isArr(st) && st[0] === 'local.set' && st.length === 3 && fnLocals.get(st[1]) === 'f64' && laneMap.has(st[1]) &&
+          isArr(st[2]) && st[2][0] === 'f64.add' && isLocalGet(st[2][1], st[1])) {
+        const cond = s[1], cmp = isArr(cond) && cond.length === 3 ? CMP_LANE[cond[0]] : null
+        if (!cmp || laneInvariant(cond)) return null   // need a per-lane mask
+        const liftE = lift(st[2][2]), ca = lift(cond[1]), cb = lift(cond[2])
+        if (!liftE || !ca || !cb) return null
+        const sh = laneMap.get(st[1])
+        return [['local.set', sh, ['f64x2.add', ['local.get', sh], ['v128.bitselect', liftE, ['f64x2.splat', ['f64.const', 0]], [cmp, ca, cb]]]]]
+      }
+    }
+    return null
+  }
+
+  const liftInnerLoop = (block) => {
+    const ibl = matchBlockLoop(block, { allowPreamble: true })
+    if (!ibl || ibl.preamble.length) return null
+    const lifted = []
+    for (const s of ibl.body) { const out = liftInnerStmt(s, ibl.incVar); if (!out) return null; lifted.push(...out) }
+    return ['block', ibl.blockLabel, ['loop', ibl.loopLabel, ibl.loopNode[2], ...lifted, ibl.loopNode[ibl.incIdx], ['br', ibl.loopLabel]]]
+  }
+
+  // ---- laneCompute = obody[0..lastInner]: f64 seeds → shadow lift; scalar seeds kept; loops lifted ----
+  const laneCompute = []
+  for (let i = 0; i <= lastInner; i++) {
+    const s = obody[i]
+    if (innerSet.has(i)) { const li = liftInnerLoop(s); if (!li) return null; laneCompute.push(li); continue }
+    if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3) {
+      const name = s[1], rhs = s[2]
+      if (fnLocals.get(name) === 'f64') {
+        if (readsName(rhs, name)) return null   // self-reading seed = carry across the OUTER loop → reject
+        const lifted = lift(rhs); if (!lifted) return null
+        laneCompute.push(['local.set', shadowOf(name), lifted])
+      } else { if (!laneInvariant(rhs)) return null; laneCompute.push(s) }   // scalar counter seed
+      continue
+    }
+    return null
+  }
+  if (!sawHeavy || !laneMap.size) return null   // no transcendental reduction → leave to the scalar JIT
+
+  // ---- epilogue = obody[lastInner+1..]: colour pack+store, run scalar per lane ----
+  const epilogue = obody.slice(lastInner + 1)
+  let hasStore = false
+  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
+  epilogue.forEach(findStore)
+  if (!hasStore) return null
+  const epiWritten = new Set()
+  const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
+  epilogue.forEach(wr)
+  const epiReadSet = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') epiReadSet.add(n[1]); else for (const c of n) rd(c) }
+  epilogue.forEach(rd)
+  for (const v of epiReadSet) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
+  const epiReads = [...laneMap.keys()].filter(v => epiReadSet.has(v))
+  if (!epiReads.length) return null
+
+  // ============================ emit ============================
+  const newLocalDecls = [...new Set(laneMap.values())].map(n => ['local', n, 'v128'])
   const epiLane = (k) => [
     ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
     ...epilogue.map(s => bump(s, k)),
@@ -4762,6 +4975,7 @@ export function vectorizeLaneLocal(fn, multiAcc = false, relaxedFma = false, blu
         ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip)
+        ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most

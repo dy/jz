@@ -99,6 +99,63 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
 });
 
+// Iterated-map reduction (tryIteratedReduce): lyapunov runs a per-pixel logistic recurrence over
+// two inner loops (warmup + accumulate), gathers a forcing sequence seq[si] (scalar index), selects
+// the rate r = seq[si]<1 ? a : b, and accumulates λ += log|r·(1−2x)| under a per-lane guard. Two
+// adjacent pixels strip-mine to f64x2 lanes: x/λ recurrences per-lane, seq/counters scalar, the
+// rate-select a v128-typed branch, the log via $math.log_v, the conditional accumulate a bitselect.
+// BIT-EXACT — per-lane IEEE arithmetic + the log_v mirror reorder nothing. (Flips a 1.4× warm-V8
+// LOSS into a ~1.6× win — the inner reduction is latency-bound, unlike a cheap pixel map.)
+test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
+    const wat = jz.compile(src, { ...OPT, wat: true });
+    ok(/f64x2\./.test(wat) && /\$math\.log_v/.test(wat), `lyapunov vectorizes with log_v (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
+    const run = (opts) => {
+        const { exports } = jz(src, opts);
+        const px = exports.resize(96, 64);
+        exports.setSeq(0b10100, 5);
+        for (let f = 0; f < 10; f++) exports.frame(f, 0.1, 0.2, 1.5);
+        return Array.from(px);
+    };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalOuterStrip: false });
+    is(simd.length, scal.length);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lyapunov iterated-reduce bit-exact vs scalar (6144 px, 10 frames)');
+});
+
+// Outer-strip LEGALITY (regression): a per-sample loop whose body is an iterated f64 RECURRENCE
+// (lorenz RK4: x/y/z carried across samples, never re-seeded per sample) is NOT a per-pixel
+// reduction — its "accumulators" are loop-carried across the outer loop, so strip-mining two
+// adjacent samples into f64x2 lanes runs both lanes from the SAME seed and halves the real work,
+// producing a WRONG (and bogus-fast) result. The strip-miner must reject it. Bit-exact speed-vs-
+// scalar is the guard; the chaotic recurrence amplifies any 1-ulp divergence into a visible delta.
+test('outer-strip rejects loop-carried recurrences (lorenz) — speed ≡ scalar', () => {
+    const src = `
+const xs = new Float64Array(4096)
+export let run = () => {
+  let x = 0.1, y = 0.0, z = 0.0
+  const DT = 0.002, H = DT * 0.5, S = DT / 6, SIGMA = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
+  for (let s = 0; s < 4096; s++) {
+    for (let i = 0; i < 16; i++) {
+      const k1x = SIGMA*(y-x), k1y = x*(RHO-z)-y, k1z = x*y-BETA*z
+      const ax = x+k1x*H, ay = y+k1y*H, az = z+k1z*H
+      const k2x = SIGMA*(ay-ax), k2y = ax*(RHO-az)-ay, k2z = ax*ay-BETA*az
+      const bx = x+k2x*H, by = y+k2y*H, bz = z+k2z*H
+      const k3x = SIGMA*(by-bx), k3y = bx*(RHO-bz)-by, k3z = bx*by-BETA*bz
+      const cx = x+k3x*DT, cy = y+k3y*DT, cz = z+k3z*DT
+      const k4x = SIGMA*(cy-cx), k4y = cx*(RHO-cz)-cy, k4z = cx*cy-BETA*cz
+      x = x+S*(k1x+2*k2x+2*k3x+k4x); y = y+S*(k1y+2*k2y+2*k3y+k4y); z = z+S*(k1z+2*k2z+2*k3z+k4z)
+    }
+    xs[s] = x + y + z
+  }
+  let h = 0.0, j = 0
+  while (j < 4096) { h = h + xs[j] * (j + 1); j++ }
+  return h
+}`;
+    const speed = jz(src, { ...OPT }).exports.run();
+    const scalar = jz(src, { optimize: 0 }).exports.run();
+    is(speed, scalar, 'lorenz recurrence: speed result bit-identical to scalar (no illegal outer-strip)');
+});
+
 // Stencil with float-derived index + f32 widening: schrodinger's stepR/stepI are 2-D 5-point
 // Laplacians where the row base `y*w` is computed in f64 (so idx = trunc(y*w + x), recognized as
 // i32-affine since trunc(C+x)=trunc(C)+x), and the potential V is a Float32Array (f32 load promoted
