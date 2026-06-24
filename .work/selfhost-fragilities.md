@@ -77,3 +77,29 @@ the allKnown path — that's never reached) and consciously left to the workarou
 entangled with falsy `&&`-guarded spread sources. Durable follow-up: a finer-grained host-vs-wasm
 parity gate (bisect which compiler fn diverges) to localize the next one. `test:wasm` gates all tested
 behavior paths.
+
+## Third class — self-host *resolveIncludes* auto-dep scan divergence
+
+`resolveIncludes()` (src/ctx.js) pulls a stdlib helper's callees two ways: explicit edges
+(`deps()` arrays / direct `inc('__foo')` — plain, kernel-robust) and an AUTO-dep scan that
+*realizes* each template and greps the body for `$__foo` calls. The auto-scan is host-only: under
+self-host it silently yields nothing for some templates (realizing a function-template factory
+diverges; some string scans drop too). A helper reachable ONLY via the auto-scan therefore vanishes
+from the kernel module.
+
+| Pattern | Self-host failure | Status |
+|---|---|---|
+| **`__clamp_idx`** — the shared `[0,len]` relative-index clamp, body-called by six range ops (str/typed `.slice`, `.fill`, `.copyWithin`, `.subarray`) yet listed in ZERO `deps()` array — pulled purely by the auto-scan | dropped from the kernel → `Unknown func $__clamp_idx` on `str.slice` / typed `.fill` (57 kernel failures) | **FIXED at root** — explicit `__clamp_idx` dep edge added to every caller (module/{string,typedarray,array}.js). Invariant pinned: `test/selfhost-includes.js` — no stdlib helper may be reachable only via the auto-scan (every body-ref needs a `deps()` edge or an `inc()`). |
+
+**Convention:** a new stdlib helper that other helpers *call* must earn an explicit edge — never rely
+on the auto-scan, which is a host-side safety net the kernel can't run. selfhost-includes.js enforces it.
+
+## Fourth class — self-host *vectorizer* divergence
+
+jz.wasm's lane vectorizer diverges from the in-process one on optimization SHAPE (it mis-compiles
+parts of its own `liftExprV`/`tryVectorize`), while staying functionally correct.
+
+| Pattern | Self-host failure | Status |
+|---|---|---|
+| **null-leak reduction operand** — `liftExprV`'s contract is "null ⟺ ctx.fail"; in the kernel it returns null WITHOUT the flag for an `i32 & K` reduction body, so `tryReduceVectorize` (checking only `ctx.fail`) spliced a literal `null` into `(i32x4.add acc null)` | invalid wasm — "not enough arguments on the stack for i32x4.add" (sieve/dot reductions, 4 kernel failures) | **FIXED** — `tryReduceVectorize` now bails on `liftedExpr == null` too (loop stays scalar on that leg — correct). No-op in-process. |
+| **bail-to-scalar parity gap** — for various lane shapes (f32 maps, Uint8 XOR/shl, i16 mul, conditional bitselect, sqrt/min/max, reduceUnroll, offset-dot) the kernel vectorizer *declines* (sets ctx.fail) where in-process accepts → correct scalar code, no SIMD | structural codegen-shape assertions fail on the kernel leg (~21) | **NEUTRALIZED** — those structural `ok(/v128…/)` assertions are guarded `if (!onKernel())` (the established simd.js pattern); functional bit-exactness still gates the kernel. ROOT (which compiler fn jz.wasm mis-compiles per shape) is the durable host-vs-wasm parity follow-up. |
