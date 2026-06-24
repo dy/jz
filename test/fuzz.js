@@ -246,7 +246,10 @@ const evalC = (e, env, st) => {
     }
     case 'call': {
       const a = e.a.map((x) => evalC(x, env, st))
-      if (e.f === 'Math.imul') return { v: Math.imul(a[0].v, a[1].v), i32: true }
+      // Math.imul ToInt32's BOTH operands (like the bitwise ops above) — an operand
+      // outside i32 range needs a real modulo-2^32 wrap that jz's documented asm.js
+      // integer contract doesn't perform (it saturates past ±2^63), so it's out of contract.
+      if (e.f === 'Math.imul') { if (needsWrap(a[0].v) || needsWrap(a[1].v)) st.oob = true; return { v: Math.imul(a[0].v, a[1].v), i32: true } }
       return { v: MATHFN[e.f](...a.map((x) => x.v)), i32: false }
     }
   }
