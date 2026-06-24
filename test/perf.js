@@ -879,7 +879,7 @@ test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter conve
 })
 
 test('codegen: typed-array global base decode hoists out of the stencil loop', () => {
-  if (belowOpt(1)) return  // promoteGlobals + base hoist are optimizations (optimize >= 1)
+  if (belowOpt(2)) return  // promoteGlobals + hoistGlobalPtrOffset are level-2 passes (level 1 = treeshake/sortLocalsByUse/fusedRewrite only)
   // A typed-array global indexed N times per cell expands each access to a
   // `(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $_pg)) MASK))` decode of
   // the NaN-boxed pointer. The promoted snapshot is set once at entry from a
@@ -920,7 +920,7 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
 })
 
 test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile global)', () => {
-  if (belowOpt(1)) return  // LICM base-decode hoist is an optimization (optimize >= 1)
+  if (belowOpt(2)) return  // hoistGlobalPtrOffset base-decode hoist is a level-2 pass (not in the level-1 preset)
   // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame
   // (`a = b; b = tmp`). The swap makes them volatile, so function-scope hoisting
   // (hoistGlobalPtrOffset) can't snapshot their base. But within EACH loop the pointer

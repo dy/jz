@@ -6,6 +6,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { onWasi } from './_matrix.js'
 
 const speed = { level: 'speed' }
 const speedNoSimd = { level: 'speed', noSimd: true }
@@ -13,6 +14,7 @@ const fires = (src) => (jz.compile(src, { wat: true, optimize: speed }).match(/v
 
 // Run the same source SIMD vs scalar; assert byte-identical numeric result.
 function bitExact(name, src) {
+  if (onWasi()) return  // compares JS-side `.exports.run()` returns, which the WASI boundary doesn't surface
   const a = jz(src, { optimize: speed }).exports.run()
   const b = jz(src, { optimize: speedNoSimd }).exports.run()
   ok(Object.is(a, b), `${name}: SIMD == scalar (${a})`)
@@ -100,7 +102,7 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
   bitExact('forward shift', src)
   // ground-truth: a regressed guard would re-pack and diverge from plain JS
   const js = (() => { let o = new Float64Array(99); for (let i=0;i<99;i++) o[i]=i+1; for (let k=0;k<96;k+=3){o[k+1]=o[k];o[k+2]=o[k+1]} let s=0; for (let i=0;i<99;i++) s+=o[i]; return s })()
-  is(jz(src, { optimize: speed }).exports.run(), js, 'jz speed == JS ground truth')
+  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), js, 'jz speed == JS ground truth')  // WASI doesn't surface the return value
 })
 
 test('slp: bails on a buffer-backed view (the watr self-host class)', () => {

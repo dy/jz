@@ -10,6 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { onWasi } from './_matrix.js'
 
 const speed = { level: 'speed' }
 const fProcess = (src, opt = speed) => {
@@ -38,6 +39,7 @@ test('ablation: pass off → the polymorphic param loop does NOT vectorize', () 
 // `process`, and returns a wasm-computed checksum. The fast path (Float64Array) and every
 // fallback (Int32/Uint8/Float32) must agree across speed / scalar-SIMD / opt0.
 function consistent(name, src, want) {
+  if (onWasi()) return  // verifies via the JS-side `.exports.run()` return value, which the WASI boundary doesn't surface
   const r = [speed, { level: 'speed', noSimd: true }, { level: 0 }].map((opt) => jz(src, { optimize: opt }).exports.run())
   ok(r.every((v) => Object.is(v, r[0])), `${name}: speed == scalar-SIMD == opt0 (${r.join(' ')})`)
   if (want !== undefined) is(r[0], want, `${name}: == ${want}`)

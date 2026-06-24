@@ -155,7 +155,7 @@ test('deopt D2: grid[i] is hoisted out of the inner j-loop (LICM)', () => {
 test('deopt D2: inner j-loop contains no outer-counter $i reference', () => {
   // Machine-independent proof: after LICM, the inner j-loop body must not
   // reference the outer counter $i at all (grid[i] was hoisted to a snap local).
-  if (belowOpt(1)) return
+  if (belowOpt(2)) return  // hoistInvariantLoop (LICM) is a level-2 pass; level 1 doesn't hoist
   const wat = compile(D2_SRC(false), { wat: true })
   const fi = wat.indexOf('(func $read')
   const seg = wat.slice(fi)
