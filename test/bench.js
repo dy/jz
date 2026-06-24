@@ -212,11 +212,18 @@ const WASMOPT_SLACK_MIN = 0.70
 // default-optimize build measured here is now the vectorized one (was ~2300 B scalar
 // when blur landed); same deliberate speed-for-bytes trade as bytebeat. Ratchet down
 // as codegen tightens.
+// conv2d: the int8-MAC vectorizer (i8x16/i16x8 widening multiply → i32x4 accumulate,
+// ~409 SIMD ops) buys a measured 5× speedup (0.91 ms vec vs 4.51 ms scalar, bit-exact)
+// and is what puts jz ~10× ahead of V8. The vectorized build is wasm-opt-tight (slack
+// 0.73 ≥ 0.70 — wasm-opt -Oz only reaches 3864 B), so this is genuine SIMD, not bloat;
+// the old 3600 B budget was set for the ~2640 B scalar build and never updated when the
+// SIMD landed. Same deliberate speed-for-bytes trade as bytebeat/blur. Ratchet down as
+// codegen tightens.
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
-  hash: 1500, base64: 2300, wav: 2050, conv2d: 3600, lz: 9200, qoi: 10500,
+  hash: 1500, base64: 2300, wav: 2050, conv2d: 5600, lz: 9200, qoi: 10500,
 }
 
 // ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────
