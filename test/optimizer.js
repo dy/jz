@@ -1074,6 +1074,46 @@ test('Math.floor(bounded)|0 → single i32.trunc_sat (no i64 round-trip / +∞ g
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'floor result bit-exact vs JS')
 })
 
+test('param-distinctness LICM: invariant load from a proven-distinct param hoists across a store', () => {
+  // proc reads src[0]/src[1] (invariant) and writes dst[i]. With src,dst proven distinct buffers
+  // (every call site passes distinct fresh `new TypedArray` locals), the src loads are loop-
+  // invariant ACROSS the dst store and hoist to the pre-header — the alias-analysis LICM rust/clang
+  // do (raytrace's read-only sphere arrays vs the framebuffer). No loads left in the loop body.
+  // Large (non-scalarizable) arrays + 3 call sites keep proc a standalone function to inspect.
+  const SRC = `
+    const proc = (src, dst, n) => { for (let i = 0; i < n; i++) dst[i] = src[0] + src[1] * i + src[2] - src[3] }
+    export const main = () => {
+      const src = new Float64Array(256), dst = new Float64Array(256)
+      for (let k = 0; k < 256; k++) src[k] = k + 0.5
+      proc(src, dst, 256); proc(src, dst, 256); proc(src, dst, 256)
+      return (dst[255] * 1000) | 0
+    }
+  `
+  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
+  const fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+  const li = fn.indexOf('(loop')   // the dst-store loop
+  is(/f64\.load/.test(fn.slice(li)), false, 'invariant src loads hoisted OUT of the loop (alias-distinct from dst)')
+  ok(/f64\.load/.test(fn.slice(0, li)), 'the src loads moved to the pre-header')
+  const ref = (() => { const src = [], dst = []; for (let k = 0; k < 256; k++) src[k] = k + 0.5
+    const p = (s, d, n) => { for (let i = 0; i < n; i++) d[i] = s[0] + s[1] * i + s[2] - s[3] }
+    p(src, dst, 256); p(src, dst, 256); p(src, dst, 256); return (dst[255] * 1000) | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'distinct-param result bit-exact vs JS')
+})
+
+test('param-distinctness LICM: SOUND — same array passed for two params is NOT hoisted (aliasing)', () => {
+  // f reads a[0] and writes b[i]. If the caller passes the SAME array for a and b, the store
+  // clobbers a[0] mid-loop, so the load must NOT be hoisted. analyzeParamDistinctness must refuse
+  // to mark a,b distinct here (the same arg appears twice), so the load stays in the loop. A wrong
+  // hoist would compute n*a[0]_initial instead of the clobbered running value — this pins it.
+  const SRC = `
+    const f = (a, b, n) => { let s = 0.0; for (let i = 0; i < n; i++) { s = s + a[0]; b[i] = 7.0 } return s }
+    export const main = () => { const arr = new Float64Array(8); arr[0] = 3.0; return (f(arr, arr, 8) + f(arr, arr, 8)) | 0 }
+  `
+  const ref = (() => { const arr = []; arr[0] = 3.0; const f = (a, b, n) => { let s = 0.0; for (let i = 0; i < n; i++) { s = s + a[0]; b[i] = 7.0 } return s }; return (f(arr, arr, 8) + f(arr, arr, 8)) | 0 })()
+  is(jz(SRC).exports.main(), ref, 'aliasing result correct at default tier (a[0] clobbered by b[0])')
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'aliasing result correct at speed tier (load NOT wrongly hoisted)')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

@@ -817,6 +817,45 @@ export function hoistInvariantLoop(fn) {
   const newLocals = []
   const refcount = buildRefcount(fn)
 
+  // Alias-analysis substrate for hoisting typed-array PARAM element loads across distinct-base
+  // stores. `distinctParams` (stamped by compile/index.js from the param-distinctness pass) is the
+  // set of typed-array params PROVEN to be mutually-distinct buffers at every call site. To use it,
+  // resolve a load/store address back to the single param it derives from — through `local.get`,
+  // `i32.add/sub`, and single-def snap locals ($__li/$__ab from prior ptr-offset hoisting).
+  const distinctParams = fn.distinctParams || null
+  let baseParamOf = () => null
+  if (distinctParams) {
+    const paramNames = new Set()
+    for (let i = 2; i < bodyStart; i++)
+      if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
+    const singleDef = new Map(), defCount = new Map()
+    const scanDefs = (n) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+        defCount.set(n[1], (defCount.get(n[1]) || 0) + 1); singleDef.set(n[1], n[2]); scanDefs(n[2]); return
+      }
+      for (let i = 1; i < n.length; i++) scanDefs(n[i])
+    }
+    for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
+    for (const [k, c] of defCount) if (c > 1) singleDef.delete(k)   // multi-def → can't trust the resolution
+    // The single typed-array param an address derives from, or null if not exactly one / unresolvable.
+    baseParamOf = (addr) => {
+      const found = new Set(); const seen = new Set(); let bad = false
+      const walk = (n) => {
+        if (bad || !Array.isArray(n)) return
+        if (n[0] === 'local.get' && typeof n[1] === 'string') {
+          if (paramNames.has(n[1])) found.add(n[1])
+          else if (singleDef.has(n[1]) && !seen.has(n[1])) { seen.add(n[1]); walk(singleDef.get(n[1])) }
+          else bad = true   // a written/unknown local in the address → base unprovable
+          return
+        }
+        for (let i = 1; i < n.length; i++) walk(n[i])
+      }
+      walk(addr)
+      return !bad && found.size === 1 ? [...found][0] : null
+    }
+  }
+
   const processLoop = (loopNode, nested) => {
     // Inner loops first (bottom-up) — an inner hoist creates a local.get the
     // outer level can hoist further. Children run in a nested context.
@@ -824,7 +863,7 @@ export function hoistInvariantLoop(fn) {
       if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i, true)
 
     // The loop's effect summary (scans nested loops too — conservative).
-    const locals = new Set(), globals = new Set(), storedCells = new Set()
+    const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
     let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
     const scan = (node) => {
       if (!Array.isArray(node)) return
@@ -840,6 +879,7 @@ export function hoistInvariantLoop(fn) {
         hasDirectStore = true
         const a = node[1]
         if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
+        if (distinctParams) { const sb = baseParamOf(a); if (sb) storedBases.add(sb) }   // alias: which buffers this loop writes
       }
       for (let i = 1; i < node.length; i++) scan(node[i])
     }
@@ -905,8 +945,19 @@ export function hoistInvariantLoop(fn) {
       }
       if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
         const a = node[1]
-        return Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
-          && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))
+        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
+          && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
+        // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
+        // this loop writes (base ∉ storedBases) is loop-invariant when its address is invariant —
+        // even across the loop's stores, because they can't alias it. This is what lets rust/clang
+        // hoist read-only input arrays out of a write loop (raytrace's spheres vs the framebuffer).
+        // `pureGiven(a, bound)` proves the address itself invariant (base param unwritten + invariant
+        // offset); the calls guard rules out callee memory mutation.
+        if (distinctParams && !hasAnyCall) {
+          const base = baseParamOf(a)
+          if (base && distinctParams.has(base) && !storedBases.has(base) && pureGiven(a, bound)) return true
+        }
+        return false
       }
       if (op === 'call') {
         if (SAFE_OFFSET_CALLS.has(node[1]))
@@ -2997,12 +3048,39 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       toneMap: cfg.experimentalToneMap !== false,
       slp: cfg.experimentalSlp !== false,  // SLP default-on (testing single-use fix)
     })
+    // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled
+    // multi-accumulator reduction (a[i],a[i+2],a[i+4]…) and stencil/strided reads.
+    // fusedRewrite's memarg fold already ran (above, before vectorize), so fold the
+    // freshly-created v128 memargs now — one fewer i32.add per accumulator per
+    // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
+    if (runVectorizer) foldV128Memargs(fn)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
   // here, pinned to the function and the bad name.
   if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] optimize produced invalid IR in ${fn[1]}: ${bad}`) }
+}
+
+// Fold `(v128.load/store (i32.add base K) …)` → `(… offset=K base …)`. Same logic as
+// walkRewrite's scalar foldMemargOffsets (MEMOP path), but for the v128 loads/stores the
+// lane vectorizer creates AFTER fusedRewrite has already run — so they'd otherwise keep a
+// per-iteration i32.add. Bottom-up, in place; an addr already in offset=/align= form is left.
+function foldV128Memargs(node) {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (op === 'v128.load' || op === 'v128.store') {
+    const m1 = node[1]
+    if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align='))) &&
+        Array.isArray(m1) && m1[0] === 'i32.add' && m1.length === 3) {
+      const a = m1[1], b = m1[2]
+      let base, offset
+      if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
+      else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
+      if (base != null) { node[1] = `offset=${offset}`; node.splice(2, 0, base) }
+    }
+  }
+  for (let i = 1; i < node.length; i++) foldV128Memargs(node[i])
 }
 
 // The i32 form of an integer-valued f64 expression, or null. Used to push ToInt32

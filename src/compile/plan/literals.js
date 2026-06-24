@@ -37,7 +37,7 @@ import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
 import { analyzeBody, invalidateLocalsCache } from '../analyze.js'
 import {
-  isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen,
+  isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
 } from './common.js'
 
 // === Loop unrolling & scalarization ===
@@ -524,6 +524,44 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     if (changed) invalidateLocalsCache(func.body)
   }
   return changed
+}
+
+// Param-distinctness (alias analysis). Marks a function's typed-array params MUTUALLY DISTINCT
+// (provably different buffers) when EVERY call site passes a distinct fresh `new TypedArray` local
+// for each of them. This is what lets the optimizer's LICM hoist a load from one such param across
+// a store to another (the load can't be clobbered) — the alias-analysis-enabled LICM that
+// rust/clang get for free (raytrace's sphere loads vs the framebuffer store). Sound because:
+//   • a fresh `new TypedArray(N)` is a unique buffer (the allocator returns fresh memory);
+//   • requiring ALL typed-array-param args to be fresh-new excludes views/subarrays (not fresh)
+//     and forwarded params (not fresh), the only ways two args could alias;
+//   • pairwise-distinct arg names rule out the same buffer passed twice;
+//   • scalar (non-TYPED) params are ignored — they can't alias a buffer.
+// Conservatively all-or-nothing per function: any non-fresh/duplicate typed arg ⇒ no fact.
+export const analyzeParamDistinctness = (programFacts) => {
+  const freshByFunc = new Map(ctx.func.list.map(func => [func, freshTypedArrayLocals(func.body)]))
+  const sitesByCallee = new Map()
+  for (const site of programFacts.callSites) {
+    if (!site.callerFunc) continue
+    const l = sitesByCallee.get(site.callee); l ? l.push(site) : sitesByCallee.set(site.callee, [site])
+  }
+  for (const func of ctx.func.list) {
+    const params = func.sig?.params, sites = sitesByCallee.get(func.name)
+    if (!params || !sites?.length) continue
+    const typedIdx = []
+    for (let i = 0; i < params.length; i++) if (params[i].ptrKind === VAL.TYPED) typedIdx.push(i)
+    if (typedIdx.length < 2) continue   // distinctness only matters with ≥2 typed-array params
+    let ok = true
+    for (const site of sites) {
+      const seen = new Set()
+      for (const i of typedIdx) {
+        const arg = site.argList?.[i]
+        if (typeof arg !== 'string' || !freshByFunc.get(site.callerFunc)?.has(arg) || seen.has(arg)) { ok = false; break }
+        seen.add(arg)
+      }
+      if (!ok) break
+    }
+    if (ok) func.distinctParams = new Set(typedIdx.map(i => params[i].name))
+  }
 }
 
 const scalarizeArrayLiteralSeq = (seq) => {

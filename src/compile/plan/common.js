@@ -129,6 +129,35 @@ export const fixedScalarTypedArray = (expr) => {
     ? { len, coerce: SCALAR_TYPED_COERCE[ctor] } : null
 }
 
+/** Does `expr` allocate a FRESH typed-array buffer of static numeric length —
+ *  `new Float64Array(N)` with N a compile-time integer? Excludes view ctors
+ *  (`new Float64Array(someBuffer)` — the arg is a buffer ref, not an int), so the
+ *  result provably aliases no other buffer. Used by param-distinctness. */
+export const isFreshTypedArrayAlloc = (expr) => {
+  if (typedElemCtor(expr) == null) return false
+  const args = callArgs(expr)
+  return !!args && args.length === 1 && constIntExpr(args[0]) != null
+}
+
+/** Local names const-bound to a fresh typed-array allocation (each a unique buffer, distinct from
+ *  every other such binding and from any pre-existing value). `const` only — an immutable binding
+ *  always holds that fresh buffer. Element writes (`a[i]=…`) don't reassign `a`, so they're fine. */
+export const freshTypedArrayLocals = (body) => {
+  const fresh = new Set()
+  const walk = node => {
+    if (!Array.isArray(node) || node[0] === '=>') return
+    if (node[0] === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && isFreshTypedArrayAlloc(d[2])) fresh.add(d[1])
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return fresh
+}
+
 /** Map of name → {len, coerce} for every fixed-size typed-array binding declared
  *  via `let`/`const` directly in `body` (no descent into nested arrows). */
 export const fixedTypedArraysInBody = (body) => {

@@ -583,6 +583,7 @@ function analyzeFuncForEmit(func, programFacts) {
     flatObjects: new Map(ctx.func.flatObjects),
     sliceViews: new Set(ctx.func.sliceViews),
     cseLoadBases,
+    distinctParams: func.distinctParams || null,
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
@@ -1002,6 +1003,11 @@ function emitFunc(func, funcFacts, programFacts) {
   // it the pass is a no-op. `$`-prefixed to match WAT local names directly.
   if (funcFacts.cseLoadBases?.size)
     fn.cseLoadBases = new Set([...funcFacts.cseLoadBases].map(n => `$${n}`))
+  // Param-distinctness fact (alias analysis): typed-array params proven mutually-distinct buffers
+  // at every call site. `$`-prefixed to match WAT param names; read by hoistInvariantLoop to hoist
+  // a load from one such param across a store to another (they can't alias).
+  if (funcFacts.distinctParams?.size)
+    fn.distinctParams = new Set([...funcFacts.distinctParams].map(n => `$${n}`))
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export

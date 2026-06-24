@@ -43,7 +43,7 @@ import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } 
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
-  promoteIntArrayLiterals, scalarizeFunctionObjectLiterals,
+  promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
 } from './literals.js'
 
 export default function plan(ast, profiler) {
@@ -113,6 +113,9 @@ export default function plan(ast, profiler) {
   }
 
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
+  // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
+  // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
+  if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
   t('refineDynKeys', () => refineDynKeys(programFacts))
   strictBoundaryTypeCheck(programFacts)
