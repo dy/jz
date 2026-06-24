@@ -1,7 +1,7 @@
 {
  "meta": {
   "date": "2026-06-22",
-  "commit": "1d7e8c7",
+  "commit": "062598f",
   "host": {
    "platform": "linux",
    "arch": "x64",
@@ -40,57 +40,57 @@
    "ref": 633180752,
    "targets": {
     "nat": {
-     "medianUs": 118,
+     "medianUs": 117,
      "bytes": 39120,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 1624,
+     "medianUs": 1615,
      "bytes": 742638,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 4627,
+     "medianUs": 4624,
      "bytes": 2406485,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 62,
+     "medianUs": 58,
      "bytes": 358232,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 788,
+     "medianUs": 772,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1659,
+     "medianUs": 1645,
      "bytes": 2067,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 1289,
+     "medianUs": 1280,
      "bytes": 2067,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 984,
+     "medianUs": 981,
      "bytes": 2067,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 3098,
+     "medianUs": 3078,
      "bytes": 1341,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 157,
+     "medianUs": 158,
      "bytes": 1294,
      "parity": "ok"
     }
    },
-   "compileMs": 128.1
+   "compileMs": 120.7
   },
   "blur": {
    "name": "blur",
@@ -100,57 +100,57 @@
    "ref": 3578880432,
    "targets": {
     "nat": {
-     "medianUs": 1605,
+     "medianUs": 1606,
      "bytes": 30928,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 10324,
+     "medianUs": 10319,
      "bytes": 745975,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 50823,
+     "medianUs": 50793,
      "bytes": 2410200,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 5036,
+     "medianUs": 5038,
      "bytes": 357336,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15458,
+     "medianUs": 15443,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16963,
+     "medianUs": 16957,
      "bytes": 2942,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 16418,
+     "medianUs": 16529,
      "bytes": 2942,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 10761,
+     "medianUs": 10753,
      "bytes": 2942,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 11198,
+     "medianUs": 11219,
      "bytes": 1772,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3921,
+     "medianUs": 3904,
      "bytes": 3514,
      "parity": "ok"
     }
    },
-   "compileMs": 138.7
+   "compileMs": 138.3
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -160,7 +160,7 @@
    "ref": 3667072453,
    "targets": {
     "nat": {
-     "medianUs": 536,
+     "medianUs": 623,
      "bytes": 30928,
      "parity": "ok"
     },
@@ -170,27 +170,27 @@
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 9215,
+     "medianUs": 9211,
      "bytes": 2406267,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 521,
+     "medianUs": 515,
      "bytes": 358152,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3269,
+     "medianUs": 3272,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 4922,
+     "medianUs": 4902,
      "bytes": 2055,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5225,
+     "medianUs": 5223,
      "bytes": 2055,
      "parity": "ok"
     },
@@ -200,17 +200,17 @@
      "parity": "ok"
     },
     "as": {
-     "medianUs": 5703,
+     "medianUs": 5658,
      "bytes": 1261,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1857,
+     "medianUs": 1844,
      "bytes": 1545,
      "parity": "ok"
     }
    },
-   "compileMs": 90.6
+   "compileMs": 92.4
   },
   "dotprod": {
    "name": "dotprod",
@@ -220,22 +220,22 @@
    "ref": 199828677,
    "targets": {
     "nat": {
-     "medianUs": 1535,
+     "medianUs": 1528,
      "bytes": 22736,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 2677,
+     "medianUs": 2678,
      "bytes": 740720,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6192,
+     "medianUs": 6194,
      "bytes": 2406365,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1527,
+     "medianUs": 1528,
      "bytes": 356456,
      "parity": "ok"
     },
@@ -245,7 +245,7 @@
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1564,
+     "medianUs": 1547,
      "bytes": 1500,
      "parity": "ok"
     },
@@ -255,7 +255,7 @@
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1531,
+     "medianUs": 1532,
      "bytes": 1500,
      "parity": "ok"
     },
@@ -265,7 +265,7 @@
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 14528,
+     "medianUs": 14524,
      "bytes": 3075,
      "parity": "DIFF"
     },
@@ -275,7 +275,7 @@
      "parity": "ok"
     }
    },
-   "compileMs": 89.5
+   "compileMs": 91.6
   },
   "fft": {
    "name": "fft",
@@ -285,57 +285,57 @@
    "ref": 4234940375,
    "targets": {
     "nat": {
-     "medianUs": 2452,
+     "medianUs": 2482,
      "bytes": 26848,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 2399,
+     "medianUs": 2435,
      "bytes": 744950,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6592,
+     "medianUs": 6575,
      "bytes": 2410401,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2448,
+     "medianUs": 2466,
      "bytes": 357840,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4198,
+     "medianUs": 3955,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3260,
+     "medianUs": 3271,
      "bytes": 4344,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2747,
+     "medianUs": 2742,
      "bytes": 4344,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2435,
+     "medianUs": 2446,
      "bytes": 4344,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 2489,
+     "medianUs": 2448,
      "bytes": 1958,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2511,
+     "medianUs": 2432,
      "bytes": 2335,
      "parity": "ok"
     }
    },
-   "compileMs": 113.7
+   "compileMs": 124.7
   },
   "lorenz": {
    "name": "lorenz",
@@ -345,17 +345,17 @@
    "ref": 4004855102,
    "targets": {
     "nat": {
-     "medianUs": 19490,
+     "medianUs": 19484,
      "bytes": 22720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 19290,
+     "medianUs": 19292,
      "bytes": 738313,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 19207,
+     "medianUs": 19211,
      "bytes": 2407263,
      "parity": "ok"
     },
@@ -365,37 +365,37 @@
      "parity": "ok"
     },
     "go": {
-     "medianUs": 22031,
+     "medianUs": 22028,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 19420,
+     "medianUs": 19408,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 18838,
+     "medianUs": 18842,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 24541,
+     "medianUs": 24537,
      "bytes": 2685,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 19027,
+     "medianUs": 19023,
      "bytes": 1605,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 9548,
+     "medianUs": 9599,
      "bytes": 2262,
      "parity": "DIFF"
     }
    },
-   "compileMs": 99
+   "compileMs": 99.3
   },
   "nbody": {
    "name": "nbody",
@@ -405,57 +405,57 @@
    "ref": 784143951,
    "targets": {
     "nat": {
-     "medianUs": 39416,
+     "medianUs": 39484,
      "bytes": 26816,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 41110,
+     "medianUs": 41085,
      "bytes": 741608,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 66654,
+     "medianUs": 66776,
      "bytes": 2412287,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 39185,
+     "medianUs": 39179,
      "bytes": 360936,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 64702,
+     "medianUs": 64640,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 40029,
+     "medianUs": 39435,
      "bytes": 3413,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 39365,
+     "medianUs": 39383,
      "bytes": 3413,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 39364,
+     "medianUs": 39394,
      "bytes": 3413,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 42956,
+     "medianUs": 42919,
      "bytes": 2390,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 24369,
+     "medianUs": 24289,
      "bytes": 3805,
      "parity": "ok"
     }
    },
-   "compileMs": 123.1
+   "compileMs": 126.4
   },
   "particle": {
    "name": "particle",
@@ -465,57 +465,57 @@
    "ref": 1275530752,
    "targets": {
     "nat": {
-     "medianUs": 11460,
+     "medianUs": 11302,
      "bytes": 26816,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 63136,
+     "medianUs": 63176,
      "bytes": 738930,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 80979,
+     "medianUs": 80946,
      "bytes": 2409236,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 10590,
+     "medianUs": 10975,
      "bytes": 358664,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 21170,
+     "medianUs": 21183,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 28254,
+     "medianUs": 27499,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 43649,
+     "medianUs": 43534,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 17643,
+     "medianUs": 17426,
      "bytes": 2685,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 96132,
+     "medianUs": 117229,
      "bytes": 1845,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 10872,
+     "medianUs": 10676,
      "bytes": 1928,
      "parity": "ok"
     }
    },
-   "compileMs": 100.5
+   "compileMs": 106.5
   },
   "synth": {
    "name": "synth",
@@ -525,57 +525,57 @@
    "ref": 41574153,
    "targets": {
     "nat": {
-     "medianUs": 3997,
+     "medianUs": 3995,
      "bytes": 22736,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 5415,
+     "medianUs": 5408,
      "bytes": 743032,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 12599,
+     "medianUs": 12601,
      "bytes": 2408044,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4894,
+     "medianUs": 4892,
      "bytes": 356296,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 6191,
+     "medianUs": 6180,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 9461,
+     "medianUs": 9444,
      "bytes": 3646,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9079,
+     "medianUs": 4208,
      "bytes": 3646,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5475,
+     "medianUs": 5474,
      "bytes": 3646,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 6321,
+     "medianUs": 6322,
      "bytes": 1860,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 6130,
+     "medianUs": 6133,
      "bytes": 1976,
      "parity": "ok"
     }
    },
-   "compileMs": 100.3
+   "compileMs": 105.4
   },
   "biquad": {
    "name": "biquad filter cascade",
@@ -585,62 +585,62 @@
    "ref": 422839881,
    "targets": {
     "nat": {
-     "medianUs": 7758,
+     "medianUs": 7745,
      "bytes": 22720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 28093,
+     "medianUs": 29853,
      "bytes": 739146,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 44292,
+     "medianUs": 44738,
      "bytes": 2410008,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 11046,
+     "medianUs": 11038,
      "bytes": 359368,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13420,
+     "medianUs": 13428,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 17986,
+     "medianUs": 17979,
      "bytes": 3284,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15741,
+     "medianUs": 15757,
      "bytes": 3284,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 11846,
+     "medianUs": 11855,
      "bytes": 3284,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 15051,
+     "medianUs": 15013,
      "bytes": 1964,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 11147,
+     "medianUs": 11131,
      "bytes": 3355,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 5063073,
+     "medianUs": 4896812,
      "bytes": 2592,
      "parity": "ok"
     }
    },
-   "compileMs": 131.9
+   "compileMs": 128
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -650,67 +650,67 @@
    "ref": 2929747182,
    "targets": {
     "nat": {
-     "medianUs": 4777,
+     "medianUs": 4811,
      "bytes": 18624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 6918,
+     "medianUs": 6923,
      "bytes": 739093,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 70286,
+     "medianUs": 70290,
      "bytes": 2408013,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2268,
+     "medianUs": 2269,
      "bytes": 356536,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13214,
+     "medianUs": 13246,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 21369,
+     "medianUs": 21381,
      "bytes": 1198,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13214,
+     "medianUs": 13216,
      "bytes": 1198,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5550,
+     "medianUs": 5555,
      "bytes": 1198,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 13128,
+     "medianUs": 13148,
      "bytes": 1606,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 133259,
+     "medianUs": 133256,
      "bytes": 2765,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 2730,
+     "medianUs": 2714,
      "bytes": 3137,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 762032,
+     "medianUs": 757610,
      "bytes": 1606,
      "parity": "ok"
     }
    },
-   "compileMs": 133.4
+   "compileMs": 130
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -720,37 +720,37 @@
    "ref": 3026383685,
    "targets": {
     "nat": {
-     "medianUs": 638,
+     "medianUs": 639,
      "bytes": 22736,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 1362,
+     "medianUs": 1361,
      "bytes": 740989,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 4751,
+     "medianUs": 4746,
      "bytes": 2406697,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 638,
+     "medianUs": 643,
      "bytes": 356792,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 864,
+     "medianUs": 866,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2062,
+     "medianUs": 2056,
      "bytes": 1014,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7389,
+     "medianUs": 7388,
      "bytes": 1014,
      "parity": "ok"
     },
@@ -760,7 +760,7 @@
      "parity": "ok"
     },
     "as": {
-     "medianUs": 1229,
+     "medianUs": 1224,
      "bytes": 1336,
      "parity": "ok"
     },
@@ -775,7 +775,7 @@
      "parity": "ok"
     }
    },
-   "compileMs": 94.8
+   "compileMs": 95.7
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -785,62 +785,62 @@
    "ref": 3216842766,
    "targets": {
     "nat": {
-     "medianUs": 949,
+     "medianUs": 956,
      "bytes": 39120,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12368,
+     "medianUs": 12376,
      "bytes": 742111,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 36933,
+     "medianUs": 37001,
      "bytes": 2406716,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 962,
+     "medianUs": 938,
      "bytes": 359768,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8444,
+     "medianUs": 8447,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 11446,
+     "medianUs": 11434,
      "bytes": 1005,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9327,
+     "medianUs": 9342,
      "bytes": 1005,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8082,
+     "medianUs": 8101,
      "bytes": 1005,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 17487,
+     "medianUs": 17492,
      "bytes": 1577,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2090,
+     "medianUs": 2106,
      "bytes": 1245,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 11470,
+     "medianUs": 9643,
      "bytes": 1620,
      "parity": "ok"
     }
    },
-   "compileMs": 86.9
+   "compileMs": 89.9
   },
   "tokenizer": {
    "name": "tokenizer scan",
@@ -855,12 +855,12 @@
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 147,
+     "medianUs": 146,
      "bytes": 740968,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 235,
+     "medianUs": 234,
      "bytes": 2417355,
      "parity": "ok"
     },
@@ -875,17 +875,17 @@
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 272,
+     "medianUs": 273,
      "bytes": 1997,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 215,
+     "medianUs": 172,
      "bytes": 1997,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 235,
+     "medianUs": 236,
      "bytes": 1997,
      "parity": "ok"
     },
@@ -895,22 +895,22 @@
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 785,
+     "medianUs": 783,
      "bytes": 3572,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 88,
+     "medianUs": 93,
      "bytes": 2238,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 6209,
+     "medianUs": 6270,
      "bytes": 2024,
      "parity": "ok"
     }
    },
-   "compileMs": 107.9
+   "compileMs": 110.7
   },
   "callback": {
    "name": "callback map",
@@ -920,17 +920,17 @@
    "ref": 893685701,
    "targets": {
     "nat": {
-     "medianUs": 383,
+     "medianUs": 380,
      "bytes": 30928,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 683,
+     "medianUs": 679,
      "bytes": 742663,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 2680,
+     "medianUs": 2681,
      "bytes": 2406579,
      "parity": "ok"
     },
@@ -940,42 +940,42 @@
      "parity": "ok"
     },
     "go": {
-     "medianUs": 525,
+     "medianUs": 531,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1208,
+     "medianUs": 1184,
      "bytes": 1315,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 858,
+     "medianUs": 853,
      "bytes": 1315,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1775,
+     "medianUs": 1738,
      "bytes": 1315,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 1602,
+     "medianUs": 1583,
      "bytes": 1908,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 450,
+     "medianUs": 451,
      "bytes": 1437,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 84208,
+     "medianUs": 84128,
      "bytes": 1095,
      "parity": "ok"
     }
    },
-   "compileMs": 92.5
+   "compileMs": 98.6
   },
   "aos": {
    "name": "AoS to SoA",
@@ -985,62 +985,62 @@
    "ref": 2813671365,
    "targets": {
     "nat": {
-     "medianUs": 801,
+     "medianUs": 799,
      "bytes": 39120,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 3898,
+     "medianUs": 3851,
      "bytes": 744736,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6100,
+     "medianUs": 6037,
      "bytes": 2408711,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 693,
+     "medianUs": 760,
      "bytes": 358408,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1338,
+     "medianUs": 1341,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2729,
+     "medianUs": 2666,
      "bytes": 1089,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2167,
+     "medianUs": 2194,
      "bytes": 1089,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3309,
+     "medianUs": 3319,
      "bytes": 1089,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 2731,
+     "medianUs": 2728,
      "bytes": 2204,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1659,
+     "medianUs": 1665,
      "bytes": 1799,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 3524,
+     "medianUs": 3533,
      "bytes": 1448,
      "parity": "ok"
     }
    },
-   "compileMs": 98
+   "compileMs": 100.3
   },
   "mandelbrot": {
    "name": "mandelbrot escape",
@@ -1050,62 +1050,62 @@
    "ref": 3520419621,
    "targets": {
     "nat": {
-     "medianUs": 13390,
+     "medianUs": 13391,
      "bytes": 30928,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 20941,
+     "medianUs": 20946,
      "bytes": 742543,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 21250,
+     "medianUs": 21241,
      "bytes": 2406772,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 13450,
+     "medianUs": 13466,
      "bytes": 358488,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13671,
+     "medianUs": 13662,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 13660,
+     "medianUs": 13654,
      "bytes": 1841,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13808,
+     "medianUs": 13799,
      "bytes": 1841,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13687,
+     "medianUs": 13683,
      "bytes": 1841,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 13720,
+     "medianUs": 13726,
      "bytes": 1327,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 16146,
+     "medianUs": 16142,
      "bytes": 3408,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14695,
+     "medianUs": 14693,
      "bytes": 1456,
      "parity": "ok"
     }
    },
-   "compileMs": 89.5
+   "compileMs": 91.6
   },
   "json": {
    "name": "JSON parse+walk (single literal source)",
@@ -1115,57 +1115,57 @@
    "ref": 2797819845,
    "targets": {
     "nat": {
-     "medianUs": 325,
+     "medianUs": 321,
      "bytes": 22744,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 621,
+     "medianUs": 620,
      "bytes": 782660,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 10621,
+     "medianUs": 10326,
      "bytes": 3056552,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 460,
+     "medianUs": 461,
      "bytes": 381016,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1913,
+     "medianUs": 1886,
      "bytes": 1806520,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 608,
+     "medianUs": 586,
      "bytes": 1226,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 512,
+     "medianUs": 525,
      "bytes": 1226,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 409,
+     "medianUs": 403,
      "bytes": 1226,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 371,
+     "medianUs": 357,
      "bytes": 10053,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 1853,
+     "medianUs": 1808,
      "bytes": 1202,
      "parity": "ok"
     }
    },
-   "compileMs": 136.8
+   "compileMs": 147.5
   },
   "sort": {
    "name": "in-place heapsort",
@@ -1175,32 +1175,32 @@
    "ref": 1238395589,
    "targets": {
     "nat": {
-     "medianUs": 16313,
+     "medianUs": 16249,
      "bytes": 22720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 16125,
+     "medianUs": 16117,
      "bytes": 737871,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 25370,
+     "medianUs": 25387,
      "bytes": 2408551,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 15197,
+     "medianUs": 15210,
      "bytes": 357024,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15829,
+     "medianUs": 15822,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 18615,
+     "medianUs": 18606,
      "bytes": 1602,
      "parity": "ok"
     },
@@ -1210,27 +1210,27 @@
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 16491,
+     "medianUs": 16473,
      "bytes": 1602,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 12109,
+     "medianUs": 12110,
      "bytes": 1946,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 16637,
+     "medianUs": 16649,
      "bytes": 1828,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 2366,
+     "medianUs": 2355,
      "bytes": 1373,
      "parity": "ok"
     }
    },
-   "compileMs": 101.9
+   "compileMs": 103.9
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1240,52 +1240,52 @@
    "ref": 304463882,
    "targets": {
     "nat": {
-     "medianUs": 8964,
+     "medianUs": 8962,
      "bytes": 18624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 10089,
+     "medianUs": 10087,
      "bytes": 737568,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 9015,
+     "medianUs": 9020,
      "bytes": 2407153,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 8962,
+     "medianUs": 8963,
      "bytes": 358456,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8976,
+     "medianUs": 8965,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 9003,
+     "medianUs": 9009,
      "bytes": 1873,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 12331,
+     "medianUs": 12336,
      "bytes": 1873,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8981,
+     "medianUs": 8972,
      "bytes": 1873,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 12468,
+     "medianUs": 12450,
      "bytes": 1475,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 65611,
+     "medianUs": 65636,
      "bytes": 3448,
      "parity": "ok"
     },
@@ -1295,12 +1295,12 @@
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 2024,
+     "medianUs": 2016,
      "bytes": 1240,
      "parity": "ok"
     }
    },
-   "compileMs": 93.1
+   "compileMs": 99.4
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -1310,57 +1310,57 @@
    "ref": 1299645893,
    "targets": {
     "nat": {
-     "medianUs": 13410,
+     "medianUs": 13418,
      "bytes": 30928,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 38739,
+     "medianUs": 38725,
      "bytes": 743451,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 64965,
+     "medianUs": 64792,
      "bytes": 2406877,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 13455,
+     "medianUs": 13408,
      "bytes": 358648,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 14429,
+     "medianUs": 14422,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16628,
+     "medianUs": 16522,
      "bytes": 1984,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15117,
+     "medianUs": 15200,
      "bytes": 1984,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 15521,
+     "medianUs": 15506,
      "bytes": 1984,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 15494,
+     "medianUs": 15452,
      "bytes": 1350,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3341,
+     "medianUs": 3396,
      "bytes": 1720,
      "parity": "ok"
     }
    },
-   "compileMs": 96.9
+   "compileMs": 94.2
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -1370,57 +1370,57 @@
    "ref": 2564029013,
    "targets": {
     "nat": {
-     "medianUs": 2512,
+     "medianUs": 2429,
      "bytes": 35024,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 17023,
+     "medianUs": 17025,
      "bytes": 743529,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 40308,
+     "medianUs": 40264,
      "bytes": 2408716,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2349,
+     "medianUs": 2353,
      "bytes": 357768,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 10258,
+     "medianUs": 10250,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 19096,
+     "medianUs": 19157,
      "bytes": 2739,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 14615,
+     "medianUs": 14630,
      "bytes": 2739,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 10464,
+     "medianUs": 10484,
      "bytes": 2739,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 13715,
+     "medianUs": 18691,
      "bytes": 1660,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5552,
+     "medianUs": 5557,
      "bytes": 1714,
      "parity": "ok"
     }
    },
-   "compileMs": 92
+   "compileMs": 92.5
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -1430,57 +1430,57 @@
    "ref": 2649699616,
    "targets": {
     "nat": {
-     "medianUs": 1017,
+     "medianUs": 1008,
      "bytes": 22720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12783,
-     "bytes": 739044,
+     "medianUs": 12906,
+     "bytes": 739260,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 86378,
+     "medianUs": 86377,
      "bytes": 2409076,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 986,
+     "medianUs": 1013,
      "bytes": 360536,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 26156,
+     "medianUs": 26190,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 33329,
+     "medianUs": 33358,
      "bytes": 3595,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 24792,
+     "medianUs": 24796,
      "bytes": 3595,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 19138,
+     "medianUs": 19162,
      "bytes": 3595,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 23971,
+     "medianUs": 23978,
      "bytes": 1730,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 21057,
+     "medianUs": 21082,
      "bytes": 2975,
      "parity": "ok"
     }
    },
-   "compileMs": 134.8
+   "compileMs": 134.9
   },
   "qoi": {
    "name": "QOI image codec (encode + decode)",
@@ -1490,57 +1490,57 @@
    "ref": 1486080151,
    "targets": {
     "nat": {
-     "medianUs": 13926,
+     "medianUs": 13913,
      "bytes": 22720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 16633,
-     "bytes": 742572,
+     "medianUs": 16579,
+     "bytes": 742773,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 46134,
+     "medianUs": 46133,
      "bytes": 2418109,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 14464,
+     "medianUs": 14285,
      "bytes": 361656,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 20984,
+     "medianUs": 20955,
      "bytes": 1462456,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 26590,
+     "medianUs": 26493,
      "bytes": 6376,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 21532,
+     "medianUs": 21501,
      "bytes": 6376,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 18860,
+     "medianUs": 18851,
      "bytes": 6376,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 21284,
+     "medianUs": 21305,
      "bytes": 3219,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 23026,
+     "medianUs": 23022,
      "bytes": 9097,
      "parity": "ok"
     }
    },
-   "compileMs": 201.3
+   "compileMs": 207.9
   },
   "hash": {
    "name": "MurmurHash3 (x86 32-bit)",
@@ -1550,62 +1550,62 @@
    "ref": 1334379566,
    "targets": {
     "nat": {
-     "medianUs": 3991,
+     "medianUs": 3985,
      "bytes": 18624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12961,
-     "bytes": 737054,
+     "medianUs": 12977,
+     "bytes": 737350,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 11607,
+     "medianUs": 11605,
      "bytes": 2407736,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4235,
+     "medianUs": 4234,
      "bytes": 355960,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3577,
+     "medianUs": 3578,
      "bytes": 1454264,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 7137,
+     "medianUs": 7140,
      "bytes": 2288,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7142,
+     "medianUs": 7140,
      "bytes": 2288,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 7475,
+     "medianUs": 7424,
      "bytes": 2288,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 8401,
+     "medianUs": 8458,
      "bytes": 1367,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 157407,
+     "medianUs": 157578,
      "bytes": 3863,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 5170,
+     "medianUs": 5172,
      "bytes": 1179,
      "parity": "ok"
     }
    },
-   "compileMs": 89.5
+   "compileMs": 94.3
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -1615,62 +1615,62 @@
    "ref": 2900100982,
    "targets": {
     "nat": {
-     "medianUs": 23642,
+     "medianUs": 23653,
      "bytes": 18624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 35095,
-     "bytes": 740364,
+     "medianUs": 35131,
+     "bytes": 740693,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 206872,
+     "medianUs": 206890,
      "bytes": 2411035,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 17860,
+     "medianUs": 17858,
      "bytes": 358624,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 35328,
+     "medianUs": 35315,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 46920,
+     "medianUs": 46818,
      "bytes": 4556,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 31259,
+     "medianUs": 31217,
      "bytes": 4556,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 29400,
+     "medianUs": 29357,
      "bytes": 4556,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 35421,
+     "medianUs": 35416,
      "bytes": 1969,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 163405,
+     "medianUs": 163450,
      "bytes": 6131,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 35413,
+     "medianUs": 35340,
      "bytes": 7906,
      "parity": "ok"
     }
    },
-   "compileMs": 142.9
+   "compileMs": 154.9
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -1680,57 +1680,57 @@
    "ref": 1353105291,
    "targets": {
     "nat": {
-     "medianUs": 4207,
+     "medianUs": 4190,
      "bytes": 26816,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 5870,
-     "bytes": 738971,
+     "medianUs": 5869,
+     "bytes": 739295,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 19851,
+     "medianUs": 19875,
      "bytes": 2412554,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4207,
+     "medianUs": 4212,
      "bytes": 364552,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 6709,
+     "medianUs": 6703,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 8736,
+     "medianUs": 8729,
      "bytes": 3339,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 8002,
+     "medianUs": 7637,
      "bytes": 3339,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8098,
+     "medianUs": 8102,
      "bytes": 3339,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 7933,
+     "medianUs": 7921,
      "bytes": 2041,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 8084,
+     "medianUs": 8087,
      "bytes": 1895,
      "parity": "ok"
     }
    },
-   "compileMs": 121.2
+   "compileMs": 125.7
   },
   "wav": {
    "name": "WAV PCM-16 encode",
@@ -1740,57 +1740,57 @@
    "ref": 211188261,
    "targets": {
     "nat": {
-     "medianUs": 5790,
+     "medianUs": 5783,
      "bytes": 18624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 13795,
-     "bytes": 737177,
+     "medianUs": 13798,
+     "bytes": 737475,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 35867,
+     "medianUs": 37411,
      "bytes": 2412843,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 7781,
+     "medianUs": 7775,
      "bytes": 357224,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 12760,
+     "medianUs": 12768,
      "bytes": 1458360,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 14202,
+     "medianUs": 14199,
      "bytes": 3481,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13046,
+     "medianUs": 13063,
      "bytes": 3481,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13002,
+     "medianUs": 13004,
      "bytes": 3481,
      "parity": "ok"
     },
     "as": {
-     "medianUs": 14632,
+     "medianUs": 14710,
      "bytes": 1909,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14916,
+     "medianUs": 14923,
      "bytes": 1653,
      "parity": "ok"
     }
    },
-   "compileMs": 124.7
+   "compileMs": 106.6
   },
   "watr": {
    "name": "watr WAT compiler",
@@ -1800,23 +1800,23 @@
    "ref": 3419154861,
    "targets": {
     "v8": {
-     "medianUs": 4684,
+     "medianUs": 4562,
      "bytes": 2645,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 4369,
+     "medianUs": 4048,
      "bytes": 2645,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3498,
+     "medianUs": 3478,
      "bytes": 2645,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2860,
-     "bytes": 239228,
+     "medianUs": 2924,
+     "bytes": 238826,
      "parity": "ok"
     }
    }
@@ -1829,22 +1829,22 @@
    "ref": 2418067300,
    "targets": {
     "v8": {
-     "medianUs": 4921,
+     "medianUs": 4169,
      "bytes": 2700,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 4511,
+     "medianUs": 3941,
      "bytes": 2700,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3351,
+     "medianUs": 2885,
      "bytes": 2700,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5614,
+     "medianUs": 5721,
      "bytes": 88419,
      "parity": "ok"
     }
@@ -1858,17 +1858,17 @@
    "ref": 546173896,
    "targets": {
     "v8": {
-     "medianUs": 47434,
+     "medianUs": 50589,
      "bytes": 2657,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 39979,
+     "medianUs": 37053,
      "bytes": 2657,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 43398,
+     "medianUs": 44391,
      "bytes": 2657,
      "parity": "ok"
     }
