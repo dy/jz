@@ -298,10 +298,21 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
 const F64X2_BIN = { 'f64.add': 'f64x2.add', 'f64.sub': 'f64x2.sub', 'f64.mul': 'f64x2.mul', 'f64.div': 'f64x2.div', 'f64.min': 'f64x2.min', 'f64.max': 'f64x2.max' }
 const F64X2_UN = { 'f64.neg': 'f64x2.neg', 'f64.abs': 'f64x2.abs', 'f64.sqrt': 'f64x2.sqrt' }
 
-// No memory load anywhere in the subtree → broadcasting it once (splat) equals
-// re-evaluating it per lane (the two source statements are adjacent: no store or
-// reassignment runs between them, so a pure tree yields one value for both lanes).
-const slpPureNoLoad = (n) => !isArr(n) || (!LOAD_OPS[n[0]] && n[0] !== 'f64.load' && n[0] !== 'i32.load' && n.every((c, i) => i === 0 || slpPureNoLoad(c)))
+// The subtree's value is the SAME evaluated once (splat) or twice (the two source
+// statements, which are adjacent — no store/reassign between): a pure, side-effect-free,
+// DETERMINISTIC expression. Rejects calls (a `new TypedArray()` alloc returns a fresh
+// pointer per call — splatting it would make the two lanes ALIAS, the array-literal
+// scatter miscompile), loads, and any store/set/memory op.
+const slpSplatSafe = (n) => {
+  if (!isArr(n)) return true
+  const op = n[0]
+  if (typeof op !== 'string') return false
+  if (op.startsWith('call') || op.includes('.load') || op.includes('.store')
+      || op === 'local.set' || op === 'local.tee' || op === 'global.set'
+      || op.startsWith('memory.') || op.includes('.atomic.')) return false
+  for (let i = 1; i < n.length; i++) if (!slpSplatSafe(n[i])) return false
+  return true
+}
 
 // Decompose a load/store node, normalizing the optional `offset=K` attribute jz
 // folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
@@ -336,7 +347,7 @@ const slpPackF64x2 = (lo, hi) => {
     if (b.off - a.off !== 8 || !slpSameBase(a.addr, b.addr)) return null
     return a.off ? ['v128.load', `offset=${a.off}`, a.addr] : ['v128.load', a.addr]
   }
-  if (exprEq(lo, hi) && slpPureNoLoad(lo)) return ['f64x2.splat', lo]
+  if (exprEq(lo, hi) && slpSplatSafe(lo)) return ['f64x2.splat', lo]
   if (lo[0] === hi[0]) {
     const bin = F64X2_BIN[lo[0]]
     if (bin && lo.length === 3 && hi.length === 3) {

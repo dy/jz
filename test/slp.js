@@ -71,6 +71,18 @@ test('slp: bails on an INLINE subarray view (no binding)', () => {
   bitExact('inline subarray', src)
 })
 
+test('slp: does NOT splat distinct allocations (array-literal scatter)', () => {
+  // `[new Float32Array(3), new Float32Array(3)]` builds an outer f64 array of two
+  // adjacent pointer stores. They look identical but are DISTINCT allocations — SLP
+  // must not splat them (which would alias ch[0] and ch[1]). Regression: this aliased
+  // and returned 2220 instead of 1220.
+  const { exports } = jz(`export let f = () => {
+    let ch = [new Float32Array(3), new Float32Array(3)]
+    for (let i = 0; i < 3; i++) for (let c = 0; c < 2; c++) ch[c][i] = (c + 1) * 10 + i
+    return ch[0][2] * 100 + ch[1][0] }`, { optimize: { level: 'speed' } })
+  is(exports.f(), 1220, 'ch[0] and ch[1] are distinct arrays (no splat-aliasing)')
+})
+
 test('slp: bails on a buffer-backed view (the watr self-host class)', () => {
   // Two Float64Arrays over one ArrayBuffer alias; SLP must not pack across them.
   const src = `
