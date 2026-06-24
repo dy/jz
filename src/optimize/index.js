@@ -206,6 +206,11 @@ export function resolveOptimize(opt) {
     }
     // Preserve non-pass tuning keys (e.g. plan.js thresholds)
     for (const k of Object.keys(opt)) if (!PASS_NAMES.includes(k)) out[k] = opt[k]
+    // noSimd: suppress EVERY jz-emitted v128 — both the lane vectorizer AND the SLP
+    // store-pair packer. First-class here so `{ level:'speed', noSimd:true }` is a TRUE
+    // scalar baseline whether passed nested or via the top-level opts.noSimd flag; the
+    // SIMD-vs-scalar correctness oracles depend on it actually disabling SLP.
+    if (out.noSimd) { out.vectorizeLaneLocal = false; out.experimentalSlp = false }
     return out
   }
   return { ...ALL_ON }

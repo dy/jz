@@ -284,11 +284,18 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
 // stores into one f64x2 store — the WITHIN-iteration 2-lane class the loop
 // vectorizer (which packs ACROSS iterations) structurally cannot reach.
 //
-// Soundness rests on one module fact: no typed-array VIEW exists
-// (`ctx.features.typedView` false, checked at the dispatch). A view (subarray /
-// buffer-backed ctor) is the only way two typed bases can overlap; without one,
-// distinct typed bases own disjoint allocations and a same-base store is an
-// in-place SAME-INDEX map — neither can reorder-hazard the packed reads/write.
+// Soundness has TWO obligations, because the pack reorders memory: it materializes
+// BOTH lane values BEFORE either store, turning [read0, write0, read1, write1] into
+// [read0, read1, write0, write1].
+//   1. CROSS-base aliasing — guarded by one module fact: no typed-array VIEW exists
+//      (`ctx.features.typedView` false, checked at the dispatch). A view (subarray /
+//      buffer-backed ctor) is the only way two DISTINCT typed bases can overlap;
+//      without one, distinct bases own disjoint allocations and can't alias.
+//   2. WITHIN-base read-after-write — the high value (read1) must not load the low
+//      store's target (write0), or the pack reads write0's PRE-store value. This is a
+//      same-base hazard a view gate can't see (`o[k+1]=o[k]; o[k+2]=o[k+1]` forward
+//      shift); slpReadsOffset rejects it. The sound own-index map reads its OWN offset,
+//      never the sibling's, so it survives.
 // The pack is admitted ONLY when overhead-free (adjacent loads → v128.load,
 // identical pure scalar → splat, matching op → recurse); anything that would
 // need a per-lane `replace_lane` build bails, which makes the rewrite both
@@ -334,6 +341,40 @@ const slpSameBase = (x, y) => {
   if (x[0] === 'local.tee' && y[0] === 'local.get' && typeof x[1] === 'string' && x[1] === y[1]) return true
   if (x[0] === 'local.get' && y[0] === 'local.get' && typeof x[1] === 'string' && x[1] === y[1]) return true
   return x[0] !== 'local.tee' && y[0] !== 'local.tee' && exprEq(x, y)
+}
+
+// Two address expressions name the SAME pointer base. Symmetric, tee/get-normalized
+// (a `local.tee $X` defines what a `local.get $X` reads, so they're one base); else
+// structural exprEq. Used by the RAW guard below — under the no-view gate, a different
+// base is a different allocation, so "not same base" ⇒ provably disjoint memory.
+const slpSameMem = (a, b) => {
+  if (!isArr(a) || !isArr(b)) return false
+  const an = (a[0] === 'local.tee' || a[0] === 'local.get') && typeof a[1] === 'string' ? a[1] : null
+  const bn = (b[0] === 'local.tee' || b[0] === 'local.get') && typeof b[1] === 'string' ? b[1] : null
+  if (an !== null || bn !== null) return an === bn
+  return exprEq(a, b)
+}
+
+// Does `value` load the element at (addr, off) — the slot u0 stores to? SLP materializes
+// BOTH packed values BEFORE either store, so if the high store's VALUE reads the low
+// store's TARGET, the original (which stored low first) and the pack (which reads low's
+// OLD value) diverge — a within-iteration read-after-write hazard. `o[k+1]=o[k]; o[k+2]=
+// o[k+1]` is the canonical miscompile: the second value reads o[k+1], which the first
+// store just wrote. (The sound own-index map `o[i]=…; o[i+1]=…` reads u1's OWN offset,
+// never u0's, so it never trips this.) f64 accesses are 8-byte and 8-aligned, so two
+// overlap iff their offsets are equal.
+const slpReadsOffset = (value, addr, off) => {
+  let hit = false
+  const walk = (n) => {
+    if (hit || !isArr(n)) return
+    if (n[0] === 'f64.load') {
+      const m = slpMem(n)
+      if (m && m.off === off && slpSameMem(m.addr, addr)) { hit = true; return }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(value)
+  return hit
 }
 
 // Pack two isomorphic f64 trees [lo, hi] into an f64x2 value, or null if it isn't
@@ -419,6 +460,9 @@ const slpStorePairsIn = (node, fnLocals, freshIdRef, newLocalDecls, getCounts) =
     const u1 = slpUnitAt(node, u0.hi + 1, getCounts)
     if (!u1 || u1.lo !== u0.hi + 1) continue
     if (u1.off - u0.off !== 8 || !slpSameBase(u0.addr, u1.addr)) continue
+    // RAW hazard: the high store's value must not read the low store's target — the pack
+    // would read its pre-store value. (u0 writes u0.off; reject if u1.value loads it.)
+    if (slpReadsOffset(u1.value, u0.addr, u0.off)) continue
     const packed = slpPackF64x2(u0.value, u1.value)
     if (!packed) continue
     const t = `$__slp${freshIdRef.next++}`

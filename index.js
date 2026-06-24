@@ -536,11 +536,17 @@ const jzCompileInner = (code, opts = {}) => {
 
   // opts.noSimd: force auto-vectorization off regardless of opt level — a
   // portability escape hatch for engines without the SIMD proposal (parallels
-  // opts.noTailCall). Disabling the vectorizeLaneLocal pass suppresses every
-  // jz-emitted v128 (lane maps, reductions incl. reduceUnroll, byte scans);
-  // explicit f32x4/i32x4 intrinsics in source are the user's own opt-in and stay.
-  // Applied after auto-config so it wins over any re-resolved preset.
-  if (opts.noSimd) ctx.transform.optimize.vectorizeLaneLocal = false
+  // opts.noTailCall). Must suppress EVERY jz-emitted v128, which is two passes:
+  // vectorizeLaneLocal (lane maps, reductions incl. reduceUnroll, byte scans) AND
+  // the SLP store-pair packer (within-iteration f64x2). Both off, so `noSimd` is a
+  // true scalar baseline — the oracle SIMD-vs-scalar correctness tests compare
+  // against (missing one let an SLP miscompile pass as "SIMD == scalar"). Explicit
+  // f32x4/i32x4 intrinsics in source are the user's own opt-in and stay. Applied
+  // after auto-config so it wins over any re-resolved preset.
+  if (opts.noSimd) {
+    ctx.transform.optimize.vectorizeLaneLocal = false
+    ctx.transform.optimize.experimentalSlp = false
+  }
 
   // opts.whyNotSimd (CLI --why-not-simd): emit a `simd-why-not` warning per
   // canonical loop that the auto-vectorizer declined, naming the blocking op —
