@@ -248,6 +248,7 @@ const WASM_TODO = {
   nqueens:  'NO jz codegen fix: solve() is already optimal i32 (clean tail recursion, 0 f64, tight bitmask loop). Gap is LLVM/rustc interprocedural recursion opts (tail-duplication/inlining) jz does not do.',
   mat4:     'NOT aliasing (param-distinctness measured: zero effect) and NOT memory I/O (arrays are fully scalarized to register slots, loads hoisted to a prologue). Already FMA-vectorized; residual is ~48 f64x2.splat/iter re-broadcasting the scalar slots — the scalarize-then-revectorize tension. Needs vectors kept end-to-end.',
   qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1× (within CI jitter band).',
+  dict:     'open-addressing linear-probe hash table — AS leads ~1.09×. NOT a narrowing leak: the hot insert/probe/lookup loop is verified clean i32 (0 trunc_sat / 0 f64.convert / 0 reinterpret in $runKernel; the 2 f64.const-nan are discarded void-insert returns, the module f64 is all in benchlib). Same scalar-codegen-race class as qoi — the probe loop`s branch/bounds quality, no jz-side narrowing fix.',
 }
 const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
 
