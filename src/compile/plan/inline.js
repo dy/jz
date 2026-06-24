@@ -285,9 +285,81 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   return { node: stmt, changed: false }
 }
 
+// Short-circuit operators: only the FIRST operand is unconditionally evaluated; a call in
+// a later operand might not run, so it can't be hoisted.
+const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
+// Optional chaining: jz's own desugaring already tees the base to evaluate it once, and
+// the key/args run conditionally — so the hoist treats the WHOLE expression as opaque (no
+// operand, not even the base, is hoisted out) to avoid colliding with that desugaring.
+const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
+
+// Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
+// preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at
+// a DIRECT `const X = call` / `X = call`; a call buried in an expression (noise's
+// `sum = sum + amp * perlin(x)`) is reached by neither that path nor inlineInExpr (which
+// only substitutes zero-prefix expr-bodies). Hoisting normalizes it to the direct form.
+// Only block-body candidates and only unconditional positions — preserving evaluation order
+// + count. Statement HEADERS that are expression positions (for-init/update, while/if test)
+// are left untouched: there's no sound place for a hoisted decl there, so those calls just
+// stay outlined. Conservatively leaves unrecognized statement shapes alone.
+const hoistNestedCalls = (body, blockNames) => {
+  if (!blockNames.size || !Array.isArray(body)) return { node: body, changed: false }
+  let changed = false
+  const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
+  const hExpr = (n, pre, cond) => {
+    if (!Array.isArray(n) || n[0] === '=>') return n
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1])) {
+      const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false))]
+      const tmp = `${T}inl${ctx.func.uniq++}_h`
+      pre.push(['const', ['=', tmp, call]])
+      changed = true
+      return [null, tmp]
+    }
+    if (OPTIONAL_CHAIN.has(n[0]))
+      return [n[0], ...n.slice(1).map(c => hExpr(c, pre, true))]
+    if (SHORT_CIRCUIT.has(n[0]))
+      return [n[0], hExpr(n[1], pre, cond), ...n.slice(2).map(c => hExpr(c, pre, true))]
+    return [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond))]
+  }
+  // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's
+  // `const X = call` / `X = call` paths — hoisting it would be redundant and (for an
+  // object/array-literal `{}`-bodied factory) would break the post-inline alias chain.
+  // Only hoist NESTED calls; leave a top-level direct call to those paths.
+  const directCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && blockNames.has(e[1])
+  const hStmt = (s) => {  // → array of statements (hoisted decls prepended)
+    if (!Array.isArray(s)) return [s]
+    switch (s[0]) {
+      case ';': return [[';', ...s.slice(1).flatMap(hStmt)]]
+      case '{}': return [['{}', seq(hStmt(s[1]))]]
+      case 'if': return [s.length > 3
+        ? ['if', s[1], seq(hStmt(s[2])), seq(hStmt(s[3]))]
+        : ['if', s[1], seq(hStmt(s[2]))]]
+      case 'for': { const i = forLoopBodyIndex(s); return [withForLoopBody(s, seq(hStmt(s[i])))] }
+      case 'while': return [['while', s[1], seq(hStmt(s[2]))]]
+      case 'let': case 'const': {
+        if (s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && !directCall(s[1][2])) {
+          const pre = []; const rhs = hExpr(s[1][2], pre, false)
+          return pre.length ? [...pre, [s[0], ['=', s[1][1], rhs]]] : [s]
+        }
+        return [s]
+      }
+      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false); return pre.length ? [...pre, ['return', v]] : [s] }
+      default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
+    }
+  }
+  const out = hStmt(body)
+  return { node: changed ? seq(out) : body, changed }
+}
+
 export const inlineHotInternalCalls = (programFacts, ast) => {
   const cfg = ctx.transform.optimize
   if (cfg && cfg.sourceInline === false) return false
+  // Transitive candidacy + expression-position hoisting are a size↔speed trade (they
+  // pull a large multi-call leaf like noise's perlin fully into its hot caller, where
+  // the lower tiers prefer to keep multi-caller helpers outlined for V8 tier-up). Gate
+  // both on the speed tier so levels ≤2 keep their conservative inlining policy.
+  const speedTier = !!(cfg && cfg.inlineFns)
 
   const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
   const typedByFunc = new Map(ctx.func.list.map(func => [func, analyzeBody(func.body).typedElems]))
@@ -341,7 +413,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // entry points, not pulling a leaf INTO an export's hot loop (game-of-life's
   // step calls rot per cell; pre-Turboshaft wasm tiers never inline calls).
   const leaves = new Set()
+  // Transitive candidacy via fixpoint: a function whose only user-callees are THEMSELVES
+  // candidates (so they inline away) can be inlined too. noise's `perlin` calls grad/fade/
+  // lerp (loop-free leaves) — once those are candidates, perlin clears the call-bearing-body
+  // gate and becomes a leaf candidate. Each pass adds ≥1 or stops, so it's bounded.
+  for (let recollect = true; recollect;) {
+  recollect = false
   for (const func of ctx.func.list) {
+    if (candidates.has(func.name)) continue
     const sites = sitesByCallee.get(func.name)
     // Exported leaf/kernel with exactly one internal caller (e.g. fill→beat in
     // floatbeat): inline into the caller's loop but keep the export for external
@@ -388,7 +467,10 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // that get hammered from a hot caller's loop — replacing the call with its
     // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
     if (!hasLoop) {
-      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
+      // Calls to functions that are THEMSELVES candidates are fine — they inline away;
+      // only a call to a non-candidate user function blocks (a later fixpoint pass re-checks).
+      // Speed-tier only; lower tiers keep the strict "any user call ⇒ outline" rule.
+      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]) && !(speedTier && candidates.has(n[1])))) continue
       // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
       // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
       // for most of 260k cells/frame; cloth's relax: ~160 nodes × 2 sites, fired
@@ -421,6 +503,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name)
     candidates.set(func.name, func)
+    if (speedTier) recollect = true  // only the speed-tier transitive relaxation needs a re-pass
+  }
   }
   if (!candidates.size) return false
 
@@ -480,9 +564,21 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // binds those args to temps (`t0 = grad(a)`); the next pass folds the candidate into the temp
     // decl. Depth is bounded by call nesting (a small constant), capped here so a pathological
     // chain can't loop unbounded.
+    // Loop-free block-body LEAVES: the stmt path folds them only at a DIRECT `const X =
+    // call`, never nested in an expression. Hoisting such a call to a temp (in the iter
+    // fixpoint below) lets inlineInStmt then fold it — the noise `sum + amp*perlin(x)`
+    // shape. Restricted to LEAVES (no own loop): a loop kernel called in expression
+    // position (e.g. a 2-site `reduce`) was deliberately staying outlined for V8 tier-up,
+    // and hoisting it would pull the loop into a cold caller.
+    const blockNames = new Set()
+    for (const n of activeCandidates.keys()) if (leaves.has(n) && !exprActive.has(n)) blockNames.add(n)
     let body = func.body, bodyChanged = false
     for (let iter = 0; iter < 4; iter++) {
       let iterChanged = false
+      if (speedTier && !isExprBody && blockNames.size) {
+        const h = hoistNestedCalls(body, blockNames)
+        if (h.changed) { body = h.node; iterChanged = true }
+      }
       const r = isExprBody ? inlineInExpr(body, activeCandidates) : inlineInStmt(body, activeCandidates)
       if (r.changed) { body = r.node; iterChanged = true }
       if (exprActive.size) {
