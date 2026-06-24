@@ -181,11 +181,19 @@ can't worsen and visibly shrink when fixed:
   unhinted JS it's f64 (the integer-overflow contract — a product can exceed 2³¹), which makes
   both the outer bound `i*i < LIMIT` AND the inner counter `j` f64 BEFORE narrowLoopBound even
   looks — it only considers i32 counters, and a non-const-init/step counter fails its check
-  anyway. Closing it needs RANGE/SCEV reasoning: prove `i*i` and `j` stay within i32 (e.g.
-  `i*i < LIMIT ≤ 2³¹`) so the product/counter can be carried as i32 and the compare narrowed —
-  not a `nonNegCounter` relaxation. nonNegCounter itself is a VECTORIZER precondition (OOB
-  safety "SIMD reads ⊆ scalar reads" vectorize.js ~1499 + const-step IV detection `ivCoeff===0`),
-  and the strided `j += i` can't vectorize regardless. Real but involved; the audit flags it.
+  anyway. Closing it needs RANGE/SCEV reasoning, NOT a nonNegCounter relaxation — and there is a
+  real SOUNDNESS TRAP: at the loop EXIT `i*i` is computed BEFORE the `< LIMIT` test, so the exit
+  product can exceed 2³¹ even when LIMIT < 2³¹ (measured: LIMIT=2³¹−1 → exit i=46341, i*i=
+  2147488281, wraps to −2147479015 as i32). Carrying `i*i` as i32 is UNSOUND unless the bound
+  absorbs the overshoot. SOUND DESIGN: narrow only when (a) the loop bound is a COMPILE-TIME
+  CONSTANT ≤ 2³⁰ (a unit-stride product overshoots by ≤ 2·√LIMIT+1, so ≤ 2³⁰ keeps the exit
+  product < 2³¹) and (b) the step is unit/bounded. Spans the TYPING layer (where `i*i` becomes
+  f64 via NUMERIC_BINARY) + narrowLoopBound. NB: sieve is NOT in WASM_TODO — jz is already
+  competitive, so this is a "minimal theoretical WASM" purity win, not a rival-gap. Substantial
+  × soundness-delicate × low value ⇒ DEFERRED (the 3 sibling items shipped; this is the
+  disproportionate tail). nonNegCounter is a VECTORIZER precondition (OOB safety vectorize.js
+  ~1499 + const-step IV `ivCoeff===0`); strided `j+=i` can't vectorize regardless. Gate: the
+  AS-canon audit flags it (run on demand).
 - [x] **Pipeline under-converges on vectorized reductions** — DONE (hot-path). The post-phase
   lane vectorizer (runs AFTER fusedRewrite's memarg fold) emitted `v128.load/store (i32.add
   base K)` for the unrolled multi-accumulator reduction, keeping a per-iteration i32.add per
