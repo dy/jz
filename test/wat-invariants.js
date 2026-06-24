@@ -142,10 +142,12 @@ test(`sweep: typed-int f64-in-loop ≤ ${TYPED_INT_F64_BASELINE} (ratchet — ne
 // Loop-invariant pointer/length helpers must be hoisted, never re-run per element.
 // Clean generators (internal arrays, constant length) lower with zero such calls
 // in any loop — the LICM / hoistGlobalPtrOffset guarantee, over the population.
-// (NB: the param-typed-array generator `typedSource` does NOT hold this — a
-// typed array passed as a PARAM re-decodes its base every iteration, 200/200; a
-// real gap in JZ's flagship DSP `(buf,n)=>{for(i<n) buf[i]=…}` shape. Documented
-// in .work/todo.md; excluded here until the param-base hoist lands.)
+// (NB: the param-typed-array generator `typedSource` does NOT hold this AT LEVEL 2 — a
+// typed array passed as a PARAM re-decodes its base every iteration, 200/200, because
+// the polymorphic store reassigns `buf`. At SPEED (level 3) unswitchTypedParamLoop closes
+// it: a Float64Array-gated fast loop hoists the base and vectorizes (test/unswitch-typed-
+// param.js). This sweep parses at level 2, where the loop stays scalar — so the param
+// generator remains excluded here.)
 for (const [name, gen] of [
   ['Int32Array min/max', typedIntMinMaxSource],
   ['Uint8Array byte scan', typedByteScanSource],

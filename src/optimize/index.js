@@ -35,7 +35,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 import { T, isLeaf } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
-import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex } from '../../layout.js'
+import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
@@ -101,6 +101,7 @@ export const PASS_NAMES = [
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
   'csePureExpr',
+  'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'dropDeadZeroInit',
   'deadStoreElim',
   'promoteGlobals',          // read-only global.get → local for multi-read globals
@@ -2745,6 +2746,161 @@ export function foldStrDispatchF64(fn) {
 }
 
 /**
+ * Loop-unswitch a polymorphic typed-array PARAM loop on the pointer type so the
+ * Float64Array case hoists its base and vectorizes.
+ *
+ * `export function f(buf,n){ for(let i=0;i<n;i++) buf[i]=g(buf[i],i) }` emits a
+ * per-iteration POLYMORPHIC store `(drop (if tag(buf)==ARRAY (then __arr_set_idx_ptr;
+ * local.set $buf) (else f64.store __ptr_offset(buf)+i<<3)))` and a read
+ * `__to_num(reinterpret(__typed_idx(reinterpret(buf), i)))` — re-decoding the NaN-box
+ * base every iteration. The `local.set $buf` realloc reassign marks the param unsafe,
+ * so hoistInvariantPtrOffset bails and the loop never vectorizes.
+ *
+ * Insert a ONCE-before-loop test "is buf a (non-BigInt) Float64Array?": yes → a fast
+ * loop with the base hoisted to an i32 local, the read collapsed to `f64.load`, and the
+ * polymorphic store replaced by a direct `f64.store` (no calls) — which vectorizeLaneLocal
+ * then lifts to f64x2. no → the original block verbatim (bit-exact fallback for ARRAY and
+ * every other element width). Float64Array (owned aux=7 or view aux=15) is the ONLY gated
+ * type: the else-branch f64.store is 8-byte, valid only for f64 elements; Int32Array /
+ * Uint8Array / BigInt64Array (aux 4 / 1 / 23) all fall to the verbatim path. The global-
+ * Float64Array path already lowers reads to f64.load, proving f64.load == the __to_num
+ * read for f64 elements (bit-exact, incl. NaN). All helpers are nested function decls
+ * (no ctx param) per the self-host discipline.
+ */
+export function unswitchTypedParamLoop(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const f64Params = new Set()
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (Array.isArray(c) && c[0] === 'param' && typeof c[1] === 'string' && c[2] === 'f64') f64Params.add(c[1])
+  }
+  if (!f64Params.size) return
+
+  const F64 = TYPED_ELEM_CODE.Float64Array, F64V = F64 | TYPED_ELEM_VIEW_FLAG
+  const newLocals = []
+  let baseId = nextLocalId(fn, 'utb')
+
+  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
+  const has = (n, pred) => Array.isArray(n) && (pred(n) || n.some((c, i) => i > 0 && has(c, pred)))
+  const writes = (n, name) => has(n, (x) => (x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name)
+  const reintParam = (n, p) => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && n[1][1] === p
+  const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__typed_idx' && n.length >= 4 && reintParam(n[2], p)
+
+  // Clone, collapsing the typed-array read to a direct f64.load(base + IND<<3):
+  //   __to_num(reinterpret(__typed_idx(reinterpret P, IND)))  — and the bare form too.
+  function cloneRead(n, p, base) {
+    if (!Array.isArray(n)) return n
+    if (n[0] === 'call' && n[1] === '$__to_num' && n.length === 3
+        && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p))
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[2][1][3]), ['i32.const', 3]]]]
+    if (typedIdx(n, p))
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[3]), ['i32.const', 3]]]]
+    return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base))
+  }
+
+  function processBlock(blockNode, parent, idx) {
+    if (!Array.isArray(blockNode) || blockNode[0] !== 'block') return
+    let loopNode = null, blockLabel = null
+    const preamble = []
+    for (let i = 1; i < blockNode.length; i++) {
+      const c = blockNode[i]
+      if (i === 1 && typeof c === 'string' && c.startsWith('$')) { blockLabel = c; continue }
+      if (Array.isArray(c) && c[0] === 'loop') { if (loopNode) return; loopNode = c }
+      else if (Array.isArray(c) && c[0] === 'local.set' && !loopNode) preamble.push(c)
+      else if (Array.isArray(c)) return
+    }
+    if (!loopNode || !blockLabel) return
+    const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+    if (!loopLabel) return
+    const endIdx = loopNode.length - 1
+    if (!(Array.isArray(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return
+    const incNode = loopNode[endIdx - 1]
+    if (!Array.isArray(incNode) || incNode[0] !== 'local.set' || !Array.isArray(incNode[2]) || incNode[2][0] !== 'i32.add') return
+    const incVar = incNode[1], inc = incNode[2]
+    if (!(Array.isArray(inc[1]) && inc[1][0] === 'local.get' && inc[1][1] === incVar && Array.isArray(inc[2]) && inc[2][0] === 'i32.const' && inc[2][1] === 1)) return
+    const body = loopNode.slice(3, endIdx - 1)
+    if (body.length < 4) return
+
+    // Find the polymorphic-store `if` by scanning (it's followed by a `drop` of its
+    // f64 result; in the IR the two are separate statements, not (drop (if …))).
+    let storeIdx = -1, paramName = null, elseStore = null
+    for (let i = 0; i < body.length; i++) {
+      const c = body[i]
+      if (!Array.isArray(c) || c[0] !== 'if' || !Array.isArray(c[1]) || c[1][0] !== 'result' || c[1][1] !== 'f64') continue
+      let thenArm = null, elseArm = null
+      for (let k = 2; k < c.length; k++) { const a = c[k]; if (Array.isArray(a)) { if (a[0] === 'then') thenArm = a; else if (a[0] === 'else') elseArm = a } }
+      if (!thenArm || !elseArm) continue
+      let p = null
+      for (let k = 1; k < thenArm.length; k++) { const a = thenArm[k]; if (Array.isArray(a) && a[0] === 'local.set' && f64Params.has(a[1]) && Array.isArray(a[2]) && a[2][0] === 'local.get') p = a[1] }
+      if (!p || !has(thenArm, (x) => x[0] === 'call' && x[1] === '$__arr_set_idx_ptr')) continue
+      let es = null
+      for (let k = 1; k < elseArm.length; k++) { const a = elseArm[k]; if (Array.isArray(a) && a[0] === 'f64.store') es = a }
+      if (!es || !has(es[1], (x) => x[0] === 'call' && x[1] === '$__ptr_offset')) continue   // bails on the 3-way __typed_set_idx form
+      if (!(Array.isArray(es[1]) && es[1][0] === 'i32.add' && Array.isArray(es[1][2]) && es[1][2][0] === 'i32.shl')) continue
+      storeIdx = i; paramName = p; elseStore = es; break
+    }
+    if (storeIdx < 0) return
+    const shiftIdx = elseStore[1][2][1]  // the index from the store's (i32.shl IDX 3)
+    // The read uses the IV directly; the store uses a snapshot `$asi = $iv`. Emit the
+    // store against the IV too so the vectorizer unifies the load/store lanes — bit-exact
+    // ($asi == $iv). Bail if the store index isn't the IV or a snapshot of it.
+    let storeIdxName = null
+    if (Array.isArray(shiftIdx) && shiftIdx[0] === 'local.get') storeIdxName = shiftIdx[1]
+    if (storeIdxName !== incVar &&
+        !body.some((st) => Array.isArray(st) && st[0] === 'local.set' && st[1] === storeIdxName && Array.isArray(st[2]) && st[2][0] === 'local.get' && st[2][1] === incVar)) return
+    // The store-if pushes f64; a following `drop` (bare string in stack-style IR, or a
+    // `['drop', …]` node) pops it. The fast store pushes nothing, so the drop must go too.
+    const isDrop = (s) => s === 'drop' || (Array.isArray(s) && s[0] === 'drop')
+    const hasDrop = storeIdx + 1 < body.length && isDrop(body[storeIdx + 1])
+
+    // The stored value is the else-store's operand (a local the body computed); take it
+    // from the store itself, not by guessing which local reads buf — the read may be
+    // nested in a split computation (`$t = buf[i]; $v = $t*2`) whose result is a DIFFERENT
+    // local. cloneRead rewrites any buf reads in that computation to f64.load.
+    if (!(Array.isArray(elseStore[2]) && elseStore[2][0] === 'local.get')) return
+    const valName = elseStore[2][1]
+    // GUARD: param reassigned ONLY inside the matched store-if (else the hoisted base goes stale).
+    for (let i = 0; i < body.length; i++) { if (i === storeIdx) continue; if (writes(body[i], paramName)) return }
+    for (const s of preamble) { if (writes(s, paramName)) return }
+
+    const base = `$__utb${baseId++}`
+    newLocals.push(['local', base, 'i32'])
+    const reint = () => ['i64.reinterpret_f64', ['local.get', paramName]]
+    const tag = ['i32.and', ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]]
+    const auxOf = () => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]
+    const gate = ['i32.and', ['i32.eq', tag, ['i32.const', PTR.TYPED]],
+      ['i32.or', ['i32.eq', auxOf(), ['i32.const', F64]], ['i32.eq', auxOf(), ['i32.const', F64V]]]]
+    const baseSnap = ['local.set', base, ['call', '$__ptr_offset', reint()]]
+    const fastStore = ['f64.store', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]], ['local.get', valName]]
+    // Fast body: keep every statement except the store-if (→ fastStore) and its trailing
+    // drop (the fast store pushes nothing), with the typed-array read collapsed to f64.load.
+    const fastStmts = []
+    for (let i = 0; i < body.length; i++) {
+      if (i === storeIdx) { fastStmts.push(fastStore); continue }
+      if (hasDrop && i === storeIdx + 1) continue
+      fastStmts.push(cloneRead(body[i], paramName, base))
+    }
+    const fastLoop = ['block', blockLabel, ...preamble.map(clone),
+      ['loop', loopLabel, clone(loopNode[2]), ...fastStmts, clone(incNode), clone(loopNode[endIdx])]]
+    parent[idx] = ['if', gate, ['then', baseSnap, fastLoop], ['else', blockNode]]
+  }
+
+  function walk(node, parent, idx) {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'block') {
+      const before = parent[idx]
+      processBlock(node, parent, idx)
+      if (parent[idx] !== before) return
+    }
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+  }
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
  * Run all per-function IR optimizations on a single function node.
  * hoistPtrType runs first — it introduces new locals (`$__ptN`) that the fused
  * walk should see in their final form. fusedRewrite then collapses rebox/unbox
@@ -2806,6 +2962,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // Phase 1: fold dead string-dispatch blocks on proven-f64 locals BEFORE
     // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
+    if (runVectorizer && (!cfg || cfg.unswitchTypedParamLoop !== false)) unswitchTypedParamLoop(fn)
     if (runVectorizer) foldStrDispatchF64(fn)
     if (runVectorizer) vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
