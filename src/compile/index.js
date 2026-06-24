@@ -39,6 +39,7 @@ import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
+import { narrowBoundedSquare } from './loop-square.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 
@@ -397,6 +398,10 @@ function analyzeFuncForEmit(func, programFacts) {
   // counters are typed/narrowed like any i32 local. Off at L0 / `loopIVDivMod:false`.
   const _o = ctx.transform.optimize
   if (_o && _o.loopIVDivMod !== false && isBlockBody(func.body)) func.body = strengthReduceLoopDivMod(func.body)
+  // Bounded-square narrowing: `i*i` under an `i*i < CONST` (CONST ≤ 2³⁰) guard → Math.imul,
+  // so the sieve's product/counter chain carries i32 instead of f64. Before analyze so the
+  // Math.imul typed/narrows like any i32. Off at L0 / `loopSquare:false`.
+  if (_o && _o.loopSquare !== false && isBlockBody(func.body)) func.body = narrowBoundedSquare(func.body)
   // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
   // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)

@@ -35,7 +35,10 @@ const CORPUS = [
   { name: 'collatz length', kind: 'int',
     src: `export let collatz = (n) => { let c = 0; while (n > 1) { n = (n & 1) === 0 ? (n / 2) | 0 : (3 * n + 1) | 0; c = c + 1 | 0 } return c | 0 }` },
   { name: 'sieve count (Int32Array)', kind: 'int',
-    src: `export let primes = (n) => { const s = new Int32Array(n); let c = 0; for (let i = 2; i < n; i++) { if (s[i] === 0) { c = c + 1 | 0; for (let j = i * 2; j < n; j = j + i | 0) s[j] = 1 } } return c | 0 }` },
+    // canonical Sieve of Eratosthenes — `i*i < LIMIT` guard, `j = i*i` start (the bench shape).
+    // The products are f64 by the integer-overflow contract; bounded-square narrowing carries
+    // them i32 because LIMIT is a compile-time const ≤ 2³⁰ (src/compile/loop-square.js).
+    src: `export let primes = () => { const LIMIT = 65536; const s = new Int32Array(LIMIT); let c = 0; for (let i = 2; i * i < LIMIT; i++) { if (s[i] === 0) { c = c + 1 | 0; for (let j = i * i; j < LIMIT; j = j + i) s[j] = 1 } } return c | 0 }` },
   { name: 'popcount loop', kind: 'int',
     src: `export let popcnt = (x) => { let c = 0; while (x !== 0) { c = (c + (x & 1)) | 0; x = x >>> 1 } return c | 0 }` },
   { name: 'integer pow', kind: 'int',

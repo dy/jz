@@ -175,25 +175,18 @@ can't worsen and visibly shrink when fixed:
   (param-bounded loops over NaN/±Inf/-0/fractional — the CONSTANT-bound generators never
   covered this), THEN extended the pass (src/optimize/index.js). Pinned:
   test/wat-invariants.js `<= narrowed` ablation + fuzzLoopBound (3000 seeds green).
-- [ ] **narrowLoopBound: SCEV-shaped counters** — the real bench/sieve/sieve.js:29 inner is
-  `for (let j = i*i; j < LIMIT; j += i) …` (outer `for (let i=2; i*i < LIMIT; i++)`), NOT the
-  `i*2`/`<n` shape an earlier note assumed. The deeper blocker: `i*i` is a PRODUCT, so in
-  unhinted JS it's f64 (the integer-overflow contract — a product can exceed 2³¹), which makes
-  both the outer bound `i*i < LIMIT` AND the inner counter `j` f64 BEFORE narrowLoopBound even
-  looks — it only considers i32 counters, and a non-const-init/step counter fails its check
-  anyway. Closing it needs RANGE/SCEV reasoning, NOT a nonNegCounter relaxation — and there is a
-  real SOUNDNESS TRAP: at the loop EXIT `i*i` is computed BEFORE the `< LIMIT` test, so the exit
-  product can exceed 2³¹ even when LIMIT < 2³¹ (measured: LIMIT=2³¹−1 → exit i=46341, i*i=
-  2147488281, wraps to −2147479015 as i32). Carrying `i*i` as i32 is UNSOUND unless the bound
-  absorbs the overshoot. SOUND DESIGN: narrow only when (a) the loop bound is a COMPILE-TIME
-  CONSTANT ≤ 2³⁰ (a unit-stride product overshoots by ≤ 2·√LIMIT+1, so ≤ 2³⁰ keeps the exit
-  product < 2³¹) and (b) the step is unit/bounded. Spans the TYPING layer (where `i*i` becomes
-  f64 via NUMERIC_BINARY) + narrowLoopBound. NB: sieve is NOT in WASM_TODO — jz is already
-  competitive, so this is a "minimal theoretical WASM" purity win, not a rival-gap. Substantial
-  × soundness-delicate × low value ⇒ DEFERRED (the 3 sibling items shipped; this is the
-  disproportionate tail). nonNegCounter is a VECTORIZER precondition (OOB safety vectorize.js
-  ~1499 + const-step IV `ivCoeff===0`); strided `j+=i` can't vectorize regardless. Gate: the
-  AS-canon audit flags it (run on demand).
+- [x] **narrowLoopBound: SCEV-shaped counters (bench/sieve `i*i`)** — DONE. `for (i=2; i*i<LIMIT;
+  i++) for (j=i*i; j<LIMIT; j+=i) …`: `i*i` is f64 (the integer-overflow contract), making the
+  outer bound, the inner counter `j`, and the index chain f64. New plan-phase pass
+  `narrowBoundedSquare` (src/compile/loop-square.js) rewrites `i*i` → `Math.imul(i,i)` (→ i32.mul)
+  when the guard is `i*i </≤ CONST` with CONST ≤ 2³⁰ (literal OR a module const via
+  ctx.scope.constInts — the bench's `1<<20`) and the IV is +1-incremented and not otherwise
+  mutated. The inner `j` cascades to i32 on its own. SOUND incl. the EXIT-OVERSHOOT trap (i*i
+  computed before the `<` test can exceed 2³¹ for larger bounds): ≤ 2³⁰ keeps the exit product
+  < 2³¹, so `Math.imul == i*i`. Verified bit-exact vs JS incl. the 2³⁰ boundary (iteration-count
+  loops, no 4GB array) + 100k-sieve (9592 primes); soundness boundaries pinned (bound 2³⁰+1 /
+  variable / non-+1 step / mutated IV all stay f64). Pinned: test/loop-square.js. The AS-canon
+  audit now PASSES (sieve cleared). Off at L0 / `loopSquare:false`.
 - [x] **Pipeline under-converges on vectorized reductions** — DONE (hot-path). The post-phase
   lane vectorizer (runs AFTER fusedRewrite's memarg fold) emitted `v128.load/store (i32.add
   base K)` for the unrolled multi-accumulator reduction, keeping a per-iteration i32.add per
