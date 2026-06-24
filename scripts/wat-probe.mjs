@@ -15,8 +15,13 @@ export const walk = (node, visit, inLoop = false) => {
   visit(node, here)
   for (let i = 1; i < node.length; i++) walk(node[i], visit, here)
 }
+// Count every instruction node (each S-expr whose head is a string op) — a
+// machine-independent codegen-size proxy used by the fixpoint audit.
+export const countOps = (tree) => { let c = 0; walk(tree, (n) => { if (typeof n[0] === 'string') c++ }); return c }
 export const has = (tree, pred) => { let f = false; walk(tree, (n) => { if (pred(n)) f = true }); return f }
 export const loopHas = (tree, pred) => { let f = false; walk(tree, (n, inL) => { if (inL && pred(n)) f = true }); return f }
+export const count = (tree, pred) => { let c = 0; walk(tree, (n) => { if (pred(n)) c++ }); return c }
+export const loopCount = (tree, pred) => { let c = 0; walk(tree, (n, inL) => { if (inL && pred(n)) c++ }); return c }
 
 // ── predicates ────────────────────────────────────────────────────────────────
 export const head = (re) => (n) => typeof n[0] === 'string' && re.test(n[0])

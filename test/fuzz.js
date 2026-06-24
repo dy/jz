@@ -772,6 +772,59 @@ export const fuzzTypedByteScan = (opts) => {
   return findings
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop-bound mode — PARAM-bounded counted loops over adversarial numeric bounds.
+// ─────────────────────────────────────────────────────────────────────────────
+// Every other generator uses a CONSTANT loop bound, so none exercises
+// narrowLoopBound's f64-param-bound → i32 snap against a NaN / ±Inf / fractional
+// bound — exactly where a naive `i <= n` narrowing miscompiles: `floor(NaN)` →
+// trunc_sat → 0 makes `i <= 0` run one iteration when JS (`0 <= NaN` is false)
+// runs zero. Each program is `(n) => { for (i OP n) … }` with a `break` guard so
+// ±Inf / 1e9 bounds still terminate at a JS-and-jz-identical count; we run it for
+// a fixed adversarial bound set and diff jz vs JS. The body is `|0`-disciplined
+// and bounded, so every result is a small exact int — `same()` needs no contract
+// modeling. This is the regression guard that must stay green THROUGH any
+// extension of narrowLoopBound to `<=` / non-const counters.
+const LB_OPS = ['<', '<=']
+const loopBoundSource = (seed) => {
+  const g = mkRng(seed)
+  const op = g.pick(LB_OPS)
+  const init = g.chance(0.5) ? 0 : 1 + g.int(3)              // const init 0..3
+  const step = g.chance(0.7) ? 1 : 2                          // +1 or +2 (non-unit stride)
+  const bnd = g.chance(0.5) ? 'n' : (g.chance(0.5) ? '(n - 1)' : '(n + 1)')
+  return `export let f = (n) => { let s = 0; for (let i = ${init}; i ${op} ${bnd}; i = i + ${step}) { if (i > 60) break; s = (s + i) | 0 } return s | 0 }`
+}
+// NaN/±Inf/-0 (the narrowing traps) + integers, just-below/just-above, fractional,
+// negative, and a huge value the break guard clamps.
+const LB_BOUNDS = [NaN, Infinity, -Infinity, -0, 0, 1, 2, 3, 5, 7, 0.5, 1.5, 5.5, 5.999, 6, -1, -5, 49, 50, 51, 64, 1e9]
+const checkLoopBound = (seed, opts) => {
+  const src = loopBoundSource(seed)
+  let jsFn
+  try { jsFn = compileJS(src) } catch { return { kind: 'invalid' } }
+  const wants = []
+  for (const b of LB_BOUNDS) { try { wants.push(jsFn(b)) } catch { return { kind: 'invalid' } } }
+  for (const opt of opts.optLevels) {
+    let f
+    try { f = jz(src, { optimize: opt }).exports.f } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    for (let i = 0; i < LB_BOUNDS.length; i++) {
+      let got
+      try { got = f(LB_BOUNDS[i]) } catch { return { kind: 'wasm-threw', opt, args: [LB_BOUNDS[i]], want: wants[i], src } }
+      if (!same(got, wants[i])) return { kind: 'mismatch', opt, args: [LB_BOUNDS[i]], got, want: wants[i], src }
+    }
+  }
+  return null
+}
+export const fuzzLoopBound = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkLoopBound(seed, opts)
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
 // Source generators — exported so the STRUCTURAL-invariant verifier
 // (test/wat-invariants.js) sweeps the SAME seeded programs the correctness
 // fuzzer runs, but checks the optimized WAT for absence-of-overhead (no f64
@@ -780,7 +833,7 @@ export const fuzzTypedByteScan = (opts) => {
 export {
   genProgram as genScalarProgram, toSource as scalarSource,
   typedSource, typedMapSource, typedIntSource, typedIntMinMaxSource,
-  typedIVSRSource, typedByteScanSource,
+  typedIVSRSource, typedByteScanSource, loopBoundSource,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -851,6 +904,12 @@ if (!isMain) {
     ok(findings.length === 0, findings.length
       ? `byte-scan divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz byte-scan == JS')
+  })
+  test('fuzz: param-bounded loops (narrowLoopBound vs NaN/±Inf/<=) match JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzLoopBound({ ...GATE, count: N(120) })
+    ok(findings.length === 0, findings.length
+      ? `loop-bound divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} args=[${f.args}] jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz param-bound loops == JS')
   })
 }
 

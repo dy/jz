@@ -44,22 +44,31 @@ const genMixed = (g, d) => g() < 0.5 ? genInt(g, d) : genFloat(g, d)
 // lost narrowing / un-hoisted decode shows up as extra loop-body ops the ratchet
 // catches. They are `callable: false`: the timing perf-fuzz (fuzz-bench.mjs)
 // only runs the scalar `f(n,p0,p1,p2)→number` categories; these are gated by the
-// machine-independent codegen ratchet (test/perf-ratchet.js), which compiles and
-// counts loop-body ops without calling the function — the right gate for "did
-// codegen get wasteful", independent of any V8 hardware tier-gap.
+// machine-independent codegen ratchet (test/perf-ratchet.js).
+//
+// NB on the metric: the ratchet compiles at optimize:2 and counts loop-body ops —
+// the right gate for SCALAR codegen ("did a narrowing/hoist stop firing"). It is
+// deliberately NOT run at the 'speed' tier: vectorization there legitimately
+// RAISES the static op count (SIMD setup + scalar tail + unswitch's duplicated
+// body), so an op-count gate would flag a win as a regression. The speed-tier
+// vectorization wins are pinned by the right tool instead — v128-presence +
+// bit-exactness assertions in test/{cond-vectorize,unswitch-typed-param,slp}.js.
 
 // COND: nested integer conditional (`?:` ≥2 deep) — stresses i32 narrowing THROUGH
-// a conditional result. A known gap: under the vectorizer this bails to an
-// `(if (result f64))` with per-branch f64.convert (see test/wat-invariants.js).
+// a conditional result (the scalar accumulation path; the typed-array conditional
+// MAP that vectorizes to i32x4 is pinned by test/cond-vectorize.js).
 const genCond = (g, d) => {
   if (d <= 0 || g() < 0.3) return genInt(g, 1)
   return `((${genInt(g, 1)} ${pick(g, ['<', '>', '<=', '>=', '===', '!=='])} ${genInt(g, 1)}) ? ${genCond(g, d - 1)} : ${genCond(g, d - 1)})`
 }
 
 // BUF: typed array passed as a PARAM, mutated in place — JZ's flagship DSP shape
-// `(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`. The base offset is loop-invariant
-// but currently re-decoded every iteration (a per-element `__ptr_offset` the
-// ratchet's op count exposes), unlike a module-global array which hoists cleanly.
+// `(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`. At optimize:2 (where the ratchet
+// measures) this is the fully-dynamic param path — base re-decoded per element —
+// and the op count guards that scalar shape. At 'speed', unswitchTypedParamLoop now
+// guards `is buf Float64Array?` once and lifts a base-hoisted f64x2 fast path
+// (pinned by test/unswitch-typed-param.js); that win is NOT visible to this op
+// count (it duplicates the body), by design.
 const BUF_LEAF = ['buf[i]', 'i + 0.0', '1.0', '0.5', '2.0', '-1.5', '3.0']
 const genBufExpr = (g, d) => (d <= 0 || g() < 0.4)
   ? pick(g, BUF_LEAF)

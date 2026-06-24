@@ -151,23 +151,38 @@ can't worsen and visibly shrink when fixed:
   `const a=new Int32Array(32); for(i<32) a[i]=((3<a[i])?(2&a[i]):((7<a[i])?a[i]:1))|0`.
   Fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar fallback).
   Gate: `test/wat-invariants.js` typed-int ratchet (baseline 13/200) + perf-ratchet `cond`.
-- [ ] **Param typed-array base re-decode** — a typed array passed as a PARAM
-  (`(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`, JZ's flagship DSP shape) re-decodes its
-  NaN-box base offset every iteration (`__ptr_offset`/`__typed_idx` in-loop, 200/200),
-  where a module-GLOBAL array hoists cleanly (`hoistGlobalPtrOffset`). The base is
-  loop-invariant; the self-store makes LICM bail conservatively. Fix: extend the
-  invariant-pointer hoist to params whose only loop write is an element store (no base
-  reassign). Gate: perf-ratchet `buf` op count (baseline 3861 — drops when this lands).
-- [ ] **narrowLoopBound only handles `i < n`** — surfaced by the AS-canon bias audit
-  (`scripts/audit-assemblyscript.mjs`): factorial's `i <= n` and sieve's inner
-  `for(j=i*2; j<n; …)` keep a per-iteration `f64.le/lt(convert(i), n)` because the pass
-  matches only `<`/`>` with a const-init, const-step counter. `<=`/`>`/`>=` and
-  non-const counters (provably ≥0 but not by the current check) fall through.
-  NOT a trivial fix: `i <= n` narrows to `i <= floor(n)`, but `floor(NaN)→trunc_sat→0`
-  would make `i <= 0` wrongly true at i=0 for `n = NaN` (JS runs 0 iters) — and the
-  fuzzer uses CONSTANT bounds, so it wouldn't catch it. Needs a non-NaN bound proof (or
-  a NaN-preserving snap) before extending. First harden the fuzzer with param-bound
-  loops over NaN/Inf inputs, THEN narrow. Gate: the audit (run on demand).
+- [x] **Param typed-array base re-decode** — DONE (speed tier). A typed array passed as a
+  PARAM (`(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`, JZ's flagship DSP shape) re-decoded
+  its NaN-box base every iteration because the polymorphic store reassigns `buf`, marking
+  it unsafe to hoist. `unswitchTypedParamLoop` now tests `is buf Float64Array?` ONCE before
+  the loop → a base-hoisted f64.load/store fast loop the lane vectorizer lifts to f64x2;
+  every other type falls back bit-exact (test/unswitch-typed-param.js). Speed-only (it
+  duplicates the body — size↔speed). NB: the perf-ratchet `buf` baseline (3861) measures
+  optimize:2, where the param path stays dynamic by design — it does NOT drop when the
+  speed-tier win lands (vectorization RAISES static op count); the win is pinned
+  structurally, not by op count. At 'speed', 34/40 buf-corpus programs vectorize (0/40 at opt2).
+- [x] **narrowLoopBound `i <= n`** — DONE. Surfaced by the AS-canon bias audit; factorial
+  (`for i=2; i<=n; i++`) kept a per-iteration `f64.le(convert(i), n)`. Now snaps the bound
+  via floor with a NaN→I32_MIN guard (`trunc_sat(floor(NaN))=0` would wrongly run i=0;
+  JS `i<=NaN` is false → 0 iters). First hardened test/fuzz.js with `fuzzLoopBound`
+  (param-bounded loops over NaN/±Inf/-0/fractional — the CONSTANT-bound generators never
+  covered this), THEN extended the pass (src/optimize/index.js). Pinned:
+  test/wat-invariants.js `<= narrowed` ablation + fuzzLoopBound (3000 seeds green).
+- [ ] **narrowLoopBound: non-const counters** — sieve's inner `for(j=i*2; j<n; j=j+i)`
+  still keeps `f64.lt` because nonNegCounter only proves const-init, const-step counters
+  ≥0. Proving `i*2 ≥ 0` needs i ≥ 0 (transitive from the outer counter) AND i < 2³⁰ —
+  `i*2` OVERFLOWS to negative for large i, so it is NOT unconditionally ≥0. A real
+  soundness trap, not a clean fix; needs a range bound on the init/step. Lower value than
+  `<=` (rarer shape). Gate: the audit flags it (run on demand).
+- [ ] **Pipeline under-converges on reductions** — surfaced by the Tier-2 local-optimality
+  audit (`scripts/audit-fixpoint.mjs`, `npm run audit:fixpoint`): jz output is a fixpoint
+  of its own watr optimizer for 7/10 kernels, but reduction / conditional-map shapes (dot
+  −18, sum −15, clamp-map −16 ops) are NOT — a SECOND watr pass (idempotent: converges in
+  one) removes more. jz's post-watr passes (stage 8) reshape the IR but watr isn't re-run
+  after, so the leftover copy-prop/dead-tee in the reduction-unroll output isn't cleaned.
+  Candidate fix: a final watr pass after the post-phase. FIRST confirm the delta is
+  speed-relevant (not a default-watr-vs-jz-speed-config size trade) and that it doesn't
+  move size budgets / determinism. Gate: the fixpoint audit (run on demand).
 
 ## Future
 - [ ] Component interface (wit).

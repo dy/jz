@@ -33,7 +33,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import {
-  parse, has, loopHas, head, F64_OR_ROUNDTRIP, PTR_HELPER,
+  parse, has, loopHas, count, loopCount, head, F64_OR_ROUNDTRIP, PTR_HELPER,
 } from '../scripts/wat-probe.mjs'
 import {
   typedIntSource, typedIntMinMaxSource, typedIVSRSource, typedByteScanSource, typedMapSource,
@@ -60,6 +60,15 @@ test('ablation: narrowLoopBound kills the per-iteration f64 trip-count compare',
   ok(!loopHas(parse(src, 2), F64_CMP_OR_CONVERT), 'INVARIANT: no f64 trip-count compare in loop with pass ON')
 })
 
+test('ablation: narrowLoopBound also snaps an inclusive `i <= n` bound (NaN-safe)', () => {
+  // `<=` snaps via floor with a NaN→I32_MIN guard (trunc_sat(floor(NaN))=0 would
+  // wrongly run i=0). Correctness across NaN/Inf is in test/fuzz.js fuzzLoopBound;
+  // this pins that the per-iteration f64.le is gone. (Was: factorial/sieve gap.)
+  const src = `export let f = (n) => { let s = 0; for (let i = 0; i <= n; i++) s = (s + i) | 0; return s | 0 }`
+  ok(loopHas(parse(src, { narrowLoopBound: false }), F64_CMP_OR_CONVERT), 'control: f64 <= compare present with pass OFF')
+  ok(!loopHas(parse(src, 2), F64_CMP_OR_CONVERT), 'INVARIANT: inclusive bound narrowed to i32.le_s with pass ON')
+})
+
 test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of the loop', () => {
   // re/im are module globals; their pointer base is loop-invariant. Without the
   // hoist every element access re-runs `i64.reinterpret_f64(global.get)` per step.
@@ -81,6 +90,22 @@ test('ablation: hoistInvariantLoop snaps an invariant cell read to a pre-header 
   const src = `const keep = (f) => f; export const main = () => { let i = 0; const inc = keep(() => i = i + 1); let s = 0; for (let j = 0; j < 10; j++) s = s + i + i; inc(); return s | 0 }`
   ok(!has(parse(src, { watr: false, hoistInvariantLoop: false }), LI_SNAP), 'control: no snap local with pass OFF')
   ok(has(parse(src, { watr: false }), LI_SNAP), 'INVARIANT: $__li snap local hoists the invariant read with pass ON')
+})
+
+test('ablation: promoteGlobals snapshots a repeatedly-read global to one function-entry local', () => {
+  // `g` read 5×, never written → one `global.get` + cheap local.gets, not five 5-byte loads.
+  const src = `let g = 5.5; export let f = () => { return g + g + g + g + g }`
+  const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
+  ok(count(parse(src, { promoteGlobals: false }), gGet) > 1, 'control: multiple global.get $g with pass OFF')
+  ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')
+})
+
+test('ablation: csePureExpr collapses a pure subexpression shared by the loop test and body', () => {
+  // mandelbrot: `zx*zx` and `zy*zy` appear in BOTH the escape test and the body —
+  // one snap each, not recomputed per use. (4 muls/iter without, 2 with + the cross term.)
+  const src = `export let f = (cx, cy, m) => { let zx = 0.0, zy = 0.0, i = 0; while (i < m && zx*zx + zy*zy <= 4.0) { let t = zx*zx - zy*zy + cx; zy = 2.0*zx*zy + cy; zx = t; i = i + 1 | 0 } return i | 0 }`
+  const mul = head(/^f64\.mul$/)
+  ok(loopCount(parse(src, { csePureExpr: false }), mul) > loopCount(parse(src, 2), mul), 'INVARIANT: fewer f64.mul in loop with pass ON (shared zx*zx / zy*zy collapsed)')
 })
 
 // ════════════════════════════════════════════════════════════════════════════

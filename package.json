@@ -61,7 +61,8 @@
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
     "prepublishOnly": "npm test && npm run build && npm run test:self && npm run test:wasm",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "audit:fixpoint": "node scripts/audit-fixpoint.mjs"
   },
   "repository": {
     "type": "git",

@@ -1093,16 +1093,17 @@ export function narrowLoopBound(fn) {
   const newLocals = []
   const refcount = buildRefcount(fn)
 
-  // `(f64.lt (f64.convert_i32_s (local.get $i)) (local.get $n))` or mirrored
-  // `(f64.gt (local.get $n) (f64.convert_i32_s (local.get $i)))`.
+  // `i <  bound` as `(f64.lt (convert i) bound)` or mirrored `(f64.gt bound (convert i))`.
+  // `i <= bound` as `(f64.le (convert i) bound)` or mirrored `(f64.ge bound (convert i))`.
   const match = (n) => {
-    const conv = n[0] === 'f64.lt' ? n[1] : n[0] === 'f64.gt' ? n[2] : null
-    const bnd = n[0] === 'f64.lt' ? n[2] : n[0] === 'f64.gt' ? n[1] : null
+    const lt = n[0] === 'f64.lt', gt = n[0] === 'f64.gt', le = n[0] === 'f64.le', ge = n[0] === 'f64.ge'
+    const conv = lt || le ? n[1] : gt || ge ? n[2] : null
+    const bnd = lt || le ? n[2] : gt || ge ? n[1] : null
     if (!Array.isArray(conv) || conv[0] !== 'f64.convert_i32_s') return null
     const ig = conv[1]
     if (!Array.isArray(ig) || ig[0] !== 'local.get' || typeof ig[1] !== 'string') return null
     if (!Array.isArray(bnd) || bnd[0] !== 'local.get' || typeof bnd[1] !== 'string') return null
-    return { ctr: ig[1], bound: bnd[1] }
+    return { ctr: ig[1], bound: bnd[1], op: le || ge ? 'le' : 'lt' }
   }
 
   const processLoop = (loopNode) => {
@@ -1132,18 +1133,34 @@ export function narrowLoopBound(fn) {
     }
     for (let i = 1; i < loopNode.length; i++) collect(loopNode[i])
 
-    const snapFor = new Map()  // bound name → snap local (one per distinct bound)
+    // One snap per distinct (bound, op): `i < n` and `i <= n` of the SAME bound
+    // need different snapped i32 values (ceil vs floor).
+    const snapFor = new Map()
     const snaps = []
+    const I32_MIN = -2147483648
     for (const { node, m } of sites) {
-      let snap = snapFor.get(m.bound)
+      const key = `${m.bound}|${m.op}`
+      let snap = snapFor.get(key)
       if (!snap) {
         snap = freshLb()
-        snapFor.set(m.bound, snap)
+        snapFor.set(key, snap)
         newLocals.push(['local', snap, 'i32'])
-        snaps.push(['local.set', snap, ['i32.trunc_sat_f64_s', ['f64.ceil', ['local.get', m.bound]]]])
+        // `i < n`  ⟺ `i < ceil(n)`: trunc_sat(NaN)=0 makes `i<0` false — matches `i<NaN`;
+        //   ±Inf → I32_MAX/I32_MIN, both correct. NaN-safe for free.
+        // `i <= n` ⟺ `i <= floor(n)`, BUT trunc_sat(floor(NaN))=0 would make `i<=0` run
+        //   one iteration at i=0, while JS (`i<=NaN` is false) runs zero. Guard the NaN
+        //   case to I32_MIN (below any non-negative counter ⇒ zero iterations). ±Inf are
+        //   already correct (floor(+Inf)→I32_MAX, floor(-Inf)→I32_MIN; Inf==Inf is true).
+        snaps.push(['local.set', snap, m.op === 'le'
+          ? ['select',
+              ['i32.trunc_sat_f64_s', ['f64.floor', ['local.get', m.bound]]],
+              ['i32.const', I32_MIN],
+              ['f64.eq', ['local.get', m.bound], ['local.get', m.bound]]]
+          : ['i32.trunc_sat_f64_s', ['f64.ceil', ['local.get', m.bound]]]])
       }
       node.length = 3
-      node[0] = 'i32.lt_s'; node[1] = ['local.get', m.ctr]; node[2] = ['local.get', snap]
+      node[0] = m.op === 'le' ? 'i32.le_s' : 'i32.lt_s'
+      node[1] = ['local.get', m.ctr]; node[2] = ['local.get', snap]
     }
     return snaps
   }

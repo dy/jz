@@ -522,13 +522,31 @@ benchmark win because it does not erode when V8 ships a new tier next quarter.
      proof over the language, not a sample). This is the engineering target.
   2. **Locally optimal** — output is a fixpoint of the peephole+watr rewrite system
      (no missed local rewrite) = "minimal theoretical WASM per construct", checkably.
-     Partial today (watr vacuums); a fixpoint assertion is the next step.
+     Audited by `scripts/audit-fixpoint.mjs` (`npm run audit:fixpoint`): re-run jz's
+     OWN optimizer (watr) on the finished output; a drop = a rewrite the pipeline left
+     on the table. Today 7/10 corpus kernels are fixpoints; the non-convergent cluster
+     is reductions / conditional maps (dot, sum, clamp-map: a 2nd watr pass removes
+     15–18 ops). NB: a FOREIGN optimizer (wasm-opt -O3) is the wrong oracle — it
+     unrolls/re-vectorizes, RAISING static op count on biquad/matmul/crc, so its delta
+     conflates "jz left slack" with "different size↔speed trade". watr (jz's own system)
+     is unconfounded.
   3. **Globally optimal** — undecidable in general; reachable per-construct only via a
      bounded superoptimizer, offline, as a one-shot proof artifact. Never a live gate.
 
 **The speed claim becomes a partition, not a universal:**
-  { cases the verifier proves minimal } ∪ { cases at a documented structural floor
-  that bounds EVERY wasm producer — crc32 `clmul`, mandelbrot `fma`, AoS AVX2 }.
+  { cases the verifier proves minimal } ∪ { cases at a documented floor }.
+The documented-floor half is already a STRUCTURED, machine-gated registry — `WASM_TODO`
+in `test/bench.js`, behind the `fastest-wasm` gate (jz leads every wasm rival on every
+case UNLESS listed, and each entry carries a MEASURED root cause; closing one = deleting
+it). Two reference classes, kept distinct:
+  - **floor vs wasm rivals** (`WASM_TODO`: fft FMA-parity, raytrace/mat4/nqueens/qoi/dict
+    scalar-codegen-quality) — jz trails another wasm producer for an LLVM-grade
+    scalar-isel/regalloc reason V8's wasm tier caps anyway, or an FMA parity class that
+    would break valid-jz=valid-JS. No jz pass closes these; each was verified against the
+    WAT and the disproven hypotheses recorded so they aren't re-chased.
+  - **floor vs native** (crc32 `clmul`/SSE4.2, AoS AVX2-4-lane) — jz LEADS the wasm
+    rivals but trails NATIVE because the hardware instruction is unreachable in wasm-v1.
+    This bounds every wasm producer, not just jz.
 A documented floor is a *stronger* statement than a benchmark win: "no wasm producer
 beats this on this target" outlives the next JIT; "we won by 1.05× today" does not.
 
