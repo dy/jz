@@ -2307,7 +2307,12 @@ test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays c
       return s
     }`
   is(runVec(src, STENCIL).main(), runVec(src, SCALAR).main(), 'in-place stays bit-exact (bailed)')
-  ok(!/v128\.load offset/.test(wat(src, STENCIL)), 'in-place stencil not vectorized')
+  // The store-back is the signature: an in-place stencil that vectorized would v128.store
+  // the computed lane back to `a`. The legit loops don't store-vectorize (the `i%7` init
+  // isn't lane-pure; the reduction accumulates in a local), so NO v128.store ⇒ the stencil
+  // bailed. (Was `!/v128.load offset/` — stale since the reduction's v128 loads now fold to
+  // `offset=` form via the v128 memarg fold, so a load-offset is no longer stencil-specific.)
+  ok(!/v128\.store/.test(wat(src, STENCIL)), 'in-place stencil not vectorized (no v128 store-back)')
 })
 
 // ── Per-pixel-color vectorizer (tryPerPixelColor) ─────────────────────────────

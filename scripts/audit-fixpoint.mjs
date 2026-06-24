@@ -22,7 +22,21 @@
 import { compile } from '../index.js'
 import parseWat from 'watr/parse'
 import { optimize as watOptimize } from 'watr/optimize'
-import { countOps } from './wat-probe.mjs'
+import { countOps, loopCount } from './wat-probe.mjs'
+
+// HOT-PATH metric: ops lexically inside a `(loop …)`. Local optimality that matters
+// for SPEED lives in the loop body — whole-module deltas are dominated by
+// speed-neutral control-flow restructuring (watr's brif: block+br_if → if/then) and
+// module-level inlineOnce, neither of which jz's pipeline does (brif is neutral;
+// re-inlining would reintroduce the rebox/unbox the post phase folded). So the verdict
+// gates on LOOP-BODY convergence; whole-module is reported as secondary context.
+const loopOps = (tree) => loopCount(tree, (n) => typeof n[0] === 'string')
+// "Real" hot-path work = anything that isn't control-flow/local plumbing. A loop-body
+// delta made up ONLY of these is watr's brif restructuring (block+br_if+eqz → if/then)
+// — speed-neutral, not waste. A delta touching arithmetic/memory/SIMD is real.
+const NEUTRAL = new Set(['block', 'loop', 'if', 'then', 'else', 'br', 'br_if', 'br_table',
+  'result', 'i32.eqz', 'local.get', 'local.set', 'local.tee', 'nop', 'drop', 'end'])
+const realLoopOps = (tree) => loopCount(tree, (n) => typeof n[0] === 'string' && !NEUTRAL.has(n[0]))
 
 // Kernels spanning the construct space: scalar recurrence, reductions, stencils,
 // nested loops, integer bit-twiddling, conditional maps.
@@ -43,33 +57,39 @@ const pad = (s, n) => String(s).padEnd(n)
 const padL = (s, n) => String(s).padStart(n)
 
 console.log('Local-optimality audit (Tier 2) — is jz output a fixpoint of its own optimizer (watr)?\n')
-console.log(`${pad('kernel', 28)} ${padL('jz ops', 7)} ${padL('re-watr', 8)}  verdict`)
-console.log('─'.repeat(70))
+console.log(`${pad('kernel', 28)} ${padL('loop', 5)} ${padL('re-watr', 8)} ${padL('module', 8)}  verdict`)
+console.log('─'.repeat(74))
 
 let fixpoints = 0, checked = 0
 const misses = []
 for (const { name, src } of CORPUS) {
-  let before, after
+  let lb, lbAfter, realDrop, modDrop
   try {
     const tree = parseWat(compile(src, { optimize: 'speed', wat: true }))
-    before = countOps(tree)
-    after = countOps(watOptimize(tree))
+    lb = loopOps(tree)
+    const re = watOptimize(tree)
+    lbAfter = loopOps(re)
+    realDrop = realLoopOps(tree) - realLoopOps(re)   // hot-path arithmetic/memory/SIMD only
+    modDrop = countOps(tree) - countOps(re)          // whole-module, secondary
   } catch (e) {
-    console.log(`${pad(name, 28)} ${padL('ERR', 7)}  ${e.message.slice(0, 36)}`)
+    console.log(`${pad(name, 28)} ${padL('ERR', 5)}  ${e.message.slice(0, 36)}`)
     continue
   }
   checked++
-  const drop = before - after
-  if (drop <= 0) { fixpoints++; console.log(`${pad(name, 28)} ${padL(before, 7)} ${padL(after, 8)}  fixpoint ✓`) }
-  else { misses.push({ name, drop }); console.log(`${pad(name, 28)} ${padL(before, 7)} ${padL(after, 8)}  ✗ NOT a fixpoint (−${drop})`) }
+  const drop = lb - lbAfter
+  const note = realDrop <= 0 && drop > 0 ? `(−${drop} brif, neutral)` : modDrop > 0 ? `module −${modDrop}` : ''
+  // A loop is "converged for speed" iff no REAL (non-control-flow) op is removable.
+  if (realDrop <= 0) { fixpoints++; console.log(`${pad(name, 28)} ${padL(lb, 5)} ${padL(lbAfter, 8)} ${padL(modDrop > 0 ? '−' + modDrop : '0', 8)}  loop fixpoint ✓ ${note}`) }
+  else { misses.push({ name, drop: realDrop }); console.log(`${pad(name, 28)} ${padL(lb, 5)} ${padL(lbAfter, 8)} ${padL('−' + modDrop, 8)}  ✗ LOOP not a fixpoint (−${realDrop} real)`) }
 }
 
-console.log('─'.repeat(70))
-console.log(`\nlocally optimal (fixpoint of jz's own rewrite system): ${fixpoints}/${checked}`)
+console.log('─'.repeat(74))
+console.log(`\nhot-loop locally optimal (loop body is a watr fixpoint): ${fixpoints}/${checked}`)
 if (!misses.length) {
-  console.log('PASS: every kernel is a watr fixpoint — no local rewrite left on the table.')
+  console.log('PASS: every kernel\'s loop body is a watr fixpoint — no hot-path rewrite left on the table.')
+  console.log('(Whole-module `−N` deltas above are speed-neutral: watr brif restructuring + module-level inlineOnce that jz\'s pipeline deliberately skips.)')
 } else {
-  console.log(`ATTENTION: ${misses.length} kernel(s) are not fixpoints — jz's pipeline didn't run watr to convergence:`)
-  for (const m of misses) console.log(`  ${m.name}: a second watr pass removes ${m.drop} more ops`)
-  console.log(`(These are CANDIDATES — confirm the delta is speed-relevant, not a default-watr-vs-jz-config size trade, before changing the pipeline. Reduction kernels are the known cluster.)`)
+  console.log(`ATTENTION: ${misses.length} kernel(s) have a non-fixpoint LOOP BODY — real per-iteration waste:`)
+  for (const m of misses) console.log(`  ${m.name}: a second watr pass removes ${m.drop} more loop-body ops`)
+  console.log(`(These are genuine hot-path candidates — the fix is in the vectorizer/post-phase output, e.g. the v128 memarg fold in src/optimize/index.js foldV128Memargs.)`)
 }

@@ -175,35 +175,30 @@ can't worsen and visibly shrink when fixed:
   (param-bounded loops over NaN/±Inf/-0/fractional — the CONSTANT-bound generators never
   covered this), THEN extended the pass (src/optimize/index.js). Pinned:
   test/wat-invariants.js `<= narrowed` ablation + fuzzLoopBound (3000 seeds green).
-- [ ] **narrowLoopBound: non-const counters** — sieve's inner `for(j=i*2; j<n; j=j+i)`
-  keeps `f64.lt` because nonNegCounter only proves const-init, const-step counters ≥0.
-  Investigated, LEFT documented (low value, soundness-delicate). The non-negativity gate
-  exists for the VECTORIZER, not the compare: narrowLoopBound's stated job is to unblock
-  the lane vectorizer, whose OOB-safety argument ("SIMD reads ⊆ scalar reads", vectorize.js
-  ~1499) needs a non-negative start, and whose IV detection needs a CONSTANT step
-  (`ivCoeff===0`). Sieve's non-const step `j+=i` already fails IV detection → it can't
-  vectorize regardless, so only the compare-narrowing (drop the per-iter `f64.lt`) would
-  apply. But relaxing nonNegCounter for that is unsafe two ways: (1) `i*2` OVERFLOWS to
-  negative for large i, so `i*2 ≥ 0` isn't unconditionally provable (needs a range bound);
-  (2) the narrowing pass runs BEFORE the vectorizer, so it can't know vectorization will
-  decline — relaxing the gate could feed an unsafe bound to the strip-miner. Net: rare
-  shape × real soundness traps → not worth it. Gate: the audit flags it (run on demand).
-- [ ] **Pipeline under-converges on vectorized reductions** — surfaced by the Tier-2
-  local-optimality audit (`scripts/audit-fixpoint.mjs`, `npm run audit:fixpoint`): jz output
-  is a watr fixpoint for 7/10 kernels, but VECTORIZED reduction / conditional-map shapes
-  (dot −18, sum −15, clamp −16 ops) are NOT — the post-phase lane vectorizer (stage 8) runs
-  AFTER watr (line ~610) and leaves dead tees / unfolded memargs that a 2nd watr pass cleans
-  (idempotent: converges in one).
-  **Global final-pass approach MEASURED and REJECTED** (don't re-try it): a cleanup-only
-  watr pass after the post-phase (inline/devirt off so it can't re-grow), gated to vectorized
-  speed output, DOES converge them (dot −24 B) — BUT it runs the FULL watr cleanup, which
-  broadly RE-SHAPES vectorized loops (memarg-folds `(v128.load (i32.add base N))` →
-  `v128.load offset=N`), tripping structural WAT pins (test/simd.js in-place-stencil) — bit-
-  exactness held, but the shape churn ripples across simd.js assertions — and it adds a full
-  watr pass of compile time. Net-negative for a 16-op / 3–5% win on a core path.
-  **Right fix instead:** clean the lane vectorizer's OWN output in `src/optimize/vectorize.js`
-  — drop the dead scalar-tail tees / fold memargs as it emits — so no extra pass and no shape
-  churn elsewhere. Gate: the fixpoint audit (run on demand).
+- [ ] **narrowLoopBound: SCEV-shaped counters** — the real bench/sieve/sieve.js:29 inner is
+  `for (let j = i*i; j < LIMIT; j += i) …` (outer `for (let i=2; i*i < LIMIT; i++)`), NOT the
+  `i*2`/`<n` shape an earlier note assumed. The deeper blocker: `i*i` is a PRODUCT, so in
+  unhinted JS it's f64 (the integer-overflow contract — a product can exceed 2³¹), which makes
+  both the outer bound `i*i < LIMIT` AND the inner counter `j` f64 BEFORE narrowLoopBound even
+  looks — it only considers i32 counters, and a non-const-init/step counter fails its check
+  anyway. Closing it needs RANGE/SCEV reasoning: prove `i*i` and `j` stay within i32 (e.g.
+  `i*i < LIMIT ≤ 2³¹`) so the product/counter can be carried as i32 and the compare narrowed —
+  not a `nonNegCounter` relaxation. nonNegCounter itself is a VECTORIZER precondition (OOB
+  safety "SIMD reads ⊆ scalar reads" vectorize.js ~1499 + const-step IV detection `ivCoeff===0`),
+  and the strided `j += i` can't vectorize regardless. Real but involved; the audit flags it.
+- [x] **Pipeline under-converges on vectorized reductions** — DONE (hot-path). The post-phase
+  lane vectorizer (runs AFTER fusedRewrite's memarg fold) emitted `v128.load/store (i32.add
+  base K)` for the unrolled multi-accumulator reduction, keeping a per-iteration i32.add per
+  accumulator. Fix: `foldV128Memargs` runs right after `vectorizeLaneLocal`
+  (src/optimize/index.js), folding K into `offset=` — same logic/soundness as the scalar
+  MEMOP fold. dot loop-body 84→72, sum 94→88; the fixpoint audit is now 10/10 LOOP-body
+  fixpoints. A REJECTED global cleanup-pass alternative (don't re-try) over-reshaped loops +
+  cost compile time; the targeted fold is surgical. The residual whole-module deltas the
+  audit shows (dot −6, clamp −8) are watr `brif` (block+br_if→if/then, SPEED-NEUTRAL) +
+  module-level inlineOnce that jz deliberately skips — not hot-path waste (audit now
+  classifies real-vs-neutral loop ops). Stencil test made robust to the fold (test/simd.js:
+  `!/v128.store/` instead of the stale `!/v128.load offset/`). Verified: all typed fuzzer
+  modes × opt{0,2,3} 0 divergence; full suite green.
 
 ## Future
 - [ ] Component interface (wit).
