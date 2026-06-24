@@ -1749,7 +1749,11 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
 
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)
-  if (ctx.fail) return null
+  // liftExprV's contract is "null ⟺ ctx.fail"; under self-host (jz.wasm) it can diverge and
+  // return null WITHOUT the flag, which would otherwise splice a literal `null` operand into the
+  // emitted `(<reduce>.add acc null)` — invalid wasm ("not enough arguments on the stack"). Treat
+  // a null lift as a bail (the loop stays scalar — correct, just unvectorized on that leg).
+  if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
 
   // Synthesize SIMD prefix block + horizontal reduce + (preserved scalar tail).
