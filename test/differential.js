@@ -59,3 +59,47 @@ for (const { name, src, args } of PROGRAMS) {
     }
   })
 }
+
+// ── Memory-access geometries: the typed-array store/load sublanguage where the SLP
+// store-pair packer and the lane vectorizer live — the oracle this suite previously
+// lacked (a forward-shift `o[k+1]=o[k]; o[k+2]=o[k+1]` SLP read-after-write miscompile
+// shipped past every green gate). MODULE-LEVEL arrays (the base-addressing shape that
+// actually engages SLP — a local array stays scalar) with FLOAT arithmetic over
+// INTEGER-VALUED data (×100.0): the value stays f64 so the packer fires, yet every
+// partial sum stays < 2^53, so a POSITION-WEIGHTED sum is exact regardless of addition
+// order — the lane vectorizer's accepted f64-reduction reassociation (1–2 ULP, see
+// vectorize.js) can't move it, but a wrong/duplicated/stale ELEMENT does (verified: with
+// the RAW guard removed, "forward shift" diverges 7/7 by ~1.5e5, not a ULP). `(seed*i)|0`
+// is avoided — the i32 store path skips SLP. Run at the default level (SLP + vectorizer
+// on) and 'speed' (adds the 4-accumulator reduce). `weight (i+1)` is order-sensitive, so
+// a permutation that preserves the multiset still trips it.
+const sval = () => (rng() * 200 | 0) - 100
+const MEM_PROGRAMS = [
+  { name: 'forward shift (SLP RAW)',
+    src: `let o = new Float64Array(99); export let f = (seed) => { for (let i=0;i<99;i++) o[i]=(seed+i)*100.0; for (let k=0;k<96;k+=3){ o[k+1]=o[k]; o[k+2]=o[k+1] } let s=0.0; for (let i=0;i<99;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'backward shift',
+    src: `let o = new Float64Array(99); export let f = (seed) => { for (let i=0;i<99;i++) o[i]=(seed+i)*100.0; for (let k=93;k>=0;k-=3){ o[k+1]=o[k+2]; o[k]=o[k+1] } let s=0.0; for (let i=0;i<99;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'own-index map',
+    src: `let o = new Float64Array(64), a = new Float64Array(64); export let f = (seed) => { for (let i=0;i<64;i++) a[i]=(seed+i)*100.0; for (let i=0;i<64;i+=2){ o[i]=a[i]*2.0+1.0; o[i+1]=a[i+1]*2.0+1.0 } let s=0.0; for (let i=0;i<64;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'multi-array sum',
+    src: `let o = new Float64Array(64), a = new Float64Array(64), b = new Float64Array(64); export let f = (seed) => { for (let i=0;i<64;i++){ a[i]=(seed+i)*100.0; b[i]=(seed-i)*100.0 } for (let i=0;i<64;i+=2){ o[i]=a[i]+b[i]; o[i+1]=a[i+1]+b[i+1] } let s=0.0; for (let i=0;i<64;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'pairwise swap',
+    src: `let o = new Float64Array(64); export let f = (seed) => { for (let i=0;i<64;i++) o[i]=(seed+i)*100.0; for (let i=0;i<64;i+=2){ let t=o[i]; o[i]=o[i+1]; o[i+1]=t } let s=0.0; for (let i=0;i<64;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'strided de-interleave',
+    src: `let o = new Float64Array(64), a = new Float64Array(64); export let f = (seed) => { for (let i=0;i<64;i++) a[i]=(seed+i)*100.0; for (let i=0;i<32;i++){ o[i]=a[2*i]; o[i+32]=a[2*i+1] } let s=0.0; for (let i=0;i<64;i++) s=s+o[i]*(i+1); return s }` },
+  { name: 'prefix sum (recurrence)',
+    src: `let o = new Float64Array(64); export let f = (seed) => { o[0]=seed*1.0; for (let i=1;i<64;i++) o[i]=o[i-1]+i*1.0; let s=0.0; for (let i=0;i<64;i++) s=s+o[i]*(i+1); return s }` },
+]
+for (const { name, src } of MEM_PROGRAMS) {
+  test(`differential mem: ${name}`, () => {
+    const ref = jsRef(src)
+    for (const level of [2, 'speed']) {
+      const { exports: { f } } = jz(src, { optimize: { level } })
+      for (let i = 0; i < 120; i++) {
+        const seed = sval()
+        const got = f(seed), want = ref(seed)
+        ok(Object.is(got, want), `${name}@${level}(${seed}) → jz ${got} ≠ js ${want}`)
+      }
+    }
+  })
+}
