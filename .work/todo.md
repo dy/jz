@@ -144,13 +144,32 @@ The structural-invariant verifier (`test/wat-invariants.js`) sweeps the fuzzer's
 i32-disciplined sublanguage and flags any f64 / un-hoisted pointer op inside a loop —
 waste the net-output bench can't see. Two real gaps it surfaced, now ratcheted so they
 can't worsen and visibly shrink when fixed:
-- [ ] **Nested-conditional int narrowing** — a `?:` ≥2 levels deep over integer leaves,
-  under the vectorizer (array len ≥32), bails to a scalar `(if (result f64))` with
-  per-branch `f64.convert_i32_s` instead of `(if (result i32))`, round-tripping the
-  integer result through f64. Clean at N<32, deopts at N≥32. Minimal repro:
-  `const a=new Int32Array(32); for(i<32) a[i]=((3<a[i])?(2&a[i]):((7<a[i])?a[i]:1))|0`.
-  Fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar fallback).
-  Gate: `test/wat-invariants.js` typed-int ratchet (baseline 13/200) + perf-ratchet `cond`.
+- [~] **Nested-conditional int narrowing** — mostly CLOSED (13→2): toI32 now distributes
+  ToInt32 through `(if result f64)` recursively, so most nested integer `?:` chains narrow.
+  The 2 residual cases (typed-int seeds 28, 73) are the DEEPEST shapes that still bail to a
+  scalar `(if (result f64))` with per-branch `f64.convert_i32_s` round-tripping through f64.
+  The fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar
+  fallback). Gate: `test/wat-invariants.js` typed-int ratchet (baseline 2) + perf-ratchet `cond`.
+  NB: the ratchet's f64-in-loop count ALSO catches the dead `__static_str` loops below, so
+  "2" is not "2 user-loop deopts" — most of each residual's f64 is in dead stdlib.
+- [ ] **Dead `__static_str` pull on nested-conditional int** — NEW, surfaced while triaging
+  the residual above. A pure-integer program (Int32Array, all `|0`, no string/toString) pulls
+  in the number→string formatting stdlib (`__static_str`: `__pow10`, dtoa digit-extraction,
+  exponent-normalization — all f64), blowing a 1-func module to ~19 funcs. The code is DEAD
+  (result is correct; fuzzer green) — treeshake doesn't remove it, so something in the
+  conditional-int codegen EMITS a `__static_str` reference that pins it. Minimal repro (N=16,
+  independent of the vectorizer): `a[i] = ((a[i] - ((a[i]<=2)?a[i]:a[i])) + ((a[i]===255)?a[i]:(a[i]>2)))|0`
+  — either half alone is clean; only the `(a[i]-tern) + (tern-with-bool-else)` SUM triggers it.
+  TRACED (stack instrumentation of includeModule): the `number` module is pulled by
+  `includeForArrayAccess` — the GENERIC `[]` path (prepare/index.js:1971) fires for `a[i]`
+  and pulls array/collection → `number` (a MOD_DEP). That happens for EVERY `a[i]`, including
+  the trivial program — but there `__static_str`/`__ftoa` are STRIPPED as unused
+  (compile.js, see module/number.js:642). So the bug is narrower than "pulls number": in s2
+  something REFERENCES `__static_str` un-strippably (a dead `__ftoa`/dtoa path the bail or a
+  dynamic fallback emits) so the strip can't remove it → 1 func → 19. The surviving reference
+  is NOT yet pinned (needs tracing the strip's reachability set on the s2 output). Fix =
+  either don't emit that reference, or strengthen the unused-`__static_str` strip. Significant
+  bloat (18× funcs). Gate: func-count on the repro.
 - [x] **Param typed-array base re-decode** — DONE (speed tier). A typed array passed as a
   PARAM (`(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`, JZ's flagship DSP shape) re-decoded
   its NaN-box base every iteration because the polymorphic store reassigns `buf`, marking
@@ -169,20 +188,34 @@ can't worsen and visibly shrink when fixed:
   covered this), THEN extended the pass (src/optimize/index.js). Pinned:
   test/wat-invariants.js `<= narrowed` ablation + fuzzLoopBound (3000 seeds green).
 - [ ] **narrowLoopBound: non-const counters** — sieve's inner `for(j=i*2; j<n; j=j+i)`
-  still keeps `f64.lt` because nonNegCounter only proves const-init, const-step counters
-  ≥0. Proving `i*2 ≥ 0` needs i ≥ 0 (transitive from the outer counter) AND i < 2³⁰ —
-  `i*2` OVERFLOWS to negative for large i, so it is NOT unconditionally ≥0. A real
-  soundness trap, not a clean fix; needs a range bound on the init/step. Lower value than
-  `<=` (rarer shape). Gate: the audit flags it (run on demand).
-- [ ] **Pipeline under-converges on reductions** — surfaced by the Tier-2 local-optimality
-  audit (`scripts/audit-fixpoint.mjs`, `npm run audit:fixpoint`): jz output is a fixpoint
-  of its own watr optimizer for 7/10 kernels, but reduction / conditional-map shapes (dot
-  −18, sum −15, clamp-map −16 ops) are NOT — a SECOND watr pass (idempotent: converges in
-  one) removes more. jz's post-watr passes (stage 8) reshape the IR but watr isn't re-run
-  after, so the leftover copy-prop/dead-tee in the reduction-unroll output isn't cleaned.
-  Candidate fix: a final watr pass after the post-phase. FIRST confirm the delta is
-  speed-relevant (not a default-watr-vs-jz-speed-config size trade) and that it doesn't
-  move size budgets / determinism. Gate: the fixpoint audit (run on demand).
+  keeps `f64.lt` because nonNegCounter only proves const-init, const-step counters ≥0.
+  Investigated, LEFT documented (low value, soundness-delicate). The non-negativity gate
+  exists for the VECTORIZER, not the compare: narrowLoopBound's stated job is to unblock
+  the lane vectorizer, whose OOB-safety argument ("SIMD reads ⊆ scalar reads", vectorize.js
+  ~1499) needs a non-negative start, and whose IV detection needs a CONSTANT step
+  (`ivCoeff===0`). Sieve's non-const step `j+=i` already fails IV detection → it can't
+  vectorize regardless, so only the compare-narrowing (drop the per-iter `f64.lt`) would
+  apply. But relaxing nonNegCounter for that is unsafe two ways: (1) `i*2` OVERFLOWS to
+  negative for large i, so `i*2 ≥ 0` isn't unconditionally provable (needs a range bound);
+  (2) the narrowing pass runs BEFORE the vectorizer, so it can't know vectorization will
+  decline — relaxing the gate could feed an unsafe bound to the strip-miner. Net: rare
+  shape × real soundness traps → not worth it. Gate: the audit flags it (run on demand).
+- [ ] **Pipeline under-converges on vectorized reductions** — surfaced by the Tier-2
+  local-optimality audit (`scripts/audit-fixpoint.mjs`, `npm run audit:fixpoint`): jz output
+  is a watr fixpoint for 7/10 kernels, but VECTORIZED reduction / conditional-map shapes
+  (dot −18, sum −15, clamp −16 ops) are NOT — the post-phase lane vectorizer (stage 8) runs
+  AFTER watr (line ~610) and leaves dead tees / unfolded memargs that a 2nd watr pass cleans
+  (idempotent: converges in one).
+  **Global final-pass approach MEASURED and REJECTED** (don't re-try it): a cleanup-only
+  watr pass after the post-phase (inline/devirt off so it can't re-grow), gated to vectorized
+  speed output, DOES converge them (dot −24 B) — BUT it runs the FULL watr cleanup, which
+  broadly RE-SHAPES vectorized loops (memarg-folds `(v128.load (i32.add base N))` →
+  `v128.load offset=N`), tripping structural WAT pins (test/simd.js in-place-stencil) — bit-
+  exactness held, but the shape churn ripples across simd.js assertions — and it adds a full
+  watr pass of compile time. Net-negative for a 16-op / 3–5% win on a core path.
+  **Right fix instead:** clean the lane vectorizer's OWN output in `src/optimize/vectorize.js`
+  — drop the dead scalar-tail tees / fold memargs as it emits — so no extra pass and no shape
+  churn elsewhere. Gate: the fixpoint audit (run on demand).
 
 ## Future
 - [ ] Component interface (wit).
