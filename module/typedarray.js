@@ -208,12 +208,17 @@ export default (ctx) => {
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
     __typed_get_idx: ['__ptr_aux', '__ptr_offset'],
-    __typed_fill: ['__len', '__typed_set_idx'],
+    // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
+    // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
+    // auto-scan — which diverges under self-host (jz.wasm), dropping it ("Unknown func
+    // $__clamp_idx" on typed .fill/.subarray in the kernel). Declare it manually here so the
+    // reliable dep path includes it. Pinned by test/selfhost-includes.js.
+    __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
-    __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx'],
+    __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx', '__clamp_idx'],
     __typed_sort: ['__len', '__typed_get_idx', '__typed_set_idx'],
-    __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc'],
-    __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n'],
+    __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
+    __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
     // __str_join uses __typed_idx when typedarray is loaded (plain arrays promoted to
     // Int32Array by promoteIntArrayLiterals can produce PTR.TYPED results via .map()).
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],

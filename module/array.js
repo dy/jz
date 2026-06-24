@@ -249,7 +249,7 @@ export default (ctx) => {
       '__ptr_offset',
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
-    __arr_fill: ['__ptr_offset'],
+    __arr_fill: ['__ptr_offset', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
     __arr_push1: ['__arr_grow_known', '__ptr_offset'],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],

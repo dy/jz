@@ -146,8 +146,13 @@ export default (ctx) => {
     __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
-    __str_slice: ['__str_byteLen', '__alloc'],
-    __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice'],
+    // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
+    // factory (v()) to discover body calls, but that realization DIVERGES under self-host
+    // (jz.wasm) — so a body-called helper not also listed here is dropped from the kernel
+    // ("Unknown func $__clamp_idx" on `str.slice`). FN templates must declare body deps
+    // manually; pinned by test/selfhost-includes.js.
+    __str_slice: ['__str_byteLen', '__alloc', '__clamp_idx', '__mkptr'],
+    __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice', '__clamp_idx'],
     __str_indexof: ['__str_byteLen'],
     __str_lastindexof: ['__str_byteLen'],
     __wrap1: ['__alloc', '__mkptr'],
@@ -168,9 +173,9 @@ export default (ctx) => {
     __str_cmp: ['__char_at', '__str_byteLen'],
     __str_range_eq: ['__char_at', '__str_byteLen'],
     __str_substring_eq: ['__str_byteLen', '__str_range_eq'],
-    __str_slice_eq: ['__str_byteLen', '__str_range_eq'],
+    __str_slice_eq: ['__str_byteLen', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan unreliable — test/selfhost-includes.js)
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
-    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
+    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-host auto-scan diverges)
     __str_encode: ['__str_byteLen', '__str_copy'],
     __encodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr'],
     __decodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__uri_hex'],
