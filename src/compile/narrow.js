@@ -304,8 +304,24 @@ function narrowI32Results(funcs) {
     ctx.func.current = func.sig
     const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
     for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
+    // Seed the typedElem overlay with this func's TYPED-pointer params so a return tail
+    // reading a typed-array element — `return vals[h]`, vals an Int32Array param (dict's
+    // `lookup`) — types as i32, not NaN-boxed f64. Without it the call site keeps the full
+    // __typed_idx/ToNumber unbox dispatch (491520× per dict kernel run). Mirrors
+    // refreshCallerLocals + analyzeFuncForEmit. Only meaningful once Phase G has tagged params
+    // ptrKind=TYPED (the I2 re-run below); harmless before (no typed params → overlay untouched).
+    const savedTE = ctx.types.typedElem
+    let te = null
+    for (const p of func.sig.params) {
+      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
+        const c = ctorFromElemAux(p.ptrAux)
+        if (c != null) { if (!te) te = savedTE ? new Map(savedTE) : new Map(); te.set(p.name, c) }
+      }
+    }
+    if (te) ctx.types.typedElem = te
     const allV128 = exprs.every(e => exprType(e, locals) === 'v128')
     const allI32 = !allV128 && exprs.every(e => exprType(e, locals) === 'i32')
+    if (te) ctx.types.typedElem = savedTE
     const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
     ctx.func.current = savedCurrent
     return r
@@ -1010,6 +1026,16 @@ export default function narrowSignatures(programFacts, ast) {
   // (callback bench: mix is FNV — params and result all i32-shaped, but inferred
   // only after E phase narrowed mix's result).
   phase.refreshLocals()
+  // I2: Re-narrow i32 RESULTS now that Phase G (applyTypedPointerParamAbi) has tagged
+  // typed-array params ptrKind=TYPED. Phase E ran before G, so a function returning a
+  // typed-array element — dict's `lookup = (keys, vals, k) => { … return vals[h] }` with
+  // vals an Int32Array param — had its return tail type as NaN-boxed f64 (vals not yet a
+  // typed pointer), leaving sig.results f64 and the call site running the full
+  // __typed_idx/ToNumber unbox on every probe step (491520× per dict kernel run). Now that
+  // evalTails seeds the typed-param overlay and params carry ptrAux, the fixpoint catches
+  // `vals[h]` as i32, narrows the result, and the dispatch vanishes; the runFixpoint below
+  // then propagates the i32 result into `let v = lookup(...)` at the call sites.
+  narrowI32Results(funcsWithNarrowableResult)
   // Reset wasm field unconditionally — first pass populated it from stale callerLocals
   // (where `let h = mix(...)` widened h to f64 because mix's result wasn't narrowed
   // yet). clearStickyNull only resets null; here we need to reset f64-observed too

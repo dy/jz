@@ -1057,3 +1057,33 @@ test('result i32-narrowing: a recursive integer result narrows to i32 (optimisti
   ok(/\(result i32\)/.test(sumTo), 'recursive sumTo result narrows to i32')
   ok(!/f64\./.test(sumTo), 'no f64 ops in the recursive integer body (param + result + accumulator all i32)')
 })
+
+// A function returning a typed-array-element read — `lookup = (keys, vals, k) => { … return vals[h] }`
+// with vals an Int32Array param — must narrow its RESULT to i32. The result-narrowing pass (Phase E)
+// runs before the typed-pointer param ABI (Phase G) tags `vals` as Int32Array, so the first pass sees
+// `vals[h]` as NaN-boxed f64 and leaves the result f64 — every call site then runs the full
+// __typed_idx/ToNumber unbox on the returned element (the dict bench paid this 491520× per kernel run).
+// The fix: evalTails seeds the typed-elem overlay from the func's TYPED params, and an I2 re-narrow runs
+// after Phase G. Observable: lookup's result is i32 with no ToNumber dispatch on the returned element.
+test('result i32-narrowing: a typed-array-element return narrows to i32 (post-typed-param re-narrow)', () => {
+  if (onWasi()) return
+  const wat = jz.compile(`
+    let lookup = (keys, vals, k) => {
+      let h = k & 1023
+      while (keys[h] !== -1) { if (keys[h] === k) return vals[h]; h = (h + 1) & 1023 }
+      return -1
+    }
+    export let main = () => {
+      let keys = new Int32Array(1024), vals = new Int32Array(1024)
+      let i = 0; while (i < 1024) { keys[i] = -1; i++ }
+      i = 0; while (i < 500) { let h = (i*7) & 1023; while (keys[h] !== -1) h = (h+1)&1023; keys[h] = i*7; vals[h] = i*3; i++ }
+      let s = 0; i = 0; while (i < 500) { s = (s + lookup(keys, vals, i*7)) | 0; i++ }
+      i = 0; while (i < 500) { s = (s + lookup(keys, vals, i*11)) | 0; i++ }
+      return s
+    }
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  const lookup = wat.match(/\(func \$lookup\b[\s\S]*?\n  \)/)[0]
+  ok(/\(result i32\)/.test(lookup), 'typed-element return narrows the result to i32 (not NaN-boxed f64)')
+  ok(!/__to_str|__typed_idx|trunc_sat/.test(lookup), 'no ToNumber/__typed_idx dispatch on the returned element')
+  ok(!/convert_i32/.test(lookup), 'no i32→f64 rebox inside lookup — the element stays i32 end to end')
+})
