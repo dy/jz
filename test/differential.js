@@ -36,6 +36,13 @@ const PROGRAMS = [
   // libm pow only agree bit-for-bit while results stay ≤ 2**53).
   { name: 'integer pow', src: `export let f = (a, b) => { let e = ((b|0) & 5); let n = (a|0) % 12; return n ** e + 2 ** e }`, args: () => [num(), num()] },
   { name: 'fnv hash', src: `export let f = (a, b, c) => { let h = 2166136261 | 0; h = Math.imul(h ^ (a|0), 16777619); h = Math.imul(h ^ (b|0), 16777619); h = Math.imul(h ^ (c|0), 16777619); return h >>> 8 }`, args: () => [num(), num(), num()] },
+  // Conditional negation feeding arithmetic — the Perlin-gradient sign-select shape
+  // (`(h&1)?x:-x`). stripCanon recurses through the ?: to drop the per-neg NaN-canon,
+  // trusting the consuming f64.add/sub/mul to re-canon at escape. A NaN/Inf/-0 operand
+  // that round-trips wrong (sign-flipped NaN read as a tagged value, or -0 vs +0) shows
+  // up here as a divergence, and the result is fed back through `===` to surface a
+  // mis-canon'd NaN (NaN === NaN is false; a tagged sign-flip would read true).
+  { name: 'cond-neg canon', src: `export let f = (c, x, y) => { let n = (c|0) & 3; let u = (n === 0 ? x : -x) + (n === 1 ? -y : y); let v = (n === 2 ? -x : x) * (n === 3 ? y : -y); let w = u - v; return (w === w ? w : 1.5) + (u !== u ? 2.25 : 0.0) }`, args: () => [num(), num(), num()] },
 ]
 
 // Divergences this fuzzer caught and that are now fixed (kept here as a log):

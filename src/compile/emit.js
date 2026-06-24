@@ -160,7 +160,27 @@ const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
 // so the inner per-op canon (local.set + select + f64.ne, ~3 ops) is dead on the
 // critical path. This is THE gap that put sqrt-heavy kernels ~23% behind V8
 // (julia/raymarcher/boids); stripping it makes them match native JS.
-const stripCanon = (v) => (v && v.canonOf != null) ? typed(v.canonOf, 'f64') : v
+const stripCanon = (v) => {
+  if (!v) return v
+  if (v.canonOf != null) return typed(v.canonOf, 'f64')
+  // A NaN-canon nested in the VALUE arm of a `select` / `(if result f64)` is equally
+  // dead: the consumer that called stripCanon (f64.add/sub/mul/div, or a math call)
+  // propagates the NaN identically and the outermost escape re-canon-izes. Recurse into
+  // the arms so `(cond ? x : -x) + v` (the Perlin-gradient sign-select, and every other
+  // conditional negation) drops the per-neg select+f64.ne, same as a bare `x + -y`.
+  if (Array.isArray(v)) {
+    if (v[0] === 'select' && v.length === 4) {
+      const a = stripCanon(v[1]), b = stripCanon(v[2])
+      if (a !== v[1] || b !== v[2]) return typed(['select', a, b, v[3]], 'f64')
+    } else if (v[0] === 'if' && Array.isArray(v[1]) && v[1][0] === 'result' && v[1][1] === 'f64'
+               && Array.isArray(v[3]) && v[3][0] === 'then' && v[3].length === 2
+               && Array.isArray(v[4]) && v[4][0] === 'else' && v[4].length === 2) {
+      const t = stripCanon(v[3][1]), e = stripCanon(v[4][1])
+      if (t !== v[3][1] || e !== v[4][1]) return typed(['if', v[1], v[2], ['then', t], ['else', e]], 'f64')
+    }
+  }
+  return v
+}
 
 const FIRST_CLASS_UNARY_MATH = {
   'math.abs': 'f64.abs',
