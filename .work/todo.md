@@ -3,7 +3,7 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
-  * [ ] 10 more bench cases - each area covered
+  * [x] 10 more bench cases - each area covered
 * [ ] compiler architecture perfection
 * [ ] jz.wasm beats v8
 * [ ] sourcemaps
