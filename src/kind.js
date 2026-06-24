@@ -137,7 +137,16 @@ VT['?:'] = (args) => {
   const truthy = literalTruthiness(args[0])
   if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
   const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
-  return ta && ta === tb ? ta : null
+  if (ta && ta === tb) return ta
+  // A boolean branch coerces to 0/1 in numeric context (same rule as &&/||/?? below):
+  // when the other branch has a known non-boolean type, the conditional carries it.
+  // Without this, `num + (cond ? num : num>k)` sees a null-typed operand and emits the
+  // polymorphic string-concat dispatch on two pure-numeric subexprs — which pins the
+  // whole number→string formatter (__str_concat → __to_str → __static_str), a pure-int
+  // program ballooning 1 → ~19 funcs (see test/wat-invariants.js, .work/todo.md).
+  if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
+  if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
+  return null
 }
 
 // Value-preserving logical: `&&`/`||` return one of their operands.

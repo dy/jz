@@ -149,19 +149,28 @@ for (const [name, gen] of [
   })
 }
 
-// typed-int nested-conditional narrowing: mostly CLOSED (13→2). A nested integer
-// `?:` (`((3<a)?(2&a):((7<a)?a:1))|0`) used to bail to a scalar `(if (result f64))`
-// with per-branch `f64.convert_i32_s`; toI32 now distributes ToInt32 through
-// `(if result f64)` recursively (src/optimize/index.js), so the whole tree narrows
-// to `(if result i32)` and the lane vectorizer lifts it as i32x4 bitselect. The
-// residual 2 are deeper/odd shapes left to track. An INCREASE = a new lost-narrowing
-// deopt regressed the compiler; a DECREASE = re-baseline DOWN to lock the win.
-const TYPED_INT_F64_BASELINE = 2
-test(`sweep: typed-int f64-in-loop ≤ ${TYPED_INT_F64_BASELINE} (ratchet — nested-conditional narrowing gap)`, () => {
-  const n = countLoopF64(typedIntSource)
-  ok(n <= TYPED_INT_F64_BASELINE,
-    `${n} typed-int programs emit f64 in a loop (baseline ${TYPED_INT_F64_BASELINE}). ` +
-    `INCREASE ⇒ a new lost-narrowing deopt regressed the compiler; DECREASE ⇒ improvement, re-baseline down.`)
+// typed-int nested-conditional narrowing: now CLOSED (13 → 0). Two fixes: (1) toI32
+// distributes ToInt32 through `(if result f64)` recursively so nested integer `?:`
+// chains narrow to `(if result i32)` (lane-vectorized as i32x4 bitselect); (2) the
+// last 2 residuals weren't user-loop f64 at all — a mixed number/boolean ternary lost
+// type precision, so `+` emitted polymorphic string-concat dispatch, pinning the
+// number→string formatter whose OWN loops (dtoa) are f64 (src/kind.js VT['?:'], see
+// the absence test below). Hard-zero gate now; a regression on either path trips it.
+test(`sweep: typed-int emits NO f64 op in any loop body (seeds 1..${SWEEP}) — proven waste-free`, () => {
+  is(countLoopF64(typedIntSource), 0)
+})
+
+test('absence: a pure-integer program pulls no number→string formatter (mixed num/bool ?: precision)', () => {
+  // A mixed number/boolean ternary `(c ? num : num>k)` used to lose type precision, so
+  // the enclosing `+` emitted the polymorphic string-concat dispatch on pure-numeric
+  // operands, pinning __str_concat → __to_str → __static_str (a dtoa formatter). A
+  // pure-int program ballooned 1 → ~19 funcs. Fixed in src/kind.js (VT['?:'] now mirrors
+  // the &&/||/?? BOOL-coercion rule: a boolean branch coerces in numeric context).
+  const src = `export let f = () => { const a = new Int32Array(16); for (let i = 0; i < 16; i++) { a[i] = ((a[i] - ((a[i] <= 2) ? a[i] : a[i])) + ((a[i] === 255) ? a[i] : (a[i] > 2))) | 0 } return 0 }`
+  const tree = parse(src, 2)
+  const fmt = (n) => n[0] === 'func' && typeof n[1] === 'string' && /__static_str|__str_concat|__to_str|__ftoa/.test(n[1])
+  ok(!has(tree, fmt), 'pure-int program must not pull the number→string formatter (string-dispatch leak)')
+  ok(count(tree, (n) => n[0] === 'func') <= 3, 'pure-int program stays tiny (was 19 funcs with the leak)')
 })
 
 // Loop-invariant pointer/length helpers must be hoisted, never re-run per element.

@@ -144,32 +144,20 @@ The structural-invariant verifier (`test/wat-invariants.js`) sweeps the fuzzer's
 i32-disciplined sublanguage and flags any f64 / un-hoisted pointer op inside a loop —
 waste the net-output bench can't see. Two real gaps it surfaced, now ratcheted so they
 can't worsen and visibly shrink when fixed:
-- [~] **Nested-conditional int narrowing** — mostly CLOSED (13→2): toI32 now distributes
-  ToInt32 through `(if result f64)` recursively, so most nested integer `?:` chains narrow.
-  The 2 residual cases (typed-int seeds 28, 73) are the DEEPEST shapes that still bail to a
-  scalar `(if (result f64))` with per-branch `f64.convert_i32_s` round-tripping through f64.
-  The fix lives in the vectorizer's conditional-lane bail path (re-narrow the scalar
-  fallback). Gate: `test/wat-invariants.js` typed-int ratchet (baseline 2) + perf-ratchet `cond`.
-  NB: the ratchet's f64-in-loop count ALSO catches the dead `__static_str` loops below, so
-  "2" is not "2 user-loop deopts" — most of each residual's f64 is in dead stdlib.
-- [ ] **Dead `__static_str` pull on nested-conditional int** — NEW, surfaced while triaging
-  the residual above. A pure-integer program (Int32Array, all `|0`, no string/toString) pulls
-  in the number→string formatting stdlib (`__static_str`: `__pow10`, dtoa digit-extraction,
-  exponent-normalization — all f64), blowing a 1-func module to ~19 funcs. The code is DEAD
-  (result is correct; fuzzer green) — treeshake doesn't remove it, so something in the
-  conditional-int codegen EMITS a `__static_str` reference that pins it. Minimal repro (N=16,
-  independent of the vectorizer): `a[i] = ((a[i] - ((a[i]<=2)?a[i]:a[i])) + ((a[i]===255)?a[i]:(a[i]>2)))|0`
-  — either half alone is clean; only the `(a[i]-tern) + (tern-with-bool-else)` SUM triggers it.
-  TRACED (stack instrumentation of includeModule): the `number` module is pulled by
-  `includeForArrayAccess` — the GENERIC `[]` path (prepare/index.js:1971) fires for `a[i]`
-  and pulls array/collection → `number` (a MOD_DEP). That happens for EVERY `a[i]`, including
-  the trivial program — but there `__static_str`/`__ftoa` are STRIPPED as unused
-  (compile.js, see module/number.js:642). So the bug is narrower than "pulls number": in s2
-  something REFERENCES `__static_str` un-strippably (a dead `__ftoa`/dtoa path the bail or a
-  dynamic fallback emits) so the strip can't remove it → 1 func → 19. The surviving reference
-  is NOT yet pinned (needs tracing the strip's reachability set on the s2 output). Fix =
-  either don't emit that reference, or strengthen the unused-`__static_str` strip. Significant
-  bloat (18× funcs). Gate: func-count on the repro.
+- [x] **Nested-conditional int narrowing + dead `__static_str` pull** — CLOSED (13 → 0).
+  Two fixes: (1, prior) toI32 distributes ToInt32 through `(if result f64)` recursively, so
+  nested integer `?:` chains narrow to `(if result i32)` (13→2). (2, this round) the last 2
+  residuals (typed-int seeds 28, 73) were NOT user-loop deopts — a mixed number/boolean
+  ternary `(c ? num : num>k)` lost type precision (`VT['?:']` returned null when branch
+  kinds differed), so the enclosing `+` emitted the polymorphic string-concat dispatch on
+  pure-numeric operands, pinning the whole number→string formatter (`__str_concat` →
+  `__to_str` → `__static_str`, all f64 dtoa loops). A pure-int program ballooned 1 → ~19
+  funcs. Fix: `VT['?:']` (src/kind.js) now mirrors the `&&`/`||`/`??` BOOL-coercion rule —
+  a boolean branch coerces in numeric context, so `num ? : bool` carries the non-bool type.
+  Repro `a[i] = ((a[i]-((a[i]<=2)?a[i]:a[i])) + ((a[i]===255)?a[i]:(a[i]>2)))|0`: 19 → 1 func,
+  no `__static_str`. Verified: scalar fuzz 4000 / typed-int 1000 / typed-map 600 × opt{0,1,2,3}
+  all 0 divergence. Gated: test/wat-invariants.js `absence:` (no number→string formatter in a
+  pure-int program) + typed-int sweep promoted to hard-zero.
 - [x] **Param typed-array base re-decode** — DONE (speed tier). A typed array passed as a
   PARAM (`(buf,n)=>{ for(i<n) buf[i]=f(buf[i],i) }`, JZ's flagship DSP shape) re-decoded
   its NaN-box base every iteration because the polymorphic store reassigns `buf`, marking
