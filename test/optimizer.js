@@ -1027,6 +1027,53 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
   is(jz(SRC).exports.main(), ref, 'default-tier result bit-exact')
 })
 
+test('if→select: f64 ternary with pure arms+cond → branchless select (sign/clamp kernels)', () => {
+  // `(h & 1) === 0 ? x : -x` (noise's gradient) lowers to (if (result f64) PURE_COND (then x)
+  // (else -x)); both arms and the cond are pure, so fold to a branchless select — the cmov
+  // LLVM/clang emit for every `cond ? a : b`, killing the misprediction on data-random conds.
+  const SRC = `
+    const grad = (h, x, y) => { const u = (h & 1) === 0 ? x : -x; const v = (h & 2) === 0 ? y : -y; return u + v }
+    export const main = () => {
+      let s = 0.0
+      for (let i = 0; i < 16; i++) s = s + grad(i, i * 0.5, i * 0.25) + grad(i + 1, i * 0.3, i * 0.7)
+      return (s * 1000) | 0
+    }
+  `
+  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })   // grad (small leaf) inlines into main
+  const m = wat.slice(wat.indexOf('(func $main'), wat.indexOf('\n  (func ', wat.indexOf('(func $main') + 10) + 1 || undefined)
+  ok(/\bselect\b/.test(m), 'gradient sign-select lowered to branchless select')
+  is(/\(if \(result f64\)/.test(m), false, 'no f64 conditional branch left')
+  const ref = (() => { const g = (h, x, y) => { const u = (h & 1) === 0 ? x : -x; const v = (h & 2) === 0 ? y : -y; return u + v }
+    let s = 0.0; for (let i = 0; i < 16; i++) s = s + g(i, i * 0.5, i * 0.25) + g(i + 1, i * 0.3, i * 0.7); return (s * 1000) | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'grad result bit-exact vs JS')
+})
+
+test('if→select: short-circuit || with a side-effecting cond is NOT folded (regression: tee reorder)', () => {
+  // `a || b` lowers to (if (result f64) is_truthy(local.tee $t a) (then $t)(else b)) — the cond
+  // hides a tee the then-arm reads. wasm `select` evaluates its arms BEFORE the cond, so folding
+  // would read $t stale. The cond-purity gate must reject it (this broke ||/??= before the gate).
+  const SRC = `export const f = (a, b) => a || b
+    export const main = () => { let n = 0; if (f(0, 5) === 5) n = n + 1; if (f(7, 9) === 7) n = n + 2; if (f(false, 3) === 3) n = n + 4; return n }`
+  is(jz(SRC).exports.main(), 7, '|| short-circuit stays correct (0||5=5, 7||9=7, false||3=3)')
+})
+
+test('Math.floor(bounded)|0 → single i32.trunc_sat (no i64 round-trip / +∞ guard)', () => {
+  // f64Range now maps through f64.floor: Math.floor(u8 * scale) is a finite, in-i32-range value,
+  // so toI32 emits one i32.trunc_sat_f64_s instead of i64.trunc_sat + i32.wrap + (select … f64.ne
+  // ∞). The image/audio index class (`Math.floor(pixel * scale)`). Bit-exact. (Inert when the
+  // floor's input is a bare param/local — f64Range can't bound those without range-of-locals.)
+  const SRC = `
+    const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
+    export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
+  `
+  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
+  is(/i64\.trunc_sat/.test(wat), false, 'no i64 trunc round-trip for the bounded floor')
+  ok(/i32\.trunc_sat_f64_s/.test(wat), 'single i32.trunc_sat for the bounded floor')
+  const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255
+    const f = (b, o, n) => { for (let i = 0; i < n; i++) o[i] = (Math.floor(b[i] * 0.5) | 0) & 255 }; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'floor result bit-exact vs JS')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

@@ -212,6 +212,14 @@ export const f64Range = (n) => {
   if (op === 'f64.neg') { const a = f64Range(n[1]); return a && fin(-a.hi, -a.lo) }
   if (op === 'f64.abs') { const a = f64Range(n[1]); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
   if (op === 'f64.sqrt') { const a = f64Range(n[1]); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
+  // Rounding ops preserve finiteness and are monotonic, so the range maps elementwise. This lets
+  // `Math.floor(x)|0` over a bounded x (every grid/image/audio index: `px*scale`, perm[] lookups)
+  // drop the +∞-guard + i64 round-trip in toI32 down to a single i32.trunc_sat_f64_s. `nearest`
+  // (round-half-to-even) lands in {floor,ceil} so its bounds are floor(lo)..ceil(hi).
+  if (op === 'f64.floor') { const a = f64Range(n[1]); return a && fin(Math.floor(a.lo), Math.floor(a.hi)) }
+  if (op === 'f64.ceil')  { const a = f64Range(n[1]); return a && fin(Math.ceil(a.lo), Math.ceil(a.hi)) }
+  if (op === 'f64.trunc') { const a = f64Range(n[1]); return a && fin(Math.trunc(a.lo), Math.trunc(a.hi)) }
+  if (op === 'f64.nearest') { const a = f64Range(n[1]); return a && fin(Math.floor(a.lo), Math.ceil(a.hi)) }
   if (op === 'f64.add') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
   if (op === 'f64.sub') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
   if (op === 'f64.mul') {

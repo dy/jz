@@ -29,7 +29,7 @@
 
 import { LAYOUT, ctx } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { findBodyStart, buildRefcount, nextLocalId, verifyFn } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -3279,6 +3279,30 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64) {
     const a = node[1], b = node[2]
     if (Array.isArray(b) && b[0] === 'i32.const' && b[1] === 0) return a
     if (Array.isArray(a) && a[0] === 'i32.const' && a[1] === 0) return b
+  }
+
+  // if→select for a value-producing f64 `if` with PURE arms: (if (result f64) COND (then A)
+  // (else B)) → (select A B COND). This is the branchless `cmov` lowering LLVM/clang apply to
+  // every `cond ? a : b` — it removes the conditional branch (and its misprediction cost on
+  // data-unpredictable conditions) on the whole class of float sign/clamp/reflect ternaries.
+  // The flagship: noise's gradient `(h & 1) === 0 ? x : -x` (8 per perlin × 5 octaves × 65k px).
+  // SOUND: wasm `select` evaluates BOTH arms unconditionally, and `isPureIR` admits only
+  // side-effect-free, non-trapping ops (no load/call/div/rem) — so eager evaluation is safe; it
+  // is the exact predicate emit.js uses for the same fold at emit time, now applied post-watr
+  // where the arms (e.g. `f64.neg (local.get $x)`) are clean after canon-DCE. Gated to NOT fire
+  // when BOTH arms are i32-narrowable — those stay an `if` for the ToInt32-through-if fold +
+  // the i32x4-bitselect conditional-map vectorizer (don't steal the integer path).
+  if (op === 'if' && node.length === 5 && Array.isArray(node[1]) && node[1][0] === 'result' && node[1][1] === 'f64'
+      && Array.isArray(node[3]) && node[3][0] === 'then' && node[3].length === 2
+      && Array.isArray(node[4]) && node[4][0] === 'else' && node[4].length === 2) {
+    const a = node[3][1], b = node[4][1], cond = node[2]
+    // The COND must also be pure: `if` evaluates cond FIRST then one arm, but wasm `select`
+    // evaluates its arms BEFORE the cond. A short-circuit lowering like `a || b` =
+    // `(if (result f64) is_truthy(local.tee $t a) (then get $t)(else b))` hides a `tee` in the
+    // cond that the then-arm reads — reordering it after the arms reads $t stale. Requiring
+    // isPureIR(cond) excludes every tee/call/short-circuit cond while admitting the pure
+    // comparison conds of real float ternaries (noise's `(h & 1) === 0`).
+    if (isPureIR(a) && isPureIR(b) && isPureIR(cond) && !(toI32(a) && toI32(b))) return ['select', a, b, cond]
   }
 
   // f64.CMP(convert_i32 A, convert_i32 B) → i32.CMP(A, B). Comparing two i32 values is
