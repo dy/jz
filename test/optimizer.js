@@ -257,6 +257,31 @@ test('escape analysis: call-passed object still heap allocates', () => {
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'call-passed object must remain materialized')
 })
 
+test('inline: large multi-caller leaf folds at speed (transitive candidacy + expression-position hoist), bit-exact', () => {
+  // `mix` is a block-body LEAF that CALLS leaf helpers lo/hi — so the strict "any user call
+  // ⇒ outline" gate keeps it standalone at ≤2 — and is invoked from MULTIPLE sites in
+  // EXPRESSION position `2.0*mix(i) + mix(i+1)`, which neither inlineInStmt's `const X=call`
+  // path nor single-call inlineOnce reaches. At speed, transitive candidacy makes it a
+  // candidate once lo/hi are, and the hoist lifts the nested calls into temps the direct
+  // path folds → 0 calls. ≤2 keep the conservative multi-caller policy (V8 wasm tier-up).
+  // This is noise's perlin shape in miniature; a revert of ANY of the three pieces
+  // (transitive candidacy, the hoist, or the speed gate) fails a distinct assertion.
+  const SRC = `
+    let lo = (x) => x * 0.5
+    let hi = (x) => x + 1.0
+    let mix = (x) => { let a = lo(x); let b = hi(x); return a + b }
+    export let f = (n) => { let s = 0.0
+      for (let i = 0; i < n; i = i + 1) s = s + 2.0 * mix(i) + mix(i + 1)
+      return s }`
+  // bit-exact: inlining is pure substitution, so speed must equal the level-2 (called) result
+  if (!onWasi()) is(jz(SRC, { optimize: { level: 'speed' } }).exports.f(50),
+                    jz(SRC, { optimize: 2 }).exports.f(50), 'speed == level 2 (bit-exact)')
+  if (onKernel()) return  // call-shape is a host-codegen assertion; bit-exactness above is portable
+  const calls = (opt) => (jz.compile(SRC, { wat: true, optimize: opt }).match(/call \$mix/g) || []).length
+  is(calls({ level: 'speed' }), 0, 'speed: transitive+hoist fully inlines the multi-caller leaf')
+  ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
+})
+
 test('known numeric coercions elide __to_num', () => {
   const wat = jz.compile(`
     export const main = (buf) => {
