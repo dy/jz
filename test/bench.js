@@ -94,6 +94,12 @@ const SPEED = {
   // target can vectorize it, so it's a pure scalar-codegen race. jz lands within
   // ~5% of AS (medians straddle 1.0–1.05× run-to-run), pinned `near` to stay non-flaky.
   qoi:            { v8: 'win',  as: 'near', porf: 'todo' },
+  // hashjoin: probe-dominated relational hash join — the boss case. jz TRAILED V8
+  // until valResult=NUMBER stamping (0fbe6ee) killed the polymorphic + on probe()'s
+  // typed-array-param return (sum + probe() was lowering through __is_str_key/
+  // __str_concat); now jz is the fastest target — beats V8, AS, native C, and every
+  // wasm rival. Recheck-stabilised below (the V8 margin is real ~0.91× but slim).
+  hashjoin:       { v8: 'win',  as: 'win',  porf: 'na'   },
   // watr is the one large real-program case (jz compiling the watr WAT encoder —
   // string-tokenizing + byte-array emission). jz's linear-memory strings
   // structurally trail V8's native strings + JIT here, so it lands ~1.12-1.20× of
@@ -138,6 +144,9 @@ const NATIVE = {
   // byte-twiddling backend, conv2d's int8 MAC is native-SIMD'd, and qoi trails by a
   // codegen margin — none claim native parity, so they sit out the NATIVE geomean.
   hash: 'tie', base64: 'na', wav: 'na', conv2d: 'na', lz: 'na', qoi: 'na',
+  // hashjoin: the i32 probe loop is native-grade since the polymorphic-+ fix —
+  // jz/C ≈ 0.9× (clean) / parity under load; sits in the native-parity geomean.
+  hashjoin: 'tie',
   // jz beats `clang -O3 -ffp-contract=off` ~10× here: the multi-accumulator SIMD
   // reassociation extracts ILP the strict-fp serial sum can't. A genuine win (not
   // host-noise) — the margin dwarfs cross-substrate variance.
@@ -186,6 +195,9 @@ const SIZE = {
   // output — honest `todo` (printed, unasserted), not a size-parity claim.
   lz:             { as: 'todo', porf: 'win' },
   qoi:            { as: 'todo', porf: 'win' },
+  // hashjoin carries two hash fns + open-addressing probe/insert scaffolding —
+  // ~2.2× AS's lean -Oz (honest `todo`, like lz/qoi), but 13× smaller than porf.
+  hashjoin:       { as: 'todo', porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
@@ -224,6 +236,7 @@ const SIZE_BUDGET = {
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
   hash: 1500, base64: 2300, wav: 2050, conv2d: 5600, lz: 9200, qoi: 10500,
+  hashjoin: 4200,
 }
 
 // ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────
@@ -295,7 +308,7 @@ const speedCases = Object.keys(runs)
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const recheckTargets = `v8,jz${natAvailable ? ',nat' : ''}`
-for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64']) {
+for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'base64', 'hashjoin']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   if (runs[id].nat) s.nat = [runs[id].nat.medianUs]
