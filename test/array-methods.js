@@ -463,6 +463,27 @@ test('Regression: array literal spread copies external typed array values', () =
   is(result[2], 67)
 })
 
+// `[...str]` spreads a string into its characters. The spread machinery decoded string
+// ELEMENTS per-char (via __str_idx), but cached the source LENGTH with __len — array length,
+// which is 0 for a string — so `[...str]` silently produced an empty array. Length now uses
+// __str_len for a known string and a runtime STRING?__str_len:__len dispatch for an unknown
+// source (a fn param, the compiler's own `[...key]`). This also closed the json self-host
+// byte-DIFF: the kernel's shape parser used `[...key]` to emit per-key char checks, so it
+// dropped every key name (kernel built smaller, still correct via positional parsing) while
+// jz.js (V8 spread) kept them — now both match.
+test('array spread of a string yields its characters (length, indexing, map)', () => {
+  is(run('export let f = () => { let a = [...("items")]; return a.length }').f(), 5, 'known-string spread length')
+  is(run('export let f = () => [...("abc")].map(c => c.charCodeAt(0)).reduce((a,b)=>a+b,0)').f(), 294, 'spread → chars (97+98+99)')
+  is(run('export let f = () => { let a = [..."ab", "c"]; return a.length }').f(), 3, 'string spread mixed with a literal element')
+  // Unknown-source (the compiler's own `[...key]` shape): a jz string of statically-unknown
+  // type — an array element / concat result — dispatches STRING?__str_len:__len at runtime.
+  is(run('export let f = () => { let arr = ["items","meta"]; let a = [...arr[0]]; return a.length }').f(), 5, 'unknown-source (array element) spread length')
+  is(run('export let f = () => { let s = "ab" + "cde"; let a = [...s]; return a.length }').f(), 5, 'unknown-source (concat) spread length')
+  is(run('export let f = () => { let arr = ["hi"]; let a = [...arr[0]]; return a[1].charCodeAt(0) }').f(), 105, 'unknown-source spread indexing (i)')
+  // typed-array + array spread still correct (no regression from the length-by-kind change)
+  is(run('export let f = () => { let a = [1,2,3]; let b = [...a, 4]; return b.length * 10 + b[3] }').f(), 44, 'array spread intact')
+})
+
 test('Regression: imported function returning array with props keeps numeric indexing', () => {
   if (onKernel()) return  // kernel: host {modules} import resolution doesn't reach the single-source self-host
   const { exports } = jz(`

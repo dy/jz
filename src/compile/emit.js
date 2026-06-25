@@ -1318,8 +1318,25 @@ export function buildArrayWithSpreads(items) {
       // emitSpreadCopy resolve its kind at runtime via its one-time __ptr_type branch.
       sec.val = n ? undefined : valTypeOf(srcExpr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(srcExpr))])
-      // Cache __len once per spread; reused below for total-len sum and the copy.
-      ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
+      // Cache the source length once per spread (reused for the total-len sum and the
+      // copy). `__len` is ARRAY/typed length — WRONG for a STRING (returns 0, so `[...str]`
+      // spreads an empty array). Pick the length to MATCH emitSpreadCopy's element decode:
+      // a known string counts chars (__str_len, paired with the __str_idx per-char copy); a
+      // statically-unknown source — `[...x]` / `[...fnParam]`, the compiler's own
+      // `[...key]` — dispatches once at runtime (STRING→__str_len, else→__len), mirroring
+      // emitSpreadCopy's ARRAY-vs-scalar branch. (Not __length: its `off>=8` guard returns
+      // undefined for host/static typed arrays.) Known array/typed/multi keep plain __len.
+      const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]
+      const lenIR = sec.val === VAL.STRING
+        ? (inc('__str_len'), ['call', '$__str_len', srcI64()])
+        : (sec.val === VAL.ARRAY || sec.val === VAL.TYPED || n)
+          ? (inc('__len'), ['call', '$__len', srcI64()])
+          : (inc('__str_len', '__len', '__ptr_type'),
+            ['if', ['result', 'i32'],
+              ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.STRING]],
+              ['then', ['call', '$__str_len', srcI64()]],
+              ['else', ['call', '$__len', srcI64()]]])
+      ir.push(['local.set', `$${sec.lenLocal}`, lenIR])
     }
   }
 

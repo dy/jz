@@ -407,3 +407,38 @@ miscompile of the compiler's OWN code, not a bug in the source (jz.js runs the s
 Next-session hunt: rebuild the kernel toggling opt2 passes (the Q1/watr split from SESSION-2) against
 this 5-line trigger to find which pass the kernel mis-runs; or diff jz.js vs kernel intermediate
 local-type state for v0.
+
+## SESSION 5 cont — valueOf footgun + json self-host DIFF, both ROOT-FIXED
+
+Two long-standing self-host fidelity gaps closed, both real jz.js correctness bugs underneath.
+
+**valueOf footgun (committed 5c6898c).** `let valueOf = 5; return valueOf` compiled to `return 0`
+(and `valueOf = …` errored "Assignment to non-variable") — same for toString/hasOwnProperty/
+constructor/etc. The compiler keys resolution dictionaries (CONSTANTS, F64_CONSTANTS, REJECT_IDENTS,
+GLOBALS, the scope chain via `derive`, hostConsts/namespaces/exports) on the identifier name with
+PLAIN `{}` objects. In V8 those inherit Object.prototype, so `'valueOf' in CONSTANTS` is true and the
+lookup returns the inherited method → the identifier resolved to a boxed function. jz.js-ONLY (kernel
+jz objects are prototype-less — which is why a compiler-internal `valueOf` local once miscompiled into
+the kernel). Fix: prototype-less dicts (`Object.assign(Object.create(null), {…})` / `Object.create(null)`),
+verified metacircular (kernel builds + runs, corpus byte-identical). +regression test, native 2531/0.
+
+**json self-host DIFF — RESOLVED (the last corpus divergence).** json was the one bench program whose
+kernel output diverged from jz.js (the groundtruth's standing "run-and-compare"). ROOT: `[...str]`
+(spreading a string into its characters) returned an EMPTY array in jz. The array-spread machinery
+decoded string ELEMENTS per-char (via __str_idx) but cached the source LENGTH with `__len` — array
+length, which is 0 for a string. The compiler's JSON shape parser builds per-key char checks with
+`expectText(k) = [...k].map(…)`; under jz.js that runs on V8 (correct, full keys), but the kernel runs
+jz's own broken `[...k]` → it dropped every key NAME, emitting a smaller-but-still-correct positional
+parser (hence benign: identical checksum, fewer bytes). Fix (emit.js buildArrayWithSpreads): pick the
+spread length by source kind — known string → __str_len; statically-unknown → a runtime
+`ptr_type==STRING ? __str_len : __len` dispatch mirroring emitSpreadCopy's element branch (NOT __length:
+its `off>=8` guard returns undefined for host/static typed arrays). This fixed the general `[...str]`
+bug AND made the kernel's json output **byte-identical** to jz.js at L0 and L2 → **all 22/22 corpus
+programs now self-host byte-identical.** +regression test; native 2532/0, test:self 15/15.
+
+**Flagged (NOT fixed, separate pre-existing): host-arg param-type inference is multi-compile-order
+dependent.** `(s) => [...s]` called `.f('hello')` returns 0 when compiled AFTER certain other programs in
+one process (the suite) but 5 in isolation — the param `s` is inferred non-string under accumulated
+facts-cache state, so the host bridge marshals the string arg wrongly. Orthogonal to the spread fix
+(the compiled code is correct; `sec.val` is null and the runtime dispatch is right — it's the host
+boundary's arg coercion). A focused facts-cache / interop-signature investigation for a later pass.
