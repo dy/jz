@@ -1226,7 +1226,7 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   // Locals to add to function header.
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
-    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']),
+    ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']),
     ...extraLocals,
   ]
 
@@ -1518,7 +1518,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
   // LICM-hoisted $__li invariants run ahead of the SIMD block (the scalar tail's
   // copy inside bl.blockNode re-runs them harmlessly — pure & loop-invariant).
   const wrapper = ['block', ...preamble.map(cloneNode), ...peelStmts, boundSetup, simdBlock, bl.blockNode]
-  const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']), ...extraLocals]
+  const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }
 
@@ -2011,13 +2011,17 @@ function _isAddressLocal(body, name, ind) {
 
 // ---- Lifter ----------------------------------------------------------------
 
+// Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
+// string — NOT a `{laneName}` object — because a schema-object read back through the Map in a
+// DIFFERENT function returns undefined under self-host (jz.wasm loses the object's schema id
+// across the boundary; see .work/selfhost-fragilities.md Root E). Strings are immune.
 function getOrAllocLanedLocal(name, ctx) {
-  let r = ctx.newLanedLocals.get(name)
-  if (!r) {
-    r = { laneName: `${name}__v`, origName: name }
-    ctx.newLanedLocals.set(name, r)
+  let laneName = ctx.newLanedLocals.get(name)
+  if (!laneName) {
+    laneName = `${name}__v`
+    ctx.newLanedLocals.set(name, laneName)
   }
-  return r
+  return laneName
 }
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
@@ -2088,7 +2092,7 @@ function liftStmt(stmt, ctx) {
       return ['local.set', name, stmt[2]]
     }
     if (kind === 'lane') {
-      const { laneName } = getOrAllocLanedLocal(name, ctx)
+      const laneName = getOrAllocLanedLocal(name, ctx)
       const v = liftExprV(stmt[2], ctx)
       if (ctx.fail) return null
       return ['local.set', laneName, v]
@@ -2276,7 +2280,7 @@ function liftExprV(expr, ctx) {
     }
     const kind = ctx.localKind.get(name)
     if (kind === 'lane') {
-      const { laneName } = getOrAllocLanedLocal(name, ctx)
+      const laneName = getOrAllocLanedLocal(name, ctx)
       return ['local.get', laneName]
     }
     if (kind === 'invariant') {
@@ -3101,7 +3105,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   const wrapper = ['block', boundSetup, simdBlock, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
-    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']),
+    ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']),
     ...extraLocals,
   ]
   return { wrapper, newLocalDecls }
@@ -5147,7 +5151,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // reads fail/failReason/extraLocals, but the unused fields must still be present, in order.
   const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
-  const laned = (name) => { let r = newLanedLocals.get(name); if (!r) { r = { laneName: `${name}__v` }; newLanedLocals.set(name, r) } return r.laneName }
+  const laned = (name) => { let ln = newLanedLocals.get(name); if (!ln) { ln = `${name}__v`; newLanedLocals.set(name, ln) } return ln }
   const freshMask = () => { const mt = `$__mask${freshIdRef.next++}`; ctx.extraLocals.push(['local', mt, 'v128']); return mt }
 
   // The ctx-using lifters are NESTED function declarations that CAPTURE the state above (like
@@ -5334,7 +5338,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
-    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']),
+    ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']),
     ...ctx.extraLocals,
   ]
   return { wrapper, newLocalDecls }

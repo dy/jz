@@ -104,19 +104,30 @@ parts of its own `liftExprV`/`tryVectorize`), while staying functionally correct
 | **null-leak reduction operand** — `liftExprV`'s contract is "null ⟺ ctx.fail"; in the kernel it returns null WITHOUT the flag for an `i32 & K` reduction body, so `tryReduceVectorize` (checking only `ctx.fail`) spliced a literal `null` into `(i32x4.add acc null)` | invalid wasm — "not enough arguments on the stack for i32x4.add" (sieve/dot reductions, 4 kernel failures) | **FIXED** — `tryReduceVectorize` now bails on `liftedExpr == null` too (loop stays scalar on that leg — correct). No-op in-process. |
 | **bail-to-scalar parity gap** — for various lane shapes (f32 maps, Uint8 XOR/shl, i16 mul, conditional bitselect, sqrt/min/max, reduceUnroll, offset-dot) the kernel vectorizer *declines* where in-process accepts → correct scalar code, no SIMD | structural codegen-shape assertions fail on the kernel leg (~21) | **NEUTRALIZED** — those structural `ok(/v128…/)` assertions are guarded `if (!onKernel())` (the established simd.js pattern); functional bit-exactness still gates the kernel. ROOT is the durable follow-up below. |
 
-**Parity-investigation findings (toward the durable host-vs-wasm gate):**
-- The divergence is at loop **RECOGNITION**, not the lift. Even a basic local-array f64 map
-  `let a=new Float64Array(n); … o[i]=a[i]*k` — which in-process lifts to `f64x2.mul` — is not
-  vectorized by `jz.wasm` (it's the same `tryVectorize`, but the kernel never treats the loop as a
-  candidate). The per-pixel-color path (`tryPerPixelColor`) DOES self-host (COMPLEX_FIELD lifts to
-  f64x2 in the kernel), so it's `tryVectorize`'s candidate-recognition that mis-compiles, not all
-  vectorization.
-- `--why-not-simd` doesn't help localize it from outside: forcing `whyNot` on and reading
-  `compileViaKernel(..., {warnings})` yields ZERO entries for the diverging loop — the warning is
-  emitted only for loops that REACH the lift attempt (`bl || matchOuterPixelLoop`), and this loop
-  is rejected before that. So a proper gate needs IN-KERNEL decision tracing (e.g. a debug export
-  that returns the candidate-scan verdict), not the host-side advisory channel.
-- Next step: bisect `tryVectorize`'s candidate scan (typed-array element-type / affine-address
-  recognition) for the self-host-miscompiled construct, the way `specializeBimorphicTyped` was
-  root-caused. Likely a Map/object lookup or computed access in the recognizer (the recurring
-  classes above). Multi-cycle (each hypothesis = a ~3-min self-host rebuild).
+**Parity-investigation findings — ROOT bisected (a Root-E instance).** Built an in-kernel decision
+trace (a `warn('vt', …)` surfaced via `compileViaKernel({warnings})`; `--why-not-simd` alone is
+useless — the diverging loop is rejected before the why-not emit point). Stepped a basic local-array
+f64 map `let a=new Float64Array(n); … o[i]=a[i]*k` (in-process → `f64x2.mul`; kernel → scalar)
+through the pipeline:
+- `matchBlockLoop` **succeeds** in the kernel (recognition is fine — my earlier "recognition"
+  guess was wrong). `tryVectorize` reaches its lift loop, then bails at `lifted.length === 0`.
+- Each body stmt's `liftStmt` returns null. Traced into the `local.set tw5 = a[i]*k` lift:
+  `getOrAllocLanedLocal` built `r = { laneName: \`${name}__v\`, origName: name }`, and reading
+  `r.laneName` **back in the caller returned `undefined`** (kernel) — the template literal itself
+  was correct (`interp` showed the right string); the OBJECT lost its schema across the
+  Map.set/function-return boundary. **This is Root E** (schema id lost through boxing) on a fresh
+  2-field literal, not just closure-captured ones.
+- **FIXED (this instance):** `getOrAllocLanedLocal` / `laned` now store and return the bare lane
+  NAME string in `newLanedLocals` — strings are immune to the schema-boxing loss. No in-process
+  change (only `laneName` was ever read; `origName`/`simdType` were vestigial). suite 2512/0,
+  kernel 2241/0.
+- **STILL BLOCKED — the `ctx` instance.** With laneName fixed the f64 map STILL doesn't vectorize:
+  `liftExprV` reads the SCALAR props of the `ctx` object (`ctx.laneType`, the `ctx.fail` write-back)
+  across the `tryVectorize → liftStmt → liftExprV → liftFail` call chain, and those read/propagate
+  wrong in the kernel (same Root E). Notably ctx's REFERENCE props read fine (`ctx.localKind.get`,
+  `ctx.newLanedLocals.get/set` work) — only scalar/string slots are lost across the boundary.
+  `tryPerPixelColor` self-hosts precisely because it hardcodes the lane type and never cross-reads a
+  ctx scalar. A bounded fix would thread `laneType` (and a fail flag) as PRIMITIVE args through
+  liftExprV instead of via the ctx object — a sizeable, careful refactor of the whole lift chain;
+  the real fix is the central Root-E repair (preserve schema ids across the box boundary), which is
+  the high-leverage durable follow-up since it would unblock this whole class at once.
