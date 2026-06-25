@@ -159,3 +159,14 @@ through the pipeline:
     liftStmt/liftExprV/getOrAllocLanedLocal/liftCanon/narrowStore — a large, careful refactor that must
     keep the in-process vectorizer bit-identical (full suite + bench + test:wasm gate). PERF-ONLY: the
     kernel emits correct SCALAR code (bit-exact), so this is a jz.wasm output-quality gap, not a defect.
+
+- **✅ RESOLVED.** Took option (b), minimally: the lift chain now reads `ctx` from a MODULE-GLOBAL
+  (`_liftCtx` in vectorize.js) instead of the arg-passed param — each of the 7 lift fns (liftStmt,
+  liftExprV, getOrAllocLanedLocal, liftCanon, liftFail, narrowStore, buildRampStore) rebinds
+  `ctx = _liftCtx` at entry, and each of the 5 recognizers sets `_liftCtx = ctx` at creation. A module
+  global is read directly (no per-call arg-boxing), which jz.wasm compiles correctly; in-process it's a
+  no-op (same object) so the in-process vectorizer is BIT-IDENTICAL. Sound because exactly one lift runs
+  at a time (recognizers are tried sequentially). Result: the self-host kernel now vectorizes EVERY shape
+  at full parity (map/reduce/min-max/clamp/sqrt/bitselect/i8x16/i16x8/multi-acc — verified). The 23
+  `onKernel()` "codegen differs" guards in test/simd.js are removed (those shape assertions now run on
+  the kernel leg and PIN the parity); full test:wasm 2242 pass /0 fail, core/opt0/opt3 2513, fuzz clean.
