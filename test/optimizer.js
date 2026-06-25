@@ -282,6 +282,25 @@ test('inline: large multi-caller leaf folds at speed (transitive candidacy + exp
   ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
 })
 
+test('inline: expression-position hoist preserves evaluation order of side effects', () => {
+  // The hoist lifts a candidate call to a `const __h = call` temp at the statement top. That
+  // is sound ONLY when no side effect precedes it: here `a()` (a non-candidate — it has a loop)
+  // runs BEFORE `helper()` textually, so helper must NOT be hoisted above it. Each fn records
+  // its call order into `log`; the returned digits encode the order (123 = a,helper,b).
+  const order = (src) => jz(src, { optimize: { level: 'speed' } }).exports.f()
+  const NONCAND_FIRST = `let log = new Int32Array(4); let n = 0;
+    let a = () => { let s = 0; for (let i = 0; i < 1; i = i + 1) s = s + 1; log[n] = 1; n = n + 1; return 10 }
+    let helper = (x) => { log[n] = 2; n = n + 1; return x + 1 }
+    let b = () => { log[n] = 3; n = n + 1; return 100 }
+    export let f = () => { n = 0; let t = a() + helper(5) * b(); return t * 1000000 + log[0]*100 + log[1]*10 + log[2] }`
+  is(order(NONCAND_FIRST), 610000123, 'effect before a candidate blocks its hoist — order a,helper,b preserved')
+
+  // When everything preceding is pure / hoistable, the candidate DOES fold (0 calls) and order holds.
+  const ALL_CAND = NONCAND_FIRST.replace('let a = () => { let s = 0; for (let i = 0; i < 1; i = i + 1) s = s + 1; log[n] = 1', 'let a = () => { log[n] = 1')
+  is(order(ALL_CAND), 610000123, 'all-candidate chain: order a,helper,b preserved')
+  if (!onKernel()) is((jz.compile(ALL_CAND, { wat: true, optimize: { level: 'speed' } }).match(/call \$helper/g) || []).length, 0, 'helper still inlines when nothing effectful precedes it')
+})
+
 test('known numeric coercions elide __to_num', () => {
   const wat = jz.compile(`
     export const main = (buf) => {

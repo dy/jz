@@ -292,6 +292,11 @@ const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
 // the key/args run conditionally — so the hoist treats the WHOLE expression as opaque (no
 // operand, not even the base, is hoisted out) to avoid colliding with that desugaring.
 const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
+// Mutating expression operators — evaluating one is an observable side effect.
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**=', '&&=', '||=', '??=', '++', '--'])
+// Does evaluating this expression have an observable side effect (a call or assignment)?
+const containsEffect = (n) => Array.isArray(n) && n[0] !== '=>' &&
+  (n[0] === '()' || n[0] === '?.()' || ASSIGN_OPS.has(n[0]) || n.slice(1).some(containsEffect))
 
 // Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
 // preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at
@@ -306,20 +311,31 @@ const hoistNestedCalls = (body, blockNames) => {
   if (!blockNames.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
   const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
-  const hExpr = (n, pre, cond) => {
+  // Lifting a call to the pre-decl block moves its evaluation to the TOP of the statement.
+  // Sound only if no observable side effect is evaluated BEFORE it — else its effect jumps
+  // ahead of that one (`a() + helper(x)` must keep a()'s effect first). `eff.seen` threads
+  // left-to-right through evaluation order: a call or assignment LEFT IN PLACE marks every
+  // later position. A hoisted call moves as a unit — its args run in a fresh inner eff, and
+  // it does NOT advance the outer eff (the whole unit relocates together, order intact).
+  const hExpr = (n, pre, cond, eff) => {
     if (!Array.isArray(n) || n[0] === '=>') return n
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1])) {
-      const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false))]
+    if (!cond && !eff.seen && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1])) {
+      const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, { seen: false }))]
       const tmp = `${T}inl${ctx.func.uniq++}_h`
       pre.push(['const', ['=', tmp, call]])
       changed = true
       return [null, tmp]
     }
-    if (OPTIONAL_CHAIN.has(n[0]))
-      return [n[0], ...n.slice(1).map(c => hExpr(c, pre, true))]
+    if (OPTIONAL_CHAIN.has(n[0])) {
+      const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, true, eff))]
+      if (n[0] === '?.()') eff.seen = true  // optional CALL may run
+      return out
+    }
     if (SHORT_CIRCUIT.has(n[0]))
-      return [n[0], hExpr(n[1], pre, cond), ...n.slice(2).map(c => hExpr(c, pre, true))]
-    return [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond))]
+      return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
+    const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
+    if (n[0] === '()' || ASSIGN_OPS.has(n[0])) eff.seen = true  // a call/assign left in place is an effect
+    return out
   }
   // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's
   // `const X = call` / `X = call` paths — hoisting it would be redundant and (for an
@@ -338,13 +354,15 @@ const hoistNestedCalls = (body, blockNames) => {
       case 'while': return [['while', s[1], seq(hStmt(s[2]))]]
       case 'let': case 'const': {
         if (s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && !directCall(s[1][2])) {
-          const pre = []; const rhs = hExpr(s[1][2], pre, false)
+          const pre = []; const rhs = hExpr(s[1][2], pre, false, { seen: false })
           return pre.length ? [...pre, [s[0], ['=', s[1][1], rhs]]] : [s]
         }
         return [s]
       }
-      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
-      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false); return pre.length ? [...pre, ['return', v]] : [s] }
+      // A computed assign target (`a[i]=…`) evaluates its index BEFORE the RHS, so an effect
+      // there (`a[j++]=…`) must block hoisting too — seed eff.seen from the LHS.
+      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, { seen: containsEffect(s[1]) }); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, { seen: false }); return pre.length ? [...pre, ['return', v]] : [s] }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }
   }
