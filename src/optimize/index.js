@@ -552,6 +552,20 @@ function boolConvertToSelect(fn) {
 // loop-invariant __jss_length in the same loop condition CAN hoist).
 const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
 
+// wasm comparison-op mantissas (the part after the `.`): they yield i32 regardless of
+// operand width (i64.eq, f64.lt, i32.ge_s, …). `eq`/`ne` are sign-agnostic; the ordered
+// compares carry `_s`/`_u` for the integer types and none for f64. Used by resultType to
+// type a hoisted subtree by its root op. A Set membership test, NOT a regex
+// (`/^(eq|ne|lt|gt|le|ge)(_[su])?$/`): the regex mis-anchored under self-host −O2 — `nearest`
+// (the f64.nearest mantissa, from Math.round) starts with `ne`, and the embedded −O2 build
+// matched it as a comparison → the LICM hoist local got typed i32, so `local.set $__li
+// (f64.nearest …)` emitted invalid wasm (f64 into i32) only in the kernel. Explicit string
+// membership is both self-host-robust and cheaper in this LICM-hot path.
+const CMP_MANTISSA = new Set([
+  'eqz', 'eq', 'ne', 'lt', 'gt', 'le', 'ge',
+  'lt_s', 'lt_u', 'gt_s', 'gt_u', 'le_s', 'le_u', 'ge_s', 'ge_u',
+])
+
 // Calls that don't modify EXISTING heap memory: they may allocate (bump the heap
 // pointer) or do tag dispatch, but they never write to an address a hoisted
 // __typed_idx/__str_idx element read would revisit. Their presence must not
@@ -793,7 +807,7 @@ export function hoistInvariantLoop(fn) {
     // Comparisons and `eqz` yield i32 regardless of operand type (i64.eq, f64.lt,
     // i64.eqz, …) — so the operand-type prefix would mistype them. Catch first.
     const m = op.slice(dot + 1)
-    if (m === 'eqz' || /^(eq|ne|lt|gt|le|ge)(_[su])?$/.test(m)) return 'i32'
+    if (CMP_MANTISSA.has(m)) return 'i32'
     const p = op.slice(0, dot)
     if (p === 'i32' || p === 'i64' || p === 'f64' || p === 'f32') return p
     return null

@@ -360,11 +360,31 @@ type-mismatch 0/111, collection-key 0/195); its other "divergences" were all PRE
 behaviors reproducible with `===` removed (`==` non-coercion of number↔string, `substr(-n)` neg-index,
 `(s)=>s+s` param-self-concat). Kernel↔jz.js string-`===` parity fuzz 960/0. Native 2530/0, test:self 14/14.
 
-**Surfaced (NOT mine, pre-existing kernel-only bug) — now precisely localized:** `test:wasm`
-full-local fuzz seed=192 emits invalid wasm from the KERNEL (`local.set $v0` expected i32, found
-`f64.nearest`). PROVEN pre-existing + spec-independent: the baseline (no-spec) kernel emits
-byte-identical invalid wasm; jz.js compiles it VALID at every opt level. CI's wasm-target leg scales
-`JZ_FUZZ_GATE` down so it never reaches seed=192 — only the full local run surfaces it.
+**Surfaced + ROOT-CAUSED + FIXED (pre-existing kernel-only −O2 bug):** `test:wasm` full-local fuzz
+seed=192 emitted invalid wasm from the KERNEL (`local.set $__li0` expected i32, found `f64.nearest`).
+Pre-existing + spec-independent (the baseline no-spec kernel emitted byte-identical invalid wasm; jz.js
+compiles it valid at every opt level); CI's wasm-target leg scales `JZ_FUZZ_GATE` down so it never
+reaches seed=192 — only the full local run surfaced it.
+
+**Root cause:** `resultType` (src/optimize/index.js, the LICM type-of-hoisted-subtree helper) detected
+comparison ops — which yield i32 regardless of operand width — with the regex
+`/^(eq|ne|lt|gt|le|ge)(_[su])?$/` over the op mantissa. Compiled into the kernel at −O2, that regex
+**mis-anchored**: `f64.nearest`'s mantissa `nearest` starts with `ne`, so the embedded matcher accepted
+it as a comparison → `resultType` returned i32 → the LICM-hoisted `f64.nearest(p0)` local was declared
+i32, and `local.set $__li0 (f64.nearest …)` is an f64-into-i32 type clash. jz.js used V8's native regex
+(correct, rejects via the `$` anchor); only jz's OWN wasm regex, as built at −O2 in the full compiler
+module, mis-evaluated it — so KERNEL-ONLY. (The same regex compiled standalone via the kernel was
+correct; it's the −O2 module-context compilation of the embedded literal that broke — the recurring
+self-host −O2 fidelity-bug shape.)
+
+**Fix (committed):** detect comparison mantissas with an explicit `CMP_MANTISSA` Set instead of the
+regex — self-host-robust (Set.has / string-eq are used pervasively in the compiler and proven −O2-safe)
+AND cheaper in the LICM-hot `resultType`. Kernel now valid at all opts for the trigger; `$__li0`
+types f64 identically to jz.js. Validation: native 2530/0, test:self 15/15 (+ a new LICM pin compiling
+the nested-loop Math.round shape through the kernel at L2), and the scalar fuzz seeds 1..200 × opt
+{0,1,2,3} run THROUGH the kernel = 800 compiles, 0 invalid-wasm, 0 value-mismatch (the fast targeted
+equivalent of the 70-min test:wasm fuzz leg). Lesson: prefer Set/string-eq over regex in compiler hot
+paths that must survive self-host −O2.
 
 Minimal trigger (narrowed from SESSION-4's vague seed=50):
 ```js

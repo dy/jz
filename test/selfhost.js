@@ -131,6 +131,26 @@ test('selfhost: level-2 f64-constant pool keeps full precision', () => {
   is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
 })
 
+// Pins the LEVEL-2 LICM hoist-local typing. resultType (src/optimize/index.js) classified a
+// hoisted subtree's wasm type; its comparison-op guard was a regex `/^(eq|ne|lt|gt|le|ge)(_[su])?$/`
+// which, compiled into the kernel at −O2, mis-anchored — `f64.nearest`'s mantissa `nearest` starts
+// with `ne`, so the kernel matched it as a comparison and typed the hoisted `f64.nearest(p0)` local
+// i32 → `local.set (f64.nearest …)` = invalid wasm (f64 into i32). jz.js used V8's regex (correct),
+// so this was KERNEL-ONLY and only the full local fuzz (seed=192) surfaced it. Fixed by detecting
+// comparison mantissas with an explicit Set. Needs the LICM shape: Math.round(p0) loop-invariant in
+// the INNER of two nested loops, p0 reassigned in the OUTER → the round's f64.nearest is hoisted.
+test('selfhost: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
+  getSelf()
+  const s = instantiate(readFileSync(SELF), { memory: 8192 })
+  const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
+  const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
+  const bin = s.memory.read(out)
+  const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  // instantiate THROWS if the kernel emitted invalid wasm (f64.nearest into an i32 local).
+  is(instantiate(bytes, { memory: 256 }).exports.main(), 39, 'kernel L2 round-in-nested-loops valid + correct (3+3+3+4 rounds ×3)')
+  is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
+})
+
 // Pins the f64x2 lane vectorizer under self-host — it broke ENTIRELY two ways this regression hit:
 //  (1) tryToneMap built its `ctx` with a different field set than the other lifters; the kernel
 //      infers one struct layout per shared callee (liftFail), so the mismatched shape corrupted
