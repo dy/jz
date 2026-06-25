@@ -1174,7 +1174,7 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   }
 
   // Build lifted body. If anything fails to lift, bail.
-  const newLanedLocals = new Map()  // origName → { laneName, simdType }
+  const newLanedLocals = new Map()  // origName → laneName (bare string; see getOrAllocLanedLocal)
   const extraLocals = []  // canon temps allocated during lift
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
@@ -5142,7 +5142,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
   }
 
-  const newLanedLocals = new Map()       // origName → { laneName }
+  const newLanedLocals = new Map()       // origName → laneName (bare string; see getOrAllocLanedLocal)
   // SAME field set + ORDER as the ctx in tryVectorize / tryReduceVectorize / tryRampMap. The
   // self-host kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
   // liftExprV — so every ctx reaching it MUST have the identical shape, or the inferred layout is

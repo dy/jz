@@ -857,6 +857,24 @@ test('.subarray: chained methods + sub-of-sub + Uint8 kind-aware', () => {
   is(runHost(`export let f = () => { let a = new Int16Array(5); for (let i=0;i<5;i++) a[i]=i*3; let v = a.subarray(2); v[0]=-9; return a[2] }`).f(), -9)
 })
 
+// Integer-index contract (asm.js-style; see README "differences with JS"). An index
+// coerces to i32, so a fractional/NaN index TRUNCATES rather than yielding JS's
+// `undefined`. Typed-array access is raw (no bounds check) — the speed primitive that
+// makes the hot loops competitive; plain `[]` arrays stay bounds-checked. This pins the
+// contract so it stays intentional (and distinct from the object numeric-KEY path, which
+// IS JS-correct via __i32_to_str). NOT a JS-parity claim — a documented divergence.
+test('array index contract: i32-truncating, typed raw, plain bounds-checked', () => {
+  // Fractional/NaN index TRUNCATES to a valid in-bounds element (the contract), not JS's undefined.
+  is(run(`export let f = () => { const a=[11,22]; return a[1.5] }`).f(), 22)   // →a[1]; JS: undefined
+  is(run(`export let f = () => { const a=[11,22]; return a[NaN] }`).f(), 11)   // →a[0]; JS: undefined
+  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[1.5] }`).f(), 22)
+  is(run(`export let f = () => { const a=new Float64Array(2); a[0]=11; a[1]=22; return a[NaN] }`).f(), 11)
+  // Plain `[]` arrays ARE bounds-checked: OOB / negative → undefined (surfaces as NaN at the f64
+  // return boundary), NOT a raw read. (A typed array would read raw memory — the speed primitive.)
+  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[5] }`).f()), 'plain OOB → undefined')
+  ok(Number.isNaN(run(`export let f = () => { const a=[11,22]; return a[-1] }`).f()), 'plain negative → undefined')
+})
+
 // A small fixed typed array whose reference is CAPTURED (bound, stored, or subarray'd)
 // must not be scalarized/mirrored — a write through the captured alias has to reach the
 // original. (subarray was the canary; the same class hit `let b = a`, `o.x = a`, `[a]`.)
