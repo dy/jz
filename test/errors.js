@@ -575,6 +575,31 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 })
 
 // ============================================================================
+// Uncatchable internal throw → a trap, NOT the exceptions proposal. A throw with
+// no `try`/`catch` anywhere is uncatchable (semantically a trap); declaring the
+// $__jz_err Tag just to carry it forces consumers that don't enable the exceptions
+// proposal (wasmtime, wabt, wasm2c) to reject the module on the Tag section — V8
+// alone enables exceptions by default, which masked this. Keep such modules in the
+// wasm MVP. (User throw/try/catch is an ABI contract and keeps the runtime — above.)
+// ============================================================================
+
+test('uncatchable internal throw is a trap, not the exceptions tag (MVP-portable)', () => {
+  // `Number(v)` pulls __to_num, whose non-coercible-value branch throws $__jz_err.
+  // With no user try/catch nothing can catch it, so the module must stay MVP-clean.
+  const wat = compile('export let f = (v) => Number(v) + 1', { wat: true })
+  ok(wat.includes('$__to_num'), 'sanity: the throwing coercion helper is pulled in')
+  ok(!wat.includes('(tag $__jz_err'), 'no exceptions tag for an uncatchable internal throw')
+  ok(!/\(throw /.test(wat), 'the uncatchable throw is lowered to a trap')
+})
+
+test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', () => {
+  // Contrast: a real try/catch CAN catch the throw, so the tag must survive.
+  const wat = compile('export let f = (v) => { try { throw v } catch (e) { return e } }', { wat: true })
+  ok(wat.includes('(tag $__jz_err'), 'caught throw keeps the exceptions tag')
+  ok(wat.includes('(try_table'), 'try/catch lowers to try_table')
+})
+
+// ============================================================================
 // Error wrapping — unknown identifier errors must read as jz wording, not
 // watr's internal "Unknown local/func/global" phrasing
 // ============================================================================

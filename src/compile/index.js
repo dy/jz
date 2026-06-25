@@ -221,20 +221,39 @@ const ensureThrowRuntime = (sec) => {
     sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
 }
 
-// Drop the $__jz_err tag + __jz_last_err_bits globals when optimization
-// eliminated every actual throw site. ensureThrowRuntime runs before
-// optimizeModule so dead-throw analysis can see the tag/global as live; once
-// opt has finished, an unused tag still forces consumers (wasmtime, wasm2c) to
-// enable the exceptions proposal just to parse the module. User-written
-// throw/try/catch/finally is an ABI contract (JS-side may inspect
-// __jz_last_err_bits), so `userThrows` keeps the runtime declared regardless;
-// the prune fires only when `throws` was set purely by stdlib pattern matching
-// or compiler-internal coercion sites.
+// Drop the $__jz_err tag + __jz_last_err_bits globals when no throw can be CAUGHT.
+// ensureThrowRuntime runs before optimizeModule so dead-throw analysis sees the
+// tag/global as live; once opt has finished, an unused tag still forces consumers
+// (wasmtime, wasm2c, wabt) to enable the exceptions proposal just to PARSE the module.
+//
+// When `!userThrows`, every `throw` is compiler-internal (bounds / coercion / type
+// errors) and — with no user try/catch — uncatchable: nothing inspects the thrown
+// value, so it is semantically a trap. The exceptions proposal is needed only to
+// DECLARE the tag a `throw` references; lowering each surviving uncatchable throw to
+// `unreachable` keeps the module in the wasm MVP, so every runtime can parse it
+// (V8 alone enables exceptions by default, which masked this). A pure-recursion or
+// typed-array kernel (nqueens, anything pulling __to_num) thus stops emitting a Tag
+// section it can never use. User-written throw/try/catch/finally is an ABI contract
+// (JS-side may inspect __jz_last_err_bits), so `userThrows` keeps the runtime intact.
 const pruneUnusedThrowRuntime = (sec) => {
   if (!ctx.runtime.throws || ctx.runtime.userThrows) return
-  const hasThrow = (n) => Array.isArray(n) && (n[0] === 'throw' || n.some(hasThrow))
+  // A catch handler (try_table) appears only under userThrows; defensively bail if one
+  // is present so a caught throw is never silently turned into a trap.
+  const hasCatch = (n) => Array.isArray(n) &&
+    (n[0] === 'try_table' || n[0] === 'catch' || n[0] === 'catch_all' || n.some(hasCatch))
   for (const arr of [sec.funcs, sec.stdlib, sec.start])
-    for (const f of arr) if (hasThrow(f)) return
+    for (const f of arr) if (hasCatch(f)) return
+  // Rewrite every surviving `(throw $__jz_err …)` to `(unreachable)` (same polymorphic
+  // stack type — a drop-in in any position). The thrown operand is side-effect-free
+  // (a local read / const), so dropping it loses nothing.
+  const lowerThrows = (n) => {
+    if (!Array.isArray(n)) return n
+    if (n[0] === 'throw') return ['unreachable']
+    for (let i = 1; i < n.length; i++) n[i] = lowerThrows(n[i])
+    return n
+  }
+  for (const arr of [sec.funcs, sec.stdlib, sec.start])
+    for (let i = 0; i < arr.length; i++) arr[i] = lowerThrows(arr[i])
   sec.tags = sec.tags.filter(t => !(Array.isArray(t) &&
     ((t[0] === 'tag' && t[1] === '$__jz_err') ||
      (t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))))
