@@ -97,9 +97,14 @@ export const ctx = {
                   // the defaults; see reset() for the field list and who flips each.
 }
 
-/** Create a child scope via shallow flat copy (metacircular-safe: no prototype chain).
+/** Create a child scope via shallow flat copy with NO prototype chain. Critical:
+ *  `{ ...parent }` would inherit Object.prototype in V8 (jz.js), so a name-keyed lookup
+ *  like `chain['valueOf']`/`emit['toString']` returns the inherited method instead of
+ *  undefined — corrupting resolution of any identifier named like an Object method. The
+ *  kernel's jz objects are already prototype-less, so this was a jz.js-ONLY footgun. A
+ *  prototype-less dict (Object.create(null) + assign) is correct in both engines.
  *  Mutations to the child do not affect the parent; lookups work via direct property access. */
-export const derive = (parent) => ({ ...parent })
+export const derive = (parent) => Object.assign(Object.create(null), parent)
 
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
@@ -264,7 +269,7 @@ export function reset(proto, globals, bridge) {
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
     map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
     multiProp: new Set(),  // Set<"obj.prop"> — function-properties assigned >1× (wrapper composition); suppresses the static fn.prop() direct call
-    exports: {},
+    exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
     current: null,
     locals: new Map(),
     localReps: null,

@@ -22,7 +22,10 @@ export const REJECT_OPS = {
 }
 
 /** Bare identifiers prepare rejects (no jzify lowering). */
-export const REJECT_IDENTS = {
+// Prototype-less (Object.create(null)): a plain `{}` inherits Object.prototype in V8, so
+// `REJECT_IDENTS['valueOf']` would return the inherited method (truthy) and wrongly reject
+// a user identifier named like an Object method. Kernel objects are already prototype-less.
+export const REJECT_IDENTS = Object.assign(Object.create(null), {
   with: '`with` not supported',
   class: '`class` not supported',
   yield: '`yield` not supported',
@@ -36,7 +39,7 @@ export const REJECT_IDENTS = {
   // identifier in sloppy JS (`var let = 5`), so rejecting it would refuse valid JS
   // (test262 language/expressions/object/let-non-strict-*).
   const: '`const` is a reserved word, not a valid name',
-}
+})
 
 /** jzify-only errors for class lowering (no prepare counterpart). */
 export const JZIFY_CLASS_ERRORS = {

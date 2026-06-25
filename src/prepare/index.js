@@ -169,7 +169,7 @@ const addHostImport = (mod, name, alias, spec) => {
   // ABI — record it so references fold to an f64 literal (see prep's identifier resolution) instead
   // of emitting a 0-arg func import that can't be read as a value ("'PI' is not in scope").
   if (typeof spec === 'number') {
-    if (!ctx.scope.hostConsts) ctx.scope.hostConsts = {}
+    if (!ctx.scope.hostConsts) ctx.scope.hostConsts = Object.create(null)  // name-keyed: prototype-less (see derive)
     ctx.scope.hostConsts[alias] = spec
     return
   }
@@ -590,9 +590,13 @@ export default function prepare(node) {
 
 // Named constants → numeric literals. The JZ_NULL/JZ_UNDEF atom sentinels live
 // in ast.js — shared with emit without crossing the prepare↔compile boundary.
-const CONSTANTS = { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF }
+// Prototype-less (Object.create(null)): a plain `{}` inherits Object.prototype in V8, so
+// `'valueOf' in CONSTANTS` / `CONSTANTS['toString']` would hit an inherited method and
+// mis-resolve a user identifier named like an Object method (jz.js-only — kernel objects
+// are already prototype-less). Same reason on F64_CONSTANTS / GLOBALS / REJECT_IDENTS.
+const CONSTANTS = Object.assign(Object.create(null), { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF })
 // NaN/Infinity stay as special f64 values in emit()
-const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
+const F64_CONSTANTS = Object.assign(Object.create(null), { 'NaN': NaN, 'Infinity': Infinity })
 
 /** Resolve variable name through block scope chain (innermost rename wins). */
 function resolveScope(name) {
@@ -848,7 +852,7 @@ function prep(node) {
 // Not actually "implicit imports" — these are ambient globals that exist in every jz/JS
 // program (they do not live in any module). jzify auto-injecting imports would still
 // need a list of these names to know what to emit, so the table lives here either way.
-export const GLOBALS = {
+export const GLOBALS = Object.assign(Object.create(null), {
   Math: 'math',
   Number: 'Number',
   Array: 'Array',
@@ -878,7 +882,7 @@ export const GLOBALS = {
   BigInt: 'BigInt',
   TextEncoder: 'TextEncoder',
   TextDecoder: 'TextDecoder',
-}
+})
 
 const patternItems = (node) => node?.[0] === ',' ? node.slice(1) : [node]
 const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
@@ -1583,7 +1587,7 @@ const handlers = {
       if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
         const alias = specifiers[2]
         // Store namespace mapping so '.' handler can resolve X.prop → mangled name
-        if (!ctx.module.namespaces) ctx.module.namespaces = {}
+        if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)  // name-keyed: prototype-less (see derive)
         ctx.module.namespaces[alias] = resolved.exports
         return null
       }
@@ -2466,7 +2470,7 @@ function prepareModule(specifier, source) {
   const savedFuncCount = ctx.func.list.length  // track new funcs from this module
   const savedModulePrefix = ctx.module.currentPrefix
   ctx.scope.chain = derive(savedScope)  // inherit parent scope
-  ctx.func.exports = {}
+  ctx.func.exports = Object.create(null)  // name-keyed: prototype-less (see derive)
   ctx.module.currentPrefix = prefix
 
   try {

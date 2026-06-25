@@ -991,3 +991,25 @@ test('IIFE lift: a mutated capture bails to the closure path, stays correct', ()
   // so the lift bails and the closure cell carries it — the visible value is still right.
   is(runHost('export let f = (a) => { let x = a; let y = (() => { x = x + 10.0; return x * 2.0 })(); return x + y }').f(5), 45, 'mutated-capture IIFE: x=15, y=30 → 45')
 })
+
+// Identifiers named like Object.prototype members must resolve as ordinary variables.
+// The compiler keyed several resolution dictionaries (CONSTANTS, F64_CONSTANTS,
+// REJECT_IDENTS, GLOBALS, the scope chain) on the identifier name with PLAIN objects.
+// In V8, `{}` inherits Object.prototype, so `'valueOf' in CONSTANTS` was true and
+// `CONSTANTS['valueOf']` returned the inherited method — `let valueOf = 5` resolved to a
+// boxed function (emitted 0) and `valueOf = …` errored "Assignment to non-variable".
+// jz.js-ONLY: the self-host kernel's jz objects are prototype-less, so the kernel compiled
+// these correctly all along (the bug only bit the compiler running in V8). Fixed by making
+// the dictionaries prototype-less (Object.create(null)).
+test('identifiers named like Object methods resolve as plain variables (proto-less dicts)', () => {
+  for (const n of ['valueOf', 'toString', 'hasOwnProperty', 'constructor', 'isPrototypeOf', 'propertyIsEnumerable']) {
+    is(run(`export let main = () => { let ${n} = 5; return ${n} }`).main(), 5, `let ${n}`)
+    is(run(`export let main = () => { let ${n} = 5; ${n} = ${n} + 2; return ${n} }`).main(), 7, `reassign ${n}`)
+    is(run(`let f = (${n}) => ${n} + 1; export let main = () => f(41)`).main(), 42, `param ${n}`)
+    is(run(`export let main = () => { let ${n} = 0; for (let i=0;i<5;i++) ${n} = ${n} + i; return ${n} }`).main(), 10, `loop ${n}`)
+  }
+  is(run('let valueOf = 7; export let main = () => valueOf').main(), 7, 'module-level valueOf')
+  is(run('export let valueOf = () => 9; export let main = () => valueOf()').main(), 9, 'export named valueOf')
+  is(run('export let main = () => { let toString = 3; { let x = toString + 1; return x } }').main(), 4, 'nested-scope toString')
+  is(run('export let main = () => { let o = {valueOf: 5, x: 2}; return o.valueOf + o.x }').main(), 7, 'object property valueOf unaffected')
+})
