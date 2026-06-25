@@ -139,6 +139,47 @@ correctness risk for zero measured benefit:
   reality: hand-WAT 3–8× smaller is structural (generic helpers); realistic ≈1.5–2× with
   `alloc:false`+`optimize:'size'`, NOT byte-parity.
 
+## Future
+- [ ] Component interface (wit).
+- [ ] **threads/atomics** — lower `Atomics.*` on shared typed arrays → wasm atomic ops;
+  `memory:{shared:true}` → shared Memory + `(memory … shared)`; worker spawn stays host-side
+  (same boundary discipline as I/O). Large; verify a real workload first. Vectorizer +
+  shared-memory substrate already exist.
+- [ ] memory64 (>4GB); relaxed SIMD; WebGPU compute shaders.
+- [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
+  typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination
+  (landed carrier resolves that in wasm-v1). Reserved error today (index.js:315).
+- [ ] **Insertion-order Set/Map** — open-addressing iterates slot-order; ES mandates insertion
+  order. Needs a per-entry `seq` or sibling order-list. Documented divergence in test262 xfail.
+
+## Ideas
+  - [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
+  - [x] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
+  - [x] template tag as a build tool — jz`code` in a Node script replaces a build step.
+  - [ ] AS integrations/plugins (assemblyscript.org/built-with);
+  - [ ] potrace playground.
+  - [x] dithering algorithms — `examples/dithering` (threshold/Bayer/Floyd–Steinberg/Atkinson over a shaded sphere).
+  - [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
+
+## Demos / visualizers: ideas for no-gpu graphical uses
+
+  - [ ] Instagram minimalism/etc renderers
+  - [ ] xor shaders
+  - [ ] Demoscene
+  - [ ] winamp visualizers
+  - [ ] Various (classic) audio visualizers
+  - [ ] Wave osc visualizers
+  - [ ] DAW play visualizers (pitch bend etc)
+  - [ ] Musical visgens (windchimes, physical etc)
+  - [ ] ASCII renderers
+  - [ ] SVG visualizer?
+
+
+
+---
+
+## Archive
+
 ### Verifier-surfaced deopts (absence-of-overhead gates, not benches)
 The structural-invariant verifier (`test/wat-invariants.js`) sweeps the fuzzer's
 i32-disciplined sublanguage and flags any f64 / un-hoisted pointer op inside a loop —
@@ -200,47 +241,6 @@ can't worsen and visibly shrink when fixed:
   classifies real-vs-neutral loop ops). Stencil test made robust to the fold (test/simd.js:
   `!/v128.store/` instead of the stale `!/v128.load offset/`). Verified: all typed fuzzer
   modes × opt{0,2,3} 0 divergence; full suite green.
-
-## Future
-- [ ] Component interface (wit).
-- [ ] **threads/atomics** — lower `Atomics.*` on shared typed arrays → wasm atomic ops;
-  `memory:{shared:true}` → shared Memory + `(memory … shared)`; worker spawn stays host-side
-  (same boundary discipline as I/O). Large; verify a real workload first. Vectorizer +
-  shared-memory substrate already exist.
-- [ ] memory64 (>4GB); relaxed SIMD; WebGPU compute shaders.
-- [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
-  typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination
-  (landed carrier resolves that in wasm-v1). Reserved error today (index.js:315).
-- [ ] **Insertion-order Set/Map** — open-addressing iterates slot-order; ES mandates insertion
-  order. Needs a per-entry `seq` or sibling order-list. Documented divergence in test262 xfail.
-
-## Ideas
-  - [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
-  - [x] jz as a compilation target — DSLs emitting jz-compatible code get WASM for free.
-  - [x] template tag as a build tool — jz`code` in a Node script replaces a build step.
-  - [ ] AS integrations/plugins (assemblyscript.org/built-with);
-  - [ ] potrace playground.
-  - [x] dithering algorithms — `examples/dithering` (threshold/Bayer/Floyd–Steinberg/Atkinson over a shaded sphere).
-  - [ ] EdgeJS test/harness entry — only if it runs in their CI without large/optional deps.
-
-## Demos / visualizers: ideas for no-gpu graphical uses
-
-  - [ ] Instagram minimalism/etc renderers
-  - [ ] xor shaders
-  - [ ] Demoscene
-  - [ ] winamp visualizers
-  - [ ] Various (classic) audio visualizers
-  - [ ] Wave osc visualizers
-  - [ ] DAW play visualizers (pitch bend etc)
-  - [ ] Musical visgens (windchimes, physical etc)
-  - [ ] ASCII renderers
-  - [ ] SVG visualizer?
-
-
-
----
-
-## Archive
 
 ### Examples polish pass + 2 new demos + a per-pixel-color miscompile fix (2026-06-19)
 
