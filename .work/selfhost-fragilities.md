@@ -131,3 +131,31 @@ through the pipeline:
   liftExprV instead of via the ctx object — a sizeable, careful refactor of the whole lift chain;
   the real fix is the central Root-E repair (preserve schema ids across the box boundary), which is
   the high-leverage durable follow-up since it would unblock this whole class at once.
+
+- **DEEPER BISECTION (corrects the line above).** Instrumented the actual lift loop via `warn` (note:
+  `warn` dedupes by `code:fn:line`, so debug warns need a unique `meta.fn` counter or they collapse to
+  one entry — this masks loop traces). Findings on the f64 map `o[i]=a[i]*2+1` (in-process `f64x2=4`,
+  kernel `f64x2=0`):
+  - `liftStmt` returns null for BOTH body stmts with `ctx.fail=false, reason=null` in the kernel — i.e.
+    it falls through to no-lift, NOT a `liftFail`. The guards are byte-identical to in-process
+    (`STORE_OPS[op]`, `localKind.get` all correct).
+  - ROOT: in the `local.set $tw5` lane branch, **`getOrAllocLanedLocal` returns `"f64"` (= `ctx.laneType`)
+    instead of `"$tw5__v"`** — `ctx.newLanedLocals.get(name)` returns `"f64"` even on the FIRST call when
+    the Map is empty (should be `undefined`). So the doc's claim above that "ctx's REFERENCE props read
+    fine / `newLanedLocals.get` works" is **WRONG** — the *reference* prop `newLanedLocals` reads back a
+    DIFFERENT slot's value (`laneType`) at call-depth 2. `instanceof Map` on the same prop reads TRUE,
+    but `.get()` returns the wrong slot — the SAME property yields different values in different
+    syntactic contexts (a slot-offset miscompile, not scalar-vs-reference).
+  - `liftExprV` ALSO fails independently in that branch (`vNull=true, fail=true` deep) on its own ctx
+    reads — so the bug hits MULTIPLE deep ctx reads, not one site.
+  - Tested fixes that do NOT work: destructuring `const nll = ctx.newLanedLocals; nll.get()` (still
+    wrong). RESISTS isolated reproduction: the exact 12-field ctx shape + access path + populated
+    `fnLocals` (slot 6, a name→type Map whose `.get($tw5)='f64'`, the suspected adjacent slot) all pass
+    in a standalone program. The trigger needs the real compiled vectorizer context.
+  - CONSEQUENCE: the "thread laneType/fail as primitives" bounded fix is INSUFFICIENT (the failing reads
+    include a Map ref + multiple sites). Real fix is either (a) the deep object-read codegen repair at
+    its root — blocked on an isolable repro — or (b) thread EVERY ctx field used in the lift chain
+    (`laneType`, `newLanedLocals`, `localKind`, fail-as-return) as explicit params through
+    liftStmt/liftExprV/getOrAllocLanedLocal/liftCanon/narrowStore — a large, careful refactor that must
+    keep the in-process vectorizer bit-identical (full suite + bench + test:wasm gate). PERF-ONLY: the
+    kernel emits correct SCALAR code (bit-exact), so this is a jz.wasm output-quality gap, not a defect.
