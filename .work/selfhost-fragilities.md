@@ -202,8 +202,26 @@ jz.js parses source number literals via V8's `Number()` (correctly rounded); jz.
 for `|decExp| > 22` (e.g. 10^23 = 2^23·5^23, 5^23 > 2^53 — `__pow10` is inexact + the mul/div rounds),
 so a 16-17 sig-digit constant like `-2.505210838544172e-8` lands 1 ULP off. Confirmed: that constant's
 compiled bytes DIFFER jz.js vs jz.wasm; most constants match. This breaks the bit-exactness `fft`/`synth`
-are designed for when compiled by the kernel. **IN PROGRESS** — correctly-rounded parser
-(Eisel-Lemire / Clinger-with-correction), oracle = V8 `Number`, fuzz-verified bit-exact.
+are designed for when compiled by the kernel. **FIXED.** `__dec_to_f64` (module/number.js) is a
+correctly-rounded Eisel-Lemire decimal→f64: normalize the i64 significand to 64 bits, multiply by a
+128-bit power-of-ten table entry, round the 64-bit product. `__to_num`/`__parseFloat` call it and fall
+back to the old `POW10_SCALE` only when it returns the NaN sentinel. **The power-of-ten table is TRIMMED
+to exp10 ∈ [-65, 65]** (131 entries, 2096 bytes) — the realistic source/JSON constant span (fft/synth's
+coefficients are ~10^-23). exp10 outside that range returns the sentinel → POW10_SCALE fallback (1 ULP
+for moderate exponents; at the f64 limits, the pre-EL behavior — no real literal reaches them; the
+`Number.MIN_VALUE`/`MAX_VALUE` *constants* are exact f64.const, not parsed). A full -342..308 table would
+add ~10 KB to **every** program that does an untyped numeric coercion (`x*2` pulls `__to_num`); the trim
+keeps it ~2 KB. Verified: 3000 random realistic constants compile byte-identical jz.js vs kernel; `fft`
+and `synth` bench:self parity = `ok`. Pinned: test/number.js (the mul64-carry hard case `2505210838544172e-23`,
+exp10 -23, inside the table) — runs on the kernel leg. Lazy-linked: `src/wat/assemble.js` appends the
+table only when `__dec_to_f64` survives DCE.
+
+**`json` bench:self DIFF is BENIGN (not a correctness bug).** After getter + EL fixes, `json` still shows
+a byte DIFF, isolated to jz's own JSON-parser codegen (`$jpws` whitespace-skip shape) — same functions,
+behaviorally IDENTICAL output (verified: object/array/nested/whitespace/integer-value walks all match
+jz.js, kernel checksum == jz.js checksum; test:wasm's JSON.parse coverage is green). It is a codegen-SHAPE
+divergence in self-compiling module/json.js, not a value divergence; chasing byte-identity there is low
+value since behavior is proven equal.
 
 ## Harness (NOT a compiler bug) — bench-selfhost arena exhaustion
 

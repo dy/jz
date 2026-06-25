@@ -607,6 +607,18 @@ export function pullStdlib(sec) {
   // are pulled in on demand, never eagerly, so they're already minimal and never pruned
   // here (guarding against any reachability blind spot in a dotted-name template).
   for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
+  // Lazy Eisel-Lemire table injection: only when __dec_to_f64 (correctly-rounded
+  // decimal→f64, module/number.js) survived pruning — append its trimmed 131-entry
+  // (~2KB) power-of-10 table and declare $__el_tbl = that offset. Must run HERE so
+  // dataPages (below) accounts for the addition; keeps it out of programs that never
+  // parse decimals at runtime.
+  if (ctx.core.includes.has('__dec_to_f64') && ctx.runtime.elTable) {
+    while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+    const elTblOff = ctx.runtime.data.length
+    ctx.runtime.data += ctx.runtime.elTable
+    declGlobal('__el_tbl', 'i32', elTblOff, { mut: false })
+    ctx.runtime.elTable = null  // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
+  }
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {

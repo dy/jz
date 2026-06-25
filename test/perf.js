@@ -1422,7 +1422,12 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // 5216→5669: __ftoa's large-value path now recovers and emits the fractional digits
 // (so `String(1073741824.5)` keeps its fraction) and clamps the big-integer digit
 // extraction so values below 1e21 no longer trap. A correctness fix that costs bytes.
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5669)
+// 5669→8669: the untyped `x * 2` coercion pulls __to_num, which now links the
+// correctly-rounded Eisel-Lemire decimal→f64 path (__dec_to_f64 + a 2 KB trimmed
+// power-of-10 table, exp10 ∈ [-65,65]). ~3 KB total; a full-range EL table would be
+// ~11 KB — trimmed to the realistic constant span (module/number.js). Typed programs
+// that never coerce a string keep their size (no __to_num).
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 8669)
 // Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
 // per-object dyn props the literal's static schema doesn't enumerate. Reads
 // (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
@@ -1456,7 +1461,7 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 7149)
+}`, 10315) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
 // Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
 // local only when nothing in the body can mutate `buf` (no writes to it, no
 // calls — any call may reach `buf` through an alias the compiler can't track).

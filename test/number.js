@@ -289,3 +289,30 @@ test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
   `, { optimize: 2 })
   is(r.main(), 1)
 })
+
+// ---- Eisel-Lemire mul64 carry fix (1-ULP misparse) --------------------------
+// The __dec_to_f64 WASM implementation used a 3-way 64-bit addition to compute
+// the 128-bit product's middle limb (mid = t01 + t10 + (t00>>32)). For certain
+// inputs the addition overflows 64 bits, silently dropping a carry bit into the
+// high 64-bit product word. This produced a result 1 ULP low for values like
+// 2505210838544172e-23.  Fix: split into two sequential additions, detecting
+// overflow from each step and propagating the carry into p1hi.
+
+test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', () => {
+  // 2505210838544172e-23: triggers the mul64 carry overflow in __dec_to_f64.
+  // The 3-way mid accumulation (t01 + t10 + t00>>32) overflowed 64 bits, dropping
+  // a carry bit into p1hi, producing a result 1 ULP too low.
+  is(run(`export let f = () => +"2505210838544172e-23"`).f(), 2.505210838544172e-8)
+  is(run(`export let f = () => +"2.505210838544172e-8"`).f(), 2.505210838544172e-8)
+  // More cases inside the trimmed table range (exp10 ∈ [-65,65]) — the realistic
+  // span every source / JSON constant lives in (fft/synth's coefficients are ~10^-23).
+  is(run(`export let f = () => +"1e-23"`).f(), 1e-23)
+  is(run(`export let f = () => +"9007199254740992"`).f(), 9007199254740992) // 2^53 exact
+  is(run(`export let f = () => +"1.23456789012345678e-40"`).f(), 1.23456789012345678e-40)
+  is(run(`export let f = () => +"6.022140857e23"`).f(), 6.022140857e23)
+  // f64-EXTREME exponents (|10^e| > 10^65 — denormals / near-MAX) intentionally fall
+  // back to POW10_SCALE (the EL table is trimmed for size, see module/number.js).
+  // No real-world literal reaches them; Number.MIN_VALUE / Number.MAX_VALUE are still
+  // exact (emitted as f64.const, not parsed). The mul64 carry fix is exercised by the
+  // 2505210838544172e-23 case above (exp10 -23, inside the table).
+})

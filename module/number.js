@@ -145,11 +145,223 @@ const sciExponent = (tail) => `
         ${tail}))`
 
 // Apply the accumulated base-10 exponent to $result via __pow10.
+// Used as fallback when EL cannot determine a unique rounding.
 const POW10_SCALE = `
     (if (i32.gt_s (local.get $decExp) (i32.const 0))
       (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
     (if (i32.lt_s (local.get $decExp) (i32.const 0))
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))`
+
+// Eisel-Lemire correctly-rounded decimal-to-f64.
+// Used in place of FINISH_SIGNIFICAND + POW10_SCALE. Keeps $mant as i64 until after
+// sciExponent finalizes $decExp, then calls $__dec_to_f64 with both.
+// Falls back to f64.convert_i64_u + POW10_SCALE when EL returns NaN (ambiguous).
+// The caller handles sign INSIDE this fragment (so the final return is the signed result).
+const EL_SCALE = `
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
+    (local.set $result (call $__dec_to_f64 (local.get $mant) (local.get $decExp)))
+    (if (f64.ne (local.get $result) (local.get $result))
+      (then
+        (local.set $result (f64.convert_i64_u (local.get $mant)))
+        ${POW10_SCALE}))
+    (if (local.get $neg) (then (local.set $result (f64.neg (local.get $result)))))`
+
+// $__dec_to_f64: Eisel-Lemire correctly-rounded f64 from (mant × 10^exp10).
+// Returns NaN (as sentinel) for ambiguous cases — caller falls back to POW10_SCALE.
+// Reads 651-entry 128-bit power-of-ten table from global $__el_tbl (injected at compile time).
+// Table layout: entry[i] = lo_i64_LE || hi_i64_LE, i = exp10 + 342.
+//
+// Algorithm: normalize mant to 64 bits, multiply by 128-bit table entry to get 128-bit
+// product (prodHi:prodLo), extract 52-bit IEEE mantissa with correct rounding.
+// Handles subnormals, overflow to Infinity, and early-exit for 0/trivial ranges.
+const DEC_TO_F64_WAT = `(func $__dec_to_f64
+    (param $mant i64) (param $exp10 i32)
+    (result f64)
+    (local $mBits i32)
+    (local $w i64)
+    (local $tbl i32)
+    (local $tblHi i64) (local $tblLo i64)
+    ;; 128-bit product: prodHi × 2^64 + prodLo
+    (local $p1hi i64) (local $p1lo i64)
+    (local $p2hi i64) (local $p2lo i64)
+    (local $prodHi i64) (local $prodLo i64)
+    (local $carry i64)
+    (local $lz i32)
+    (local $log2floor i32)
+    (local $exp2 i32) (local $biased i32)
+    (local $roundShift i32)
+    (local $roundBit i64)
+    (local $sticky i64)
+    (local $mant52 i64)
+    (local $subnShift i32) (local $totalShift i32)
+    (local $snRound i64) (local $snSticky i64) (local $snMant i64)
+    ;; 32-bit limb temps for mul64
+    (local $a0 i32) (local $a1 i32) (local $b0 i32) (local $b1 i32)
+    (local $t00 i64) (local $t01 i64) (local $t10 i64) (local $t11 i64)
+    (local $mid i64) (local $mid_carry i64)
+    ;; Zero check
+    (if (i64.eqz (local.get $mant)) (then (return (f64.const 0))))
+    ;; Compute bit length of mant (1..64) by normalizing to 64 bits via clz
+    ;; mBits = 64 - clz64(mant)
+    (local.set $mBits (i32.sub (i32.const 64) (i32.wrap_i64 (i64.clz (local.get $mant)))))
+    ;; Normalize mant to 64-bit: w = mant << (64 - mBits)
+    (local.set $w (i64.shl (local.get $mant) (i64.extend_i32_u (i32.sub (i32.const 64) (local.get $mBits)))))
+    ;; Range checks: the table is TRIMMED to exp10 in [-65..65] (covers every
+    ;; real-world / source / JSON constant; fft/synth's coefficients are ~10^-23).
+    ;; Outside that, return NaN → caller falls back to POW10_SCALE (the pre-EL path,
+    ;; ~1 ULP for moderate exponents, exact only near the f64 limits no real literal
+    ;; reaches). This keeps the data segment ~2KB instead of ~10KB on every program
+    ;; that does an untyped numeric coercion (which pulls __to_num).
+    (if (i32.or (i32.lt_s (local.get $exp10) (i32.const -65))
+                (i32.gt_s (local.get $exp10) (i32.const 65)))
+      (then (return (f64.const nan))))
+    ;; Load 128-bit table entry for exp10:  tbl = $__el_tbl + (exp10 + 65) * 16
+    (local.set $tbl (i32.add (global.get $__el_tbl) (i32.shl (i32.add (local.get $exp10) (i32.const 65)) (i32.const 4))))
+    (local.set $tblLo (i64.load (local.get $tbl)))
+    (local.set $tblHi (i64.load (i32.add (local.get $tbl) (i32.const 8))))
+    ;; ─── Two-product: (prodHi:prodLo) = w × tblHi + (w × tblLo >> 64) ──────────
+    ;; mul64(w, tblHi) → p1hi:p1lo
+    ;; Split w into 32-bit halves
+    (local.set $a0 (i32.wrap_i64 (i64.and (local.get $w) (i64.const 0xFFFFFFFF))))
+    (local.set $a1 (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))))
+    (local.set $b0 (i32.wrap_i64 (i64.and (local.get $tblHi) (i64.const 0xFFFFFFFF))))
+    (local.set $b1 (i32.wrap_i64 (i64.shr_u (local.get $tblHi) (i64.const 32))))
+    (local.set $t00 (i64.mul (i64.extend_i32_u (local.get $a0)) (i64.extend_i32_u (local.get $b0))))
+    (local.set $t01 (i64.mul (i64.extend_i32_u (local.get $a0)) (i64.extend_i32_u (local.get $b1))))
+    (local.set $t10 (i64.mul (i64.extend_i32_u (local.get $a1)) (i64.extend_i32_u (local.get $b0))))
+    (local.set $t11 (i64.mul (i64.extend_i32_u (local.get $a1)) (i64.extend_i32_u (local.get $b1))))
+    ;; mid = t01 + (t00>>32), track carry; then mid += t10, track carry
+    ;; Each addition can carry at most 1 bit; total carry ≤ 2 → hi += carry<<32
+    (local.set $mid (i64.add (local.get $t01) (i64.shr_u (local.get $t00) (i64.const 32))))
+    (local.set $mid_carry (i64.extend_i32_u (i64.lt_u (local.get $mid) (local.get $t01))))
+    (local.set $mid (i64.add (local.get $mid) (local.get $t10)))
+    (local.set $mid_carry (i64.add (local.get $mid_carry)
+      (i64.extend_i32_u (i64.lt_u (local.get $mid) (local.get $t10)))))
+    (local.set $p1hi (i64.add
+      (i64.add (local.get $t11) (i64.shr_u (local.get $mid) (i64.const 32)))
+      (i64.shl (local.get $mid_carry) (i64.const 32))))
+    (local.set $p1lo (i64.or
+      (i64.and (local.get $t00) (i64.const 0xFFFFFFFF))
+      (i64.shl (i64.and (local.get $mid) (i64.const 0xFFFFFFFF)) (i64.const 32))))
+    ;; mul64(w, tblLo) → p2hi:p2lo
+    (local.set $b0 (i32.wrap_i64 (i64.and (local.get $tblLo) (i64.const 0xFFFFFFFF))))
+    (local.set $b1 (i32.wrap_i64 (i64.shr_u (local.get $tblLo) (i64.const 32))))
+    (local.set $t00 (i64.mul (i64.extend_i32_u (local.get $a0)) (i64.extend_i32_u (local.get $b0))))
+    (local.set $t01 (i64.mul (i64.extend_i32_u (local.get $a0)) (i64.extend_i32_u (local.get $b1))))
+    (local.set $t10 (i64.mul (i64.extend_i32_u (local.get $a1)) (i64.extend_i32_u (local.get $b0))))
+    (local.set $t11 (i64.mul (i64.extend_i32_u (local.get $a1)) (i64.extend_i32_u (local.get $b1))))
+    (local.set $mid (i64.add (local.get $t01) (i64.shr_u (local.get $t00) (i64.const 32))))
+    (local.set $mid_carry (i64.extend_i32_u (i64.lt_u (local.get $mid) (local.get $t01))))
+    (local.set $mid (i64.add (local.get $mid) (local.get $t10)))
+    (local.set $mid_carry (i64.add (local.get $mid_carry)
+      (i64.extend_i32_u (i64.lt_u (local.get $mid) (local.get $t10)))))
+    (local.set $p2hi (i64.add
+      (i64.add (local.get $t11) (i64.shr_u (local.get $mid) (i64.const 32)))
+      (i64.shl (local.get $mid_carry) (i64.const 32))))
+    (local.set $p2lo (i64.or
+      (i64.and (local.get $t00) (i64.const 0xFFFFFFFF))
+      (i64.shl (i64.and (local.get $mid) (i64.const 0xFFFFFFFF)) (i64.const 32))))
+    ;; Combine: prodHi:prodLo = p1hi:(p1lo + p2hi) with carry propagation
+    (local.set $carry (i64.add (local.get $p1lo) (local.get $p2hi)))
+    ;; Check if carry propagated (carry < p1lo → overflow into prodHi)
+    (local.set $prodHi (i64.add (local.get $p1hi)
+      (i64.extend_i32_u (i64.lt_u (local.get $carry) (local.get $p1lo)))))
+    (local.set $prodLo (local.get $carry))
+    ;; ─── Determine lz (leading-zero flag): 1 if MSB of prodHi is 0 ──────────────
+    (local.set $lz (i32.wrap_i64 (i64.xor (i64.shr_u (local.get $prodHi) (i64.const 63)) (i64.const 1))))
+    ;; ─── Compute biased exponent ─────────────────────────────────────────────────
+    ;; floor(exp10 * log2(10)) via fixed-point: (exp10 * 14267572527) >> 32
+    ;; 14267572527 = floor(log2(10) * 2^32) — correct for all exp10 in -342..308.
+    (local.set $log2floor (i32.wrap_i64 (i64.shr_s
+      (i64.mul (i64.extend_i32_s (local.get $exp10)) (i64.const 14267572527))
+      (i64.const 32))))
+    ;; exp2 = mBits + floor(exp10 * log2(10)) - lz
+    (local.set $exp2 (i32.sub (i32.add (local.get $mBits) (local.get $log2floor)) (local.get $lz)))
+    (local.set $biased (i32.add (local.get $exp2) (i32.const 1023)))
+    ;; Overflow → Infinity
+    (if (i32.ge_s (local.get $biased) (i32.const 2047)) (then (return (f64.const inf))))
+    ;; ─── Subnormal path (biased ≤ 0) ────────────────────────────────────────────
+    (if (i32.le_s (local.get $biased) (i32.const 0))
+      (then
+        ;; total_shift = 11 - lz + (1 - biased) = 12 - lz - biased
+        (local.set $totalShift (i32.sub (i32.sub (i32.const 12) (local.get $lz)) (local.get $biased)))
+        ;; If totalShift >= 64: prodHi >> totalShift == 0 in BigInt, but here:
+        ;; For totalShift in [64..127]: snMant = (prodHi >> (totalShift-64)) >> 64... = 0
+        ;; We just use BigInt-style: clamp to 0 if >=64 (prodHi is 64-bit)
+        (if (i32.ge_u (local.get $totalShift) (i32.const 64))
+          (then
+            ;; All mantissa bits are 0; only rounding could give min subnormal.
+            ;; round bit: at position (totalShift-1) of prodHi → always 0 for totalShift>=65
+            ;; For totalShift==64: round bit = bit 63 of prodHi = MSB
+            (if (i32.eq (local.get $totalShift) (i32.const 64))
+              (then
+                (local.set $snRound (i64.shr_u (local.get $prodHi) (i64.const 63)))
+                (local.set $snSticky (i64.or (local.get $prodLo) (local.get $p2lo)))
+                ;; Return min-subnormal if snRound=1 AND snSticky!=0 (boolean AND, not bitwise)
+                (if (i32.and
+                  (i32.wrap_i64 (local.get $snRound))
+                  (i64.ne (local.get $snSticky) (i64.const 0)))
+                  (then (return (f64.reinterpret_i64 (i64.const 1)))))
+              ))
+            (return (f64.const 0))))
+        ;; totalShift in [1..63]: extract directly from prodHi
+        (local.set $snMant (i64.and
+          (i64.shr_u (local.get $prodHi) (i64.extend_i32_u (local.get $totalShift)))
+          (i64.const 0x000FFFFFFFFFFFFF)))
+        (local.set $snRound
+          (i64.and (i64.shr_u (local.get $prodHi)
+            (i64.extend_i32_u (i32.sub (local.get $totalShift) (i32.const 1))))
+            (i64.const 1)))
+        (local.set $snSticky (i64.or
+          (i64.and (local.get $prodHi)
+            (i64.sub (i64.shl (i64.const 1) (i64.extend_i32_u (i32.sub (local.get $totalShift) (i32.const 1))))
+                     (i64.const 1)))
+          (i64.or (local.get $prodLo) (local.get $p2lo))))
+        ;; Round: snMant++ if roundBit && (sticky > 0 || snMant is odd)
+        (if (i64.ne (i64.and (local.get $snRound)
+              (i64.or (i64.extend_i32_u (i64.ne (local.get $snSticky) (i64.const 0)))
+                      (i64.and (local.get $snMant) (i64.const 1))))
+             (i64.const 0))
+          (then (local.set $snMant (i64.add (local.get $snMant) (i64.const 1)))))
+        ;; Overflow of subnormal mantissa → minimum normal (biased=1, mant=0)
+        (if (i64.ge_u (local.get $snMant) (i64.const 0x0010000000000000))
+          (then (return (f64.reinterpret_i64 (i64.const 0x0010000000000000)))))
+        (return (f64.reinterpret_i64 (local.get $snMant)))))
+    ;; ─── Normal path ─────────────────────────────────────────────────────────────
+    ;; roundShift = 10 - lz  (bit position of round bit in prodHi)
+    (local.set $roundShift (i32.sub (i32.const 10) (local.get $lz)))
+    (local.set $roundBit (i64.and
+      (i64.shr_u (local.get $prodHi) (i64.extend_i32_u (local.get $roundShift)))
+      (i64.const 1)))
+    ;; sticky = bits below roundBit in prodHi, plus all of prodLo and p2lo
+    (local.set $sticky (i64.or
+      (i64.and (local.get $prodHi)
+        (i64.sub (i64.shl (i64.const 1) (i64.extend_i32_u (local.get $roundShift)))
+                 (i64.const 1)))
+      (i64.or (local.get $prodLo) (local.get $p2lo))))
+    ;; mant52 = (prodHi >> (11 - lz)) & MASK52
+    (local.set $mant52 (i64.and
+      (i64.shr_u (local.get $prodHi) (i64.extend_i32_u (i32.sub (i32.const 11) (local.get $lz))))
+      (i64.const 0x000FFFFFFFFFFFFF)))
+    ;; Round: mant52++ if roundBit && (sticky > 0 || mant52 is odd)
+    (if (i64.ne (i64.and (local.get $roundBit)
+          (i64.or (i64.extend_i32_u (i64.ne (local.get $sticky) (i64.const 0)))
+                  (i64.and (local.get $mant52) (i64.const 1))))
+         (i64.const 0))
+      (then (local.set $mant52 (i64.add (local.get $mant52) (i64.const 1)))))
+    ;; Mantissa overflow: carry into exponent
+    (if (i64.ge_u (local.get $mant52) (i64.const 0x0010000000000000))
+      (then
+        (local.set $mant52 (i64.const 0))
+        (local.set $biased (i32.add (local.get $biased) (i32.const 1)))))
+    ;; Final overflow check after rounding
+    (if (i32.ge_s (local.get $biased) (i32.const 2047)) (then (return (f64.const inf))))
+    ;; Assemble IEEE 754 bits: biased_exp << 52 | mant52
+    (f64.reinterpret_i64
+      (i64.or
+        (i64.shl (i64.extend_i32_u (local.get $biased)) (i64.const 52))
+        (local.get $mant52))))`
 
 export default (ctx) => {
   deps({
@@ -159,11 +371,11 @@ export default (ctx) => {
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
-    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws', '__ptr_aux'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
     __to_bigint: ['__char_at', '__str_byteLen', '__num_to_bigint'],
     __parseInt: ['__char_at', '__str_byteLen'],
-    __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
+    __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str'],
   })
 
 
@@ -645,6 +857,26 @@ export default (ctx) => {
   ctx.runtime.staticDataLen = staticStr.length
   ctx.runtime.data = (ctx.runtime.data || '') + staticStr
 
+  // Eisel-Lemire power-of-10 table: 131 entries × 16 bytes = 2096 bytes,
+  // staticStr.length = 57, pad 7 → table starts at byte 64 (always constant).
+  // The table bytes are stashed in ctx.runtime.elTable. src/compile/index.js appends
+  // them to ctx.runtime.data (padded to 8-byte boundary) only when $__dec_to_f64 is
+  // actually pulled in, then declares global $__el_tbl = that offset. This keeps the
+  // 2096-byte data segment out of modules that don't do decimal→f64 conversion.
+  // TRIMMED to exp10 in [-65..65] (see __dec_to_f64 range check). Each entry: 8
+  // bytes tblLo (LE) + 8 bytes tblHi (LE), for exp10 = -65 + i.
+  const EL_TABLE_HEX = 'e9b4c29f1247e998eaba94ea52bbcc862462b347d798233fa5e939a527ea7fa8ad3aa0190d7fec8e0e64888eb1e49fd2ac24043068cf5319893e15f9eeeea383d72d053c42c3a85f2b8e5ab7aaea8ca44d7906cb12f49237b63131655525b0cdd00be4be8bd8bbe211bf3e5f55178e80c40e9daeaece6a5bd66e0eb72a9db1a07552445a5a8245f28b0ad2647504dec81267d5f0f0e2d6ee2e8d06be928515fb6b608596d64d46553d18c4b67b73ed9c86b8263c4ce197aa4c1e75a45ad028c4a866304b9fd93dd5df65924d710433f52940fe8e03a846e5ab7f7bd0c6e23f9933d0bd72045298de965f9a8478db8fbf40446d8f85663e967cf7c0a556d273efa84aa4791300e7ddad9a98277663a895525d0d5818c0605559c17eb1537c12bba6b4106e1ef0b8aaaf71de9d681bd7e9e870ca041396b3ca0d07ab6221712692220dfdc5977b603dd1c855bb690db0b66a507cb77d9ab88c053b2b2ac4105ce442b2ad928e60f377e3045b9a7a8ab98ed31e5937b238f0551cc6f14019ed67b288662fc5de466c6ba3372e915fe801df15a03d3b4bac2323c6e2bcba3b31618b1a080d0a5e97ecab771b6ca98a7d39ae214a908c35bde7965522c753eddcc7d9542eda7741d6507e75755c5414ea1c88e9b9d0d5d10be5ddd2927369992424aa64e8444bc64e5e958777d0c3bf2dadd43e110bef3bf15abdb44a62da973cec848ed5cdea8aadb1ec61ddfad0bd4b27a6f24a81a5ed18de67ba943945ad1eb1cfd7ce708794cfea80f4fc434b2cb3ce818d024da9798325a131fc145ef75f42a23043a01358e46e093e3b9a35f5f7d2cafc5388186e9dca8b0dca0083f2b587fd7d3455cf64a25e77487ee091b7d1749e9d812a03fe4a3695da9d5876250612c60422f583bddd833a51c5eed3ae8796f742357972966a92c4523b7544cd14be9a9382170f3c05b775278a9295009a6dc13863dd128bc62453b12cf7ba8000c9f1035ecaeb16fcf6d3ee7bda7450a01d9784f5bca61cbbf488ea1a11926408e5bce5326cd0e3e9312ba56195b67d4a1eeccf9f43622e32ff3a075d1d928eee9293c287d4fab9febe0949b4a43632aa77b8b3a9897968be2e4c5be14dc4be9495e6100af64b01379d0fd9acb03af77c1d90948cf39ec18484530fd85c0935dc24b4b96fb006f2a56528130eb44b42132ee1d3452e44b7873ff9cb88506f09ccbc8c48d73915a5698ff7feaa24cb0bffebaf1b4d885a0e4473b5bed5edbdcefee6db303095f8880a683197a5b436415f70893d7cba362b0dc2fdfcce61841177ccab4c1b69047690323dbc427ae5d594bfd60fb1c1c2499a3fa6b5696caf05bd3786531d7233dc80cf0f2384471b47acc5a7a8a44e401361c3d32b6519e25817b7d1e9263108ac1c5a643bdf4f8d976e1283a3703d0ad7a3703d0ad7a3703d0ad7a3cccccccccccccccccccccccccccccccc00000000000000000000000000000080000000000000000000000000000000a0000000000000000000000000000000c8000000000000000000000000000000fa0000000000000000000000000000409c000000000000000000000000000050c3000000000000000000000000000024f4000000000000000000000000008096980000000000000000000000000020bcbe00000000000000000000000000286bee00000000000000000000000000f9029500000000000000000000000040b743ba00000000000000000000000010a5d4e80000000000000000000000002ae78491000000000000000000000080f420e6b50000000000000000000000a031a95fe3000000000000000000000004bfc91b8e0000000000000000000000c52ebca2b10000000000000000000040763a6b0bde00000000000000000000e8890423c78a0000000000000000000062acc5eb78ad000000000000000000807a17b726d7d800000000000000000090ac6e32788687000000000000000000b4570a3f1668a9000000000000000000a1edccce1bc2d30000000000000000a0841440615159840000000000000000c8a51990b9a56fa500000000000000003a0f20f4278fcbce0000000000000040840994f878393f810000000000000050e50bb936d7078fa100000000000000a4de4e6704cdc9f2c9000000000000004d96228145407c6ffc00000000000020f09db5702ba8adc59d000000000000286c05e34c36121937c500000000000032c7c61be0c356df84f60000000000407f3c5c116c3a960b139a0000000000109f4bb31507c97bce97c00000000000d4861e20db48bb1ac2bdf00000000080441413f4880db55099769600000000a055d91731eb50e2a43f14bc0000000008abcf5dfd25e51a8e4f19eb00000000e5caa15abe37cfd0b8d1ef92000000409e3d4af1ad05030527c6abb7000000d005cd9c6d19c743c6b0b796e5000000a2230082e46f5cea7bce327e8f0000808a2c80a2dd8bf3e41a82bf5db3000020ad37200bd56e309ea1622f35e0000034cc22f4264545de02a59d3d218c0000417f2bb17096d695430e058d29af0040115f76dd0c3c4c7bd45146f0f3da00c86afb690a88a50fcd24f32b76d888007a457a040dea8e5300eeefb6930eab80d8d6984590a4726880e9aba438d2d55047867f2bdaa64741f071eb6663a38524d9675fb6909099516c4ea6403c0ca76dcf41f7e3b4f4ff6507e2cf504bcfd0a421897a0ef1f8bf9f44ed81128f81820d6a2b19522df7afc7956822d7f221a39044769fa6f8f49b39bb02eb8c6feacbb4d55347d036f202086ac325700be5fe9065942c4262d70145229a1726274f9ff57eb9b7d23a4d42d6aa809deff022c7b2dea7658789e0d28bd5e0842badebf82feb889ff455cc6377850c333b4c939bfb256bc7716bbf3cd5a6cfff491f78c27aef45394e46ef8b8a90c37f1c2716f3'
+  // Pre-decode the EL table bytes once and stash in ctx.runtime.
+  // src/compile/index.js appends elTable to ctx.runtime.data only when
+  // __dec_to_f64 is actually pulled in via deps (lazy, keeps small modules clean).
+  let elTableBytes = ''
+  for (let i = 0; i < EL_TABLE_HEX.length; i += 2)
+    elTableBytes += String.fromCharCode(parseInt(EL_TABLE_HEX.slice(i, i + 2), 16))
+  ctx.runtime.elTable = elTableBytes
+
+  // Register the stdlib function (no data appended here — see compile/index.js hook)
+  ctx.core.stdlib['__dec_to_f64'] = DEC_TO_F64_WAT
+
   // === Number constants ===
 
   // Each folds to inline (f64.const …), no stdlib dep. Written out (not a table
@@ -954,9 +1186,6 @@ export default (ctx) => {
     ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     ${DEC_SIGNIFICAND}
-    ;; No digits — the literal was a bare sign or stray text ("abc", "+") → NaN.
-    ;; (Empty / all-whitespace strings already returned +0 above.)
-    ${FINISH_SIGNIFICAND}
     ;; Scientific notation. 'e'/'E' commits to an ExponentPart — at least one
     ;; digit must follow ("1e", "5e+" are NaN).
     ${sciExponent(`(if (i32.eqz (local.get $expDigits)) (then (return (f64.const nan))))
@@ -966,8 +1195,9 @@ export default (ctx) => {
     ;; Reject trailing non-whitespace ("5px", numeric separators "1_0", …).
     (local.set $i (call $__skipws (local.get $v) (local.get $i) (local.get $len)))
     (if (i32.lt_s (local.get $i) (local.get $len)) (then (return (f64.const nan))))
-    ${POW10_SCALE}
-    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+    ;; Eisel-Lemire exact rounding; fallback to __pow10 for ambiguous cases.
+    ${EL_SCALE}
+    (local.get $result))`
 
   // NumberToBigInt: a RangeError unless n is an integral Number — finite and
   // equal to its own truncation. NaN fails the f64.eq integrality test;
@@ -1093,15 +1323,15 @@ export default (ctx) => {
     ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     ${DEC_SIGNIFICAND}
-    ${FINISH_SIGNIFICAND}
     ;; Scientific notation.
     ${sciExponent(`(if (local.get $expDigits)
           (then
             (if (local.get $expNeg)
               (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
               (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))`)}
-    ${POW10_SCALE}
-    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+    ;; Eisel-Lemire exact rounding; fallback to __pow10 for ambiguous cases.
+    ${EL_SCALE}
+    (local.get $result))`
 
   // ToString(arg) for the string-input builtins. A statically-known boolean must
   // render as "true"/"false" (spec step 1: ToString) before parsing — otherwise
