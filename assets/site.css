@@ -102,7 +102,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 :root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
-/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; author (dy) over ॐ bottom-right. ─── */
+/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; credit · author · ॐ inline, bottom-right. ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
@@ -110,8 +110,9 @@ footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
 footer .fcol a:hover { color: light-dark(#000, #fff); }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: var(--dim); }   /* author · ॐ inline, bottom-right */
-footer .legal .lic::before { content: '·'; margin-right: 7px; color: var(--mute); }   /* middot separating dy and ॐ */
+footer .legal { margin-left: auto; align-self: flex-end; display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; color: var(--dim); }   /* credit · dy · ॐ inline, bottom-right */
+footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */
+footer .legal .by::before, footer .legal .lic::before { content: '·'; margin-right: 7px; color: var(--mute); }   /* middots: credit · dy · ॐ */
 footer .legal .by a { color: var(--soft); }
 footer .legal .by a:hover { color: light-dark(#000, #fff); }
 footer .legal a { color: var(--soft); text-decoration: none; }
