@@ -1548,6 +1548,43 @@ function emitLooseEq(a, b, negate) {
   if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
     return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
   }
+  // String-equality specialization — the hot `node[0] === 'literal'` AST-tag dispatch,
+  // the compiler's single most-emitted comparison (5579 of its 6487 __eq sites). When one
+  // side is statically a STRING, skip the generic __eq NaN-box dispatch (the #1 self-host
+  // hot helper). jz's ==/=== never coerce (number-vs-string is false in __eq), so this is
+  // sound for both. Two shapes by what the OTHER side is known to be:
+  //   both STRING        → __str_eq directly (no number/NaN/tag test needed at all).
+  //   STRING vs unknown  → i64.eq fast ? equal : (__is_str_key(u) ? __str_eq : not-equal).
+  // Soundness of the fast path: the known string is a non-NaN STRING NaN-box, so a bit
+  // match can ONLY be that same string (a normal f64 can't alias those bits). On bit
+  // MISMATCH the unknown can still content-match — a heap string from `'i'+'f'` shares
+  // content but not bits — so the fallback __str_eq stays (pure i64.eq is unsound here).
+  // __is_str_key rejects the number-whose-bits-alias-the-STRING-tag case that a bare
+  // __ptr_type would misroute into a wild __str_eq deref (see __eq's own guard).
+  // INLINED (not a helper call): a single $__str_eq_lit helper measured 2.4% slower on
+  // the corpus — V8 keeps the call at the hot miss path; inlining lets the optimizer fold
+  // __is_str_key/__str_eq's prefix in, which is where the tag dispatch spends its time.
+  // Behaviorally identical to __eq when one side is a string — proven by a 4584-case
+  // spec-on/spec-off differential (zero divergence at optimize 0 and 2).
+  const strEqResult = (r) => negate ? typed(['i32.eqz', r], 'i32') : r
+  const aStr = rawA === VAL.STRING, bStr = rawB === VAL.STRING
+  if (aStr && bStr) {
+    inc('__str_eq')
+    return strEqResult(typed(['call', '$__str_eq', asI64(va), asI64(vb)], 'i32'))
+  }
+  if ((bStr && rawA == null) || (aStr && rawB == null)) {
+    const uVal = bStr ? va : vb, lVal = bStr ? vb : va   // u: unknown side, l: known string
+    inc('__is_str_key', '__str_eq')
+    const u = tempI64('seq'), l = tempI64('seq'), uG = ['local.get', `$${u}`], lG = ['local.get', `$${l}`]
+    return strEqResult(typed(['block', ['result', 'i32'],
+      ['local.set', `$${u}`, asI64(uVal)],
+      ['local.set', `$${l}`, asI64(lVal)],
+      ['if', ['result', 'i32'], ['i64.eq', uG, lG],
+        ['then', ['i32.const', 1]],
+        ['else', ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
+          ['then', ['call', '$__str_eq', uG, lG]],
+          ['else', ['i32.const', 0]]]]]], 'i32'))
+  }
   inc('__eq')
   const call = typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
   return negate ? typed(['i32.eqz', call], 'i32') : call

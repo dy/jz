@@ -920,3 +920,41 @@ test('SSO 7-bit: Set/Map with 6-char string keys (collection hash)', () => {
 test('SSO 7-bit: JSON.parse 4-char key/value round-trips', () => {
   is(run(`export let f = () => JSON.parse('{"name":"jdef"}').name`).f(), 'jdef')
 })
+
+// === `x === "literal"` specialization (emit.js emitLooseEq) ===
+// The compiler's hottest comparison (`node[0] === 'if'` AST-tag dispatch). When one
+// operand is statically a string, emit skips the generic __eq NaN-box dispatch and
+// inlines `i64.eq ? equal : (__is_str_key(u) ? __str_eq : ne)`. Behaviorally identical
+// to __eq (jz's ==/=== never coerce); the win is on the self-host kernel's own 5579 sites.
+test('str-eq spec: heap concat === SSO literal is true (the soundness case)', () => {
+  // `"i"+"f"` allocates a HEAP "if" with different bits than the inline SSO literal —
+  // a pure i64.eq would wrongly say not-equal; the __str_eq fallback content-compares.
+  for (const opt of [false, 2]) {
+    is(jz(`let x = "i"+"f"; export let main = () => (x === "if") | 0`, { optimize: opt }).exports.main(), 1, `concat===lit @${opt}`)
+    is(jz(`let x = "func"+"tion"; export let main = () => (x === "function") | 0`, { optimize: opt }).exports.main(), 1, `long concat===lit @${opt}`)
+    is(jz(`let x = "i"+"g"; export let main = () => (x === "if") | 0`, { optimize: opt }).exports.main(), 0, `concat!==lit @${opt}`)
+    is(jz(`let x = "i"+"f"; export let main = () => (x !== "if") | 0`, { optimize: opt }).exports.main(), 0, `!== negate @${opt}`)
+  }
+})
+test('str-eq spec: non-string vs string literal is false, no deref (number/null/array)', () => {
+  // __is_str_key rejects a number whose f64 bits could alias the STRING tag — number
+  // ===/== string must be false (jz does not coerce), never a wild __str_eq deref.
+  is(jz(`let x = 5; export let main = () => (x === "5") | 0`).exports.main(), 0)
+  is(jz(`let x = 1.5e308; export let main = () => (x === "if") | 0`).exports.main(), 0)
+  is(jz(`let x = null; export let main = () => (x === "x") | 0`).exports.main(), 0)
+  is(jz(`let x = [1,2]; export let main = () => (x === "1,2") | 0`).exports.main(), 0)
+})
+test('str-eq spec: tag-dispatch chain + Map heap key + symmetric placement', () => {
+  is(jz(`let n = ["let",1]; export let main = () => (n[0] === "if" ? 1 : n[0] === "let" ? 2 : 0)`).exports.main(), 2)
+  is(jz(`let m = new Map(); m.set("a"+"b", 7); export let main = () => m.get("ab")`).exports.main(), 7)
+  is(jz(`let x = "i"+"f"; export let main = () => ("if" === x) | 0`).exports.main(), 1)  // literal on the left
+})
+test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () => {
+  // `x === "lit"` (x untyped, exported param) routes through __is_str_key/__str_eq, NOT __eq.
+  const strEq = compile(`export let f = (x) => (x === "if") | 0`, { wat: true })
+  ok(/\$__is_str_key/.test(strEq) && /\$__str_eq/.test(strEq), 'string === literal uses __is_str_key + __str_eq')
+  ok(!/\$__eq\b/.test(strEq), 'string === literal does NOT call the generic __eq')
+  // numeric === must not be dragged into the string path.
+  const numEq = compile(`export let f = (x) => (x === 5) | 0`, { wat: true })
+  ok(!/\$__str_eq|\$__is_str_key/.test(numEq), 'numeric === stays off the string path')
+})

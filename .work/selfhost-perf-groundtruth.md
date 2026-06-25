@@ -328,3 +328,41 @@ The structural ~1.24× (NaN-box + linear memory + manual hashtable, no GC/JIT) i
 THE REAL WINS — SSO (41KB, ~5% on string code; committed 778862c) and the −O2 self-host build
 (comment-hang fixed) — are banked. Further gains need IR-level type-narrowing or a non-moving
 allocator (different order of magnitude), not micro-levers.
+
+## SESSION 5 (2026-06-25) — `x === "literal"` spec SHIPPED (corrects the Opp3 verdict)
+
+The campaign above triaged Opp3 (`__eq` STRING-vs-unknown fork) as "==-vs-=== only, ~1-2%" and
+shipped NO code. That verdict conflated two different levers: a RUNTIME fork inside `__eq` (what
+Opp3 described, low-ROI) vs a COMPILE-TIME literal specialization that removes the `__eq` CALL +
+NaN-dance at the emit site (never actually built). The latter ships now and measurably moves the
+ratio — the campaign's "every micro-lever is structural floor" conclusion was too strong for THIS
+lever.
+
+**Landed (emit.js `emitLooseEq`):** when one operand of `==`/`===`/`!=`/`!==` is statically a
+string, inline `i64.eq ? 1 : (__is_str_key(u) ? __str_eq(u,l) : 0)` instead of `call $__eq`.
+Sound because the literal is a non-NaN STRING box (bit-match ⇒ same string), and on bit-mismatch
+only a genuine string can content-match (`'i'+'f'` is a heap "if" — equal content, different bits —
+so the `__str_eq` fallback stays; pure i64.eq is unsound). `__is_str_key` rejects a number whose
+bits alias the STRING tag. jz's ==/=== never coerce, so it's sound for both operators.
+
+**Measured:** kernel `$__eq` call sites 6487 → 908 (5579 specialized, the AST-tag dispatch); the
+self-host corpus compile is **−2.75%** (one-process interleaved min-of-25 A/B: baseline 427.6ms →
+spec 415.8ms), kernel **+137KB**. INLINED, not a helper: a single `__str_eq_lit` helper made the
+kernel −53KB but was 2.4% SLOWER (V8 keeps the call at the hot MISS path — where tag dispatch spends
+its time; inlining lets the optimizer fold `__is_str_key`/`__str_eq`'s prefix in). So this is the
+rare micro-lever that beats the structural-floor narrative — small but real, and on the adversarial
+self-host workload.
+
+**Soundness proof (core-path change):** a 4584-case spec-on/spec-off differential at opt {0,2} = 0
+behavioral divergence (the spec is provably identical to the old `__eq`); an adversarial workflow
+(1580 programs across 6 lenses) found 0 divergence on the core cases (concat-heap 0/100,
+type-mismatch 0/111, collection-key 0/195); its other "divergences" were all PRE-EXISTING jz subset
+behaviors reproducible with `===` removed (`==` non-coercion of number↔string, `substr(-n)` neg-index,
+`(s)=>s+s` param-self-concat). Kernel↔jz.js string-`===` parity fuzz 960/0. Native 2530/0, test:self 14/14.
+
+**Surfaced (NOT mine, pre-existing kernel-only bug):** `test:wasm` full-local fuzz seed=192 opt=2 —
+the kernel emits invalid wasm (`f64.nearest` of `Math.round(p0)` into an i32 local) in deeply-nested
+loops. Same class as the SESSION-4 seed=50 (`f64.neg` into i32 local). PROVEN pre-existing: the
+baseline (no-spec) kernel emits byte-identical invalid wasm; jz.js compiles it valid at all opts.
+CI's wasm-target leg scales `JZ_FUZZ_GATE` down so it never reaches seed=192 — only the full local
+run surfaces it. A focused self-host −O2 numeric-codegen fidelity hunt (the `__char1byte` playbook).
