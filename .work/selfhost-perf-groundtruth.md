@@ -360,9 +360,30 @@ type-mismatch 0/111, collection-key 0/195); its other "divergences" were all PRE
 behaviors reproducible with `===` removed (`==` non-coercion of number↔string, `substr(-n)` neg-index,
 `(s)=>s+s` param-self-concat). Kernel↔jz.js string-`===` parity fuzz 960/0. Native 2530/0, test:self 14/14.
 
-**Surfaced (NOT mine, pre-existing kernel-only bug):** `test:wasm` full-local fuzz seed=192 opt=2 —
-the kernel emits invalid wasm (`f64.nearest` of `Math.round(p0)` into an i32 local) in deeply-nested
-loops. Same class as the SESSION-4 seed=50 (`f64.neg` into i32 local). PROVEN pre-existing: the
-baseline (no-spec) kernel emits byte-identical invalid wasm; jz.js compiles it valid at all opts.
-CI's wasm-target leg scales `JZ_FUZZ_GATE` down so it never reaches seed=192 — only the full local
-run surfaces it. A focused self-host −O2 numeric-codegen fidelity hunt (the `__char1byte` playbook).
+**Surfaced (NOT mine, pre-existing kernel-only bug) — now precisely localized:** `test:wasm`
+full-local fuzz seed=192 emits invalid wasm from the KERNEL (`local.set $v0` expected i32, found
+`f64.nearest`). PROVEN pre-existing + spec-independent: the baseline (no-spec) kernel emits
+byte-identical invalid wasm; jz.js compiles it VALID at every opt level. CI's wasm-target leg scales
+`JZ_FUZZ_GATE` down so it never reaches seed=192 — only the full local run surfaces it.
+
+Minimal trigger (narrowed from SESSION-4's vague seed=50):
+```js
+export let f = (p0) => { let v0 = 0; let i7 = 0;
+  while (i7 < 29) { let i8 = 0;
+    while (i8 < 23) { v0 = Math.round(p0); i8 = i8 + 1; }   // f64 result into i32-seeded v0
+    p0 = 0; i7 = i7 + 1; } return v0; }                     // param reassign in the OUTER loop
+```
+ALL FOUR needed: (1) two NESTED while loops, (2) `v0 = Math.round(p0)` where v0 is i32-seeded by
+`let v0 = 0`, (3) `p0` reassigned in the outer loop, (4) **opt ≥ 2** (opt0/opt1 kernel output is
+VALID). Drop any one → valid. **Kernel-only, optimizer-level.**
+
+What CORRECT looks like (jz.js, both opt0 and opt2): `v0` is declared **f64** (widened because
+Math.round assigns a float), the loop-invariant `Math.round(p0)` is LICM-hoisted to an f64 temp,
+and there is **no `f64.nearest`** anywhere (Math.round ≠ round-half-even). The kernel at opt2
+instead keeps `v0` i32 AND introduces `f64.nearest` → the type clash. So the kernel mis-executes a
+opt2-only pass — the v0 widening / LICM-of-Math.round interaction — when that pass is itself compiled
+to wasm at −O2. Same deep class as the SESSION-3 comment-hang (sourceInline): a −O2 self-host
+miscompile of the compiler's OWN code, not a bug in the source (jz.js runs the same source right).
+Next-session hunt: rebuild the kernel toggling opt2 passes (the Q1/watr split from SESSION-2) against
+this 5-line trigger to find which pass the kernel mis-runs; or diff jz.js vs kernel intermediate
+local-type state for v0.
