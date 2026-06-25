@@ -20,8 +20,9 @@
 // literal tests use `== null`; created literals are bare numbers.
 
 import { findMutations } from './analyze-scans.js'
+import { ASSIGN_OPS } from '../ast.js'
+import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks } from './loop-model.js'
 
-const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 const isVar = (n) => typeof n === 'string'
 
 // `k = -r`: prepared as ['u-', r] (unary minus) or ['-', 0, r].
@@ -31,11 +32,10 @@ const negOf = (n) => Array.isArray(n) && n[0] === 'u-' ? n[1]
 // Every write to `iv` in `node` is a strictly-positive step (++iv / iv+=1 / iv=iv+1),
 // so iv advances monotonically — required so the three split loops partition [0,bound)
 // and the clamp-free interior never re-runs at an edge index. Any other write → false.
-const ASSIGN = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**=', '&&=', '||=', '??='])
 function ivMonotonic(node, iv) {
   if (!Array.isArray(node)) return true
   if ((node[0] === '++' || node[0] === '--') && node[1] === iv) return node[0] === '++'
-  if (ASSIGN.has(node[0]) && node[1] === iv) {
+  if (ASSIGN_OPS.has(node[0]) && node[1] === iv) {
     if (node[0] === '+=' && litN(node[2], 1)) return true
     if (node[0] === '=' && Array.isArray(node[2]) && node[2][0] === '+'
       && ((node[2][1] === iv && litN(node[2][2], 1)) || (node[2][2] === iv && litN(node[2][1], 1)))) return true
@@ -43,22 +43,6 @@ function ivMonotonic(node, iv) {
   }
   return node.every(c => ivMonotonic(c, iv))
 }
-
-// Vars assigned inside any closure in the function — a call in the loop can mutate
-// them even though findMutations (direct writes only) misses it. iv/bound/r in this
-// set must bail (same class as the loop-SR closure-mutation guard).
-const collectAssigns = (n, out) => {
-  if (!Array.isArray(n)) return
-  if (typeof n[1] === 'string' && (ASSIGN.has(n[0]) || n[0] === '++' || n[0] === '--')) out.add(n[1])
-  n.forEach(c => collectAssigns(c, out))
-}
-const closureMutated = (n, out) => {
-  if (!Array.isArray(n)) return out
-  if (n[0] === '=>') collectAssigns(n, out)
-  n.forEach(c => closureMutated(c, out))
-  return out
-}
-let _cm = new Set()
 
 // Find, anywhere in `node`, a clamp `if (ci < 0) ci = 0; else if (ci >= B) ci = B-1`
 // over a var `ci` and bound var `B`. Returns { ci, bound } or null (first match).
@@ -121,7 +105,7 @@ function countWrites(node, v) {
   const visit = (x) => {
     if (!Array.isArray(x)) return
     if ((x[0] === '++' || x[0] === '--') && x[1] === v) n++
-    else if (ASSIGN.has(x[0]) && x[1] === v) n++
+    else if (ASSIGN_OPS.has(x[0]) && x[1] === v) n++
     x.forEach(visit)
   }
   visit(node)
@@ -151,7 +135,7 @@ function ivWrittenInNestedLoop(body, iv) {
   let found = false
   const visit = (n, inLoop) => {
     if (!Array.isArray(n)) return
-    if (inLoop && (((n[0] === '++' || n[0] === '--') && n[1] === iv) || (ASSIGN.has(n[0]) && n[1] === iv))) found = true
+    if (inLoop && (((n[0] === '++' || n[0] === '--') && n[1] === iv) || (ASSIGN_OPS.has(n[0]) && n[1] === iv))) found = true
     const deeper = inLoop || n[0] === 'while' || n[0] === 'for'
     n.forEach(c => visit(c, deeper))
   }
@@ -167,33 +151,18 @@ const dropClamp = (node, clampNode) =>
     : node === clampNode ? ['{}', [';']]   // empty block (the if is a statement)
     : node.map(c => dropClamp(c, clampNode))
 
-// A strictly-positive +1 step on `iv` (the for-loop increment): i++, ++i, i+=1, i=i+1.
-const stepIsPosInc = (s, iv) => {
-  if (!Array.isArray(s)) return false
-  let inc = s
-  if (s[0] === '-' && litN(s[2], 1) && Array.isArray(s[1]) && s[1][0] === '++') inc = s[1]
-  if (inc[0] === '++' && inc[1] === iv) return true
-  if (s[0] === '+=' && s[1] === iv && litN(s[2], 1)) return true
-  return s[0] === '=' && s[1] === iv && Array.isArray(s[2]) && s[2][0] === '+'
-    && ((s[2][1] === iv && litN(s[2][2], 1)) || (s[2][2] === iv && litN(s[2][1], 1)))
-}
-
-function tryPeel(stmt) {
-  if (!Array.isArray(stmt)) return null
+function tryPeel(stmt, cm) {
   // Normalize while / for into (iv, bound, body, init, step). For a `while`, the
   // increment is inside the body; for a `for` it is the separate step clause, which
   // we re-append to each split loop's body (converting the for into init + whiles).
-  let iv, bound, body, init = null, step = null
-  if (stmt[0] === 'while') {
-    const cond = stmt[1]
-    if (!Array.isArray(cond) || cond[0] !== '<' || !isVar(cond[1])) return null
-    iv = cond[1]; bound = cond[2]; body = stmt[2]
-  } else if (stmt[0] === 'for') {
-    init = stmt[1]; const cond = stmt[2]; step = stmt[3]; body = stmt[4]
-    if (!Array.isArray(cond) || cond[0] !== '<' || !isVar(cond[1])) return null
-    iv = cond[1]; bound = cond[2]
-    if (!stepIsPosInc(step, iv)) return null
-  } else return null
+  const L = normalizeLoop(stmt)
+  if (!L) return null
+  let { init, cond, step, body } = L
+  if (!Array.isArray(cond) || cond[0] !== '<' || !isVar(cond[1])) return null
+  const iv = cond[1], bound = cond[2]
+  // The `for` step must be the IV's strictly-positive +1 increment; a `while` increments in
+  // its body (validated below by ivMonotonic / the exactly-one-+1 checks).
+  if (L.kind === 'for' && unitIncVar(step) !== iv) return null
   if (!isVar(bound) || !Array.isArray(body)) return null
   // A loop whose body is a single statement (e.g. an outer row loop wrapping one
   // inner loop — the vertical blur pass) isn't a `;` sequence; normalize it.
@@ -227,7 +196,7 @@ function tryPeel(stmt) {
   if (!ivMonotonic(body, iv)) return null
   const mut = new Set(); findMutations(body, new Set([bound, r]), mut)
   if (mut.has(bound) || mut.has(r)) return null
-  if (_cm.has(iv) || _cm.has(bound) || _cm.has(r)) return null  // closure-mutable → unsafe
+  if (cm.has(iv) || cm.has(bound) || cm.has(r)) return null  // closure-mutable → unsafe
 
   const id = _uniq++
   const xs = `__pks${id}`, xe = `__pke${id}`
@@ -242,20 +211,7 @@ function tryPeel(stmt) {
   return init ? [init, seed, ...loops] : [seed, ...loops]
 }
 
-function walk(node) {
-  if (!Array.isArray(node)) return node
-  const n = node.map(walk)
-  if (n[0] !== ';') return n
-  const out = [';']
-  for (let k = 1; k < n.length; k++) {
-    const r = tryPeel(n[k])
-    if (r) out.push(...r)
-    else out.push(n[k])
-  }
-  return out
-}
-
 export function peelClampedStencil(body) {
-  _cm = closureMutated(body, new Set())
-  return walk(body)
+  const cm = closureMutatedVars(body)
+  return rewriteBlocks(body, stmt => tryPeel(stmt, cm))
 }
