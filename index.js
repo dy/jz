@@ -588,6 +588,10 @@ const jzCompileInner = (code, opts = {}) => {
   const cfg = ctx.transform.optimize
   let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
   if (cfg.vectorizeLaneLocal) {
+    // Off at the speed tier: watr's loopify collapses the while-idiom to
+    // `loop { if C { …; br } }` (an UNfused back-jump — no win) AND would mangle the
+    // lane-vectorizer's loop shape. jz's own `rotateLoops` (optimize/index.js, post
+    // phase) does the rotation instead, emitting the FUSED `br_if $loop C` back-edge.
     if (watrOpts === true) watrOpts = { loopify: false }
     else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
   }

@@ -147,7 +147,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true }),
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true }),
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
@@ -168,7 +168,7 @@ const LEVEL_PRESETS = Object.freeze({
   // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
   // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
   // `cfg.experimentalStencil !== false` at the call site, not a speed-only size/precision trade.)
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true }),
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true }),
 })
 
 /**
@@ -3068,6 +3068,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     if (runVectorizer) foldV128Memargs(fn)
   }
+  // Loop rotation — the LAST shape pass (post-watr only, so no later pass reverts
+  // it and the v128 loops are already formed for the skip-guard). Speed-tier: it
+  // duplicates the loop condition for a fused conditional back-edge (1.35× on the
+  // lz/qoi scalar scans — see rotateLoops).
+  if (cfg && cfg.rotateLoops === true && phase === 'post') rotateLoops(fn)
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
@@ -3094,6 +3099,126 @@ function foldV128Memargs(node) {
     }
   }
   for (let i = 1; i < node.length; i++) foldV128Memargs(node[i])
+}
+
+// i32 comparison/eqz negations — used to flip a break-condition into the
+// loop-continue condition. f64 compares are deliberately ABSENT: ¬(a<b) ≠ (a≥b)
+// across NaN, so those fall through to the `i32.eqz` wrap below.
+const ROT_NEG = {
+  'i32.eqz': null, // sentinel: strip the eqz (handled specially)
+  'i32.eq': 'i32.ne', 'i32.ne': 'i32.eq',
+  'i32.lt_s': 'i32.ge_s', 'i32.ge_s': 'i32.lt_s', 'i32.gt_s': 'i32.le_s', 'i32.le_s': 'i32.gt_s',
+  'i32.lt_u': 'i32.ge_u', 'i32.ge_u': 'i32.lt_u', 'i32.gt_u': 'i32.le_u', 'i32.le_u': 'i32.gt_u',
+}
+
+/**
+ * Loop rotation (loop inversion). Convert jz's top-test loop idiom
+ *   (block $brk (loop $loop (br_if $brk ¬C) BODY… (br $loop)))
+ * into a guarded bottom-test loop with a FUSED conditional back-edge:
+ *   (block $brk (br_if $brk ¬C) (loop $loop BODY… (br_if $loop C)))
+ *
+ * V8/TurboFan lowers the fused `br_if $loop C` to one hardware loop branch — the
+ * shape LLVM gives rust/zig, and the reason their hot scalar loops (lz's greedy
+ * match-scan, qoi's run-length scan) beat jz's top-test form, which compiles to a
+ * forward exit-branch PLUS a separate unconditional back-jump. Measured 1.35× on
+ * the lz inner loop; nothing else jz runs reaches this shape — watr's `loopify`
+ * collapses to `loop { if C { …; br } }`, whose back-jump stays UNfused (no win).
+ *
+ * Evaluation count of C is unchanged: guard-once + one back-edge per iteration ==
+ * the top-test form's once-per-loop-top — so it's sound even when C has side
+ * effects (a `local.tee` recurrence, a call). The condition is duplicated only in
+ * the EMITTED text (guard + back-edge), a small size-for-speed trade — speed-tier.
+ *
+ * Conservative skips:
+ *   - any v128/SIMD op in the loop — already register-tight; reshaping risks
+ *     disturbing the lane structure (mirrors hoistInvariantLoop's hasV128 guard).
+ *   - a body that branches to $loop: a `continue` with no step lands on the loop
+ *     label, which after rotation sits BEFORE the back-edge test — rotating would
+ *     skip it. (jz wraps continue-with-step in a `$cont` block → targets that, not
+ *     $loop → still rotatable.)
+ */
+function rotateLoops(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
+  // Break-condition C → loop-continue condition ¬C for the back-edge. Fold the
+  // i32 forms so the back-edge stays ONE fused compare-and-branch (a wrapping
+  // `i32.eqz` would add an op inside the hot loop); everything else wraps.
+  const negate = (c) => {
+    if (Array.isArray(c) && c[0] === 'i32.eqz' && c.length === 2) return c[1]
+    if (Array.isArray(c) && c.length === 3 && ROT_NEG[c[0]]) return [ROT_NEG[c[0]], c[1], c[2]]
+    return ['i32.eqz', c]
+  }
+  const targetsLabel = (n, label) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === 'br' || op === 'br_if') { if (n[1] === label) return true }
+    else if (op === 'br_table') { for (let i = 1; i < n.length; i++) if (n[i] === label) return true }
+    for (let i = 1; i < n.length; i++) if (targetsLabel(n[i], label)) return true
+    return false
+  }
+  const hasV128 = (n) => Array.isArray(n) && (
+    (typeof n[0] === 'string' && (n[0].startsWith('v128.') || /^[if]\d+x\d+\./.test(n[0]))) ||
+    n.some((c, i) => i > 0 && hasV128(c)))
+
+  const tryRotate = (blk) => {
+    let bi = 1, blockLabel = null
+    if (typeof blk[1] === 'string' && blk[1][0] === '$') { blockLabel = blk[1]; bi = 2 }
+    if (!blockLabel) return null
+    // The loop must be the block's final child; LICM may hoist invariant snaps into
+    // a `local.set` pre-header before it — keep those ahead of the guard (the guard
+    // condition can read them). Bail on anything else (typed blocks, side computations).
+    const preamble = []
+    let loop = null
+    for (let i = bi; i < blk.length; i++) {
+      const c = blk[i]
+      if (Array.isArray(c) && c[0] === 'loop') { if (loop || i !== blk.length - 1) return null; loop = c }
+      else if (Array.isArray(c) && c[0] === 'local.set' && !loop) preamble.push(c)
+      else return null
+    }
+    if (!loop) return null
+    let li = 1, loopLabel = null
+    if (typeof loop[1] === 'string' && loop[1][0] === '$') { loopLabel = loop[1]; li = 2 }
+    if (!loopLabel) return null
+    const loopHeader = []
+    while (li < loop.length) {
+      const c = loop[li]
+      if (Array.isArray(c) && c[0] === 'type') { loopHeader.push(c); li++; continue }
+      if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'result')) return null
+      break
+    }
+    const body = loop.slice(li)
+    if (body.length < 2) return null
+    const head = body[0], tail = body[body.length - 1]
+    if (!(Array.isArray(head) && head[0] === 'br_if' && head[1] === blockLabel && head.length === 3)) return null
+    if (!(Array.isArray(tail) && tail[0] === 'br' && tail[1] === loopLabel && tail.length === 2)) return null
+    const inner = body.slice(1, -1)
+    if (inner.some((s) => targetsLabel(s, loopLabel))) return null   // continue → loop top: unsafe
+    if (hasV128(head) || inner.some(hasV128)) return null            // vectorized: leave tight
+    const cond = head[2]
+    return ['block', blockLabel, ...preamble,
+      ['br_if', blockLabel, clone(cond)],
+      ['loop', loopLabel, ...loopHeader, ...inner, ['br_if', loopLabel, negate(cond)]]]
+  }
+
+  // Rotate a (block …) at container[i] in place, else descend. Returns true if it fired.
+  const tryAt = (container, i) => {
+    const c = container[i]
+    if (!Array.isArray(c) || c[0] !== 'block') return false
+    const rot = tryRotate(c)
+    if (!rot) return false
+    container[i] = rot
+    walk(rot)
+    return true
+  }
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) if (!tryAt(node, i)) walk(node[i])
+  }
+  // Top-level statements (a loop block can BE fn[i], not just nested under one).
+  for (let i = bodyStart; i < fn.length; i++) if (!tryAt(fn, i)) walk(fn[i])
 }
 
 // The i32 form of an integer-valued f64 expression, or null. Used to push ToInt32

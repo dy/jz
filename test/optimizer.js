@@ -112,6 +112,39 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-edge', () => {
+  // The lz/qoi class of hot scalar loop. Top-test `loop { br_if exit ¬C; body; br loop }`
+  // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`
+  // back-edge is the do-while shape LLVM gives rust/zig (1.34× on lz's match scan);
+  // V8 lowers it to one hardware loop branch vs the top-test's exit-branch + back-jump.
+  const src = `export const firstGt = (a, n, t) => { let i = 0; while (i < n && a[i] <= t) i++; return i }`
+  const rot = jz.compile(src, { wat: true, optimize: { level: 'speed' } })
+  const ctl = jz.compile(src, { wat: true, optimize: { level: 'speed', rotateLoops: false } })
+  ok(/br_if \$loop\d+/.test(rot) && !/\(br \$loop\d+/.test(rot), 'rotated: fused br_if back-edge, no unconditional br $loop')
+  ok(!/br_if \$loop\d+/.test(ctl) && /\(br \$loop\d+/.test(ctl), 'control (rotateLoops off): top-test keeps unconditional br back-edge')
+})
+
+test('rotateLoops: semantics preserved across continue / break / nested / match-scan', () => {
+  // Rotation duplicates the loop condition (guard + back-edge), keeps eval order, and
+  // must NOT rotate a while-continue with no step (continue → loop label, no $cont block).
+  // Compare speed-tier WITH rotation against the same tier with it off — bit-identical.
+  const src = `export const main = () => {
+    let total = 0
+    let i = 0, s1 = 0
+    while (i < 100) { i++; if ((i & 3) === 0) continue; s1 += i }   // while + continue, no step
+    total += s1
+    for (let k = 0; k < 100; k++) { if (k % 5 === 0) continue; total += k }   // for + continue + step
+    outer: for (let a = 0; a < 20; a++) { for (let b = 0; b < 20; b++) { if (b === 5) continue outer; total += b } }
+    let n = 1000; while ((n = n - 1) > 0) { if (n % 7 === 0) total += n }   // side-effecting condition
+    let p = 1, m = 0
+    while (p < 60 && (p * 7 + 3 & 0xff) !== 0) { p++; m++ }   // scan-until (lz idiom)
+    return total + m
+  }`
+  const withRot = run(src, { optimize: { level: 'speed' } }).main()
+  const without = run(src, { optimize: { level: 'speed', rotateLoops: false } }).main()
+  is(withRot, without)
+})
+
 test('arrayElemValType: typed-array .map elides __to_num in callback', () => {
   // Float64Array elements have known type NUMBER → __to_num coercion can be
   // elided in the inlined .map callback param.
