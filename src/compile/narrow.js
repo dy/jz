@@ -362,6 +362,13 @@ function narrowI32Results(funcs) {
       } else if (r.allI32 && (!r.anyUnsigned || r.allUnsigned)) {   // sign-consistent i32 tails
         func.sig.results = ['i32']
         if (r.allUnsigned) func.sig.unsignedResult = true
+        // A committed i32 result is a genuine NUMBER, so stamp valResult for the call-site
+        // VAL dispatch — E2 (narrowValResults) ran ABOVE the param lattice and so couldn't
+        // type a `return typedArrayParam[idx]` tail (hashjoin's `probe` → `vals[h]`), leaving
+        // valResult unset → the hot `sum + probe()` stayed the polymorphic string-or-number
+        // `+`. Only-if-unset: an UNBOXED-pointer i32 result already carries its ARRAY/OBJECT/
+        // TYPED valResult (the unboxing ABI needs it), so this never overwrites a pointer kind.
+        if (func.valResult == null) func.valResult = VAL.NUMBER
         changed = true
       }
     }
