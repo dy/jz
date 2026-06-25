@@ -20,7 +20,7 @@
 // hole = undefined), so literal tests use `== null`; created literals are bare numbers.
 
 import { findMutations } from './analyze-scans.js'
-import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks } from './loop-model.js'
+import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId } from './loop-model.js'
 
 const isMod = (n, i, w) => Array.isArray(n) && n[0] === '%' && n[1] === i && n[2] === w
 const isFloorDiv = (n, i, w) =>
@@ -34,7 +34,6 @@ const replace = (n, i, w, cx, cy) =>
 const hasOuterContinue = (n) => Array.isArray(n) &&
   (n[0] === 'continue' || (n[0] !== 'while' && n[0] !== 'for' && n[0] !== 'do' && n[0] !== '=>' && n.some(hasOuterContinue)))
 
-let _uniq = 0
 
 // Try to strength-reduce one `while` statement. Returns [seed, loop] or null. `cm` is
 // the function's closure-mutated-vars set (an IV/divisor in it is unsafe).
@@ -77,7 +76,7 @@ function tryReduce(stmt, cm) {
   if (hasOuterContinue(lbody)) return null
   if (cm.has(iv) || cm.has(w)) return null  // IV/divisor mutable via a closure call
 
-  const id = _uniq++
+  const id = freshLoopId()
   const cx = `__lsrx${id}`, cy = `__lsry${id}`
   // seed (inside the w>0 branch): cx = (i%w)|0, cy = (i/w)|0 — one-time, i32 via |0
   const seedDecls = [['=', cx, ['|', ['%', iv, w], 0]]]

@@ -21,7 +21,7 @@
 
 import { findMutations } from './analyze-scans.js'
 import { ASSIGN_OPS } from '../ast.js'
-import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks } from './loop-model.js'
+import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
 
@@ -143,8 +143,6 @@ function ivWrittenInNestedLoop(body, iv) {
   return found
 }
 
-let _uniq = 0
-
 // Drop the clamp `if` node from a (cloned) body, leaving the bare `ci = iv + k`.
 const dropClamp = (node, clampNode) =>
   !Array.isArray(node) ? node
@@ -198,7 +196,7 @@ function tryPeel(stmt, cm) {
   if (mut.has(bound) || mut.has(r)) return null
   if (cm.has(iv) || cm.has(bound) || cm.has(r)) return null  // closure-mutable → unsafe
 
-  const id = _uniq++
+  const id = freshLoopId()
   const xs = `__pks${id}`, xe = `__pke${id}`
   // xs = r < bound ? r : bound ;  xe = (bound - r) > xs ? bound - r : xs
   const seed = ['let',

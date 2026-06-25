@@ -10,6 +10,14 @@
 // — adding the next loop transform is then one recognizer over these, not a fourth copy.
 
 import { ASSIGN_OPS } from '../ast.js'
+import { ctx } from '../ctx.js'
+
+// Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
+// a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
+// grows unbounded across a long-lived host and makes compile(P) non-deterministic — its output
+// names depend on how many programs were compiled before it. Distinct prefixes keep the shared
+// id space collision-free across transforms.
+export const freshLoopId = () => ctx.transform.loopXformId++
 
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
 // slot `n[0]` is the elided hole == null). `litVal` returns the numeric value or null;

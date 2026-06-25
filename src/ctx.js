@@ -400,6 +400,9 @@ export function reset(proto, globals, bridge) {
     inspect: false,     // when true, compile() additionally populates ctx.inspect with the inferred
                         // per-function signatures, locals, and JSON shapes — readable by editor
                         // hosts for inlay hints / hover types without re-running the analyzer.
+    loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
+                        // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
+                        // so compile(P) is deterministic regardless of prior compiles in the process.
   }
 
   // Inspection sink. Populated by compile() only when transform.inspect is true.
