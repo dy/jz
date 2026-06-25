@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
-import { ctx, err, inc, PTR, LAYOUT, getter, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 
@@ -912,14 +912,14 @@ export default (ctx) => {
   // RegExp.prototype.source — the pattern text. A literal stores it verbatim
   // (already grammar-escaped), so `/A/.source` is the 6-char "A".
   // An empty pattern serializes to "(?:)" so the result re-parses to a regex.
-  ctx.core.emit['.regex:source'] = getter((obj) => {
+  registerGetter('.regex:source', (obj) => {
     const a = regexAstOf(obj)
     return emit(['str', (a && a[1]) || '(?:)'])
   })
 
   // RegExp.prototype.flags — flag characters in canonical order (sec-get-regexp.prototype.flags).
   const FLAG_ORDER = 'dgimsvy'
-  ctx.core.emit['.regex:flags'] = getter((obj) => {
+  registerGetter('.regex:flags', (obj) => {
     const f = flagsOf(obj)
     return emit(['str', [...FLAG_ORDER].filter(c => f.includes(c)).join('')])
   })
@@ -928,10 +928,10 @@ export default (ctx) => {
   for (const [prop, ch] of [
     ['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'], ['dotAll', 's'],
     ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
-  ]) ctx.core.emit[`.regex:${prop}`] = getter((obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64'))
+  ]) registerGetter(`.regex:${prop}`, (obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64'))
 
   // lastIndex — for /g and /y regexes, reads the mutable global; others always 0.
-  ctx.core.emit['.regex:lastIndex'] = getter((obj) => {
+  registerGetter('.regex:lastIndex', (obj) => {
     const id = resolveRegex(obj)
     if (id != null) {
       const flags = flagsOf(obj)

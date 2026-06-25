@@ -1609,6 +1609,49 @@ test('promoteIntArrayLiterals: .filter promotes (.typed:filter emits same-elemen
   is(main(), 2)
 })
 
+test('promoteIntArrayLiterals: string-literal key disqualifies (NaN-coercion would return a[0] instead of undefined)', () => {
+  // `a[k]` where k is a string literal: after promotion to Int32Array,
+  // `i32.trunc_sat_f64_s(NaN-boxed-string) = 0` silently returns a[0] = 1
+  // instead of undefined. The candidate must be disqualified.
+  const src = `
+    export const str_key = () => {
+      const a = [1, 2, 3]
+      const k = 'x'
+      return a[k]  // must be undefined, not 1
+    }
+    export const num_key = () => {
+      const a = [1, 2, 3]
+      const k = 1
+      return a[k]  // must be 2
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$a f64\)/.test(body) || !/\(local \$a i32\)/.test(body),
+    'string-keyed read must prevent promotion of a to TYPED')
+  const { str_key, num_key } = run(src)
+  is(str_key(), undefined, 'a[k] where k="x" must return undefined, not 1')
+  is(num_key(), 2, 'a[k] where k=1 must return 2')
+})
+
+test('promoteIntArrayLiterals: unknown-type param key disqualifies (string at runtime → NaN-coerce)', () => {
+  // `a[k]` where k is a function parameter of unknown type: the caller may
+  // pass a string. After promotion the read must still route through the
+  // __is_str_key → __dyn_get dispatch rather than a raw Int32Array load.
+  const src = `
+    export const test_str = (k) => {
+      const a = [10, 20, 30]
+      return a[k]
+    }
+    export const test_num = (k) => {
+      const a = [10, 20, 30]
+      return a[k]
+    }
+  `
+  const { test_str, test_num } = run(src)
+  is(test_str('x'), undefined, 'string key on promoted-candidate array must return undefined')
+  is(test_num(1), 20, 'numeric key on same array still returns the element')
+})
+
 test('.typed:forEach: side effect via captured slot (typed receiver via direct ctor)', () => {
   // `arr` is a tracked TypedArray binding via `new Float64Array([…])`, so
   // `.forEach` routes through .typed:forEach (emit.js:2211 dispatch).

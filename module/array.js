@@ -678,6 +678,12 @@ export default (ctx) => {
       return ['f64.reinterpret_i64', ['call', '$__dyn_get', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
+    // A numeric index on an unknown receiver is array/typed access by design — kept
+    // lean (no OBJECT/HASH dyn-get fork): an object with numeric keys is a degenerate
+    // pattern not worth a per-access string-coercion + hash probe in every hot loop.
+    // The WRITE path still routes a numeric `o[i]=v` on an OBJECT to __dyn_set for
+    // SAFETY (no schema-slot corruption / OOB), so such a read returns undefined
+    // rather than corrupting — matching JS for an out-of-range typed/array index.
     const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()

@@ -965,8 +965,9 @@ export default (ctx) => {
     const ptRep = typeof obj === 'string' ? repOf(obj) : null
     const ptVt = ptRep ? ptRep.val : valTypeOf(obj)
     if (ptVt) {
-      const tpEmitter = ctx.core.emit[`.${ptVt}:${prop}`]
-      if (tpEmitter?.getter) return tpEmitter(obj)
+      const tpKey = `.${ptVt}:${prop}`
+      const tpEmitter = ctx.core.emit[tpKey]
+      if (tpEmitter && ctx.core.getters.has(tpKey)) return tpEmitter(obj)
     }
 
     // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
@@ -993,7 +994,7 @@ export default (ctx) => {
     // fall through to a real property read — `m.values` reads the "values" field.
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]
-    if (propEmitter?.getter) return propEmitter(obj)
+    if (propEmitter && ctx.core.getters.has(propKey)) return propEmitter(obj)
 
     return emitPropAccess(emit(obj), obj, prop)
   }
@@ -1046,11 +1047,13 @@ export default (ctx) => {
     // re-emitting `obj`. Without this `s?.size` fell straight to emitPropAccess (a
     // plain field read) and returned undefined — a Set/Map size getter never ran.
     if (vt) {
-      const tg = ctx.core.emit[`.${vt}:${prop}`]
-      if (tg?.getter) return tg(t)
+      const tgKey = `.${vt}:${prop}`
+      const tg = ctx.core.emit[tgKey]
+      if (tg && ctx.core.getters.has(tgKey)) return tg(t)
     }
-    const g = ctx.core.emit[`.${prop}`]
-    if (g?.getter) return g(t)
+    const gKey = `.${prop}`
+    const g = ctx.core.emit[gKey]
+    if (g && ctx.core.getters.has(gKey)) return g(t)
     return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop, true)
   })
 

@@ -13,7 +13,7 @@ import { emit, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody } from '../src/ast.js'
-import { ctx, inc, PTR, LAYOUT, getter, declGlobal } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { STR_INTERN_BIT } from '../layout.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -666,7 +666,7 @@ export default (ctx) => {
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
-  ctx.core.emit['.size'] = getter((expr) => {
+  registerGetter('.size', (expr) => {
     return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
   })
 

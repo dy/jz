@@ -342,6 +342,43 @@ test('Regression: numeric runtime key write on fixed-shape object preserves sche
   is(compound(0), 5) // undefined+1=NaN to sidecar; slot 0 (o.x) untouched
 })
 
+// Root A′: `o[i]=v` (numeric/dynamic key) on an UNTYPED empty-object binding
+// (`let o = {}` — null-typed, OBJECT only at runtime). It took the polymorphic
+// store path whose fallback raw-stored at ptrOffset(o)+i*8 → schema-slot corruption
+// at small i, an OOB memory trap at large i (the self-host `blur` crash). It now
+// routes an OBJECT/HASH receiver to __dyn_set (propsPtr sidecar, string key). The
+// numeric-keyed READ stays array/typed by design (returns undefined — see test/perf
+// "skips __is_str_key dispatch"), but the WRITE must never trap or corrupt. Runs
+// under test:wasm. Gated on `rep.notString` so typed-array params keep the lean store.
+test("Regression: o[i]=v on an untyped empty-object binding is OOB-safe (Root A′)", () => {
+  const { big, loop, sibling } = run(`
+    export let big = () => { let o = {}; o[5000] = 42; return 1 }
+    export let loop = () => { let o = {}; for (let i = 0; i < 32; i++) o[i] = i * 2; return 1 }
+    export let sibling = () => { let a = 7; let o = {}; o[3] = 99; return a }
+  `)
+  is(big(), 1)      // large index — must not trap (was: memory access out of bounds)
+  is(loop(), 1)     // repeated dynamic writes — must not trap
+  is(sibling(), 7)  // a small-index write must not corrupt an adjacent binding
+})
+
+// Root B: a STRING runtime-key write `o[k]=v` whose key matches a schema field
+// must mirror the value into the fixed schema slot (buildObjectSchemaSetArm in
+// $__dyn_set), or a later static `o.x` read returns the stale slot. That mirror
+// is gated on `$__schema_tbl != 0`; a write-only module pulls in `__dyn_set` but
+// no `__dyn_get*`, so the table was never built (tblConsumed missed __dyn_set)
+// and the slot stayed stale. Runs under test:wasm — single-function modules so
+// no other fn incidentally raises anyDynKey.
+test('Regression: o[k]=v where k is a schema field name — static o.x sees the written value', () => {
+  const { f } = run(`export let f = (k) => { let o = { x: 1 }; o[k] = 9; return o.x }`)
+  is(f('x'), 9)
+})
+
+test('Regression: o[k]=v schema-field write — static read after multiple keys', () => {
+  const { f } = run(`export let f = (k) => { let o = { x: 1, y: 2 }; o[k] = 99; return o.x * 1000 + o.y }`)
+  is(f('x'), 99002) // o.x=99, o.y=2
+  is(f('y'), 1099)  // o.x=1,  o.y=99
+})
+
 test('Regression: literal numeric string array assignment updates element storage', () => {
   const { f } = run(`export let f = () => {
     let a = [1]

@@ -138,12 +138,19 @@ export const emitter = (deps, fn) => {
  *  carry it as `.argc`; bare ones expose it as the function's own `.length`. */
 export const emitArity = (h) => h?.argc ?? h?.length
 
-/** Tag an emit handler as a property getter — it yields a value when the
- *  property is *read* (`re.source`, `m.size`), so the `.`-read path may fire it.
- *  Untagged handlers are methods: a bare read of `m.values` must not invoke them
- *  (that would materialize a view instead of reading the `"values"` property);
- *  they fire only from the method-call path. Apply outermost: `getter(emitter(…))`. */
-export const getter = (fn) => (fn.getter = true, fn)
+/** Register `fn` as a property-GETTER emitter for `key` — it yields a value when
+ *  the property is *read* (`re.source`, `m.size`, `a.byteOffset`), so the `.`-read
+ *  path fires it. (Untagged `ctx.core.emit` handlers are methods: a bare read of
+ *  `m.values` must NOT invoke them — that would materialize a view — they fire only
+ *  from the method-call path.) Getter-ness lives in `ctx.core.getters` (a plain Set),
+ *  NOT as a flag on the emitter closure: the self-host kernel can't reliably read a
+ *  dynamic property off a closure returned via a dynamic-key lookup, so a closure tag
+ *  silently read `undefined` and every getter fell through to `__dyn_get`. A Set
+ *  key-lookup is kernel-safe. Dispatch (module/core.js) checks `ctx.core.getters.has(key)`. */
+export const registerGetter = (key, fn) => {
+  ctx.core.emit[key] = fn
+  ctx.core.getters.add(key)
+}
 
 /** Expand ctx.core.includes transitively via ctx.core.stdlibDeps. Call before WASM assembly.
  *  Each module co-locates its own deps with its stdlib registrations at init time. */
@@ -212,6 +219,13 @@ export function reset(proto, globals, bridge) {
                             // `(import "env" "name" (global $name i64))` at assembly. Same
                             // usage-gated pattern as jsstring — emit records, assembly owns
                             // the ctx.module.imports write.
+    getters: new Set(), // keys of emit entries that are property getters — the
+                        // kernel-safe authority for getter dispatch (a closure-attached
+                        // flag was unreadable in the self-host kernel after a dynamic-key
+                        // lookup, so every getter silently fell through to __dyn_get).
+                        // MUST remain last: adding fields before stdlib/stdlibDeps/… shifts
+                        // their slot indices and breaks the self-host compiled kernel's reads.
+                        // Populated by registerGetter(); checked by module/core.js dispatch.
   }
 
 

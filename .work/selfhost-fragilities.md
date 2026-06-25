@@ -24,18 +24,18 @@ introduced by the fix). See Root A′ below — the proper fix is either a runti
 fork in `emitPolymorphicElementStore` (perf cost on every polymorphic store) or analyze-time HASH
 promotion when a binding receives dynamic-key writes.
 
-## TRACKED follow-ups (sweep findings, not yet fixed)
+## TRACKED follow-ups — RESOLUTION STATUS (2026 sweep)
 
 Severity: **SAFETY** = memory corruption / heap-read leak; **WRONG** = silent wrong value.
 
-| Root | Pattern | Severity | Note |
+| Root | Pattern | Severity | Status |
 |---|---|---|---|
-| A′ | `o[i]=v` (numeric/dynamic key) on an **untyped** receiver that is an OBJECT at runtime (e.g. empty `{}`) → `emitPolymorphicElementStore` fallback raw-stores: wrong value at small `i`, **OOB trap at large `i`** | SAFETY | The static-OBJECT variant is fixed (step 7b); this is the polymorphic variant. Fix: runtime `__ptr_type(OBJECT) → __dyn_set` fork in `emitPolymorphicElementStore`, or analyze-time HASH promotion for dyn-keyed bindings. |
-| B | `o[k]=v` (string runtime key) on schema OBJECT in a single-function module where no other fn sets `anyDynKey` → `__dyn_set` writes sidecar but the schema slot isn't shadowed; later `o.x` reads stale slot | WRONG | Shadow-write analysis in `analyze.js` (`anyDynKey` must be module-wide for the binding). Existing string-key regression passes only because its module incidentally sets `anyDynKey=true`. |
-| C | `ta[-1]` typed-array literal negative index read → `f64.load(payload + (-1<<3))`, reads heap metadata | SAFETY | Likely already neutralized by `arrayIndexKey` rejecting negatives — **verify**; if reachable, fold negative literals → undefined. |
-| D | `a[k]` (string runtime key) read on a populated array `[1,2,3]` → no `__is_str_key` dispatch; string NaN-coerces to 0 → returns `a[0]` | WRONG | Array element-**read** path (emit.js / read path) needs the same runtime-key fork the write path (step 7) has. Empty-array path is correct. |
-| E | `o[k]` read on a closure-**captured** schema object → schema id lost through the closure-cell unbox; propsPtr empty → undefined | WRONG | `__dyn_get` OBJECT-schema arm needs the schema id preserved across closure-cell boxing, or schema slots mirrored at alloc. |
-| F | `a[i]` array read with a runtime **negative** variable index → reads before payload → heap junk (literal `-1` is constant-folded correctly; only the runtime-variable case leaks) | SAFETY | Read path / `__arr_get_idx` needs an `i < 0 → undefined` guard. |
+| A′ | `o[i]=v` (numeric/dynamic key) on an **untyped** receiver that is an OBJECT at runtime (e.g. empty `{}`) → `emitPolymorphicElementStore` fallback raw-stores: wrong value at small `i`, **OOB trap at large `i`** | SAFETY | **FIXED.** `emitPolymorphicElementStore` (+ step 8) now fork OBJECT/HASH → `__dyn_set` with a STRING key (`o[3]`≡`o["3"]`, via `__i32_to_str`) — no schema-slot corruption, no OOB. Gated on `rep.notString` (`mayBeObject`) so a typed-array param indexed in a hot loop keeps the lean raw store and never drags in `__dyn_set`/`__i32_to_str` (the doc-anticipated "perf cost on every polymorphic store" — avoided). The lean numeric READ path is unchanged by design (an object with numeric keys reads `undefined`, like an out-of-range typed index; test/perf "skips __is_str_key dispatch" pins the lean read). Pinned: test/objects.js "o[i]=v on an untyped empty-object binding is OOB-safe (Root A′)". Unswitch matcher (`src/optimize/index.js`) hardened to descend through the new fork. |
+| B | `o[k]=v` (string runtime key) on schema OBJECT in a single-function module where no other fn sets `anyDynKey` → `__dyn_set` writes sidecar but the schema slot isn't shadowed; later `o.x` reads stale slot | WRONG | **FIXED at root.** `src/wat/assemble.js` `tblConsumed` now includes `__dyn_set`, so the schema table is built whenever a string-key write needs to mirror into a fixed slot (`buildObjectSchemaSetArm`, gated on `$__schema_tbl != 0`). `needsSchemaTbl`'s non-empty-schema guard keeps zero cost for dict-only programs. Pinned: test/objects.js (2 single-function-module cases). |
+| C | `ta[-1]` typed-array literal negative index read → `f64.load(payload + (-1<<3))`, reads heap metadata | SAFETY | **NON-ISSUE (verified).** `module/array.js` `ctx.core.emit['[]']` guards literal negatives up front (`intLiteralValue(idx) < 0 → undefExpr()`) before any `__typed_idx`/raw load. Covers literal `-1`/`-2`, typed + plain arrays. (The runtime-VARIABLE negative case is Root F.) |
+| D | `a[k]` (string/unknown key) read on an int-array that `promoteIntArrayLiterals` rewrote to `Int32Array` → typed load truncates `NaN→0` → returns `a[0]` instead of `undefined` | WRONG | **FIXED at root.** `src/compile/plan/literals.js` `_disqualifyPromotion` now threads `valTypes` and disqualifies an int-array-literal candidate from TYPED promotion when any `name[k]` read has a non-numeric key (`_isNumericKey`) — mirroring the emit-level `idxNumericName`/`intIndexIR` guard at the planning level (where the unsound rewrite occurs). Pinned: test/optimizer.js (string-literal + unknown-param key). |
+| E | `o[k]` read on a closure-**captured** schema object → schema id lost through the closure-cell unbox; propsPtr empty → undefined | WRONG | **NON-ISSUE (verified).** Closure-captured `o[k]` (and direct) read back correct values host + kernel; schema id is preserved. |
+| F | typed-array `ta[i]` read/write with a runtime **negative** (or `≥len`) variable index → reads/writes outside the buffer → heap junk / corruption. The `.typed:[]` resolved-ctor fast path (`module/typedarray.js`) is unchecked; the `__typed_idx` helper IS bounds-checked. The plain-ARRAY read path is already safe (inline `i32.lt_u` guard, elided by `inBoundsArrIdx`). | SAFETY | **OPEN — folded into the bench-perf phase.** A blanket bounds check on `.typed:[]` would hit every DSP loop: the bench kernels index `for(i=0;i<n;i++) a[i]` where `n` is a *separate* length var (`a=new T(n)`), which `inBoundsArrIdx` (proves only `i<a.length`) does NOT cover — so the guard would regress the exact cases we're optimizing. The correct fix is to EXTEND the in-bounds proof to `let a=new T(n); for(i<n) a[i]` (length-binding equivalence), eliding the guard for the DSP pattern and applying it only to genuinely-unproven indices. Done in the perf phase where that proof also enables hoisting. |
 
 ### Coverage gaps (zero existing assertions) for the above
 Numeric-key write on schema OBJECT (Root A — now covered), `o[i]+=v` compound, loop-counter key,
@@ -160,13 +160,56 @@ through the pipeline:
     keep the in-process vectorizer bit-identical (full suite + bench + test:wasm gate). PERF-ONLY: the
     kernel emits correct SCALAR code (bit-exact), so this is a jz.wasm output-quality gap, not a defect.
 
-- **✅ RESOLVED.** Took option (b), minimally: the lift chain now reads `ctx` from a MODULE-GLOBAL
-  (`_liftCtx` in vectorize.js) instead of the arg-passed param — each of the 7 lift fns (liftStmt,
-  liftExprV, getOrAllocLanedLocal, liftCanon, liftFail, narrowStore, buildRampStore) rebinds
-  `ctx = _liftCtx` at entry, and each of the 5 recognizers sets `_liftCtx = ctx` at creation. A module
-  global is read directly (no per-call arg-boxing), which jz.wasm compiles correctly; in-process it's a
-  no-op (same object) so the in-process vectorizer is BIT-IDENTICAL. Sound because exactly one lift runs
-  at a time (recognizers are tried sequentially). Result: the self-host kernel now vectorizes EVERY shape
-  at full parity (map/reduce/min-max/clamp/sqrt/bitselect/i8x16/i16x8/multi-acc — verified). The 23
-  `onKernel()` "codegen differs" guards in test/simd.js are removed (those shape assertions now run on
-  the kernel leg and PIN the parity); full test:wasm 2242 pass /0 fail, core/opt0/opt3 2513, fuzz clean.
+- **✅ RESOLVED AT TRUE ROOT (module-global workaround removed).** The earlier diagnosis ("deep
+  arg-passed object read miscompiled / schema lost across the boundary") was a SYMPTOM, not the root.
+  The real cause: **two of the five lift-ctx object literals had INCONSISTENT shapes.** `tryRampMap`
+  and `tryToneMap` built an 11-field ctx (missing `fnLocals`), while `tryVectorize`/`tryStencil`/
+  `tryReduceVectorize` built the 12-field ctx. jz infers ONE monomorphic struct layout per shared
+  callee param; since `liftStmt`/`liftExprV`/`getOrAllocLanedLocal` are called from BOTH, the inferred
+  arg layout collapsed to the 11-field schema. Reading a 12-field object through an 11-field schema
+  shifts every slot from index 6 (`fnLocals`) onward by −1, so `ctx.newLanedLocals` (slot 7) read
+  `fnLocals` (slot 6) — exactly the "wrong slot" symptom. V8 tolerated it (real objects read missing
+  fields as `undefined`); the NaN-box schema model did not. **Fix: add `fnLocals: null` to the two
+  short literals so all five ctx shapes are identical, then DELETE the entire `_liftCtx` module-global
+  workaround** (7 `ctx = _liftCtx` rebinds, 5 `_liftCtx = ctx` assignments, the `let _liftCtx`).
+  `getOrAllocLanedLocal` now takes `newLanedLocals` directly (no depth-2 ctx read at all). In-process
+  output is bit-identical (the workaround was a no-op there); the kernel vectorizes EVERY shape at full
+  parity — verified `in-process f64x2 == kernel f64x2`. The 23 un-guarded shape assertions in
+  test/simd.js pin it. Full suite 2519/0, test:wasm 2249/0, fuzz 0 divergences (5000 seeds × opt0-3).
+  **Convention (enforce):** any object literal flowing into a shared callee param must keep an IDENTICAL
+  field SET + ORDER across every construction site — a missing/reordered field silently mis-slots in the
+  kernel. `tryToneMap`'s comment already warned this; the invariant was violated when `fnLocals` was
+  added to the other ctxs without updating these two.
+
+## Fifth class — self-host *property-getter dispatch* (closure-tag fragility)
+
+Surfaced by the bench-selfhost parity gate (re-enabled after the `blur` harness fix below): the kernel
+miscompiled typed-array PROPERTY reads `.byteOffset` / `.buffer` / `.byteLength`, collection `.size`,
+and the regex getters — they fell through to a runtime `__dyn_get` (→ `undefined`) instead of resolving
+statically. Root of the `fft`/`synth`/`json` parity DIFFs (benchlib `checksumF64` builds a
+`new Uint32Array(out.buffer, out.byteOffset, …)` view).
+
+| Pattern | Self-host failure | Status |
+|---|---|---|
+| `a.byteOffset` / `a.buffer` / `a.byteLength` / `s.size` / `re.flags` — dispatched only when `ctx.core.emit['.PROP'].getter` is truthy | The getter-ness was tagged on the emitter CLOSURE (`getter = fn => (fn.getter = true, fn)`, src/ctx.js). The kernel cannot reliably read a dynamic property off a closure returned via a dynamic-key lookup (`ctx.core.emit[propKey]?.getter`), so every getter read `undefined` → fell to `__dyn_get` → wrong value. (Resists isolation — closure-prop, sequence-expr, dyn-key-read of a closure-with-dynprop ALL work standalone; only the real compiler diverges.) | **FIXED at root.** New `ctx.core.getters` (a plain Set on ctx.core, placed LAST to avoid slot-shift) + `registerGetter(key, fn)` (src/ctx.js) populates it alongside `ctx.core.emit[key]`. The 4 dispatch checks in module/core.js now authorize via `ctx.core.getters.has(propKey)` — a plain Set key-lookup is immune to the closure-tag loss (the `.${vt}:${method}` method dispatch already proved dynamic-key reads of the emit table are kernel-safe). Registration sites in module/{typedarray,collection,regex}.js switched to `registerGetter`. Pinned: test/buffer.js "typed-array property getters resolve statically (self-host parity)" — runs on the `JZ_TEST_TARGET=jz.wasm` leg. |
+
+## Sixth class — self-host *float-literal parsing* precision (correctly-rounded strtod)
+
+After the getter fix, `fft`/`synth` STILL DIFF: the kernel parses some f64 literals 1 ULP off from V8.
+jz.js parses source number literals via V8's `Number()` (correctly rounded); jz.wasm runs jz's own
+`__to_num`/`__parseFloat` (module/number.js), which accumulates ≤18 significant digits into an i64
+`$mant` then scales by `mant * __pow10(decExp)` (`POW10_SCALE`). That product is NOT correctly-rounded
+for `|decExp| > 22` (e.g. 10^23 = 2^23·5^23, 5^23 > 2^53 — `__pow10` is inexact + the mul/div rounds),
+so a 16-17 sig-digit constant like `-2.505210838544172e-8` lands 1 ULP off. Confirmed: that constant's
+compiled bytes DIFFER jz.js vs jz.wasm; most constants match. This breaks the bit-exactness `fft`/`synth`
+are designed for when compiled by the kernel. **IN PROGRESS** — correctly-rounded parser
+(Eisel-Lemire / Clinger-with-correction), oracle = V8 `Number`, fuzz-verified bit-exact.
+
+## Harness (NOT a compiler bug) — bench-selfhost arena exhaustion
+
+`scripts/bench-selfhost.mjs` reused ONE wasm instance for all 26 timed compiles (WARM+RUNS) of each
+program. The kernel bump-allocates per compile and never resets its arena (cross-compile caches assume
+an immortal arena), so a large program (`blur`) exhausted the 8192-page memory on its ~4th compile —
+"memory access out of bounds". This was MISDIAGNOSED earlier as a Root-A′ codegen bug. **FIXED** in the
+harness: `timeMinWasm` instantiates a FRESH instance per timed iteration (instantiation excluded from
+the timed region). bench:self now runs all 22 cases.

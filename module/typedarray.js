@@ -12,7 +12,7 @@ import { emit, idx, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
-import { inc, PTR, LAYOUT, getter } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -481,7 +481,7 @@ export default (ctx) => {
   // .buffer — always aliased (zero-copy). BUFFER: passthrough.
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
   // TYPED view (incl. DataView): BUFFER at descriptor[8] (root parent data offset).
-  ctx.core.emit['.buffer'] = getter((obj) => {
+  registerGetter('.buffer', (obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') return asF64(emit(obj))
@@ -501,7 +501,7 @@ export default (ctx) => {
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
   // View TYPED (incl. DataView): descriptor[0], via the __byte_length fallback.
-  ctx.core.emit['.byteLength'] = getter((obj) => {
+  registerGetter('.byteLength', (obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') {
@@ -525,7 +525,7 @@ export default (ctx) => {
   })
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
-  ctx.core.emit['.byteOffset'] = getter((obj) => {
+  registerGetter('.byteOffset', (obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor?.endsWith('.view')) {

@@ -28,7 +28,7 @@ import {
   some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import {
-  intLiteralValue, constIntExpr, staticObjectProps, staticPropertyKey,
+  intLiteralValue, nonNegIntLiteral, constIntExpr, staticObjectProps, staticPropertyKey,
 } from '../../static.js'
 import {
   smallConstForTripCount, containsDeclOf, cloneWithSubst,
@@ -978,13 +978,41 @@ const _intArrayLitElems = (expr) => {
   return out
 }
 
+// Arithmetic and bitwise operators that always produce a numeric result —
+// regardless of operand types — so `name[expr]` is index-safe after promotion.
+// Bitwise ops (`&`, `|`, etc.) ToInt32 their operands; pure-arithmetic ops with
+// numeric leaves stay numeric. `+` is excluded: `"a" + "b"` is a string.
+const _NUMERIC_INDEX_OPS = new Set(['-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>', 'u-', 'u+'])
+
+// Returns true when `key` is provably a numeric index at plan time: an integer
+// literal, a local name whose val-type is VAL.NUMBER in `valTypes`, or a
+// compound expression that always produces a number (arithmetic/bitwise ops).
+// Mirrors the `idxNumericName` / `intIndexIR` guard in emit so that the same
+// index shapes that skip `__is_str_key` at emit-time also pass here. Used by
+// `_disqualifyPromotion` to gate index reads: a non-numeric key on a promoted
+// Int32Array NaN-coerces to 0 (trunc_sat_f64_s(NaN) = 0) instead of returning
+// undefined — the correct JS behaviour for an out-of-range or string index.
+const _isNumericKey = (key, valTypes) => {
+  if (key == null) return false
+  if (nonNegIntLiteral(key) != null) return true           // literal integer
+  if (typeof key === 'string') return valTypes?.get(key) === VAL.NUMBER
+  if (!Array.isArray(key)) return false
+  const op = key[0]
+  if (op == null) return typeof key[1] === 'number'        // [null, n] literal
+  if (_NUMERIC_INDEX_OPS.has(op)) return true              // always produces Number
+  // `+` is numeric only when both operands are proven numeric.
+  if (op === '+' && key.length === 3)
+    return _isNumericKey(key[1], valTypes) && _isNumericKey(key[2], valTypes)
+  return false
+}
+
 // Walks `node` and disqualifies every candidate name that appears in an
 // unsafe context. `initSet` holds the candidate's own init-decl AST nodes
 // (their LHS reference is the binding being defined, not an escape).
-const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
+const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes) => {
   if (initSet.has(node)) {
     // The init decl itself: only walk the RHS (skip the LHS `name`).
-    return _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    return _disqualifyPromotion(node[2], candidates, disqualified, initSet, valTypes)
   }
   if (typeof node === 'string') {
     // Bare identifier outside any handled parent context — escape.
@@ -1010,7 +1038,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
       Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
       typeof node[1][1] === 'string' && candidates.has(node[1][1])) {
     disqualified.add(node[1][1])
-    for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
+    for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
     return
   }
 
@@ -1032,7 +1060,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
         typeof callee[1] === 'string' && candidates.has(callee[1])) {
       if (!_TYPED_SAFE_METHODS.has(callee[2])) disqualified.add(callee[1])
       // Walk method args (skip the receiver — already validated above).
-      for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
+      for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
       return
     }
     // Array.isArray flips true→false under promotion.
@@ -1041,7 +1069,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
       const list = raw == null ? [] : (Array.isArray(raw) && raw[0] === ',') ? raw.slice(1) : [raw]
       for (const a of list) {
         if (typeof a === 'string' && candidates.has(a)) disqualified.add(a)
-        else _disqualifyPromotion(a, candidates, disqualified, initSet)
+        else _disqualifyPromotion(a, candidates, disqualified, initSet, valTypes)
       }
       return
     }
@@ -1049,10 +1077,15 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
     // bare-name leaf above and disqualify.
   }
 
-  // Index read `name[k]` — read access is TYPED-safe. Walk the key in case
-  // it contains references to other candidate names.
+  // Index read `name[k]` — TYPED-safe only when the key is provably numeric.
+  // A string or unknown key on a promoted Int32Array would NaN-coerce to 0
+  // (i32.trunc_sat_f64_s(NaN) = 0) instead of returning undefined — silently
+  // wrong. Mirror the `idxNumericName` / `intIndexIR` guard in emit: disqualify
+  // the candidate unless `k` is an integer literal, a VAL.NUMBER local, or an
+  // expression that always produces a Number (bitwise/arithmetic ops).
   if (op === '[]' && typeof node[1] === 'string' && candidates.has(node[1])) {
-    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet, valTypes)
+    if (!_isNumericKey(node[2], valTypes)) disqualified.add(node[1])
     return
   }
 
@@ -1061,15 +1094,15 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
   if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' &&
       typeof node[1][1] === 'string' && candidates.has(node[1][1])) {
     disqualified.add(node[1][1])
-    _disqualifyPromotion(node[1][2], candidates, disqualified, initSet)
-    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    _disqualifyPromotion(node[1][2], candidates, disqualified, initSet, valTypes)
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet, valTypes)
     return
   }
 
   // Whole-binding reassign: `name = …` / `name += …` / etc.
   if (ASSIGN_OPS.has(op) && typeof node[1] === 'string' && candidates.has(node[1])) {
     disqualified.add(node[1])
-    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet, valTypes)
     return
   }
 
@@ -1079,7 +1112,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
     if (typeof t === 'string' && candidates.has(t)) { disqualified.add(t); return }
     if (Array.isArray(t) && t[0] === '[]' && typeof t[1] === 'string' && candidates.has(t[1])) {
       disqualified.add(t[1])
-      _disqualifyPromotion(t[2], candidates, disqualified, initSet)
+      _disqualifyPromotion(t[2], candidates, disqualified, initSet, valTypes)
       return
     }
   }
@@ -1094,9 +1127,9 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
       else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
                candidates.has(d[1]) && !initSet.has(d)) {
         disqualified.add(d[1])
-        _disqualifyPromotion(d[2], candidates, disqualified, initSet)
+        _disqualifyPromotion(d[2], candidates, disqualified, initSet, valTypes)
       } else {
-        _disqualifyPromotion(d, candidates, disqualified, initSet)
+        _disqualifyPromotion(d, candidates, disqualified, initSet, valTypes)
       }
     }
     return
@@ -1118,14 +1151,14 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
     for (let i = 1; i < node.length; i++) {
       const child = node[i]
       if (i === 2 && typeof child === 'string' && candidates.has(child)) continue
-      _disqualifyPromotion(child, candidates, disqualified, initSet)
+      _disqualifyPromotion(child, candidates, disqualified, initSet, valTypes)
     }
     return
   }
 
   // Generic — recurse into children. Bare-name refs at unhandled positions
   // hit the string-leaf branch above and disqualify on contact.
-  for (let i = 1; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
+  for (let i = 1; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
 }
 
 // Walk `body` to collect every `let X = [intLit, …]` candidate. Each entry
@@ -1193,8 +1226,11 @@ const promoteIntArrayLiteralsInBody = (body) => {
   if (!candidates.size) return { node: body, changed: false }
   const initSet = new Set()
   for (const { initDecl } of candidates.values()) initSet.add(initDecl)
+  // valTypes from analyzeBody gives per-local VAL.* kinds, used by
+  // _disqualifyPromotion to prove index keys are numeric (see _isNumericKey).
+  const { valTypes } = analyzeBody(body)
   const disqualified = new Set()
-  _disqualifyPromotion(body, candidates, disqualified, initSet)
+  _disqualifyPromotion(body, candidates, disqualified, initSet, valTypes)
   const validated = new Set()
   for (const name of candidates.keys()) if (!disqualified.has(name)) validated.add(name)
   if (!validated.size) return { node: body, changed: false }

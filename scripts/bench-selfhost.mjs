@@ -66,6 +66,21 @@ const timeMin = (fn) => {
   return best
 }
 
+// Time the WASM compile across WARM+RUNS iterations, each on a FRESH instance.
+// The kernel bump-allocates per compile and never resets its arena (cross-compile
+// caches assume an immortal arena), so reusing ONE instance for N compiles
+// exhausts memory on a large program — `blur` traps on its 4th compile. A fresh
+// instance per iteration models the real "one compile per instance" usage;
+// instantiation + source marshaling stay OUT of the timed region (the steady-state
+// per-compile cost is the fair comparison to the JS compiler's warmed path).
+const timeMinWasm = (src) => {
+  const setup = () => { const inst = instantiate(wasmBytes, { memory: 8192 }); const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); return () => inst.memory.read(inst.exports.default(sp, 0, lp)) }
+  for (let i = 0; i < WARM; i++) setup()()
+  let best = Infinity
+  for (let r = 0; r < RUNS; r++) { const fn = setup(); const t = performance.now(); fn(); best = Math.min(best, performance.now() - t) }
+  return best
+}
+
 ensureWasm()
 const wasmBytes = readFileSync(WASM)
 
@@ -87,7 +102,7 @@ for (const name of CASES) {
   const parity = fnv(jsBytes) === fnv(wasmBytesOut instanceof Uint8Array ? wasmBytesOut : new Uint8Array(wasmBytesOut)) ? 'ok' : 'DIFF'
 
   const js = timeMin(() => compileSelf(src, false, LEVEL))
-  const wasm = timeMin(compileWasm)
+  const wasm = timeMinWasm(src)
   sumJs += js; sumWasm += wasm; ratios.push(wasm / js); okN++
   const flag = wasm < js ? '' : ' ⚠'
   console.log(`${name.padEnd(12)} ${js.toFixed(2).padStart(6)} ${wasm.toFixed(2).padStart(9)}  ${(wasm/js).toFixed(2)}×${flag}  ${parity}`)

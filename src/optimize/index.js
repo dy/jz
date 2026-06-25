@@ -2908,10 +2908,23 @@ export function unswitchTypedParamLoop(fn) {
       let p = null
       for (let k = 1; k < thenArm.length; k++) { const a = thenArm[k]; if (Array.isArray(a) && a[0] === 'local.set' && f64Params.has(a[1]) && Array.isArray(a[2]) && a[2][0] === 'local.get') p = a[1] }
       if (!p || !has(thenArm, (x) => x[0] === 'call' && x[1] === '$__arr_set_idx_ptr')) continue
-      let es = null
-      for (let k = 1; k < elseArm.length; k++) { const a = elseArm[k]; if (Array.isArray(a) && a[0] === 'f64.store') es = a }
-      if (!es || !has(es[1], (x) => x[0] === 'call' && x[1] === '$__ptr_offset')) continue   // bails on the 3-way __typed_set_idx form
-      if (!(Array.isArray(es[1]) && es[1][0] === 'i32.add' && Array.isArray(es[1][2]) && es[1][2][0] === 'i32.shl')) continue
+      // The bare `f64.store(__ptr_offset(o)+i<<3)` is the non-ARRAY fallback. It may be
+      // nested under an OBJECT/HASH → __dyn_set guard (emitPolymorphicElementStore's
+      // dyn-prop safety fork) — descend to find it; the fast path replaces the whole
+      // store with a direct f64.load/store anyway (a proven Float64Array is never an
+      // OBJECT, so its dyn arm is dead there). Still bail on the 3-way __typed_set_idx
+      // form (mixed element widths — the f64.store fallback isn't the sole non-ARRAY case).
+      const findRawStore = (n) => {
+        if (!Array.isArray(n)) return null
+        if (n[0] === 'f64.store' && Array.isArray(n[1]) && n[1][0] === 'i32.add' &&
+            Array.isArray(n[1][2]) && n[1][2][0] === 'i32.shl' &&
+            has(n[1], (x) => x[0] === 'call' && x[1] === '$__ptr_offset')) return n
+        for (let k = 1; k < n.length; k++) { const r = findRawStore(n[k]); if (r) return r }
+        return null
+      }
+      if (has(elseArm, (x) => x[0] === 'call' && x[1] === '$__typed_set_idx')) continue
+      const es = findRawStore(elseArm)
+      if (!es) continue
       storeIdx = i; paramName = p; elseStore = es; break
     }
     if (storeIdx < 0) return

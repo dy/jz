@@ -1177,7 +1177,6 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   const newLanedLocals = new Map()  // origName → { laneName, simdType }
   const extraLocals = []  // canon temps allocated during lift
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
-  _liftCtx = ctx
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -1483,7 +1482,6 @@ function tryStencil(node, fnLocals, freshIdRef, enabled) {
   // Lift through the shared lifter (addresses kept verbatim; loads → v128.load).
   const newLanedLocals = new Map(), extraLocals = []
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
-  _liftCtx = ctx
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -1751,7 +1749,6 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
 
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
 
-  _liftCtx = ctx
   const liftedExpr = liftExprV(exprNode, ctx)
   // liftExprV's contract is "null ⟺ ctx.fail"; under self-host (jz.wasm) it can diverge and
   // return null WITHOUT the flag, which would otherwise splice a literal `null` operand into the
@@ -2017,14 +2014,13 @@ function _isAddressLocal(body, name, ind) {
 
 // Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
 // string — NOT a `{laneName}` object — because a schema-object read back through the Map in a
-// DIFFERENT function returns undefined under self-host (jz.wasm loses the object's schema id
-// across the boundary; see .work/selfhost-fragilities.md Root E). Strings are immune.
-function getOrAllocLanedLocal(name, ctx) {
-  ctx = _liftCtx
-  let laneName = ctx.newLanedLocals.get(name)
+// DIFFERENT function returns undefined under self-host. Takes `newLanedLocals` directly
+// (not ctx) so callers don't need to pass the full ctx object to a helper at call-depth 2.
+function getOrAllocLanedLocal(name, newLanedLocals) {
+  let laneName = newLanedLocals.get(name)
   if (!laneName) {
     laneName = `${name}__v`
-    ctx.newLanedLocals.set(name, laneName)
+    newLanedLocals.set(name, laneName)
   }
   return laneName
 }
@@ -2036,7 +2032,6 @@ function getOrAllocLanedLocal(name, ctx) {
 // directly — matching the scalar select, which likewise reads the temp thrice.
 // Otherwise we materialize a fresh v128 temp so the core evaluates once.
 function liftCanon(coreV, C, ctx, info) {
-  ctx = _liftCtx
   const laneNe = ctx.laneType === 'f32' ? 'f32x4.ne' : 'f64x2.ne'
   // The f32-via-f64 canon carries an f64 NaN const — splat it as f32 (demote is
   // exact for the canonical NaN, and the lane value coreV is already f32x4).
@@ -2059,16 +2054,6 @@ function liftCanon(coreV, C, ctx, info) {
 // bail for the block currently under the recognizer chain; the walk reads it after.
 let _whyNotActive = false
 let _whyNotReason = null
-// Self-host workaround: the lift chain (liftStmt / liftExprV / getOrAllocLanedLocal / liftCanon /
-// narrowStore / …) reads ctx fields at call-depth 2-3. jz.wasm miscompiles deep property reads of an
-// ARG-PASSED object — the NaN-box schema is corrupted across arg boundaries, so `ctx.newLanedLocals.get()`
-// reads back a WRONG slot (returns ctx.laneType), silently failing every map lift in the self-hosted
-// compiler (see .work/selfhost-fragilities.md). A MODULE-GLOBAL holding the active ctx is read directly
-// (no arg-boxing) and compiles correctly. Each lift fn rebinds `ctx = _liftCtx` at entry; in-process this
-// is a no-op (same object) so the in-process vectorizer stays bit-identical. Exactly one lift runs at a
-// time (recognizers are tried sequentially), so a single global is sound.
-let _liftCtx = null
-
 // Precision-relaxed f32 SIMD. jz computes Float32Array arithmetic in f64
 // (`f32.demote_f64 (f64.mul (f64.promote_f32 …) …)`); lifting that chain to
 // `f32x4.mul` over `v128.load` changes the intermediate from f64 to f32 — a
@@ -2083,7 +2068,6 @@ let _relaxF32 = false
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
 // overwriting, so the reason names the actual blocking op, not a wrapper.
 const liftFail = (ctx, reason) => {
-  ctx = _liftCtx
   ctx.fail = true
   if (ctx.failReason == null) ctx.failReason = reason
   if (_whyNotActive && _whyNotReason == null) _whyNotReason = reason
@@ -2092,7 +2076,6 @@ const liftFail = (ctx, reason) => {
 
 /** Lift a statement. Returns lifted stmt, or null to skip, or ['__seq__', ...] for multiple. */
 function liftStmt(stmt, ctx) {
-  ctx = _liftCtx
   if (!isArr(stmt)) {
     // Bare strings like "drop" — produced by stack-form WAT. We unwrap value-blocks
     // separately so an isolated "drop" should not appear here, but tolerate it.
@@ -2109,7 +2092,7 @@ function liftStmt(stmt, ctx) {
       return ['local.set', name, stmt[2]]
     }
     if (kind === 'lane') {
-      const laneName = getOrAllocLanedLocal(name, ctx)
+      const laneName = getOrAllocLanedLocal(name, ctx.newLanedLocals)
       const v = liftExprV(stmt[2], ctx)
       if (ctx.fail) return null
       return ['local.set', laneName, v]
@@ -2211,7 +2194,6 @@ function liftStmt(stmt, ctx) {
 
 /** Lift a value expression into v128 context. */
 function liftExprV(expr, ctx) {
-  ctx = _liftCtx
   if (!isArr(expr)) return liftFail(ctx, 'non-expression operand')
   const op = expr[0]
   const info = LANE_INFO[ctx.laneType]
@@ -2298,7 +2280,7 @@ function liftExprV(expr, ctx) {
     }
     const kind = ctx.localKind.get(name)
     if (kind === 'lane') {
-      const laneName = getOrAllocLanedLocal(name, ctx)
+      const laneName = getOrAllocLanedLocal(name, ctx.newLanedLocals)
       return ['local.get', laneName]
     }
     if (kind === 'invariant') {
@@ -2985,8 +2967,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   const newLanedLocals = new Map()
   const extraLocals = []
   const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
-  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
-  _liftCtx = ctx
+  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, fnLocals: null, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
 
   // A byte store fed by one value expression (inline, or via a single lane-local
   // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can
@@ -3164,7 +3145,6 @@ const PACK_I32_TO_I16 = [0, 1, 4, 5, 8, 9, 12, 13, 0, 0, 0, 0, 0, 0, 0, 0]
 const PACK_I32_TO_I8 = [0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 function narrowStore(addr, val, laneType, sty, ctx) {
-  ctx = _liftCtx
   const tmp = `$__nv${ctx.freshIdRef.next++}`
   ctx.extraLocals.push(['local', tmp, 'v128'])
   const g = ['local.get', tmp]
@@ -3181,7 +3161,6 @@ function narrowStore(addr, val, laneType, sty, ctx) {
 }
 
 function buildRampStore(storeOp, addr, vval, ctx) {
-  ctx = _liftCtx
   if (storeOp === 'i32.store') return ['v128.store', addr, vval]   // 4 i32 lanes → 16 bytes
   // i32.store8: hoist vval to a temp so the shuffle reads it once; low byte of
   // each of 4 lanes → bytes 0..3 → one i32.store (4 bytes). Shuffle lane indices
@@ -5170,8 +5149,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // wrong for some and field reads corrupt (this is the exact regression 11657cf fixed; the
   // tone-map's old 3-field ctx re-broke the ENTIRE self-host vectorizer). tryToneMap itself only
   // reads fail/failReason/extraLocals, but the unused fields must still be present, in order.
-  const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
-  _liftCtx = ctx
+  const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals: null, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
   const laned = (name) => { let ln = newLanedLocals.get(name); if (!ln) { ln = `${name}__v`; newLanedLocals.set(name, ln) } return ln }
   const freshMask = () => { const mt = `$__mask${freshIdRef.next++}`; ctx.extraLocals.push(['local', mt, 'v128']); return mt }

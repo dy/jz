@@ -419,3 +419,22 @@ test('spread: rest gets only remaining props', () => {
   }`)
   is(f(), 10)
 })
+
+// Second-class a′: a multi-prop spread `{ ...src, k }` whose source schema is
+// unknown at analysis time must be HASH-typed (src/kind.js VT['{}'] → VAL.HASH),
+// so its result reads go through the hash path — NOT a schema-slot f64.load that
+// could match an UNRELATED ambient schema and OOB/mis-read. This was the
+// self-host crash class behind `{ ...func.sig, params, results }`. Pins the type
+// + the read shape; runs under test:wasm.
+test('spread: multi-prop unknown-schema spread is HASH — no ambient-schema slot misdispatch', () => {
+  // `ambient` registers a schema [extra, other]; if the spread result were
+  // mistyped OBJECT, `c.extra` could resolve to ambient slot 0 (a raw f64.load).
+  const { f } = run(`
+    let ambient = { extra: 0, other: 0 }
+    export let f = () => { let src = { a: 1, b: 2 }; let c = { ...src, extra: 7 }; return c.extra * 100 + c.a * 10 + c.b }
+  `)
+  is(f(), 712) // extra=7, a=1, b=2 — all read from the HASH, none from a schema slot
+  const wat = compile(`export let h = (src) => { let c = { ...src, extra: 7 }; return c.extra }`, { optimize: 0, wat: true })
+  ok(/\$__hash_new/.test(wat), 'unknown-source multi-prop spread builds a HASH (emitDynamicSpread)')
+  ok(/\$__hash_get|\$__dyn_get/.test(wat), 'spread result read uses the HASH/dyn path, not a raw schema slot')
+})

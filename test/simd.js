@@ -79,13 +79,17 @@ test('SIMD f64x2 - odd length (remainder)', () => {
 // NO onKernel guard — this (and the un-guarded shape checks throughout) runs on the kernel leg,
 // pinning that the self-host kernel vectorizes IDENTICALLY to in-process.
 test('self-host parity: the lane vectorizer runs in the jz.wasm kernel', () => {
-  const SRC = `export let run = () => {
+  // Export name is `go`, NOT `run`: under the wasi host `run`/`_start` are WASI
+  // command-mode entries, wrapped as `() -> ()` (the f64 return is dropped), so a
+  // `.run()` value assertion reads undefined there. `go` runs identically across
+  // js / wasi / jz.wasm-kernel, so this parity assertion holds on every leg.
+  const SRC = `export let go = () => {
     let a = new Float64Array(64), o = new Float64Array(64)
     for (let i = 0; i < 64; i = i + 1) a[i] = i * 0.5
     for (let i = 0; i < 64; i = i + 1) o[i] = a[i] * 2.0 + 1.0
     let s = 0.0; for (let i = 0; i < 64; i = i + 1) s = s + o[i]; return s }`
   ok((wat(SRC, SIMD_OPT).match(/f64x2/g) || []).length >= 4, 'map loop lifts to f64x2 (in-process AND kernel)')
-  is(runVec(SRC, SIMD_OPT).run(), 2080, 'bit-exact result')
+  is(runVec(SRC, SIMD_OPT).go(), 2080, 'bit-exact result')
 })
 
 // === SIMD breadth matrix — pins generic DSP patterns against regression ===

@@ -231,7 +231,13 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     ctx.core.includes.has('__dyn_get_any_t_h') ||
     ctx.core.includes.has('__dyn_get_expr') ||
     ctx.core.includes.has('__dyn_get_expr_t') ||
-    ctx.core.includes.has('__dyn_get_or')
+    ctx.core.includes.has('__dyn_get_or') ||
+    // A string runtime-key WRITE `o[k]=v` whose `k` matches a schema field must
+    // mirror the value into the fixed schema slot (buildObjectSchemaSetArm), or a
+    // later static `o.x` read returns the stale slot. That mirror is gated on
+    // `$__schema_tbl != 0`, so a write-only module (no `__dyn_get*`) must still
+    // build the table. (needsSchemaTbl below skips it when every schema is empty.)
+    ctx.core.includes.has('__dyn_set')
   const needsSchemaTbl = (ctx.schema.list.length && tblConsumed &&
     (hasStringify || ctx.schema.list.some(s => s.length > 0))) ||
     hasJpObj

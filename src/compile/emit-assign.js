@@ -99,26 +99,54 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
       ['else', numericIR(['local.get', `$${keyTmp}`])]])
 }
 
+/** Raw indexed f64.store at `ptrOffset(o)+idx*8` — the lean fallback for a receiver
+ *  proven to be ARRAY/TYPED at runtime (the ARRAY/TYPED forks are taken first).
+ *  Operands are pre-set locals: `$obj` f64, `$idx` i32, `$val` f64. */
+const rawIndexedStore = (obj, idx, val, arrVT) => ['block', ['result', 'f64'],
+  ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${obj}`], arrVT), ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]], ['local.get', `$${val}`]],
+  ['local.get', `$${val}`]]
+
+/** Numeric element store for a receiver that may be OBJECT/HASH at runtime: those
+ *  keep dynamic indexed props in the propsPtr HASH sidecar at off-16 (paired with
+ *  __dyn_get); a raw store at ptrOffset(o)+i*8 lands in the schema-slot region —
+ *  silent corruption at small i, an OOB trap at large i (the self-host `blur`
+ *  crash). The propsPtr hash is STRING-keyed (object keys are strings: `o[3]` ≡
+ *  `o["3"]`), so the index is rendered to its string form — the same string the
+ *  __dyn_get read produces, content-compared by the hash. ARRAY/TYPED fall to the
+ *  raw store. Caller must `inc('__dyn_set','__i32_to_str')`. Gated by `mayBeObject`
+ *  so pure typed-array programs (an f64 param indexed in a hot loop) keep the lean
+ *  raw store and never drag in __dyn_set / __i32_to_str. */
+const objHashOrRawStore = (obj, idx, val, arrVT) => ['if', ['result', 'f64'],
+  ['i32.or', ptrTypeEq(['local.get', `$${obj}`], PTR.OBJECT), ptrTypeEq(['local.get', `$${obj}`], PTR.HASH)],
+  ['then', ['block', ['result', 'f64'],
+    ['drop', ['call', '$__dyn_set',
+      ['i64.reinterpret_f64', ['local.get', `$${obj}`]],
+      ['i64.reinterpret_f64', ['call', '$__i32_to_str', ['local.get', `$${idx}`]]],
+      ['i64.reinterpret_f64', ['local.get', `$${val}`]]]],
+    ['local.get', `$${val}`]]],
+  ['else', rawIndexedStore(obj, idx, val, arrVT)]]
+
 /** Build a `__ptr_type`-fork IR for `arr[idx] = val` when receiver is opaque
  *  (non-string expr, or string-named binding of unknown VAL). Forks on
  *  ARRAY → `__arr_set_idx_ptr` (+ optional persist), TYPED → `__typed_set_idx`,
- *  else → raw f64.store at the OBJECT/HASH payload offset. */
-function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist) {
+ *  OBJECT/HASH → `__dyn_set` (only when `mayBeObject`), else → raw f64.store. */
+function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist, mayBeObject) {
   const objTmp = temp('asu')
   const idxTmp = tempI32('asi')
   const ptrTmp = temp('asp')
   const valTmp = temp()
   const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
   inc('__ptr_type', '__arr_set_idx_ptr')
+  if (mayBeObject) inc('__dyn_set', '__i32_to_str')
   if (hasTypedSet) inc('__typed_set_idx')
   const arrSetCall = ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]
   const arrayBranch = ['block', ['result', 'f64'],
     ['local.set', `$${ptrTmp}`, arrSetCall],
     ...(persist ? [persist(['local.get', `$${ptrTmp}`])] : []),
     ['local.get', `$${valTmp}`]]
-  const fallbackStore = ['block', ['result', 'f64'],
-    ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
-    ['local.get', `$${valTmp}`]]
+  const fallbackStore = mayBeObject
+    ? objHashOrRawStore(objTmp, idxTmp, valTmp, arrVT)
+    : rawIndexedStore(objTmp, idxTmp, valTmp, arrVT)
   const elseBranch = hasTypedSet
     ? ['if', ['result', 'f64'],
         ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
@@ -239,6 +267,18 @@ export function emitElementAssign(arr, idx, val) {
   //     the `o.prop=v` vs `o[expr]=v` asymmetry that faulted the self-host.
   if (knownArrVT === VAL.OBJECT) return dynSetCall(arr, keyExpr, valueExpr)
 
+  // A receiver "may be an OBJECT/HASH at runtime" unless the analyzer has proven it
+  // is an indexable array/typed candidate (`rep.notString`, set by infer.js for
+  // bindings used as `x[i]` array/typed receivers — e.g. a Float64Array param `buf`).
+  // Those keep the lean raw-store path and never drag in __dyn_set / __i32_to_str
+  // (which carry their own rehash/itoa loops — a real size + hot-loop-ratchet cost).
+  // Everything else (an object-literal local `let o = {}` — the Root A′ case — or a
+  // fully-opaque expression) gets the OBJECT-safe fork that routes to the propsPtr
+  // sidecar instead of an out-of-bounds raw f64.store.
+  const mayBeObject = typeof arr !== 'string' || repOf(arr)?.notString !== true
+  // OBJECT-safe numeric store when the receiver may be an object, else the lean raw store.
+  const numStore = (o, i, v) => mayBeObject ? objHashOrRawStore(o, i, v, arrVT) : rawIndexedStore(o, i, v, arrVT)
+
   // 8. Polymorphic + runtime key dispatch — key kind unknown AND receiver shape
   //    possibly TypedArray (or fully opaque). Numeric branch forks on __ptr_type.
   //    Deliberately a 2-fork (TYPED vs else) rather than reusing
@@ -253,6 +293,7 @@ export function emitElementAssign(arr, idx, val) {
       const idxTmp = tempI32('asi')
       const valTmp = temp()
       inc('__ptr_type', '__typed_set_idx')
+      if (mayBeObject) inc('__i32_to_str')
       // When arr type is unknown (could be TypedArray) and __typed_set_idx is
       // available, dispatch the numeric branch through __ptr_type so TypedArray
       // writes go by element type. Without this, ternary-typed arrays (e.g.
@@ -265,23 +306,26 @@ export function emitElementAssign(arr, idx, val) {
         ['if', ['result', 'f64'],
           ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
           ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-          ['else', ['block', ['result', 'f64'],
-            ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
-            ['local.get', `$${valTmp}`]]]]])
+          ['else', numStore(objTmp, idxTmp, valTmp)]]])
     }
+    const objTmpB = temp('asu')
+    const idxTmpB = tempI32('asi')
     const valTmp = temp()
+    inc('__ptr_type')
+    if (mayBeObject) inc('__i32_to_str')
     return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => ['block', ['result', 'f64'],
+      ['local.set', `$${objTmpB}`, asF64(emit(arr))],
+      ['local.set', `$${idxTmpB}`, asI32(typed(keyNode, 'f64'))],
       ['local.set', `$${valTmp}`, valueExpr],
-      ['f64.store', ['i32.add', ptrOffsetIR(asF64(emit(arr)), arrVT), ['i32.shl', asI32(typed(keyNode, 'f64')), ['i32.const', 3]]], ['local.get', `$${valTmp}`]],
-      ['local.get', `$${valTmp}`]])
+      numStore(objTmpB, idxTmpB, valTmp)])
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure
   //    __ptr_type dispatch (no key-kind fork: key is provably numeric here).
   if (typeof arr !== 'string')
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, null)
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, null, mayBeObject)
   if (knownArrVT == null)
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistBinding(arr))
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistBinding(arr), mayBeObject)
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
   return withTemp(valueExpr, t => [
