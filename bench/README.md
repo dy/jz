@@ -70,6 +70,7 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`sieve`](sieve/sieve.js) | Sieve of Eratosthenes over a byte array; pure strided scatter (j = i², i²+i, …) guarded by an outer branch — a non-contiguous write pattern |
 | [`vm`](vm/vm.js) | tiny bytecode interpreter — a fetch-decode-dispatch loop (if/else opcode chain + indirect code-array loads) running an integer recurrence; the canonical VM/regex-engine inner loop |
 | [`spmv`](spmv/spmv.js) | sparse matrix×vector in CSR form; the MAC inner loop gathers `x[col[k]]` through a column-index array — the data-dependent gather dense codegen handles worst (exact-integer f64, bit-identical everywhere) |
+| [`hashjoin`](hashjoin/hashjoin.js) | probe-dominated relational hash join (build small, stream a large probe side, sum matched payloads) — the database/dataframe kernel and JZ's boss case: the open-addressing probe reads the same slot twice per step (guard then match), and the one un-eliminated load on the cache-missing probe chain is enough to trail V8 itself |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |

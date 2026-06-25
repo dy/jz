@@ -118,6 +118,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
 .chips button { padding: 4px 10px; font-size: 10.5px; }
 .chips button.on { background: var(--ink); color: var(--paper); }
+.chips button[disabled] { opacity: .4; pointer-events: none; }
+.chips button .n { margin-left: 5px; opacity: .55; font-variant-numeric: tabular-nums; }
+h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-numeric: tabular-nums; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 40px 38px; }
 .card h3 { font-size: 13px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
 .card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
@@ -180,7 +183,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 </section>
 
 <section id="cases">
-  <h2>Cases</h2>
+  <h2>Cases <span class="cnt" id="casecount"></span></h2>
   <div class="chips" id="chips"></div>
   <div class="cards" id="cards"></div>
 </section>
@@ -280,15 +283,38 @@ const CLS_ICO = {
   native: `<svg class="cico cls-native" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><title>native</title><path d="M4 17l6-6-6-6M12 19h8"/></svg>`,
 }
 
-const FAMILY = { biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio',
-  mat4: 'numeric', poly: 'numeric', bitwise: 'numeric', dotprod: 'numeric',
-  mandelbrot: 'numeric', sort: 'numeric', crc32: 'numeric', tokenizer: 'string', json: 'string',
-  callback: 'alloc', aos: 'alloc', blur: 'image', matmul: 'numeric', heat: 'numeric' }
+// Every case lands in exactly one family so the chip counts sum to the corpus
+// total. Families mirror the bench README's groupings: dense float math vs the
+// integer / control-flow & gather-scatter kernels it separates them from.
+const FAMILY = {
+  // numeric — dense f64 math, linear algebra, physics, stencils
+  mat4: 'numeric', poly: 'numeric', dotprod: 'numeric', mandelbrot: 'numeric',
+  matmul: 'numeric', heat: 'numeric', nbody: 'numeric', lorenz: 'numeric',
+  particle: 'numeric', spmv: 'numeric',
+  // integer — i32 / bit / hash / sort / search / dispatch
+  bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
+  radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
+  hashjoin: 'integer',
+  // audio — DSP / per-sample loop-carried signal
+  biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio', wav: 'audio',
+  // image — raster / pixel / render / procedural
+  blur: 'image', conv2d: 'image', qoi: 'image', raytrace: 'image', noise: 'image', alpha: 'image',
+  // string — text / parse / codec / sequence
+  tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
+  // alloc — allocation / closures / object layout
+  callback: 'alloc', aos: 'alloc',
+}
 const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
   mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
   tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
   mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
-  blur: 'rgba · stencil', matmul: 'gemm · f64', heat: 'stencil · f64' }
+  blur: 'rgba · stencil', matmul: 'gemm · f64', heat: 'stencil · f64',
+  wav: 'pcm · i16', nbody: 'n-body · f64', lorenz: 'ode · f64', particle: 'soa · f64',
+  spmv: 'sparse · gather', conv2d: 'conv · i8', qoi: 'codec · scalar', raytrace: 'render · sqrt',
+  noise: 'perlin · gather', alpha: 'blend · i32', base64: 'codec · lut', lz: 'lz · match',
+  levenshtein: 'dp · min', hash: 'murmur · i32', sieve: 'scatter · i32', radixsort: 'radix · scatter',
+  dict: 'hash · probe', nqueens: 'recursion · bitmask', vm: 'dispatch · i32',
+  hashjoin: 'join · probe' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -309,6 +335,25 @@ const INSIGHTS = {
   blur: 'Separable box blur on an RGBA8 image — sliding-window stencil with integer accumulation; memory-bound layout codegen.',
   matmul: 'Dense C = A·Bᵀ, Bᵀ pre-transposed so each output is a contiguous dot — the multiply-accumulate kernel every linear-algebra library lives on; integer-valued, so bit-exact across targets.',
   heat: 'Explicit-Euler 5-point Laplacian over a double-buffered grid (dst≠src, fixed border) — the clean neighbour-load stencil a[i±1]/a[i±W] jz lifts to f64x2, bit-exact.',
+  nbody: 'O(n²) pairwise gravitational force accumulation in f64 — the physics-step kernel; transcendental-free, so bit-identical across targets (Go arm64 FMA aside).',
+  lorenz: 'Lorenz attractor — explicit-Euler integration of a 3-variable ODE; a tight loop-carried f64 recurrence no target can vectorize.',
+  particle: 'Fixed-timestep particle integrator — N particles in struct-of-arrays (px,py,vx,vy) under constant gravity; pure f64 add/mul, a memory-bound SoA sweep.',
+  spmv: 'Sparse A·x in CSR — the multiply-accumulate inner loop gathers x[col[k]] through an index array; the data-dependent gather dense codegen handles worst.',
+  conv2d: 'Int8 quantized 3×3 conv layer (i32 MAC + ReLU requant) — the spatial-convolution counterpart to dense matmul, the edge-ML inference kernel.',
+  qoi: 'QOI lossless image codec encode+decode — loop-carried run/index/diff/luma ops no target can vectorize; a pure scalar-codegen race.',
+  raytrace: 'Sphere ray tracer — primary ray + closest-hit + Lambert/ambient shading to an f64 framebuffer; a branchy loop-carried scalar sqrt pipeline no target vectorizes.',
+  noise: 'Perlin fBm (5 octaves) — nested permutation-table hashing perm[perm[X]+Y] interleaved with f64 quintic smoothstep; the procedural-generation kernel. AS’s direct typed loads still win the gather.',
+  alpha: 'Alpha compositing — constant-opacity “over” blend of two RGBA8 images in fixed-point i32; the canonical layer-blend / crossfade kernel.',
+  base64: 'Base64 encode+decode round-trip — table-driven 3→4 byte packing; the canonical codec / serialization kernel.',
+  lz: 'LZSS compress+inflate — greedy sliding-window longest-match search; the match finder that dominates every LZ-family codec.',
+  levenshtein: 'Edit-distance rolling-row DP — each cell is min(del,ins,sub) with a diagonal dependency no target vectorizes; the branchy min-reduction over a typed row AS lowers tighter than jz today.',
+  hash: 'MurmurHash3 x86_32 over a byte buffer — table-free multiply/rotate/xor mixing, a different ALU profile from crc32.',
+  sieve: 'Sieve of Eratosthenes — strided composite scatter (i², i²+i, …) guarded by an outer branch; a non-contiguous integer write pattern.',
+  radixsort: 'LSD radix sort (4×8-bit counting passes) over u32 keys — histogram → prefix-sum → scatter with buffer ping-pong; the gather/scatter integer sort.',
+  dict: 'Open-addressing hash table — multiply-shift hash scatter + dependent-load probe-chain gather with unpredictable branches; the gather shape jz lowers least tightly today.',
+  nqueens: 'Bitmask N-Queens counter — deep backtracking recursion + per-node available-columns branch; the call/recursion-codegen probe.',
+  vm: 'Tiny bytecode interpreter — fetch-decode-dispatch if/else opcode chain + indirect code-array loads; the VM/regex-engine inner loop jz wins outright, even vs native clang.',
+  hashjoin: 'Probe-dominated relational hash join — the database/dataframe kernel, and jz’s boss case: the open-addressing probe reads the same slot twice per step (guard then match), and the one redundant load on the cache-missing probe chain is enough to lose to V8 itself. Kill it (value-CSE across the loop guard) + prove h&MASK in-bounds and jz wins the gather shape nothing safe surpasses.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -466,10 +511,13 @@ const renderStrip = () => {
 }
 
 // ── per-case cards ───────────────────────────────────────────────────────────
-const CHIPS = ['all', 'numeric', 'audio', 'string', 'alloc', 'image']
+const CHIPS = ['all', 'numeric', 'integer', 'audio', 'image', 'string', 'alloc']
+const famCount = f => f === 'all' ? CASES.length : CASES.filter(c => FAMILY[c.id] === f).length
 const renderChips = () => {
-  $('chips').innerHTML = CHIPS.map(f =>
-    `<button data-f="${f}" class="${filter === f ? 'on' : ''}">${f}</button>`).join('')
+  $('chips').innerHTML = CHIPS.map(f => {
+    const n = famCount(f)
+    return `<button data-f="${f}" class="${filter === f ? 'on' : ''}"${n ? '' : ' disabled'}>${f}<span class="n">${n}</span></button>`
+  }).join('')
 }
 
 // Per-case: ONE intermixed list of every target, sorted by absolute speed — the
@@ -518,6 +566,7 @@ const cardRows = c => {
 }
 
 const renderCards = () => {
+  $('casecount').textContent = CASES.length   // corpus total, next to the "Cases" title
   let html = ''
   for (const c of CASES) {
     if (filter !== 'all' && FAMILY[c.id] !== filter) continue
