@@ -113,6 +113,24 @@ test('selfhost: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   is(instantiate(bytes, { memory: 256 }).exports.main(), 10, 'main() === 10 (1+2+3+4)')
 })
 
+// Pins the LEVEL-2 f64-constant pool. hoistConstantPool used to key+emit a pooled constant
+// through `String(number)`, which keeps only ~9 sig digits IN THE KERNEL (jz's number formatter),
+// so a high-precision literal lost precision (0.041666666666666664 → 0x1.5555558325751p-5) — the
+// kernel's L2 output diverged from jz.js (fft/synth twiddle coefficients). Fixed by keying on the
+// exact 64 bits and emitting the number itself. A 17-digit literal used twice (so it pools) whose
+// reciprocal is a clean integer makes any precision loss numerically visible.
+test('selfhost: level-2 f64-constant pool keeps full precision', () => {
+  getSelf()
+  const s = instantiate(readFileSync(SELF), { memory: 8192 })
+  // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
+  const src = 'export let main = () => { const a = 0.041666666666666664; const b = 0.041666666666666664; return 1/a + 1/b }'
+  const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
+  const bin = s.memory.read(out)
+  const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  is(instantiate(bytes, { memory: 256 }).exports.main(), 48, 'kernel-pooled 1/24 stays exact (1/a+1/b === 48)')
+  is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
+})
+
 // Pins the f64x2 lane vectorizer under self-host — it broke ENTIRELY two ways this regression hit:
 //  (1) tryToneMap built its `ctx` with a different field set than the other lifters; the kernel
 //      infers one struct layout per shared callee (liftFail), so the mismatched shape corrupted

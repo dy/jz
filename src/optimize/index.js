@@ -2315,22 +2315,33 @@ function inferTypeFromContext(fn, gName, bodyStart) {
  *
  * Mutates `funcs` in place; writes new global decls via `addGlobal(name, constLiteral)`.
  */
+// `String(number)` keeps only ~9 significant digits in the self-host kernel (jz's number
+// formatter — see README "differences"). The old pool keyed constants by `n:${c[1]}` (a toString)
+// and emitted them via that same string, so in the kernel a constant both LOST precision
+// (0.041666666666666664 → 0x1.5555558325751p-5) and could MERGE with a distinct value sharing its
+// 9-digit prefix. Key by the exact 64 bits instead (a Float64Array/Uint32Array union — the
+// numHashLiteral pattern, which self-hosts; the sign bit distinguishes -0/+0 for free) and emit
+// the original NUMBER, which `declGlobal` lowers to a binary `f64.const` (exact, no string).
+const _FCB = new Float64Array(1), _FCBu = new Uint32Array(_FCB.buffer)
+const f64BitsKey = (n) => { _FCB[0] = n; return `n:${_FCBu[0]}:${_FCBu[1]}` }
+
 export function hoistConstantPool(funcs, addGlobal) {
   const MIN_USES = 2
   // Single walk: count occurrences AND record each f64.const site for direct rewrite.
   // Avoids a second full-AST traversal in the rewrite phase.
   const counts = new Map()
+  // NOTE: not `valueOf` — a local named like an Object method self-host-miscompiles (the
+  // kernel's dynamic dispatch confuses it). key → exact original c[1] (number, or source string).
+  const exactVal = new Map()
   const sites = []  // { parent, idx, key }
   const walk = (node) => {
     if (!Array.isArray(node)) return
     for (let i = 0; i < node.length; i++) {
       const c = node[i]
       if (Array.isArray(c) && c[0] === 'f64.const' && (typeof c[1] === 'number' || typeof c[1] === 'string')) {
-        // Distinguish -0 from +0 by sign: template literal collapses both to "0".
-        const k = typeof c[1] === 'number'
-          ? (Object.is(c[1], -0) ? 'n:-0' : `n:${c[1]}`)
-          : `s:${c[1]}`
+        const k = typeof c[1] === 'number' ? f64BitsKey(c[1]) : `s:${c[1]}`
         counts.set(k, (counts.get(k) || 0) + 1)
+        if (!exactVal.has(k)) exactVal.set(k, c[1])
         sites.push({ parent: node, idx: i, key: k })
       }
       walk(c)
@@ -2343,8 +2354,9 @@ export function hoistConstantPool(funcs, addGlobal) {
   let gId = 0
   for (const [k] of sorted) {
     const name = `__fc${gId++}`
-    const lit = k.slice(2)
-    addGlobal(name, lit)
+    // The EXACT original c[1] (a number → binary f64.const; or a source hex/decimal string),
+    // never the lossy k-derived toString.
+    addGlobal(name, exactVal.get(k))
     hoist.set(k, name)
   }
   if (!hoist.size) return
