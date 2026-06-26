@@ -2031,7 +2031,7 @@ function tryCharCodeAtFast(callee, obj, method, parsed) {
       return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
     }
     return typed(stringOps(obj).charCodeAt(
-      asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+      asF64(recv), asI32(emit(parsed.normal[0])), ctx, false, true), 'i32')
   }
 }
 

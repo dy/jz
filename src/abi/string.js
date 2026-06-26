@@ -86,7 +86,7 @@ const allocLocalI32 = (ctx, tag) => {
  *  side-effecting `iI32` is spilled to a scratch local first — leaves are safe
  *  to duplicate. `oobNan` picks the OOB contract / result type exactly as in
  *  the generic path. */
-function emitDecompCharRead(dec, iI32, ctx, oobNan) {
+function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
   const rt = oobNan ? 'f64' : 'i32'
   let idx = iI32, spill = null
   if (!isLeaf(iI32)) { spill = allocLocalI32(ctx, 'ci'); idx = ['local.get', `$${spill}`] }
@@ -98,10 +98,17 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan) {
     ['local.get', `$${dec.sso}`],
     ['then', ssoByteExpr],
     ['else', heapByteExpr]]
-  const use = ['if', ['result', rt],
-    ['i32.ge_u', idx, ['local.get', `$${dec.len}`]],
-    ['then', oobNan ? oobNanIR() : ['i32.const', 0]],
-    ['else', oobNan ? ['f64.convert_i32_u', ccByte] : ccByte]]
+  // `inBounds`: the index is proven in [0, len) by an enclosing canonical scan
+  // (analyze.js inBoundsCharCodeAt / splitCharScanLoops' in-bounds main loop), so
+  // the OOB arm is dead — drop the per-char `i >= len` compare. This is what turns
+  // a split char-scan loop into a bare load (the `if(sso)` arm is loop-invariant and
+  // V8-folds), matching AS/native on tokenizer-shape scans. Otherwise keep the guard.
+  const use = inBounds
+    ? (oobNan ? ['f64.convert_i32_u', ccByte] : ccByte)
+    : ['if', ['result', rt],
+        ['i32.ge_u', idx, ['local.get', `$${dec.len}`]],
+        ['then', oobNan ? oobNanIR() : ['i32.const', 0]],
+        ['else', oobNan ? ['f64.convert_i32_u', ccByte] : ccByte]]
   return spill
     ? ['block', ['result', rt], ['local.set', `$${spill}`, iI32], use]
     : use
@@ -208,7 +215,7 @@ export const sso = {
      *  `src/compile.js#emitFunc` — it drains `ctx.func.charDecomp` after the
      *  body emit completes and splices an init block between the boxed-param
      *  inits and the user statements. */
-    charCodeAt: (sF64, iI32, ctx, oobNan = false) => {
+    charCodeAt: (sF64, iI32, ctx, oobNan = false, inBounds = false) => {
       // `oobNan` selects the out-of-bounds semantics and result type:
       //   - false (default): OOB → `i32.const 0`, result i32 — the raw-byte
       //     primitive used by the `buf += s[i]` append-byte fast path.
@@ -261,7 +268,7 @@ export const sso = {
             dec = { base, len, sso, loadbase, ptr64, param: name }
             ctx.func.charDecomp.set(name, dec)
           }
-          return emitDecompCharRead(dec, iI32, ctx, oobNan)
+          return emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds)
         }
       }
 
