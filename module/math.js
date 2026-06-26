@@ -360,6 +360,22 @@ export default (ctx) => {
     // We emit, check, and if not foldable, the emitted IR is used by the fallthrough paths.
     const irA = toNumF64(a, emit(a)), irB = toNumF64(b, emit(b))
     if (isLit(irA) && isLit(irB)) return typed(['f64.const', Math.pow(litVal(irA), litVal(irB))], 'f64')
+    // Constant non-integer exponent c: inline Math.pow(x,c) as exp(c·log(x)) — that IS $math.pow's
+    // own non-integer tail (the final line of $math.pow below), so it is BIT-IDENTICAL to the call
+    // for every finite x and for x ∈ {±0, +∞, NaN}: log+exp carry the edges (log(NaN)=NaN,
+    // log(0)=−∞, log(<0)=NaN, log(+∞)=+∞; exp(±∞)=∞/0). Skipping the ~15-branch pow special-case
+    // ladder + the call frame is a per-pixel win on the gamma curves (v**0.45, a**(1/2.4)) that
+    // dominate tone-mapping, and a program whose only pow is folded this way never pulls $math.pow.
+    // The ONE divergence is x=−∞: this yields NaN where Math.pow gives ±∞ — the same deliberate
+    // boundary trade jz already makes for `(−∞)**0.5` (see the sqrt fold above); −∞ is never a real
+    // tone-map/gamma base. Integers stay on $math.pow (its square-and-multiply path is bit-different
+    // from exp/log); ±0.5 stays sqrt / the exact pow path (handled above).
+    if (isLit(irB)) {
+      const c = litVal(irB)
+      if (Number.isFinite(c) && !Number.isInteger(c) && c !== 0.5 && c !== -0.5)
+        return (inc('math.exp'), inc('math.log'),
+          typed(['call', '$math.exp', ['f64.mul', irB, ['call', '$math.log', irA]]], 'f64'))
+    }
     // base 2 → dedicated 2^y (exp2 is exact for integer y, and skips exp's ×ln2/÷ln2).
     // Every other literal base keeps $math.pow: `exp(y·ln base)` would lose ulps and,
     // worse, miss Math.pow's integer-exponent semantics — e.g. `16 ** flen` with a

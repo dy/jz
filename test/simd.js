@@ -2533,9 +2533,11 @@ test('per-pixel-color f64x2 - odd widths exercise the scalar tail (bit-exact)', 
   }
 })
 
-// Phase 2: a sin+sqrt heavy pixel with an `a ** γ` sRGB pack. sin/sqrt go 2-wide; pow rides along
-// via the $math.pow2 mirror (bit-exact per-lane scalar) so the surrounding f64x2 arithmetic stays
-// vectorized. Both the conditional (→ v128.bitselect) and the |0 pack must stay bit-exact.
+// Phase 2: a sin+sqrt heavy pixel with an `a ** γ` sRGB pack. sin/sqrt go 2-wide; the constant-γ pow
+// lowers at emit-time to exp(γ·log a) (module/math.js emitPow — bit-identical to $math.pow for finite
+// x), which the lift then carries as TRUE 2-wide $math.log_v / $math.exp_v (both lanes one poly), so
+// the whole pixel is vectorized — better than the old per-lane-scalar $math.pow2 mirror. Both the
+// conditional (→ v128.bitselect) and the |0 pack must stay bit-exact.
 const PPC_POW = `
   let W=64, H=48
   let mem = new Uint32Array(W*H)
@@ -2565,7 +2567,8 @@ test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact
   const w = wat(PPC_POW, PPC_ON)
   ok(/__ppc/.test(w), 'pow kernel takes the per-pixel-color path')
   ok(/call \$math\.sin2/.test(w) && /f64x2\.sqrt/.test(w), 'sin + sqrt vectorized 2-wide')
-  ok(/call \$math\.pow2/.test(w), 'a**γ pow vectorized via the f64x2 $math.pow2 mirror (Phase 2)')
+  ok(/call \$math\.log_v/.test(w) && /call \$math\.exp_v/.test(w), 'a**γ → exp_v∘log_v: constant-γ pow inlined as exp·log, both TRUE 2-wide (Phase 2)')
+  ok(!/call \$math\.pow2/.test(w), 'no per-lane-scalar $math.pow2 — the inlined exp·log vectorizes fully')
 })
 
 // ── Multi-caller SIMD-helper inlining (the size-for-speed `inline` pass) ──────────────────

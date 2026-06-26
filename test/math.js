@@ -361,6 +361,35 @@ test('Math.pow / ** — constant-integer-exponent fold (bit-identical, stdlib-fr
   ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
 })
 
+test('Math.pow / ** — constant-non-integer-exponent inline (exp∘log, bit-identical mod -∞)', () => {
+  // A constant NON-integer exponent lowers to inline exp(c·log x) — that IS $math.pow's own
+  // non-integer tail, so it is bit-identical to the runtime ($math.pow) path for every input
+  // except x=-∞ (NaN here vs ±∞ from Math.pow — the same deliberate boundary trade jz already
+  // makes for (-∞)**0.5). The gamma curves v**0.45 / a**(1/2.4) that dominate tone-mapping ride it.
+  const m = run(`
+    export let ref = (x, e) => x ** e          // runtime exponent → $math.pow (no fold) — the reference
+    export let g45 = (x) => x ** 0.45
+    export let gsrgb = (x) => x ** (1.0 / 2.4)
+    export let gneg = (x) => x ** -1.5
+  `)
+  // bit-identical to the runtime $math.pow path across finite values + every edge but -∞
+  for (const x of [0, -0, 0.5, 1, 2, 1.1, 3.14159, 47.032, 1e150, 1e-300, NaN, Infinity, Number.MIN_VALUE]) {
+    ok(Object.is(m.g45(x), m.ref(x, 0.45)), `0.45: x=${x}`)
+    ok(Object.is(m.gsrgb(x), m.ref(x, 1 / 2.4)), `1/2.4: x=${x}`)
+    ok(Object.is(m.gneg(x), m.ref(x, -1.5)), `-1.5: x=${x}`)
+  }
+  ok(Number.isNaN(m.g45(-3)) && Number.isNaN(m.ref(-3, 0.45)), '(-finite)**c = NaN (matches $math.pow)')
+  // The ONE divergence: (-∞)**c is NaN here (log(-∞)=NaN) where spec Math.pow gives ±∞ — deliberate,
+  // mirrors the (-∞)**0.5 sqrt trade; -∞ is never a real tone-map/gamma base.
+  ok(Number.isNaN(m.g45(-Infinity)), '(-∞)**0.45 → NaN (deliberate boundary trade)')
+  is(Math.pow(-Infinity, 0.45), Infinity)
+  // A program whose only pow is a constant non-integer exponent never pulls $math.pow — it inlines
+  // to exp(c·log x), so exp + log are present and the pow body is gone.
+  const wat = compile(`export let f = (x) => x ** 0.45`, { wat: true })
+  ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided (inlined as exp∘log)')
+  ok(/\(func \$math\.exp/.test(wat) && /\(func \$math\.log/.test(wat), 'exp + log stdlib present')
+})
+
 test('Math.pow / ** — positive-constant base lowers to exp (no pow/log stdlib)', async () => {
   const m = run(`export let f = (n) => 2 ** (n / 12)`)
   almost(m.f(5), Math.pow(2, 5 / 12), 1e-6)
