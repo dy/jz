@@ -161,14 +161,20 @@ export let resize = (w, h) => {
 
 export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2] = pb; th[3] = ir; th[4] = ig; th[5] = ib }
 
-export let init = () => {
-  SEED = 20240626
+let baseSeed = 20240626         // layout seed — init() is deterministic; seed()/the randomize button re-roll it
+
+let generate = () => {
+  SEED = baseSeed
   rob[RX] = -halfW() + 0.35; rob[RY] = 0.0; rob[RH] = 0.0; rob[VL] = 0.0; rob[VR] = 0.0
   nobs = 28
   let i = 0
   while (i < nobs) { spawnObstacle(i); i++ }
   newGoal()
 }
+
+export let init = () => generate()
+// host-set layout seed: a fresh combination of balls per page-load and on the randomize button
+export let seed = (s) => { baseSeed = s | 0; generate() }
 
 // host steers the target: click or drag (normalized screen coords → world metres)
 export let setGoal = (fx, fy) => {

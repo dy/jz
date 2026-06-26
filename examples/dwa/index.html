@@ -11,11 +11,17 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // A faithful port of Andrew Davison's Dynamic Window Approach demo. Drag to move the target; the
 // robot scores every reachable arc for progress-to-goal and obstacle clearance and drives the best.
+// A fresh combination of balls each page-load; the randomize button (⚄) re-rolls a new one.
+let mySeed = (Math.random() * 2e9) | 0
+
 const demo = runDemo({
   name: "dwa",
   hint: "Dynamic Window Approach (Fox / Burgard / Thrun) — after Andrew Davison's robotics-course demo. The robot scores every reachable wheel-velocity arc for progress and clearance and drives the best. Drag to move the goal",
   size: { dpr: 2, budget: null },
-  load: (e) => e.init(),
+  // apply the current layout seed on every (re)load so resize / engine-swap keep the same combination
+  load: (e) => { if (e.seed) e.seed(mySeed); else e.init() },
+  // the randomize button re-rolls the ball combination (advance the seed the host owns, then re-seed)
+  randomize: (e) => { mySeed = (mySeed * 1103515245 + 12345) | 0; if (e.seed) e.seed(mySeed); else e.init() },
   frame: (e, t) => e.frame(t),
 })
 
