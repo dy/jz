@@ -14,7 +14,7 @@ let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
 // and smears a wake behind it). The display pace is kept calm by throttling the step rate in the host.
 let C2 = 0.5
 let DAMP = 0.995      // damping → rings fade as they spread (and so appear to slow & stop) yet last long enough to cross
-let GAIN = 9.0        // render brightness of the crest field — keeps lone rings thin & unsaturated
+let GAIN = 42.0       // render brightness of the wave-energy field — bright thin rings
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -107,19 +107,32 @@ export let frame = (t) => {
   // of two crests ADDS (2× height → 8× via the cube) → a bright glint, never the cancelling black that
   // |height| produced. The cube also crushes the dim 2D wake (the afterglow a pulse trails in 2D)
   // toward black, so the interior stays clean — just sharp leading rings and glowing intersections.
-  let n = w * h, i = 0
-  while (i < n) {
-    let m = a[i]
-    if (m < 0.0) m = 0.0
-    let g = m * GAIN
-    g = g * g; g = g * g            // ^4 — crushes the faint 2D wake to black, keeps rings + crossings bright
-    if (g > 1.0) g = 1.0
-    let gi = (g * 255.0) | 0
-    px[i] = (255 << 24) | (gi << 16) | (gi << 8) | gi
-    // bloom source: only the BRIGHT part (mostly the constructive crossings) seeds the glow
-    let s = g - 0.45
-    gbuf[i] = s > 0.0 ? s : 0.0
-    i++
+  // render: wave ENERGY (kinetic u_t² + potential c²|∇u|²) — always ≥ 0, so interference only ever
+  // ADDS. Two ring fronts cross at an angle, so their gradients combine in quadrature and the energy
+  // SUMS (brightens) at the crossing — no dark destructive gaps a height render leaves. The energy
+  // concentrates in the thin wavefront → one crisp ring per drop; the faint 2D wake stays near zero.
+  let bx0 = 0
+  while (bx0 < w) { px[bx0] = 255 << 24; px[(h - 1) * w + bx0] = 255 << 24; gbuf[bx0] = 0.0; gbuf[(h - 1) * w + bx0] = 0.0; bx0++ }
+  let by0 = 0
+  while (by0 < h) { px[by0 * w] = 255 << 24; px[by0 * w + w - 1] = 255 << 24; gbuf[by0 * w] = 0.0; gbuf[by0 * w + w - 1] = 0.0; by0++ }
+  let ry = 1
+  while (ry < h - 1) {
+    let row = ry * w, rx = 1
+    while (rx < w - 1) {
+      let c = row + rx
+      let vel = a[c] - b[c]
+      let gx = a[c + 1] - a[c - 1], gy = a[c + w] - a[c - w]
+      let E = vel * vel + C2 * (gx * gx + gy * gy)
+      let g = E * GAIN
+      g = g * g
+      if (g > 1.0) g = 1.0
+      let gi = (g * 255.0) | 0
+      px[c] = (255 << 24) | (gi << 16) | (gi << 8) | gi
+      let s = g - 0.45                              // bloom source: bright crossings seed the glow
+      gbuf[c] = s > 0.0 ? s : 0.0
+      rx++
+    }
+    ry++
   }
 
   // GLOW BLOOM: separable box blur of the bright source, added back, so the intersections (and the
