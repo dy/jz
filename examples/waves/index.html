@@ -13,9 +13,10 @@ import { runDemo } from "../lib/jzdemo.js"
 let frameCount = 0, nextDrop = 30, lastStepMs = 0
 let painting = false, lastX = 0, lastY = 0
 
-// each drop is a touch randomized — radius and strength jitter so no two ripples ring alike
-const rr = () => 9 + Math.random() * 6
-const ra = () => 0.85 + Math.random() * 0.3
+// each drop is a touch randomized — radius and strength jitter so no two ripples ring alike. Small
+// radius → the drop starts as a point and the ring grows out from radius 0.
+const rr = () => 5 + Math.random() * 4
+const ra = () => 0.9 + Math.random() * 0.3
 const drop = (x, y) => {
   if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, rr(), ra())
 }

@@ -357,6 +357,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       html.jz-full .jz-bar { padding-inline: 24px; }
       /* full caption — never trimmed; the bar grows taller (min-height above) to fit every line. */
       .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em; }
+      .jz-bar .jz-links { display: block; margin-top: 3px; }   /* wiki/code links on their OWN line under the title */
       .jz-bar .jz-wiki { color: var(--soft); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-bar .jz-wiki:hover { color: var(--ink); }
       /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
@@ -460,13 +461,16 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     </div>`
   document.body.appendChild(el)
 
-  // description (left): capitalized hint, then the (wiki) link and a "code" toggle, each
-  // separated by a thin middot.
+  // description (left): capitalized hint on the title line, then wiki / code links on their OWN line
+  // beneath it (each separated by a thin middot).
   const descEl = el.querySelector('.jz-desc')
-  if (hint) descEl.textContent = hint.charAt(0).toUpperCase() + hint.slice(1)
+  descEl.textContent = ''
+  if (hint) descEl.appendChild(document.createTextNode(hint.charAt(0).toUpperCase() + hint.slice(1)))
+  const linksEl = document.createElement('div')
+  linksEl.className = 'jz-links'
   const addLink = (node) => {
-    descEl.appendChild(document.createTextNode(descEl.childNodes.length ? '  ·  ' : ''))
-    descEl.appendChild(node)
+    if (linksEl.childNodes.length) linksEl.appendChild(document.createTextNode('  ·  '))
+    linksEl.appendChild(node)
   }
   if (nav && WIKI[nav]) {
     const a = document.createElement('a')
@@ -481,6 +485,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     addLink(link)
     setupCode(link, code)
   }
+  if (linksEl.childNodes.length) descEl.appendChild(linksEl)
 
   // The HUD is an overlay — swallow pointer/click so they don't fall through to a
   // window-level canvas handler (e.g. clicking the FPS area must not re-seed/shuffle).

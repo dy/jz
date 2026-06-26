@@ -9,12 +9,13 @@
 let W = 0, H = 0, px
 let a, b              // height now / previous
 let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
-// C2 near 0.5 is the LOW-DISPERSION regime for this stencil: every wavelength travels at the same
-// speed, so a ring keeps a constant pace (a low C2 disperses → the front visibly slows as it fades,
-// and smears a wake behind it). The display pace is kept calm by throttling the step rate in the host.
+// Base wave speed². The EFFECTIVE speed is amplitude-dependent (shallow-water style, c²∝height) — see
+// the step below — so a tall fresh pulse bursts out FAST and decelerates to this base speed as it
+// spreads and fades. Base is kept moderate; the host throttles the step rate to keep the pace calm.
 let C2 = 0.5
+let KAMP = 1.2        // how much a tall crest speeds up (fast initial burst → slows as it flattens)
 let DAMP = 0.995      // damping → rings fade as they spread (and so appear to slow & stop) yet last long enough to cross
-let GAIN = 42.0       // render brightness of the wave-energy field — bright thin rings
+let GAIN = 115.0      // render brightness — low, so lone rings stay DIM and only crossings light up
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -25,21 +26,16 @@ export let resize = (w, h) => {
 }
 export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ } }
 
-// radial pulse profile: a single ALL-POSITIVE crest (no trough) with a STEEP leading edge — a fast
-// ADSR attack at the wavefront, then a quick decay behind it. Positivity is what makes crossings add
-// (bright) instead of crest-meeting-trough cancelling (black), and gives one clean ring per drop.
+// drop profile: a compact bump peaked at the CENTRE (d=0), falling off to the drop radius. The drop
+// therefore starts as a point and the ring grows OUTWARD from radius 0 (rather than appearing as a
+// ready-made ring of radius r).
 let prof = (d, r, amp) => {
-  if (d < 0.0) return 0.0
-  if (d > r) return 0.0
-  let behind = (r - d) / r                                  // 0 at the rim/front .. 1 at centre
-  let front = d > r * 0.93 ? (r - d) / (r * 0.07) : 1.0     // steep outer edge → fast attack as the front passes
-  let tail = Math.exp(-behind * 8.5)                        // quick decay inward → a THIN positive ring
-  return amp * front * tail
+  let s = d / (r * 0.5)
+  return amp * Math.exp(-s * s)
 }
 
-// Seed an OUTGOING circular wave. A zero-velocity bump splits into an outward AND an inward wave
-// (the inward one re-focuses at the centre → a phantom SECOND front); instead we set the previous
-// frame one step further IN — u(t−dt)=f(d+c·dt) — so the leapfrog launches a single front outward.
+// Seed a central disturbance with ZERO initial velocity — it radiates outward from the centre as a
+// ring that grows from radius 0.
 export let drop = (cx, cy, r, amp) => {
   let x0 = cx - r | 0, x1 = cx + r | 0, y0 = cy - r | 0, y1 = cy + r | 0
   if (x0 < 1) x0 = 1
@@ -47,16 +43,14 @@ export let drop = (cx, cy, r, amp) => {
   if (x1 > W - 2) x1 = W - 2
   if (y1 > H - 2) y1 = H - 2
   let r2 = r * r
-  let speed = Math.sqrt(C2)            // wavefront travel per step, in grid cells
   let y = y0
   while (y <= y1) {
     let dy = y - cy, row = y * W, x = x0
     while (x <= x1) {
       let dx = x - cx, d2 = dx * dx + dy * dy
       if (d2 <= r2) {
-        let d = Math.sqrt(d2)
-        a[row + x] += prof(d, r, amp)
-        b[row + x] += prof(d + speed, r, amp)   // one step earlier the crest sat further in → moves OUT
+        let p = prof(Math.sqrt(d2), r, amp)
+        a[row + x] += p; b[row + x] += p
       }
       x++
     }
@@ -77,7 +71,12 @@ export let frame = (t) => {
       let lap = 0.66667 * (a[rn + x] + a[rs + x] + a[c - 1] + a[c + 1])
               + 0.16667 * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1])
               - 3.33333 * a[c]
-      b[c] = (2.0 * a[c] - b[c] + C2 * lap) * DAMP    // next height → into b
+      // amplitude-dependent speed (shallow-water style): a tall crest travels faster → the fresh
+      // pulse bursts out fast and slows as it flattens. Clamped below the 9-point stability limit.
+      let ac = a[c] < 0.0 ? -a[c] : a[c]
+      let c2l = C2 + C2 * KAMP * ac
+      if (c2l > 0.72) c2l = 0.72
+      b[c] = (2.0 * a[c] - b[c] + c2l * lap) * DAMP    // next height → into b
       x++
     }
     y++
@@ -123,6 +122,8 @@ export let frame = (t) => {
       let vel = a[c] - b[c]
       let gx = a[c + 1] - a[c - 1], gy = a[c + w] - a[c - w]
       let E = vel * vel + C2 * (gx * gx + gy * gy)
+      // squared energy → high contrast: a lone ring stays DIM, but a crossing (≈2× energy) lands ≈4×
+      // brighter, so the surface only really lights up where ripples INTERSECT.
       let g = E * GAIN
       g = g * g
       if (g > 1.0) g = 1.0
