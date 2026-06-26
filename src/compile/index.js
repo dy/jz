@@ -140,7 +140,11 @@ const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, f
  * fractional Number gets the same truncation it would get from `arr[n]`).
  */
 const isBoundaryWrapped = (func) => {
-  if (!isExported(func) || func.raw || func.sig.results.length !== 1) return false
+  if (!isExported(func) || func.raw) return false
+  // Multi-value return: every lane is an f64 NaN-box carrier (the `return [a,b,…]` emit forces
+  // asF64 per lane; result narrowing only touches single-result funcs), so any lane may hold a
+  // box whose NaN payload JSC/V8 erases at the boundary — wrap to i64-carry every lane.
+  if (func.sig.results.length !== 1) return true
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
   // Any result that isn't a proven plain number can be a NaN-box — a heap pointer,
   // a null/undef/bool atom, a bigint carrier, or a dynamic value — so it crosses as
@@ -1207,20 +1211,47 @@ function synthesizeBoundaryWrappers() {
       wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : paramIsI64(p) ? 'i64' : 'f64'])
       if (paramIsI64(p)) i64Params.push(i)
     })
-    wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
+    // Track externref param positions so interop.js can pass JS values raw (skipping
+    // `mem.wrapVal`) at those slots — today only `jsstring` params; future externref carriers
+    // wire here too. `extParams` is per-slot: false | { def: '...' } for a JS-side default.
+    const extParams = sig.params.map(p => !p.jsstring ? false : p.jsstringDefault != null ? { def: p.jsstringDefault } : true)
+    if (extParams.some(Boolean)) func._exportExtParams = extParams
+    // Inner→wrapper argument list, shared by both single- and multi-value result shapes.
     const args = sig.params.map((p) => {
       const get = ['local.get', `$${p.name}`]
-      // jsstring: externref flows through unchanged — inner func also takes externref.
-      if (p.jsstring) return get
-      // ptrKind param: inner func takes the i32 offset; pull it from the i64 box.
-      if (p.ptrKind != null) return ['i32.wrap_i64', get]
-      // Dynamic boxed param: inner func takes the f64 NaN-box carrier.
-      if (p.boundaryI64) return ['f64.reinterpret_i64', get]
+      if (p.jsstring) return get                              // externref flows through unchanged
+      if (p.ptrKind != null) return ['i32.wrap_i64', get]     // ptr param: inner takes the i32 offset
+      if (p.boundaryI64) return ['f64.reinterpret_i64', get]  // dynamic boxed param → f64 NaN-box carrier
       if (p.type === 'f64') return get
-      // Numeric narrowing: f64 → i32 truncate
-      return ['i32.trunc_sat_f64_s', get]
+      return ['i32.trunc_sat_f64_s', get]                     // numeric narrowing f64 → i32
     })
     const callIR = ['call', `$${name}`, ...args]
+    // Multi-value return: each lane is an f64 NaN-box carrier (every `return [a,b,…]` lane is
+    // asF64; narrowing only touches single-result funcs). A boxed lane's NaN payload is erased
+    // at the JS boundary, so cross EVERY lane as i64 — capture the inner call's N lanes into f64
+    // locals (last result on top of the stack ⇒ pop in reverse) and re-push each reinterpreted.
+    // interop reads the lane tuple via mem.read / decode (both map over an array result).
+    if (sig.results.length > 1) {
+      sig.results.forEach(() => wrapNode.push(['result', 'i64']))
+      // Lane temporaries — guaranteed distinct from the wrapper's params (jz doesn't reserve
+      // `__`, so a user param could be `__mlane0`): bump the prefix until no lane name collides.
+      const pnames = new Set(sig.params.map((p) => p.name))
+      let pfx = '__mlane'
+      while (sig.results.some((_, i) => pnames.has(`${pfx}${i}`))) pfx = `_${pfx}`
+      const lanes = sig.results.map((_, i) => `$${pfx}${i}`)
+      lanes.forEach((n) => wrapNode.push(['local', n, 'f64']))
+      const stmts = [callIR]
+      for (let i = lanes.length - 1; i >= 0; i--) stmts.push(['local.set', lanes[i]])
+      for (const n of lanes) stmts.push(['i64.reinterpret_f64', ['local.get', n]])
+      wrapNode.push(...stmts)
+      // `m` (lane count) marks a multi-value result so interop / the test adapter decode each
+      // lane (vs `r`'s single reinterpret). Always recorded — even with no i64 params — so the
+      // numeric-only `(a,b)=>[a+1,b+2]` tuple still gets its lanes turned back into numbers.
+      func._exportI64 = { p: i64Params, m: sig.results.length }
+      wrappers.push(wrapNode)
+      continue
+    }
+    wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
     const toI64 = (n) => ['i64.reinterpret_f64', n]
     let body
     if (resultPtr) {
@@ -1251,16 +1282,6 @@ function synthesizeBoundaryWrappers() {
     // (no i64 params, f64 result) records nothing — zero footprint off the box path.
     if (i64Params.length || resultReinterpret)
       func._exportI64 = { p: i64Params, r: resultReinterpret ? 1 : 0 }
-    // Track externref param positions so interop.js can pass JS values
-    // raw (skipping `mem.wrapVal`) at those slots. Today this only fires
-    // for `jsstring`-tagged params; future externref carriers wire here too.
-    // `extParams` is per-slot: false (non-ext) | { def: '...' }-bearing object
-    // for jsstring params with a JS-side default substitution.
-    const extParams = sig.params.map(p => {
-      if (!p.jsstring) return false
-      return p.jsstringDefault != null ? { def: p.jsstringDefault } : true
-    })
-    if (extParams.some(Boolean)) func._exportExtParams = extParams
     wrappers.push(wrapNode)
   }
   return wrappers
@@ -1915,16 +1936,18 @@ export default function compile(ast, profiler) {
     sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // jz:i64exp — per-export i64 carrier map (NaN-canonicalization dodging). Each entry
-  // `{name, p:[i64 param indices], r:1?}`: `p` lists params interop must pass as BigInt
-  // (f64ToI64), `r` marks a result interop must reinterpret (i64ToF64) before mem.read.
-  // Pure-numeric exports emit no entry. A bigint result is i64 but unmarked (the BigInt
-  // is the value). Written under every JS-visible alias, like jz:extparam.
+  // `{name, p:[i64 param indices], r:1? | m:N?}`: `p` lists params interop must pass as BigInt
+  // (f64ToI64); `r` marks a single result to reinterpret (i64ToF64) before mem.read; `m` marks
+  // an N-lane multi-value result whose lanes interop/the adapter decode element-wise. Pure-
+  // numeric single-result exports emit no entry. A bigint result is i64 but unmarked (the BigInt
+  // is the value). Written under every JS-visible alias, like jz:extparam. Each shape is built as
+  // a direct literal (no spread) — the self-host kernel's fixed schemas don't enumerate post-hoc keys.
   const i64Exports = []
   for (const f of ctx.func.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue
-    const { p, r } = f._exportI64
+    const { p, r, m } = f._exportI64
     for (const exportName of exportNamesOf(f.name))
-      i64Exports.push(r ? { name: exportName, p, r } : { name: exportName, p })
+      i64Exports.push(m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p })
   }
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])

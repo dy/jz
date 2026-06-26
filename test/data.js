@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, adaptI64 } from './_matrix.js'
+import { onKernel, onWasi, adaptI64 } from './_matrix.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -256,6 +256,19 @@ test('array: literal return ≤8 = multi-value', () => {
   const r = run('export let f = (a, b) => [a + 1, b + 2]').f(10, 20)
   ok(Array.isArray(r))
   is(r[0], 11); is(r[1], 22)
+})
+
+test('array: multi-value return of boxed STRINGS survives the JS boundary', () => {
+  // Regression: a multi-value `(f64,f64)` return of SSO-string NaN-boxes was canonicalized by
+  // V8 at the JS↔wasm boundary (every lane → bare NaN → null). Lanes now cross as i64, and
+  // interop.wrap() decodes the tuple. JS-host-only — WASI reads raw int64 and never canonicalizes.
+  if (onWasi()) return
+  is(JSON.stringify(jz("export let f = () => ['a', 'b']").exports.f()), '["a","b"]')
+  is(JSON.stringify(jz("export let f = () => ['x', 'y', 'z']").exports.f()), '["x","y","z"]')
+  is(JSON.stringify(jz("export let f = () => [1, 'a']").exports.f()), '[1,"a"]')           // mixed number + box
+  is(JSON.stringify(jz('export let f = (a, b) => [a + 1, b + 2]').exports.f(10, 20)), '[11,22]')  // numeric tuple unchanged
+  // The wrapper's lane temporaries must not collide with a same-named param (jz doesn't reserve `__`).
+  is(JSON.stringify(jz('export let f = (__mlane0) => [__mlane0, 1]').exports.f(7)), '[7,1]')
 })
 
 test('array: >8 elements = pointer', () => {

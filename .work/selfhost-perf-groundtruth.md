@@ -449,7 +449,15 @@ wasm→JS boundary in non-i64-carrier lanes**:
   against for *single* boxed results (`ie.r`) and boxed params; it just doesn't extend to multi-value
   result lanes (nor to a heap-array whose ELEMENTS are boxed strings, read back fine from memory but
   only when the array pointer itself rides an i64 lane).
-The fix is a coordinated compiler+interop change: emit boxed-capable multi-value result lanes as i64
-and reinterpret them in `interop.read`, extending the existing i64-carrier ABI. Niche (returning
-tuples/arrays of strings to JS is outside the numeric-kernel core), so deferred — but it is a marshaling
-ABI gap, NOT an inference/facts-cache bug. Do not chase a "compile-state leak" here.
+**FIXED 2026-06-26 (multi-value case).** `isBoundaryWrapped` now wraps multi-value exports;
+`synthesizeBoundaryWrappers` crosses every lane as i64 (capture inner f64 lanes into locals, reinterpret
+each); the `jz:i64exp` entry gains an `m` (lane-count) marker; `interop.decode` + the test `adaptI64`
+adapter decode the lane tuple. `()=>['a','b']` → `['a','b']`; numeric tuples unchanged. Validated: native
+2536/0, fuzz 0-div (45611 inputs), opt0/opt3/WASI 2536/0, 77 adversarial edge cases, self-host 15/15.
+Two RELATED issues remain, each a *separate* root cause (NOT this boundary fix):
+- **`[...s]` heap-array of slice-strings** still returns null elements — `interop.read`'s STRING case
+  doesn't decode SLICE_BIT strings (the chars from spreading a string are slices into the source). A
+  contained interop-decode gap, orthogonal to multi-value lanes.
+- **bool / dynamic-string-param** edges are general value-representation issues (bools read as numbers in
+  any collection incl. heap arrays; an un-inferable string param marshals as NaN) — pre-existing, not
+  multi-value-specific.

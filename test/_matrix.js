@@ -46,7 +46,7 @@ export function adaptI64(mod, raw) {
     if (typeof fn !== 'function') { out[name] = fn; continue }
     const sig = i64Exp.get(name)
     if (!sig) { out[name] = fn; continue }
-    const piSet = new Set(sig.p), r = sig.r
+    const piSet = new Set(sig.p), r = sig.r, m = sig.m
     out[name] = (...args) => {
       // Pad to the wasm arity: an i64 param requires a BigInt, so a missing arg must be a
       // box (UNDEF_NAN) — `undefined` throws "Cannot convert undefined to a BigInt". coerce
@@ -54,6 +54,9 @@ export function adaptI64(mod, raw) {
       while (args.length < fn.length) args.push(undefined)
       const a = args.map((x, i) => piSet.has(i) ? argBits(coerce(x)) : x)
       const ret = fn(...a)
+      // `m`: a multi-value tuple crosses as i64 lanes — reinterpret each back to the f64
+      // NaN-box ABI (numbers restore; boxes' bits are exact on V8, where tests run).
+      if (m) return ret.map(i64ToF64)
       return r ? i64ToF64(ret) : ret
     }
   }

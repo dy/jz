@@ -153,6 +153,7 @@ const decodeSSO = (b) => {
 // its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
 // memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
 const decode = v => {
+  if (Array.isArray(v)) return v.map(decode)   // multi-value tuple — each lane is an i64-carrier (memoryless)
   if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
   else if (typeof v !== 'bigint') return v     // already-decoded JS value
   if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
