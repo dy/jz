@@ -1905,6 +1905,13 @@ function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
   ]
 }
 
+function emitAsValue(fn) {
+  const prev = ctx.func._expect
+  ctx.func._expect = null
+  try { return fn() }
+  finally { ctx.func._expect = prev }
+}
+
 function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   const inPlace = SPREAD_MUTATORS.has(method)
   // unshift prepends each arg to the front — forward iteration reverses intent.
@@ -1913,11 +1920,11 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   ctx.func.locals.set(acc, 'f64')
   const ir = [['local.set', `$${acc}`, asF64(emit(objArg))]]
   if (parsed.normal.length > 0) {
-    const r = asF64(methodEmitter(objArg, ...parsed.normal))
+    const r = asF64(emitAsValue(() => methodEmitter(objArg, ...parsed.normal)))
     ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
   }
   ir.push(...emitSpreadElementLoop(parsed.spreads[0].expr, (arr, idx) => {
-    const body = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
+    const body = asF64(emitAsValue(() => methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx])))
     return [inPlace ? ['drop', body] : ['local.set', `$${acc}`, body]]
   }, { reverse }))
   ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
@@ -1939,7 +1946,7 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   let batch = []
   const flushBatch = () => {
     if (!batch.length) return
-    const r = asF64(methodEmitter(recv, ...batch))
+    const r = asF64(emitAsValue(() => methodEmitter(recv, ...batch)))
     ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
     batch = []
   }
@@ -1947,7 +1954,7 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
     if (Array.isArray(item) && item[0] === '__spread') {
       flushBatch()
       ir.push(...emitSpreadElementLoop(item[1], (arr, idx) => {
-        const body = asF64(methodEmitter(recv, ['[]', arr, idx]))
+        const body = asF64(emitAsValue(() => methodEmitter(recv, ['[]', arr, idx])))
         return [inPlace ? ['drop', body] : ['local.set', `$${acc}`, body]]
       }))
     } else {

@@ -1128,6 +1128,21 @@ test('helper counters are opt-in and resettable', async () => {
   is(e.__hc_arr_push1.value, 0n)
 })
 
+test('codegen: statement array push skips dropped return length reload', () => {
+  if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
+  const stmtWat = compile('export let f = () => { let xs = []; xs.push(1); return 7 }', { wat: true, optimize: false })
+  const stmtBody = stmtWat.match(/\(func \$f[\s\S]*?^  \)/m)?.[0] || ''
+  ok(stmtBody, 'expected $f function in WAT')
+  is((stmtBody.match(/\$__arr_push1\b/g) || []).length, 1, 'statement push should use the known-array helper')
+  is((stmtBody.match(/\$__ptr_offset\b/g) || []).length, 0, 'statement push should not reload length for a dropped result')
+
+  const exprWat = compile('export let f = () => { let xs = []; return xs.push(1) }', { wat: true, optimize: false })
+  const exprBody = exprWat.match(/\(func \$f[\s\S]*?^  \)/m)?.[0] || ''
+  ok(exprBody, 'expected expression $f function in WAT')
+  is((exprBody.match(/\$__arr_push1\b/g) || []).length, 1, 'expression push should use the same known-array helper')
+  is((exprBody.match(/\$__ptr_offset\b/g) || []).length, 1, 'expression push still reloads length for the JS return value')
+})
+
 // === JSON shape inference (shapeStrs) ===
 //
 // Bench convention writes `let SRC = '{...}'` to defeat compile-time JSON.parse

@@ -882,6 +882,10 @@ export default (ctx) => {
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
   ctx.core.emit['.push'] = (arr, ...vals) => {
+    // `_expect` is overwritten by recursive emit() calls below. Capture the
+    // statement-position hint now so a dropped `xs.push(v)` can skip computing
+    // the JS return length while still performing the mutation/writeback.
+    const void_ = ctx.func._expect === 'void'
     // structInline Array<S>: `.push({S})` writes the K schema fields as K
     // consecutive f64 cells. Flatten the struct literal into K schema-ordered
     // field-value nodes and fall through to the general multi-value store path
@@ -909,8 +913,10 @@ export default (ctx) => {
       const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
       const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
       const vv = asF64(emit(vals[0]))
+      const pushed = ['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]
+      if (void_) return typed(['block', writeVar(pushed)], 'void')
       return typed(['block', ['result', 'f64'],
-        writeVar(['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]),
+        writeVar(pushed),
         ['f64.convert_i32_s', ['i32.load', ['i32.sub',
           ['call', '$__ptr_offset', ['i64.reinterpret_f64', readVar]], ['i32.const', 8]]]]], 'f64')
     }
