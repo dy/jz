@@ -13,15 +13,18 @@ import { runDemo, panZoom } from "../lib/jzdemo.js"
 // reset) — c keeps orbiting on its own so the zeros and poles drift through whatever you frame.
 const home = { cx: 0, cy: 0, scale: 2.5 }
 const view = { ...home }
+let cPhase = 0
 const demo = runDemo({
   name: "domain-color",
   hint: "Domain coloring of f(z) = (z²−1)(z−c)/(z²+1) — drag to pan · scroll to zoom",
   frame: (e, t) => {
     // c orbits slowly: zeros and poles drift
-    const cx = Math.cos(t * 0.23) * 0.4
-    const cy = Math.sin(t * 0.17) * 0.4
+    const cx = Math.cos(t * 0.23 + cPhase) * 0.4
+    const cy = Math.sin(t * 0.17 + cPhase) * 0.4
     e.frame(t, cx, cy, view.cx, view.cy, view.scale)
   },
+  // re-frame to a fresh region of the landscape + jump the moving zero
+  randomize: () => { view.cx = (Math.random() - 0.5) * 2.2; view.cy = (Math.random() - 0.5) * 2.2; view.scale = 1.6 + Math.random() * 1.8; cPhase = Math.random() * 6.2832 },
 })
 panZoom(demo.cv, view, home, () => {})
 </script>

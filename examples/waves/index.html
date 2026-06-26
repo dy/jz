@@ -14,7 +14,7 @@ let frameCount = 0, nextDrop = 30
 let painting = false, lastX = 0, lastY = 0
 
 const drop = (x, y) => {
-  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, 4, 1.2)
+  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, 14, 0.9)
 }
 const strokeTo = (x, y) => {
   const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 5))
@@ -31,11 +31,13 @@ const demo = runDemo({
   frame: (e) => {
     frameCount++
     if (frameCount > nextDrop) {
-      e.drop(Math.random() * demo.W, Math.random() * demo.H, 4, 1.4)
-      nextDrop = frameCount + 70 + Math.random() * 160
+      e.drop(Math.random() * demo.W, Math.random() * demo.H, 14, 0.85)
+      nextDrop = frameCount + 28 + Math.random() * 70   // drop often → ripples keep crossing & interfering
     }
     e.frame(0)
   },
+  // re-roll: clear the pond and scatter a handful of fresh packets that immediately interfere
+  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 6; i++) e.drop(Math.random() * d.W, Math.random() * d.H, 14, 0.95) },
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {

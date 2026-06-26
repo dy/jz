@@ -33,6 +33,12 @@ export let init = () => {
   th[0] = -0.7
 }
 
+// re-roll: lift every ball to a random angle → a chaotic clatter instead of the tidy single swing
+export let randomize = () => {
+  let i = 0
+  while (i < N) { th[i] = (Math.random() - 0.5) * 1.2; om[i] = 0.0; i++ }
+}
+
 let grabbed = -1
 
 // grab the ball nearest the cursor; drag sets its angle; release lets it swing

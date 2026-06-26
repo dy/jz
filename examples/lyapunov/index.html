@@ -39,6 +39,7 @@ const demo = runDemo({
   hint: "Markus–Lyapunov fractal — drag to pan · scroll to zoom · double-click for a fresh sequence",
   size: { budget: 220000 },
   load: (e) => e.setSeq?.(bits, len),
+  randomize: (e) => { view.ox = home.ox; view.oy = home.oy; view.span = home.span; userSet = false; rollSeq(); e.setSeq?.(bits, len) },
   frame: (e, t) => {
     // gentle drift until grabbed — both offsets stay ≤ 0 so b (and a) never exceed 4
     if (!userSet) { view.ox = (Math.sin(t * 0.04) - 1) * 0.18; view.oy = (Math.cos(t * 0.03) - 1) * 0.18 }

@@ -17,6 +17,7 @@ const view = { ...home }
 // Swirl off its own accumulator, rate = min(1, scale²) referenced to absolute scale 1: full lively
 // pace framed wide (home and zoomed-out), tapering hard below scale 1 to near-frozen deep in.
 let phase = 0, lastT = 0
+let aBaseRe = 1.0, aBaseIm = 0.0     // centre of the relaxation factor's drift — randomize re-rolls it
 const demo = runDemo({
   name: "newton",
   hint: "Newton's method on z³−1 — the over-relaxation swirls on its own · drag to pan · scroll to zoom",
@@ -24,10 +25,12 @@ const demo = runDemo({
     const dt = t - lastT; lastT = t
     const zoomRate = Math.min(1, view.scale * view.scale)
     phase += dt * zoomRate
-    const are = 1.0 + Math.cos(phase * 0.17) * 0.32
-    const aim = Math.sin(phase * 0.13) * 0.32
+    const are = aBaseRe + Math.cos(phase * 0.17) * 0.28
+    const aim = aBaseIm + Math.sin(phase * 0.13) * 0.28
     e.frame(t, are, aim, view.cx, view.cy, view.scale)
   },
+  // re-roll the relaxation factor → a fresh basin swirl; reset the view to take it in
+  randomize: () => { aBaseRe = 0.6 + Math.random() * 1.2; aBaseIm = (Math.random() - 0.5) * 0.9; view.cx = home.cx; view.cy = home.cy; view.scale = home.scale },
 })
 panZoom(demo.cv, view, home, () => {})   // drag → pan, scroll → zoom, double-click → reset
 </script>

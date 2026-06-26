@@ -349,14 +349,12 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const el = document.createElement('div')
   el.innerHTML = `
     <style>
-      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: var(--jz-barh, 64px); box-sizing: border-box;
-        display: flex; align-items: center; gap: 18px; padding: 0 var(--jz-demopad, 28px); background: var(--paper);
+      .jz-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; min-height: var(--jz-barh, 64px); box-sizing: border-box;
+        display: flex; align-items: center; gap: 18px; padding: 10px var(--jz-demopad, 28px); background: var(--paper);
         font-family: var(--font, Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif); user-select: none; }
       html.jz-full .jz-bar { padding-inline: 24px; }
-      /* up to two lines (fits the 64px bar at 13px/1.3) before ellipsing — a longer caption
-         can breathe onto a second line instead of being clipped mid-sentence. */
-      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em;
-        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+      /* full caption — never trimmed; the bar grows taller (min-height above) to fit every line. */
+      .jz-bar .jz-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; color: var(--dim); letter-spacing: .01em; }
       .jz-bar .jz-wiki { color: var(--soft); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
       .jz-bar .jz-wiki:hover { color: var(--ink); }
       /* segmented JS|JZ switch — labels inside the track, knob centered over the active one (equal
@@ -390,11 +388,11 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-fps .metric b { font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; display: inline-block; width: 3ch; text-align: right; }
       .jz-fps .metric.ms b { width: 4ch; }
       .jz-fps .unit { font-size: 12px; color: var(--dim); }
-      /* palette: a square swatch (matches the modernist B&W frame); rotates on click */
-      .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
-      .jz-pal .sw { display: block; width: 100%; height: 100%;
+      /* palette: a sharp square swatch with a dim rim (darker on the light theme, light on dark),
+         sized to match the dice button beside it */
+      .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; display: inline-flex; align-items: center; justify-content: center; }
+      .jz-pal .sw { display: block; width: 22px; height: 22px;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-        /* darker rim on the light (paper) theme so the swatch doesn't blend in; light rim on dark */
         box-shadow: 0 0 0 1.5px light-dark(rgba(0,0,0,.3), rgba(255,255,255,.35)) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
       .jz-pal:hover .sw { transform: rotate(90deg); }
       .jz-pal.on .sw { transform: rotate(180deg); }
@@ -412,16 +410,22 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       /* screensaver: the fullscreen button hides the masthead and re-fits the demo to the whole
          viewport (a genuine resize → native-res render, not a CSS stretch). The bottom bar stays,
          floating transparently OVER the demo — description (left) + switch/fps/buttons (right), all
-         in white with a soft dark halo so they read on any frame. Chevrons stay too, in white. */
-      html.jz-saver .masthead { display: none !important; }
+         in white with a soft dark halo so they read on any frame. Masthead + chevrons are hidden. */
+      html.jz-saver .masthead, html.jz-saver .jz-edge { display: none !important; }
       html.jz-saver body > canvas:not(.gradient) { top: 0 !important; left: 0 !important; transform: none !important;
         width: 100vw !important; height: 100vh !important; object-fit: fill !important; }
       html.jz-saver .jz-bar { background: transparent !important; border-top: 0 !important;
-        padding-inline: 28px !important;   /* full-width: drop the centred-column inset → description hugs the left, controls the right */
+        padding-inline: 28px !important;   /* full-width: drop the centred-column inset */
+        min-height: var(--jz-barh, 64px) !important; padding-block: 12px !important;
         text-shadow: 0 1px 4px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.7); }
       html.jz-saver .jz-desc, html.jz-saver .jz-wiki, html.jz-saver .jz-codelink,
       html.jz-saver .jz-fps, html.jz-saver .jz-fps .metric b, html.jz-saver .jz-fps .unit,
-      html.jz-saver .jz-rand, html.jz-saver .jz-fs, html.jz-saver .jz-edge a { color: #fff !important; }
+      html.jz-saver .jz-rand, html.jz-saver .jz-fs { color: #fff !important; }
+      /* description: cap to a readable measure (~45–75 chars), and show EVERY line — no clamp, no trim */
+      html.jz-saver .jz-desc { max-width: 64ch !important; white-space: normal !important;
+        display: block !important; -webkit-line-clamp: none !important; overflow: visible !important; }
+      /* push switch + fps + buttons hard to the right edge (the capped desc no longer fills the bar) */
+      html.jz-saver .jz-engine { margin-left: auto !important; }
       /* code preview: a "code" link in the description + a panel that slides over the demo area
          (between the two bands, same column as the canvas) showing the kernel's own source. */
       .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
@@ -445,7 +449,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       <div class="jz-desc"></div>
       <button class="jz-engine" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
       ${meter ? `<div class="jz-fps"><canvas class="spark" id="jz-spark"></canvas><span class="metric"><b id="jz-fps">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="jz-ms-v">··</b><span class="unit">ms</span></span></div>` : ''}
-      <button class="jz-rand" id="jz-rand" title="randomize" aria-label="randomize"><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5"/><circle cx="8.5" cy="8.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15.5" r="1.35" fill="currentColor" stroke="none"/></svg></button>
+      <button class="jz-rand" id="jz-rand" title="randomize" aria-label="randomize"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="miter" aria-hidden="true"><rect x="2" y="2" width="20" height="20"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="16.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="16.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="16.5" cy="16.5" r="1.5" fill="currentColor" stroke="none"/></svg></button>
       ${palette ? `<button class="jz-pal" id="jz-pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>` : ''}
       <button class="jz-fs" id="jz-fs" title="screensaver" aria-label="screensaver"></button>
     </div>`

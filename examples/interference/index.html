@@ -25,6 +25,8 @@ const demo = runDemo({
     }
     e.update(tick += step)
   },
+  // re-roll: drop the two sources at fresh random spots
+  randomize: (e, d) => e.setSources?.(Math.random() * d.W, Math.random() * d.H, Math.random() * d.W, Math.random() * d.H),
 })
 
 const ptr = trackPointer(demo.cv)

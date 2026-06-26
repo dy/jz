@@ -197,7 +197,7 @@ export let frame = (t) => {
     s++
   }
 
-  let n = W * H, scale = 12.0
+  let n = W * H, scale = 2.6
   let i = 0
   while (i < n) {
     if (V[i] > 0.5) {
@@ -207,8 +207,8 @@ export let frame = (t) => {
       let ri = R[i], ii = I[i]
       let prob = (ri * ri + ii * ii) * scale
       if (prob > 1.0) prob = 1.0
-      // gray = |ψ|² probability density (drop phase hue)
-      let g = (prob * 255.0) | 0
+      // gray = |ψ|² density, gamma-lifted so the interference fringes read instead of blowing to white
+      let g = (Math.sqrt(prob) * 255.0) | 0
       px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     }
     i++

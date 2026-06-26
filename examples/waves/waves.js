@@ -6,8 +6,8 @@
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
-let C2 = 0.47         // wave speed² (high → many ring cycles per drop; keep < 0.5 for stability)
-let DAMP = 0.9975     // light damping → each drop rings for a few seconds, then dissipates
+let C2 = 0.46         // wave speed² (high → many ring cycles per drop; keep < 0.5 for stability)
+let DAMP = 0.994      // damping → a drop rings briefly then dissipates (short reverb, no long lingering)
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -17,7 +17,8 @@ export let resize = (w, h) => {
 }
 export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ } }
 
-// drop a smooth pulse (raises the surface) at (cx,cy)
+// drop a radial WAVE PACKET (a few concentric rings, not a single bump) so the spreading wavefront
+// is a multi-cycle oscillation, not one lone crest. r = packet radius (bigger), amp = strength.
 export let drop = (cx, cy, r, amp) => {
   let x0 = cx - r | 0, x1 = cx + r | 0, y0 = cy - r | 0, y1 = cy + r | 0
   if (x0 < 1) x0 = 1
@@ -25,12 +26,17 @@ export let drop = (cx, cy, r, amp) => {
   if (x1 > W - 2) x1 = W - 2
   if (y1 > H - 2) y1 = H - 2
   let r2 = r * r
+  let k = 9.4 / r                      // ~1.5 wavelengths inside the packet → a short ringing train
   let y = y0
   while (y <= y1) {
     let dy = y - cy, row = y * W, x = x0
     while (x <= x1) {
       let dx = x - cx, d2 = dx * dx + dy * dy
-      if (d2 <= r2) { let w = 1.0 - d2 / r2; a[row + x] += amp * w; b[row + x] += amp * w }
+      if (d2 <= r2) {
+        let d = Math.sqrt(d2), env = 1.0 - d2 / r2
+        let val = amp * Math.cos(k * d) * env * env    // cos rings × smooth envelope
+        a[row + x] += val; b[row + x] += val
+      }
       x++
     }
     y++

@@ -36,6 +36,19 @@ export let init = () => {
   }
 }
 
+// re-roll: drop the block at a random spot with a random sideways shove → a different splash each time
+export let randomize = () => {
+  let i = 0, cols = 34
+  let ox = 0.10 + Math.random() * 0.55
+  let v0 = (Math.random() < 0.5 ? -1.0 : 1.0) * (0.002 + Math.random() * 0.005)
+  while (i < N) {
+    x[i] = ox + (i % cols) * 0.0125 + (Math.random() - 0.5) * 0.02
+    y[i] = 0.05 + ((i / cols) | 0) * 0.0125
+    vx[i] = v0; vy[i] = 0.0
+    i++
+  }
+}
+
 let splat = (fx, fy, rad, g) => {
   let cxi = fx | 0, cyi = fy | 0, ri = rad | 0
   if (ri < 1) ri = 1
