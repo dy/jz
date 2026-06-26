@@ -29,6 +29,7 @@ const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
+const JSC_BIN = process.env.JSC_BIN || ''
 const PORF_BIN = process.env.PORF_BIN || 'porf'
 
 mkdirSync(BUILD, { recursive: true })
@@ -111,6 +112,9 @@ const graalJsBin = () => {
   if (has('js') && /graal/i.test(versionText('js'))) return 'js'
   return ''
 }
+// Safari's engine: the standalone `jsc` shell (same JavaScriptCore as WebKit/Safari).
+// Installed via `jsvu --engines=javascriptcore` (→ ~/.jsvu/bin/jsc); set JSC_BIN to override.
+const jscBin = () => JSC_BIN || firstAvailable(['jsc', join(process.env.HOME || '', '.jsvu/bin/jsc')])
 const cIdent = s => s.replace(/[^A-Za-z0-9_]/g, '_')
 const build = (...p) => join(BUILD, ...p)
 const caseBuild = c => build(c.id)
@@ -245,7 +249,11 @@ const compileJzHost = c => {
 const writeFlat = c => {
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
 if (typeof __benchGlobal.console === 'undefined' && typeof print === 'function') __benchGlobal.console = { log: print }
-if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance = { now: typeof dateNow === 'function' ? dateNow : () => Date.now() }
+// Timer: JSC's shell exposes high-res preciseTime() (seconds) but a Spectre-clamped
+// performance.now (~0.2ms) — too coarse for µs kernels; prefer preciseTime where present
+// (JSC, SpiderMonkey). Else the engine's own performance.now, else dateNow / Date.now.
+if (typeof preciseTime === 'function') __benchGlobal.performance = { now: () => preciseTime() * 1000 }
+else if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance = { now: typeof dateNow === 'function' ? dateNow : () => Date.now() }
 `
   let src = readFileSync(c.js, 'utf8')
   if (src.includes('../_lib/benchlib.js')) {
@@ -416,6 +424,14 @@ const targets = {
     available: () => has(BUN_BIN),
     bin: c => c.js,
     run: c => tryRun('bun', c, null, [BUN_BIN, join(LIB, 'run-v8.mjs'), c.js]),
+  },
+  // Safari's engine — the standalone JavaScriptCore shell. Runs the flat source like
+  // SpiderMonkey/GraalJS (no ES modules / Node APIs); writeFlat shims print + preciseTime.
+  jsc: {
+    name: 'JavaScriptCore (jsc)',
+    available: () => !!jscBin(),
+    bin: flatPath,
+    run: c => tryRun('jsc', c, () => writeFlat(c), [jscBin(), flatPath(c)]),
   },
   spidermonkey: {
     name: 'SpiderMonkey shell',
@@ -597,6 +613,7 @@ const TARGET_CMDS = {
   deno: 'deno run --allow-read --allow-env run-v8.mjs <case>.js',
   bun: 'bun run-v8.mjs <case>.js',
   spidermonkey: 'js <case>-flat.js',
+  jsc: 'jsc <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
   porf: 'porf --allocator-chunks=128 run <case>-flat.js',

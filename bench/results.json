@@ -1,34 +1,39 @@
 {
  "meta": {
-  "date": "2026-06-22",
-  "commit": "062598f",
+  "date": "2026-06-26",
+  "commit": "248db39",
   "host": {
-   "platform": "linux",
-   "arch": "x64",
-   "cpu": "AMD EPYC 7763 64-Core Processor"
+   "platform": "darwin",
+   "arch": "arm64",
+   "cpu": "Apple M4 Max"
   },
   "versions": {
    "jz": "0.7.0",
-   "node": "v22.22.3",
-   "asc": "Version 0.27.37",
+   "node": "v25.9.0",
+   "asc": "Version 0.28.19",
    "porffor": "0.61.13",
    "bun": "1.3.14",
-   "deno": "deno 2.8.3 (stable, release, x86_64-unknown-linux-gnu)",
-   "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)"
+   "deno": "deno 2.6.7 (stable, release, aarch64-apple-darwin)",
+   "clang": "Homebrew clang version 19.1.6"
   },
   "invocations": {
    "nat": "clang -O3 -march=native -ffp-contract=off <case>.c",
    "c-wasm": "zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)",
+   "rust-wasm": "rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)",
    "go-wasm": "GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)",
+   "zig-wasm": "zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)",
    "rust": "rustc -C opt-level=3 -C target-cpu=native <case>.rs",
+   "zig": "zig build-exe <case>.zig -O ReleaseFast (shared _lib/bench.zig)",
    "go": "go build -ldflags=\"-s -w\" <case>.go",
    "v8": "node run-v8.mjs <case>.js",
    "deno": "deno run --allow-read --allow-env run-v8.mjs <case>.js",
    "bun": "bun run-v8.mjs <case>.js",
+   "jsc": "jsc <case>-flat.js",
    "as": "asc <case>.as.ts -O3 --runtime stub --noAssert",
    "jz": "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
    "porf": "porf --allocator-chunks=128 run <case>-flat.js",
-   "numpy": "python3 <case>.npy.py"
+   "numpy": "python3 <case>.npy.py",
+   "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)"
   }
  },
  "cases": {
@@ -40,57 +45,81 @@
    "ref": 633180752,
    "targets": {
     "nat": {
-     "medianUs": 117,
-     "bytes": 39120,
+     "medianUs": 26,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 1615,
-     "bytes": 742638,
+     "medianUs": 883,
+     "bytes": 947330,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1129,
+     "bytes": 2028935,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 4624,
-     "bytes": 2406485,
+     "medianUs": 2175,
+     "bytes": 2588498,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 830,
+     "bytes": 978067,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 58,
-     "bytes": 358232,
+     "medianUs": 25,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 415,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 772,
-     "bytes": 1454264,
+     "medianUs": 477,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1645,
+     "medianUs": 686,
      "bytes": 2067,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 1280,
+     "medianUs": 615,
      "bytes": 2067,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 981,
+     "medianUs": 439,
      "bytes": 2067,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 457,
+     "bytes": 4009,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 3078,
-     "bytes": 1341,
+     "medianUs": 1547,
+     "bytes": 1337,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 158,
-     "bytes": 1294,
+     "medianUs": 339,
+     "bytes": 1347,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 120.7
+   "compileMs": 58.3
   },
   "blur": {
    "name": "blur",
@@ -100,57 +129,81 @@
    "ref": 3578880432,
    "targets": {
     "nat": {
-     "medianUs": 1606,
-     "bytes": 30928,
+     "medianUs": 592,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 10319,
-     "bytes": 745975,
+     "medianUs": 4119,
+     "bytes": 949522,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 10722,
+     "bytes": 2030834,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 50793,
-     "bytes": 2410200,
+     "medianUs": 15694,
+     "bytes": 2592180,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4067,
+     "bytes": 980878,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 5038,
-     "bytes": 357336,
+     "medianUs": 2177,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 641,
+     "bytes": 378088,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15443,
-     "bytes": 1458360,
+     "medianUs": 5821,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16957,
+     "medianUs": 8762,
      "bytes": 2942,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 16529,
+     "medianUs": 8374,
      "bytes": 2942,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 10753,
+     "medianUs": 5149,
      "bytes": 2942,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 5317,
+     "bytes": 4884,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 11219,
-     "bytes": 1772,
+     "medianUs": 4813,
+     "bytes": 1768,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3904,
-     "bytes": 3514,
+     "medianUs": 876,
+     "bytes": 3580,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 138.3
+   "compileMs": 72.9
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -160,57 +213,81 @@
    "ref": 3667072453,
    "targets": {
     "nat": {
-     "medianUs": 623,
-     "bytes": 30928,
+     "medianUs": 524,
+     "bytes": 33728,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 6031,
-     "bytes": 741708,
+     "medianUs": 2819,
+     "bytes": 946751,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4185,
+     "bytes": 2028401,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 9211,
-     "bytes": 2406267,
+     "medianUs": 3778,
+     "bytes": 2588154,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2806,
+     "bytes": 975783,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 515,
-     "bytes": 358152,
+     "medianUs": 533,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1198,
+     "bytes": 377920,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3272,
-     "bytes": 1454264,
+     "medianUs": 1421,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 4902,
+     "medianUs": 2262,
      "bytes": 2055,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5223,
+     "medianUs": 2191,
      "bytes": 2055,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3920,
+     "medianUs": 1710,
      "bytes": 2055,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 1659,
+     "bytes": 3997,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 5658,
-     "bytes": 1261,
+     "medianUs": 3071,
+     "bytes": 1257,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1844,
-     "bytes": 1545,
+     "medianUs": 635,
+     "bytes": 1590,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 92.4
+   "compileMs": 47.9
   },
   "dotprod": {
    "name": "dotprod",
@@ -220,62 +297,82 @@
    "ref": 199828677,
    "targets": {
     "nat": {
-     "medianUs": 1528,
-     "bytes": 22736,
+     "medianUs": 901,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 2678,
-     "bytes": 740720,
+     "medianUs": 2054,
+     "bytes": 945501,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2066,
+     "bytes": 2028065,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6194,
-     "bytes": 2406365,
+     "medianUs": 3164,
+     "bytes": 2588391,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2022,
+     "bytes": 975975,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1528,
-     "bytes": 356456,
+     "medianUs": 887,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1031,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1527,
-     "bytes": 1454264,
+     "medianUs": 1449,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1547,
+     "medianUs": 2050,
      "bytes": 1500,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9515,
+     "medianUs": 2083,
      "bytes": 1500,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1532,
+     "medianUs": 1124,
      "bytes": 1500,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 1104,
+     "bytes": 3449,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 6135,
-     "bytes": 1333,
+     "medianUs": 4890,
+     "bytes": 1329,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 14524,
-     "bytes": 3075,
+     "medianUs": 7172,
+     "bytes": 3449,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 319,
-     "bytes": 1306,
+     "medianUs": 149,
+     "bytes": 1332,
      "parity": "ok"
     }
    },
-   "compileMs": 91.6
+   "compileMs": 49.3
   },
   "fft": {
    "name": "fft",
@@ -285,57 +382,165 @@
    "ref": 4234940375,
    "targets": {
     "nat": {
-     "medianUs": 2482,
-     "bytes": 26848,
+     "medianUs": 1098,
+     "bytes": 33800,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 2435,
-     "bytes": 744950,
+     "medianUs": 1134,
+     "bytes": 949530,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1029,
+     "bytes": 2029556,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6575,
-     "bytes": 2410401,
+     "medianUs": 1822,
+     "bytes": 2592365,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1445,
+     "bytes": 985830,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2466,
-     "bytes": 357840,
+     "medianUs": 1057,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1070,
+     "bytes": 377992,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3955,
-     "bytes": 1458360,
-     "parity": "ok"
+     "medianUs": 1122,
+     "bytes": 1674306,
+     "parity": "fma"
     },
     "v8": {
-     "medianUs": 3271,
+     "medianUs": 1440,
      "bytes": 4344,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2742,
+     "medianUs": 1488,
      "bytes": 4344,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2446,
+     "medianUs": 1219,
      "bytes": 4344,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 1185,
+     "bytes": 6285,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 2448,
-     "bytes": 1958,
+     "medianUs": 1291,
+     "bytes": 1950,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2432,
-     "bytes": 2335,
+     "medianUs": 1012,
+     "bytes": 2424,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 124.7
+   "compileMs": 61.9
+  },
+  "hashjoin": {
+   "name": "hashjoin",
+   "samples": 1572864,
+   "stages": 2,
+   "runs": 21,
+   "ref": 730663173,
+   "targets": {
+    "nat": {
+     "medianUs": 6121,
+     "bytes": 33552,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 9356,
+     "bytes": 946965,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 10180,
+     "bytes": 2029904,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 16613,
+     "bytes": 2590613,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 11187,
+     "bytes": 983653,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 6614,
+     "bytes": 389904,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 4214,
+     "bytes": 377920,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 7626,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 7706,
+     "bytes": 4119,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 5365,
+     "bytes": 4119,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 5649,
+     "bytes": 4119,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 7473,
+     "bytes": 6068,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8818,
+     "bytes": 1692,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 6282,
+     "bytes": 1672,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 51.5
   },
   "lorenz": {
    "name": "lorenz",
@@ -345,57 +550,81 @@
    "ref": 4004855102,
    "targets": {
     "nat": {
-     "medianUs": 19484,
-     "bytes": 22720,
+     "medianUs": 14206,
+     "bytes": 33624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 19292,
-     "bytes": 738313,
+     "medianUs": 13968,
+     "bytes": 946726,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 14157,
+     "bytes": 2028461,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 19211,
-     "bytes": 2407263,
+     "medianUs": 14264,
+     "bytes": 2589207,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 13752,
+     "bytes": 37738,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 22158,
-     "bytes": 355800,
+     "medianUs": 13800,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 16701,
+     "bytes": 53128,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 22028,
-     "bytes": 1454264,
-     "parity": "ok"
+     "medianUs": 11378,
+     "bytes": 1674306,
+     "parity": "fma"
     },
     "v8": {
-     "medianUs": 19408,
+     "medianUs": 14561,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 18842,
+     "medianUs": 14448,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 24537,
+     "medianUs": 14301,
      "bytes": 2685,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 13867,
+     "bytes": 4626,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 19023,
-     "bytes": 1605,
+     "medianUs": 13542,
+     "bytes": 1601,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 9599,
-     "bytes": 2262,
-     "parity": "DIFF"
+     "medianUs": 14151,
+     "bytes": 1646,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 99.3
+   "compileMs": 49.8
   },
   "nbody": {
    "name": "nbody",
@@ -405,57 +634,81 @@
    "ref": 784143951,
    "targets": {
     "nat": {
-     "medianUs": 39484,
-     "bytes": 26816,
+     "medianUs": 8097,
+     "bytes": 33624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 41085,
-     "bytes": 741608,
+     "medianUs": 12987,
+     "bytes": 949919,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 13129,
+     "bytes": 2029709,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 66776,
-     "bytes": 2412287,
+     "medianUs": 15463,
+     "bytes": 2594174,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 26459,
+     "bytes": 40477,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 39179,
-     "bytes": 360936,
+     "medianUs": 8154,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 15848,
+     "bytes": 53384,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 64640,
-     "bytes": 1458360,
-     "parity": "ok"
+     "medianUs": 10516,
+     "bytes": 1674306,
+     "parity": "fma"
     },
     "v8": {
-     "medianUs": 39435,
+     "medianUs": 12000,
      "bytes": 3413,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 39383,
+     "medianUs": 12695,
      "bytes": 3413,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 39394,
+     "medianUs": 11454,
      "bytes": 3413,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 11460,
+     "bytes": 5354,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 42919,
-     "bytes": 2390,
+     "medianUs": 12746,
+     "bytes": 2382,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 24289,
-     "bytes": 3805,
+     "medianUs": 9556,
+     "bytes": 3865,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: px is not defined"
     }
    },
-   "compileMs": 126.4
+   "compileMs": 61
   },
   "particle": {
    "name": "particle",
@@ -465,57 +718,81 @@
    "ref": 1275530752,
    "targets": {
     "nat": {
-     "medianUs": 11302,
-     "bytes": 26816,
+     "medianUs": 7239,
+     "bytes": 33632,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 63176,
-     "bytes": 738930,
+     "medianUs": 31132,
+     "bytes": 947544,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 35043,
+     "bytes": 2030533,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 80946,
-     "bytes": 2409236,
+     "medianUs": 45955,
+     "bytes": 2590940,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 36637,
+     "bytes": 979074,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 10975,
-     "bytes": 358664,
+     "medianUs": 7155,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 10703,
+     "bytes": 377920,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 21183,
-     "bytes": 1458360,
+     "medianUs": 12967,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 27499,
+     "medianUs": 31903,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 43534,
+     "medianUs": 25659,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 17426,
+     "medianUs": 11074,
      "bytes": 2685,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 11146,
+     "bytes": 4626,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 117229,
-     "bytes": 1845,
+     "medianUs": 46606,
+     "bytes": 1837,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 10676,
-     "bytes": 1928,
+     "medianUs": 7072,
+     "bytes": 1984,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
     }
    },
-   "compileMs": 106.5
+   "compileMs": 52
   },
   "synth": {
    "name": "synth",
@@ -525,57 +802,81 @@
    "ref": 41574153,
    "targets": {
     "nat": {
-     "medianUs": 3995,
-     "bytes": 22736,
+     "medianUs": 2541,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 5408,
-     "bytes": 743032,
+     "medianUs": 2524,
+     "bytes": 947622,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2614,
+     "bytes": 2028714,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 12601,
-     "bytes": 2408044,
+     "medianUs": 4901,
+     "bytes": 2590024,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2483,
+     "bytes": 977968,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4892,
-     "bytes": 356296,
+     "medianUs": 2546,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2634,
+     "bytes": 378040,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 6180,
-     "bytes": 1458360,
-     "parity": "ok"
+     "medianUs": 2596,
+     "bytes": 1674306,
+     "parity": "fma"
     },
     "v8": {
-     "medianUs": 9444,
+     "medianUs": 3071,
      "bytes": 3646,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 4208,
+     "medianUs": 3412,
      "bytes": 3646,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5474,
+     "medianUs": 2940,
      "bytes": 3646,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 2951,
+     "bytes": 5587,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 6322,
-     "bytes": 1860,
+     "medianUs": 2453,
+     "bytes": 1856,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 6133,
-     "bytes": 1976,
+     "medianUs": 2331,
+     "bytes": 2010,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 105.4
+   "compileMs": 54.1
   },
   "biquad": {
    "name": "biquad filter cascade",
@@ -585,62 +886,90 @@
    "ref": 422839881,
    "targets": {
     "nat": {
-     "medianUs": 7745,
-     "bytes": 22720,
+     "medianUs": 3876,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 29853,
-     "bytes": 739146,
+     "medianUs": 5462,
+     "bytes": 948949,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5440,
+     "bytes": 2030200,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 44738,
-     "bytes": 2410008,
+     "medianUs": 11741,
+     "bytes": 2591916,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4759,
+     "bytes": 982558,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 11038,
-     "bytes": 359368,
+     "medianUs": 3803,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3651,
+     "bytes": 378008,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13428,
-     "bytes": 1458360,
-     "parity": "ok"
+     "medianUs": 6472,
+     "bytes": 1674306,
+     "parity": "fma"
     },
     "v8": {
-     "medianUs": 17979,
+     "medianUs": 9024,
      "bytes": 3284,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15757,
+     "medianUs": 8870,
      "bytes": 3284,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 11855,
+     "medianUs": 5358,
      "bytes": 3284,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 5363,
+     "bytes": 5225,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 15013,
-     "bytes": 1964,
+     "medianUs": 6513,
+     "bytes": 1960,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 11131,
-     "bytes": 3355,
+     "medianUs": 4650,
+     "bytes": 3409,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 4896812,
+     "medianUs": 2293574,
      "bytes": 2592,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    },
+    "wat": {
+     "status": "fail",
+     "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/biquad/biquad.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad-wat.was"
     }
    },
-   "compileMs": 128
+   "compileMs": 67.5
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -650,67 +979,91 @@
    "ref": 2929747182,
    "targets": {
     "nat": {
-     "medianUs": 4811,
-     "bytes": 18624,
+     "medianUs": 1955,
+     "bytes": 33624,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 6923,
-     "bytes": 739093,
+     "medianUs": 2552,
+     "bytes": 946258,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1216,
+     "bytes": 2029754,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 70290,
-     "bytes": 2408013,
+     "medianUs": 26055,
+     "bytes": 2589981,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2362,
+     "bytes": 40586,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2269,
-     "bytes": 356536,
+     "medianUs": 1328,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2006,
+     "bytes": 53096,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13246,
-     "bytes": 1454264,
+     "medianUs": 8919,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 21381,
+     "medianUs": 8606,
      "bytes": 1198,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13216,
+     "medianUs": 7740,
      "bytes": 1198,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5555,
+     "medianUs": 2539,
      "bytes": 1198,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 2483,
+     "bytes": 3139,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 13148,
-     "bytes": 1606,
+     "medianUs": 6694,
+     "bytes": 1602,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 133256,
-     "bytes": 2765,
+     "medianUs": 64623,
+     "bytes": 3139,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 2714,
-     "bytes": 3137,
+     "medianUs": 1487,
+     "bytes": 3179,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 757610,
+     "medianUs": 291717,
      "bytes": 1606,
      "parity": "ok"
+    },
+    "wat": {
+     "status": "fail",
+     "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
     }
    },
-   "compileMs": 130
+   "compileMs": 66.3
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -720,62 +1073,91 @@
    "ref": 3026383685,
    "targets": {
     "nat": {
-     "medianUs": 639,
-     "bytes": 22736,
+     "medianUs": 379,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 1361,
-     "bytes": 740989,
+     "medianUs": 918,
+     "bytes": 945691,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 917,
+     "bytes": 2028137,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 4746,
-     "bytes": 2406697,
+     "medianUs": 2489,
+     "bytes": 2588577,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 914,
+     "bytes": 976753,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 643,
-     "bytes": 356792,
+     "medianUs": 382,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 572,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 866,
-     "bytes": 1454264,
+     "medianUs": 566,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2056,
+     "medianUs": 1680,
      "bytes": 1014,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7388,
+     "medianUs": 1644,
      "bytes": 1014,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2050,
+     "medianUs": 951,
      "bytes": 1014,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 930,
+     "bytes": 2963,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 1224,
-     "bytes": 1336,
+     "medianUs": 805,
+     "bytes": 1328,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 130,
-     "bytes": 1426,
+     "medianUs": 133,
+     "bytes": 1474,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 1127,
+     "medianUs": 454,
      "bytes": 1237,
      "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 587,
+     "bytes": 359,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 95.7
+   "compileMs": 45.7
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -785,62 +1167,91 @@
    "ref": 3216842766,
    "targets": {
     "nat": {
-     "medianUs": 956,
-     "bytes": 39120,
+     "medianUs": 953,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12376,
-     "bytes": 742111,
+     "medianUs": 5997,
+     "bytes": 947152,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6028,
+     "bytes": 2029392,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 37001,
-     "bytes": 2406716,
+     "medianUs": 15571,
+     "bytes": 2588585,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5732,
+     "bytes": 979378,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 938,
-     "bytes": 359768,
+     "medianUs": 936,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3005,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8447,
-     "bytes": 1454264,
+     "medianUs": 3784,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 11434,
+     "medianUs": 3987,
      "bytes": 1005,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9342,
+     "medianUs": 3514,
      "bytes": 1005,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8101,
+     "medianUs": 2991,
      "bytes": 1005,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 3186,
+     "bytes": 2946,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 17492,
-     "bytes": 1577,
+     "medianUs": 9126,
+     "bytes": 1569,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2106,
-     "bytes": 1245,
+     "medianUs": 978,
+     "bytes": 1292,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 9643,
+     "medianUs": 10892,
      "bytes": 1620,
      "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 3551,
+     "bytes": 355,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 89.9
+   "compileMs": 44.5
   },
   "tokenizer": {
    "name": "tokenizer scan",
@@ -850,67 +1261,92 @@
    "ref": 2031286465,
    "targets": {
     "nat": {
-     "medianUs": 64,
-     "bytes": 22736,
+     "medianUs": 98,
+     "bytes": 33728,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 146,
-     "bytes": 740968,
+     "medianUs": 84,
+     "bytes": 946119,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 149,
+     "bytes": 2028051,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 234,
-     "bytes": 2417355,
+     "medianUs": 184,
+     "bytes": 2599006,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 98,
+     "bytes": 975982,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 104,
-     "bytes": 356424,
+     "medianUs": 85,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 88,
+     "bytes": 377968,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 75,
-     "bytes": 1462456,
+     "medianUs": 49,
+     "bytes": 1674322,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 273,
+     "medianUs": 141,
      "bytes": 1997,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 172,
+     "medianUs": 155,
      "bytes": 1997,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 236,
+     "medianUs": 118,
      "bytes": 1997,
      "parity": "ok"
     },
-    "as": {
+    "jsc": {
      "medianUs": 122,
-     "bytes": 1598,
+     "bytes": 3946,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 62,
+     "bytes": 1594,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 783,
-     "bytes": 3572,
+     "medianUs": 298,
+     "bytes": 3946,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 93,
-     "bytes": 2238,
+     "medianUs": 68,
+     "bytes": 2287,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 6270,
+     "medianUs": 3739,
      "bytes": 2024,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 56,
+     "bytes": 344,
      "parity": "ok"
     }
    },
-   "compileMs": 110.7
+   "compileMs": 54.1
   },
   "callback": {
    "name": "callback map",
@@ -920,62 +1356,91 @@
    "ref": 893685701,
    "targets": {
     "nat": {
-     "medianUs": 380,
-     "bytes": 30928,
+     "medianUs": 289,
+     "bytes": 33728,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 679,
-     "bytes": 742663,
+     "medianUs": 487,
+     "bytes": 947406,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 411,
+     "bytes": 2028224,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 2681,
-     "bytes": 2406579,
+     "medianUs": 917,
+     "bytes": 2588511,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 373,
+     "bytes": 977862,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 387,
-     "bytes": 360776,
+     "medianUs": 278,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 338,
+     "bytes": 377920,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 531,
-     "bytes": 1454264,
+     "medianUs": 328,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1184,
+     "medianUs": 626,
      "bytes": 1315,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 853,
+     "medianUs": 609,
      "bytes": 1315,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1738,
+     "medianUs": 735,
      "bytes": 1315,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 737,
+     "bytes": 3264,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 1583,
-     "bytes": 1908,
+     "medianUs": 801,
+     "bytes": 1904,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 451,
-     "bytes": 1437,
+     "medianUs": 263,
+     "bytes": 1528,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 84128,
+     "medianUs": 34126,
      "bytes": 1095,
      "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 353,
+     "bytes": 266,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: scale is not defined"
     }
    },
-   "compileMs": 98.6
+   "compileMs": 47
   },
   "aos": {
    "name": "AoS to SoA",
@@ -985,62 +1450,91 @@
    "ref": 2813671365,
    "targets": {
     "nat": {
-     "medianUs": 799,
-     "bytes": 39120,
+     "medianUs": 870,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 3851,
-     "bytes": 744736,
+     "medianUs": 2749,
+     "bytes": 949524,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2620,
+     "bytes": 2029432,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 6037,
-     "bytes": 2408711,
+     "medianUs": 2885,
+     "bytes": 2590376,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2452,
+     "bytes": 981007,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 760,
-     "bytes": 358408,
+     "medianUs": 870,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 657,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1341,
-     "bytes": 1454264,
+     "medianUs": 653,
+     "bytes": 1674370,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2666,
+     "medianUs": 1280,
      "bytes": 1089,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2194,
+     "medianUs": 1272,
      "bytes": 1089,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3319,
+     "medianUs": 1627,
      "bytes": 1089,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 1626,
+     "bytes": 3030,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 2728,
-     "bytes": 2204,
+     "medianUs": 1354,
+     "bytes": 2180,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1665,
-     "bytes": 1799,
+     "medianUs": 657,
+     "bytes": 1859,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 3533,
+     "medianUs": 1535,
      "bytes": 1448,
      "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 762,
+     "bytes": 481,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 100.3
+   "compileMs": 50.6
   },
   "mandelbrot": {
    "name": "mandelbrot escape",
@@ -1050,62 +1544,82 @@
    "ref": 3520419621,
    "targets": {
     "nat": {
-     "medianUs": 13391,
-     "bytes": 30928,
+     "medianUs": 8652,
+     "bytes": 33728,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 20946,
-     "bytes": 742543,
+     "medianUs": 15631,
+     "bytes": 947550,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 15517,
+     "bytes": 2029917,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 21241,
-     "bytes": 2406772,
+     "medianUs": 8968,
+     "bytes": 2588724,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 15648,
+     "bytes": 980969,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 13466,
-     "bytes": 358488,
+     "medianUs": 8840,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 8769,
+     "bytes": 377920,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13662,
-     "bytes": 1454264,
+     "medianUs": 8531,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 13654,
+     "medianUs": 9277,
      "bytes": 1841,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13799,
+     "medianUs": 9799,
      "bytes": 1841,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13683,
+     "medianUs": 8835,
      "bytes": 1841,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 8833,
+     "bytes": 3782,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 13726,
-     "bytes": 1327,
+     "medianUs": 8820,
+     "bytes": 1323,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 16142,
-     "bytes": 3408,
+     "medianUs": 9753,
+     "bytes": 3782,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14693,
-     "bytes": 1456,
+     "medianUs": 8431,
+     "bytes": 1505,
      "parity": "ok"
     }
    },
-   "compileMs": 91.6
+   "compileMs": 48.2
   },
   "json": {
    "name": "JSON parse+walk (single literal source)",
@@ -1115,57 +1629,81 @@
    "ref": 2797819845,
    "targets": {
     "nat": {
-     "medianUs": 321,
-     "bytes": 22744,
+     "medianUs": 149,
+     "bytes": 33832,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 620,
-     "bytes": 782660,
+     "medianUs": 256,
+     "bytes": 990785,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 307,
+     "bytes": 2054564,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 10326,
-     "bytes": 3056552,
+     "medianUs": 4334,
+     "bytes": 3266361,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 707,
+     "bytes": 1168105,
      "parity": "ok"
     },
     "rust": {
+     "medianUs": 320,
+     "bytes": 407528,
+     "parity": "ok"
+    },
+    "zig": {
      "medianUs": 461,
-     "bytes": 381016,
+     "bytes": 437576,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1886,
-     "bytes": 1806520,
+     "medianUs": 882,
+     "bytes": 2060786,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 586,
+     "medianUs": 271,
      "bytes": 1226,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 525,
+     "medianUs": 213,
      "bytes": 1226,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 403,
+     "medianUs": 186,
      "bytes": 1226,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 123,
+     "bytes": 3175,
+     "parity": "ok"
+    },
     "jz": {
-     "medianUs": 357,
-     "bytes": 10053,
+     "medianUs": 212,
+     "bytes": 12235,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 1808,
+     "medianUs": 861,
      "bytes": 1202,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RangeError: Start offset -2146369289 is outside the bounds of the buffer"
     }
    },
-   "compileMs": 147.5
+   "compileMs": 75
   },
   "sort": {
    "name": "in-place heapsort",
@@ -1175,62 +1713,86 @@
    "ref": 1238395589,
    "targets": {
     "nat": {
-     "medianUs": 16249,
-     "bytes": 22720,
+     "medianUs": 7070,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 16117,
-     "bytes": 737871,
+     "medianUs": 5360,
+     "bytes": 946274,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6668,
+     "bytes": 2028945,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 25387,
-     "bytes": 2408551,
+     "medianUs": 13334,
+     "bytes": 2590466,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4949,
+     "bytes": 36736,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 15210,
-     "bytes": 357024,
+     "medianUs": 6784,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7464,
+     "bytes": 53064,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15822,
-     "bytes": 1454264,
+     "medianUs": 7803,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 18606,
+     "medianUs": 9505,
      "bytes": 1602,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 17269,
+     "medianUs": 9372,
      "bytes": 1602,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 16473,
+     "medianUs": 7281,
      "bytes": 1602,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 6593,
+     "bytes": 3543,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 12110,
-     "bytes": 1946,
+     "medianUs": 7823,
+     "bytes": 1938,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 16649,
-     "bytes": 1828,
+     "medianUs": 5563,
+     "bytes": 1900,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 2355,
+     "medianUs": 3735,
      "bytes": 1373,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 103.9
+   "compileMs": 50.5
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1240,67 +1802,87 @@
    "ref": 304463882,
    "targets": {
     "nat": {
-     "medianUs": 8962,
-     "bytes": 18624,
+     "medianUs": 7690,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 10087,
-     "bytes": 737568,
+     "medianUs": 8303,
+     "bytes": 946184,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 8555,
+     "bytes": 2029795,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 9020,
-     "bytes": 2407153,
+     "medianUs": 9275,
+     "bytes": 2589189,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 8574,
+     "bytes": 37011,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 8963,
-     "bytes": 358456,
+     "medianUs": 6710,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 6686,
+     "bytes": 53064,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8965,
-     "bytes": 1454264,
+     "medianUs": 6418,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 9009,
+     "medianUs": 9594,
      "bytes": 1873,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 12336,
+     "medianUs": 9293,
      "bytes": 1873,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8972,
+     "medianUs": 6646,
      "bytes": 1873,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 6620,
+     "bytes": 3822,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 12450,
-     "bytes": 1475,
+     "medianUs": 8701,
+     "bytes": 1471,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 65636,
-     "bytes": 3448,
+     "medianUs": 57473,
+     "bytes": 3822,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 8976,
-     "bytes": 1361,
+     "medianUs": 8531,
+     "bytes": 1415,
      "parity": "ok"
     },
     "numpy": {
-     "medianUs": 2016,
+     "medianUs": 177,
      "bytes": 1240,
      "parity": "ok"
     }
    },
-   "compileMs": 99.4
+   "compileMs": 48.8
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -1310,57 +1892,81 @@
    "ref": 1299645893,
    "targets": {
     "nat": {
-     "medianUs": 13418,
-     "bytes": 30928,
+     "medianUs": 5574,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 38725,
-     "bytes": 743451,
+     "medianUs": 17126,
+     "bytes": 948372,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 16797,
+     "bytes": 2029311,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 64792,
-     "bytes": 2406877,
+     "medianUs": 32304,
+     "bytes": 2589010,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 17136,
+     "bytes": 980170,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 13408,
-     "bytes": 358648,
+     "medianUs": 5469,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7554,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 14422,
-     "bytes": 1454264,
+     "medianUs": 9348,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16522,
+     "medianUs": 9821,
      "bytes": 1984,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15200,
+     "medianUs": 9908,
      "bytes": 1984,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 15506,
+     "medianUs": 10965,
      "bytes": 1984,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 10778,
+     "bytes": 3925,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 15452,
-     "bytes": 1350,
+     "medianUs": 8326,
+     "bytes": 1346,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3396,
-     "bytes": 1720,
+     "medianUs": 1961,
+     "bytes": 1757,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 94.2
+   "compileMs": 47.4
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -1370,57 +1976,81 @@
    "ref": 2564029013,
    "targets": {
     "nat": {
-     "medianUs": 2429,
-     "bytes": 35024,
+     "medianUs": 1593,
+     "bytes": 33720,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 17025,
-     "bytes": 743529,
+     "medianUs": 9307,
+     "bytes": 948347,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 9438,
+     "bytes": 2029053,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 40264,
-     "bytes": 2408716,
+     "medianUs": 11857,
+     "bytes": 2590598,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 9311,
+     "bytes": 978938,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2353,
-     "bytes": 357768,
+     "medianUs": 1622,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3513,
+     "bytes": 377896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 10250,
-     "bytes": 1458360,
+     "medianUs": 4773,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 19157,
+     "medianUs": 9297,
      "bytes": 2739,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 14630,
+     "medianUs": 7841,
      "bytes": 2739,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 10484,
+     "medianUs": 5809,
      "bytes": 2739,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 5719,
+     "bytes": 4680,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 18691,
+     "medianUs": 8037,
      "bytes": 1660,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5557,
-     "bytes": 1714,
+     "medianUs": 2273,
+     "bytes": 1766,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 92.5
+   "compileMs": 48.9
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -1430,57 +2060,81 @@
    "ref": 2649699616,
    "targets": {
     "nat": {
-     "medianUs": 1008,
-     "bytes": 22720,
+     "medianUs": 1006,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12906,
-     "bytes": 739260,
+     "medianUs": 2570,
+     "bytes": 948366,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2545,
+     "bytes": 2029453,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 86377,
-     "bytes": 2409076,
+     "medianUs": 44983,
+     "bytes": 2591009,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2850,
+     "bytes": 985796,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1013,
-     "bytes": 360536,
+     "medianUs": 818,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1582,
+     "bytes": 378008,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 26190,
-     "bytes": 1458360,
+     "medianUs": 8482,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 33358,
+     "medianUs": 13023,
      "bytes": 3595,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 24796,
+     "medianUs": 12300,
      "bytes": 3595,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 19162,
+     "medianUs": 7344,
      "bytes": 3595,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 7729,
+     "bytes": 5532,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 23978,
-     "bytes": 1730,
+     "medianUs": 7978,
+     "bytes": 1726,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 21082,
-     "bytes": 2975,
+     "medianUs": 1339,
+     "bytes": 5597,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 134.9
+   "compileMs": 71.4
   },
   "qoi": {
    "name": "QOI image codec (encode + decode)",
@@ -1490,57 +2144,81 @@
    "ref": 1486080151,
    "targets": {
     "nat": {
-     "medianUs": 13913,
-     "bytes": 22720,
+     "medianUs": 8026,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 16579,
-     "bytes": 742773,
+     "medianUs": 9437,
+     "bytes": 951387,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 9281,
+     "bytes": 2031970,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 46133,
-     "bytes": 2418109,
+     "medianUs": 19820,
+     "bytes": 2599943,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 9322,
+     "bytes": 985613,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 14285,
-     "bytes": 361656,
+     "medianUs": 7433,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 8369,
+     "bytes": 377992,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 20955,
-     "bytes": 1462456,
+     "medianUs": 9698,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 26493,
+     "medianUs": 11930,
      "bytes": 6376,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 21501,
+     "medianUs": 27700,
      "bytes": 6376,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 18851,
+     "medianUs": 10159,
      "bytes": 6376,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 10195,
+     "bytes": 8325,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 21305,
-     "bytes": 3219,
+     "medianUs": 9469,
+     "bytes": 3215,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 23022,
-     "bytes": 9097,
+     "medianUs": 9611,
+     "bytes": 3248,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 207.9
+   "compileMs": 84.9
   },
   "hash": {
    "name": "MurmurHash3 (x86 32-bit)",
@@ -1550,62 +2228,82 @@
    "ref": 1334379566,
    "targets": {
     "nat": {
-     "medianUs": 3985,
-     "bytes": 18624,
+     "medianUs": 3659,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 12977,
-     "bytes": 737350,
+     "medianUs": 6435,
+     "bytes": 945989,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4516,
+     "bytes": 2028622,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 11605,
-     "bytes": 2407736,
+     "medianUs": 4739,
+     "bytes": 2589637,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5881,
+     "bytes": 36705,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4234,
-     "bytes": 355960,
+     "medianUs": 3614,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3687,
+     "bytes": 53064,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3578,
-     "bytes": 1454264,
+     "medianUs": 3674,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 7140,
+     "medianUs": 3742,
      "bytes": 2288,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7140,
+     "medianUs": 3716,
      "bytes": 2288,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 7424,
+     "medianUs": 4409,
      "bytes": 2288,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 4398,
+     "bytes": 4237,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 8458,
-     "bytes": 1367,
+     "medianUs": 3687,
+     "bytes": 1359,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 157578,
-     "bytes": 3863,
+     "medianUs": 50363,
+     "bytes": 4237,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 5172,
-     "bytes": 1179,
+     "medianUs": 3708,
+     "bytes": 1232,
      "parity": "ok"
     }
    },
-   "compileMs": 94.3
+   "compileMs": 47.2
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -1615,62 +2313,82 @@
    "ref": 2900100982,
    "targets": {
     "nat": {
-     "medianUs": 23653,
-     "bytes": 18624,
+     "medianUs": 10238,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 35131,
-     "bytes": 740693,
+     "medianUs": 14868,
+     "bytes": 948621,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 14483,
+     "bytes": 2030070,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 206890,
-     "bytes": 2411035,
+     "medianUs": 65538,
+     "bytes": 2592898,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 11114,
+     "bytes": 39152,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 17858,
-     "bytes": 358624,
+     "medianUs": 10391,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 9686,
+     "bytes": 53160,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 35315,
-     "bytes": 1458360,
+     "medianUs": 14641,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 46818,
+     "medianUs": 23395,
      "bytes": 4556,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 31217,
+     "medianUs": 23829,
      "bytes": 4556,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 29357,
+     "medianUs": 18828,
      "bytes": 4556,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 18546,
+     "bytes": 6505,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 35416,
-     "bytes": 1969,
+     "medianUs": 15071,
+     "bytes": 1965,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 163450,
-     "bytes": 6131,
+     "medianUs": 63419,
+     "bytes": 6505,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 35340,
-     "bytes": 7906,
+     "medianUs": 11324,
+     "bytes": 1979,
      "parity": "ok"
     }
    },
-   "compileMs": 154.9
+   "compileMs": 56.8
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -1680,57 +2398,81 @@
    "ref": 1353105291,
    "targets": {
     "nat": {
-     "medianUs": 4190,
-     "bytes": 26816,
+     "medianUs": 2897,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 5869,
-     "bytes": 739295,
+     "medianUs": 3593,
+     "bytes": 947599,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 3564,
+     "bytes": 2029516,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 19875,
-     "bytes": 2412554,
+     "medianUs": 6584,
+     "bytes": 2594438,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 3574,
+     "bytes": 39146,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4212,
-     "bytes": 364552,
+     "medianUs": 2822,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3291,
+     "bytes": 53176,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 6703,
-     "bytes": 1458360,
+     "medianUs": 3949,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 8729,
+     "medianUs": 4996,
      "bytes": 3339,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7637,
+     "medianUs": 4825,
      "bytes": 3339,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8102,
+     "medianUs": 4200,
      "bytes": 3339,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 3948,
+     "bytes": 5276,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 7921,
-     "bytes": 2041,
+     "medianUs": 4124,
+     "bytes": 2037,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 8087,
-     "bytes": 1895,
+     "medianUs": 3587,
+     "bytes": 1901,
      "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 125.7
+   "compileMs": 60.1
   },
   "wav": {
    "name": "WAV PCM-16 encode",
@@ -1740,57 +2482,841 @@
    "ref": 211188261,
    "targets": {
     "nat": {
-     "medianUs": 5783,
-     "bytes": 18624,
+     "medianUs": 4849,
+     "bytes": 33496,
      "parity": "ok"
     },
     "c-wasm": {
-     "medianUs": 13798,
-     "bytes": 737475,
+     "medianUs": 5811,
+     "bytes": 946052,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5710,
+     "bytes": 2028458,
      "parity": "ok"
     },
     "go-wasm": {
-     "medianUs": 37411,
-     "bytes": 2412843,
+     "medianUs": 11252,
+     "bytes": 2594819,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5799,
+     "bytes": 978603,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 7775,
-     "bytes": 357224,
+     "medianUs": 5118,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7842,
+     "bytes": 377992,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 12768,
-     "bytes": 1458360,
+     "medianUs": 7567,
+     "bytes": 1674306,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 14199,
+     "medianUs": 7717,
      "bytes": 3481,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13063,
+     "medianUs": 7062,
      "bytes": 3481,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13004,
+     "medianUs": 6159,
      "bytes": 3481,
      "parity": "ok"
     },
+    "jsc": {
+     "medianUs": 5792,
+     "bytes": 5418,
+     "parity": "ok"
+    },
     "as": {
-     "medianUs": 14710,
-     "bytes": 1909,
+     "medianUs": 6212,
+     "bytes": 1905,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14923,
-     "bytes": 1653,
+     "medianUs": 5584,
+     "bytes": 1719,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 57.5
+  },
+  "raytrace": {
+   "name": "sphere ray tracer (closest-hit + Lambert)",
+   "samples": 147456,
+   "stages": 8,
+   "runs": 21,
+   "ref": 306875421,
+   "targets": {
+    "nat": {
+     "medianUs": 1366,
+     "bytes": 33728,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1369,
+     "bytes": 950333,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1082,
+     "bytes": 2031003,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 3719,
+     "bytes": 2593428,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1383,
+     "bytes": 989174,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1067,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1384,
+     "bytes": 378016,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 1452,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "v8": {
+     "medianUs": 2004,
+     "bytes": 4239,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 1680,
+     "bytes": 4239,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1630,
+     "bytes": 4239,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 1641,
+     "bytes": 6180,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1766,
+     "bytes": 2149,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 19288,
+     "bytes": 6180,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 1337,
+     "bytes": 4893,
      "parity": "ok"
     }
    },
-   "compileMs": 106.6
+   "compileMs": 84.5
+  },
+  "noise": {
+   "name": "Perlin fBm noise field",
+   "samples": 65536,
+   "stages": 5,
+   "runs": 21,
+   "ref": 2977367493,
+   "targets": {
+    "nat": {
+     "medianUs": 1495,
+     "bytes": 33720,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1550,
+     "bytes": 950146,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1443,
+     "bytes": 2029590,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7297,
+     "bytes": 2593014,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1559,
+     "bytes": 980415,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1240,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1483,
+     "bytes": 377992,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 3614,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 8608,
+     "bytes": 3465,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 8759,
+     "bytes": 3465,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 4387,
+     "bytes": 3465,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 4207,
+     "bytes": 5406,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1496,
+     "bytes": 1904,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 1253,
+     "bytes": 4417,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 98.4
+  },
+  "radixsort": {
+   "name": "LSD radix sort (u32 keys)",
+   "samples": 655360,
+   "stages": 4,
+   "runs": 21,
+   "ref": 2475082232,
+   "targets": {
+    "nat": {
+     "medianUs": 1922,
+     "bytes": 33760,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5837,
+     "bytes": 948522,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2390,
+     "bytes": 2030441,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7255,
+     "bytes": 2590807,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2415,
+     "bytes": 981336,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1895,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2092,
+     "bytes": 378016,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 2557,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 3285,
+     "bytes": 2639,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 2678,
+     "bytes": 2639,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 5475,
+     "bytes": 2639,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 4281,
+     "bytes": 4580,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 3329,
+     "bytes": 1616,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 2446,
+     "bytes": 1665,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 49.1
+  },
+  "levenshtein": {
+   "name": "Levenshtein edit-distance DP",
+   "samples": 2097152,
+   "stages": 2,
+   "runs": 21,
+   "ref": 981953199,
+   "targets": {
+    "nat": {
+     "medianUs": 1599,
+     "bytes": 50240,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 4790,
+     "bytes": 948375,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4961,
+     "bytes": 2029784,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 5832,
+     "bytes": 2590364,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4960,
+     "bytes": 986298,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 2104,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2050,
+     "bytes": 378016,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 5481,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 5026,
+     "bytes": 2864,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 4875,
+     "bytes": 2864,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 4818,
+     "bytes": 2864,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 4765,
+     "bytes": 4813,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1828,
+     "bytes": 1650,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 23849,
+     "bytes": 4813,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 1748,
+     "bytes": 1789,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 49.7
+  },
+  "nqueens": {
+   "name": "N-Queens bitmask backtracking",
+   "samples": 16072,
+   "stages": 11,
+   "runs": 21,
+   "ref": 1121018765,
+   "targets": {
+    "nat": {
+     "medianUs": 2967,
+     "bytes": 33496,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2952,
+     "bytes": 945835,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2924,
+     "bytes": 2028975,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7027,
+     "bytes": 2589851,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 3154,
+     "bytes": 40228,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 2908,
+     "bytes": 390160,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2848,
+     "bytes": 53192,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 3652,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 4864,
+     "bytes": 2922,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 5109,
+     "bytes": 2922,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 3839,
+     "bytes": 2922,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 3843,
+     "bytes": 4871,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 4019,
+     "bytes": 1470,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 14010,
+     "bytes": 4871,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 4104,
+     "bytes": 10138,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 48.1
+  },
+  "dict": {
+   "name": "open-addressing hash table",
+   "samples": 491520,
+   "stages": 2,
+   "runs": 21,
+   "ref": 1968764697,
+   "targets": {
+    "nat": {
+     "medianUs": 1173,
+     "bytes": 33544,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 3625,
+     "bytes": 946231,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 3688,
+     "bytes": 2029683,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 6575,
+     "bytes": 2590153,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 3700,
+     "bytes": 982522,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1169,
+     "bytes": 389896,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1118,
+     "bytes": 377896,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 1678,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 3016,
+     "bytes": 2847,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 2047,
+     "bytes": 2847,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1556,
+     "bytes": 2847,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 1483,
+     "bytes": 4796,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2375,
+     "bytes": 1517,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 1921,
+     "bytes": 1504,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 47.4
+  },
+  "sieve": {
+   "name": "Sieve of Eratosthenes",
+   "samples": 6291456,
+   "stages": 1,
+   "runs": 21,
+   "ref": 3811242000,
+   "targets": {
+    "nat": {
+     "medianUs": 3949,
+     "bytes": 33752,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5329,
+     "bytes": 948332,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5201,
+     "bytes": 2028835,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 15745,
+     "bytes": 2588975,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5462,
+     "bytes": 977719,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 4049,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 4945,
+     "bytes": 377992,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 6352,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 7827,
+     "bytes": 1822,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7228,
+     "bytes": 1822,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 6866,
+     "bytes": 1822,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 7118,
+     "bytes": 3764,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6633,
+     "bytes": 1269,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 5150,
+     "bytes": 1105,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: RuntimeError: memory access out of bounds"
+    }
+   },
+   "compileMs": 42.8
+  },
+  "vm": {
+   "name": "bytecode interpreter dispatch",
+   "samples": 1048576,
+   "stages": 8,
+   "runs": 21,
+   "ref": 750010871,
+   "targets": {
+    "nat": {
+     "medianUs": 5851,
+     "bytes": 33624,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6229,
+     "bytes": 945309,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6184,
+     "bytes": 2028821,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 20454,
+     "bytes": 2590725,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 14914,
+     "bytes": 979610,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 5646,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3578,
+     "bytes": 377944,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 7510,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 7966,
+     "bytes": 3268,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7346,
+     "bytes": 3268,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 5380,
+     "bytes": 3268,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 5469,
+     "bytes": 5217,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 11404,
+     "bytes": 1892,
+     "parity": "ok"
+    },
+    "porf": {
+     "medianUs": 43725,
+     "bytes": 5217,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 4822,
+     "bytes": 2267,
+     "parity": "ok"
+    }
+   },
+   "compileMs": 51.7
+  },
+  "spmv": {
+   "name": "sparse matrix×vector (CSR)",
+   "samples": 5242880,
+   "stages": 2,
+   "runs": 21,
+   "ref": 187360325,
+   "targets": {
+    "nat": {
+     "medianUs": 1791,
+     "bytes": 33720,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6019,
+     "bytes": 949886,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 12685,
+     "bytes": 2032733,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 8031,
+     "bytes": 2592481,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 6188,
+     "bytes": 986178,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1766,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1842,
+     "bytes": 377896,
+     "parity": "ok"
+    },
+    "go": {
+     "medianUs": 2447,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 3423,
+     "bytes": 3063,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 3376,
+     "bytes": 3063,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 2807,
+     "bytes": 3063,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 2547,
+     "bytes": 5004,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2394,
+     "bytes": 1912,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 1910,
+     "bytes": 2251,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 52
   },
   "watr": {
    "name": "watr WAT compiler",
@@ -1800,24 +3326,32 @@
    "ref": 3419154861,
    "targets": {
     "v8": {
-     "medianUs": 4562,
+     "medianUs": 1001,
      "bytes": 2645,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 4048,
+     "medianUs": 1043,
      "bytes": 2645,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3478,
+     "medianUs": 977,
      "bytes": 2645,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2924,
-     "bytes": 238826,
+     "medianUs": 1015,
+     "bytes": 249207,
      "parity": "ok"
+    },
+    "jsc": {
+     "status": "fail",
+     "reason": "exit 3: Exception: SyntaxError: Unexpected token '{'. import call expects one or two arguments.\nat /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/watr/watr-flat.js:47"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: SyntaxError: 'import' and 'export' may appear only with 'sourceType: module' (47:0)"
     }
    }
   },
@@ -1829,24 +3363,31 @@
    "ref": 2418067300,
    "targets": {
     "v8": {
-     "medianUs": 4169,
+     "medianUs": 1680,
      "bytes": 2700,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3941,
+     "medianUs": 1629,
      "bytes": 2700,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2885,
+     "medianUs": 1334,
      "bytes": 2700,
      "parity": "ok"
     },
+    "jsc": {
+     "status": "fail",
+     "reason": "exit 3: Exception: SyntaxError: Unexpected token '{'. import call expects one or two arguments.\nat /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jessie/jessie-flat.js:47"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: SyntaxError: 'import' and 'export' may appear only with 'sourceType: module' (47:0)"
+    },
     "jz": {
-     "medianUs": 5721,
-     "bytes": 88419,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "exit 1: node:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\n[CompileError: WebAssembly.instantiate(): Compiling function #57 failed: local.set[0] expected type i32, found f64.convert_i32_s of type f64 @+19168]\n\nNode.js v25.9.0"
     }
    }
   },
@@ -1858,19 +3399,31 @@
    "ref": 546173896,
    "targets": {
     "v8": {
-     "medianUs": 50589,
+     "medianUs": 14779,
      "bytes": 2657,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 37053,
+     "medianUs": 16408,
      "bytes": 2657,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 44391,
+     "medianUs": 16202,
      "bytes": 2657,
      "parity": "ok"
+    },
+    "jsc": {
+     "status": "fail",
+     "reason": "exit 3: Exception: SyntaxError: Unexpected identifier 'compileSelf'. import call expects one or two arguments.\nat /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jz/jz-flat.js:47"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: SyntaxError: 'import' and 'export' may appear only with 'sourceType: module' (47:0)"
+    },
+    "jz": {
+     "status": "fail",
+     "reason": "'scalarHot' is not in scope — jz emitted a reference it cannot resolve (likely an unsupported built-in or missing import).\n  current AST: [\"str\",\"boolean\"]"
     }
    }
   }

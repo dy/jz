@@ -148,6 +148,7 @@ correctly-rounded; cascade is the same algorithm.
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |
 | `bun` | raw JavaScript on Bun/JavaScriptCore |
+| `jsc` | raw JavaScript on the standalone JavaScriptCore shell — Safari's engine (`jsc`; install via `jsvu --engines=javascriptcore`, or set `JSC_BIN`) |
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
 | `shermes` | Static Hermes — JS AOT-compiled to a native binary (`shermes -O`), when installed |
 | `graaljs` | raw JavaScript on GraalJS |
