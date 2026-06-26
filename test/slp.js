@@ -85,6 +85,24 @@ test('slp: does NOT splat distinct allocations (array-literal scatter)', () => {
   is(exports.f(), 1220, 'ch[0] and ch[1] are distinct arrays (no splat-aliasing)')
 })
 
+test('slp: does NOT splat distinct NON-FINITE / signed-zero constants', () => {
+  // exprEq compared nodes via JSON.stringify, which maps Infinity/-Infinity/NaN→null
+  // and -0→0 — so a `[Infinity, -Infinity]` (or `[-0, 0]`) adjacent-constant store pair
+  // LOOKED equal and packed as ONE f64x2.splat lane, dropping the second value.
+  // Regression (test262 Math/sumPrecise): sumPrecise([Inf,-Inf]) returned Infinity
+  // (splat→[Inf,Inf]) instead of NaN; sumPrecise([-0,0]) returned -0 instead of +0.
+  const e = jz(`
+    export let sumInf = () => Math.sumPrecise([Infinity, -Infinity])
+    export let sumInf2 = () => Math.sumPrecise([-Infinity, Infinity])
+    export let sumZero = () => Math.sumPrecise([-0.0, 0.0])
+    export let sumSame = () => Math.sumPrecise([Infinity, Infinity])
+  `, { optimize: speed }).exports
+  ok(Number.isNaN(e.sumInf()), 'sumPrecise([Inf,-Inf]) = NaN — pair not splatted to [Inf,Inf]')
+  ok(Number.isNaN(e.sumInf2()), 'sumPrecise([-Inf,Inf]) = NaN — pair not splatted to [-Inf,-Inf]')
+  ok(Object.is(e.sumZero(), 0), 'sumPrecise([-0,0]) = +0 — -0 not splatted over +0')
+  is(e.sumSame(), Infinity, 'sumPrecise([Inf,Inf]) = Inf — genuinely-equal constants still pack')
+})
+
 test('slp: bails on a within-iteration read-after-write (forward shift)', () => {
   // `o[k+1]=o[k]; o[k+2]=o[k+1]` — the second store's value reads o[k+1], which the
   // FIRST store just wrote. SLP materializes both lane values before either store, so a

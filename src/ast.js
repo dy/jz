@@ -390,9 +390,21 @@ export function cloneNode(node) {
 /** Structural equality via JSON. AST nodes are JSON-serializable except i64.const
  *  BigInt payloads (NaN-box prefixes — dcbb433 routes pointer offsets through boxed
  *  forms); the replacer stringifies those as `<n>n` (cf. formatErrorNode in ctx.js). */
-export const bigintSafeKey = (_k, v) => typeof v === 'bigint' ? `${v}n` : v
+// Replacer for structural node-equality / dedup keys. JSON.stringify is the fast
+// path, but it silently collapses values it can't round-trip: bigint throws, and —
+// the subtle one — Infinity / -Infinity / NaN ALL stringify to `null` while -0
+// stringifies to `0`. Two nodes differing ONLY in such a constant then serialize
+// identically and compare equal — an unsound merge (SLP packs `[Inf,-Inf]` as one
+// splat lane; CSE/LICM dedups distinct invariants). Tag each so it round-trips with
+// Object.is semantics.
+export const stableKey = (_k, v) => {
+  if (typeof v === 'bigint') return `${v}n`
+  if (typeof v === 'number' && (v !== v || v === Infinity || v === -Infinity || Object.is(v, -0)))
+    return v !== v ? '#NaN' : v === Infinity ? '#Inf' : v === -Infinity ? '#-Inf' : '#-0'
+  return v
+}
 export function nodeEqual(a, b) {
-  return JSON.stringify(a, bigintSafeKey) === JSON.stringify(b, bigintSafeKey)
+  return JSON.stringify(a, stableKey) === JSON.stringify(b, stableKey)
 }
 
 /** Property entries of an object-literal AST node (`['{}', …]`). */

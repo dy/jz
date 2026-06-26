@@ -33,7 +33,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
-import { T, isLeaf } from '../ast.js'
+import { T, isLeaf, stableKey } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
@@ -1024,9 +1024,10 @@ export function hoistInvariantLoop(fn) {
       if (!Array.isArray(node)) return
       if (node[0] === 'loop') return  // already processed bottom-up
       if (isHoistable(node) && (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1) {
-        // BigInt-safe: hoistable boxed-pointer subtrees carry i64.const NaN-box prefixes
-        // (BigInt values) that plain JSON.stringify can't serialize — see ast.bigintSafeKey.
-        const key = JSON.stringify(node, (_k, v) => typeof v === 'bigint' ? `${v}n` : v)
+        // stableKey: hoistable boxed-pointer subtrees carry i64.const NaN-box prefixes
+        // (BigInt) that plain JSON.stringify can't serialize, and it also collapses
+        // Infinity/-Infinity/NaN→null & -0→0 — both would dedup distinct invariants.
+        const key = JSON.stringify(node, stableKey)
         let arr = sites.get(key); if (!arr) { arr = []; sites.set(key, arr) }
         arr.push({ parent, idx, node })
         return
