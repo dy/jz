@@ -108,34 +108,6 @@ let ringA = (cx, cy, rad, thick, r, g, b, a) => {
   }
 }
 
-// filled triangle facing (ux,uy) in SCREEN space, tip forward — the robot
-let triA = (cxf, cyf, ux, uy, s, r, g, b) => {
-  let pvx = -uy, pvy = ux
-  let ax = cxf + ux * s * 1.5, ay = cyf + uy * s * 1.5
-  let bxp = cxf - ux * s + pvx * s * 0.85, byp = cyf - uy * s + pvy * s * 0.85
-  let dx2 = cxf - ux * s - pvx * s * 0.85, dy2 = cyf - uy * s - pvy * s * 0.85
-  let x0 = Math.floor(Math.min(ax, Math.min(bxp, dx2))), x1 = Math.ceil(Math.max(ax, Math.max(bxp, dx2)))
-  let y0 = Math.floor(Math.min(ay, Math.min(byp, dy2))), y1 = Math.ceil(Math.max(ay, Math.max(byp, dy2)))
-  if (x0 < 0) x0 = 0
-  if (y0 < 0) y0 = 0
-  if (x1 > W - 1) x1 = W - 1
-  if (y1 > H - 1) y1 = H - 1
-  let col = (255 << 24) | (b << 16) | (g << 8) | r
-  let py = y0
-  while (py <= y1) {
-    let pxx = x0
-    while (pxx <= x1) {
-      let w0 = (bxp - ax) * (py - ay) - (byp - ay) * (pxx - ax)
-      let w1 = (dx2 - bxp) * (py - byp) - (dy2 - byp) * (pxx - bxp)
-      let w2 = (ax - dx2) * (py - dy2) - (ay - dy2) * (pxx - dx2)
-      if ((w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0))
-        px[py * W + pxx] = col
-      pxx++
-    }
-    py++
-  }
-}
-
 // stamp the trail buffer at a pixel spot
 let stamp = (cx, cy, rr) => {
   let ci = cx | 0, cj = cy | 0, ri = rr | 0, r2 = rr * rr, oyl = -ri
@@ -328,8 +300,9 @@ export let frame = (t) => {
   ringA(u0 + k * goal[0], v0 - k * goal[1], BR * k, 1.6, ir, ig, ib, 0.95)
   discA(u0 + k * goal[0], v0 - k * goal[1], BR * k * 0.28, ir, ig, ib, 0.95)
 
-  // the robot — a red arrowhead (screen y is flipped, so heading uy = −sin)
-  triA(u0 + k * rx, v0 - k * ry, Math.cos(rh), -Math.sin(rh), RR * k, ACR | 0, ACG | 0, ACB | 0)
+  // the robot — a red disc. A circle has no "facing", so the planner's frequent reversing never reads
+  // as driving backwards (and it matches his disc-shaped robot).
+  discA(u0 + k * rx, v0 - k * ry, RR * k, ACR | 0, ACG | 0, ACB | 0, 1.0)
 
   // collision alarm — his planner allows contact, so mark it when it happens
   let hit = -1, jc = 0
