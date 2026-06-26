@@ -8,29 +8,31 @@
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
-let glow              // Float32 star-seed buffer (brightness^4) for the streak bloom
-let C2 = 0.16         // wave speed² (isotropic 9-point stencil is stable to ≈0.75; low → calm, slow rings)
-let DAMP = 0.9965     // slow damping → rings persist and travel far (large, faint) before dissolving
-let GAIN = 5.5        // render brightness of the |height| field — keeps lone rings thin & unsaturated
+// C2 near 0.5 is the LOW-DISPERSION regime for this stencil: every wavelength travels at the same
+// speed, so a ring keeps a constant pace (a low C2 disperses → the front visibly slows as it fades,
+// and smears a wake behind it). The display pace is kept calm by throttling the step rate in the host.
+let C2 = 0.5
+let DAMP = 0.997      // slow damping → rings persist and travel far (large, faint) before dissolving
+let GAIN = 9.0        // render brightness of the crest field — keeps lone rings thin & unsaturated
 
 export let resize = (w, h) => {
   W = w; H = h
   a = new Float64Array(w * h); b = new Float64Array(w * h)
-  glow = new Float32Array(w * h)
   px = new Uint32Array(w * h)
   return px
 }
 export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ } }
 
-// radial pulse profile: ONE dominant crest at the wavefront (the rim) with a fast-decaying ripple
-// tail toward the centre — an ADSR-shaped single front, not a train of equal rings.
+// radial pulse profile: a single ALL-POSITIVE crest (no trough) with a STEEP leading edge — a fast
+// ADSR attack at the wavefront, then a quick decay behind it. Positivity is what makes crossings add
+// (bright) instead of crest-meeting-trough cancelling (black), and gives one clean ring per drop.
 let prof = (d, r, amp) => {
   if (d < 0.0) return 0.0
   if (d > r) return 0.0
   let behind = (r - d) / r                                  // 0 at the rim/front .. 1 at centre
-  let attack = d > r * 0.80 ? (r - d) / (r * 0.20) : 1.0    // taper the rim → clean leading edge, no cliff
-  let env = Math.exp(-behind * 4.0)                         // strong front, quickly-decaying tail
-  return amp * Math.cos(6.5 * behind) * env * attack        // ~1 cycle: a single crest
+  let front = d > r * 0.90 ? (r - d) / (r * 0.10) : 1.0     // steep outer edge → fast attack as the front passes
+  let tail = Math.exp(-behind * 5.5)                        // quick decay inward → a thin positive ring
+  return amp * front * tail
 }
 
 // Seed an OUTGOING circular wave. A zero-velocity bump splits into an outward AND an inward wave
@@ -61,7 +63,8 @@ export let drop = (cx, cy, r, amp) => {
 }
 
 export let frame = (t) => {
-  let w = W, h = H, y = 1
+  let w = W, h = H
+  let y = 1
   while (y < h - 1) {
     let rc = y * w, rn = rc - w, rs = rc + w, x = 1
     while (x < w - 1) {
@@ -77,52 +80,40 @@ export let frame = (t) => {
     }
     y++
   }
+
+  // ABSORBING (Mur 1st-order) boundary: a ring reaching the wall passes THROUGH and leaves, instead
+  // of reflecting back and cluttering the pond with a mess of returning ripples. u(edge)^{n+1} =
+  // u(in)^n + k·(u(in)^{n+1} − u(edge)^n), k=(c−1)/(c+1) with per-step speed c=√C2.
+  let cc = Math.sqrt(C2), kk = (cc - 1.0) / (cc + 1.0)
+  let ey = 0
+  while (ey < h) {
+    let row = ey * w
+    b[row] = a[row + 1] + kk * (b[row + 1] - a[row])                                   // left
+    b[row + w - 1] = a[row + w - 2] + kk * (b[row + w - 2] - a[row + w - 1])            // right
+    ey++
+  }
+  let ex = 0
+  while (ex < w) {
+    b[ex] = a[w + ex] + kk * (b[w + ex] - a[ex])                                        // top
+    b[(h - 1) * w + ex] = a[(h - 2) * w + ex] + kk * (b[(h - 2) * w + ex] - a[(h - 1) * w + ex])  // bottom
+    ex++
+  }
+
   let tmp = a; a = b; b = tmp                          // swap: a is now current
 
-  // render: black field; |height|² makes thin bright rings and lets a constructive crossing (two
-  // crests summed → ~4× a single ring here) bloom far brighter. The star SEED = brightness⁴ isolates
-  // those crossings — a single ring barely registers — so only crossings spawn bright stars.
+  // render: black field, CREST-ONLY (troughs → black) so each wavefront is ONE clean ring; a crossing
+  // of two crests ADDS (2× height → 8× via the cube) → a bright glint, never the cancelling black that
+  // |height| produced. The cube also crushes the dim 2D wake (the afterglow a pulse trails in 2D)
+  // toward black, so the interior stays clean — just sharp leading rings and glowing intersections.
   let n = w * h, i = 0
   while (i < n) {
-    let v = a[i]
-    let m = v < 0.0 ? -v : v
+    let m = a[i]
+    if (m < 0.0) m = 0.0
     let g = m * GAIN
-    g = g * g
+    g = g * g; g = g * g            // ^4 — crushes the faint 2D wake to black, keeps rings + crossings bright
     if (g > 1.0) g = 1.0
     let gi = (g * 255.0) | 0
     px[i] = (255 << 24) | (gi << 16) | (gi << 8) | gi
-    // star seed: UNclipped |height|⁶ — a crossing (≈2× a ring's amplitude) seeds 2⁶ ≈ 64× more
-    // streak than a lone ring, independent of how bright the display clips the ring to.
-    glow[i] = m * m * m * m * m * m
     i++
   }
-
-  // STREAK BLOOM: each seed emits an exponentially-decaying ray; separable (horizontal then vertical,
-  // each swept both ways) so it's O(n). Only the crossings seed a strong-enough ray to read as a
-  // bright 4-point diffraction star; lone rings stay rings.
-  let DEC = 0.90, STR = 230000.0
-  let yy = 0
-  while (yy < h) {
-    let row = yy * w
-    let acc = 0.0, x = 0
-    while (x < w) { let s = glow[row + x]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(row + x, (acc * STR) | 0); x++ }
-    acc = 0.0; x = w - 1
-    while (x >= 0) { let s = glow[row + x]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(row + x, (acc * STR) | 0); x-- }
-    yy++
-  }
-  let xx = 0
-  while (xx < w) {
-    let acc = 0.0, y2 = 0
-    while (y2 < h) { let idx = y2 * w + xx; let s = glow[idx]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(idx, (acc * STR) | 0); y2++ }
-    acc = 0.0; y2 = h - 1
-    while (y2 >= 0) { let idx = y2 * w + xx; let s = glow[idx]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(idx, (acc * STR) | 0); y2-- }
-    xx++
-  }
-}
-
-// additive white into a pixel (clamped) — used by the sparkle flares
-let addpx = (idx, add) => {
-  let p = px[idx]
-  let r = (p & 0xff) + add; if (r > 255) r = 255
-  px[idx] = (255 << 24) | (r << 16) | (r << 8) | r
 }

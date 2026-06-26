@@ -10,12 +10,12 @@
 import { runDemo } from "../lib/jzdemo.js"
 
 // autonomous: drop random ripples at random intervals so the surface keeps ringing (screensaver)
-let frameCount = 0, nextDrop = 30
+let frameCount = 0, nextDrop = 30, lastStepMs = 0
 let painting = false, lastX = 0, lastY = 0
 
 // each drop is a touch randomized — radius and strength jitter so no two ripples ring alike
-const rr = () => 12 + Math.random() * 9
-const ra = () => 0.78 + Math.random() * 0.35
+const rr = () => 9 + Math.random() * 6
+const ra = () => 0.85 + Math.random() * 0.3
 const drop = (x, y) => {
   if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, rr(), ra())
 }
@@ -27,15 +27,22 @@ const strokeTo = (x, y) => {
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation — ripples ring, reflect, and interfere · click to drop one",
+  hint: "the 2D wave equation — ripples ring outward and interfere · click to drop one",
   size: { budget: 420000 },
   bg: "#000",
   load: (e) => { e.clear() },
   frame: (e) => {
+    // Throttle the simulation to ~50 Hz of REAL time. The harness ticks once per rAF — 120 Hz on many
+    // displays — and at C2≈0.5 that raced (the "too fast"); skipping the extra rAFs keeps the pace calm
+    // and identical on 60/120/144 Hz screens. The harness keeps presenting the last frame, so the gap
+    // between steps doesn't flicker.
+    const now = performance.now()
+    if (now - lastStepMs < 20) return
+    lastStepMs = now
     frameCount++
     if (frameCount > nextDrop) {
       e.drop(Math.random() * demo.W, Math.random() * demo.H, rr(), ra())
-      nextDrop = frameCount + 110 + Math.random() * 150  // sparse: a few rings coexist & cross, not a busy mush
+      nextDrop = frameCount + 75 + Math.random() * 110   // a few rings coexist & cross, not a busy mush
     }
     e.frame(0)
   },
