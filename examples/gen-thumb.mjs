@@ -95,7 +95,7 @@ const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, lenia: 120, attracto
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
                  dla: 600, wireworld: 200, waves: 90, cloth: 130, maze: 200, sph: 500,
                  erosion: 80, lbm: 150, watercolor: 200, cradle: 36,
-                 buddhabrot: 120, lorenz: 320, pendulum: 175, fern: 150, ising: 140,
+                 buddhabrot: 120, lorenz: 320, pendulum: 175, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the
