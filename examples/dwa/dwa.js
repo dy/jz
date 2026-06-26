@@ -211,10 +211,12 @@ export let frame = (t) => {
   let RR = 0.1                  // robot radius
   let BR = 0.1                  // barrier radius
   let VMAXv = 0.5               // max wheel velocity
-  let AMAX = 0.5                // max acceleration
+  let AMAX = 1.0                // max acceleration (his slider; nimbler than 0.5 so it can turn to face)
   let DT = 0.05                 // timestep
   let STEPS = 15                // steps ahead → TAU = STEPS·DT
   let FW = 12.0, OW = 6666.0    // forward / obstacle weights
+  let HW = 3.0                  // heading: a gentle reward for facing the target so it TURNS to aim and
+                                // drives forward, rather than reverse-driving to a goal behind it
   let SAFED = RR                // safeDist
   let TAU = DT * STEPS
   let AW = AMAX * DT            // one acceleration step
@@ -296,8 +298,9 @@ export let frame = (t) => {
             j++
           }
           let newD = Math.sqrt((ex - fgx) * (ex - fgx) + (ey - fgy) * (ey - fgy))
+          let head = 0.5 * (1.0 + (Math.cos(eh) * (fgx - ex) + Math.sin(eh) * (fgy - ey)) / (newD + 1e-6))
           let cost = distObs < SAFED ? OW * (SAFED - distObs) : 0.0
-          let benefit = FW * (prevD - newD) - cost
+          let benefit = FW * (prevD - newD) + HW * head - cost
           if (benefit > best) { best = benefit; bvl = vL; bvr = vR }
         }
         ib++
