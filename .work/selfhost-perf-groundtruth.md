@@ -436,9 +436,20 @@ its `off>=8` guard returns undefined for host/static typed arrays). This fixed t
 bug AND made the kernel's json output **byte-identical** to jz.js at L0 and L2 → **all 22/22 corpus
 programs now self-host byte-identical.** +regression test; native 2532/0, test:self 15/15.
 
-**Flagged (NOT fixed, separate pre-existing): host-arg param-type inference is multi-compile-order
-dependent.** `(s) => [...s]` called `.f('hello')` returns 0 when compiled AFTER certain other programs in
-one process (the suite) but 5 in isolation — the param `s` is inferred non-string under accumulated
-facts-cache state, so the host bridge marshals the string arg wrongly. Orthogonal to the spread fix
-(the compiled code is correct; `sec.val` is null and the runtime dispatch is right — it's the host
-boundary's arg coercion). A focused facts-cache / interop-signature investigation for a later pass.
+**Re-diagnosed 2026-06-25 (was mis-filed as a facts-cache order-dependence — it is NOT).** The earlier
+note claimed `(s) => [...s]` was multi-compile-order dependent (a "facts-cache leak"). Verified false:
+the failure is *consistent in isolation*, not order-dependent, and the compiled code is provably
+correct — `(s)=>[...s].length` → 5, `(s)=>{const a=[...s]; return a[0]}` → "h", `s.charCodeAt(0)` →
+104 all pass. The real root is **V8/JSC NaN-canonicalization of BOXED values returned across the
+wasm→JS boundary in non-i64-carrier lanes**:
+- `() => ['a','b']` compiles to a multi-value `(f64,f64)` return of two SSO-string NaN-boxes. V8
+  canonicalizes each NaN f64 lane as it crosses to a JS number, erasing the string payload, so
+  `interop.read` sees a bare NaN → `null`. `[1,2,3]` survives only because plain numbers aren't boxed.
+- This is exactly the canonicalization the `jz:i64exp` i64-carrier custom section already defends
+  against for *single* boxed results (`ie.r`) and boxed params; it just doesn't extend to multi-value
+  result lanes (nor to a heap-array whose ELEMENTS are boxed strings, read back fine from memory but
+  only when the array pointer itself rides an i64 lane).
+The fix is a coordinated compiler+interop change: emit boxed-capable multi-value result lanes as i64
+and reinterpret them in `interop.read`, extending the existing i64-carrier ABI. Niche (returning
+tuples/arrays of strings to JS is outside the numeric-kernel core), so deferred — but it is a marshaling
+ABI gap, NOT an inference/facts-cache bug. Do not chase a "compile-state leak" here.
