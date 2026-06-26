@@ -290,15 +290,15 @@ export let frame = (t, phi, terms) => {
     ti++
   }
 
-  // ── Ghost: full target curve, dim grey-blue ──
+  // ── Ghost: full target curve, dim grey ──
   let ghx0 = ocx + scale * hx[0], ghy0 = ocy + scale * hy[0]
   let gj = 0
   while (gj < N - 1) {
     let ghx1 = ocx + scale * hx[gj + 1], ghy1 = ocy + scale * hy[gj + 1]
-    lineBlend(ghx0, ghy0, ghx1, ghy1, 55, 70, 105, 0.75)
+    lineBlend(ghx0, ghy0, ghx1, ghy1, 78, 78, 78, 0.75)
     ghx0 = ghx1; ghy0 = ghy1; gj++
   }
-  lineBlend(ghx0, ghy0, ocx + scale * hx[0], ocy + scale * hy[0], 55, 70, 105, 0.75)
+  lineBlend(ghx0, ghy0, ocx + scale * hx[0], ocy + scale * hy[0], 78, 78, 78, 0.75)
 
   // ── Traced curve: accumulated path from 0 to phi ──
   let frac = phi / PI2
@@ -313,10 +313,10 @@ export let frame = (t, phi, terms) => {
   while (tj2 < traceCount) {
     let tx0 = traceX[tj2], ty0 = traceY[tj2]
     let tx1 = traceX[tj2 + 1], ty1 = traceY[tj2 + 1]
-    // Core: bright white-cyan, thick
-    lineThick(tx0, ty0, tx1, ty1, 80, 240, 255, 0.95)
+    // Core: bright white, thick
+    lineThick(tx0, ty0, tx1, ty1, 245, 245, 245, 0.95)
     // Glow: wider softer aura
-    lineAdd(tx0, ty0, tx1, ty1, 20, 80, 120)
+    lineAdd(tx0, ty0, tx1, ty1, 55, 55, 55)
     tj2++
   }
 
@@ -336,9 +336,6 @@ export let frame = (t, phi, terms) => {
     // rank: 0 = biggest/slowest arm, 1 = smallest/fastest
     let rank = ki / (N - 1)
 
-    // Hue: amber (big slow) → teal → violet (tiny fast)
-    let hue = 0.08 + rank * 0.64
-
     let magNorm = mag / (scale * ext[0])
     // Arm: always visible — big arms solid, small arms still drawn
     let armAlpha = 0.55 + magNorm * 0.45
@@ -348,8 +345,9 @@ export let frame = (t, phi, terms) => {
     let circAlpha = 0.5 + magNorm * 0.4
     if (circAlpha > 0.88) circAlpha = 0.88
 
-    let col = hslColor(hue, 0.9, 0.60)
-    let cr = col & 255, cg = (col >> 8) & 255, cb = (col >> 16) & 255
+    // B&W: big slow arms bright white, tiny fast arms dim grey
+    let lum = (230.0 - rank * 120.0) | 0
+    let cr = lum, cg = lum, cb = lum
 
     // Circle ring — draw all circles with radius > 2px
     if (mag >= 2.0) circleBlend(ex, ey, mag, cr, cg, cb, circAlpha)

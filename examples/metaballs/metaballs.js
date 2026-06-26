@@ -40,6 +40,21 @@ export let init = () => {
   active = -1
 }
 
+// re-roll: a genuinely different blob soup — random count, positions, velocities and sizes
+export let randomize = () => {
+  count = 5 + (Math.random() * 8.0 | 0)        // 5..12 blobs
+  let i = 0
+  while (i < count) {
+    bx[i] = 0.12 + Math.random() * 0.76
+    by[i] = 0.12 + Math.random() * 0.76
+    bvx[i] = (Math.random() - 0.5) * 0.0044
+    bvy[i] = (Math.random() - 0.5) * 0.0044
+    br[i] = 0.04 + Math.random() * 0.095
+    i++
+  }
+  active = -1
+}
+
 // Press: spawn a tiny blob at the cursor (or, at capacity, re-grow the oldest).
 export let spawn = (x, y) => {
   if (count < MAXN) { active = count; count++ } else { active = 0 }

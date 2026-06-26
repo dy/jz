@@ -16,7 +16,7 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 // 1s → 2s → 2p → 3s → 3p → 3d → 4f and back, forever. Drag ↔ to scrub to a specific orbital.
 const NAMES = ["1s", "2s", "2pₓ", "2p_z", "3s", "3p_z", "3d_z²", "3d_xz", "4f_z³"]
 const NORB = NAMES.length
-let manual = false, manualAt = -10, nowT = 0, sel = 0
+let manual = false, manualAt = -10, nowT = 0, sel = 0, phase = Math.random() * 6.2832   // random initial orbital
 const orbEl = document.getElementById("orb")
 const showName = () => { const i = Math.round(sel); orbEl.innerHTML = `<b style="font-weight:700">${NAMES[i] || ""}</b>` }
 
@@ -27,11 +27,13 @@ const demo = runDemo({
   load: () => showName(),
   frame: (e, t) => {
     nowT = t
-    if (manual && t - manualAt > 6) manual = false
-    if (!manual) sel = (NORB - 1) * (0.5 - 0.5 * Math.cos(t * 0.16))   // smooth ping-pong tour
+    if (manual && t - manualAt > 2) manual = false   // resume the tour quickly after a scrub
+    if (!manual) sel = (NORB - 1) * (0.5 - 0.5 * Math.cos(t * 0.38 + phase))   // smooth ping-pong tour, brisker
     e.frame(t, sel)
     showName()
   },
+  // re-roll: jump to a random orbital and keep touring from there (never freezes)
+  randomize: () => { phase = Math.random() * 6.2832; manual = false },
 })
 
 const ptr = trackPointer(demo.cv)

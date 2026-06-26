@@ -33,7 +33,11 @@ const demo = runDemo({
     if (!seeded) { seeded = true; scatter(e, d) }   // first load: randomise the field
     else applySeeds(e, d)                            // resize/swap: re-apply same seeds
   },
+  // re-roll: a fresh feed/kill regime (different morphology — spots, worms, mazes) + new seeds
+  randomize: (e, d) => { const p = PRESETS[Math.random() * PRESETS.length | 0]; e.setParams?.(p[0], p[1]); scatter(e, d) },
 })
+// known-good Gray–Scott (feed, kill) regimes, each a distinct pattern class
+const PRESETS = [[0.054, 0.062], [0.0367, 0.0649], [0.030, 0.062], [0.025, 0.060], [0.039, 0.058], [0.014, 0.054]]
 
 // Pointer interaction: drag to paint, right-drag to erase. Stamps are interpolated
 // between successive points so a fast drag paints a continuous line, not dots.

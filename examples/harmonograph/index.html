@@ -25,58 +25,68 @@ const FIGURES = [
   [3, 4, 2, 5], [2, 3, 4, 3], [5, 4, 2, 3], [3, 5, 5, 3],
   [4, 5, 3, 2], [5, 3, 4, 2], [3, 4, 5, 3], [2, 5, 5, 4],
 ]
-const fig = FIGURES[Math.floor(Math.random() * FIGURES.length)]
-const phs = Array.from({ length: 4 }, () => Math.random() * Math.PI * 2)
+let fig = FIGURES[Math.floor(Math.random() * FIGURES.length)]
+let phs = Array.from({ length: 4 }, () => Math.random() * Math.PI * 2)
 
 // LFO state — kept in an array so it survives between frame calls as a genuine f64
 let lfoState = new Float64Array(2)  // [detune, damp]
 lfoState[0] = 0.038
 lfoState[1] = 1.0
 
-let userDetune = -999, userDamp = -999, lastPtrDown = -10
+// Like julia: the figure precesses ON ITS OWN through the param space, so drag is freed for PANNING
+// (scroll zooms). animPhase is the animation clock; it advances slower the deeper you zoom so the
+// magnified knot holds still while you inspect it.
+let animPhase = 0, lastT = 0
+const home = { panX: 0, panY: 0, zoom: 1 }
+const view = { ...home }
 
 const demo = runDemo({
   name: "harmonograph",
-  hint: "Damped harmonograph — drag left↔right for detune · up↔down for damping",
+  hint: "Damped harmonograph — drag to pan · scroll to zoom · the figure precesses on its own",
   size: { dpr: 2, budget: null },
   load: (e) => e.setParams?.(fig[0], fig[1], fig[2], fig[3], phs[0], phs[1], phs[2], phs[3]),
   frame: (e, t) => {
-    let detune, damp
-    const holdWindow = 5   // seconds to hold user setting after pointer release
-
-    if (ptr.down) {
-      // Map pointer position to parameter ranges
-      // x ∈ [0,1] → detune ∈ [-0.06, 0.06]  (center = locked, edges = max precession)
-      // y ∈ [0,1] → damp  ∈ [0.45, 2.2]     (top = lush slow, bottom = tight fast spiral)
-      detune = (ptr.x - 0.5) * 0.12
-      damp   = 0.45 + ptr.y * 1.75
-      userDetune  = detune
-      userDamp    = damp
-      lastPtrDown = t
-    } else if (t - lastPtrDown < holdWindow) {
-      // Hold user setting briefly after release so the figure stabilises before LFO resumes
-      detune = userDetune
-      damp   = userDamp
-    } else {
-      // Idle auto-animation: two LFOs at different periods traverse the full parameter space.
-      // Detune: 0.042-cycle/s, range -0.055..0.055 — passes through locked figure (detune≈0)
-      // twice per cycle so the viewer sees both the closed static figure and the precessional
-      // rosette, the two canonical regimes, without any interaction.
-      // Damp: 0.017-cycle/s — slower, so the spiral-vs-lush transition reads clearly.
-      let detuneTarget = Math.sin(t * 0.042 * 6.2831853) * 0.055
-      let dampTarget   = 0.7 + 0.65 * Math.sin(t * 0.017 * 6.2831853 + 1.3)
-      // Light smoothing so jumps from user→LFO are graceful
-      lfoState[0] = lfoState[0] + (detuneTarget - lfoState[0]) * 0.04
-      lfoState[1] = lfoState[1] + (dampTarget   - lfoState[1]) * 0.04
-      detune = lfoState[0]
-      damp   = lfoState[1]
-    }
-
-    e.frame(t, detune, damp)
+    const dt = Math.min(0.05, t - lastT); lastT = t
+    const zoomRate = Math.min(1, 1 / (view.zoom * view.zoom))   // precession slows as you zoom in
+    animPhase += dt * zoomRate
+    // two LFOs traverse the param space on the zoom-tapered clock: detune passes through the locked
+    // figure (≈0) and the precessional rosette; damp sweeps lush↔tight-spiral.
+    const detuneTarget = Math.sin(animPhase * 0.042 * 6.2831853) * 0.055
+    const dampTarget   = 0.7 + 0.65 * Math.sin(animPhase * 0.017 * 6.2831853 + 1.3)
+    lfoState[0] = lfoState[0] + (detuneTarget - lfoState[0]) * 0.04
+    lfoState[1] = lfoState[1] + (dampTarget   - lfoState[1]) * 0.04
+    const spin = animPhase * 0.003
+    e.frame(t, lfoState[0], lfoState[1], view.panX, view.panY, view.zoom, spin)
+  },
+  // re-roll: a fresh frequency quadruple + phases → a different rosette
+  randomize: (e) => {
+    fig = FIGURES[Math.floor(Math.random() * FIGURES.length)]
+    phs = Array.from({ length: 4 }, () => Math.random() * Math.PI * 2)
+    e.setParams?.(fig[0], fig[1], fig[2], fig[3], phs[0], phs[1], phs[2], phs[3])
   },
 })
 
-const ptr = trackPointer(demo.cv)
+// pan/zoom in backing pixels (kernel zooms about the screen centre), à la fern/mandelbrot/attractors
+const cv = demo.cv
+const sx = () => cv.width / cv.getBoundingClientRect().width
+const sy = () => cv.height / cv.getBoundingClientRect().height
+let down = false, lx = 0, ly = 0
+cv.addEventListener("pointerdown", e => { down = true; lx = e.clientX; ly = e.clientY; try { cv.setPointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointermove", e => { if (!down) return; view.panX += (e.clientX - lx) * sx(); view.panY += (e.clientY - ly) * sy(); lx = e.clientX; ly = e.clientY })
+cv.addEventListener("pointerup", e => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { down = false })
+cv.addEventListener("wheel", e => {
+  e.preventDefault()
+  const r = cv.getBoundingClientRect(), Sx = (e.clientX - r.left) * sx(), Sy = (e.clientY - r.top) * sy()
+  const z0 = view.zoom
+  let z1 = z0 * Math.exp(-e.deltaY * 0.0012)
+  if (z1 < 0.4) z1 = 0.4
+  if (z1 > 50) z1 = 50
+  view.panX = Sx - cv.width * 0.5 - (Sx - cv.width * 0.5 - view.panX) * z1 / z0
+  view.panY = Sy - cv.height * 0.5 - (Sy - cv.height * 0.5 - view.panY) * z1 / z0
+  view.zoom = z1
+}, { passive: false })
+cv.addEventListener("dblclick", () => { view.panX = home.panX; view.panY = home.panY; view.zoom = home.zoom })
 </script>
 </body>
 </html>

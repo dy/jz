@@ -20,9 +20,10 @@ export let resize = (w, h) => {
   return px
 }
 
-export let frame = (a, b, c, d, iters) => {
+export let frame = (a, b, c, d, iters, panX, panY, zoom) => {
   let n = W * H, i = 0
   while (i < n) { dens[i] = 0; i++ }
+  let cxv = W * 0.5, cyv = H * 0.5    // pan/zoom pivots about the screen centre
 
   // Auto-fit: stretch the attractor's actual bounding box to fill the whole viewport
   // (independent x/y scale, 4% margin), so it never sits as a small centred/top blob.
@@ -48,8 +49,9 @@ export let frame = (a, b, c, d, iters) => {
     if (x > nMaxX) nMaxX = x
     if (y < nMinY) nMinY = y
     if (y > nMaxY) nMaxY = y
-    let ix = (offX + x * scaleX) | 0
-    let iy = (offY + y * scaleY) | 0
+    let gx = offX + x * scaleX, gy = offY + y * scaleY
+    let ix = ((gx - cxv) * zoom + cxv + panX) | 0
+    let iy = ((gy - cyv) * zoom + cyv + panY) | 0
     if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
       let idx = iy * W + ix
       dens[idx] = dens[idx] + 1

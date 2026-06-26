@@ -10,15 +10,17 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // Drag to smear watercolor blooms into the field (interpolated so the trail is solid).
-let painting = false, lpx = 0, lpy = 0
+let painting = false, lpx = 0, lpy = 0, phase = Math.random() * 600   // random initial bloom
 const demo = runDemo({
   name: "plasma",
   hint: "fbm domain-warp plasma",
   size: { scale: 0.6 },
   bg: "#07070c",
   frame: (e, t) => {
-    e.frame(t)
+    e.frame(t + phase)
   },
+  // re-roll: jump the fbm time far away → a wholly different bloom of the field
+  randomize: () => { phase += 120 + Math.random() * 800 },
 })
 
 const ptr = trackPointer(demo.cv)

@@ -10,7 +10,7 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 const GOLDEN_ANGLE = 2.3999632297286535
-let baseAng = GOLDEN_ANGLE, userSet = false
+let baseAng = GOLDEN_ANGLE, userSet = false, count = 3600, gap = 1.0   // re-roll varies count + gap
 const demo = runDemo({
   name: "phyllotaxis",
   hint: "Sunflower packing — drag left/right to shift the divergence angle away from golden",
@@ -26,8 +26,10 @@ const demo = runDemo({
       const amp = userSet ? 0.001 : 0.005
       ang = baseAng + Math.sin(t * 0.02) * amp         // slow, gentle drift (4× softer)
     }
-    e.frame(t, ang)
+    e.frame(t, ang, count, gap)
   },
+  // re-roll: a fresh density — vary the seed count and the dot/gap ratio
+  randomize: () => { count = Math.round(900 + Math.random() * 5200); gap = 0.7 + Math.random() * 1.1 },
 })
 const ptr = trackPointer(demo.cv)
 </script>

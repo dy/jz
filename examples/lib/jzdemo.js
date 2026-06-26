@@ -117,7 +117,9 @@ const addMasthead = (name) => {
       + 'html,body{background:var(--paper)!important}'
       + 'body > canvas:not(.gradient){position:fixed!important;top:80px!important;left:50%!important;'
       + 'transform:translateX(-50%)!important;width:min(100vw,var(--jz-democol))!important;'
-      + 'height:calc(100vh - 80px - var(--jz-barh))!important;object-fit:contain!important}'
+      // 100dvh (not 100vh): Safari's 100vh counts the dynamic toolbar, making the box taller than the
+      // host-measured backing → object-fit:contain then letterboxes it with white top/bottom bands.
+      + 'height:calc(100dvh - 80px - var(--jz-barh))!important;object-fit:contain!important}'
       + '.masthead.fixed{padding-inline:var(--jz-demopad)!important}'
       + 'html.jz-full body > canvas:not(.gradient){width:100vw!important}'
       + 'html.jz-full .masthead.fixed{padding-inline:24px!important}'
@@ -393,7 +395,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; display: inline-flex; align-items: center; justify-content: center; }
       .jz-pal .sw { display: block; width: 22px; height: 22px;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-        box-shadow: 0 0 0 1.5px light-dark(rgba(0,0,0,.3), rgba(255,255,255,.35)) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
+        box-shadow: 0 0 0 1.5px light-dark(rgba(0,0,0,.27), rgba(255,255,255,.27)) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
       .jz-pal:hover .sw { transform: rotate(90deg); }
       .jz-pal.on .sw { transform: rotate(180deg); }
       /* fullscreen — two-angles expand icon; fills the viewport edge-to-edge (Esc / click to exit) */
@@ -421,6 +423,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       html.jz-saver .jz-desc, html.jz-saver .jz-wiki, html.jz-saver .jz-codelink,
       html.jz-saver .jz-fps, html.jz-saver .jz-fps .metric b, html.jz-saver .jz-fps .unit,
       html.jz-saver .jz-rand, html.jz-saver .jz-fs { color: #fff !important; }
+      /* the colour swatch's rim is theme-aware (light-dark) — over the fullscreen demo it must read
+         white like the rest of the bar's text/icons, not the page-theme tint */
+      html.jz-saver .jz-pal .sw { box-shadow: 0 0 0 1.5px rgba(255,255,255,.5) inset !important; }
       /* description: cap to a readable measure (~45–75 chars), and show EVERY line — no clamp, no trim */
       html.jz-saver .jz-desc { max-width: 64ch !important; white-space: normal !important;
         display: block !important; -webkit-line-clamp: none !important; overflow: visible !important; }
@@ -703,6 +708,7 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
     if (randomize) randomize(engine, demo)
     else if (engine.randomize) engine.randomize()
     else if (engine.reseed) engine.reseed()
+    else if (engine.seed) engine.seed()    // most CA sims expose a no-arg seed() that re-scatters
     else if (engine.init) engine.init()
     applyTheme(engine)
   })

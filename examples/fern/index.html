@@ -14,13 +14,23 @@ import { runDemo } from "../lib/jzdemo.js"
 // converted from CSS px via the canvas box.
 const home = { panX: 0, panY: 0, zoom: 1 }
 const view = { ...home }
+let swayPhase = 0, lastT = 0, lastZ = -1, lastPX = NaN, lastPY = NaN
 const demo = runDemo({
   name: "fern",
   hint: "Barnsley fern — chaos game IFS with wind sway · drag to pan · scroll to zoom",
   load: (e) => e.init(),
   frame: (e, t) => {
-    const sway = 0.03 * Math.sin(t * 0.7)
-    e.frame(t, sway, view.panX, view.panY, view.zoom)
+    // the sway slows as you zoom in (like the julia morph) so the magnified fronds hold still
+    const dt = t - lastT; lastT = t
+    const zoomRate = Math.min(1, 1 / (view.zoom * view.zoom))
+    swayPhase += dt * zoomRate
+    const sway = 0.03 * Math.sin(swayPhase * 0.7)
+    // animate fresh near home; once zoomed (sway ~frozen) accumulate frames for detail, restarting
+    // only when the view moves.
+    const moved = view.zoom !== lastZ || view.panX !== lastPX || view.panY !== lastPY
+    lastZ = view.zoom; lastPX = view.panX; lastPY = view.panY
+    const restart = (moved || view.zoom < 1.2) ? 1 : 0
+    e.frame(t, sway, view.panX, view.panY, view.zoom, restart)
   },
 })
 

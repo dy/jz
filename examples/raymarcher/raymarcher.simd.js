@@ -7,25 +7,41 @@
 // the harness installs examples/lib/simd.js. Output is grayscale (r=g=b=v).
 let W = 0, H = 0, px;
 let invW = 0, invH = 0, aspect = 0;
+
+// Sphere-field config in a Float64Array (so jz never i32-narrows these floats):
+// [0]=radius  [1..3]=period x/y/z  [4..6]=1/period  [7..9]=period/2
+let cfg = new Float64Array(10);
+let setCfg = (r, pxp, pyp, pzp) => {
+  cfg[0] = r; cfg[1] = pxp; cfg[2] = pyp; cfg[3] = pzp;
+  cfg[4] = 1.0 / pxp; cfg[5] = 1.0 / pyp; cfg[6] = 1.0 / pzp;
+  cfg[7] = pxp * 0.5; cfg[8] = pyp * 0.5; cfg[9] = pzp * 0.5;
+};
+
 export let resize = (w, h) => {
   W = w; H = h; invW = 1.0 / w; invH = 1.0 / h; aspect = w * invH;
   px = new Uint32Array(w * h);
+  setCfg(0.55, 4.0, 3.0, 4.0);   // default lattice
   return px;
 };
 export let dataOffset = () => px;
 
+// re-roll: a different ball composition — fatter/leaner spheres on a tighter/looser lattice
+export let randomize = () => {
+  setCfg(0.40 + Math.random() * 0.34, 3.0 + Math.random() * 2.6, 2.4 + Math.random() * 1.7, 3.0 + Math.random() * 2.6);
+};
+
 const EPS = 0.002;
 
-// Domain-repeated sphere field (period 4 in x/z, 3 in y), 4 lanes.
+// Domain-repeated sphere field (period & radius from cfg), 4 lanes.
 let sdRep = (x, y, z) => {
-  let rx = f32x4.add(x, f32x4.splat(2.0));
-  rx = f32x4.sub(f32x4.sub(rx, f32x4.mul(f32x4.splat(4.0), f32x4.floor(f32x4.mul(rx, f32x4.splat(0.25))))), f32x4.splat(2.0));
-  let ry = f32x4.add(y, f32x4.splat(1.5));
-  ry = f32x4.sub(f32x4.sub(ry, f32x4.mul(f32x4.splat(3.0), f32x4.floor(f32x4.mul(ry, f32x4.splat(0.333333333))))), f32x4.splat(1.5));
-  let rz = f32x4.add(z, f32x4.splat(2.0));
-  rz = f32x4.sub(f32x4.sub(rz, f32x4.mul(f32x4.splat(4.0), f32x4.floor(f32x4.mul(rz, f32x4.splat(0.25))))), f32x4.splat(2.0));
+  let rx = f32x4.add(x, f32x4.splat(cfg[7]));
+  rx = f32x4.sub(f32x4.sub(rx, f32x4.mul(f32x4.splat(cfg[1]), f32x4.floor(f32x4.mul(rx, f32x4.splat(cfg[4]))))), f32x4.splat(cfg[7]));
+  let ry = f32x4.add(y, f32x4.splat(cfg[8]));
+  ry = f32x4.sub(f32x4.sub(ry, f32x4.mul(f32x4.splat(cfg[2]), f32x4.floor(f32x4.mul(ry, f32x4.splat(cfg[5]))))), f32x4.splat(cfg[8]));
+  let rz = f32x4.add(z, f32x4.splat(cfg[9]));
+  rz = f32x4.sub(f32x4.sub(rz, f32x4.mul(f32x4.splat(cfg[3]), f32x4.floor(f32x4.mul(rz, f32x4.splat(cfg[6]))))), f32x4.splat(cfg[9]));
   let len = f32x4.sqrt(f32x4.add(f32x4.add(f32x4.mul(rx, rx), f32x4.mul(ry, ry)), f32x4.mul(rz, rz)));
-  return f32x4.sub(len, f32x4.splat(0.55));
+  return f32x4.sub(len, f32x4.splat(cfg[0]));
 };
 // Scene = min(sphere field, ground plane y=-1.4), 4 lanes.
 let sdf = (x, y, z) => f32x4.min(sdRep(x, y, z), f32x4.add(y, f32x4.splat(1.4)));

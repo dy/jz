@@ -44,17 +44,18 @@ let disc = (cx, cy, radius, rr, gg, bb) => {
   }
 }
 
-export let frame = (t, ang) => {
+export let frame = (t, ang, nf, dotMul) => {
   // Clear to near-black
   let total = W * H, i = 0
   while (i < total) { px[i] = (255 << 24); i++ }
 
-  let N = 3600
+  let N = nf | 0                       // seed count — drives the density (re-roll varies it)
+  if (N < 200) N = 200
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
   let scale = minDim * 0.47 / Math.sqrt(N)
-  let dotR = scale * 0.32              // well under half the seed spacing → smaller, crisper, more separated dots
-  if (dotR < 0.75) dotR = 0.75
+  let dotR = scale * 0.32 * dotMul     // dot/gap ratio — re-roll varies how tightly the seeds pack
+  if (dotR < 0.6) dotR = 0.6
 
   i = 0
   while (i < N) {

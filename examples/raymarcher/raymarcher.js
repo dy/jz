@@ -12,13 +12,28 @@
 let W = 0, H = 0, px
 let invW = 0, invH = 0, aspect = 0
 
+// Sphere-field config in a Float64Array (so jz never i32-narrows these floats):
+// [0]=radius  [1..3]=period x/y/z  [4..6]=1/period  [7..9]=period/2
+let cfg = new Float64Array(10)
+let setCfg = (r, pxp, pyp, pzp) => {
+  cfg[0] = r; cfg[1] = pxp; cfg[2] = pyp; cfg[3] = pzp
+  cfg[4] = 1.0 / pxp; cfg[5] = 1.0 / pyp; cfg[6] = 1.0 / pzp
+  cfg[7] = pxp * 0.5; cfg[8] = pyp * 0.5; cfg[9] = pzp * 0.5
+}
+
 export let resize = (w, h) => {
   W = w; H = h
   invW = 1.0 / w
   invH = 1.0 / h
   aspect = w * invH                // w/h divide, done once at resize not per-pixel
   px = new Uint32Array(w * h)
+  setCfg(0.55, 4.0, 3.0, 4.0)      // default lattice
   return px
+}
+
+// re-roll: a different ball composition — fatter/leaner spheres on a tighter/looser lattice
+export let randomize = () => {
+  setCfg(0.40 + Math.random() * 0.34, 3.0 + Math.random() * 2.6, 2.4 + Math.random() * 1.7, 3.0 + Math.random() * 2.6)
 }
 
 // ---- SDF helpers (no divides) -----------------------------------------------

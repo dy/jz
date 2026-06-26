@@ -22,9 +22,10 @@ const SIG = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
 const DT = 0.006
 const STEPS = 14          // trajectory substeps advanced per frame → a slow, trackable comet head
 const HMAX = 90000        // 3D history length — dense enough to draw a SOLID glowing attractor
-const DEPOSIT = 0.13      // density energy per history point (overlaps build the glow)
+const DEPOSIT = 0.022     // energy per segment pixel — low, since the connecting LINES touch far more
+                         // pixels than sparse splats did; overlaps in the crowded cores still glow white
 const HEADN = 2400        // the newest HEADN points get a brighter, tapering comet head
-const HEADADD = 0.45
+const HEADADD = 0.16
 
 // 3D trajectory ring buffer (module scope — never reallocated, so resize can't detach the px view)
 let hx = new Float64Array(HMAX), hy = new Float64Array(HMAX), hz = new Float64Array(HMAX)
@@ -99,6 +100,32 @@ let plot = (ix, iy, add) => {
   energy[c + W] = energy[c + W] + add * 0.4
 }
 
+// single-pixel energy deposit (the body of a connecting segment)
+let dep = (ix, iy, add) => {
+  if (ix < 0 || ix >= W || iy < 0 || iy >= H) return
+  let c = iy * W + ix
+  energy[c] = energy[c] + add
+}
+
+// connect two consecutive projected samples with a thin segment → the orbit reads as one
+// continuous glowing CURVE instead of a stipple of dots (crowding still builds the density glow)
+let plotLine = (x0, y0, x1, y1, add) => {
+  let ddx = x1 - x0, ddy = y1 - y0
+  let adx = ddx < 0 ? -ddx : ddx
+  let ady = ddy < 0 ? -ddy : ddy
+  let steps = adx > ady ? adx : ady
+  if (steps < 1) { plot(x0, y0, add); return 0.0 }
+  if (steps > 64) steps = 64                       // guard a rare long jump across the lobes
+  let ux = ddx / steps, uy = ddy / steps
+  let fx = x0 + 0.0, fy = y0 + 0.0, s = 0
+  while (s <= steps) {
+    dep(fx | 0, fy | 0, add)
+    fx = fx + ux; fy = fy + uy
+    s++
+  }
+  return 0.0
+}
+
 export let frame = (t, theta) => {
   // advance the live orbit a little
   let k = 0
@@ -113,16 +140,20 @@ export let frame = (t, theta) => {
   let scX = st[4], scY = st[5], offX = st[6], offY = st[7]
   let newest = hhead - 1
   if (newest < 0) newest = HMAX - 1
+  let psx = 0, psy = 0, hasPrev = 0
   let j = 0
   while (j < hcount) {
     let idx = newest - j
     if (idx < 0) idx = idx + HMAX
     let X = hx[idx], Y = hy[idx], Z = hz[idx]
-    let sx = (X * cosT - Y * sinT) * scX + offX
-    let sy = offY - Z * scY
+    let isx = ((X * cosT - Y * sinT) * scX + offX) | 0
+    let isy = (offY - Z * scY) | 0
     let add = DEPOSIT
     if (j < HEADN) add = add + HEADADD * (1.0 - j / HEADN)   // bright, tapering comet head
-    plot(sx | 0, sy | 0, add)
+    if (hasPrev != 0) plotLine(psx, psy, isx, isy, add)      // join consecutive samples → curve
+    else plot(isx, isy, add)
+    if (j < HEADN) plot(isx, isy, add)                       // extra glow on the comet head
+    psx = isx; psy = isy; hasPrev = 1
     j++
   }
 

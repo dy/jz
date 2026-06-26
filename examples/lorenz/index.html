@@ -10,7 +10,7 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // The kernel exports setTheme, so the harness feeds it the page palette and re-tints on toggle.
-let baseTheta = 0.0, userSet = false
+let phase = 0.0   // rotation offset so the spin CONTINUES from wherever a drag leaves it
 const demo = runDemo({
   name: "lorenz",
   hint: "Lorenz attractor — the butterfly that launched chaos theory · drag to spin it",
@@ -19,11 +19,10 @@ const demo = runDemo({
   frame: (e, t) => {
     let theta
     if (ptr.down) {
-      baseTheta = (ptr.x * 2.0 - 1.0) * Math.PI
-      userSet = true
-      theta = baseTheta
+      theta = (ptr.x * 2.0 - 1.0) * Math.PI
+      phase = theta - t * 0.15          // remember the offset so spin resumes seamlessly on release
     } else {
-      theta = userSet ? baseTheta : t * 0.15
+      theta = phase + t * 0.15          // keep rotating — never freezes after you let go
     }
     e.frame(t, theta)
   },

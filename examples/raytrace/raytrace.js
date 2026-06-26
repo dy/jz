@@ -58,6 +58,21 @@ export let init = () => {
   cr[2] = 0.36; cg[2] = 0.36; cb[2] = 0.36     // dark
 }
 
+// re-roll: scatter the three spheres at fresh spots, sizes and grays (all still resting on the floor)
+export let randomize = () => {
+  let i = 0
+  while (i < 3) {
+    let r = 0.24 + Math.random() * 0.34
+    sx[i] = (Math.random() - 0.5) * 2.0
+    sz[i] = (Math.random() - 0.5) * 1.2
+    sr[i] = r
+    sy[i] = PY + r
+    let g = 0.30 + Math.random() * 0.64
+    cr[i] = g; cg[i] = g; cb[i] = g
+    i++
+  }
+}
+
 // Any-hit test for shadow rays — early-out, leaves HIT untouched.
 let occluded = (ox, oy, oz, dx, dy, dz, tmax) => {
   let s = 0

@@ -17,6 +17,8 @@ const demo = runDemo({
   size: { budget: 150000 },
   bg: "#f6f2e9",
   load: (e) => e.clear(),
+  // re-roll: wash the paper and drip a fresh scatter of ink blooms
+  randomize: (e, d) => { e.clear(); for (let i = 0; i < 5; i++) { const a = Math.random() * 6.28; e.paint(Math.random() * d.W, Math.random() * d.H, R + 3, Math.cos(a) * 0.6, Math.sin(a) * 0.6) } },
   frame: (e) => {
     t++
     if (!painting && t > nextDrip) {

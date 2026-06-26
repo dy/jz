@@ -28,6 +28,8 @@ const demo = runDemo({
   size: { budget: 950000 },
   frame: (e) => e.frame(0),
   load: (e, d) => { e.clear(); scatter(e, d) },
+  // re-roll: empty the box and strew fresh walls, sand and water
+  randomize: (e, d) => { e.clear(); scatter(e, d) },
 })
 
 // element selector

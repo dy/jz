@@ -16,6 +16,8 @@ const demo = runDemo({
   bg: "#000",
   cursor: "pointer",
   frame: (e) => e.frame(0),
+  // re-roll: carve and solve a brand-new maze
+  randomize: (e) => e.restart?.(),
 })
 demo.cv.addEventListener("pointerdown", () => { if (demo.engine) demo.engine.restart() })
 </script>

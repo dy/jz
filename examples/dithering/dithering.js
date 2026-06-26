@@ -61,27 +61,62 @@ let hash01 = (x, y) => {
 // Fill gray[] with the continuous-tone source: a Lambert-shaded sphere lit by a circling light,
 // over a gentle vertical gradient. Smooth ramps + a specular-ish highlight are exactly what makes
 // the difference between the dithering methods legible.
-let source = (t) => {
+// Continuous-tone source image to be dithered. `shape` swaps the subject (re-roll picks one) — all
+// are smooth full-tonal-range fields so the difference between the dither algorithms reads clearly.
+//   0 = lit sphere   1 = two lit spheres   2 = rolling sine field   3 = lit cone
+let source = (t, shape) => {
   let aspect = W / H, R = 0.40
   let lx = Math.cos(t * 0.6), ly = 0.45, lz = Math.sin(t * 0.6)
   let il = 1.0 / Math.sqrt(lx * lx + ly * ly + lz * lz)
   lx = lx * il; ly = ly * il; lz = lz * il
+  let sh = shape | 0
   let py = 0
   while (py < H) {
     let ny = (py / H - 0.5) * 2.0
     let qx = 0
     while (qx < W) {
       let nx = (qx / W - 0.5) * 2.0 * aspect
-      // background: a soft diagonal gradient sweeping the FULL tonal range 0.16 → 0.72, so the
-      // dither has real midtones to render (not a near-black field). The ball sits on top.
+      // background: a soft diagonal gradient sweeping the FULL tonal range, so there are real
+      // midtones to render (not a near-black field). The subject sits on top.
       let lum = 0.16 + 0.56 * (qx / W * 0.5 + (1.0 - py / H) * 0.5)
-      let r2 = nx * nx + ny * ny
-      if (r2 < R * R) {
-        let z = Math.sqrt(R * R - r2)
-        let inv = 1.0 / R
-        let d = (nx * inv) * lx + (ny * inv) * ly + (z * inv) * lz
-        if (d < 0.0) d = 0.0
-        lum = 0.04 + 0.96 * Math.pow(d, 0.8)     // ambient + diffuse — full black→white sphere
+      if (sh === 2) {
+        // rolling sine field — a smooth animated gradient over the whole frame
+        lum = 0.5 + 0.42 * Math.sin(nx * 3.0 + t * 0.5) * Math.cos(ny * 3.0 - t * 0.35)
+      } else if (sh === 1) {
+        // two lit spheres
+        let ax = nx - 0.45, ay = ny + 0.12, ra2 = ax * ax + ay * ay, RA = 0.32
+        let bx = nx + 0.5, by = ny - 0.16, rb2 = bx * bx + by * by, RB = 0.42
+        if (ra2 < RA * RA) {
+          let z = Math.sqrt(RA * RA - ra2), iv = 1.0 / RA
+          let d = (ax * iv) * lx + (ay * iv) * ly + (z * iv) * lz
+          if (d < 0.0) d = 0.0
+          lum = 0.04 + 0.96 * Math.pow(d, 0.8)
+        }
+        if (rb2 < RB * RB) {
+          let z = Math.sqrt(RB * RB - rb2), iv = 1.0 / RB
+          let d = (bx * iv) * lx + (by * iv) * ly + (z * iv) * lz
+          if (d < 0.0) d = 0.0
+          let l2 = 0.04 + 0.96 * Math.pow(d, 0.8)
+          if (l2 > lum) lum = l2
+        }
+      } else if (sh === 3) {
+        // lit cone: brightness from the tilted slant, capped to a disc
+        let r2 = nx * nx + ny * ny, R2 = 0.46
+        if (r2 < R2 * R2) {
+          let r = Math.sqrt(r2)
+          let d = (nx / (r + 0.0001)) * lx + (ny / (r + 0.0001)) * ly + 0.55 * lz
+          if (d < 0.0) d = 0.0
+          lum = 0.08 + 0.9 * (1.0 - r / R2) * (0.3 + 0.7 * d)
+        }
+      } else {
+        // lit sphere (default)
+        let r2 = nx * nx + ny * ny
+        if (r2 < R * R) {
+          let z = Math.sqrt(R * R - r2), inv = 1.0 / R
+          let d = (nx * inv) * lx + (ny * inv) * ly + (z * inv) * lz
+          if (d < 0.0) d = 0.0
+          lum = 0.04 + 0.96 * Math.pow(d, 0.8)
+        }
       }
       gray[py * W + qx] = lum
       qx++
@@ -95,8 +130,8 @@ let putBW = (idx, on) => {
   px[idx] = (255 << 24) | (v << 16) | (v << 8) | v
 }
 
-export let frame = (t, mode) => {
-  source(t)
+export let frame = (t, mode, shape) => {
+  source(t, shape)
   let md = mode | 0
   let n = W * H
 

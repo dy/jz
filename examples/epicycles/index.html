@@ -26,7 +26,7 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 // The ghost curve (dim blue) shows the full target; the cyan trace shows reconstruction.
 
 const SHAPES = ["a heart", "a rose", "a star", "a figure-eight", "a spirograph", "an epicycloid"]
-const shape = Math.floor(Math.random() * SHAPES.length)
+let shape = Math.floor(Math.random() * SHAPES.length)
 
 // Drawing state
 let drawing = false
@@ -46,6 +46,8 @@ const demo = runDemo({
   hint: `Fourier epicycles tracing ${SHAPES[shape]} — draw to replace · left↔right scrubs term count · ghost = target`,
   size: { dpr: 2, budget: null },
   load: (e) => { e.setShape?.(shape); e.init() },
+  // re-roll: trace a different preset shape from scratch
+  randomize: (e) => { shape = (shape + 1 + Math.floor(Math.random() * (SHAPES.length - 1))) % SHAPES.length; drawnHx = null; drawnHy = null; e.setShape?.(shape); e.init(); userTermsT = -1 },
   frame: (e, t) => {
     const phi = (t * 0.7) % TAU   // ~9s per full loop
 

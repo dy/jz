@@ -25,6 +25,8 @@ const demo = runDemo({
     }
     e.frame(t, k, n)
   },
+  // re-roll: jump to a random multiplier and point count, and hold there (drag or re-roll to move on)
+  randomize: () => { k = 1.0 + Math.random() * 47.0; n = Math.round(60 + Math.random() * 360); userSet = true },
 })
 const ptr = trackPointer(demo.cv)
 </script>

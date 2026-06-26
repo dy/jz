@@ -27,6 +27,12 @@ const demo = runDemo({
     }
     e.frame(t * 0.05)
   },
+  // re-roll: fresh ink stones, then a few random comb strokes to swirl them
+  randomize: (e, d) => {
+    e.clear()
+    for (let i = 0; i < 9; i++) e.drop(Math.random() * d.W, Math.random() * d.H, d.W * (0.025 + Math.random() * 0.03))
+    for (let i = 0; i < 6; i++) e.tine?.(Math.random() * d.W, Math.random() * d.H, Math.random() * d.W, Math.random() * d.H)
+  },
 })
 
 const sx = () => demo.W / demo.cv.clientWidth, sy = () => demo.H / demo.cv.clientHeight

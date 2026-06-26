@@ -65,7 +65,7 @@ let line = (x0, y0, x1, y1, rr, gg, bb) => {
 // frame(t, detune, damp)
 //   detune  — frequency offset (0 = locked figure, ±0.06 = slow precession)
 //   damp    — damping speed factor (0.5 = slow decay / large figure, 2.0 = fast spiral to knot)
-export let frame = (t, detune, damp) => {
+export let frame = (t, detune, damp, panX, panY, zoom, spin) => {
   // Clear to opaque black
   let total = W * H, i = 0
   while (i < total) { px[i] = (255 << 24); i++ }
@@ -91,7 +91,7 @@ export let frame = (t, detune, damp) => {
 
   // Phase offsets: per-load base + symmetric phase shift on ALL four oscillators.
   // Equal phase shift to all four → clean precessional rotation, no axis distortion.
-  let phShift = t * 0.003   // very slow idle drift; host adds faster term on interaction
+  let phShift = spin        // host-driven precession phase (the host slows it when zoomed in)
   let p1 = phShift + cfg[4]
   let p2 = phShift + cfg[5]
   let p3 = phShift * 0.9 + cfg[6]  // slight differential on y gives gentle breathing
@@ -114,10 +114,13 @@ export let frame = (t, detune, damp) => {
     let nx = cx + R * (Math.sin(f1 * tau + p1) * e1 + A2 * Math.sin(f2 * tau + p2) * e2)
     let ny = cy + R * (Math.sin(f3 * tau + p3) * e3 + A2 * Math.sin(f4 * tau + p4) * e4)
 
-    // White on black, additive: every stroke deposits the same faint light, so where the curve
-    // crosses itself the ink builds toward white — the bright centre knot is a pure density map.
-    let inten = 26
-    line(px0, py0, nx, ny, inten, inten, inten)
+    // White on black, additive: every stroke deposits faint light, so where the curve crosses
+    // itself the ink builds toward white — the bright centre knot is a pure density map. Each point
+    // rides the pan/zoom view (zoom about screen centre + pan) so you can magnify the knot.
+    let inten = 42
+    let ax = (px0 - cx) * zoom + cx + panX, ay = (py0 - cy) * zoom + cy + panY
+    let bx = (nx - cx) * zoom + cx + panX, by = (ny - cy) * zoom + cy + panY
+    line(ax, ay, bx, by, inten, inten, inten)
 
     px0 = nx; py0 = ny
     i++

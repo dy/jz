@@ -13,8 +13,11 @@ import { runDemo } from "../lib/jzdemo.js"
 let frameCount = 0, nextDrop = 30
 let painting = false, lastX = 0, lastY = 0
 
+// each drop is a touch randomized — radius and strength jitter so no two ripples ring alike
+const rr = () => 12 + Math.random() * 9
+const ra = () => 0.78 + Math.random() * 0.35
 const drop = (x, y) => {
-  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, 14, 0.9)
+  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, rr(), ra())
 }
 const strokeTo = (x, y) => {
   const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 5))
@@ -26,18 +29,18 @@ const demo = runDemo({
   name: "waves",
   hint: "the 2D wave equation — ripples ring, reflect, and interfere · click to drop one",
   size: { budget: 420000 },
-  bg: "#808080",
+  bg: "#000",
   load: (e) => { e.clear() },
   frame: (e) => {
     frameCount++
     if (frameCount > nextDrop) {
-      e.drop(Math.random() * demo.W, Math.random() * demo.H, 14, 0.85)
+      e.drop(Math.random() * demo.W, Math.random() * demo.H, rr(), ra())
       nextDrop = frameCount + 28 + Math.random() * 70   // drop often → ripples keep crossing & interfering
     }
     e.frame(0)
   },
   // re-roll: clear the pond and scatter a handful of fresh packets that immediately interfere
-  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 6; i++) e.drop(Math.random() * d.W, Math.random() * d.H, 14, 0.95) },
+  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 6; i++) e.drop(Math.random() * d.W, Math.random() * d.H, rr(), ra()) },
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {

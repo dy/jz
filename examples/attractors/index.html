@@ -10,24 +10,48 @@
 import { runDemo } from "../lib/jzdemo.js"
 
 // a base point in de-Jong parameter space; slow LFOs drift all four params (no hover).
-// Click anywhere to jump to a fresh random attractor.
+// Drag to pan, scroll to zoom into the filaments; the dice re-rolls a fresh attractor.
 let base = [1.9, -2.5, 1.7, -0.3]
 const ITERS = 1_200_000
+const home = { panX: 0, panY: 0, zoom: 1 }
+const view = { ...home }
 
 const demo = runDemo({
   name: "attractors",
-  hint: "a de Jong strange attractor · click to morph it",
+  hint: "a de Jong strange attractor · drag to pan · scroll to zoom · dice to morph",
   size: { dpr: 1.5, budget: null },
-  cursor: "pointer",
   frame: (e, t) => {
     const a = base[0] + Math.sin(t * 0.05) * 0.22
     const b = base[1] + Math.cos(t * 0.08) * 0.22
     const c = base[2] + Math.sin(t * 0.07) * 0.22
     const d = base[3] + Math.cos(t * 0.13) * 0.22
-    e.frame(a, b, c, d, ITERS)
+    e.frame(a, b, c, d, ITERS, view.panX, view.panY, view.zoom)
   },
+  // re-roll: jump to a fresh random attractor (what a click used to do)
+  randomize: () => { base = base.map(() => Math.random() * 6 - 3) },
 })
-demo.cv.addEventListener("pointerdown", () => { base = base.map(() => Math.random() * 6 - 3) })
+
+// pan/zoom in backing pixels (the kernel zooms about the screen centre), à la fern/mandelbrot
+const cv = demo.cv
+const sx = () => cv.width / cv.getBoundingClientRect().width
+const sy = () => cv.height / cv.getBoundingClientRect().height
+let down = false, lx = 0, ly = 0
+cv.addEventListener("pointerdown", e => { down = true; lx = e.clientX; ly = e.clientY; try { cv.setPointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointermove", e => { if (!down) return; view.panX += (e.clientX - lx) * sx(); view.panY += (e.clientY - ly) * sy(); lx = e.clientX; ly = e.clientY })
+cv.addEventListener("pointerup", e => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", () => { down = false })
+cv.addEventListener("wheel", e => {
+  e.preventDefault()
+  const r = cv.getBoundingClientRect(), Sx = (e.clientX - r.left) * sx(), Sy = (e.clientY - r.top) * sy()
+  const z0 = view.zoom
+  let z1 = z0 * Math.exp(-e.deltaY * 0.0012)
+  if (z1 < 0.3) z1 = 0.3
+  if (z1 > 60) z1 = 60
+  view.panX = Sx - cv.width * 0.5 - (Sx - cv.width * 0.5 - view.panX) * z1 / z0   // keep cursor pinned
+  view.panY = Sy - cv.height * 0.5 - (Sy - cv.height * 0.5 - view.panY) * z1 / z0
+  view.zoom = z1
+}, { passive: false })
+cv.addEventListener("dblclick", () => { view.panX = home.panX; view.panY = home.panY; view.zoom = home.zoom })
 </script>
 </body>
 </html>

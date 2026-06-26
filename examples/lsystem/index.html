@@ -9,17 +9,28 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
+let lastT = 0, forced = -1, forcedT0 = 0   // re-roll pins a random system for a few cycles, then resumes
 const demo = runDemo({
   name: "lsystem",
   hint: "L-system fractals — Koch, Dragon, Sierpinski, Plant — click to cycle",
   size: { budget: 2600000, dpr: 2 },
   frame: (e, t) => {
+    lastT = t
     const period = 7                             // brisk: each fractal grows in, holds briefly, swaps
-    const sysIdx = Math.floor(t / period) % 4
-    const cycleT = (t % period) / period
+    let sysIdx, cycleT
+    if (forced >= 0) {
+      sysIdx = forced
+      cycleT = ((t - forcedT0) % period) / period
+      if (t - forcedT0 > period * 3) forced = -1 // after a few regrowths, hand back to the auto-tour
+    } else {
+      sysIdx = Math.floor(t / period) % 4
+      cycleT = (t % period) / period
+    }
     const progress = Math.min(1, cycleT * 1.6)   // draw over the first ~2/3 of the period, then hold
     e.frame(t, sysIdx, progress)
   },
+  // re-roll: jump to a random one of the four systems and regrow it from scratch
+  randomize: () => { forced = Math.floor(Math.random() * 4); forcedT0 = lastT },
 })
 </script>
 </body>
