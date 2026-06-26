@@ -15,7 +15,7 @@ let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
 let C2 = 0.5
 let KAMP = 1.2        // how much a tall crest speeds up (fast initial burst → slows as it flattens)
 let DAMP = 0.995      // damping → rings fade as they spread (and so appear to slow & stop) yet last long enough to cross
-let GAIN = 115.0      // render brightness — low, so lone rings stay DIM and only crossings light up
+let GAIN = 85.0       // render brightness — low, so lone rings stay DIM and only crossings light up
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -102,10 +102,6 @@ export let frame = (t) => {
 
   let tmp = a; a = b; b = tmp                          // swap: a is now current
 
-  // render: black field, CREST-ONLY (troughs → black) so each wavefront is ONE clean ring; a crossing
-  // of two crests ADDS (2× height → 8× via the cube) → a bright glint, never the cancelling black that
-  // |height| produced. The cube also crushes the dim 2D wake (the afterglow a pulse trails in 2D)
-  // toward black, so the interior stays clean — just sharp leading rings and glowing intersections.
   // render: wave ENERGY (kinetic u_t² + potential c²|∇u|²) — always ≥ 0, so interference only ever
   // ADDS. Two ring fronts cross at an angle, so their gradients combine in quadrature and the energy
   // SUMS (brightens) at the crossing — no dark destructive gaps a height render leaves. The energy
@@ -129,7 +125,7 @@ export let frame = (t) => {
       if (g > 1.0) g = 1.0
       let gi = (g * 255.0) | 0
       px[c] = (255 << 24) | (gi << 16) | (gi << 8) | gi
-      let s = g - 0.45                              // bloom source: bright crossings seed the glow
+      let s = g - 0.32                              // bloom source: only the brighter spots (crossings) glow
       gbuf[c] = s > 0.0 ? s : 0.0
       rx++
     }
@@ -140,7 +136,7 @@ export let frame = (t) => {
   // source dots) glow with a soft HALO — the "glowing around the intersections" effect, which is just
   // light bloom. Symmetric → no directional burst on a fresh drop; the thin rings sit below the bright
   // threshold so they don't bloom and stay crisp.
-  let R = 4, inv = 1.0 / (2.0 * R + 1.0)
+  let R = 6, inv = 1.0 / (2.0 * R + 1.0)
   let yy = 0
   while (yy < h) {
     let row = yy * w
@@ -163,7 +159,7 @@ export let frame = (t) => {
     y2 = 0
     while (y2 < h) {
       let bl = sum * inv
-      let add = (bl * 900.0) | 0
+      let add = (bl * 650.0) | 0
       if (add > 2) addpx(y2 * w + xx, add)
       let ad = y2 + R + 1, sb = y2 - R
       if (ad < h) sum = sum + bloomA[ad * w + xx]
