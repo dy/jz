@@ -495,3 +495,28 @@ match"). So the real V8 lever is **#4 intern-on-insert** — canonicalize dynami
 static intern table on write, making those true matches bit-equal so the #3 i64.eq fast path actually
 fires and the byte walk disappears. #2 (hash CSE) and #5 (split `__dyn_get_t_h`) are also call/branch
 shaving → likely V8-negligible too. Measure #4 against this 1.35× baseline before assuming a win.
+
+## #4 (intern-on-insert) — MEASURED not worth building (2026-06-26)
+
+Before building intern-on-insert, instrumented `__str_eq`/`__str_eq_cold` in the kernel (temp
+counters, reverted) and ran the corpus (10 compiles, 6.16M __str_eq calls):
+- 70.4% resolve WITHOUT a byte-walk (the #3 probe bit-eq + the cold prelude length/SSO checks).
+- 29.6% reach the byte-walk; of those only **13.6% are true matches** — the rest return 0 on the
+  first differing byte (same-length unequal strings).
+- **#4-addressable (heap-vs-literal true-match byte-walks) = 4.0% of all __str_eq calls.**
+
+With __str_eq_cold at 3.8% of self-host time, #4's ceiling is **~1–2%**, minus the per-insert
+intern-probe write cost, on a V8 that already vectorizes the byte loop. Not worth a substantial,
+miscompile-sensitive insert-path change. The audit's intuition ("the first serious __str_eq reducer")
+doesn't survive measurement: the byte-walk is NOT the __str_eq tax — most __str_eq is already cheap.
+
+## Synthesis across #1/#3/#4 — the tax is distributed, not a fixable primitive
+
+Three expert/audit-recommended primitive optimizations, all measured: #1+#3 V8-negligible (V8 inlines
+the callees), #4 ~1–2% ceiling (byte-walk is only 4% of calls). The self-host V8 tax is DISTRIBUTED —
+the NaN-box representation (every value reinterpret), __ptr_offset 6.6%, the 70% of __str_eq that's
+already-cheap-but-still-called, __eq dispatch — none individually fixable by a local recognizer, and V8's
+JS tier beats V8's wasm tier on this helper-heavy shape regardless. This is the audit's own deeper point:
+the moat is the ARCHITECTURAL SUBSTRATE (unified EffectFacts/Alias facts, canonical mid-level IR, a
+V8-wasm lowering lab) + MEASUREMENT INFRASTRUCTURE (durable helper-counter harness = audit #5, coverage
+matrix = audit #1), NOT another primitive. Build the measurement tool first; let it pick the next target.
