@@ -28,6 +28,7 @@
 * Output mastering params (maybe drop into wavearea for fragment editing?)
 * Download a slice / fragment
 
+
 ## Ship — flagship (the one compounding "make-world-know" move)
 - [ ] **Floatbeat playground** — type a formula, hear music; AudioWorklet, compiled live.
   Vibecoder + audio + live-coding proof in one. Needs: syntax highlight, waveform
@@ -164,6 +165,8 @@ correctness risk for zero measured benefit:
 
 ## Demos / visualizers: ideas for no-gpu graphical uses
 
+  - [ ] Screensavers
+  - [ ] NFT
   - [ ] Instagram minimalism/etc renderers
   - [ ] xor shaders
   - [ ] Demoscene
@@ -174,7 +177,6 @@ correctness risk for zero measured benefit:
   - [ ] Musical visgens (windchimes, physical etc)
   - [ ] ASCII renderers
   - [ ] SVG visualizer?
-
 
 
 ---
