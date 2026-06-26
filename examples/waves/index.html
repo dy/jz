@@ -42,7 +42,7 @@ const demo = runDemo({
     frameCount++
     if (frameCount > nextDrop) {
       e.drop(Math.random() * demo.W, Math.random() * demo.H, rr(), ra())
-      nextDrop = frameCount + 75 + Math.random() * 110   // a few rings coexist & cross, not a busy mush
+      nextDrop = frameCount + 55 + Math.random() * 85    // a few rings coexist & cross, not a busy mush
     }
     e.frame(0)
   },

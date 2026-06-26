@@ -8,16 +8,18 @@
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
+let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
 // C2 near 0.5 is the LOW-DISPERSION regime for this stencil: every wavelength travels at the same
 // speed, so a ring keeps a constant pace (a low C2 disperses → the front visibly slows as it fades,
 // and smears a wake behind it). The display pace is kept calm by throttling the step rate in the host.
 let C2 = 0.5
-let DAMP = 0.997      // slow damping → rings persist and travel far (large, faint) before dissolving
+let DAMP = 0.995      // damping → rings fade as they spread (and so appear to slow & stop) yet last long enough to cross
 let GAIN = 9.0        // render brightness of the crest field — keeps lone rings thin & unsaturated
 
 export let resize = (w, h) => {
   W = w; H = h
   a = new Float64Array(w * h); b = new Float64Array(w * h)
+  gbuf = new Float32Array(w * h); bloomA = new Float32Array(w * h)
   px = new Uint32Array(w * h)
   return px
 }
@@ -30,8 +32,8 @@ let prof = (d, r, amp) => {
   if (d < 0.0) return 0.0
   if (d > r) return 0.0
   let behind = (r - d) / r                                  // 0 at the rim/front .. 1 at centre
-  let front = d > r * 0.90 ? (r - d) / (r * 0.10) : 1.0     // steep outer edge → fast attack as the front passes
-  let tail = Math.exp(-behind * 5.5)                        // quick decay inward → a thin positive ring
+  let front = d > r * 0.93 ? (r - d) / (r * 0.07) : 1.0     // steep outer edge → fast attack as the front passes
+  let tail = Math.exp(-behind * 8.5)                        // quick decay inward → a THIN positive ring
   return amp * front * tail
 }
 
@@ -114,6 +116,53 @@ export let frame = (t) => {
     if (g > 1.0) g = 1.0
     let gi = (g * 255.0) | 0
     px[i] = (255 << 24) | (gi << 16) | (gi << 8) | gi
+    // bloom source: only the BRIGHT part (mostly the constructive crossings) seeds the glow
+    let s = g - 0.45
+    gbuf[i] = s > 0.0 ? s : 0.0
     i++
   }
+
+  // GLOW BLOOM: separable box blur of the bright source, added back, so the intersections (and the
+  // source dots) glow with a soft HALO — the "glowing around the intersections" effect, which is just
+  // light bloom. Symmetric → no directional burst on a fresh drop; the thin rings sit below the bright
+  // threshold so they don't bloom and stay crisp.
+  let R = 4, inv = 1.0 / (2.0 * R + 1.0)
+  let yy = 0
+  while (yy < h) {
+    let row = yy * w
+    let sum = 0.0, x = 0
+    while (x <= R) { sum = sum + gbuf[row + x]; x++ }
+    x = 0
+    while (x < w) {
+      bloomA[row + x] = sum * inv
+      let ad = x + R + 1, sb = x - R
+      if (ad < w) sum = sum + gbuf[row + ad]
+      if (sb >= 0) sum = sum - gbuf[row + sb]
+      x++
+    }
+    yy++
+  }
+  let xx = 0
+  while (xx < w) {
+    let sum = 0.0, y2 = 0
+    while (y2 <= R) { sum = sum + bloomA[y2 * w + xx]; y2++ }
+    y2 = 0
+    while (y2 < h) {
+      let bl = sum * inv
+      let add = (bl * 900.0) | 0
+      if (add > 2) addpx(y2 * w + xx, add)
+      let ad = y2 + R + 1, sb = y2 - R
+      if (ad < h) sum = sum + bloomA[ad * w + xx]
+      if (sb >= 0) sum = sum - bloomA[sb * w + xx]
+      y2++
+    }
+    xx++
+  }
+}
+
+// additive white into a pixel (clamped) — used by the glow bloom
+let addpx = (idx, add) => {
+  let p = px[idx]
+  let r = (p & 0xff) + add; if (r > 255) r = 255
+  px[idx] = (255 << 24) | (r << 16) | (r << 8) | r
 }
