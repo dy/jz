@@ -45,6 +45,7 @@
   - [ ] Sponsor call
   - [ ] Used by (projects list)
 - [ ] Examples
+  - [ ] Each example must be presentable to authors: lovely code editor, lovely settings panel,
   - [ ] Instead of myriads better have a few powerful boosted examples
   - [ ] Nice settings-panel side-menu
   - [ ] All math examples: educative, entertaining
