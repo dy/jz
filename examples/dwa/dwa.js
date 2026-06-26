@@ -1,53 +1,56 @@
 // Dynamic Window Approach — a faithful port of Andrew Davison's planner (https://www.doc.ic.ac.uk/~ajd/Planning/,
-// after Fox, Burgard & Thrun 1997). The robot is differential drive (two wheels, track width L). Each tick it
-// considers the 3×3 reachable wheel-speed pairs — each wheel may decelerate, hold, or accelerate by one
-// acceleration step (vL,vR ∈ {v−aΔt, v, v+aΔt}) — predicts the single closed-form arc each traces over the
-// horizon TAU = stepsAhead·dt, and scores it by Davison's benefit, evaluated at the predicted ENDPOINT:
+// after Fox, Burgard & Thrun 1997). To keep every ratio exactly as his, the simulation runs in HIS world units
+// (metres / radians / m·s⁻¹) and is scaled to pixels only for drawing — the planner math and constants are his.
 //
-//        benefit = FORWARDWEIGHT·(distance closed to the goal)  −  OBSTACLEWEIGHT·(safeDist − clearance)⁺
+// Each tick the differential-drive robot considers the 3×3 reachable wheel-speed pairs (each wheel may
+// decelerate, hold, or accelerate by maxAccel·dt), predicts the exact circular arc each traces over the
+// horizon TAU = stepsAhead·dt, and scores it at the predicted ENDPOINT by his benefit:
 //
-// i.e. reward progress, and subtract a steep penalty ONLY when the endpoint comes within safeDist of a sphere.
-// FORWARDWEIGHT = 12, OBSTACLEWEIGHT = 6666, safeDist = robot radius — his fixed values. No heading term, no
-// velocity term, no admissibility prune, no reverse penalty: reverse falls out naturally (backing toward a goal
-// behind scores positive progress), which is why the robot steers AND backs up to elide. Spheres are advanced
-// to their future positions for the check, so it anticipates the moving field. One arc is committed per tick.
+//        benefit = forwardWeight·(distance closed to the target)  −  obstacleWeight·(safeDist − clearance)⁺
 //
-// Look: black floor, white spheres, the faint candidate-arc fan, the chosen arc + the robot in red, a hollow
-// target ring, a fading trail. (jz compiles the planner; the Canvas/DOM scaffolding of his page does not port.)
+// forwardWeight = 12, obstacleWeight = 6666, safeDist = robot radius. No heading/velocity/admissibility/reverse
+// bias — so it backs up to reach a target behind it, exactly like his demo. The target is a drifting "ghost"
+// barrier the robot chases; reaching it spawns more barriers. Obstacles are advanced to their future positions
+// for the clearance check, so it anticipates the moving field. Only the planner ports; his Canvas/DOM does not.
 //
-// All continuous state lives in Float64Arrays — a scalar f64 module global is i32-narrowed in jz.
-// resize(w,h) → Uint32Array; frame(t) drives; setGoal(fx,fy) steers.
+// All continuous state lives in Float64Arrays (a scalar f64 module global is i32-narrowed in jz); the physics
+// constants are f64 locals inside frame() for the same reason. resize(w,h) → Uint32Array; frame(t) drives.
 
 let W = 0, H = 0, px
-let trail              // Uint8Array — fading trail intensity (0..255)
+let trail              // Uint8Array — fading trail intensity
 let SEED = 0
 
-// robot pose + wheel velocities
+// robot pose + wheel velocities (metres, radians, m/s)
 let RX = 0, RY = 1, RH = 2, VL = 3, VR = 4
 let rob = new Float64Array(5)
-let goal = new Float64Array(4)   // gx, gy, gvx, gvy — a drifting target the robot chases (his moving "ghost" barrier)
+let goal = new Float64Array(4)   // gx, gy, gvx, gvy — the drifting target
 
-// the flying spheres (uniform radius, like his barriers)
-let MAXO = 24
+// the flying barriers (world metres), uniform radius
+let MAXO = 40
 let ox = new Float64Array(MAXO), oy = new Float64Array(MAXO)
 let ovx = new Float64Array(MAXO), ovy = new Float64Array(MAXO)
-let fobx = new Float64Array(MAXO), foby = new Float64Array(MAXO)   // predicted (future) positions for planning
 let nobs = 0
 
-// theme palette [paperR,G,B, inkR,G,B] — default = black floor, white spheres
+// theme palette [paperR,G,B, inkR,G,B] — black floor, white barriers
 let th = new Float64Array(6)
 th[0] = 0.0; th[1] = 0.0; th[2] = 0.0; th[3] = 235.0; th[4] = 235.0; th[5] = 235.0
 
-// the one accent — red for the robot, the chosen arc, and the collision alarm
+// the one accent — red for the robot, the chosen arc, the collision alarm
 let ACR = 232.0, ACG = 58.0, ACB = 42.0
 
-// deterministic PRNG
 let rnd = () => {
   SEED = (SEED * 1103515245 + 12345) | 0
   return ((SEED >>> 8) & 0xffff) / 65536.0
 }
+// approx normal via two uniforms (his barriers use a gaussian velocity)
+let gauss = () => (rnd() + rnd() + rnd() - 1.5) * 0.9
 
-// ── drawing primitives (ARGB = 0xAABBGGRR) ──
+// world half-extents (metres): his playfield is 5.7 m tall; width follows the canvas aspect
+let halfH = () => 2.85
+let halfW = () => 2.85 * (W / H)
+let mpp = () => H / 5.7        // pixels per metre
+
+// ── pixel drawing primitives (ARGB = 0xAABBGGRR) ──
 let bl = (idx, r, g, b, a) => {
   let p = px[idx]
   let pr = p & 255, pg = (p >> 8) & 255, pb = (p >> 16) & 255
@@ -59,7 +62,7 @@ let lineA = (x0, y0, x1, y1, r, g, b, a) => {
   let x = x0 | 0, y = y0 | 0, xe = x1 | 0, ye = y1 | 0
   let dx = Math.abs(xe - x), dy = Math.abs(ye - y)
   let sx = x < xe ? 1 : -1, sy = y < ye ? 1 : -1, err = dx - dy, gd = 0
-  while (gd < 4000) {
+  while (gd < 6000) {
     if (x >= 0 && x < W && y >= 0 && y < H) bl(y * W + x, r, g, b, a)
     if (x === xe && y === ye) break
     let e2 = 2 * err
@@ -105,7 +108,7 @@ let ringA = (cx, cy, rad, thick, r, g, b, a) => {
   }
 }
 
-// filled triangle facing (ux,uy), tip forward — the robot, opaque
+// filled triangle facing (ux,uy) in SCREEN space, tip forward — the robot
 let triA = (cxf, cyf, ux, uy, s, r, g, b) => {
   let pvx = -uy, pvy = ux
   let ax = cxf + ux * s * 1.5, ay = cyf + uy * s * 1.5
@@ -133,7 +136,7 @@ let triA = (cxf, cyf, ux, uy, s, r, g, b) => {
   }
 }
 
-// stamp the trail buffer at the robot's spot
+// stamp the trail buffer at a pixel spot
 let stamp = (cx, cy, rr) => {
   let ci = cx | 0, cj = cy | 0, ri = rr | 0, r2 = rr * rr, oyl = -ri
   while (oyl <= ri) {
@@ -150,35 +153,31 @@ let stamp = (cx, cy, rr) => {
   }
 }
 
-// fling a fresh sphere across the arena (uniform radius; a gentle gaussian-ish drift, like his barrierVelocity)
+// fling a fresh barrier (world metres) with a gaussian drift, like his
 let spawnObstacle = (i) => {
-  let S = (W < H ? W : H)
-  ox[i] = W * (0.12 + rnd() * 0.76); oy[i] = H * (0.1 + rnd() * 0.8)
-  let a = rnd() * 6.2831853, sp = S * 0.0004 * (0.3 + rnd() * 1.0)
-  ovx[i] = Math.cos(a) * sp; ovy[i] = Math.sin(a) * sp
+  let hw = halfW(), hh = halfH()
+  ox[i] = -hw + rnd() * 2.0 * hw; oy[i] = -hh + rnd() * 2.0 * hh
+  ovx[i] = gauss() * 0.05; ovy[i] = gauss() * 0.05
 }
 
-// pick a fresh goal clear of every sphere and a good throw from the robot
+// pick a fresh target clear of the barriers and a good throw from the robot (world metres)
 let newGoal = () => {
-  let S = (W < H ? W : H), OR = S * 0.018, tries = 0
+  let hw = halfW(), hh = halfH(), tries = 0
   while (tries < 200) {
-    let gx = W * (0.1 + rnd() * 0.8), gy = H * (0.1 + rnd() * 0.8)
+    let gx = -hw + rnd() * 2.0 * hw, gy = -hh + rnd() * 2.0 * hh
     let ok = 1, i = 0
     while (i < nobs) {
-      let dx = gx - ox[i], dy = gy - oy[i], m = OR + S * 0.05
-      if (dx * dx + dy * dy < m * m) ok = 0
+      let dx = gx - ox[i], dy = gy - oy[i]
+      if (dx * dx + dy * dy < 0.35 * 0.35) ok = 0
       i++
     }
     let dxr = gx - rob[RX], dyr = gy - rob[RY]
-    if (ok > 0 && dxr * dxr + dyr * dyr > (S * 0.25) * (S * 0.25)) {
-      goal[0] = gx; goal[1] = gy
-      let a = rnd() * 6.2831853, sp = S * 0.0004 * (0.3 + rnd() * 1.0)
-      goal[2] = Math.cos(a) * sp; goal[3] = Math.sin(a) * sp     // a gentle drift, like his barriers
-      return
+    if (ok > 0 && dxr * dxr + dyr * dyr > 1.6 * 1.6) {
+      goal[0] = gx; goal[1] = gy; goal[2] = gauss() * 0.05; goal[3] = gauss() * 0.05; return
     }
     tries++
   }
-  goal[0] = W * 0.5; goal[1] = H * 0.5; goal[2] = 0.0; goal[3] = 0.0
+  goal[0] = 0.0; goal[1] = 0.0; goal[2] = 0.0; goal[3] = 0.0
 }
 
 export let resize = (w, h) => {
@@ -192,122 +191,112 @@ export let setTheme = (pr, pg, pb, ir, ig, ib) => { th[0] = pr; th[1] = pg; th[2
 
 export let init = () => {
   SEED = 20240626
-  rob[RX] = W * 0.12; rob[RY] = H * 0.5; rob[RH] = 0.0; rob[VL] = 0.0; rob[VR] = 0.0
-  nobs = 16
+  rob[RX] = -halfW() + 0.35; rob[RY] = 0.0; rob[RH] = 0.0; rob[VL] = 0.0; rob[VR] = 0.0
+  nobs = 28
   let i = 0
   while (i < nobs) { spawnObstacle(i); i++ }
   newGoal()
 }
 
-// host steers the goal: click or drag (normalized coords)
-export let setGoal = (fx, fy) => { goal[0] = fx * W; goal[1] = fy * H }
+// host steers the target: click or drag (normalized screen coords → world metres)
+export let setGoal = (fx, fy) => {
+  let k = mpp()
+  goal[0] = (fx * W - W * 0.5) / k
+  goal[1] = (H * 0.5 - fy * H) / k
+}
 
 export let frame = (t) => {
-  let S = (W < H ? W : H)
-  let VMAX = S * 0.0032                   // max wheel velocity (px/step) — Davison 0.50 m/s
-  let L = S * 0.036                        // wheel track width — Davison robotWidth 0.20 m
-  let A = VMAX * 0.05                       // acceleration·dt — Davison 0.50 m/s² · 0.05 s = 5% of v_max
-  let SIG = VMAX * 0.001                    // straight-line threshold (avoids the arc singularity at vL≈vR)
-  let RR = S * 0.018                        // robot radius — Davison 0.10 m
-  let OR = S * 0.018                        // sphere radius — Davison 0.10 m (uniform)
-  let STEPS = 15                            // stepsAhead → TAU = STEPS · (one step) is the prediction horizon
-  let SAFE = RR                             // safeDist = robot radius (Davison)
-  let FW = 12.0, OW = 6666.0                // his forwardWeight / obstacleWeight (his exact 2-term benefit)
+  // ── his constants (metres / seconds) ──
+  let RW = 0.2                  // robot width (wheel track)
+  let RR = 0.1                  // robot radius
+  let BR = 0.1                  // barrier radius
+  let VMAXv = 0.5               // max wheel velocity
+  let AMAX = 0.5                // max acceleration
+  let DT = 0.05                 // timestep
+  let STEPS = 15                // steps ahead → TAU = STEPS·DT
+  let FW = 12.0, OW = 6666.0    // forward / obstacle weights
+  let SAFED = RR                // safeDist
+  let TAU = DT * STEPS
+  let AW = AMAX * DT            // one acceleration step
+  let hw = halfW(), hh = halfH(), k = mpp(), u0 = W * 0.5, v0 = H * 0.5
 
-  // the spheres drift, bouncing off the walls
+  // drift the barriers, bouncing off the playfield walls
   let i = 0
   while (i < nobs) {
-    ox[i] += ovx[i]; oy[i] += ovy[i]
-    if (ox[i] < OR || ox[i] > W - OR) ovx[i] = -ovx[i]
-    if (oy[i] < OR || oy[i] > H - OR) ovy[i] = -ovy[i]
-    if (ox[i] < OR) ox[i] = OR
-    if (ox[i] > W - OR) ox[i] = W - OR
-    if (oy[i] < OR) oy[i] = OR
-    if (oy[i] > H - OR) oy[i] = H - OR
+    ox[i] += ovx[i] * DT; oy[i] += ovy[i] * DT
+    if (ox[i] < -hw || ox[i] > hw) ovx[i] = -ovx[i]
+    if (oy[i] < -hh || oy[i] > hh) ovy[i] = -ovy[i]
     i++
   }
-
-  // the target drifts too (his target is a moving "ghost" barrier the robot chases)
-  goal[0] += goal[2]; goal[1] += goal[3]
-  if (goal[0] < OR || goal[0] > W - OR) goal[2] = -goal[2]
-  if (goal[1] < OR || goal[1] > H - OR) goal[3] = -goal[3]
-  if (goal[0] < OR) goal[0] = OR
-  if (goal[0] > W - OR) goal[0] = W - OR
-  if (goal[1] < OR) goal[1] = OR
-  if (goal[1] > H - OR) goal[1] = H - OR
+  // the target drifts too (his moving ghost barrier)
+  goal[0] += goal[2] * DT; goal[1] += goal[3] * DT
+  if (goal[0] < -hw || goal[0] > hw) goal[2] = -goal[2]
+  if (goal[1] < -hh || goal[1] > hh) goal[3] = -goal[3]
 
   let rx = rob[RX], ry = rob[RY], rh = rob[RH]
 
-  // fade the trail, then stamp the current spot
-  let n = W * H, k = 0
-  while (k < n) { trail[k] = (trail[k] * 253) >> 8; k++ }
-  stamp(rx, ry, RR * 0.5)
+  // fade the trail, stamp the robot's pixel spot
+  let n = W * H, c = 0
+  while (c < n) { trail[c] = (trail[c] * 252) >> 8; c++ }
+  stamp(u0 + k * rx, v0 - k * ry, RR * k * 0.5)
 
-  // composite floor (black paper) + trail (white, faint)
+  // composite floor + faint trail
   let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
-  k = 0
-  while (k < n) {
-    let v = trail[k] / 255.0 * 0.5
+  c = 0
+  while (c < n) {
+    let v = trail[c] / 255.0 * 0.5
     let r = (pr + (ir - pr) * v) | 0, g = (pg + (ig - pg) * v) | 0, b = (pb + (ib - pb) * v) | 0
-    px[k] = (255 << 24) | (b << 16) | (g << 8) | r
-    k++
+    px[c] = (255 << 24) | (b << 16) | (g << 8) | r
+    c++
   }
 
-  // the spheres (white, solid, uniform)
+  // the barriers (white discs)
+  let brp = BR * k
   i = 0
-  while (i < nobs) { discA(ox[i], oy[i], OR, ir, ig, ib, 1.0); i++ }
+  while (i < nobs) { discA(u0 + k * ox[i], v0 - k * oy[i], brp, ir, ig, ib, 1.0); i++ }
 
-  // advance the spheres to where they'll be at the planning horizon — anticipate the moving field
-  i = 0
-  while (i < nobs) { fobx[i] = ox[i] + ovx[i] * STEPS; foby[i] = oy[i] + ovy[i] * STEPS; i++ }
-
-  // ── plan: Davison's benefit over the 3×3 reachable (vL, vR) window ──
-  // aim at where the target WILL be at the horizon (his prevTargetDist/newTargetDist use the advanced target)
-  let fgx = goal[0] + goal[2] * STEPS, fgy = goal[1] + goal[3] * STEPS
+  // the target's anticipated (future) position — his prevTargetDist/newTargetDist use the advanced target
+  let fgx = goal[0] + goal[2] * TAU, fgy = goal[1] + goal[3] * TAU
   let prevD = Math.sqrt((rx - fgx) * (rx - fgx) + (ry - fgy) * (ry - fgy))
+
+  // ── plan over the 3×3 reachable (vL, vR) window ──
   let vlo = rob[VL], vro = rob[VR]
   let best = -1e30, bvl = vlo, bvr = vro
   let ia = 0
   while (ia < 3) {
-    let vL = vlo + (ia - 1) * A                     // decelerate · hold · accelerate
-    if (vL >= -VMAX && vL <= VMAX) {
+    let vL = vlo + (ia - 1) * AW
+    if (vL >= -VMAXv && vL <= VMAXv) {
       let ib = 0
       while (ib < 3) {
-        let vR = vro + (ib - 1) * A
-        if (vR >= -VMAX && vR <= VMAX) {
-          let dvr = vR - vL, v = (vL + vR) * 0.5
-          // predict the exact arc over the horizon, drawing the faint candidate path; keep the endpoint
-          let ex = rx, ey = ry, eh = rh, lpx = rx, lpy = ry, s = 0
+        let vR = vro + (ib - 1) * AW
+        if (vR >= -VMAXv && vR <= VMAXv) {
+          // predict the exact arc over the horizon, drawing the faint candidate path
+          let ex = rx, ey = ry, eh = rh, lpu = u0 + k * rx, lpv = v0 - k * ry, s = 0
           while (s < STEPS) {
-            if (dvr < SIG && dvr > -SIG) { ex += Math.cos(eh) * v; ey += Math.sin(eh) * v }
-            else {
-              let dth = dvr / L
-              let R = (L * 0.5) * (vR + vL) / dvr
+            if (vR - vL < 1e-6 && vR - vL > -1e-6) {
+              ex += vL * DT * Math.cos(eh); ey += vL * DT * Math.sin(eh)
+            } else {
+              let R = (RW * 0.5) * (vR + vL) / (vR - vL)
+              let dth = (vR - vL) * DT / RW
               let nth = eh + dth
               ex += R * (Math.sin(nth) - Math.sin(eh))
               ey -= R * (Math.cos(nth) - Math.cos(eh))
               eh = nth
             }
-            lineA(lpx, lpy, ex, ey, ir, ig, ib, 0.16)
-            lpx = ex; lpy = ey; s++
+            let u = u0 + k * ex, vv = v0 - k * ey
+            lineA(lpu, lpv, u, vv, ir, ig, ib, 0.14)
+            lpu = u; lpv = vv; s++
           }
-          // clearance to the nearest (future) sphere or wall — AT THE ENDPOINT (his form)
+          // clearance to the nearest (future) barrier — AT THE ENDPOINT (his form)
           let distObs = 1e30, j = 0
           while (j < nobs) {
-            let dx = ex - fobx[j], dy = ey - foby[j]
-            let d = Math.sqrt(dx * dx + dy * dy) - OR - RR
+            let dx = ex - (ox[j] + ovx[j] * TAU), dy = ey - (oy[j] + ovy[j] * TAU)
+            let d = Math.sqrt(dx * dx + dy * dy) - BR - RR
             if (d < distObs) distObs = d
             j++
           }
-          let wc = ex
-          if (W - ex < wc) wc = W - ex
-          if (ey < wc) wc = ey
-          if (H - ey < wc) wc = H - ey
-          wc -= RR
-          if (wc < distObs) distObs = wc
-          // benefit = progress − steep penalty only when the endpoint is within safeDist
           let newD = Math.sqrt((ex - fgx) * (ex - fgx) + (ey - fgy) * (ey - fgy))
-          let cost = distObs < SAFE ? OW * (SAFE - distObs) : 0.0
+          let cost = distObs < SAFED ? OW * (SAFED - distObs) : 0.0
           let benefit = FW * (prevD - newD) - cost
           if (benefit > best) { best = benefit; bvl = vL; bvr = vR }
         }
@@ -318,62 +307,65 @@ export let frame = (t) => {
   }
 
   // chosen arc: bright red
-  let dvrc = bvr - bvl, vc = (bvl + bvr) * 0.5
-  let ex2 = rx, ey2 = ry, eh2 = rh, lpx3 = rx, lpy3 = ry, s2 = 0
+  let ex2 = rx, ey2 = ry, eh2 = rh, lpu2 = u0 + k * rx, lpv2 = v0 - k * ry, s2 = 0
   while (s2 < STEPS) {
-    if (dvrc < SIG && dvrc > -SIG) { ex2 += Math.cos(eh2) * vc; ey2 += Math.sin(eh2) * vc }
-    else {
-      let dth = dvrc / L
-      let R = (L * 0.5) * (bvr + bvl) / dvrc
+    if (bvr - bvl < 1e-6 && bvr - bvl > -1e-6) {
+      ex2 += bvl * DT * Math.cos(eh2); ey2 += bvl * DT * Math.sin(eh2)
+    } else {
+      let R = (RW * 0.5) * (bvr + bvl) / (bvr - bvl)
+      let dth = (bvr - bvl) * DT / RW
       let nth = eh2 + dth
       ex2 += R * (Math.sin(nth) - Math.sin(eh2))
       ey2 -= R * (Math.cos(nth) - Math.cos(eh2))
       eh2 = nth
     }
-    lineA(lpx3, lpy3, ex2, ey2, ACR | 0, ACG | 0, ACB | 0, 0.95)
-    lpx3 = ex2; lpy3 = ey2; s2++
+    let u = u0 + k * ex2, vv = v0 - k * ey2
+    lineA(lpu2, lpv2, u, vv, ACR | 0, ACG | 0, ACB | 0, 0.95)
+    lpu2 = u; lpv2 = vv; s2++
   }
 
-  // goal — a hollow white ring + pip
-  ringA(goal[0], goal[1], S * 0.019, 1.6, ir, ig, ib, 0.95)
-  discA(goal[0], goal[1], S * 0.005, ir, ig, ib, 0.95)
+  // target — a hollow white ring + pip
+  ringA(u0 + k * goal[0], v0 - k * goal[1], BR * k, 1.6, ir, ig, ib, 0.95)
+  discA(u0 + k * goal[0], v0 - k * goal[1], BR * k * 0.28, ir, ig, ib, 0.95)
 
-  // the robot — a red arrowhead along its heading
-  triA(rx, ry, Math.cos(rh), Math.sin(rh), RR * 1.1, ACR | 0, ACG | 0, ACB | 0)
+  // the robot — a red arrowhead (screen y is flipped, so heading uy = −sin)
+  triA(u0 + k * rx, v0 - k * ry, Math.cos(rh), -Math.sin(rh), RR * k, ACR | 0, ACG | 0, ACB | 0)
 
-  // collision alarm — his planner allows contact (no admissibility), so mark it when it happens
+  // collision alarm — his planner allows contact, so mark it when it happens
   let hit = -1, jc = 0
   while (jc < nobs) {
-    let dx = rx - ox[jc], dy = ry - oy[jc], rs = OR + RR
+    let dx = rx - ox[jc], dy = ry - oy[jc], rs = BR + RR
     if (dx * dx + dy * dy < rs * rs) hit = jc
     jc++
   }
   if (hit >= 0) {
-    ringA(rx, ry, RR * 1.9, 2.0, ACR | 0, ACG | 0, ACB | 0, 1.0)
-    ringA(ox[hit], oy[hit], OR + 1.5, 2.0, ACR | 0, ACG | 0, ACB | 0, 0.95)
+    ringA(u0 + k * rx, v0 - k * ry, RR * k * 1.7, 2.0, ACR | 0, ACG | 0, ACB | 0, 1.0)
+    ringA(u0 + k * ox[hit], v0 - k * oy[hit], BR * k + 1.5, 2.0, ACR | 0, ACG | 0, ACB | 0, 0.95)
   }
 
-  // arrived? relocate the goal and grow the field (his demo adds spheres on each reach)
+  // reached the target? throw a new one and add barriers (his demo grows the field)
   let dgx = goal[0] - rx, dgy = goal[1] - ry
-  if (dgx * dgx + dgy * dgy < (RR + OR) * (RR + OR)) {
+  if (dgx * dgx + dgy * dgy < (BR + RR) * (BR + RR)) {
     newGoal()
+    if (nobs < MAXO) { spawnObstacle(nobs); nobs++ }
     if (nobs < MAXO) { spawnObstacle(nobs); nobs++ }
   }
 
-  // commit one tick of the winning wheel speeds (the same exact arc, one step)
-  if (dvrc < SIG && dvrc > -SIG) {
-    rob[RX] = rx + Math.cos(rh) * vc; rob[RY] = ry + Math.sin(rh) * vc; rob[RH] = rh
+  // commit one timestep of the winning wheel speeds (his applyMotion: predict over DT)
+  if (bvr - bvl < 1e-6 && bvr - bvl > -1e-6) {
+    rob[RX] = rx + bvl * DT * Math.cos(rh); rob[RY] = ry + bvl * DT * Math.sin(rh); rob[RH] = rh
   } else {
-    let dth = dvrc / L
-    let R = (L * 0.5) * (bvr + bvl) / dvrc
+    let R = (RW * 0.5) * (bvr + bvl) / (bvr - bvl)
+    let dth = (bvr - bvl) * DT / RW
     let nth = rh + dth
     rob[RX] = rx + R * (Math.sin(nth) - Math.sin(rh))
     rob[RY] = ry - R * (Math.cos(nth) - Math.cos(rh))
     rob[RH] = nth
   }
   rob[VL] = bvl; rob[VR] = bvr
-  if (rob[RX] < RR) rob[RX] = RR
-  if (rob[RX] > W - RR) rob[RX] = W - RR
-  if (rob[RY] < RR) rob[RY] = RR
-  if (rob[RY] > H - RR) rob[RY] = H - RR
+  // keep the robot on the playfield (his rarely leaves; we clamp so it stays on-screen)
+  if (rob[RX] < -hw) rob[RX] = -hw
+  if (rob[RX] > hw) rob[RX] = hw
+  if (rob[RY] < -hh) rob[RY] = -hh
+  if (rob[RY] > hh) rob[RY] = hh
 }
