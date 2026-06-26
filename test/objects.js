@@ -933,6 +933,56 @@ test('Regression: compound assignments on typed-array index targets', () => {
   is(f(), 23)
 })
 
+test('Regression: load CSE keeps compound typed-array targets as stores', () => {
+  const { f } = run(`
+    let a, b, n = 1
+    export let f = () => {
+      a = new Float64Array(4)
+      b = new Float64Array(4)
+      a[1] = 1
+      b[1] = 10
+      step()
+      step()
+      return a[1] * 100 + b[1]
+    }
+    let step = () => {
+      let i = 1 * n
+      a[i] += (20 - a[i]) / 2
+      let s = a
+      a = b
+      b = s
+    }
+  `)
+  is(f(), 1065)
+})
+
+test('Regression: load CSE preserves every compound typed-array assignment target', () => {
+  const { f } = run(`
+    let i = 1
+    export let f = () => {
+      let f64 = new Float64Array(4)
+      f64[i] = 2
+      f64[i] += f64[i] + 3
+      f64[i] -= f64[i] - 4
+      f64[i] *= f64[i] - 1
+      f64[i] /= f64[i] / 6
+
+      let i32 = new Int32Array(4)
+      i32[i] = 5
+      i32[i] &= i32[i] + 2
+      i32[i] |= i32[i] + 8
+      i32[i] ^= i32[i] - 3
+      let bits = i32[i]
+      i32[2] = 0
+      i32[2] ||= i32[2] + 4
+      i32[2] &&= i32[2] + 6
+
+      return f64[i] * 100 + bits + i32[2]
+    }
+  `)
+  is(f(), 617)
+})
+
 test('Regression: bitwise compound assignments on typed-array index targets', () => {
   const { f } = run(`
     export let f = () => {

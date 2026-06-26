@@ -20,6 +20,8 @@
  * Runs post-analyze (purity known) and pre-emit, mutating the body. Purely conservative.
  */
 
+import { ASSIGN_OPS } from '../ast.js'
+
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-host a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
 
@@ -47,7 +49,7 @@ const idxVars = (e, out) => {
 
 const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'switch', 'try', '=>',
   'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable'])
-const ASSIGN = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
+const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 
 function buildFacts(body) {
   const def = new Map(), declCount = new Map(), positive = new Set()
@@ -129,10 +131,11 @@ export function cseLoads(body, isTypedArray, freshName) {
 
     const reads = (node, parent, pi, si) => {
       if (!isArr(node) || node[0] === 'str') return
-      // Plain `=` to an element/member: the LHS is a STORE TARGET, not a value load — don't CSE it
-      // (only `idx`/receiver subexprs are real reads). Compound-assign / ++ DO read the LHS, so they
-      // fall through to the default walk (then `writes` invalidates).
-      if (node[0] === '=' && isArr(node[1]) && (node[1][0] === '[]' || node[1][0] === '.' || node[1][0] === '?.')) {
+      // Element/member assignment targets must stay targets. Plain `=` does not
+      // read the slot; compound/update ops do, but rewriting the LHS node itself
+      // turns the eventual store into a temp assignment. Only inspect receiver /
+      // index subexpressions here, then let the RHS participate in load CSE.
+      if (ASSIGN.has(node[0]) && isArr(node[1]) && (node[1][0] === '[]' || node[1][0] === '.' || node[1][0] === '?.')) {
         const lhs = node[1]
         reads(lhs[0] === '[]' ? lhs[2] : lhs[1], lhs, lhs[0] === '[]' ? 2 : 1, si)   // index / receiver
         for (let i = 2; i < node.length; i++) reads(node[i], node, i, si)            // rhs value
