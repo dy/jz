@@ -9,11 +9,11 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Press (or drag) to plant the goal anywhere; the robot re-plans toward it every tick and dodges
-// the drifting obstacles. Left alone it throws itself a fresh goal each time it arrives.
+// A faithful port of Andrew Davison's Dynamic Window Approach demo. Drag to move the target; the
+// robot scores every reachable arc for progress-to-goal and obstacle clearance and drives the best.
 const demo = runDemo({
   name: "dwa",
-  hint: "Dynamic Window Approach — the robot rolls out every reachable velocity, scores each arc for progress and clearance, and drives the winner. Drag to move the goal",
+  hint: "Dynamic Window Approach (Fox / Burgard / Thrun) — after Andrew Davison's robotics-course demo. The robot scores every reachable wheel-velocity arc for progress and clearance and drives the best. Drag to move the goal",
   size: { dpr: 2, budget: null },
   load: (e) => e.init(),
   frame: (e, t) => e.frame(t),
@@ -23,6 +23,18 @@ const ptr = trackPointer(demo.cv)
 const steer = () => { if (demo.engine && ptr.down) demo.engine.setGoal(ptr.x, ptr.y) }
 demo.cv.addEventListener("pointerdown", steer)
 demo.cv.addEventListener("pointermove", steer)
+
+// Credit the source/inspiration — Davison's original interactive demo — beside the wiki/code links.
+const desc = document.querySelector(".jz-desc")
+if (desc) {
+  desc.appendChild(document.createTextNode("  ·  "))
+  const a = document.createElement("a")
+  a.className = "jz-wiki"
+  a.href = "https://www.doc.ic.ac.uk/~ajd/Planning/"
+  a.target = "_blank"; a.rel = "noopener"
+  a.textContent = "original"
+  desc.appendChild(a)
+}
 </script>
 </body>
 </html>
