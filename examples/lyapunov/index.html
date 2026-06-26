@@ -25,13 +25,24 @@ const home = { ox: 0, oy: 0, span: 1.5 }
 const view = { ...home }
 let lastX = 0, lastY = 0, dragging = false, userSet = false
 
+// The logistic map r·x·(1−x) only stays bounded for r ∈ [0, 4]; past r=4 it escapes to −∞ and
+// the pixel renders as a dead black band. Keep the (a,b) window inside [0, 4]² so the canvas
+// always shows fractal, never that band: maxOff keeps 2.5+off+span ≤ 4, minOff keeps 2.5+off ≥ 0.
+const clampView = () => {
+  const maxOff = 1.5 - view.span, minOff = -2.5
+  view.ox = view.ox < minOff ? minOff : view.ox > maxOff ? maxOff : view.ox
+  view.oy = view.oy < minOff ? minOff : view.oy > maxOff ? maxOff : view.oy
+}
+
 const demo = runDemo({
   name: "lyapunov",
   hint: "Markus–Lyapunov fractal — drag to pan · scroll to zoom · double-click for a fresh sequence",
   size: { budget: 220000 },
   load: (e) => e.setSeq?.(bits, len),
   frame: (e, t) => {
-    if (!userSet) { view.ox = Math.sin(t * 0.04) * 0.3; view.oy = Math.cos(t * 0.03) * 0.3 }   // gentle drift until grabbed
+    // gentle drift until grabbed — both offsets stay ≤ 0 so b (and a) never exceed 4
+    if (!userSet) { view.ox = (Math.sin(t * 0.04) - 1) * 0.18; view.oy = (Math.cos(t * 0.03) - 1) * 0.18 }
+    clampView()
     e.frame(t, view.ox, view.oy, view.span)
   },
   overlay: (g) => {
@@ -52,6 +63,7 @@ cv.addEventListener("pointermove", e => {
   const r = cv.getBoundingClientRect()
   view.ox -= (e.clientX - lastX) / r.width * view.span    // pan delta scales with the zoomed span
   view.oy -= (e.clientY - lastY) / r.height * view.span
+  clampView()                                             // never pan past the valid r∈[0,4] domain
   lastX = e.clientX; lastY = e.clientY
 })
 cv.addEventListener("pointerup", e => { dragging = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
@@ -66,6 +78,7 @@ cv.addEventListener("wheel", e => {
   if (view.span < 1e-4) view.span = 1e-4
   view.ox = aBefore - 2.5 - fx * view.span        // pin the point under the cursor
   view.oy = bBefore - 2.5 - fy * view.span
+  clampView()                                     // keep the zoomed window inside the valid domain
 }, { passive: false })
 // double-click → reset the view AND roll a fresh random sequence
 cv.addEventListener("dblclick", () => {
