@@ -214,18 +214,23 @@ export let frame = (t) => {
 
   let rx = rob[RX], ry = rob[RY], rh = rob[RH]
 
-  // fade the trail, stamp the robot's pixel spot
-  let n = W * H, c = 0
-  while (c < n) { trail[c] = (trail[c] * 252) >> 8; c++ }
+  // stamp the robot's spot, then fade + composite the floor in ONE pass. Almost every pixel has no
+  // trail (the floor is black), so fast-path those straight to the paper colour and only run the
+  // per-pixel float lerp where the trail actually is — this skips that lerp for ~all of the canvas,
+  // which is ~90% of the frame's work (and the part JSC vectorizes in JS but jz's wasm runs scalar).
   stamp(u0 + k * rx, v0 - k * ry, RR * k * 0.5)
-
-  // composite floor + faint trail
   let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
-  c = 0
+  let paper = (255 << 24) | ((pb | 0) << 16) | ((pg | 0) << 8) | (pr | 0)
+  let n = W * H, c = 0
   while (c < n) {
-    let v = trail[c] / 255.0 * 0.5
-    let r = (pr + (ir - pr) * v) | 0, g = (pg + (ig - pg) * v) | 0, b = (pb + (ib - pb) * v) | 0
-    px[c] = (255 << 24) | (b << 16) | (g << 8) | r
+    let ti = (trail[c] * 252) >> 8
+    trail[c] = ti
+    if (ti === 0) { px[c] = paper }
+    else {
+      let v = ti / 255.0 * 0.5
+      let r = (pr + (ir - pr) * v) | 0, g = (pg + (ig - pg) * v) | 0, b = (pb + (ib - pb) * v) | 0
+      px[c] = (255 << 24) | (b << 16) | (g << 8) | r
+    }
     c++
   }
 
