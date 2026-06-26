@@ -570,6 +570,41 @@ for (const [label, mk] of [['value-form', TONE_VALUE], ['store-form', TONE_STORE
   })
 }
 
+// (c) NARROW-input affine form (the dwa floor-composite / F-B-T `dist` term): a Uint8/Uint16 buffer
+// widened to the f64 island for a linear lerp, then packed to ARGB and stored u32. The load is
+// NARROWER than the u32 store, so it widens (load32_zero → extend_low → i32x4 low lanes → convert_low)
+// and the SIMD bound shrinks by the over-read. Must stay bit-exact incl. bytes ≥128 (the widen
+// signedness must match the load) and the odd/tiny tail (where the bound-shrink leaves it all scalar).
+const TONE_DIST = (n, arr, max) => `
+  let trail = new ${arr}(${n}), px = new Uint32Array(${n})
+  export let main = () => {
+    let i = 0
+    while (i < ${n}) { trail[i] = (i * 37 + 11) & ${max}; i++ }   // 0..${max} incl 0, ${max}, and ≥128
+    let pr = 12.0, pg = 18.0, pb = 27.0, ir = 235.0, ig = 240.0, ib = 250.0
+    i = 0
+    while (i < ${n}) {
+      let v = trail[i] / ${max}.0 * 0.5
+      let r = (pr + (ir - pr) * v) | 0, g = (pg + (ig - pg) * v) | 0, b = (pb + (ib - pb) * v) | 0
+      px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+      i++
+    }
+    let s = 0; i = 0; while (i < ${n}) { s = (s + px[i]) | 0; i++ }
+    return s
+  }`
+for (const [arr, max] of [['Uint8Array', 255], ['Uint16Array', 65535]]) {
+  test(`SIMD tonemap narrow-input (${arr}) - widens the load to the f64 island, bit-exact`, () => {
+    const w = wat(TONE_DIST(64, arr, max), SPEED)
+    ok(/f64x2\.convert_low_i32x4/.test(w), `${arr} tonemap lifts the narrow→f64 island (convert_low_i32x4)`)
+    ok(/f64x2\.mul/.test(w), `${arr} tonemap lifts the lerp to f64x2`)
+    ok(/extend_low_i(8x16|16x8)/.test(w), `${arr} tonemap widens the narrow load (extend_low)`)
+    for (const n of [64, 63, 1, 2, 3, 5]) {   // even, odd tail, and the tiny widths at the bound-shrink edge
+      const simd = runVec(TONE_DIST(n, arr, max), SPEED).main()
+      const scal = runVec(TONE_DIST(n, arr, max), SPEED_SCALAR).main()
+      is(simd, scal, `${arr} tonemap n=${n}: SIMD checksum === scalar`)
+    }
+  })
+}
+
 // Per-pixel-color HAZARD (domain-color): a guarded conditional assignment `let fx=0; if(cond){fx=…}`
 // whose target later feeds a transcendental mirror (hypot/atan2). `fx=0` lifts to an f64x2 lane
 // local, but the statement-form `if` lands in the SCALAR epilogue — so the lifted `hypot(fx,…)`,

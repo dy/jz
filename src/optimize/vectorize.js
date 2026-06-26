@@ -5205,14 +5205,31 @@ function matchInfCanonTone(sel) {
   return tr ? tr.inner : null
 }
 
-// `base + (i<<2)` with `base` a loop-invariant array pointer (local or global). Returns
-// the base node (stride-4 ⇒ load64_zero/i64.store cover exactly 2 consecutive u32) or null.
-function matchToneAddr(addr, ind) {
+// Loads tryToneMap accepts as the f64-island input. `i32.load` is the original (stride-4, no
+// widening). Narrow typed-array reads (Uint8/Int8/Uint16/Int16) are widened to the low two i32x4
+// lanes before the f64x2.convert — exactly the F/B/T `dist` term over an 8-bit/16-bit buffer.
+// `shift` = the address stride exponent (0/1/2). `over` = extra ELEMENTS the widening load reads
+// past its lane pair (u8 reads 4 bytes via load32_zero for 2 lanes) — the SIMD bound is shrunk by
+// it so the read never runs off the array; the scalar tail finishes the remainder. The widen step
+// signedness matches the load op, so the i32x4 lanes hold the exact scalar value.
+const TONE_LOAD = {
+  'i32.load':     { shift: 2, widen: null, over: 0 },
+  'i32.load8_u':  { shift: 0, widen: ['v128.load32_zero', ['i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u']], over: 2 },
+  'i32.load8_s':  { shift: 0, widen: ['v128.load32_zero', ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s']], over: 2 },
+  'i32.load16_u': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_u']], over: 0 },
+  'i32.load16_s': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_s']], over: 0 },
+}
+
+// `base + (i << shift)` (shift 0 ⇒ bare `base + i`) with `base` a loop-invariant array pointer.
+// The address shape for a load/store at its element stride: the u32 store uses shift 2 (stride-4 ⇒
+// load64_zero/i64.store cover exactly 2 consecutive u32); a narrow load uses its own stride (0/1).
+function matchToneAddrShift(addr, ind, shift) {
   if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
   const pair = (baseN, offN) => {
     if (!isArr(baseN) || (baseN[0] !== 'local.get' && baseN[0] !== 'global.get')) return null
     if (baseN[0] === 'local.get' && baseN[1] === ind) return null
-    if (isArr(offN) && offN[0] === 'i32.shl' && offN.length === 3 && isLocalGet(offN[1], ind) && constNum(offN[2]) === 2) return baseN
+    if (shift === 0) return isLocalGet(offN, ind) ? baseN : null
+    if (isArr(offN) && offN[0] === 'i32.shl' && offN.length === 3 && isLocalGet(offN[1], ind) && constNum(offN[2]) === shift) return baseN
     return null
   }
   return pair(addr[1], addr[2]) || pair(addr[2], addr[1])
@@ -5257,14 +5274,20 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // island signature (`f64.convert_i32_*`). Any other-width load/store declines. The
   // f64-convert requirement is what distinguishes this from a plain i32 map (tryVectorize,
   // which runs earlier and already owns those).
-  let hasConvert = false, storeCount = 0, loadCount = 0, ok = true
+  let hasConvert = false, storeCount = 0, loadCount = 0, overread = 0, ok = true
   const scan = (n) => {
     if (!ok || !isArr(n)) return
     const o = n[0]
     if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u') hasConvert = true
-    if (o === 'i32.store') { storeCount++; if (!matchToneAddr(n[1], incVar)) ok = false; scan(n[2]); return }
-    if (o === 'i32.load') { loadCount++; if (!matchToneAddr(n[1], incVar)) ok = false; return }
-    if (LOAD_OPS[o] || STORE_OPS[o]) { ok = false; return }  // any wider/narrower memop → not this shape
+    if (o === 'i32.store') { storeCount++; if (!matchToneAddrShift(n[1], incVar, 2)) ok = false; scan(n[2]); return }
+    const ld = TONE_LOAD[o]
+    if (ld && n.length === 2) {   // i32 (stride-4) or a narrow typed-array read at its own stride
+      loadCount++
+      if (!matchToneAddrShift(n[1], incVar, ld.shift)) { ok = false; return }
+      if (ld.over > overread) overread = ld.over
+      return
+    }
+    if (LOAD_OPS[o] || STORE_OPS[o]) { ok = false; return }  // any other-width memop → not this shape
     for (let i = 1; i < n.length; i++) scan(n[i])
   }
   for (const s of body) scan(s)
@@ -5354,7 +5377,13 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
     const tr = matchTruncF64(expr)   // f64 → i32 `|0` bridge
     if (tr) { const a = liftV(tr.inner); if (ctx.fail) return null; return [tr.signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', a] }
-    if (op === 'i32.load' && expr.length === 2) return ['v128.load64_zero', expr[1]]   // address kept scalar
+    if (TONE_LOAD[op] && expr.length === 2) {   // i32 → load64_zero (low 2 lanes); narrow → widen to i32x4 low lanes
+      const w = TONE_LOAD[op].widen
+      if (!w) return ['v128.load64_zero', expr[1]]   // address kept scalar
+      let v = [w[0], expr[1]]
+      for (let i = 0; i < w[1].length; i++) v = [w[1][i], v]
+      return v
+    }
     if (op === 'i32.const') return ['i32x4.splat', expr]
     if (op === 'f64.const') return ['f64x2.splat', expr]
     if (op === 'local.get' && typeof expr[1] === 'string') {
@@ -5362,6 +5391,15 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       if (kind === 'lane') return ['local.get', laned(name)]
       if (kind === 'invariant') return [fnLocals.get(name) === 'f64' ? 'f64x2.splat' : 'i32x4.splat', expr]
       return liftFail(ctx, `tonemap: ${name} address/induction var used as lane data`)
+    }
+    if (op === 'local.tee' && typeof expr[1] === 'string' && expr.length === 3) {
+      // `let v = X` reused in the same statement folds to `(local.tee $v X)`; lift it to set the
+      // lane local AND yield it (bit-exact — the scalar tee sets $v and returns the same value).
+      const name = expr[1]
+      if (localKind.get(name) !== 'lane') return liftFail(ctx, `tonemap: tee of non-lane ${name}`)
+      const v = liftV(expr[2]); if (ctx.fail) return null
+      toneSetBefore.add(name)
+      return ['local.tee', laned(name), v]
     }
     if (op === 'call' && PPC_CALL2[expr[1]]) {   // transcendental → its 2-wide mirror
       const args = []
@@ -5499,7 +5537,11 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       ...lifted,
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', LANES]]],
       ['br', simdLoop]]]
-  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -LANES]]]
+  // A widening narrow load reads more elements than its lane pair (u8: 4 bytes for 2 lanes), so shrink
+  // the SIMD bound by that over-read — the widest load stays in-bounds and the scalar tail finishes the
+  // remainder. (A negative bound from a tiny array just leaves the whole loop scalar — safe.)
+  const boundExprAdj = overread > 0 ? ['i32.sub', boundExpr, ['i32.const', overread]] : boundExpr
+  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExprAdj, ['i32.const', -LANES]]]
   const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
