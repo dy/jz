@@ -17,6 +17,7 @@ import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../s
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
+import { parse, loopCount } from '../scripts/wat-probe.mjs'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`
@@ -2605,4 +2606,72 @@ test('live runtime decimal parsing keeps the Eisel-Lemire table (no false strip)
   const bytes = jz.compile(src, { optimize: 'size', alloc: false })
   ok(bytes.length > 2048, `module is ${bytes.length} B — table wrongly stripped from live Number()`)
   new WebAssembly.Module(bytes)   // throws if the strip left a dangling reference
+})
+
+test('range-narrowing: ToInt32 of a bounded value through a reused local drops the +∞ guard', () => {
+  // `xi` (= floor of a [0,255]-bounded Uint8Array read × const) is read twice, so it stays
+  // a local; ToInt32(local.get $xi) emits the guarded select(wrap(i64.trunc_sat), 0,
+  // f64.ne(x, Inf)). f64Range — resolving $xi's single textual def through the trunc_sat
+  // fold (src/optimize/index.js) — proves it ∈ [0, 7] ⊂ i32, so the +∞ guard is dead and
+  // trunc_sat is exact ToInt32: one i32.trunc_sat, no i64 round-trip, no guard. Runtime-
+  // independent (fewer loop-body ops on V8 / JSC / wasmtime alike).
+  const src = `export let f = (n) => {
+    const buf = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) buf[i] = (i * 37) & 255
+    let s = 0
+    for (let i = 0; i < n; i++) {
+      let v = buf[i & 255]
+      let xi = Math.floor(v * 0.03125)
+      s = (s + (xi & 255) + (xi & 127)) | 0
+    }
+    return s
+  }`
+  const t = parse(src, 'speed')
+  // INVARIANT: the bounded index path carries no i64 round-trip / +∞ guard — only i32.trunc_sat.
+  is(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s'), 0, 'no i64 round-trip in loop (guard retired)')
+  is(loopCount(t, n => n[0] === 'f64.const' && n[1] === 'Infinity'), 0, 'no +∞ guard in loop')
+  ok(loopCount(t, n => n[0] === 'i32.trunc_sat_f64_s') >= 2, 'bounded index narrowed to i32.trunc_sat')
+  // Bit-exact vs JS over the full input range.
+  const { f } = run(src)
+  const ref = (n) => {
+    const buf = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) buf[i] = (i * 37) & 255
+    let s = 0
+    for (let i = 0; i < n; i++) { let v = buf[i & 255]; let xi = Math.floor(v * 0.03125); s = (s + (xi & 255) + (xi & 127)) | 0 }
+    return s
+  }
+  for (const n of [0, 1, 7, 256, 1000]) is(f(n), ref(n), `f(${n}) bit-exact vs JS`)
+})
+
+test('int narrowing: bounded typed-array element products use i32.mul (faithful), bit-exact', () => {
+  // `int8[i] * int8[j]` (and i8/u8/i16 pairs, plus i16×u16) — the int-conv / correlation /
+  // quantised-MAC shape — has a product that provably fits SIGNED i32, so i32.mul == the true
+  // value in every consumer context. Rides the i32 ABI (one op, no convert→f64.mul→convert
+  // round-trip) on V8 / JSC / wasmtime alike. u16×u16 (65535² > 2^31) must STAY f64 — unfaithful.
+  const i8sum = `export let f = (n) => {
+    const a = new Int8Array(64); const b = new Int8Array(64)
+    for (let i = 0; i < 64; i++) { a[i] = (i % 13) - 6; b[i] = (i % 7) - 3 }
+    let s = 0; for (let i = 0; i < n; i++) s = s + a[i & 63] * b[i & 63]; return s
+  }`
+  ok(/i32\.mul/.test(jz.compile(i8sum, { optimize: 'speed', wat: true })), 'i8×i8 product narrows to i32.mul')
+
+  // u16×u16 stays f64 (the exact product can exceed signed i32 → i32.mul would be unfaithful).
+  const u16sq = `export let f = (n) => {
+    const a = new Uint16Array(8); for (let i = 0; i < 8; i++) a[i] = 60000 + i
+    let s = 0; for (let i = 0; i < n; i++) s = s + a[i & 7] * a[(i + 1) & 7]; return s
+  }`
+  const u16wat = jz.compile(u16sq, { optimize: 'speed', wat: true })
+  ok(/f64\.mul/.test(u16wat), 'u16×u16 product stays f64.mul (faithfulness-excluded)')
+
+  // Bit-exact vs JS across contexts: i8 reduction (f64 value), i16×u16 (boundary), u16×u16 (excluded).
+  const cases = [
+    [i8sum, [0, 1, 100, 1000]],
+    [`export let f = (n) => { const a = new Int16Array(8); const b = new Uint16Array(8); for (let i=0;i<8;i++){a[i]=-30000+i;b[i]=60000+i} let s=0; for (let i=0;i<n;i++) s=s+a[i&7]*b[i&7]; return s }`, [0, 1, 8, 50]],
+    [u16sq, [0, 1, 8, 50]],
+  ]
+  for (const [src, ns] of cases) {
+    const { f } = run(src)
+    const ref = new Function('n', '"use strict";' + src.replace(/^export let f = /, 'const f = ').replace(/return s\s*}$/, 'return s }') + '; return f(n)')
+    for (const n of ns) is(f(n), ref(n), `bit-exact vs JS at n=${n}`)
+  }
 })

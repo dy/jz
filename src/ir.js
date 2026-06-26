@@ -203,40 +203,59 @@ const convRange = (child, signed) => {
   }
   return signed ? { lo: I32_MIN, hi: I32_MAX } : { lo: 0, hi: 4294967295 }
 }
-export const f64Range = (n) => {
-  if (!Array.isArray(n)) return null
-  const op = n[0]
-  if (op === 'f64.const') return typeof n[1] === 'number' ? fin(n[1], n[1]) : null   // `nan:…`/Inf literal strings → null
-  if (op === 'f64.convert_i32_s') return convRange(n[1], true)
-  if (op === 'f64.convert_i32_u') return convRange(n[1], false)
-  if (op === 'f64.neg') { const a = f64Range(n[1]); return a && fin(-a.hi, -a.lo) }
-  if (op === 'f64.abs') { const a = f64Range(n[1]); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
-  if (op === 'f64.sqrt') { const a = f64Range(n[1]); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
-  // Rounding ops preserve finiteness and are monotonic, so the range maps elementwise. This lets
-  // `Math.floor(x)|0` over a bounded x (every grid/image/audio index: `px*scale`, perm[] lookups)
-  // drop the +∞-guard + i64 round-trip in toI32 down to a single i32.trunc_sat_f64_s. `nearest`
-  // (round-half-to-even) lands in {floor,ceil} so its bounds are floor(lo)..ceil(hi).
-  if (op === 'f64.floor') { const a = f64Range(n[1]); return a && fin(Math.floor(a.lo), Math.floor(a.hi)) }
-  if (op === 'f64.ceil')  { const a = f64Range(n[1]); return a && fin(Math.ceil(a.lo), Math.ceil(a.hi)) }
-  if (op === 'f64.trunc') { const a = f64Range(n[1]); return a && fin(Math.trunc(a.lo), Math.trunc(a.hi)) }
-  if (op === 'f64.nearest') { const a = f64Range(n[1]); return a && fin(Math.floor(a.lo), Math.ceil(a.hi)) }
-  if (op === 'f64.add') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
-  if (op === 'f64.sub') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
-  if (op === 'f64.mul') {
-    const a = f64Range(n[1]), b = f64Range(n[2]); if (!a || !b) return null
-    const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
-    return fin(Math.min(...p), Math.max(...p))
+// `get`, when supplied, resolves a `(local.get $V)` to $V's single defining value node
+// (a `name → defExpr | null` map/function built from a one-def-per-local scan). This lets the
+// range see through the temps that inlining introduces — e.g. `floor(mul(convert($px),0.03125))`
+// stashed in `$xi` before truncation — so the i32-fit proof survives the indirection. SOUND
+// without code motion: a single-textual-def local holds exactly the value its def computes, so
+// the def's range bounds every value the local can take, even if the def's inputs vary across
+// iterations. A self-referential (loop-carried) single def is caught by the `seen` cycle guard
+// and yields null (unknown), which is conservative.
+export const f64Range = (n, get) => {
+  const seen = get ? new Set() : null
+  const r = (n) => {
+    if (!Array.isArray(n)) return null
+    const op = n[0]
+    if (op === 'local.get' && get && typeof n[1] === 'string') {
+      if (seen.has(n[1])) return null               // loop-carried / cyclic def → unknown
+      const def = typeof get === 'function' ? get(n[1]) : get.get(n[1])
+      if (!def) return null
+      seen.add(n[1]); const rng = r(def); seen.delete(n[1])
+      return rng
+    }
+    if (op === 'f64.const') return typeof n[1] === 'number' ? fin(n[1], n[1]) : null   // `nan:…`/Inf literal strings → null
+    if (op === 'f64.convert_i32_s') return convRange(n[1], true)
+    if (op === 'f64.convert_i32_u') return convRange(n[1], false)
+    if (op === 'f64.neg') { const a = r(n[1]); return a && fin(-a.hi, -a.lo) }
+    if (op === 'f64.abs') { const a = r(n[1]); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
+    if (op === 'f64.sqrt') { const a = r(n[1]); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
+    // Rounding ops preserve finiteness and are monotonic, so the range maps elementwise. This lets
+    // `Math.floor(x)|0` over a bounded x (every grid/image/audio index: `px*scale`, perm[] lookups)
+    // drop the +∞-guard + i64 round-trip in toI32 down to a single i32.trunc_sat_f64_s. `nearest`
+    // (round-half-to-even) lands in {floor,ceil} so its bounds are floor(lo)..ceil(hi).
+    if (op === 'f64.floor') { const a = r(n[1]); return a && fin(Math.floor(a.lo), Math.floor(a.hi)) }
+    if (op === 'f64.ceil')  { const a = r(n[1]); return a && fin(Math.ceil(a.lo), Math.ceil(a.hi)) }
+    if (op === 'f64.trunc') { const a = r(n[1]); return a && fin(Math.trunc(a.lo), Math.trunc(a.hi)) }
+    if (op === 'f64.nearest') { const a = r(n[1]); return a && fin(Math.floor(a.lo), Math.ceil(a.hi)) }
+    if (op === 'f64.add') { const a = r(n[1]), b = r(n[2]); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
+    if (op === 'f64.sub') { const a = r(n[1]), b = r(n[2]); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
+    if (op === 'f64.mul') {
+      const a = r(n[1]), b = r(n[2]); if (!a || !b) return null
+      const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
+      return fin(Math.min(...p), Math.max(...p))
+    }
+    if (op === 'f64.div') {
+      const c = Array.isArray(n[2]) && n[2][0] === 'f64.const' && typeof n[2][1] === 'number' ? n[2][1] : null
+      if (c == null || c === 0) return null               // variable / zero divisor → may be ±∞
+      const a = r(n[1]); if (!a) return null
+      const p = [a.lo / c, a.hi / c]
+      return fin(Math.min(...p), Math.max(...p))
+    }
+    if (op === 'f64.min') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
+    if (op === 'f64.max') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
+    return null
   }
-  if (op === 'f64.div') {
-    const c = Array.isArray(n[2]) && n[2][0] === 'f64.const' && typeof n[2][1] === 'number' ? n[2][1] : null
-    if (c == null || c === 0) return null               // variable / zero divisor → may be ±∞
-    const a = f64Range(n[1]); if (!a) return null
-    const p = [a.lo / c, a.hi / c]
-    return fin(Math.min(...p), Math.max(...p))
-  }
-  if (op === 'f64.min') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
-  if (op === 'f64.max') { const a = f64Range(n[1]), b = f64Range(n[2]); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
-  return null
+  return r(n)
 }
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).

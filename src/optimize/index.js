@@ -29,7 +29,7 @@
 
 import { LAYOUT, ctx } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range, I32_MIN, I32_MAX } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -3317,18 +3317,38 @@ function fusedRewrite(fn, counts) {
   }
   const freshI64 = () => { const n = `$__eqt${scratchN++}`; newDecls.push(['local', n, 'i64']); return n }
   const freshF64 = () => { const n = `$__eqf${scratchN++}`; newDecls.push(['local', n, 'f64']); return n }
+  // Single-textual-def locals → their defining value node, so the trunc_sat range fold (below)
+  // can see through the temps inlining introduces when proving an index/packed value fits i32.
+  // Multi-def (incl. loop-carried self-referential) locals are excluded: their value is not the
+  // one def's, so its range wouldn't bound them. Pure read of the IR — value-preserving rewrites
+  // during this same walk keep the captured def's RANGE intact, so a lazily-built map stays sound.
+  // Built on first query only (most functions carry no guarded-trunc form → zero cost).
+  let defVal
+  const get = (name) => {
+    if (defVal === undefined) {
+      defVal = new Map(); const defCnt = new Map()
+      const scanDefs = (n) => {
+        if (!Array.isArray(n)) return
+        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { defCnt.set(n[1], (defCnt.get(n[1]) || 0) + 1); defVal.set(n[1], n[2]) }
+        for (let i = 1; i < n.length; i++) scanDefs(n[i])
+      }
+      for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
+      for (const [k, c] of defCnt) if (c > 1) defVal.delete(k)
+    }
+    return defVal.get(name) || null
+  }
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
-    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64, freshF64)
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64, freshF64, get)
   }
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-function walkRewrite(node, doInline, counts, freshI64, freshF64) {
+function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64, freshF64)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64, freshF64, get)
   }
   const op = node[0]
   // Piggyback local-ref counting for sortLocalsByUse. `counts` may be undefined
@@ -3513,6 +3533,16 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64) {
       // conditional `?:` (toI32 distributes through `(if result f64)`, recursively).
       const i = toI32(inner)
       if (i) return i
+      // Range fallback for the NON-integer-ring values toI32 rejects (`floor(scale·v)`,
+      // `base + scale·v` — every grid/lattice/colour index): when the def chain — resolved
+      // through single-def inlining temps via `get` — provably yields a finite i32-range value,
+      // the +∞ guard is dead AND trunc_sat can't saturate, so the whole guarded select collapses
+      // to one `i32.trunc_sat_f64_s`. SOUND: f64Range admits only pure nodes and proves
+      // finiteness (kills the guard) + in-range (kills saturation), so the result is identical
+      // ToInt32 on every value the program can produce. Drops the i64 round-trip + guard on all
+      // runtimes (this is the post-inline twin of the emit-time fold at ir.js toI32).
+      const rng = f64Range(inner, get)
+      if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', inner]
     }
   }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
