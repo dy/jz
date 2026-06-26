@@ -45,6 +45,12 @@ jobs:
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@v2
+      # Safari's engine: standalone JavaScriptCore shell via jsvu (→ ~/.jsvu/bin/jsc).
+      # Non-fatal — bench.mjs drops the jsc row if the install fails.
+      - name: install jsc (JavaScriptCore)
+        run: |
+          npx --yes jsvu --engines=javascriptcore --os=linux64 || true
+          echo "$HOME/.jsvu/bin" >> "$GITHUB_PATH"
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
@@ -82,7 +88,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,zig-wasm,rust,zig,go,v8,deno,bun,as,porf,jz,jz-w2c,wat,numpy --json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git pull --rebase origin main || true
