@@ -35,7 +35,7 @@ const demo = runDemo({
     frameCount++
     if (frameCount > nextDrop) {
       e.drop(Math.random() * demo.W, Math.random() * demo.H, rr(), ra())
-      nextDrop = frameCount + 28 + Math.random() * 70   // drop often → ripples keep crossing & interfering
+      nextDrop = frameCount + 110 + Math.random() * 150  // sparse: a few rings coexist & cross, not a busy mush
     }
     e.frame(0)
   },

@@ -1,27 +1,41 @@
-// Wave ripples — the 2D wave equation u_tt = c²∇²u on a grid, le-frog in time over two
-// height buffers (current, previous): next = 2·cur − prev + c²·laplacian, lightly damped.
-// Click drops a pulse; circular ripples spread, ring for a while, reflect off the edges and
-// interfere as they cross, then settle. A pure 5-point stencil sweep — memory-bound, the
-// kind of loop jz vectorizes well. resize(w,h) → Uint32Array; drop() to disturb the surface.
+// Wave ripples — a REAL simulation of the 2D wave equation u_tt = c²∇²u, integrated by a
+// finite-difference leapfrog in time over two height buffers (current a, previous b):
+//   u(t+dt) = 2·u(t) − u(t−dt) + c²·∇²u · dt²,  lightly damped.
+// ∇² is an isotropic 9-point Laplacian (so wavefronts stay circular, not squircular). The rings,
+// their reflection off the walls, and their interference are all EMERGENT from the physics — the
+// only non-physical touch is the render (|height|² glow + a star-flare drawn at constructive peaks).
+// resize(w,h) → Uint32Array; drop() seeds an outgoing circular pulse.
 
 let W = 0, H = 0, px
 let a, b              // height now / previous
-let C2 = 0.42         // wave speed² (isotropic 9-point stencil is stable up to ≈0.75)
-let DAMP = 0.99       // damping → a ring fades QUICKLY as it spreads (no energy build-up / standing "mountains")
+let glow              // Float32 star-seed buffer (brightness^4) for the streak bloom
+let C2 = 0.16         // wave speed² (isotropic 9-point stencil is stable to ≈0.75; low → calm, slow rings)
+let DAMP = 0.9965     // slow damping → rings persist and travel far (large, faint) before dissolving
+let GAIN = 5.5        // render brightness of the |height| field — keeps lone rings thin & unsaturated
 
 export let resize = (w, h) => {
   W = w; H = h
   a = new Float64Array(w * h); b = new Float64Array(w * h)
+  glow = new Float32Array(w * h)
   px = new Uint32Array(w * h)
   return px
 }
 export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ } }
 
-// drop with an ADSR-shaped radial profile: ONE dominant crest at the wavefront (attack), then a
-// quickly-decaying ripple tail toward the centre (decay→sustain→release). The phase is measured
-// from the rim, so the outermost — first to propagate out — is the strong leading oscillation, with
-// the rest tapering off behind it (not a train of equal rings, which read as several wavefronts).
-// r = packet radius, amp = strength.
+// radial pulse profile: ONE dominant crest at the wavefront (the rim) with a fast-decaying ripple
+// tail toward the centre — an ADSR-shaped single front, not a train of equal rings.
+let prof = (d, r, amp) => {
+  if (d < 0.0) return 0.0
+  if (d > r) return 0.0
+  let behind = (r - d) / r                                  // 0 at the rim/front .. 1 at centre
+  let attack = d > r * 0.80 ? (r - d) / (r * 0.20) : 1.0    // taper the rim → clean leading edge, no cliff
+  let env = Math.exp(-behind * 4.0)                         // strong front, quickly-decaying tail
+  return amp * Math.cos(6.5 * behind) * env * attack        // ~1 cycle: a single crest
+}
+
+// Seed an OUTGOING circular wave. A zero-velocity bump splits into an outward AND an inward wave
+// (the inward one re-focuses at the centre → a phantom SECOND front); instead we set the previous
+// frame one step further IN — u(t−dt)=f(d+c·dt) — so the leapfrog launches a single front outward.
 export let drop = (cx, cy, r, amp) => {
   let x0 = cx - r | 0, x1 = cx + r | 0, y0 = cy - r | 0, y1 = cy + r | 0
   if (x0 < 1) x0 = 1
@@ -29,6 +43,7 @@ export let drop = (cx, cy, r, amp) => {
   if (x1 > W - 2) x1 = W - 2
   if (y1 > H - 2) y1 = H - 2
   let r2 = r * r
+  let speed = Math.sqrt(C2)            // wavefront travel per step, in grid cells
   let y = y0
   while (y <= y1) {
     let dy = y - cy, row = y * W, x = x0
@@ -36,11 +51,8 @@ export let drop = (cx, cy, r, amp) => {
       let dx = x - cx, d2 = dx * dx + dy * dy
       if (d2 <= r2) {
         let d = Math.sqrt(d2)
-        let behind = (r - d) / r                                  // 0 at the rim/front .. 1 at centre
-        let attack = d > r * 0.82 ? (r - d) / (r * 0.18) : 1.0    // taper the rim → clean front, no cliff
-        let env = Math.exp(-behind * 2.8)                         // strong front, fast-decaying tail
-        let val = amp * Math.cos(8.5 * behind) * env * attack     // ~1.3 cycles: one crest, then a decaying ripple
-        a[row + x] += val; b[row + x] += val
+        a[row + x] += prof(d, r, amp)
+        b[row + x] += prof(d + speed, r, amp)   // one step earlier the crest sat further in → moves OUT
       }
       x++
     }
@@ -54,9 +66,9 @@ export let frame = (t) => {
     let rc = y * w, rn = rc - w, rs = rc + w, x = 1
     while (x < w - 1) {
       let c = rc + x
-      // ISOTROPIC 9-point Laplacian (ortho 2/3, diagonal 1/6) — the plain 5-point stencil propagates
-      // faster along the axes than the diagonals, which deforms expanding rings into squircles; the
-      // diagonal terms restore near-circular wavefronts.
+      // ISOTROPIC 9-point Laplacian (ortho 2/3, diagonal 1/6) — the plain 5-point stencil travels
+      // faster along the axes than the diagonals, deforming rings into squircles; the diagonal terms
+      // restore near-circular wavefronts.
       let lap = 0.66667 * (a[rn + x] + a[rs + x] + a[c - 1] + a[c + 1])
               + 0.16667 * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1])
               - 3.33333 * a[c]
@@ -67,49 +79,44 @@ export let frame = (t) => {
   }
   let tmp = a; a = b; b = tmp                          // swap: a is now current
 
-  // render: black field; the oscillating surface glows as thin bright rings. brightness = |height|²
-  // (squared) sharpens the crests to crisp rings and makes constructive crossings — where two
-  // wavefronts sum — bloom far brighter than either ring alone.
+  // render: black field; |height|² makes thin bright rings and lets a constructive crossing (two
+  // crests summed → ~4× a single ring here) bloom far brighter. The star SEED = brightness⁴ isolates
+  // those crossings — a single ring barely registers — so only crossings spawn bright stars.
   let n = w * h, i = 0
   while (i < n) {
     let v = a[i]
     let m = v < 0.0 ? -v : v
-    let g = m * 9.5
+    let g = m * GAIN
     g = g * g
     if (g > 1.0) g = 1.0
     let gi = (g * 255.0) | 0
     px[i] = (255 << 24) | (gi << 16) | (gi << 8) | gi
+    // star seed: UNclipped |height|⁶ — a crossing (≈2× a ring's amplitude) seeds 2⁶ ≈ 64× more
+    // streak than a lone ring, independent of how bright the display clips the ring to.
+    glow[i] = m * m * m * m * m * m
     i++
   }
 
-  // sparkle pass: at the brightest constructive peaks (ring crossings), splat a small additive
-  // star-cross so the intersections read as glints, like overlapping ripples catching the light.
-  let yy = 3
-  while (yy < h - 3) {
-    let xx = 3
-    while (xx < w - 3) {
-      let c = yy * w + xx
-      let vc = a[c], mc = vc < 0.0 ? -vc : vc
-      if (mc > 0.18) {                                  // a strong spot — candidate glint
-        let ml = a[c - 1] < 0.0 ? -a[c - 1] : a[c - 1]
-        let mr = a[c + 1] < 0.0 ? -a[c + 1] : a[c + 1]
-        let mu = a[c - w] < 0.0 ? -a[c - w] : a[c - w]
-        let md = a[c + w] < 0.0 ? -a[c + w] : a[c + w]
-        // STRICT 2D peak: a single ring is flat along its tangent (ties) so it won't fire; only a
-        // ring–ring crossing makes a true bump in every direction → the star sits exactly there.
-        if (mc > ml & mc > mr & mc > mu & mc > md) {
-          let L = 7, j = 1
-          while (j <= L) {
-            let f = ((L - j) * 235) / L | 0             // additive white, fading along each ray
-            addpx(c + j, f); addpx(c - j, f)
-            addpx(c + j * w, f); addpx(c - j * w, f)
-            j++
-          }
-        }
-      }
-      xx++
-    }
+  // STREAK BLOOM: each seed emits an exponentially-decaying ray; separable (horizontal then vertical,
+  // each swept both ways) so it's O(n). Only the crossings seed a strong-enough ray to read as a
+  // bright 4-point diffraction star; lone rings stay rings.
+  let DEC = 0.90, STR = 230000.0
+  let yy = 0
+  while (yy < h) {
+    let row = yy * w
+    let acc = 0.0, x = 0
+    while (x < w) { let s = glow[row + x]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(row + x, (acc * STR) | 0); x++ }
+    acc = 0.0; x = w - 1
+    while (x >= 0) { let s = glow[row + x]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(row + x, (acc * STR) | 0); x-- }
     yy++
+  }
+  let xx = 0
+  while (xx < w) {
+    let acc = 0.0, y2 = 0
+    while (y2 < h) { let idx = y2 * w + xx; let s = glow[idx]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(idx, (acc * STR) | 0); y2++ }
+    acc = 0.0; y2 = h - 1
+    while (y2 >= 0) { let idx = y2 * w + xx; let s = glow[idx]; acc = acc * DEC; if (s > acc) acc = s; if (acc > 0.000008) addpx(idx, (acc * STR) | 0); y2-- }
+    xx++
   }
 }
 
