@@ -271,6 +271,25 @@ test('array: multi-value return of boxed STRINGS survives the JS boundary', () =
   is(JSON.stringify(jz('export let f = (__mlane0) => [__mlane0, 1]').exports.f(7)), '[7,1]')
 })
 
+test('array: string spread [...s] decodes its char elements (was null)', () => {
+  // Regression: `[...s]` stored UNDEF into every slot when the string module wasn't loaded
+  // (emitSpreadCopy fell to __typed_idx → __len=0 for a STRING → OOB). Now it dispatches
+  // STRING→__str_idx. Codegen fix; the host-side decode is JS-only.
+  if (onWasi()) return
+  is(JSON.stringify(jz('export let f = (s) => [...s]').exports.f('hi')), '["h","i"]')
+  is(JSON.stringify(jz('export let f = (s) => [...s]').exports.f('abcdefgh')), '["a","b","c","d","e","f","g","h"]')  // heap source
+  is(JSON.stringify(jz('export let f = (s) => [9, ...s, 1]').exports.f('hi')), '[9,"h","i",1]')                       // mixed
+})
+
+test('interop: string arg to a fully-untyped param marshals (SSO) instead of NaN', () => {
+  // Regression: a no-type-evidence param rides the i64 carrier; for a memoryless module the
+  // host marshaled a string via f64ToI64 → NaN. interop now SSO-encodes ≤6 ASCII host-side.
+  if (onWasi()) return
+  is(jz('export let f = (a) => a').exports.f('hi'), 'hi')
+  is(jz('export let f = (a) => a').exports.f(42), 42)        // number unaffected
+  is(jz('export let f = (a) => a').exports.f(null), null)
+})
+
 test('array: >8 elements = pointer', () => {
   const { f, g } = run(`
     export let f = () => { let a = [1,2,3,4,5,6,7,8,9]; return a }

@@ -132,6 +132,18 @@ export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
 // Coerce JS null/undefined → boxed atom (BigInt); everything else passes through.
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
 
+// SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
+// Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier
+// param of a memoryless module (no linear memory, so only self-contained bit encodings
+// like SSO can survive the boundary). Non-SSO strings throw clearly rather than silently
+// becoming NaN.
+const encodeSSO = (s) => {
+  let p = 0n
+  for (let i = 0; i < s.length; i++) p |= BigInt(s.charCodeAt(i)) << BigInt(i * 7)
+  p |= BigInt(s.length) << 42n
+  return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))
+}
+
 // Accept either the i64 carrier (BigInt, canonical) or a legacy f64 NaN-box (intact on V8 —
 // e.g. an adaptI64 result, or user code holding a pre-i64 pointer) — normalize before decode.
 const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
@@ -609,7 +621,17 @@ export const wrap = (memSrc, inst) => {
   // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
   const i64Arg = (ie, ext, box) => (x, i) => {
     const w = wrapArgAt(ext, i, x, box)
-    if (ie && ie.p.has(i)) return bits(w)              // i64 param: pass the box bits
+    if (ie && ie.p.has(i)) {
+      // i64-carrier slot: a string that coerce() left raw (scalar/memoryless module)
+      // must be NaN-box encoded. SSO handles ≤6 ASCII chars without heap memory; longer
+      // or non-ASCII strings need a heap that this module lacks — throw clearly.
+      if (typeof w === 'string') {
+        if (w.length > 6 || !/^[\x00-\x7f]*$/.test(w))
+          throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
+        return encodeSSO(w)
+      }
+      return bits(w)                                   // i64 param: pass the box bits
+    }
     // f64 position: a box (BigInt) must reinterpret to f64. Happens for an un-wrapped export
     // (e.g. a multi-value result skips wrapping) whose boxed param keeps the legacy f64 carrier
     // — intact on V8; that path is inherently JSC-limited for boxed lanes anyway.

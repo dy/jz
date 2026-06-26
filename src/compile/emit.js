@@ -26,6 +26,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
+import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
@@ -255,6 +256,27 @@ const mulFitsI32 = (va, vb) =>
   (isLit(vb) && Math.abs(litVal(vb)) <= FITS_I32_MAX) ||
   (!isLit(va) && maskBound(va) <= FITS_I32_MAX) ||
   (!isLit(vb) && maskBound(vb) <= FITS_I32_MAX)
+
+// Max |value| of an i32-typed operand from a narrowing typed-array load width — the
+// element-read twin of maskBound's `x & 0xff` case (load8_u and `x & 0xff` carry the
+// SAME [0,255] range). Infinity when the magnitude is unbounded. Signed loads reach
+// −2^(w−1), so the magnitude bound is 2^(w−1).
+const I32_LOAD_MAG = { 'i32.load8_s': 128, 'i32.load8_u': 255, 'i32.load16_s': 32768, 'i32.load16_u': 65535 }
+const i32Mag = (v) =>
+  !Array.isArray(v) ? Infinity :
+  v[0] in I32_LOAD_MAG ? I32_LOAD_MAG[v[0]] :
+  (v[0] === 'i32.const' && typeof v[1] === 'number') ? Math.abs(v[1]) :
+  (v[0] === 'i32.and' || v[0] === 'i32.shr_u') ? maskBound(v) :
+  Infinity
+// `int8[i]*int8[j]` and friends: a product of two range-bounded integer typed-array
+// elements whose magnitudes multiply to ≤ 2^31−1 is FAITHFUL as i32.mul — the exact
+// product fits signed i32, so i32.mul == the true value in EVERY consumer context
+// (i32 sink AND f64 value), independent of the widen pass. Covers i8/u8/i16 pairs and
+// i16×u16 (32768·65535 < 2^31); correctly EXCLUDES u16×u16 (65535² > 2^31). JS `*` of
+// two such reads — the int-conv / correlation / quantised-MAC kernel shape — then rides
+// the i32 ABI (one op, no f64 round-trip) on V8 / JSC / wasmtime alike, and the i32
+// product is lane-vectorizable where the f64 form was not.
+const mulBoundedFaithful = (va, vb) => i32Mag(va) * i32Mag(vb) <= 0x7fffffff
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
@@ -1211,12 +1233,22 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
     const sidx = `${T}sidx${ctx.func.uniq++}`
     ctx.func.locals.set(sidx, 'i32')
     const loopId = ctx.func.uniq++
-    const elem = ctx.module.modules['string']
-      ? ['if', ['result', 'f64'],
+    // When the source is statically known to be a typed array, __typed_idx suffices.
+    // Otherwise (STRING, or unknown type whose runtime value may be a string) dispatch on
+    // ptr_type: STRING→__str_idx, else→__typed_idx.
+    // The old gate (ctx.module.modules['string']) was wrong: for `[...s]` with an untyped
+    // param the string module is never loaded, so __typed_idx was used for strings —
+    // __typed_idx calls __len which returns 0 for strings, making i>=len always true and
+    // storing UNDEF into every element slot. Pull in the string module here so __str_idx
+    // is registered before inc() adds it to the dependency set.
+    const elem = staticVT === VAL.TYPED
+      ? (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])
+      : (includeForStringOnly(),
+        ['if', ['result', 'f64'],
           ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.STRING]],
           ['then', (inc('__str_idx'), ['call', '$__str_idx', srcI64(), ['local.get', `$${sidx}`]])],
-          ['else', (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])]]
-      : (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])
+          ['else', (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])]
+        ])
     // Reset the counter on each entry — WASM zeroes locals once at function
     // entry, but this loop re-executes when the spread sits inside a JS loop;
     // a stale `sidx` (= prior srcLen) would skip the copy entirely.
@@ -2884,7 +2916,7 @@ export const emitter = {
     if (isLit(va) && litVal(va) === 0 && finiteFactor(vb)) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
-    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && (mulFitsI32(va, vb) || mulBoundedFaithful(va, vb))) return typed(['i32.mul', va, vb], 'i32')
     const i32mul = tryI32Arith('i32.mul', '*', a, b, va, vb); if (i32mul) return i32mul
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
