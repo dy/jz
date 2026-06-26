@@ -12,7 +12,7 @@ import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64
 import { emit, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { hasOwnContinue, isBlockBody } from '../src/ast.js'
+import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { STR_INTERN_BIT } from '../layout.js'
 
@@ -43,6 +43,20 @@ function numConstLiteral(expr) {
   return null
 }
 
+// Compile-time probe hash for a LITERAL collection/property key, else null. A numeric
+// constant → numHashLiteral; an ASCII string literal → strHashLiteral. The string case is
+// ASCII-only on purpose: strHashLiteral folds `charCodeAt(i) & 0xFF`, which equals __str_hash /
+// __map_hash (FNV-1a over the UTF-8 bytes) ONLY for code points < 0x80 — a non-ASCII literal
+// would fold a different hash than its stored key and silently miss, so it falls back to the
+// runtime hash. Lets `m.get("if")` / `m.has("x")` skip the per-access __map_hash call.
+const ASCII_KEY = /^[\x00-\x7f]*$/
+const litKeyHash = (key) => {
+  const num = numConstLiteral(key)
+  if (num != null) return numHashLiteral(num)
+  if (isLiteralStr(key) && ASCII_KEY.test(key[1])) return strHashLiteral(key[1])
+  return null
+}
+
 // Equality expressions for probe templates
 const sameValueZeroEq = '(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 const strEq = '(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
@@ -55,9 +69,22 @@ const strEq = '(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8
 // walking shared-prefix bytes through __str_eq (31M unequal content-compares
 // per self-host bench run before this). If-expression for short-circuit:
 // i32.and would still evaluate the call.
+//
+// On a hash hit, an inline `storedKey == queryKey` (one i64.eq on the slot's key
+// word) decides the overwhelmingly-common identity case — interned/SSO literals and
+// the same heap pointer are bit-equal — WITHOUT the __str_eq / __same_value_zero call
+// frame. Sound for both: bit-equality implies string-equality and SameValueZero (the
+// only cross-bit-pattern equals — +0/-0, distinct NaN payloads — fall through to the
+// full compare, never the reverse). Only a content-equal-but-bit-distinct key (a heap
+// string vs a literal) still pays the call. This attacks the __str_eq call tax directly
+// and helps the runtimes that DON'T inline tiny callees (wasmtime, wasm2c).
 const hashGuard = (eqExpr) =>
   `(if (result i32) (i32.eq (i32.load (local.get $slot)) (local.get $h))
-    (then ${eqExpr}) (else (i32.const 0)))`
+    (then (if (result i32)
+        (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+        (then (i32.const 1))
+        (else ${eqExpr})))
+    (else (i32.const 0)))`
 const strEqG = hashGuard(strEq)
 const sameValueZeroEqG = hashGuard(sameValueZeroEq)
 
@@ -367,34 +394,39 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
     (i64.const ${missing}))`
 }
 
-function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing = UNDEF_NAN, hasExt = false) {
+// wantValue=true (default): return the slot value, missing → `missing` (i64). wantValue=false:
+// return an i32 0/1 existence flag (for `.has`). Mirrors genLookup's two-mode shape, prehashed.
+function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing = UNDEF_NAN, hasExt = false, wantValue = true) {
+  const rt = wantValue ? 'i64' : 'i32'
+  const onEmpty = wantValue ? `(return (i64.const ${missing}))` : '(return (i32.const 0))'
+  const onFound = wantValue ? '(return (i64.load (i32.add (local.get $slot) (i32.const 16))))' : '(return (i32.const 1))'
+  const notFound = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
+  const extHit = wantValue ? '(call $__ext_prop (local.get $coll) (local.get $key))' : '(call $__ext_has (local.get $coll) (local.get $key))'
   const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
       (then
         (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
-          (then (return (call $__ext_prop (local.get $coll) (local.get $key))))
-          (else (return (i64.const ${missing}))))))`
+          (then (return ${extHit}))
+          (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
-      (then (return (i64.const ${missing}))))`
+      (then ${onEmpty}))`
   // SET/MAP/HASH grow by forward-marking; a boxed pointer may be stale → follow the chain.
   const offExpr = '(call $__ptr_offset (local.get $coll))'
-  return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result i64)
+  return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result ${rt})
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $tries i32)
     ${typeGuard}
     (local.set $off ${offExpr})
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     ${probeStart(entrySize)}
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
-        (then (return (i64.const ${missing}))))
-      (if ${eqExpr}
-        (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))
+      (if (i64.eqz (i64.load (local.get $slot))) (then ${onEmpty}))
+      (if ${eqExpr} (then ${onFound}))
       ${probeNext(entrySize)}
       (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
-    (i64.const ${missing}))`
+    ${notFound})`
 }
 
 function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
@@ -440,6 +472,9 @@ export default (ctx) => {
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset'] : ['__map_set', '__ptr_offset'],
     __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset'] : ['__same_value_zero', '__ptr_offset'],
     __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
+    // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
+    __map_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
+    __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
     __map_delete: ['__map_hash', '__same_value_zero'],
     __map_from: ['__ptr_type', '__ptr_offset', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
     __hash_set: () => ctx.features.external
@@ -628,20 +663,35 @@ export default (ctx) => {
   // the Set probe carries a PTR.SET type guard that rejects a Map outright, so
   // routing a Map through `__set_has`/`__set_delete` makes every lookup/delete
   // silently report absent. Mirrors collViewDyn below; typed receivers skip it.
-  const collProbeDyn = (mapFn, setFn) => (collExpr, key) => {
+  // `h` (optional precomputed key hash) appends to the call → routes to the `_h` prehashed
+  // probes, skipping __map_hash per access; omitted → the generic hashing probes.
+  const collProbeDyn = (mapFn, setFn) => (collExpr, key, h) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
+    const extra = h != null ? [['i32.const', h]] : []
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(collExpr))],
       ['local.set', `$${k}`, asI64(emit(key))],
       ['f64.convert_i32_s', ['if', ['result', 'i32'],
         ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
-        ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`]]],
-        ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`]]]]]], 'f64')
+        ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]],
+        ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]]]]], 'f64')
   }
-  ctx.core.emit['.has'] = collProbeDyn('__map_has', '__set_has')
+  // `.has` on an unproven receiver: a literal key folds its hash and uses the _h probes.
+  ctx.core.emit['.has'] = (collExpr, key) => {
+    const h = litKeyHash(key)
+    return h != null
+      ? collProbeDyn('__map_has_h', '__set_has_h')(collExpr, key, h)
+      : collProbeDyn('__map_has', '__set_has')(collExpr, key)
+  }
   ctx.core.emit['.delete'] = collProbeDyn('__map_delete', '__set_delete')
-  ctx.core.emit[`.${VAL.SET}:has`] = call('__set_has', 'II', 'i32')
+  // Typed Set.has: literal key → prehashed __set_has_h, else the generic probe.
+  ctx.core.emit[`.${VAL.SET}:has`] = (collExpr, key) => {
+    const h = litKeyHash(key)
+    if (h == null) return call('__set_has', 'II', 'i32')(collExpr, key)
+    inc('__set_has_h')
+    return typed(['f64.convert_i32_s', ['call', '$__set_has_h', asI64(emit(collExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
+  }
   ctx.core.emit[`.${VAL.SET}:delete`] = call('__set_delete', 'II', 'i32')
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
@@ -691,6 +741,7 @@ export default (ctx) => {
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
   ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.features.external, false)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
   // === Map ===
@@ -717,10 +768,10 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
   const emitMapGet = (mapExpr, key) => {
-    const constKey = numConstLiteral(key)
-    if (constKey != null) {
+    const h = litKeyHash(key)
+    if (h != null) {
       inc('__map_get_h')
-      return typed(['f64.reinterpret_i64', ['call', '$__map_get_h', asI64(emit(mapExpr)), asI64(emit(key)), ['i32.const', numHashLiteral(constKey)]]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__map_get_h', asI64(emit(mapExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
     }
     inc('__map_get')
     return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(emit(key))]], 'f64')
@@ -729,7 +780,13 @@ export default (ctx) => {
   ctx.core.emit['.get'] = emitMapGet
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
-  ctx.core.emit[`.${VAL.MAP}:has`] = call('__map_has', 'II', 'i32')
+  // Typed Map.has: literal key → prehashed __map_has_h, else the generic probe.
+  ctx.core.emit[`.${VAL.MAP}:has`] = (collExpr, key) => {
+    const h = litKeyHash(key)
+    if (h == null) return call('__map_has', 'II', 'i32')(collExpr, key)
+    inc('__map_has_h')
+    return typed(['f64.convert_i32_s', ['call', '$__map_has_h', asI64(emit(collExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
+  }
   ctx.core.emit[`.${VAL.MAP}:delete`] = call('__map_delete', 'II', 'i32')
 
   // Map/Set iteration views: keys() / values() / entries() materialize a dense
@@ -815,6 +872,7 @@ export default (ctx) => {
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
   ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
   ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.features.external)
+  ctx.core.stdlib['__map_has_h'] = () => genLookupStrictPrehashed('__map_has_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.features.external, false)
   ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.features.external)
   ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 

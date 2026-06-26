@@ -183,7 +183,25 @@ test('features.set OFF: scalar-only — no set stdlibs', () => {
 test('features.set ON: new Set pulls set stdlibs', () => {
   const w = wat(`export let f = () => { let s = new Set(); s.add(1); return s.has(1) }`)
   ok(hasDef(w, '__set_add'))
-  ok(hasDef(w, '__set_has'))
+  ok(hasDef(w, '__set_has_h'))   // literal key 1 → prehashed probe (no __map_hash per access)
+})
+
+test('collection: literal keys prehash; probes bit-eq before the equality call', () => {
+  // #1 prehash: a literal Map/Set key folds its hash at compile time → the `_h` probe, so
+  // there is NO per-access __map_hash. (Non-ASCII strings can't fold an equal hash, so they
+  // keep the generic path — covered by the correctness suite, not here.)
+  const g = wat(`export let f = (m) => m.get('k')`)
+  ok(hasDef(g, '__map_get_h'))
+  is(hasDef(g, '__map_hash'), false)
+  const h = wat(`export let f = (m) => m.has('k')`)
+  ok(hasDef(h, '__map_has_h'))
+  is(hasDef(h, '__map_hash'), false)
+  // #3 bit-eq: on a hash hit, an inline `storedKey == queryKey` (i64.eq on the slot's key word)
+  // short-circuits the __same_value_zero / __str_eq call for the identity (interned/SSO) case —
+  // the distinctive `… (then (i32.const 1)) (else (call $__same_value_zero …` probe shape.
+  const flat = g.replace(/\s+/g, ' ')
+  ok(flat.includes('(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))'))
+  ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero'))
 })
 
 test('features.map OFF: scalar-only — no map stdlibs', () => {
@@ -195,7 +213,7 @@ test('features.map OFF: scalar-only — no map stdlibs', () => {
 test('features.map ON: new Map pulls map stdlibs', () => {
   const w = wat(`export let f = () => { let m = new Map(); m.set('k', 1); return m.get('k') }`)
   ok(hasDef(w, '__map_set'))
-  ok(hasDef(w, '__map_get'))
+  ok(hasDef(w, '__map_get_h'))   // literal key 'k' → prehashed probe (no __map_hash per access)
 })
 
 // No GC → weakness is unobservable, so WeakMap/WeakSet fold to Map/Set in default mode:
@@ -204,13 +222,13 @@ test('features.map ON: new Map pulls map stdlibs', () => {
 test('WeakMap folds to Map: new WeakMap pulls map stdlibs', () => {
   const w = wat(`export let f = () => { let m = new WeakMap(); m.set('k', 1); return m.get('k') }`)
   ok(hasDef(w, '__map_set'))
-  ok(hasDef(w, '__map_get'))
+  ok(hasDef(w, '__map_get_h'))   // literal key 'k' → prehashed probe
 })
 
 test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
   const w = wat(`export let f = () => { let s = new WeakSet(); s.add(1); return s.has(1) }`)
   ok(hasDef(w, '__set_add'))
-  ok(hasDef(w, '__set_has'))
+  ok(hasDef(w, '__set_has_h'))   // literal key 1 → prehashed probe
 })
 
 test('alloc:false omits allocator helper exports', () => {
