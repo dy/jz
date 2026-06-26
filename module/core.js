@@ -36,7 +36,7 @@ export default (ctx) => {
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __set_len: ['__ptr_offset_fwd'],
-    __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
+    __length: ['__ptr_type', '__str_len', '__len'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
@@ -872,12 +872,14 @@ export default (ctx) => {
     const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`
     let disj = eqT(types[0])
     for (let i = 1; i < types.length; i++) disj = `(i32.or ${disj} ${eqT(types[i])})`
-    const lenArm = `(if (result f64) ${disj}
+    const lenArm = `(block (result f64)
+            (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
+            (if (result f64) ${disj}
               (then
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
                   (then (f64.convert_i32_s (call $__len (local.get $v))))
                   (else (f64.const nan:${UNDEF_NAN}))))
-              (else (f64.const nan:${UNDEF_NAN})))`
+              (else (f64.const nan:${UNDEF_NAN}))))`
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (then (f64.convert_i32_s (call $__str_len (local.get $v))))
             (else ${lenArm}))`
@@ -888,7 +890,6 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $t (call $__ptr_type (local.get $v)))
-        (local.set $off (call $__ptr_offset (local.get $v)))
         ${stringArm})))`
   }
 

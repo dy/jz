@@ -1156,6 +1156,18 @@ test('helper callsite counters attribute dynamic helper calls', async () => {
     'callsite counter should increment dynamically')
 })
 
+test('codegen: runtime .length does not eagerly decode pointer offset', () => {
+  if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
+  const wat = compile('export let f = (x) => x.length', { wat: true, optimize: false })
+  const h0 = wat.indexOf('(func $__length')
+  const h1 = wat.indexOf('\n  (func ', h0 + 1)
+  const helperBody = h0 >= 0 ? wat.slice(h0, h1 >= 0 ? h1 : undefined) : ''
+  ok(helperBody, 'expected $__length helper in WAT')
+  ok(/\$__len\b/.test(helperBody), '$__length should still delegate non-string length to $__len')
+  is((helperBody.match(/\$__ptr_offset\b/g) || []).length, 0,
+    '$__length should not eagerly call $__ptr_offset before the string/non-string branch')
+})
+
 test('codegen: statement array push skips dropped return length reload', () => {
   if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
   const stmtWat = compile('export let f = () => { let xs = []; xs.push(1); return 7 }', { wat: true, optimize: false })
