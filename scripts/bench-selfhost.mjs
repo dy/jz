@@ -26,6 +26,7 @@ import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { instantiate } from '../interop.js'
 import compileSelf from './self.js'
+import { HELPER_COUNTERS } from '../src/helper-counters.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench')
@@ -34,6 +35,7 @@ const WASM = join(ROOT, 'dist', 'jz.wasm')
 const LEVEL = process.env.JZ_LEVEL ?? '0'
 const RUNS = Math.max(8, Number(process.env.JZ_BENCH_RUNS) || 18)
 const WARM = 8
+const COUNT_HELPERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
 
 // Corpus = every bench case with a real .js source. Skip self-referential / graph cases.
 const CASES = ['alpha','blur','bytebeat','dotprod','fft','lorenz','nbody','particle','synth',
@@ -51,9 +53,10 @@ const sourceFor = (name) => {
 }
 
 const ensureWasm = () => {
-  if (existsSync(WASM)) return
-  console.log('dist/jz.wasm missing — building self-host…')
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'selfhost-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
+  if (existsSync(WASM) && !COUNT_HELPERS) return
+  console.log(COUNT_HELPERS ? 'building instrumented self-host…' : 'dist/jz.wasm missing — building self-host…')
+  const env = COUNT_HELPERS ? { ...process.env, JZ_HELPER_COUNTERS: '1' } : process.env
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'selfhost-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
   if (r.status !== 0) throw new Error(`selfhost build failed (exit ${r.status})`)
 }
 
@@ -81,14 +84,33 @@ const timeMinWasm = (src) => {
   return best
 }
 
+const readHelperCounters = (exports) => {
+  const out = []
+  for (const [helper, label] of HELPER_COUNTERS) {
+    const g = exports[`__hc_${label}`]
+    if (!g) continue
+    const n = Number(g.value)
+    if (n) out.push({ helper, label, n })
+  }
+  return out
+}
+
+const addHelperCounters = (totals, exports) => {
+  const counts = readHelperCounters(exports)
+  if (COUNT_HELPERS && !counts.length && !exports.__helper_counts_reset)
+    throw new Error('JZ_HELPER_COUNTERS=1 requested, but dist/jz.wasm has no helper counter exports')
+  for (const { label, n } of counts) totals[label] = (totals[label] || 0) + n
+}
+
 ensureWasm()
 const wasmBytes = readFileSync(WASM)
 
-console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}\n`)
+console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${COUNT_HELPERS ? ' (helper counters ON; timings are instrumented)' : ''}\n`)
 console.log('case          js(ms)  wasm(ms)  ratio   parity')
 console.log('─'.repeat(52))
 
 let sumJs = 0, sumWasm = 0, ratios = [], okN = 0, skipped = []
+const helperTotals = Object.create(null)
 for (const name of CASES) {
   const src = sourceFor(name)
   // JS compiler reference + checksum
@@ -99,6 +121,7 @@ for (const name of CASES) {
   const compileWasm = () => self.memory.read(self.exports.default(self.memory.String(src), 0, self.memory.String(LEVEL)))
   let wasmBytesOut
   try { wasmBytesOut = compileWasm() } catch (e) { self && skipped.push(`${name}(wasm:${e.message.slice(0,18)})`); continue }
+  if (COUNT_HELPERS) addHelperCounters(helperTotals, self.instance.exports)
   const parity = fnv(jsBytes) === fnv(wasmBytesOut instanceof Uint8Array ? wasmBytesOut : new Uint8Array(wasmBytesOut)) ? 'ok' : 'DIFF'
 
   const js = timeMin(() => compileSelf(src, false, LEVEL))
@@ -113,3 +136,10 @@ console.log('─'.repeat(52))
 console.log(`TOTAL (${okN}/${CASES.length})  js ${sumJs.toFixed(1)}ms   wasm ${sumWasm.toFixed(1)}ms`)
 console.log(`geomean ratio: ${geo.toFixed(2)}× — wasm is ${geo < 1 ? (1/geo).toFixed(2)+'× FASTER' : geo.toFixed(2)+'× slower'} than jz.js`)
 if (skipped.length) console.log(`skipped: ${skipped.join(', ')}`)
+if (COUNT_HELPERS) {
+  const rows = Object.entries(helperTotals).sort((a, b) => b[1] - a[1])
+  console.log('\nhelper counters — one compile per successful corpus case')
+  console.log('helper              calls')
+  console.log('─'.repeat(32))
+  for (const [label, n] of rows) console.log(`${label.padEnd(18)} ${String(n).padStart(12)}`)
+}

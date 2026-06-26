@@ -1104,6 +1104,30 @@ test('compile profile.names emits wasm function name section', () => {
   ok(names.includes('helper'), 'internal function name should be present')
 })
 
+test('helper counters are opt-in and resettable', async () => {
+  if (onKernel()) return  // kernel: host-only profiling option is not in the self-host ABI
+  const src = `
+    export const main = () => {
+      const xs = []
+      xs.push(1)
+      xs.push(2)
+      return xs.length
+    }
+  `
+  const plain = await WebAssembly.instantiate(compile(src, { optimize: false }))
+  ok(!plain.instance.exports.__hc_arr_push1, 'plain output should not export helper counters')
+
+  const profiled = await WebAssembly.instantiate(compile(src, { optimize: false, helperCounters: true }))
+  const e = profiled.instance.exports
+  ok(e.__hc_arr_push1, 'profiled output should export helper counters')
+  ok(e.__helper_counts_reset, 'profiled output should export a counter reset helper')
+  is(e.__hc_arr_push1.value, 0n)
+  is(e.main(), 2)
+  ok(e.__hc_arr_push1.value >= 2n, 'Array.push helper counter should increment')
+  e.__helper_counts_reset()
+  is(e.__hc_arr_push1.value, 0n)
+})
+
 // === JSON shape inference (shapeStrs) ===
 //
 // Bench convention writes `let SRC = '{...}'` to defeat compile-time JSON.parse

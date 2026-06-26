@@ -39,6 +39,7 @@ import { VAL } from '../reps.js'
 import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
+import { installHelperCounters, instrumentHelperCounter } from '../helper-counters.js'
 
 // NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
 const NAN_PREFIX = BigInt(LAYOUT.NAN_PREFIX)
@@ -559,6 +560,7 @@ export function appendLateStdlib(moduleArr) {
  * Phase: pull stdlib + memory.
  */
 export function pullStdlib(sec) {
+  installHelperCounters()
   resolveIncludes()
 
   // Reachability, not inclusion, decides what the output needs. `ctx.core.includes`
@@ -677,7 +679,7 @@ export function pullStdlib(sec) {
     }
   }
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) err(`internal: stdlib '${n}' was requested but never registered (this is a jz bug — feature pulled in something it can't deliver)`)
-  sec.stdlib.push(...[...ctx.core.includes].map(n => parseTemplate(stdlibStr(n))))
+  sec.stdlib.push(...[...ctx.core.includes].map(n => instrumentHelperCounter(n, parseTemplate(stdlibStr(n)))))
 }
 
 export function syncImports(sec) {

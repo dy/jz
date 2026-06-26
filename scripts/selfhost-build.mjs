@@ -26,7 +26,13 @@ const t0 = Date.now()
 // the corpus-compile ratio is identical at O1/O2/O3 (the cost is the kernel NaN-box/string/
 // map tax, not the compiler's own code). Override with JZ_SELFHOST_OPT (e.g. =3, =false).
 const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '2'
-const wasm = compile(g.code, { modules: g.modules, memory: 8192, optimize: SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT) })
+const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
+const wasm = compile(g.code, {
+  modules: g.modules,
+  memory: 8192,
+  optimize: SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT),
+  helperCounters: HELPER_COUNTERS,
+})
 console.log('compiled', wasm.byteLength, 'bytes in', Date.now() - t0, 'ms')
 new WebAssembly.Module(wasm)
 mkdirSync(OUT_DIR, { recursive: true })

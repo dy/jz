@@ -400,6 +400,9 @@ export function reset(proto, globals, bridge) {
     inspect: false,     // when true, compile() additionally populates ctx.inspect with the inferred
                         // per-function signatures, locals, and JSON shapes — readable by editor
                         // hosts for inlay hints / hover types without re-running the analyzer.
+    helperCounters: false, // internal profiling mode: export mutable i64 counters for selected
+                           // runtime helpers and instrument their entry blocks. Build-time opt-in
+                           // only; normal output is byte-identical and pays no counter cost.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
