@@ -236,7 +236,7 @@ const SIZE_BUDGET = {
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
   hash: 1500, base64: 2300, wav: 2050, conv2d: 5600, lz: 9200, qoi: 10500,
-  hashjoin: 4200,
+  hashjoin: 1500,
 }
 
 // ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────

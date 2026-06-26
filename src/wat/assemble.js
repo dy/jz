@@ -613,11 +613,18 @@ export function pullStdlib(sec) {
   // dataPages (below) accounts for the addition; keeps it out of programs that never
   // parse decimals at runtime.
   if (ctx.core.includes.has('__dec_to_f64') && ctx.runtime.elTable) {
+    const elBefore = ctx.runtime.data.length
     while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
     const elTblOff = ctx.runtime.data.length
     ctx.runtime.data += ctx.runtime.elTable
     declGlobal('__el_tbl', 'i32', elTblOff, { mut: false })
     ctx.runtime.elTable = null  // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
+    // Reachability here OVER-counts __dec_to_f64: a dead inlined helper's `arr[i] | 0`
+    // on an untyped param pulls __to_num → __dec_to_f64, landing the table even when no
+    // LIVE code parses decimals. Record the appended span (padding + table, always the
+    // data tail — it's the last append) so stripDeadElTable can drop it post-lowering,
+    // once reachability is exact. See stripDeadElTable.
+    ctx.runtime.elTableLen = ctx.runtime.data.length - elBefore
   }
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
@@ -748,6 +755,47 @@ export function optimizeModule(sec, profiler) {
     if (ctx.scope.globals.has('__heap_reset')) declGlobal('__heap_reset', 'i32', heapBase)
     if (ctx.scope.globals.has('__heap_start')) declGlobal('__heap_start', 'i32', heapBase)
   }
+}
+
+/**
+ * Phase: strip the Eisel-Lemire table when it is dead.
+ *
+ * pullStdlib injects the ~2 KB power-of-10 table whenever `__dec_to_f64` is *reachable*,
+ * but that over-counts: a dead inlined helper's `arr[i] | 0` on an untyped param pulls
+ * `__to_num` → `__dec_to_f64`, so the table lands even in a module no live code parses
+ * decimals in. watr later treeshakes the dead function + its `$__el_tbl` global, but it
+ * does NOT treeshake the data segment — so the orphaned table bloated every module ~2 KB.
+ *
+ * This runs LAST (after every lowering has emitted its call/ref.func — doing it earlier is
+ * unsound: refs like `util.clone` are emitted *after* pullStdlib), so a mark-sweep from the
+ * real roots (inline-exported funcs, __start, the closure table, globals/tags/table) gives
+ * EXACT liveness. If `__dec_to_f64` is dead, truncate the table from the data tail (it is
+ * the last append — see pullStdlib). DATA only: the dead function + global are left for
+ * watr, which already removes them. Keeps correctly-rounded decimal parsing wherever it is
+ * genuinely live (parseFloat, the self-host compiler's `Number()` on source literals).
+ */
+export function stripDeadElTable(sec) {
+  if (!ctx.runtime.elTableLen) return
+  const byName = new Map()
+  for (const arr of [sec.funcs, sec.stdlib, sec.start])
+    for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
+  const live = new Set(), work = []
+  const mark = (ref) => { if (typeof ref === 'string' && byName.has(ref) && !live.has(ref)) { live.add(ref); work.push(ref) } }
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string') mark(n[1])
+    for (const c of n) scan(c)
+  }
+  for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
+  for (const f of sec.start) scan(f)
+  for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
+    if (!Array.isArray(n)) continue
+    for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
+  }
+  while (work.length) scan(byName.get(work.pop()))
+  if (live.has('$__dec_to_f64')) return   // genuinely parses decimals at runtime — keep it
+  ctx.runtime.data = ctx.runtime.data.slice(0, ctx.runtime.data.length - ctx.runtime.elTableLen)
+  ctx.runtime.elTableLen = 0
 }
 
 /**

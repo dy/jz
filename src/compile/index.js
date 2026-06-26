@@ -66,7 +66,7 @@ import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
-  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits,
+  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadElTable,
 } from '../wat/assemble.js'
 
 // =============================================================================
@@ -1824,6 +1824,11 @@ export default function compile(ast, profiler) {
       g.mut ? ['mut', ty] : ty,
       [`${ty}.const`, g.init]]
   }))
+
+  // Drop the Eisel-Lemire decimal table if no live code parses decimals at runtime — must
+  // run after sec.globals/funcs are final (exact reachability) and before the data segment
+  // below serializes ctx.runtime.data. See stripDeadElTable.
+  stripDeadElTable(sec)
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)

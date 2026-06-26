@@ -2584,3 +2584,25 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
     export const g = () => { tick(); tick(); tick(); return n }`, { optimize: 2 })
   is(viacall.g(), 3, 'nested effectful call in inlined expr-body must run')
 })
+
+test('dead helper does not leak the Eisel-Lemire decimal table', () => {
+  // A dead lib export whose `arr[i] | 0` on an untyped param pulls __to_num →
+  // __dec_to_f64 (consumer of the ~2 KB power-of-10 table). watr treeshakes the dead
+  // function but NOT the data segment, so the table used to bloat EVERY module ~2 KB.
+  // stripDeadElTable drops it when no LIVE code parses decimals at runtime.
+  const lib = `export let used = (h, x) => ((h ^ (x | 0)) * 16777619) | 0
+export let dead = (arr) => { let h = 0; for (let i = 0; i < arr.length; i++) h = used(h, arr[i]); return h }`
+  const bytes = jz.compile(
+    `import { used } from './lib.js'\nexport let main = () => { let z = new Int32Array(4); z[0] = 7; return used(0, z[0]) }`,
+    { modules: { './lib.js': lib }, optimize: 'size', alloc: false })
+  ok(bytes.length < 1024, `module is ${bytes.length} B — decimal table (~2 KB) leaked from a dead helper`)
+})
+
+test('live runtime decimal parsing keeps the Eisel-Lemire table (no false strip)', () => {
+  // The dual: Number() on a runtime string IS live, so __dec_to_f64 must keep its table —
+  // stripDeadElTable must not strip it. The module carries the ~2 KB table and instantiates.
+  const src = `let toNum = (s) => Number(s)\nexport let main = (s) => { let a = new Float64Array(2); a[0] = toNum(s); return a[0] }`
+  const bytes = jz.compile(src, { optimize: 'size', alloc: false })
+  ok(bytes.length > 2048, `module is ${bytes.length} B — table wrongly stripped from live Number()`)
+  new WebAssembly.Module(bytes)   // throws if the strip left a dangling reference
+})
