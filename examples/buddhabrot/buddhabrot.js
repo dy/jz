@@ -15,6 +15,7 @@ let MAXIT = 320            // longer orbits resolve the fine filaments you see w
 // trajectory scratch: store (x,y) pairs for up to MAXIT steps
 let traj  // Float64Array of length 2*MAXIT
 let pk = new Float64Array(1)   // smoothed normalization peak (EMA) — kills per-frame brightness flicker
+let plut = new Int32Array(256) // tone-curve LUT: quantized brightness → γ-mapped gray; rebuilt per frame
 
 export let resize = (w, h) => {
   W = w; H = h; aspect = w / h
@@ -102,14 +103,25 @@ export let frame = (t, vcx, vcy, vscale) => {
   // the exposure steady so the nebula sharpens instead of strobing.
   pk[0] = pk[0] * 0.9 + maxD * 0.1
   let inv = 1.0 / pk[0]
+  // The γ-curve v→gv yields only 256 distinct grays (gv is a u8), and the per-pixel Math.pow is the
+  // one place jz's polyfill trails V8's native pow. Precompute the curve once per frame (as bifurcation
+  // already does for its log tonemap) and make the per-pixel pass a gather — bit-exact JS≡jz (both
+  // build the same table) and faster on both engines.
+  let k = 0
+  while (k < 256) {
+    let g = (Math.pow(k / 255.0, 1.2) * 255.0) | 0   // γ>1: bg (~0.1 of peak) → ~16 (dark); filaments bright
+    if (g > 255) g = 255
+    plut[k] = g
+    k++
+  }
   i = 0
   while (i < n) {
     let d = dens[i]
     let gv = 0
     if (d > 0) {
-      let v = d * inv                          // 0..1 relative to the densest pixel
-      gv = (Math.pow(v, 1.2) * 255.0) | 0      // γ>1: bg (~0.1 of peak) → ~16 (dark); filaments bright
-      if (gv > 255) gv = 255
+      let q = (d * inv * 255.0) | 0            // brightness 0..1 → bucket 0..255
+      if (q > 255) q = 255
+      gv = plut[q]
     }
     px[i] = (255 << 24) | (gv << 16) | (gv << 8) | gv
     i++
