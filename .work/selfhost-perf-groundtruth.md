@@ -454,10 +454,20 @@ wasm→JS boundary in non-i64-carrier lanes**:
 each); the `jz:i64exp` entry gains an `m` (lane-count) marker; `interop.decode` + the test `adaptI64`
 adapter decode the lane tuple. `()=>['a','b']` → `['a','b']`; numeric tuples unchanged. Validated: native
 2536/0, fuzz 0-div (45611 inputs), opt0/opt3/WASI 2536/0, 77 adversarial edge cases, self-host 15/15.
-Two RELATED issues remain, each a *separate* root cause (NOT this boundary fix):
-- **`[...s]` heap-array of slice-strings** still returns null elements — `interop.read`'s STRING case
-  doesn't decode SLICE_BIT strings (the chars from spreading a string are slices into the source). A
-  contained interop-decode gap, orthogonal to multi-value lanes.
-- **bool / dynamic-string-param** edges are general value-representation issues (bools read as numbers in
-  any collection incl. heap arrays; an un-inferable string param marshals as NaN) — pre-existing, not
-  multi-value-specific.
+**FIXED 2026-06-26 (string-spread + untyped-string-param), commit 1afb540.** The earlier "slice-string"
+diagnosis was WRONG. Real root of `[...s]`→[null,…]: `emitSpreadCopy` (src/compile/emit.js) gated the
+per-char `__str_idx` dispatch on the string module already being loaded; `(s)=>[...s]` with an untyped
+param never loads it, so it fell to `__typed_idx`, whose `__len` returns 0 for a STRING pointer → every
+index OOB → UNDEF stored. Fix: dispatch on `staticVT===VAL.TYPED` vs else (STRING/unknown → ptr_type
+branch) + `includeForStringOnly()`. Separately, a string arg to a fully-untyped param (`(a)=>a`) marshaled
+to NaN (i64-carrier slot, memoryless module → `coerce` left the string raw → `f64ToI64(string)`=NaN);
+interop now SSO-encodes ≤6-ASCII strings host-side. Both validated: self-host 15/15, fuzz 0-div, regression
+tests in test/data.js.
+
+**NOT FIXED — bool-in-collections is LOAD-BEARING, not a bug.** `[true,false]`→[1,0] in any heap
+array/tuple. Boxing VAL.BOOL array elements as TRUE_NAN/FALSE_NAN (the "obvious fix") BREAKS the self-host
+kernel (array-reduce, closure tests) — the kernel stores comparison results in arrays and consumes them as
+raw i32 (index / bitwise), so a boxed bool reinterprets to garbage. A partial multi-value-only fix would
+make `[true,false]` (direct, ≤8 = multi-value tuple) disagree with `const a=[true,false]; return a` (heap).
+Left as the pre-existing numeric representation. A real fix needs escape analysis (box only when the array
+provably crosses to a JS export) — out of scope.
