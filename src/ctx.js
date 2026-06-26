@@ -403,6 +403,9 @@ export function reset(proto, globals, bridge) {
     helperCounters: false, // internal profiling mode: export mutable i64 counters for selected
                            // runtime helpers and instrument their entry blocks. Build-time opt-in
                            // only; normal output is byte-identical and pays no counter cost.
+    helperCallsites: false, // profiling-only: export mutable i64 counters for selected runtime
+                            // helper callsites after optimization, so hot helpers can be traced
+                            // back to the compiled function that calls them.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.

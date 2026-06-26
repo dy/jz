@@ -34,6 +34,9 @@ export const HELPER_COUNTERS = [
 ]
 
 const COUNTER_BY_HELPER = new Map(HELPER_COUNTERS.map(([helper, label]) => [helper, `__hc_${label}`]))
+const LABEL_BY_WAT_HELPER = new Map(HELPER_COUNTERS.map(([helper, label]) => [`$${helper}`, label]))
+
+export const HELPER_SITE_PREFIX = '__hcs_'
 
 export const helperCounterName = helper => COUNTER_BY_HELPER.get(helper)
 
@@ -58,4 +61,77 @@ export function instrumentHelperCounter(helper, fn) {
   fn.splice(findBodyStart(fn), 0,
     ['global.set', `$${counter}`, ['i64.add', ['global.get', `$${counter}`], ['i64.const', 1]]])
   return fn
+}
+
+const safeExportPart = name => String(name || 'anon')
+  .replace(/^\$/, '')
+  .replace(/[^A-Za-z0-9_.-]+/g, '_')
+  .slice(0, 80) || 'anon'
+
+const helperSiteFilter = () => {
+  const opt = ctx.transform.helperCallsites
+  if (opt === true) return null
+  const raw = Array.isArray(opt) ? opt : String(opt || '').split(',')
+  const labels = raw.map(s => String(s).trim()).filter(Boolean).map(s => s.replace(/^\$?__/, ''))
+  return labels.length ? new Set(labels) : null
+}
+
+const funcResults = fn => {
+  const out = []
+  if (!Array.isArray(fn) || fn[0] !== 'func') return out
+  for (let i = 2; i < fn.length; i++) {
+    const n = fn[i]
+    if (Array.isArray(n) && n[0] === 'result') out.push(...n.slice(1))
+  }
+  return out
+}
+
+const bumpCounter = counter =>
+  ['global.set', `$${counter}`, ['i64.add', ['global.get', `$${counter}`], ['i64.const', 1]]]
+
+// Profiling-only helper-callsite counters. Unlike instrumentHelperCounter(), this
+// answers "which compiled function executed the helper call?" by wrapping each
+// final `(call $__helper ...)` with a tiny counter block:
+//   (block (result T) (global.set $__hcs_N ...) (call $__helper ...))
+//
+// This intentionally runs after whole-module optimization. The profile should
+// observe final codegen, while production output remains byte-identical because
+// ctx.transform.helperCallsites is build-time opt-in.
+export function instrumentHelperCallsites(funcs) {
+  if (!ctx.transform.helperCallsites) return 0
+  const only = helperSiteFilter()
+
+  const resultsByName = new Map()
+  for (const fn of funcs) {
+    if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
+      resultsByName.set(fn[1], funcResults(fn))
+  }
+
+  let id = 0
+  const wrap = (node, owner) => {
+    if (!Array.isArray(node)) return node
+    for (let i = 1; i < node.length; i++) node[i] = wrap(node[i], owner)
+
+    if (node[0] !== 'call' || typeof node[1] !== 'string') return node
+    const label = LABEL_BY_WAT_HELPER.get(node[1])
+    if (!label) return node
+    if (only && !only.has(label) && !only.has(node[1].replace(/^\$?__/, ''))) return node
+    const results = resultsByName.get(node[1])
+    if (!results) return node
+
+    const counter = `${HELPER_SITE_PREFIX}${id++}`
+    const ownerPart = safeExportPart(owner)
+    declGlobal(counter, 'i64', 0, { export: `${counter}:${label}:${ownerPart}` })
+    const block = ['block']
+    for (const type of results) block.push(['result', type])
+    block.push(bumpCounter(counter), node)
+    return block
+  }
+
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
+    const bodyStart = findBodyStart(fn)
+    for (let i = bodyStart; i < fn.length; i++) fn[i] = wrap(fn[i], fn[1])
+  }
+  return id
 }

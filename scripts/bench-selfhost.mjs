@@ -26,7 +26,7 @@ import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { instantiate } from '../interop.js'
 import compileSelf from './self.js'
-import { HELPER_COUNTERS } from '../src/helper-counters.js'
+import { HELPER_COUNTERS, HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench')
@@ -36,6 +36,10 @@ const LEVEL = process.env.JZ_LEVEL ?? '0'
 const RUNS = Math.max(8, Number(process.env.JZ_BENCH_RUNS) || 18)
 const WARM = 8
 const COUNT_HELPERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
+const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
+const COUNT_SITES = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
+const HELPER_SITE_FILTER = /^(1|true|yes)$/i.test(HELPER_SITES) ? 'ptr_offset' : HELPER_SITES
+const PROFILE_HELPERS = COUNT_HELPERS || COUNT_SITES
 
 // Corpus = every bench case with a real .js source. Skip self-referential / graph cases.
 const CASES = ['alpha','blur','bytebeat','dotprod','fft','lorenz','nbody','particle','synth',
@@ -53,9 +57,11 @@ const sourceFor = (name) => {
 }
 
 const ensureWasm = () => {
-  if (existsSync(WASM) && !COUNT_HELPERS) return
-  console.log(COUNT_HELPERS ? 'building instrumented self-host…' : 'dist/jz.wasm missing — building self-host…')
-  const env = COUNT_HELPERS ? { ...process.env, JZ_HELPER_COUNTERS: '1' } : process.env
+  if (existsSync(WASM) && !PROFILE_HELPERS) return
+  console.log(PROFILE_HELPERS ? 'building instrumented self-host…' : 'dist/jz.wasm missing — building self-host…')
+  const env = PROFILE_HELPERS
+    ? { ...process.env, JZ_HELPER_COUNTERS: '1', ...(COUNT_SITES ? { JZ_HELPER_SITES: HELPER_SITE_FILTER } : {}) }
+    : process.env
   const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'selfhost-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
   if (r.status !== 0) throw new Error(`selfhost build failed (exit ${r.status})`)
 }
@@ -97,20 +103,46 @@ const readHelperCounters = (exports) => {
 
 const addHelperCounters = (totals, exports) => {
   const counts = readHelperCounters(exports)
-  if (COUNT_HELPERS && !counts.length && !exports.__helper_counts_reset)
+  if (PROFILE_HELPERS && !counts.length && !exports.__helper_counts_reset)
     throw new Error('JZ_HELPER_COUNTERS=1 requested, but dist/jz.wasm has no helper counter exports')
   for (const { label, n } of counts) totals[label] = (totals[label] || 0) + n
+}
+
+const readHelperSites = (exports) => {
+  const out = new Map()
+  for (const [name, g] of Object.entries(exports)) {
+    if (!name.startsWith(HELPER_SITE_PREFIX) || !g || typeof g.value !== 'bigint') continue
+    const parts = name.slice(HELPER_SITE_PREFIX.length).split(':')
+    if (parts.length < 3) continue
+    const id = parts.shift()
+    const label = parts.shift()
+    const func = parts.join(':')
+    out.set(name, { id, label, func, n: Number(g.value) })
+  }
+  return out
+}
+
+const addHelperSiteDeltas = (totals, before, after) => {
+  for (const [name, row] of after) {
+    const base = before.get(name)?.n || 0
+    const n = row.n - base
+    if (n <= 0) continue
+    const prev = totals.get(name)
+    totals.set(name, prev ? { ...prev, n: prev.n + n } : { ...row, n })
+  }
 }
 
 ensureWasm()
 const wasmBytes = readFileSync(WASM)
 
-console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${COUNT_HELPERS ? ' (helper counters ON; timings are instrumented)' : ''}\n`)
+const profileLabel = COUNT_SITES ? `helper counters + callsites(${HELPER_SITE_FILTER}) ON` : COUNT_HELPERS ? 'helper counters ON' : ''
+console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${profileLabel ? ` (${profileLabel}; timings are instrumented)` : ''}\n`)
 console.log('case          js(ms)  wasm(ms)  ratio   parity')
 console.log('─'.repeat(52))
 
 let sumJs = 0, sumWasm = 0, ratios = [], okN = 0, skipped = []
 const helperTotals = Object.create(null)
+const helperSiteTotals = new Map()
 for (const name of CASES) {
   const src = sourceFor(name)
   // JS compiler reference + checksum
@@ -118,11 +150,13 @@ for (const name of CASES) {
   try { jsBytes = compileSelf(src, false, LEVEL) } catch (e) { skipped.push(`${name}(js:${e.message.slice(0,18)})`); continue }
   // WASM compiler — fresh instance, exclude instantiation from timing
   const self = instantiate(wasmBytes, { memory: 8192 })
-  if (COUNT_HELPERS) self.instance.exports.__helper_counts_reset?.()
+  if (PROFILE_HELPERS) self.instance.exports.__helper_counts_reset?.()
+  const helperSitesBefore = COUNT_SITES ? readHelperSites(self.instance.exports) : null
   const compileWasm = () => self.memory.read(self.exports.default(self.memory.String(src), 0, self.memory.String(LEVEL)))
   let wasmBytesOut
   try { wasmBytesOut = compileWasm() } catch (e) { self && skipped.push(`${name}(wasm:${e.message.slice(0,18)})`); continue }
-  if (COUNT_HELPERS) addHelperCounters(helperTotals, self.instance.exports)
+  if (PROFILE_HELPERS) addHelperCounters(helperTotals, self.instance.exports)
+  if (COUNT_SITES) addHelperSiteDeltas(helperSiteTotals, helperSitesBefore, readHelperSites(self.instance.exports))
   const parity = fnv(jsBytes) === fnv(wasmBytesOut instanceof Uint8Array ? wasmBytesOut : new Uint8Array(wasmBytesOut)) ? 'ok' : 'DIFF'
 
   const js = timeMin(() => compileSelf(src, false, LEVEL))
@@ -137,10 +171,18 @@ console.log('─'.repeat(52))
 console.log(`TOTAL (${okN}/${CASES.length})  js ${sumJs.toFixed(1)}ms   wasm ${sumWasm.toFixed(1)}ms`)
 console.log(`geomean ratio: ${geo.toFixed(2)}× — wasm is ${geo < 1 ? (1/geo).toFixed(2)+'× FASTER' : geo.toFixed(2)+'× slower'} than jz.js`)
 if (skipped.length) console.log(`skipped: ${skipped.join(', ')}`)
-if (COUNT_HELPERS) {
+if (PROFILE_HELPERS) {
   const rows = Object.entries(helperTotals).sort((a, b) => b[1] - a[1])
   console.log('\nhelper counters — one compile per successful corpus case')
   console.log('helper              calls')
   console.log('─'.repeat(32))
   for (const [label, n] of rows) console.log(`${label.padEnd(18)} ${String(n).padStart(12)}`)
+}
+if (COUNT_SITES) {
+  const rows = [...helperSiteTotals.values()].sort((a, b) => b.n - a.n).slice(0, 50)
+  console.log('\nhelper callsites — dynamic deltas from the parity compile')
+  console.log('helper              calls  function')
+  console.log('─'.repeat(64))
+  for (const { label, n, func } of rows)
+    console.log(`${label.padEnd(18)} ${String(n).padStart(12)}  ${func}`)
 }

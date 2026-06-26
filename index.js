@@ -463,6 +463,7 @@ const setupCtx = (code, opts) => {
   if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
+  if (opts.helperCallsites) ctx.transform.helperCallsites = opts.helperCallsites
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.randomSeed !== undefined) {
     if (opts.randomSeed !== true && !Number.isFinite(opts.randomSeed))

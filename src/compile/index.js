@@ -68,6 +68,7 @@ import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadElTable,
 } from '../wat/assemble.js'
+import { instrumentHelperCallsites } from '../helper-counters.js'
 
 // =============================================================================
 // Single-source export semantics
@@ -1822,6 +1823,7 @@ export default function compile(ast, profiler) {
   ensureThrowRuntime(sec)
 
   timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
+  if (ctx.transform.helperCallsites) instrumentHelperCallsites([...sec.funcs, ...sec.stdlib, ...sec.start])
 
   // Fold constant `__start` global inits into immutable inline decls (drops the
   // store, and `__start` with it when that empties it). Runs HERE — after

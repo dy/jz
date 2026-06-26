@@ -27,11 +27,15 @@ const t0 = Date.now()
 // map tax, not the compiler's own code). Override with JZ_SELFHOST_OPT (e.g. =3, =false).
 const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '2'
 const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
+const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
+const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
+const HELPER_SITE_FILTER = /^(1|true|yes)$/i.test(HELPER_SITES) ? 'ptr_offset' : HELPER_SITES
 const wasm = compile(g.code, {
   modules: g.modules,
   memory: 8192,
   optimize: SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT),
-  helperCounters: HELPER_COUNTERS,
+  helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
+  helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
 console.log('compiled', wasm.byteLength, 'bytes in', Date.now() - t0, 'ms')
 new WebAssembly.Module(wasm)

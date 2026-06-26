@@ -3,6 +3,7 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -1128,6 +1129,33 @@ test('helper counters are opt-in and resettable', async () => {
   is(e.__hc_arr_push1.value, 0n)
 })
 
+test('helper callsite counters attribute dynamic helper calls', async () => {
+  if (onKernel()) return  // kernel: host-only profiling option is not in the self-host ABI
+  const src = `
+    export const main = () => {
+      const xs = []
+      xs.push(1)
+      xs.push(2)
+      return xs.length
+    }
+  `
+  const plain = await WebAssembly.instantiate(compile(src, { optimize: false }))
+  ok(!Object.keys(plain.instance.exports).some(k => k.startsWith(HELPER_SITE_PREFIX)),
+    'plain output should not export helper callsite counters')
+
+  const profiled = await WebAssembly.instantiate(compile(src, { optimize: false, helperCallsites: 'arr_push1' }))
+  const e = profiled.instance.exports
+  const sites = Object.entries(e).filter(([k, v]) => k.startsWith(HELPER_SITE_PREFIX) && typeof v?.value === 'bigint')
+  ok(sites.some(([k]) => k.includes(':arr_push1:main')), 'profiled output should name the helper and owning function')
+  const before = Object.fromEntries(sites.map(([k, v]) => [k, v.value]))
+  is(e.main(), 2)
+  const pushCount = sites
+    .filter(([k]) => k.includes(':arr_push1:main'))
+    .reduce((n, [k, v]) => n + (v.value - before[k]), 0n)
+  ok(pushCount >= 2n,
+    'callsite counter should increment dynamically')
+})
+
 test('codegen: statement array push skips dropped return length reload', () => {
   if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
   const stmtWat = compile('export let f = () => { let xs = []; xs.push(1); return 7 }', { wat: true, optimize: false })
@@ -1141,6 +1169,15 @@ test('codegen: statement array push skips dropped return length reload', () => {
   ok(exprBody, 'expected expression $f function in WAT')
   is((exprBody.match(/\$__arr_push1\b/g) || []).length, 1, 'expression push should use the same known-array helper')
   is((exprBody.match(/\$__ptr_offset\b/g) || []).length, 1, 'expression push still reloads length for the JS return value')
+
+  const h0 = exprWat.indexOf('(func $__arr_push1')
+  const h1 = exprWat.indexOf('\n  (func ', h0 + 1)
+  const helperBody = h0 >= 0 ? exprWat.slice(h0, h1 >= 0 ? h1 : undefined) : ''
+  ok(helperBody, 'expected $__arr_push1 helper in WAT')
+  is((helperBody.match(/\$__ptr_offset\b/g) || []).length, 0,
+    '__arr_push1 should inline its hot forwarding-aware offset decode')
+  ok(helperBody.includes('$__ptr_offset_fwd'),
+    '__arr_push1 should still use the shared cold forwarding chase')
 })
 
 // === JSON shape inference (shapeStrs) ===

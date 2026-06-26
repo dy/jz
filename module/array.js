@@ -251,7 +251,7 @@ export default (ctx) => {
     ],
     __arr_fill: ['__ptr_offset', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
-    __arr_push1: ['__arr_grow_known', '__ptr_offset'],
+    __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
@@ -515,12 +515,13 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_push1'] = `(func $__arr_push1 (param $ptr i64) (param $val f64) (result f64)
     (local $p f64) (local $base i32) (local $len i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
-    (local.set $base (call $__ptr_offset (local.get $ptr)))
+    (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${followForwardingWat('$base', { lowGuard: true })}
     (local.set $len (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (i32.add (local.get $len) (i32.const 1)))
       (then
         (local.set $p (call $__arr_grow_known (local.get $ptr) (i32.add (local.get $len) (i32.const 1))))
-        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
+        (local.set $base (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $p)) (i64.const ${LAYOUT.OFFSET_MASK}))))))
     (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (local.get $p))`
