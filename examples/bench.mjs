@@ -79,6 +79,18 @@ const EXAMPLES = [
   { name: 'attractors', frame: 'frame 1.2M iters', opt: true,
     make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
 
+  // Buddhabrot: 45k escape orbits (z=z²+c chain) + a Math.random() draw per sample, then
+  // three per-pixel tonemap passes. The orbit is a loop-CARRIED f64 recurrence — no
+  // cross-iteration ILP for either engine to exploit — so it TIES V8 (≈1.0×); jz wins the
+  // surrounding work (its inlined-xorshift random ~2.4× V8's PRNG; the fade/peak-find/gather
+  // passes lift to f64x2). Net ~1.05–1.10× on fast hardware, but — like attractors/waves —
+  // the recurrence is host-bound, so it can trail on a loaded 2-core CI runner. `opt` (◇):
+  // reported + kept in the geomean, not held to the winners' floor. The pmax/fade SIMD lift
+  // is pinned structurally in test/examples.js; this entry guards the end-to-end frame so a
+  // slow-path helper creeping into the hot loop shows up here, not in a user's demo.
+  { name: 'buddhabrot', frame: 'frame (45k orbits)', opt: true,
+    make: (e) => { e.resize(480, 320); e.init(); let t = 0; return () => e.frame(t += 0.016, -0.5, 0, 1.5) } },
+
   // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global
   // resolves hoisted (one site × 14M taps/frame); now ~1.8×. Gated.
   { name: 'lenia', frame: 'frame ×1',
