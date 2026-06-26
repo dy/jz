@@ -125,6 +125,23 @@ test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lyapunov iterated-reduce bit-exact vs scalar (6144 px, 10 frames)');
 });
 
+// Achievement ratchet: examples that once shipped scalar (and lost to V8) each gained a SIMD lift
+// this cycle. Pin the DETERMINISTIC CAUSE — the op must appear under the exact build options — so a
+// compiler regression that drops it fails CI immediately, not via a user's slow demo. (Bit-exactness
+// of each lift is gated in test/simd.js + the differential fuzz; here we guard the perf cause.)
+test('example: regressed kernels keep their vectorization (byte-fade / pmax / narrow)', () => {
+    const watOf = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+    // nbody + boids: the in-place u8 trail fade `(ink[i]*k)>>8` lifts 16-wide (i16x8 widen → narrow_u).
+    for (const name of ['nbody', 'boids']) {
+        const w = watOf(name);
+        ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w), `${name}: trail fade must lift to the 16-wide byte path (i16x8 widen + narrow_u)`);
+    }
+    // buddhabrot: the density peak-find `if (d > m) m = d` lifts to f64x2.pmax (NaN-exact, relaxedSimd).
+    ok(/f64x2\.pmax/.test(watOf('buddhabrot')), 'buddhabrot: density peak-find must lift to f64x2.pmax');
+    // fern: the f64→i32 ToInt32 map (`(…)|0`) lifts via the saturating narrow (relaxedSimd).
+    ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(watOf('fern')), 'fern: ToInt32 map must lift to i32x4.trunc_sat narrow');
+});
+
 // Outer-strip LEGALITY (regression): a per-sample loop whose body is an iterated f64 RECURRENCE
 // (lorenz RK4: x/y/z carried across samples, never re-seeded per sample) is NOT a per-pixel
 // reduction — its "accumulators" are loop-carried across the outer loop, so strip-mining two

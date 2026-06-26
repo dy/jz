@@ -72,6 +72,22 @@ test('SIMD f64x2 - odd length (remainder)', () => {
   }`).main(), 15)
 })
 
+test('SIMD f64x2 - rounding ops (floor/ceil/trunc) lift, bit-exact at edges', () => {
+  // f64x2.{floor,ceil,trunc} round each lane in the SAME IEEE mode as the scalar f64.* op,
+  // so the lift is bit-exact — including ±0, ±Inf, NaN, and large magnitudes. Unblocks the
+  // common `out[i] = Math.floor(f(in[i]))` graphics/quantize map.
+  const src = `export let main = () => {
+    const a = new Float64Array(40), o = new Float64Array(40)
+    for (let i = 0; i < 40; i++) a[i] = Math.sin(i * 1.7) * 1e9 + (i - 20) * 0.5
+    a[0] = -0; a[1] = 0.5; a[2] = -0.5; a[3] = 2.5
+    for (let i = 0; i < 40; i++) o[i] = Math.floor(a[i] * 0.5) + Math.ceil(a[i] * 0.25) - Math.trunc(a[i] * 0.1)
+    let h = 0; for (let i = 0; i < 40; i++) h = (h + (o[i] | 0)) | 0; return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'rounding map bit-exact')
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.floor/.test(w) && /f64x2\.ceil/.test(w) && /f64x2\.trunc/.test(w), 'expected f64x2 rounding ops')
+})
+
 // Self-host parity: jz.wasm miscompiled deep property reads of an ARG-passed object (the lift
 // chain's `ctx` — NaN-box schema corrupted across arg boundaries at call-depth 2-3), so
 // getOrAllocLanedLocal read back a wrong slot and EVERY map lift silently scalarized in the
@@ -134,6 +150,21 @@ test('SIMD narrowing - encode/downsample bit-identical to scalar (incl. clipping
   // f64→f32 downsample is a plain demote — bit-exact at any level.
   const ds = `export let f = (n) => { let a = new Float64Array(n); for (let i=0;i<n;i++) a[i] = i*0.1; let o = new Float32Array(n); for (let i=0;i<n;i++) o[i] = a[i]*0.5; let s=0; for (let i=0;i<n;i++) s += o[i]; return s }`
   is(jz(ds, { optimize: 'speed' }).exports.f(40), jz(ds, { optimize: 2 }).exports.f(40))
+})
+
+test('SIMD narrowing - f64→i32 ToInt32 map (a[i]|0) lifts via trunc_sat, bit-exact in-range', () => {
+  // `o[i] = (f(a[i])) | 0` into an Int32Array. The ToInt32 (`|0`) is CSE'd into a lane-local
+  // before the store; the lift inlines it and narrows via i32x4.trunc_sat_f64x2_s_zero. That
+  // SATURATES |x|≥2³¹/±Inf where ToInt32 wraps mod 2³² — bit-exact for in-range finite values
+  // (every pixel/coord/typical-DSP value), so it rides relaxedSimd (speed); strict opts out.
+  const src = `export let f = (n) => {
+    let a = new Float64Array(n); for (let i=0;i<n;i++) a[i] = Math.sin(i*1.3)*1e6 + (i-32)*0.5
+    let o = new Int32Array(n); for (let i=0;i<n;i++) o[i] = (a[i]*0.5 + 1000.0) | 0
+    let s = 0; for (let i=0;i<n;i++) s = (s + o[i]) | 0; return s
+  }`
+  is(jz(src, { optimize: 'speed' }).exports.f(64), jz(src, { optimize: 'speed', noSimd: true }).exports.f(64), 'in-range bit-exact')
+  ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, SPEED)), 'f64→i32 |0 map → i32x4.trunc_sat under relaxedSimd')
+  ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, SIMD_OPT)), 'gated: no trunc_sat narrow without relaxedSimd (saturation edge)')
 })
 
 // === SIMD Float32Array (f32x4 — 4 elements per vector) ===
@@ -337,6 +368,39 @@ test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
   }`
   is(runVec(wide, SIMD_OPT).main(), runVec(wide, NOVEC).main(), 'u16-overflow map stays bit-exact')
   ok(!/i16x8\.mul/.test(wat(wide, SIMD_OPT)), 'u16-overflow map must NOT take the i16x8 path')
+})
+
+test('SIMD widening byte-map - IN-PLACE fixed-point fade (a[i] = (a[i]*k)>>8)', () => {
+  // The universal trail-fade: a single Uint8Array read AND written in place. The shared
+  // address is CSE'd to one `(local.tee $A (base + i))` in the load, reused as `(local.get
+  // $A)` in the store — which tryRampMap now resolves (addrLocals), so the in-place map
+  // lifts 16-wide just like the separate-array alpha blend. (a[i]*234)>>8 ∈ [0,233] ⇒ exact.
+  const src = `export let main = () => {
+    const a = new Uint8Array(2048)
+    for (let i = 0; i < 2048; i++) a[i] = (i * 7) & 255
+    for (let pass = 0; pass < 4; pass++) for (let i = 0; i < 2048; i++) a[i] = (a[i] * 234) >> 8
+    let h = 0; for (let i = 0; i < 2048; i++) h = (h + a[i]) | 0; return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'in-place fade bit-exact')
+  const w = wat(src, SIMD_OPT)
+  ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w) && /v128\.load\b/.test(w), 'in-place fade lifts 16-wide')
+})
+
+test('SIMD widening byte-map - MULTI-CHANNEL in-place fade (boids 4-channel u8 trail)', () => {
+  // N independent store8s in one loop — each its own WIDEN16-eligible byte map. They emit N
+  // load→i16x8→narrow→store sequences concatenated into ONE 16-wide pass (single-pass memory
+  // traffic, not N loops). The shape every colored trail uses (ink + per-channel R/G/B).
+  const src = `export let main = () => {
+    const a = new Uint8Array(2048), b = new Uint8Array(2048), c = new Uint8Array(2048), d = new Uint8Array(2048)
+    for (let i = 0; i < 2048; i++) { a[i] = (i*7)&255; b[i] = (i*11)&255; c[i] = (i*13)&255; d[i] = (i*17)&255 }
+    for (let p = 0; p < 4; p++) for (let i = 0; i < 2048; i++) {
+      a[i] = (a[i]*210)>>8; b[i] = (b[i]*210)>>8; c[i] = (c[i]*210)>>8; d[i] = (d[i]*210)>>8
+    }
+    let h = 0; for (let i = 0; i < 2048; i++) h = (h + a[i] + b[i] + c[i] + d[i]) | 0; return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'multi-channel fade bit-exact')
+  // 4 channels → 4 narrow stores in a single SIMD loop (one v128.store per channel).
+  is((wat(src, SIMD_OPT).match(/i8x16\.narrow_i16x8_u/g) || []).length, 4, 'one narrow store per channel')
 })
 
 test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
@@ -1065,10 +1129,13 @@ test('vectorize: Uint16Array mul lifts to i16x8.mul', () => {
   ok(/i16x8\.mul/.test(wat(src, SIMD_OPT)), 'expected i16x8.mul')
 })
 
-test('vectorize: Uint8Array right shift must NOT lift (signedness mismatch)', () => {
-  // i32.shr_u on load8_u differs from i8x16.shr_u (lane treats byte as unsigned
-  // regardless; i32 path zero-extends first then shifts in i32 width).
-  // Conservative recognizer drops shr_* for i8/i16.
+test('vectorize: Uint8Array right shift lifts via the i16x8 widening path (bit-exact)', () => {
+  // The GENERIC i8 lane path still drops shr_* (i8x16.shr_u treats the byte as its narrow
+  // type — diverges from the i32 zero-extend-then-shift). But the in-place byte-map path
+  // (tryRampMap WIDEN16) handles `a[i] = (a[i] >>> 1)` correctly: it widens u8→i16
+  // (zero-extended), and `byteValueRange` proves the shifted value is non-negative and
+  // ≤ 65535, so `i16x8.shr_u` on the 16-bit pattern equals the scalar i32 shift exactly.
+  // (A signed byte load — load8_s — is NOT range-provable here and stays scalar.)
   const src = `
     export const main = () => {
       const N = 256
@@ -1080,7 +1147,8 @@ test('vectorize: Uint8Array right shift must NOT lift (signedness mismatch)', ()
     }
   `
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  ok(!/v128\.load/.test(wat(src, SIMD_OPT)), 'expected no v128.load on u8 shr')
+  ok(/i16x8\.shr_u/.test(wat(src, SIMD_OPT)) && /i8x16\.narrow_i16x8_u/.test(wat(src, SIMD_OPT)),
+    'expected the in-place byte shift to lift via i16x8 widen + narrow')
 })
 
 // ---- reduction (horizontal fold) cases -----------------------------------
@@ -1177,6 +1245,34 @@ test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
   is(runVec(src, SIMD_OPT).main(), 1024)
   ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
+})
+
+test('vectorize: f64 comparison min/max reduction lifts to f64x2.pmax/pmin (NaN-exact)', () => {
+  // `m = a[i] > m ? a[i] : m` and `if (a[i] > m) m = a[i]` are the same reduction. f64x2.pmax
+  // replicates `(a>m)?a:m` EXACTLY per element — pmax(m,a)=(m<a)?a:m keeps the accumulator on a
+  // NaN element (m<NaN is false), never NaN-poisoning the way f64x2.max would. The only theoretical
+  // divergence is the sign of a zero RESULT across lanes → relaxedSimd tier (speed), strict opts out.
+  const maxTern = `export const main = () => {
+    const N = 999, a = new Float64Array(N)
+    for (let i = 0; i < N; i++) a[i] = Math.sin(i * 1.3) * 1000
+    a[500] = NaN              // a NaN in the data must be IGNORED (scalar keeps m), not propagated
+    let m = a[0]
+    for (let i = 1; i < N; i++) m = a[i] > m ? a[i] : m
+    return (m * 1000) | 0
+  }`
+  is(runVec(maxTern, SPEED).main(), runVec(maxTern, SPEED_SCALAR).main(), 'max ternary bit-exact (NaN ignored)')
+  ok(/f64x2\.pmax/.test(wat(maxTern, SPEED)), 'max reduction → f64x2.pmax under relaxedSimd')
+  ok(!/f64x2\.pmax/.test(wat(maxTern, SIMD_OPT)), 'gated: no pmax without relaxedSimd (bit-exact scalar)')
+
+  const minIf = `export const main = () => {
+    const N = 777, a = new Float64Array(N)
+    for (let i = 0; i < N; i++) a[i] = Math.cos(i * 0.9) * 500
+    let m = a[0]
+    for (let i = 1; i < N; i++) if (a[i] < m) m = a[i]
+    return (m * 1000) | 0
+  }`
+  is(runVec(minIf, SPEED).main(), runVec(minIf, SPEED_SCALAR).main(), 'min if-statement bit-exact')
+  ok(/f64x2\.pmin/.test(wat(minIf, SPEED)), 'min conditional-store reduction → f64x2.pmin')
 })
 
 test('vectorize: reduction tail correctness when N is not a multiple of LANES', () => {
@@ -1301,6 +1397,29 @@ test('vectorize: i32 min reduction lifts to i32x4.min_s (all orderings, exact)',
     is(runVec(src, SIMD_OPT).main(), runVec(src).main())
     ok(/i32x4\.min_s/.test(wat(src, SIMD_OPT)), `expected i32x4.min_s for ${form}`)
   }
+})
+
+test('vectorize: conditional-STORE min/max (if(a[i]>m)m=a[i]) lifts like the ternary', () => {
+  // `if (a[i] > m) m = a[i]` is the same reduction as the ternary; asSelectAssign rewrites the
+  // conditional store so one recognizer handles both. Int → i32x4.max_s (exact); f64 → pmax
+  // (relaxedSimd). This is the form the peak-find idiom (e.g. buddhabrot density max) is written in.
+  const int = `export const main = () => {
+    const N = 1024, a = new Int32Array(N)
+    for (let i = 0; i < N; i++) a[i] = ((i * 73 + 13) % 4001 - 2000) | 0
+    let m = a[0]; for (let i = 1; i < N; i++) if (a[i] > m) m = a[i]
+    return m | 0
+  }`
+  is(runVec(int, SIMD_OPT).main(), runVec(int).main(), 'int conditional-store max exact')
+  ok(/i32x4\.max_s/.test(wat(int, SIMD_OPT)), 'int if-store max → i32x4.max_s')
+
+  const flo = `export const main = () => {
+    const N = 999, a = new Float64Array(N)
+    for (let i = 0; i < N; i++) a[i] = Math.sin(i * 1.1) * 1000
+    let m = a[0]; for (let i = 1; i < N; i++) if (a[i] > m) m = a[i]
+    return (m * 1000) | 0
+  }`
+  is(runVec(flo, SPEED).main(), runVec(flo, SPEED_SCALAR).main(), 'f64 conditional-store max exact')
+  ok(/f64x2\.pmax/.test(wat(flo, SPEED)), 'f64 if-store max → f64x2.pmax')
 })
 
 test('vectorize: min/max reduction with m=a[0] start-at-1 idiom + non-LANES-multiple N', () => {

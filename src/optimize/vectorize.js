@@ -100,10 +100,11 @@ function normTee(n) {
 // RESULT — equal operands tie to the same value — so only the direction axis matters.
 function matchIntMinMaxReduce(rhs, accName) {
   if (!isArr(rhs)) return null
-  let cond, T, E
+  let cond, T, E, resTy = null
   if (rhs[0] === 'if') {
     let i = 1
-    if (!(isArr(rhs[i]) && rhs[i][0] === 'result' && rhs[i][1] === 'i32')) return null
+    if (!(isArr(rhs[i]) && rhs[i][0] === 'result' && (rhs[i][1] === 'i32' || rhs[i][1] === 'f64'))) return null
+    resTy = rhs[i][1]
     i++
     if (rhs.length !== i + 3) return null
     cond = rhs[i]
@@ -123,8 +124,12 @@ function matchIntMinMaxReduce(rhs, accName) {
   let cmp = cond
   if (isArr(cmp) && cmp[0] === 'i32.ne' && isI32Const(cmp[2]) && cmp[2][1] === 0) cmp = cmp[1]
   if (!isArr(cmp) || cmp.length !== 3) return null
-  const dir = { 'i32.gt_s': 'gt', 'i32.ge_s': 'gt', 'i32.lt_s': 'lt', 'i32.le_s': 'lt' }[cmp[0]]
+  // Integer (i32x4.max_s, exact) or float (f64x2.pmax, exact per-element incl NaN/±0) compare.
+  const dir = { 'i32.gt_s': 'gt', 'i32.ge_s': 'gt', 'i32.lt_s': 'lt', 'i32.le_s': 'lt',
+                'f64.gt': 'gt', 'f64.ge': 'gt', 'f64.lt': 'lt', 'f64.le': 'lt' }[cmp[0]]
   if (!dir) return null
+  const laneType = cmp[0].startsWith('f64.') ? 'f64' : 'i32'
+  if (resTy != null && resTy !== laneType) return null   // if-form result type must agree with the compare
   // Comparison operands must be {acc, EXPR}; take the non-acc side as the canonical lane
   // expr (it carries the address tee). exprIsLeftOfCmp records its position.
   let condExpr, exprIsLeftOfCmp
@@ -135,7 +140,7 @@ function matchIntMinMaxReduce(rhs, accName) {
   if (!exprEq(normTee(condExpr), normTee(exprBr))) return null
   // cond true ⟺ EXPR > acc  ⇒  picking EXPR-when-true is a max; picking-when-false a min.
   const predExprGreater = dir === 'gt' ? exprIsLeftOfCmp : !exprIsLeftOfCmp
-  return { exprNode: condExpr, isMax: takeExprWhenTrue === predExprGreater }
+  return { exprNode: condExpr, isMax: takeExprWhenTrue === predExprGreater, laneType }
 }
 
 // Match the un-flattened canon, emitted when a Math.* result feeds another op
@@ -560,6 +565,13 @@ const LANE_PURE = {
     ['f32.neg', { simd: 'f32x4.neg' }],
     ['f32.abs', { simd: 'f32x4.abs' }],
     ['f32.sqrt', { simd: 'f32x4.sqrt' }],
+    // rounding: each f32x4.* rounds lane-for-lane identically to the scalar f32.* (same
+    // IEEE rounding mode), so the lift is bit-exact. Math.floor/ceil/trunc and the bare
+    // f64.nearest jz emits all reach here in a Float32Array kernel.
+    ['f32.floor', { simd: 'f32x4.floor' }],
+    ['f32.ceil', { simd: 'f32x4.ceil' }],
+    ['f32.trunc', { simd: 'f32x4.trunc' }],
+    ['f32.nearest', { simd: 'f32x4.nearest' }],
   ]),
   f64: new Map([
     ['f64.add', { simd: 'f64x2.add' }],
@@ -571,6 +583,12 @@ const LANE_PURE = {
     ['f64.neg', { simd: 'f64x2.neg' }],
     ['f64.abs', { simd: 'f64x2.abs' }],
     ['f64.sqrt', { simd: 'f64x2.sqrt' }],
+    // rounding: f64x2.* rounds each lane identically to the scalar f64.* op (same IEEE
+    // mode), so bit-exact. Unblocks `out[i] = Math.floor/ceil/trunc(f(in[i]))` f64 maps.
+    ['f64.floor', { simd: 'f64x2.floor' }],
+    ['f64.ceil', { simd: 'f64x2.ceil' }],
+    ['f64.trunc', { simd: 'f64x2.trunc' }],
+    ['f64.nearest', { simd: 'f64x2.nearest' }],
   ]),
 }
 
@@ -1173,12 +1191,35 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
     }
   }
 
+  // A ToInt32 (`|0`) narrowing conversion is commonly CSE'd into its own lane-local just before
+  // the store (`set $t (…trunc_sat…); store addr (local.get $t)`), hiding it from the
+  // narrowing-store path (liftStmt would then lift the i32 wrap in the f64 lane and bail). When
+  // such a lane-local is read exactly once by a narrowing store, inline the conversion back into
+  // the store so peelNarrowConv/narrowStore handle it. The original set survives in the scalar
+  // remainder; this only reshapes the SIMD lift (and bails cleanly if liftStmt still declines).
+  let body2 = body
+  {
+    const getCount = new Map()
+    const countGets = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount.set(n[1], (getCount.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets(n[i]) }
+    for (const s of body) countGets(s)
+    const dropped = new Set()
+    const inlined = body.map(s => {
+      if (isArr(s) && STORE_OPS[s[0]] && s.length === 3 && STORE_OPS[s[0]] !== laneType &&
+          isLocalGet(s[2]) && localKind.get(s[2][1]) === 'lane' && getCount.get(s[2][1]) === 1) {
+        const def = body.find(x => isArr(x) && x[0] === 'local.set' && x[1] === s[2][1] && x.length === 3)
+        if (def && peelNarrowConv(def[2], STORE_OPS[s[0]])) { dropped.add(def); return [s[0], s[1], def[2]] }
+      }
+      return s
+    })
+    if (dropped.size) body2 = inlined.filter(s => !dropped.has(s))
+  }
+
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → laneName (bare string; see getOrAllocLanedLocal)
   const extraLocals = []  // canon temps allocated during lift
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
-  for (const s of body) {
+  for (const s of body2) {
     const r = liftStmt(s, ctx)
     if (ctx.fail) return null
     if (r != null) {
@@ -1550,17 +1591,67 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
   // — or a NaN-canonicalized two-statement min/max reduction —
   //   (local.set $cn  (OP (local.get $acc) EXPR))
   //   (local.set $acc (select C (local.get $cn) (T.ne $cn $cn)))
-  const bodyLen = incIdx - 3
+  // A conditional-store min/max (`if (a[i] > m) m = a[i]`) is the SAME reduction as the ternary
+  // `m = a[i] > m ? a[i] : m`; rewrite it to the select-assign form so one recognizer covers both.
+  // Sound for recognition: the lane EXPR (an array load) is pure, and the SIMD lift reads it
+  // unconditionally anyway (pmax), while the scalar remainder keeps the original conditional store.
+  const asSelectAssign = (stmt) => {
+    if (isArr(stmt) && stmt[0] === 'if' && stmt.length === 3 && isArr(stmt[2]) && stmt[2][0] === 'then' && stmt[2].length === 2) {
+      const set = stmt[2][1]
+      if (isArr(set) && set[0] === 'local.set' && set.length === 3 && !hasSideEffect(set[2]))
+        return ['local.set', set[1], ['select', set[2], ['local.get', set[1]], stmt[1]]]
+    }
+    return stmt
+  }
+  const bodyStmts = []
+  for (let i = 3; i < incIdx; i++) bodyStmts.push(asSelectAssign(loopNode[i]))
+  // CSE collapse: `m = a[i] > m ? a[i] : m` hoists the load into its own `(local.set $t LOAD)`
+  // ahead of the reduction, making a 2-statement body the single-statement min/max recognizer
+  // misses. When $t is pure (no side effect, no accumulator reference) inline it back into the
+  // reduction so the canonical one-statement shape is recognized. Sound: the lift only consumes
+  // the inlined lane expr for the SIMD prefix; the original $t set survives in the scalar
+  // remainder (the unchanged blockNode), so $t stays defined wherever else it is read.
+  let body0 = bodyStmts
+  if (bodyStmts.length === 2) {
+    const [s1, s2] = bodyStmts
+    if (isArr(s1) && s1[0] === 'local.set' && typeof s1[1] === 'string' && s1.length === 3 &&
+        isArr(s2) && s2[0] === 'local.set' && typeof s2[1] === 'string' && s2.length === 3 && s1[1] !== s2[1]) {
+      const t = s1[1], expr = s1[2]
+      const usesName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => usesName(c, name)))
+      if (!hasSideEffect(expr) && !usesName(expr, s2[1]) && !usesName(expr, t)) {
+        const subst = (n) => isArr(n) ? (n[0] === 'local.get' && n[1] === t ? expr : n.map(subst)) : n
+        body0 = [['local.set', s2[1], subst(s2[2])]]
+      }
+    }
+  }
+  const bodyLen = body0.length
   let accName, opName, reduceEntry, exprNode, canonC = null
   if (bodyLen === 1) {
-    const stmt = loopNode[3]
+    const stmt = body0[0]
     if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
     accName = stmt[1]
     if (typeof accName !== 'string') return null
     const rhs = stmt[2]
     if (!isArr(rhs)) return null
     const minmax = matchIntMinMaxReduce(rhs, accName)
-    if (minmax) {
+    if (minmax && minmax.laneType === 'f64') {
+      // Comparison min/max over an f64 array (`m = a[i] > m ? a[i] : m`). f64x2.pmax/pmin
+      // replicate the scalar `(a>m)?a:m` EXACTLY per element — pmax(m,a) = (m<a)?a:m keeps the
+      // accumulator on NaN (m<NaN is false) and on a ±0 tie, never NaN-poisoning the way
+      // f64x2.max would. They preserve the data's exact NaN bits (a selection, not a compute),
+      // so no canon is needed. The ONLY divergence from the sequential scalar is the SIGN of a
+      // zero RESULT when the extremum is hit by both +0 and −0 in different lanes (a cross-lane
+      // reorder) — strictly less than the ULP reassociation the sum reductions already accept,
+      // so it rides the relaxedSimd tier (on at 'speed'); strict callers opt out (scalar).
+      if (!_relaxF32) return null
+      reduceEntry = {
+        simd: minmax.isMax ? 'f64x2.pmax' : 'f64x2.pmin',
+        extract: 'f64x2.extract_lane', laneType: 'f64',
+        identity: ['f64.const', minmax.isMax ? '-inf' : 'inf'],
+        minmaxSelect: true, isMax: minmax.isMax, pmaxF64: true,
+      }
+      exprNode = minmax.exprNode
+    } else if (minmax) {
       // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
       // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
       // op's neutral — INT_MIN for max, INT_MAX for min. A bare narrow load instead folds
@@ -1606,7 +1697,7 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
       exprNode = rhs[2]
     }
   } else if (bodyLen === 2) {
-    const s1 = loopNode[3], s2 = loopNode[4]
+    const s1 = body0[0], s2 = body0[1]
     if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3) return null
     if (!isArr(s2) || s2[0] !== 'local.set' || s2.length !== 3) return null
     const cnName = s1[1], rhs = s1[2]
@@ -1816,14 +1907,17 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
   const extraDecls = []
   let mergeStmts
   if (reduceEntry.minmaxSelect) {
-    // No scalar i32.max/min — fold via select through an i32 temp (no exponential
-    // operand duplication): ht = lane0; ht = minmax(ht, lane_k); acc = minmax(acc, ht).
-    // `select(a,b,(gt|lt)_s a b)` = a when it's the larger/smaller, i.e. minmax(a,b).
-    const cmpOp = reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s'
+    // No scalar max/min op — fold via select through a temp (no exponential operand
+    // duplication): ht = lane0; ht = minmax(ht, lane_k); acc = minmax(acc, ht). For int,
+    // `select(a,b,(gt|lt)_s a b)` = max/min(a,b). For the f64 pmax/pmin reduction the scalar
+    // equivalent is the pmax/pmin select — `pmax(a,b) = (a<b)?b:a` — so the merge keeps the
+    // same NaN/±0 tie semantics as the f64x2.pmax lanes.
     const ht = `$__simd_h${id}`
-    extraDecls.push(['local', ht, 'i32'])
+    extraDecls.push(['local', ht, reduceEntry.pmaxF64 ? 'f64' : 'i32'])
     const lane = (k) => [reduceEntry.extract, k, ['local.get', simdAccName]]
-    const minmaxSel = (a, b) => ['select', a, b, [cmpOp, a, b]]
+    const minmaxSel = reduceEntry.pmaxF64
+      ? (a, b) => reduceEntry.isMax ? ['select', b, a, ['f64.lt', a, b]] : ['select', b, a, ['f64.lt', b, a]]
+      : (a, b) => ['select', a, b, [reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s', a, b]]
     mergeStmts = [['local.set', ht, lane(0)]]
     for (let k = 1; k < lanes; k++) mergeStmts.push(['local.set', ht, minmaxSel(lane(k), ['local.get', ht])])
     if (reduceEntry.accF64) {
@@ -2111,6 +2205,12 @@ function liftStmt(stmt, ctx) {
     // conversion (f32.demote_f64, or the float→int ToInt32 idiom); peel it, lift the
     // inner float expr, and let narrowStore apply the SIMD narrow + low-byte store.
     if (sty !== ctx.laneType) {
+      // Integer narrowing (`o[i] = (f(x)) | 0` into Int32Array/…) lowers via the saturating
+      // i32x4.trunc_sat_f64x2_s_zero, which clamps +Inf / |x|≥2³¹ to INT_MAX where scalar
+      // ToInt32 wraps mod 2³² — bit-exact for in-range finite values (every pixel/coordinate/
+      // typical-DSP value), divergent only at that edge, so it rides relaxedSimd. Float demote
+      // (f64→f32) is bit-exact (round-to-nearest both ways) and stays ungated.
+      if (sty !== 'f32' && !_relaxF32) return liftFail(ctx, `narrowing ${ctx.laneType}->${sty} store saturates out-of-range (needs relaxedSimd)`)
       const inner = peelNarrowConv(stmt[2], sty)
       if (!inner) return liftFail(ctx, `narrowing store ${ctx.laneType}->${sty}: unrecognized conversion`)
       const innerV = liftExprV(inner, ctx)
@@ -2889,15 +2989,17 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // pointer is still expressed in terms of the IV. We keep the address verbatim
   // (scalar i32) and advance the IV by LANES, so `base + (i<<K)` lands on the
   // next group's first element each SIMD step — for any element width.
-  let storeStmt = null, storeIdx = -1
+  // Collect every store. One store → the original single-map paths (ramp pack / widening /
+  // 4-wide). Two or more independent store8s → a multi-channel in-place fade (boids' 4-channel
+  // u8 trail), handled by the multi-store WIDEN16 branch below; one pass over memory, N widening
+  // stores. Stores beyond the first don't reach the single-store paths.
+  const storeStmts = []
   for (let i = 0; i < body.length; i++) {
     const s = body[i]
-    if (isArr(s) && STORE_OPS[s[0]]) {
-      if (storeStmt) return null
-      storeStmt = s; storeIdx = i
-    }
+    if (isArr(s) && STORE_OPS[s[0]]) storeStmts.push({ stmt: s, idx: i })
   }
-  if (!storeStmt) return null
+  if (!storeStmts.length) return null
+  const storeStmt = storeStmts[0].stmt, storeIdx = storeStmts[0].idx
   const storeOp = storeStmt[0]
   if (storeStmt.length !== 3) return null
   const elemLog2 = { 'i32.store8': 0, 'i32.store': 2 }[storeOp]
@@ -2914,8 +3016,24 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   for (const s of body) gatherNames(s)
   for (const name of allNames) { const k = _offsetLocalStride(body, name, ivName); if (k != null) offsetTees.set(name, k) }
 
+  // CSE'd FULL lane address: an in-place map `a[i] = f(a[i])` shares one `(local.tee $A
+  // (i32.add base i))` between the load and the store, reused as `(local.get $A)`. Without
+  // resolving it the store/load address matchers reject the bare get (the empty-addrLocals
+  // bug that kept every in-place trail-fade scalar). Record each such tee — its lifted
+  // address (the tee) runs in the hoisted v128.load, so the store's get reads it back.
+  const addrLocals = new Map()
+  const recordAddrTees = (n) => {
+    if (!isArr(n)) return
+    if (n[0] === 'local.tee' && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] === 'i32.add') {
+      const m = matchLaneAddr(n[2], ivName, addrLocals, offsetTees)
+      if (m && m.teeName == null) addrLocals.set(n[1], { strideLog2: m.strideLog2, base: m.base })
+    }
+    for (let i = 1; i < n.length; i++) recordAddrTees(n[i])
+  }
+  for (const s of body) recordAddrTees(s)
+
   const storeAddr = storeStmt[1]
-  const addrM = matchLaneAddr(storeAddr, ivName, new Map(), offsetTees)
+  const addrM = matchLaneAddr(storeAddr, ivName, addrLocals, offsetTees)
   if (!addrM || addrM.strideLog2 !== elemLog2) return null
 
   // Memory loads turn this into a widening byte-map: out[i] = narrow(f(widen(a[i])…)).
@@ -2928,7 +3046,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
     if (LOAD_OPS[n[0]]) {
       hasLoads = true
       if (storeOp !== 'i32.store8' || n[0] !== 'i32.load8_u') { loadsOk = false; return }
-      const m = matchLaneAddr(n[1], ivName, new Map(), offsetTees)
+      const m = matchLaneAddr(n[1], ivName, addrLocals, offsetTees)
       if (!m || m.strideLog2 !== 0) loadsOk = false
       return  // address validated; the IV-strided subtree is not data
     }
@@ -3010,21 +3128,12 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
     else return null
     return (r[0] < 0 || r[1] > 65535) ? null : r
   }
-  const wideValueExpr = (!hasLoads && byteValueExpr) ? byteValueExpr : null   // pure ramp → 16-wide pack
-  const widenRange = (hasLoads && byteValueExpr) ? byteValueRange(byteValueExpr) : null
-  const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ narrow_u exact
-  const WIDE16 = wideValueExpr != null
-  const LANES = (WIDE16 || WIDEN16) ? 16 : 4
-  const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
-    ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
-
-  let lifted
-  if (WIDEN16) {
-    // 16-wide widening byte-map: load each u8 input once (v128.load of 16 bytes),
-    // extend_low/high to two i16x8 halves, run the affine map in i16x8 on each half,
-    // narrow_u the two result halves to one i8x16, store 16. Each load is hoisted to a
-    // temp (so extend_low + extend_high share one load); the loads run in source order,
-    // so the offset `local.tee` in the first one is set before later loads read it.
+  // The i16x8 widening byte-map emit for ONE store, factored so a multi-channel fade reuses it
+  // per channel: load each u8 input once (v128.load 16), extend_low/high to two i16x8 halves,
+  // run the affine map in i16x8 on each half, narrow_u to i8x16, store 16. Each load is hoisted
+  // (extend_low + extend_high share one load); loads run in source order, so an offset/address
+  // `local.tee` in a load is set before the store's `local.get` reads it.
+  const widen16Emit = (sAddr, valueExpr) => {
     const loadTemps = new Map()
     const loadSets = []
     const collectLoads = (e) => {
@@ -3034,7 +3143,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
         if (!loadTemps.has(k)) { const t = freshV128('win'); loadTemps.set(k, t); loadSets.push(['local.set', t, ['v128.load', e[1]]]) }
       } else for (let i = 1; i < e.length; i++) collectLoads(e[i])
     }
-    collectLoads(byteValueExpr)
+    collectLoads(valueExpr)
     const liftW = (e, half) => {
       const op = e[0]
       if (op === 'i32.const') return ['i16x8.splat', e]
@@ -3046,45 +3155,87 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
       if (op === 'i32.and') return ['v128.and', liftW(e[1], half), ['i16x8.splat', e[2]]]
       return null   // byteValueRange already proved every op is one of the above
     }
-    lifted = [...loadSets,
-      ['v128.store', storeAddr, ['i8x16.narrow_i16x8_u', liftW(byteValueExpr, 'low'), liftW(byteValueExpr, 'high')]]]
-  } else if (WIDE16) {
+    return [...loadSets,
+      ['v128.store', sAddr, ['i8x16.narrow_i16x8_u', liftW(valueExpr, 'low'), liftW(valueExpr, 'high')]]]
+  }
+
+  let lifted, LANES
+  if (storeStmts.length > 1) {
+    // MULTI-CHANNEL in-place byte fade: N independent store8s in one loop (boids' 4-channel u8
+    // trail). Each store must be a u8 store of a WIDEN16-eligible value (range ≤ 255); it emits
+    // its own load→i16x8→narrow→store sequence, all concatenated into ONE 16-wide pass — so the
+    // memory traffic stays single-pass (vs N separate vectorized loops). Every body statement
+    // must be a store or the lane-local set feeding one; any other (shared/invariant) compute
+    // bails to scalar, since it would be dropped.
+    LANES = 16
     lifted = []
-    const vv = []
-    for (let j = 0; j < 4; j++) {
-      const rt = freshV128('ramp')
-      lifted.push(['local.set', rt, ramp(j * 4)])
-      ctx.rampTemp = rt
-      const v = liftExprV(wideValueExpr, ctx)
-      if (ctx.fail) return null
-      const vn = freshV128('rampv')
-      lifted.push(['local.set', vn, v])
-      vv.push(vn)
+    const consumed = new Set()
+    for (const { stmt, idx } of storeStmts) {
+      if (stmt[0] !== 'i32.store8' || stmt.length !== 3) return null
+      const a = matchLaneAddr(stmt[1], ivName, addrLocals, offsetTees)
+      if (!a || a.strideLog2 !== 0) return null
+      consumed.add(idx)
+      let val = stmt[2]
+      if (isArr(val) && val[0] === 'local.get' && typeof val[1] === 'string' && localKind.get(val[1]) === 'lane') {
+        let setIdx = -1
+        for (let j = 0; j < idx; j++) { const s = body[j]; if (isArr(s) && s[0] === 'local.set' && s[1] === val[1] && s.length === 3) { setIdx = j; val = s[2] } }
+        if (setIdx < 0) return null
+        consumed.add(setIdx)
+      }
+      const rng = byteValueRange(val)
+      if (!rng || rng[1] > 255) return null   // not WIDEN16-eligible (overflows u16 or u8) → scalar
+      lifted.push(...widen16Emit(stmt[1], val))
     }
-    // Pack the low byte of all 16 i32 lanes (4 vectors) into one i8x16, in order.
-    const g = (n) => ['local.get', n]
-    const sh = (a, b, idx) => ['i8x16.shuffle', ...idx.map(String), a, b]
-    const lo = freshV128('ramplo'), hi = freshV128('ramphi')
-    lifted.push(['local.set', lo, sh(g(vv[0]), g(vv[1]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
-    lifted.push(['local.set', hi, sh(g(vv[2]), g(vv[3]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
-    lifted.push(['v128.store', storeAddr, sh(g(lo), g(hi), [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23])])
+    if (consumed.size !== body.length) return null
   } else {
-    ctx.rampTemp = freshV128('ramp')
-    // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
-    lifted = [['local.set', ctx.rampTemp, ramp(0)]]
-    for (let i = 0; i < body.length; i++) {
-      if (i === storeIdx) {
-        const vval = liftExprV(storeStmt[2], ctx)
+    const wideValueExpr = (!hasLoads && byteValueExpr) ? byteValueExpr : null   // pure ramp → 16-wide pack
+    const widenRange = (hasLoads && byteValueExpr) ? byteValueRange(byteValueExpr) : null
+    const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ narrow_u exact
+    const WIDE16 = wideValueExpr != null
+    LANES = (WIDE16 || WIDEN16) ? 16 : 4
+    const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
+      ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
+
+    if (WIDEN16) {
+      lifted = widen16Emit(storeAddr, byteValueExpr)
+    } else if (WIDE16) {
+      lifted = []
+      const vv = []
+      for (let j = 0; j < 4; j++) {
+        const rt = freshV128('ramp')
+        lifted.push(['local.set', rt, ramp(j * 4)])
+        ctx.rampTemp = rt
+        const v = liftExprV(wideValueExpr, ctx)
         if (ctx.fail) return null
-        lifted.push(buildRampStore(storeOp, storeAddr, vval, ctx))
-      } else {
-        const r = liftStmt(body[i], ctx)
-        if (ctx.fail) return null
-        if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+        const vn = freshV128('rampv')
+        lifted.push(['local.set', vn, v])
+        vv.push(vn)
+      }
+      // Pack the low byte of all 16 i32 lanes (4 vectors) into one i8x16, in order.
+      const g = (n) => ['local.get', n]
+      const sh = (a, b, idx) => ['i8x16.shuffle', ...idx.map(String), a, b]
+      const lo = freshV128('ramplo'), hi = freshV128('ramphi')
+      lifted.push(['local.set', lo, sh(g(vv[0]), g(vv[1]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
+      lifted.push(['local.set', hi, sh(g(vv[2]), g(vv[3]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
+      lifted.push(['v128.store', storeAddr, sh(g(lo), g(hi), [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23])])
+    } else {
+      ctx.rampTemp = freshV128('ramp')
+      // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
+      lifted = [['local.set', ctx.rampTemp, ramp(0)]]
+      for (let i = 0; i < body.length; i++) {
+        if (i === storeIdx) {
+          const vval = liftExprV(storeStmt[2], ctx)
+          if (ctx.fail) return null
+          lifted.push(buildRampStore(storeOp, storeAddr, vval, ctx))
+        } else {
+          const r = liftStmt(body[i], ctx)
+          if (ctx.fail) return null
+          if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+        }
       }
     }
   }
-  if (!lifted.length) return null
+  if (!lifted || !lifted.length) return null
 
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
@@ -3127,7 +3278,18 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
 function peelNarrowConv(val, sty) {
   if (!isArr(val)) return null
   if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null
-  // int element (i8/i16/i32): peel ToInt32.
+  // int element (i8/i16/i32): peel ToInt32 (`x | 0`). jz's general lowering is an
+  // Infinity-guarded saturating trunc:
+  //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s X)) (i32.const 0) (f64.ne X' Inf))
+  // where X is `(local.tee $inf <f64 expr>)` and X' the matching get. Peel to the inner f64.
+  // (The SIMD narrow i32x4.trunc_sat_f64x2_s_zero saturates +Inf / |x|≥2³¹ to INT_MAX where
+  // ToInt32 wraps mod 2³² — caller gates the int narrowing on relaxedSimd for that edge.)
+  if (val[0] === 'select' && val.length === 4 && isI32Const(val[2]) && val[2][1] === 0 &&
+      isArr(val[1]) && val[1][0] === 'i32.wrap_i64' && isArr(val[1][1]) && val[1][1][0] === 'i64.trunc_sat_f64_s') {
+    let inner = val[1][1][1]   // the f64 operand of the trunc, captured in a `(local.tee $inf …)`
+    if (isArr(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]   // peel to the tee's VALUE
+    return inner
+  }
   if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'if') {
     const iff = val[1], thenA = iff[3], elseA = iff[4]
     const s = isArr(thenA) && isArr(thenA[1]) && thenA[1][0] === 'i64.trunc_sat_f64_s' ? thenA[1][1] : null
