@@ -1,6 +1,6 @@
 import { findBodyStart } from '../ir.js'
 import { warn, ctx } from '../ctx.js'
-import { nodeEqual } from '../ast.js'
+import { nodeEqual as exprEq } from '../ast.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -52,7 +52,6 @@ const isArr = n => Array.isArray(n)
 // Structural node equality — must be non-finite- AND bigint-safe: plain
 // JSON.stringify maps Infinity/-Infinity/NaN→null and -0→0, so it would equate a
 // `[Inf,-Inf]` lane pair and splat it (dropping -Inf). nodeEqual tags those.
-const exprEq = nodeEqual
 const localGetName = n => isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' ? n[1] : null
 const f64Zero = n => isArr(n) && n[0] === 'f64.const' && Number(n[1]) === 0
 

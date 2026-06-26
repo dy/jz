@@ -118,6 +118,7 @@ for (const name of CASES) {
   try { jsBytes = compileSelf(src, false, LEVEL) } catch (e) { skipped.push(`${name}(js:${e.message.slice(0,18)})`); continue }
   // WASM compiler — fresh instance, exclude instantiation from timing
   const self = instantiate(wasmBytes, { memory: 8192 })
+  if (COUNT_HELPERS) self.instance.exports.__helper_counts_reset?.()
   const compileWasm = () => self.memory.read(self.exports.default(self.memory.String(src), 0, self.memory.String(LEVEL)))
   let wasmBytesOut
   try { wasmBytesOut = compileWasm() } catch (e) { self && skipped.push(`${name}(wasm:${e.message.slice(0,18)})`); continue }
