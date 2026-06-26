@@ -24,7 +24,6 @@ let SEED = 0
 let RX = 0, RY = 1, RH = 2, VL = 3, VR = 4
 let rob = new Float64Array(5)
 let goal = new Float64Array(4)   // gx, gy, gvx, gvy — the drifting target
-let esc = new Float64Array(3)    // stuck-escape: [checkpoint x, checkpoint y, frames-confined]
 
 // the flying barriers (world metres), uniform radius
 let MAXO = 40
@@ -169,7 +168,6 @@ export let init = () => {
   let i = 0
   while (i < nobs) { spawnObstacle(i); i++ }
   newGoal()
-  esc[0] = rob[RX]; esc[1] = rob[RY]; esc[2] = 0.0
 }
 
 // host steers the target: click or drag (normalized screen coords → world metres)
@@ -185,10 +183,10 @@ export let frame = (t) => {
   let RR = 0.1                  // robot radius
   let BR = 0.1                  // barrier radius
   let VMAXv = 0.5               // max wheel velocity
-  let AMAX = 1.0                // max acceleration (his slider) — 2× his default so it's agile enough to
-                                // curve AROUND a cluster instead of getting boxed; the escape below is the backstop
+  let AMAX = 0.5                // max acceleration — his exact value (the limited dynamics ARE the point of DWA)
   let DT = 0.05                 // timestep
-  let STEPS = 15                // steps ahead → TAU = STEPS·DT
+  let STEPS = 22                // steps ahead → TAU = STEPS·DT (a bit further than his 15 — same speed, just
+                                // more far-sighted, so it can commit to an arc that rounds a cluster)
   let FW = 12.0, OW = 6666.0    // forward / obstacle weights — his exact two-term benefit (no heading bias)
   let SAFED = RR                // safeDist
   let TAU = DT * STEPS
@@ -245,30 +243,32 @@ export let frame = (t) => {
       while (ib < 3) {
         let vR = vro + (ib - 1) * AW
         if (vR >= -VMAXv && vR <= VMAXv) {
-          // predict the exact arc over the horizon, drawing the faint candidate path
-          let ex = rx, ey = ry, eh = rh, lpu = u0 + k * rx, lpv = v0 - k * ry, s = 0
+          // predict the exact arc over the horizon, tracking the closest approach to any MOVING ball along
+          // the WHOLE path (Fox/Burgard/Thrun's dist term). Davison checks only the endpoint, which lets a
+          // long arc punch through a wall — the full-path, space-time check is what lets it steer AROUND.
+          let dvr = vR - vL
+          let ex = rx, ey = ry, eh = rh, lpu = u0 + k * rx, lpv = v0 - k * ry, s = 0, distObs = 1e30
           while (s < STEPS) {
-            if (vR - vL < 1e-6 && vR - vL > -1e-6) {
+            if (dvr < 1e-6 && dvr > -1e-6) {
               ex += vL * DT * Math.cos(eh); ey += vL * DT * Math.sin(eh)
             } else {
-              let R = (RW * 0.5) * (vR + vL) / (vR - vL)
-              let dth = (vR - vL) * DT / RW
+              let R = (RW * 0.5) * (vR + vL) / dvr
+              let dth = dvr * DT / RW
               let nth = eh + dth
               ex += R * (Math.sin(nth) - Math.sin(eh))
               ey -= R * (Math.cos(nth) - Math.cos(eh))
               eh = nth
             }
+            let tt = (s + 1) * DT, j = 0
+            while (j < nobs) {
+              let dx = ex - (ox[j] + ovx[j] * tt), dy = ey - (oy[j] + ovy[j] * tt)
+              let d = Math.sqrt(dx * dx + dy * dy) - BR - RR
+              if (d < distObs) distObs = d
+              j++
+            }
             let u = u0 + k * ex, vv = v0 - k * ey
             lineA(lpu, lpv, u, vv, ir, ig, ib, 0.14)
             lpu = u; lpv = vv; s++
-          }
-          // clearance to the nearest (future) barrier — AT THE ENDPOINT (his form)
-          let distObs = 1e30, j = 0
-          while (j < nobs) {
-            let dx = ex - (ox[j] + ovx[j] * TAU), dy = ey - (oy[j] + ovy[j] * TAU)
-            let d = Math.sqrt(dx * dx + dy * dy) - BR - RR
-            if (d < distObs) distObs = d
-            j++
           }
           let newD = Math.sqrt((ex - fgx) * (ex - fgx) + (ey - fgy) * (ey - fgy))
           let cost = distObs < SAFED ? OW * (SAFED - distObs) : 0.0
@@ -325,34 +325,6 @@ export let frame = (t) => {
     newGoal()
     if (nobs < MAXO) { spawnObstacle(nobs); nobs++ }
     if (nobs < MAXO) { spawnObstacle(nobs); nobs++ }
-    esc[0] = rx; esc[1] = ry; esc[2] = 0.0
-  } else {
-    // stuck-escape: a purely reactive planner has no map, so a cluster of balls can trap it in a local
-    // minimum. If the robot stays confined to a small region too long, abandon the unreachable target
-    // and steer to fresh open space AWAY from the surrounding balls.
-    let dm = (rx - esc[0]) * (rx - esc[0]) + (ry - esc[1]) * (ry - esc[1])
-    if (dm > 0.6 * 0.6) { esc[0] = rx; esc[1] = ry; esc[2] = 0.0 }
-    else {
-      esc[2] += 1.0
-      if (esc[2] > 120.0) {
-        // head away from the nearby-ball centroid (toward the openest side), else toward field centre
-        let cxs = 0.0, cys = 0.0, cnt = 0, j = 0
-        while (j < nobs) {
-          let dx = ox[j] - rx, dy = oy[j] - ry
-          if (dx * dx + dy * dy < 1.2 * 1.2) { cxs += dx; cys += dy; cnt++ }
-          j++
-        }
-        let ax = cnt > 0 ? -cxs : -rx, ay = cnt > 0 ? -cys : -ry
-        let al = Math.sqrt(ax * ax + ay * ay) + 1e-6
-        let nx = rx + ax / al * 2.2, ny = ry + ay / al * 2.2
-        if (nx < -hw) nx = -hw
-        if (nx > hw) nx = hw
-        if (ny < -hh) ny = -hh
-        if (ny > hh) ny = hh
-        goal[0] = nx; goal[1] = ny; goal[2] = 0.0; goal[3] = 0.0
-        esc[0] = rx; esc[1] = ry; esc[2] = 0.0
-      }
-    }
   }
 
   // commit one timestep of the winning wheel speeds (his applyMotion: predict over DT)
