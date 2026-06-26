@@ -471,3 +471,27 @@ raw i32 (index / bitwise), so a boxed bool reinterprets to garbage. A partial mu
 make `[true,false]` (direct, ≤8 = multi-value tuple) disagree with `const a=[true,false]; return a` (heap).
 Left as the pre-existing numeric representation. A real fix needs escape analysis (box only when the array
 provably crosses to a JS export) — out of scope.
+
+## Map/Set primitive lowering (2026-06-26, commit 050be49) — measured: V8-NEGLIGIBLE
+
+Implemented the expert's #1 (prehash literal Map/Set get/has keys → `_h` probes, no per-access
+`__map_hash`) and #3 (inline `storedKey == queryKey` i64.eq before the `__str_eq`/`__same_value_zero`
+call in every hash probe). Correct + sound: native 2549/0, self-host 15/15, fuzz 0-div.
+
+**Clean A/B on the self-host corpus (V8/node), built dist at parent vs at 050be49:**
+- before: geomean **1.35×** slower (js 231.5ms / wasm 311.9ms)
+- after:  geomean **1.36×** slower (js 224.7ms / wasm 304.8ms)
+
+→ **within run-to-run noise — no V8 self-host win.** Root reason: V8's wasm tier ALREADY inlines the
+tiny `__str_eq` / `__same_value_zero` / `__map_hash` callees and folds the redundant work, so avoiding a
+*call frame* or a *hash recompute* buys nothing on V8. The expert's own note holds: #1/#3 help runtimes
+that DON'T inline tiny callees (wasmtime, wasm2c) — the multi-runtime floor — not the V8 self-host ratio.
+(Kept the changes: correct, sound, no V8 regression, and a real floor win.)
+
+**Implication for the rest of the plan.** The V8 self-host tax is NOT call/hash overhead (V8 erases it).
+It is *work V8 cannot optimize away*: the per-element BYTE WALK when a stored heap/slice key is compared
+against a literal key that is content-equal but bit-distinct (the "noncanonical heap-vs-literal true
+match"). So the real V8 lever is **#4 intern-on-insert** — canonicalize dynamic string keys through the
+static intern table on write, making those true matches bit-equal so the #3 i64.eq fast path actually
+fires and the byte walk disappears. #2 (hash CSE) and #5 (split `__dyn_get_t_h`) are also call/branch
+shaving → likely V8-negligible too. Measure #4 against this 1.35× baseline before assuming a win.
