@@ -1,37 +1,47 @@
-// Fourier epicycles — any closed curve deconstructed into rotating circles.
-// The heart curve is sampled at N=256 points, its DFT computed, and each frequency
-// component becomes one spinning arm. Sorted by magnitude descending, the largest
-// circles dominate the shape; tiny ones refine the cusps. The tip traces the heart.
+// Fourier Epicycles — draw any closed curve; watch it emerge from spinning circles.
 //
-// jz typing rules: f64 by default; i32 for bitwise. No mutable fractional module
-// globals (they narrow to i32 in wasm). All persistent fractional state lives in
-// typed arrays allocated at module level or in resize().
-// resize(w,h) → Uint32Array; init() computes DFT; frame(t, phi) renders.
+// The DFT decomposes the curve into N frequency components. Sorted by magnitude, each
+// becomes one spinning arm. frame(t, phi, terms) renders the chain using only the first
+// `terms` components: sweep from 1 (blocky silhouette) to 256 (exact reconstruction).
+// High-freq arms are thinner and cooler (blue/violet); low-freq arms are thick and warm
+// (amber/red). The ghost curve shows the full target; the bright traced path accumulates.
+// Gibbs ringing is visible at sharp corners when terms ≈ 20–60.
+//
+// Interaction (host-side): ptr.down paints a custom closed path → DFT on release.
+// Idle LFO sweeps terms 1→256 so the pedagogical arc plays automatically.
+//
+// jz rules: f64 by default; i32 for bitwise. All fractional persistent state in typed arrays.
+// resize(w,h) → Uint32Array; init() computes DFT; frame(t, phi, terms) renders.
 
 let W = 0, H = 0
-let px        // Uint32Array — pixel buffer
+let px
 
 let N = 256
+let TRACE_STEPS = 256
 
-// DFT outputs — f64 to avoid i32-narrowing
-let C_re   = new Float64Array(N)   // real part of each Fourier coefficient
-let C_im   = new Float64Array(N)   // imaginary part
-let mags   = new Float64Array(N)   // magnitude |C[k]|
-let freqs  = new Float64Array(N)   // mapped frequency k' in (-N/2, N/2]
+// DFT outputs — Float64Array to avoid i32-narrowing
+let C_re   = new Float64Array(N)
+let C_im   = new Float64Array(N)
+let mags   = new Float64Array(N)
+let freqs  = new Float64Array(N)
 
-// Sorted index list — Int32Array so loop counters stay i32-clean
+// Sorted index list — Int32Array keeps loop counters i32-clean
 let sortedIdx = new Int32Array(N)
 
-// Heart-curve samples — preallocated at module scope, NOT inside init(). Allocating in
-// init() would bump the heap *after* resize() handed the host its px view, and if that
-// bump grows wasm memory the px ArrayBuffer detaches (length→0) → a blank canvas.
+// Curve samples — allocated at module scope (NOT inside init) to avoid detaching px ArrayBuffer
 let hx = new Float64Array(N)
 let hy = new Float64Array(N)
 
-// Which closed curve to deconstruct. The host rolls a fresh one on each reload (chosen there so
-// JS and jz sample the identical shape). i32 module global — safe to reassign across calls.
+// Pre-computed trace path at TRACE_STEPS resolution (screen coords, for current T)
+// Allocated here so resize never triggers detach
+let traceX = new Float64Array(TRACE_STEPS)
+let traceY = new Float64Array(TRACE_STEPS)
+
+// ext[0] = max |coord| of sampled curve for fit-scaling
+let ext = new Float64Array(2)
+
+// Which preset shape. i32 module global — safe to reassign.
 let SHAPE = 0
-let ext = new Float64Array(1)   // max |coord| of the sampled curve → fit-scaling in frame()
 
 export let setShape = (id) => { SHAPE = id | 0 }
 
@@ -41,42 +51,39 @@ export let resize = (w, h) => {
   return px
 }
 
-// Sample the chosen closed curve into hx/hy. Every option closes onto itself over its sample set
-// (multi-loop spirographs sweep their full period), so the DFT reconstructs it cleanly and the pen
-// traces one full pass per 2π of phi.
+// Sample the chosen closed curve into hx/hy
 let sampleCurve = () => {
   let PI2 = 6.283185307179586
   let n = 0
   while (n < N) {
     let u = n / N, x = 0.0, y = 0.0
-    if (SHAPE == 1) {                       // five-petal rose
+    if (SHAPE == 1) {                        // five-petal rose
       let tau = PI2 * u, r = Math.cos(5.0 * tau) * 14.0
       x = r * Math.cos(tau); y = r * Math.sin(tau)
-    } else if (SHAPE == 2) {                // five-lobed star
+    } else if (SHAPE == 2) {                 // five-lobed star
       let tau = PI2 * u, r = (0.58 + 0.42 * Math.cos(5.0 * tau)) * 15.0
       x = r * Math.cos(tau); y = r * Math.sin(tau)
-    } else if (SHAPE == 3) {                // figure-eight (Gerono lemniscate)
+    } else if (SHAPE == 3) {                 // figure-eight (Gerono lemniscate)
       let tau = PI2 * u
       x = 15.0 * Math.cos(tau)
       y = 15.0 * Math.sin(tau) * Math.cos(tau)
-    } else if (SHAPE == 4) {                // spirograph hypotrochoid (a=5,b=3) — closes after 3 loops
+    } else if (SHAPE == 4) {                 // spirograph hypotrochoid — closes after 3 loops
       let tau = PI2 * 3.0 * u
       x = (2.0 * Math.cos(tau) + 5.0 * Math.cos(2.0 * tau / 3.0)) * 2.2
       y = (2.0 * Math.sin(tau) - 5.0 * Math.sin(2.0 * tau / 3.0)) * 2.2
-    } else if (SHAPE == 5) {                // five-cusp epicycloid
+    } else if (SHAPE == 5) {                 // five-cusp epicycloid
       let tau = PI2 * u
       x = (6.0 * Math.cos(tau) - Math.cos(6.0 * tau)) * 2.4
       y = (6.0 * Math.sin(tau) - Math.sin(6.0 * tau)) * 2.4
-    } else {                                // heart (default)
+    } else {                                 // heart (default)
       let tau = PI2 * u, s = Math.sin(tau)
       x = 16.0 * s * s * s
-      // flip Y for screen coords (heart opens upward on math axes → downward on screen)
       y = -(13.0 * Math.cos(tau) - 5.0 * Math.cos(2.0 * tau) - 2.0 * Math.cos(3.0 * tau) - Math.cos(4.0 * tau))
     }
     hx[n] = x; hy[n] = y
     n++
   }
-  // record the curve's max half-extent so frame() fits any shape to the canvas
+  // record max half-extent for fit-scaling
   let m = 1.0, k = 0
   while (k < N) {
     let ax = hx[k] < 0.0 ? -hx[k] : hx[k]
@@ -88,18 +95,12 @@ let sampleCurve = () => {
   ext[0] = m
 }
 
-export let init = () => {
-  sampleCurve()
-
-  let PI2 = 6.283185307179586   // 2*PI
-  // Compute DFT: treat the curve as complex z_n = hx[n] + i*hy[n]
-  // C[k] = (1/N) * sum_n( z_n * e^(-2*PI*i*k*n/N) )
-  // C_re[k] = (1/N) * sum_n( hx[n]*cos(2*PI*k*n/N) + hy[n]*sin(2*PI*k*n/N) )
-  // C_im[k] = (1/N) * sum_n( -hx[n]*sin(2*PI*k*n/N) + hy[n]*cos(2*PI*k*n/N) )
+// Compute DFT and sort by magnitude descending
+let computeDFT = () => {
+  let PI2 = 6.283185307179586
   let k = 0
   while (k < N) {
-    let re = 0.0, im = 0.0
-    let ni = 0
+    let re = 0.0, im = 0.0, ni = 0
     while (ni < N) {
       let ang = PI2 * k * ni / N
       let ca = Math.cos(ang), sa = Math.sin(ang)
@@ -110,87 +111,219 @@ export let init = () => {
     C_re[k] = re / N
     C_im[k] = im / N
     mags[k] = Math.sqrt(C_re[k] * C_re[k] + C_im[k] * C_im[k])
-    // map frequency: k <= N/2 → k, else k - N  (shift to centered range)
     freqs[k] = k <= (N / 2) ? k : k - N
     k++
   }
-
-  // Initialize sorted indices 0..N-1
+  // initialize sorted indices 0..N-1
   let si = 0
   while (si < N) { sortedIdx[si] = si; si++ }
-
-  // Insertion sort by magnitude descending (256 elements, done once)
+  // insertion sort by magnitude descending (256 elements, done once)
   let i = 1
   while (i < N) {
-    let key = sortedIdx[i]
-    let keyMag = mags[key]
-    let j = i - 1
+    let key = sortedIdx[i], keyMag = mags[key], j = i - 1
     while (j >= 0 && mags[sortedIdx[j]] < keyMag) {
-      sortedIdx[j + 1] = sortedIdx[j]
-      j--
+      sortedIdx[j + 1] = sortedIdx[j]; j--
     }
-    sortedIdx[j + 1] = key
-    i++
+    sortedIdx[j + 1] = key; i++
   }
 }
 
-// Additive, saturating pixel write
+export let init = () => {
+  sampleCurve()
+  computeDFT()
+}
+
+// Set one drawn sample point (host calls this N times before recompute)
+export let setDrawn = (i, x, y) => {
+  let idx = i | 0
+  hx[idx] = x; hy[idx] = y
+}
+
+// Called from host when user finishes drawing: hx/hy are already filled, then recompute
+export let recompute = () => {
+  let m = 1.0, k = 0
+  while (k < N) {
+    let ax = hx[k] < 0.0 ? -hx[k] : hx[k]
+    let ay = hy[k] < 0.0 ? -hy[k] : hy[k]
+    if (ax > m) m = ax
+    if (ay > m) m = ay
+    k++
+  }
+  ext[0] = m
+  computeDFT()
+}
+
+// ── HSL → 0xAABBGGRR (verified jz-safe decomposition) ──
+let hslColor = (h, s, l) => {
+  let c = (1.0 - Math.abs(2.0 * l - 1.0)) * s
+  let h6 = h * 6.0
+  let hm2 = h6 - 2.0 * Math.floor(h6 * 0.5)
+  let x = c * (1.0 - Math.abs(hm2 - 1.0))
+  let r1 = 0.0, g1 = 0.0, b1 = 0.0
+  if (h6 < 1.0) { r1 = c; g1 = x } else if (h6 < 2.0) { r1 = x; g1 = c } else if (h6 < 3.0) { g1 = c; b1 = x } else if (h6 < 4.0) { g1 = x; b1 = c } else if (h6 < 5.0) { r1 = x; b1 = c } else { r1 = c; b1 = x }
+  let m = l - c * 0.5
+  let r = ((r1 + m) * 255.0) | 0, g = ((g1 + m) * 255.0) | 0, b = ((b1 + m) * 255.0) | 0
+  return (255 << 24) | (b << 16) | (g << 8) | r
+}
+
+// Blend pixel at idx toward (r,g,b) with alpha a
+let bl = (idx, r, g, b, a) => {
+  let p = px[idx]
+  let pr = p & 255, pg = (p >> 8) & 255, pb = (p >> 16) & 255
+  let nr = (pr + (r - pr) * a) | 0
+  let ng = (pg + (g - pg) * a) | 0
+  let nb = (pb + (b - pb) * a) | 0
+  px[idx] = (255 << 24) | (nb << 16) | (ng << 8) | nr
+}
+
+// Additive saturating pixel write
 let addpix = (x, y, rr, gg, bb) => {
   if (x < 0 || x >= W || y < 0 || y >= H) return
   let idx = (y | 0) * W + (x | 0)
   let p = px[idx]
-  let r = (p & 0xff) + rr
-  let g = ((p >> 8) & 0xff) + gg
-  let b = ((p >> 16) & 0xff) + bb
+  let r = (p & 0xff) + rr, g = ((p >> 8) & 0xff) + gg, b = ((p >> 16) & 0xff) + bb
   if (r > 255) r = 255
   if (g > 255) g = 255
   if (b > 255) b = 255
   px[idx] = (255 << 24) | (b << 16) | (g << 8) | r
 }
 
-let line = (x0, y0, x1, y1, rr, gg, bb) => {
+// Thick line using Bresenham + parallel offsets for ~3px width
+let lineThick = (x0, y0, x1, y1, rr, gg, bb, a) => {
   let dx = x1 - x0, dy = y1 - y0
   let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
   let steps = (adx > ady ? adx : ady) | 0
   if (steps < 1) steps = 1
   let xi = dx / steps, yi = dy / steps
-  let x = x0, y = y0, s = 0
+  // perpendicular unit vector scaled to 1px
+  let len = Math.sqrt(dx * dx + dy * dy)
+  let px0 = 0.0, py0 = 0.0
+  if (len > 0.5) { px0 = -dy / len; py0 = dx / len }
+  let cx = x0, cy = y0, s = 0
   while (s <= steps) {
-    addpix(x | 0, y | 0, rr, gg, bb)
-    x += xi; y += yi; s++
+    let ix = cx | 0, iy = cy | 0
+    if (ix >= 0 && ix < W && iy >= 0 && iy < H) bl(iy * W + ix, rr, gg, bb, a)
+    // +1 in perp direction
+    let ix1 = (cx + px0) | 0, iy1 = (cy + py0) | 0
+    if (ix1 >= 0 && ix1 < W && iy1 >= 0 && iy1 < H) bl(iy1 * W + ix1, rr, gg, bb, a * 0.7)
+    // -1 in perp direction
+    let ix2 = (cx - px0) | 0, iy2 = (cy - py0) | 0
+    if (ix2 >= 0 && ix2 < W && iy2 >= 0 && iy2 < H) bl(iy2 * W + ix2, rr, gg, bb, a * 0.7)
+    cx += xi; cy += yi; s++
   }
 }
 
-// Draw a circle via ~60 line segments
-let circle = (cx, cy, r, rr, gg, bb) => {
+// Simple blend line
+let lineBlend = (x0, y0, x1, y1, r, g, b, a) => {
+  let dx = x1 - x0, dy = y1 - y0
+  let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
+  let steps = (adx > ady ? adx : ady) | 0
+  if (steps < 1) steps = 1
+  let xi = dx / steps, yi = dy / steps
+  let cx = x0, cy = y0, s = 0
+  while (s <= steps) {
+    let ix = cx | 0, iy = cy | 0
+    if (ix >= 0 && ix < W && iy >= 0 && iy < H) bl(iy * W + ix, r, g, b, a)
+    cx += xi; cy += yi; s++
+  }
+}
+
+let lineAdd = (x0, y0, x1, y1, rr, gg, bb) => {
+  let dx = x1 - x0, dy = y1 - y0
+  let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
+  let steps = (adx > ady ? adx : ady) | 0
+  if (steps < 1) steps = 1
+  let xi = dx / steps, yi = dy / steps
+  let cx = x0, cy = y0, s = 0
+  while (s <= steps) {
+    addpix(cx | 0, cy | 0, rr, gg, bb)
+    cx += xi; cy += yi; s++
+  }
+}
+
+// Draw circle via line segments — clearly visible thin ring
+let circleBlend = (ccx, ccy, r, rr, gg, bb, a) => {
   if (r < 1.0) return
-  let SEGS = 60
+  let SEGS = 64
   let inv = 6.283185307179586 / SEGS
-  let px0 = cx + r, py0 = cy
+  let px0 = ccx + r, py0 = ccy
   let si = 1
   while (si <= SEGS) {
     let ang = si * inv
-    let px1 = cx + r * Math.cos(ang), py1 = cy + r * Math.sin(ang)
-    line(px0, py0, px1, py1, rr, gg, bb)
+    let px1 = ccx + r * Math.cos(ang), py1 = ccy + r * Math.sin(ang)
+    lineBlend(px0, py0, px1, py1, rr, gg, bb, a)
     px0 = px1; py0 = py1; si++
   }
 }
 
-export let frame = (t, phi) => {
-  // Clear to opaque black
+// frame(t, phi, terms): phi = angle [0, 2π], terms = 1..N (int)
+export let frame = (t, phi, terms) => {
+  let T = terms | 0
+  if (T < 1) T = 1
+  if (T > N) T = N
+
+  // Clear to pure black
   let total = W * H, ci = 0
-  while (ci < total) { px[ci] = (255 << 24); ci++ }
+  while (ci < total) { px[ci] = (255 << 24) | 0; ci++ }
 
-  // Fit whatever curve was sampled: 78% of the half-frame, normalized by its recorded extent.
   let halfMin = (W < H ? W : H) * 0.5
-  let scale = halfMin * 0.78 / ext[0]
+  let scale = halfMin * 0.88 / ext[0]
+  let ocx = W * 0.5, ocy = H * 0.5
+  let PI2 = 6.283185307179586
 
-  let cx = W * 0.5, cy = H * 0.5
+  // ── Pre-compute full trace path for current T ──
+  // TRACE_STEPS points covering 0..2π give the complete reconstructed curve
+  let ti = 0
+  while (ti < TRACE_STEPS) {
+    let dphi = (ti / TRACE_STEPS) * PI2
+    let ex = ocx, ey = ocy
+    let tki = 0
+    while (tki < T) {
+      let tk = sortedIdx[tki] | 0
+      let tang = freqs[tk] * dphi + Math.atan2(C_im[tk], C_re[tk])
+      ex += mags[tk] * scale * Math.cos(tang)
+      ey += mags[tk] * scale * Math.sin(tang)
+      tki++
+    }
+    traceX[ti] = ex
+    traceY[ti] = ey
+    ti++
+  }
 
-  // Walk the epicycle chain to find current tip
-  let ex = cx, ey = cy
+  // ── Ghost: full target curve, dim grey-blue ──
+  let ghx0 = ocx + scale * hx[0], ghy0 = ocy + scale * hy[0]
+  let gj = 0
+  while (gj < N - 1) {
+    let ghx1 = ocx + scale * hx[gj + 1], ghy1 = ocy + scale * hy[gj + 1]
+    lineBlend(ghx0, ghy0, ghx1, ghy1, 55, 70, 105, 0.75)
+    ghx0 = ghx1; ghy0 = ghy1; gj++
+  }
+  lineBlend(ghx0, ghy0, ocx + scale * hx[0], ocy + scale * hy[0], 55, 70, 105, 0.75)
+
+  // ── Traced curve: accumulated path from 0 to phi ──
+  let frac = phi / PI2
+  if (frac < 0.0) frac = 0.0
+  if (frac > 1.0) frac = 1.0
+  let traceCount = (frac * TRACE_STEPS) | 0
+  if (traceCount < 1) traceCount = 1
+  if (traceCount > TRACE_STEPS - 1) traceCount = TRACE_STEPS - 1
+
+  // Draw the traced path with thick cyan glow
+  let tj2 = 0
+  while (tj2 < traceCount) {
+    let tx0 = traceX[tj2], ty0 = traceY[tj2]
+    let tx1 = traceX[tj2 + 1], ty1 = traceY[tj2 + 1]
+    // Core: bright white-cyan, thick
+    lineThick(tx0, ty0, tx1, ty1, 80, 240, 255, 0.95)
+    // Glow: wider softer aura
+    lineAdd(tx0, ty0, tx1, ty1, 20, 80, 120)
+    tj2++
+  }
+
+  // ── Epicycle chain: circles and arms ──
+  let ex = ocx, ey = ocy
   let ki = 0
-  while (ki < N) {
+  while (ki < T) {
     let k = sortedIdx[ki] | 0
     let freq = freqs[k]
     let mag = mags[k] * scale
@@ -200,38 +333,52 @@ export let frame = (t, phi) => {
     let nx = ex + mag * Math.cos(ang)
     let ny = ey + mag * Math.sin(ang)
 
-    // Draw faint circle for this arm
-    circle(ex, ey, mag, 15, 15, 15)
-    // Draw arm line
-    line(ex, ey, nx, ny, 200, 200, 200)
+    // rank: 0 = biggest/slowest arm, 1 = smallest/fastest
+    let rank = ki / (N - 1)
+
+    // Hue: amber (big slow) → teal → violet (tiny fast)
+    let hue = 0.08 + rank * 0.64
+
+    let magNorm = mag / (scale * ext[0])
+    // Arm: always visible — big arms solid, small arms still drawn
+    let armAlpha = 0.55 + magNorm * 0.45
+    if (armAlpha > 0.98) armAlpha = 0.98
+
+    // Circle: clearly visible — minimum 0.5 alpha
+    let circAlpha = 0.5 + magNorm * 0.4
+    if (circAlpha > 0.88) circAlpha = 0.88
+
+    let col = hslColor(hue, 0.9, 0.60)
+    let cr = col & 255, cg = (col >> 8) & 255, cb = (col >> 16) & 255
+
+    // Circle ring — draw all circles with radius > 2px
+    if (mag >= 2.0) circleBlend(ex, ey, mag, cr, cg, cb, circAlpha)
+
+    // Arm line — thick for large arms
+    if (mag > scale * 0.06) {
+      lineThick(ex, ey, nx, ny, cr, cg, cb, armAlpha)
+    } else {
+      lineBlend(ex, ey, nx, ny, cr, cg, cb, armAlpha)
+    }
 
     ex = nx; ey = ny
     ki++
   }
 
-  // Draw the traced curve. The epicycle tip path IS the heart, and the heart is already
-  // sampled in hx/hy (screen point j = cx + scale*hx[j], cy + scale*hy[j]). So draw the
-  // heart polyline from the start up to the sample the pen has reached — phi/2π of the way
-  // around — then bridge that leading edge to the live tip. Deterministic and bit-exact
-  // (no Math.* in the trace → JS and jz draw an identical heart), and it always completes
-  // a full loop regardless of frame rate (the old fixed tip buffer froze at ~27%).
-  let PI2 = 6.283185307179586
-  let frac = phi / PI2
-  if (frac < 0.0) frac = 0.0
-  if (frac > 1.0) frac = 1.0
-  let prog = (frac * N) | 0
-  if (prog > N - 1) prog = N - 1
-  let hxs = cx + scale * hx[0], hys = cy + scale * hy[0]
-  let j = 0
-  while (j < prog) {
-    let nxh = cx + scale * hx[j + 1], nyh = cy + scale * hy[j + 1]
-    line(hxs, hys, nxh, nyh, 255, 255, 255)
-    hxs = nxh; hys = nyh
-    j++
+  // ── Pen tip: bright white dot ──
+  let tipR = 5
+  let dty = -tipR
+  while (dty <= tipR) {
+    let dtx = -tipR
+    while (dtx <= tipR) {
+      if (dtx * dtx + dty * dty <= tipR * tipR) {
+        let ix = (ex + dtx) | 0, iy = (ey + dty) | 0
+        if (ix >= 0 && ix < W && iy >= 0 && iy < H) {
+          px[iy * W + ix] = (255 << 24) | (255 << 16) | (255 << 8) | 255
+        }
+      }
+      dtx++
+    }
+    dty++
   }
-  // Bridge the leading trace sample to the live epicycle tip (it sits between samples).
-  line(hxs, hys, ex, ey, 255, 255, 255)
-
-  // Highlight tip
-  addpix(ex | 0, ey | 0, 255, 255, 255)
 }

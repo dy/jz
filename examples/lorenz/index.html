@@ -13,7 +13,8 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 let baseTheta = 0.0, userSet = false
 const demo = runDemo({
   name: "lorenz",
-  hint: "Lorenz attractor — glows in the page theme · drag to spin the butterfly",
+  hint: "Lorenz attractor — the butterfly that launched chaos theory · drag to spin it",
+  size: { dpr: 2, budget: 1300000 },     // crisp + dense, but light enough to stay at 60fps
   load: (e) => e.init(),
   frame: (e, t) => {
     let theta

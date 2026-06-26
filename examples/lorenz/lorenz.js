@@ -1,104 +1,132 @@
-// Lorenz attractor — the canonical chaotic ODE that started it all.
-// σ=10, ρ=28, β=8/3. RK4 integration, many fine substeps per frame.
-// A per-pixel ENERGY field decays each frame and the trajectory deposits into it; the field is
-// then composited paper→ink, so the butterfly glows in whatever colour the page theme is wearing
-// (light ink on dark paper, dark ink on light paper) — and the background is ALWAYS exactly the
-// paper, so no faded-to-black smudges linger on a light page.
+// Lorenz attractor — the canonical chaotic ODE that started it all (σ=10, ρ=28, β=8/3, RK4).
 //
-// Float64Array for ALL fractional persistent state (x,y,z,θ,scale,offsets)
-// — scalar f64 module globals would be i32-narrowed in jz.
+// The whole trajectory lives as a ring buffer of 3D points; EVERY frame the entire buffer is
+// re-projected at the current rotation into a fresh energy field. Because nothing is accumulated in
+// screen space across frames, the butterfly rotates as one solid 3D body — no rotational smearing.
+// Density does the shading: where the orbit crowds (the spiral cores) the points pile up and glow
+// white; the sparse outer loops stay dim. The newest points form a brighter comet head that traces
+// the live orbit. The projection uses ONE uniform scale, so the butterfly keeps its true proportions
+// at any window aspect (it centres with margins on a wide screen rather than stretching).
+//
+// All fractional persistent state is in Float64Array (scalar f64 globals are i32-narrowed in jz).
 
 let W = 0, H = 0, px
-let energy        // Float32Array — per-pixel trail intensity, decays + accumulates
-// [x, y, z, θ, scX, scY, offX, offY]
+let energy        // Float32Array — per-pixel intensity, rebuilt every frame
+// [x, y, z, _, scX, scY, offX, offY]
 let st = new Float64Array(8)
-// theme colours: [paperR,paperG,paperB, inkR,inkG,inkB] — host feeds them; default = dark theme
+// theme colours: [paperR,G,B, inkR,G,B] — host feeds them; default = black paper, white ink
 let col = new Float64Array(6)
 col[0] = 0.0; col[1] = 0.0; col[2] = 0.0; col[3] = 240.0; col[4] = 240.0; col[5] = 240.0
-const SIG = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
-const DT = 0.00121, STEPS = 1400   // ~1.65× the substeps of before at the same trajectory pace
-                                   // (DT·STEPS held ≈ 1.7) → a denser stippled surface
-const FADE = 0.95                  // per-frame energy decay → trails persist ~70 frames
-const DEPOSIT = 0.5                // energy added per substep hit
 
-// Lorenz derivatives
+const SIG = 10.0, RHO = 28.0, BETA = 8.0 / 3.0
+const DT = 0.006
+const STEPS = 14          // trajectory substeps advanced per frame → a slow, trackable comet head
+const HMAX = 90000        // 3D history length — dense enough to draw a SOLID glowing attractor
+const DEPOSIT = 0.13      // density energy per history point (overlaps build the glow)
+const HEADN = 2400        // the newest HEADN points get a brighter, tapering comet head
+const HEADADD = 0.45
+
+// 3D trajectory ring buffer (module scope — never reallocated, so resize can't detach the px view)
+let hx = new Float64Array(HMAX), hy = new Float64Array(HMAX), hz = new Float64Array(HMAX)
+let hhead = 0, hcount = 0
+
 let dx = (x, y, z) => SIG * (y - x)
 let dy = (x, y, z) => x * (RHO - z) - y
 let dz = (x, y, z) => x * y - BETA * z
 
+// one RK4 step on st[0..2]
+let rk4 = () => {
+  let x = st[0], y = st[1], z = st[2]
+  let k1x = dx(x, y, z), k1y = dy(x, y, z), k1z = dz(x, y, z)
+  let ax = x + DT * 0.5 * k1x, ay = y + DT * 0.5 * k1y, az = z + DT * 0.5 * k1z
+  let k2x = dx(ax, ay, az), k2y = dy(ax, ay, az), k2z = dz(ax, ay, az)
+  let bx = x + DT * 0.5 * k2x, by = y + DT * 0.5 * k2y, bz = z + DT * 0.5 * k2z
+  let k3x = dx(bx, by, bz), k3y = dy(bx, by, bz), k3z = dz(bx, by, bz)
+  let cx = x + DT * k3x, cy = y + DT * k3y, cz = z + DT * k3z
+  let k4x = dx(cx, cy, cz), k4y = dy(cx, cy, cz), k4z = dz(cx, cy, cz)
+  st[0] = x + (DT / 6.0) * (k1x + 2.0 * k2x + 2.0 * k3x + k4x)
+  st[1] = y + (DT / 6.0) * (k1y + 2.0 * k2y + 2.0 * k3y + k4y)
+  st[2] = z + (DT / 6.0) * (k1z + 2.0 * k2z + 2.0 * k3z + k4z)
+}
+
+let push = () => {
+  let h = hhead
+  hx[h] = st[0]; hy[h] = st[1]; hz[h] = st[2]
+  hhead = h + 1; if (hhead >= HMAX) hhead = 0
+  if (hcount < HMAX) hcount = hcount + 1
+}
+
 export let resize = (w, h) => {
   W = w; H = h
-  // allocate the energy field FIRST, then px LAST and return it — so no later allocation can grow
-  // wasm memory and detach the px view the host just received.
   energy = new Float32Array(w * h)
   px = new Uint32Array(w * h)
-  // Projection fit: Lorenz x,y span ≈ ±20..27 and z spans ≈ 0..48. Map z=0 near the
-  // bottom (offY = 0.9h) rising to z≈48 near the top, and ±x across ~70% of the width —
-  // so the whole butterfly sits centered in frame instead of flying off the top edge.
-  st[4] = w * 0.022  // scX (wide enough to separate the two wing-spirals at x≈±8.5)
-  st[5] = h * 0.017  // scY
-  st[6] = w * 0.5    // offX
-  st[7] = h * 0.90   // offY (z=0 sits low; rising z climbs the frame)
+  // ONE uniform scale (based on the shorter side) → the butterfly keeps its true x:z proportions at
+  // any window aspect, centred. x spans ≈ ±20, z spans ≈ 0..48 (centre ≈ 24).
+  let S = w < h ? w : h
+  st[4] = S * 0.022                 // scX (wide enough to separate the two wing-spirals)
+  st[5] = S * 0.017                 // scY
+  st[6] = w * 0.5                   // offX — horizontal centre
+  st[7] = h * 0.5 + 24.0 * st[5]    // offY — z≈24 lands at mid-frame
   return px
 }
 
 export let init = () => {
-  st[0] = 0.1; st[1] = 0.0; st[2] = 0.0  // x,y,z
-  st[3] = 0.0                               // θ
-  let n = W * H, i = 0
-  while (i < n) { energy[i] = 0.0; i++ }
+  st[0] = 0.1; st[1] = 0.0; st[2] = 0.0
+  // discard the spiral-in transient (it isn't on the attractor)
+  let w0 = 0
+  while (w0 < 1500) { rk4(); w0++ }
+  // pre-fill the ring so the butterfly is fully drawn from frame 1
+  hhead = 0; hcount = 0
+  let i = 0
+  while (i < HMAX) { rk4(); push(); i++ }
+  let n = W * H, j = 0
+  while (j < n) { energy[j] = 0.0; j++ }
 }
 
-// Set the theme palette (paper = background, ink = trail). The harness calls this on load and
-// whenever the light/dark theme toggles, so the butterfly re-tints live.
+// theme palette (paper = background, ink = trail). The harness fixes this to black/white.
 export let setTheme = (pr, pg, pb, ir, ig, ib) => {
   col[0] = pr; col[1] = pg; col[2] = pb; col[3] = ir; col[4] = ig; col[5] = ib
 }
 
-// deposit energy at (ix,iy) — overlaps build up, fade later turns it into a glow
+// soft cross splat → the orbit reads as a substantial surface, not vanishing single pixels
 let plot = (ix, iy, add) => {
-  if (ix < 0 || ix >= W || iy < 0 || iy >= H) return
-  energy[iy * W + ix] = energy[iy * W + ix] + add
+  if (ix < 1 || ix >= W - 1 || iy < 1 || iy >= H - 1) return
+  let c = iy * W + ix
+  energy[c] = energy[c] + add
+  energy[c - 1] = energy[c - 1] + add * 0.4
+  energy[c + 1] = energy[c + 1] + add * 0.4
+  energy[c - W] = energy[c - W] + add * 0.4
+  energy[c + W] = energy[c + W] + add * 0.4
 }
 
 export let frame = (t, theta) => {
-  let x = st[0], y = st[1], z = st[2]
+  // advance the live orbit a little
+  let k = 0
+  while (k < STEPS) { rk4(); push(); k++ }
+
+  // clear the field — it is rebuilt fresh at the current rotation (no screen-space smear)
+  let n = W * H, i = 0
+  while (i < n) { energy[i] = 0.0; i++ }
+
+  // re-project the whole 3D history at the current rotation; newest first → comet head
   let cosT = Math.cos(theta), sinT = Math.sin(theta)
   let scX = st[4], scY = st[5], offX = st[6], offY = st[7]
-
-  // decay the whole energy field
-  let n = W * H, i = 0
-  while (i < n) { energy[i] = energy[i] * FADE; i++ }
-
-  // integrate & plot
-  let k = 0
-  while (k < STEPS) {
-    // RK4
-    let k1x = dx(x, y, z), k1y = dy(x, y, z), k1z = dz(x, y, z)
-    let ax = x + DT * 0.5 * k1x, ay = y + DT * 0.5 * k1y, az = z + DT * 0.5 * k1z
-    let k2x = dx(ax, ay, az), k2y = dy(ax, ay, az), k2z = dz(ax, ay, az)
-    let bx = x + DT * 0.5 * k2x, by = y + DT * 0.5 * k2y, bz = z + DT * 0.5 * k2z
-    let k3x = dx(bx, by, bz), k3y = dy(bx, by, bz), k3z = dz(bx, by, bz)
-    let cx = x + DT * k3x, cy = y + DT * k3y, cz = z + DT * k3z
-    let k4x = dx(cx, cy, cz), k4y = dy(cx, cy, cz), k4z = dz(cx, cy, cz)
-    x = x + (DT / 6.0) * (k1x + 2.0 * k2x + 2.0 * k3x + k4x)
-    y = y + (DT / 6.0) * (k1y + 2.0 * k2y + 2.0 * k3y + k4y)
-    z = z + (DT / 6.0) * (k1z + 2.0 * k2z + 2.0 * k3z + k4z)
-
-    // project: rotate in XY plane, use z as vertical
-    let sx = (x * cosT - y * sinT) * scX + offX
-    let sy = offY - z * scY
-
-    // a single fine 1px point — the high substep count makes the trail dense without
-    // fattening each dot, so the wings read as a delicate stippled surface, not a ribbon.
-    plot(sx | 0, sy | 0, DEPOSIT)
-    k++
+  let newest = hhead - 1
+  if (newest < 0) newest = HMAX - 1
+  let j = 0
+  while (j < hcount) {
+    let idx = newest - j
+    if (idx < 0) idx = idx + HMAX
+    let X = hx[idx], Y = hy[idx], Z = hz[idx]
+    let sx = (X * cosT - Y * sinT) * scX + offX
+    let sy = offY - Z * scY
+    let add = DEPOSIT
+    if (j < HEADN) add = add + HEADADD * (1.0 - j / HEADN)   // bright, tapering comet head
+    plot(sx | 0, sy | 0, add)
+    j++
   }
 
-  st[0] = x; st[1] = y; st[2] = z
-
-  // composite: every pixel = lerp(paper, ink, intensity). Writing all pixels (opaque) means the
-  // background is exactly the paper colour in any theme — no transparent gaps, no stale smudges.
+  // composite: every pixel = lerp(paper, ink, intensity) — opaque, so the bg is exactly the paper
   let pr = col[0], pg = col[1], pb = col[2], ir = col[3], ig = col[4], ib = col[5]
   i = 0
   while (i < n) {

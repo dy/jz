@@ -7,20 +7,175 @@
 </head>
 <body>
 <script type="module">
-import { runDemo } from "../lib/jzdemo.js"
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// A fresh figure on every reload: heart, rose, star, figure-eight, spirograph or epicycloid.
-// Chosen ONCE in the host (so JS and jz deconstruct the same curve), re-applied in `load`.
+// Fourier Epicycles — canonical interactive version.
+//
+// AUTO: LFO sweeps terms 1→256 so you see the full arc automatically:
+//   • 1–10 terms:   blocky silhouette — only the gross shape survives
+//   • 20–60 terms:  Gibbs ringing — overshoots at sharp corners
+//   • 256 terms:    exact reconstruction — pen traces the target perfectly
+//
+// INTERACTION:
+//   • Draw your own closed curve with the mouse/finger → DFT fires on release
+//   • Left edge = 1 term (blocky), right edge = 256 terms (exact)
+//   • Drag left↔right to scrub through the approximation regime
+//   • Double-click → reset to preset shape
+//
+// Arms are colored by frequency: amber (big slow) → teal → violet (tiny fast).
+// The ghost curve (dim blue) shows the full target; the cyan trace shows reconstruction.
+
 const SHAPES = ["a heart", "a rose", "a star", "a figure-eight", "a spirograph", "an epicycloid"]
 const shape = Math.floor(Math.random() * SHAPES.length)
+
+// Drawing state
+let drawing = false
+let drawPts = []   // raw pointer samples during draw
+let drawnHx = null, drawnHy = null  // filled when user has drawn a curve
+
+// Terms state: -1 = idle LFO, 0..1 = user-set (maps to 1..256)
+let userTermsT = -1
+let lastPtrDown = -30
+
+// LFO: ramp 1→256 slowly (period ~20s), giving time to see each regime
+// Also: phi advances at ~0.7 rad/s → one full loop ≈ 9s
+const TAU = 2 * Math.PI
+
 const demo = runDemo({
   name: "epicycles",
-  hint: `Fourier epicycles tracing ${SHAPES[shape]} — each circle is one frequency component`,
+  hint: `Fourier epicycles tracing ${SHAPES[shape]} — draw to replace · left↔right scrubs term count · ghost = target`,
+  size: { dpr: 2, budget: null },
   load: (e) => { e.setShape?.(shape); e.init() },
   frame: (e, t) => {
-    const phi = (t * 0.9) % (2 * Math.PI)   // ~7s per full loop — a watchable pen pace
-    e.frame(t, phi)
+    const phi = (t * 0.7) % TAU   // ~9s per full loop
+
+    let terms
+    if (userTermsT >= 0 && t - lastPtrDown < 5 && !drawing) {
+      // hold user position for 5s after release
+      terms = Math.round(1 + userTermsT * 255)
+    } else if (!drawing) {
+      userTermsT = -1
+      // LFO: 20s cycle, 1→256 (ramp, not sine, to spend time at each regime)
+      const lfoPhase = (t * 0.05) % 1.0   // 0..1 over 20s
+      // spend extra time at low terms (Gibbs zone is interesting)
+      const boosted = lfoPhase < 0.35 ? lfoPhase * 1.43 : 0.5 + (lfoPhase - 0.35) * 0.77
+      terms = Math.max(1, Math.round(boosted * 255))
+    } else {
+      terms = 256   // while drawing, show full reconstruction of preset
+    }
+
+    e.frame(t, phi, terms)
   },
+})
+
+const ptr = trackPointer(demo.cv)
+
+// ── Draw-your-own ──
+const N = 256
+
+const startDraw = () => {
+  drawing = true
+  drawPts = []
+}
+
+const addDrawPt = () => {
+  if (!drawing) return
+  // ptr.x/y are normalized 0..1
+  drawPts.push({ x: ptr.x, y: ptr.y })
+}
+
+const finishDraw = () => {
+  if (!drawing) return
+  drawing = false
+  if (drawPts.length < 6 || !demo.engine) return
+
+  // Resample drawPts to N evenly-spaced samples (arc-length parameterized)
+  // 1. compute cumulative arc length
+  const arcs = [0]
+  for (let i = 1; i < drawPts.length; i++) {
+    const dx = drawPts[i].x - drawPts[i - 1].x
+    const dy = drawPts[i].y - drawPts[i - 1].y
+    arcs.push(arcs[i - 1] + Math.sqrt(dx * dx + dy * dy))
+  }
+  const totalArc = arcs[arcs.length - 1]
+  if (totalArc < 0.01) return
+
+  // 2. resample to N points, closing the curve (wrap around)
+  const rsX = new Float64Array(N)
+  const rsY = new Float64Array(N)
+  let pi = 0
+  for (let ni = 0; ni < N; ni++) {
+    const target = (ni / N) * totalArc
+    while (pi < arcs.length - 2 && arcs[pi + 1] < target) pi++
+    const t0 = arcs[pi], t1 = arcs[pi + 1] || t0
+    const alpha = t1 > t0 ? (target - t0) / (t1 - t0) : 0
+    const p0 = drawPts[pi], p1 = drawPts[pi + 1] || drawPts[pi]
+    rsX[ni] = p0.x + (p1.x - p0.x) * alpha
+    rsY[ni] = p0.y + (p1.y - p0.y) * alpha
+  }
+
+  // 3. Center and scale to kernel coordinate system (max extent → ~15 units like presets)
+  let cx = 0, cy = 0
+  for (let i = 0; i < N; i++) { cx += rsX[i]; cy += rsY[i] }
+  cx /= N; cy /= N
+
+  let maxE = 0
+  for (let i = 0; i < N; i++) {
+    rsX[i] -= cx; rsY[i] -= cy
+    const e = Math.max(Math.abs(rsX[i]), Math.abs(rsY[i]))
+    if (e > maxE) maxE = e
+  }
+  const norm = maxE > 0 ? 15.0 / maxE : 1
+  for (let i = 0; i < N; i++) { rsX[i] *= norm; rsY[i] *= norm }
+
+  drawnHx = rsX; drawnHy = rsY
+
+  // Push into wasm kernel via setDrawn and recompute
+  if (demo.engine.setDrawn) {
+    for (let i = 0; i < N; i++) demo.engine.setDrawn(i, rsX[i], rsY[i])
+    demo.engine.recompute()
+  }
+}
+
+// ── Pointer: left↔right scrubs terms; sustained drag = draw your own curve ──
+// Distinguish: a short drag (< 20 pts) = terms scrub; a longer gesture = draw mode.
+// In draw mode the gesture is submitted to the DFT on pointer-up.
+const onDown = () => {
+  if (!demo.engine) return
+  startDraw()
+  addDrawPt()
+  lastPtrDown = demo.t || 0
+}
+
+const onMove = () => {
+  if (!demo.engine || !ptr.down) return
+  addDrawPt()
+}
+
+const onUp = () => {
+  if (drawPts.length > 20) {
+    // Treat as drawn curve
+    finishDraw()
+  } else {
+    // Short tap / small drag = scrub terms by horizontal position
+    drawing = false
+    drawPts = []
+    userTermsT = ptr.x   // 0=1 term (left), 1=256 terms (right)
+    lastPtrDown = demo.t || 0
+  }
+}
+
+demo.cv.addEventListener("pointerdown", onDown)
+demo.cv.addEventListener("pointermove", onMove)
+demo.cv.addEventListener("pointerup", onUp)
+
+// Double-click: reset to preset shape
+demo.cv.addEventListener("dblclick", () => {
+  if (!demo.engine) return
+  drawnHx = null; drawnHy = null
+  demo.engine.setShape?.(shape)
+  demo.engine.init()
+  userTermsT = -1
 })
 </script>
 </body>

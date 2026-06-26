@@ -6,8 +6,8 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
-<!-- algorithm readout: top-center, bare white text with a soft dark outline -->
-<div id="algo" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 15px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.05em;color:#fff;text-shadow:0 0 3px rgba(0,0,0,.9),0 0 1px rgba(0,0,0,.9),0 1px 2px rgba(0,0,0,.7);pointer-events:none"></div>
+<!-- algorithm readout: bottom of the plot, black text with a soft white halo so it reads on the dither -->
+<div id="algo" style="position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;font:600 16px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.03em;color:#000;text-shadow:0 0 8px #fff,0 0 4px #fff,0 0 2px #fff;pointer-events:none"></div>
 
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
@@ -18,7 +18,7 @@ const NAMES = ["Threshold", "Random", "Ordered · Bayer 4×4", "Ordered · Bayer
 const N = NAMES.length
 let mode = 0, manual = false, manualAt = -10, nowT = 0
 const algoEl = document.getElementById("algo")
-const setMode = (m) => { m = m < 0 ? 0 : m > N - 1 ? N - 1 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `${mode + 1}⁄${N} &nbsp; <b style="font-weight:700">${NAMES[mode]}</b>` } }
+const setMode = (m) => { m = m < 0 ? 0 : m > N - 1 ? N - 1 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `<b style="font-weight:700">${NAMES[mode]}</b> &nbsp; <span style="font-weight:500;opacity:.5">${mode + 1}/${N}</span>` } }
 setMode(0)
 
 const demo = runDemo({
@@ -27,8 +27,8 @@ const demo = runDemo({
   size: { budget: 420000 },          // a touch coarse so the dither dots read clearly
   frame: (e, t) => {
     nowT = t
-    if (manual && t - manualAt > 6) manual = false        // hand control back after 6s idle
-    if (!manual) setMode(Math.floor(t / 2.6) % N)         // auto-cycle the methods
+    if (manual && t - manualAt > 8) manual = false        // hand control back after 8s idle
+    if (!manual) setMode(Math.floor(t / 6) % N)           // auto-cycle: hold each method ~6s
     e.frame(t, mode)
   },
 })

@@ -16,9 +16,10 @@ import { EXAMPLES, byName, WIKI } from '../examples.js'
 export { EXAMPLES }
 const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 
-// Theme — example pages share the site's light/dark theme. Set data-theme before the chrome paints
-// (from localStorage, else the OS), live-toggle any injected .theme-toggle (event delegation, so it works
-// no matter when the masthead mounts), and follow the OS until the user makes an explicit choice.
+// Theme — the site CHROME (masthead, bottom bar, page margins) follows the light/dark theme and the
+// toggle keeps working. Only the DEMO itself is theme-independent: its canvas is always black with
+// white as the main colour (see applyTheme + the runDemo `bg` default), so the example art reads the
+// same regardless of the site theme.
 ;(() => {
   const root = document.documentElement
   const stored = () => { try { return localStorage.getItem('theme') } catch { return null } }
@@ -32,23 +33,11 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => { if (!stored()) set(e.matches ? 'light' : 'dark') })
 })()
 
-// Resolve a theme token (--paper / --ink, possibly a light-dark() pair) to [r,g,b] by letting the
-// browser compute it on a throwaway element.
-const themeRGB = (prop) => {
-  const el = document.createElement('div')
-  el.style.cssText = 'position:absolute;left:-9999px'
-  el.style.color = `var(${prop})`
-  document.body.appendChild(el)
-  const m = getComputedStyle(el).color.match(/[\d.]+/g) || [0, 0, 0]
-  el.remove()
-  return [Math.round(+m[0] || 0), Math.round(+m[1] || 0), Math.round(+m[2] || 0)]
-}
-// Feed the live page palette to any kernel exporting setTheme(pr,pg,pb, ir,ig,ib): a grayscale demo
-// can then paint its background as the page paper and its ink as the page ink, flipping with the
-// light/dark toggle. A no-op for kernels without setTheme. runDemo calls this on load, on resize,
-// and whenever the theme changes — so opting in is just exporting setTheme.
+// The demo is theme-INDEPENDENT: any kernel exporting setTheme(pr,pg,pb, ir,ig,ib) is always fed a
+// black background + white ink, so the art looks identical whether the site is in light or dark mode.
+// A no-op for kernels without setTheme. runDemo calls this on load and on resize.
 export const applyTheme = (engine) => {
-  if (engine && engine.setTheme) { const p = themeRGB('--paper'), k = themeRGB('--ink'); engine.setTheme(p[0], p[1], p[2], k[0], k[1], k[2]) }
+  if (engine && engine.setTheme) engine.setTheme(0, 0, 0, 235, 235, 235)
 }
 
 // Embed mode (?embed) — strip ALL chrome (masthead, edge chevrons, palette, hint),
@@ -405,7 +394,8 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       .jz-pal { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
       .jz-pal .sw { display: block; width: 100%; height: 100%;
         background: conic-gradient(from 0deg, #ff5151, #ffc400, #36e07a, #36a8ff, #a36bff, #ff5151);
-        box-shadow: 0 0 0 1.5px rgba(255,255,255,.35) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
+        /* darker rim on the light (paper) theme so the swatch doesn't blend in; light rim on dark */
+        box-shadow: 0 0 0 1.5px light-dark(rgba(0,0,0,.3), rgba(255,255,255,.35)) inset; transition: transform .4s cubic-bezier(.2,.75,.2,1); }
       .jz-pal:hover .sw { transform: rotate(90deg); }
       .jz-pal.on .sw { transform: rotate(180deg); }
       /* fullscreen — two-angles expand icon; fills the viewport edge-to-edge (Esc / click to exit) */
@@ -413,6 +403,25 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         -webkit-appearance: none; appearance: none; color: var(--dim); display: inline-flex; align-items: center; justify-content: center; transition: color .18s; }
       .jz-fs:hover { color: var(--ink); }
       .jz-fs svg { display: block; }
+      /* random: re-roll the demo's randomness (new seed / obstacle / sites) — separate from interaction */
+      .jz-rand { flex: none; width: 26px; height: 26px; padding: 0; margin: 0; border: 0; background: none; cursor: pointer;
+        -webkit-appearance: none; appearance: none; color: var(--dim); display: inline-flex; align-items: center; justify-content: center; transition: color .18s, transform .3s cubic-bezier(.2,.75,.2,1); }
+      .jz-rand:hover { color: var(--ink); }
+      .jz-rand:active { transform: rotate(180deg); }
+      .jz-rand svg { display: block; }
+      /* screensaver: the fullscreen button hides the masthead and re-fits the demo to the whole
+         viewport (a genuine resize → native-res render, not a CSS stretch). The bottom bar stays,
+         floating transparently OVER the demo — description (left) + switch/fps/buttons (right), all
+         in white with a soft dark halo so they read on any frame. Chevrons stay too, in white. */
+      html.jz-saver .masthead { display: none !important; }
+      html.jz-saver body > canvas:not(.gradient) { top: 0 !important; left: 0 !important; transform: none !important;
+        width: 100vw !important; height: 100vh !important; object-fit: fill !important; }
+      html.jz-saver .jz-bar { background: transparent !important; border-top: 0 !important;
+        padding-inline: 28px !important;   /* full-width: drop the centred-column inset → description hugs the left, controls the right */
+        text-shadow: 0 1px 4px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.7); }
+      html.jz-saver .jz-desc, html.jz-saver .jz-wiki, html.jz-saver .jz-codelink,
+      html.jz-saver .jz-fps, html.jz-saver .jz-fps .metric b, html.jz-saver .jz-fps .unit,
+      html.jz-saver .jz-rand, html.jz-saver .jz-fs, html.jz-saver .jz-edge a { color: #fff !important; }
       /* code preview: a "code" link in the description + a panel that slides over the demo area
          (between the two bands, same column as the canvas) showing the kernel's own source. */
       .jz-codelink { font: inherit; color: var(--soft); background: none; border: 0; padding: 0; cursor: pointer;
@@ -436,8 +445,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
       <div class="jz-desc"></div>
       <button class="jz-engine" id="jz-toggle" role="switch" aria-label="JS / JZ engine"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
       ${meter ? `<div class="jz-fps"><canvas class="spark" id="jz-spark"></canvas><span class="metric"><b id="jz-fps">··</b><span class="unit">fps</span></span><span class="metric ms"><b id="jz-ms-v">··</b><span class="unit">ms</span></span></div>` : ''}
+      <button class="jz-rand" id="jz-rand" title="randomize" aria-label="randomize"><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5"/><circle cx="8.5" cy="8.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15.5" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15.5" r="1.35" fill="currentColor" stroke="none"/></svg></button>
       ${palette ? `<button class="jz-pal" id="jz-pal" title="randomize palette" aria-label="randomize palette"><span class="sw"></span></button>` : ''}
-      <button class="jz-fs" id="jz-fs" title="fullscreen" aria-label="fullscreen"></button>
+      <button class="jz-fs" id="jz-fs" title="screensaver" aria-label="screensaver"></button>
     </div>`
   document.body.appendChild(el)
 
@@ -491,7 +501,9 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
     sctx.beginPath(); sctx.moveTo(0, h)
     for (let i = 0; i < n; i++) sctx.lineTo(xs(i), ys(hist[i]))
     sctx.lineTo(w, h); sctx.closePath()
-    const c = document.documentElement.dataset.theme === 'light' ? '0,0,0' : '255,255,255'   // black in light, white in dark
+    // white in the screensaver (matches the white bar text over the demo); else follow the theme
+    const c = document.documentElement.classList.contains('jz-saver') ? '255,255,255'
+      : document.documentElement.dataset.theme === 'light' ? '0,0,0' : '255,255,255'
     const grad = sctx.createLinearGradient(0, 0, 0, h)
     grad.addColorStop(0, `rgba(${c},.42)`)
     grad.addColorStop(1, `rgba(${c},.04)`)
@@ -521,34 +533,39 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   const pal = el.querySelector('#jz-pal')
   if (pal) pal.onclick = () => { lut = buildLUT(randomPalette()); pal.classList.toggle('on'); onPalette?.() }
 
-  // Fullscreen (⛶): toggle the demo edge-to-edge via the Fullscreen API on <html> — the chrome
-  // (both bands) rides along so the controls stay reachable; the `.jz-full` class drops the column
-  // cap. Each toggle dispatches a resize so the demo re-fits + re-seeds to the new width.
+  // Screensaver (⛶): hide ALL chrome (masthead, bar, edge nav) and let the demo re-fit to the whole
+  // viewport — the toggle dispatches a resize so runDemo's sizeTo() recomputes the backing at the
+  // full-screen aspect and the kernel RENDERS at native resolution (not a CSS stretch of the framed
+  // canvas). Best-effort OS fullscreen rides along; Esc or OS-exit drops back out cleanly.
   const fsBtn = el.querySelector('#jz-fs')
   if (fsBtn && !EMBED) {
-    // Two small sharp corner-brackets on the ╱ diagonal (top-right + bottom-left) — square caps +
-    // miter joins, no rounding, sized to the palette square beside it. In MIN (collapse) the two
-    // brackets point inward but sit well apart (never touching) instead of meeting at the centre.
+    // Two small sharp corner-brackets on the ╱ diagonal — expand (enter) / collapse (exit).
     const ico = (d) => `<svg viewBox="0 0 26 26" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">${d.map(p => `<path d="${p}"/>`).join('')}</svg>`
     const MAX = ico(['M18 3H23V8', 'M8 23H3V18'])
     const MIN = ico(['M23 8H18V3', 'M3 18H8V23'])
     const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement
     fsBtn.innerHTML = MAX
-    fsBtn.onclick = () => {
-      const r = document.documentElement
-      if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)
-      else (r.requestFullscreen || r.webkitRequestFullscreen)?.call(r)
-    }
-    const sync = () => {
-      const on = !!fsEl()
-      document.documentElement.classList.toggle('jz-full', on)
+    let saver = false
+    const setSaver = (on) => {
+      saver = on
+      document.documentElement.classList.toggle('jz-saver', on)
       fsBtn.innerHTML = on ? MIN : MAX
-      fsBtn.setAttribute('aria-label', on ? 'exit fullscreen' : 'fullscreen')
-      fsBtn.title = on ? 'exit fullscreen' : 'fullscreen'
-      try { dispatchEvent(new Event('resize')) } catch {}   // re-fit the demo to the new column width
+      fsBtn.setAttribute('aria-label', on ? 'exit screensaver' : 'screensaver')
+      fsBtn.title = on ? 'exit screensaver' : 'screensaver'
+      try { dispatchEvent(new Event('resize')) } catch {}   // re-fit + re-render the demo at the new size
     }
+    fsBtn.onclick = () => {
+      const next = !saver
+      setSaver(next)
+      const r = document.documentElement
+      if (next) { try { (r.requestFullscreen || r.webkitRequestFullscreen)?.call(r)?.catch?.(() => {}) } catch {} }
+      else if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)
+    }
+    // OS fullscreen exited (Esc / system) → leave the screensaver too
+    const sync = () => { if (!fsEl() && saver) setSaver(false) }
     document.addEventListener('fullscreenchange', sync)
     document.addEventListener('webkitfullscreenchange', sync)
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && saver && !fsEl()) setSaver(false) })
   }
   // Blit src (engine pixels) → dst (ImageData buffer), colorizing if a palette is active.
   // Indexes the LUT by luminance, so it works on colored kernels too (false-color remap),
@@ -610,7 +627,7 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
 //   bg       page background behind the canvas (default '#000'; light demos pass e.g. '#eee')
 //   cursor   canvas cursor (default 'crosshair')
 //   palette  show the colormap button (default true)
-export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = 'var(--paper)', cursor = 'crosshair', palette = true }) => {
+export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = '#000', cursor = 'crosshair', palette = true, randomize }) => {
   document.title = `${titleOf(name)} - jz`
 
   // Shared page + canvas styling — one rule for every demo, no per-example <style>. In embed
@@ -672,6 +689,18 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
     code: `./${name}.js`,
     src: `https://github.com/dy/jz/tree/main/examples/${name}`,
     onSwitch: setEngine,
+  })
+
+  // Random button: re-roll the demo's randomness, separate from any pointer interaction. Uses the
+  // explicit `randomize` callback if the example provides one, else falls back to a fresh
+  // reseed/init export. After re-rolling, re-tint (theme) so colour-reactive kernels stay correct.
+  document.getElementById('jz-rand')?.addEventListener('click', () => {
+    if (!engine) return
+    if (randomize) randomize(engine, demo)
+    else if (engine.randomize) engine.randomize()
+    else if (engine.reseed) engine.reseed()
+    else if (engine.init) engine.init()
+    applyTheme(engine)
   })
 
   const loop = () => {

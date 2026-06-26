@@ -7,22 +7,127 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo } from "../lib/jzdemo.js"
 
-// speed: cells per second to reveal; drag left/right to slow/fast. High by default so the spiral
-// fills in a handful of seconds — the kernel now re-walks the whole spiral each frame, so this is
-// just how fast the reveal front advances.
-let baseSpeed = 90000
+// Ulam spiral — primes coloured by diagonal family (8 hues, one per quadratic streak).
+// The spontaneous diagonal lattice emerges from quadratic polynomials landing many primes.
+//
+// DRAG to pan. SCROLL to zoom toward cursor. DBLCLICK to reset to center.
+// Idle: slow LFO zooms in and pans along the diagonal streaks so the structure
+// reveals itself automatically. Zoom deep to see the diagonal lattice persist to N~millions.
+
+const HOME = { cx: 0, cy: 0, scale: 6 }
+const view = { cx: 0, cy: 0, scale: 6 }
+
+// ── Idle LFO: visits interesting zoom levels along the diagonal streak ──
+// Stops: overview → zoom in along diagonal → very deep → back out
+const STOPS = [
+  { cx:  0.0,  cy:  0.0,  scale:  6 },   // center overview, ~120×120 cells
+  { cx: 18.0,  cy: -18.0, scale: 14 },   // zoomed in on upper-right diagonal
+  { cx: 60.0,  cy: -60.0, scale:  9 },   // mid-range: streaks clearly visible
+  { cx:120.0,  cy:-120.0, scale:  5 },   // wide angle at large N
+  { cx: 40.0,  cy:  40.0, scale: 18 },   // lower-left diagonal, zoomed
+  { cx:  0.0,  cy:  0.0,  scale:  6 },   // return to center
+]
+const DWELL  = 5.0
+const TRAVEL = 3.5
+
+const ease   = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2
+const lerp   = (a, b, t) => a + (b - a) * t
+const lerpV  = (va, vb, t) => ({
+  cx:    lerp(va.cx,    vb.cx,    t),
+  cy:    lerp(va.cy,    vb.cy,    t),
+  scale: lerp(va.scale, vb.scale, t),
+})
+
+const lfoView = (elapsed) => {
+  const cycle = DWELL + TRAVEL
+  const total = STOPS.length * cycle
+  const looped = elapsed % total
+  const idx = Math.floor(looped / cycle)
+  const phase = looped - idx * cycle
+  const next = (idx + 1) % STOPS.length
+  if (phase < DWELL) return { ...STOPS[idx] }
+  return lerpV(STOPS[idx], STOPS[next], ease((phase - DWELL) / TRAVEL))
+}
+
+let userInteracted = false
+let lastInteract = -30
+let lfoStart = 0
+let lfoBase = { ...HOME }
+
 const demo = runDemo({
   name: "ulam",
-  hint: "Primes on a square spiral — diagonal streaks emerge from quadratic polynomials landing many primes",
+  hint: "Primes on a square spiral — 8 diagonal families in distinct hues · drag to pan · scroll to zoom · dblclick to reset",
+  size: { dpr: 2, budget: null },
   frame: (e, t) => {
-    let speed = baseSpeed
-    if (ptr.down) speed = Math.round(baseSpeed * (0.15 + ptr.x * 2.5))
-    e.frame(t, speed)
+    const idleFor = t - lastInteract
+    if (!userInteracted || idleFor > 5.0) {
+      if (userInteracted && idleFor > 5.0 && idleFor < 5.1) {
+        lfoStart = t
+        lfoBase = { ...view }
+        userInteracted = false
+      }
+      if (!userInteracted) {
+        const blendT = Math.min(1.0, (t - lfoStart) / 2.0)
+        const lfoV = lfoView(t - lfoStart)
+        const blended = lerpV(lfoBase, lfoV, ease(blendT))
+        view.cx = blended.cx; view.cy = blended.cy; view.scale = blended.scale
+      }
+    }
+    e.frame(t, view.cx, view.cy, view.scale)
   },
 })
-const ptr = trackPointer(demo.cv)
+
+const cv = demo.cv
+
+// ── Pan: drag ──
+let down = false, lx = 0, ly = 0
+
+cv.addEventListener("pointerdown", e => {
+  down = true; lx = e.clientX; ly = e.clientY
+  userInteracted = true; lastInteract = demo.t || 0
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+})
+cv.addEventListener("pointermove", e => {
+  if (!down) return
+  const rect = cv.getBoundingClientRect()
+  // pan in world units = pixel delta / scale
+  view.cx -= (e.clientX - lx) / rect.width  * (W_cells(rect.width,  view.scale))
+  view.cy -= (e.clientY - ly) / rect.height * (W_cells(rect.height, view.scale))
+  lx = e.clientX; ly = e.clientY
+  lastInteract = demo.t || 0
+})
+cv.addEventListener("pointerup",    e => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", ()  => { down = false })
+
+// world cells visible across a dimension at given scale
+const W_cells = (pixels, scale) => pixels / scale
+
+// ── Zoom: scroll toward cursor ──
+cv.addEventListener("wheel", e => {
+  e.preventDefault()
+  userInteracted = true; lastInteract = demo.t || 0
+  const rect = cv.getBoundingClientRect()
+  // fractional cursor position in [0,1]
+  const fx = (e.clientX - rect.left) / rect.width
+  const fy = (e.clientY - rect.top)  / rect.height
+  // world position under cursor
+  const wcx = view.cx + (fx - 0.5) * rect.width  / view.scale
+  const wcy = view.cy + (fy - 0.5) * rect.height / view.scale
+  const f = Math.exp(-e.deltaY * 0.001)   // zoom factor: scroll in → scale up
+  const newScale = Math.max(1, Math.min(120, view.scale * f))
+  // shift center so cursor stays on same world point
+  view.cx = wcx - (fx - 0.5) * rect.width  / newScale
+  view.cy = wcy - (fy - 0.5) * rect.height / newScale
+  view.scale = newScale
+}, { passive: false })
+
+// ── Double-click: reset to home ──
+cv.addEventListener("dblclick", () => {
+  view.cx = HOME.cx; view.cy = HOME.cy; view.scale = HOME.scale
+  userInteracted = false; lfoStart = demo.t || 0; lfoBase = { ...HOME }
+})
 </script>
 </body>
 </html>

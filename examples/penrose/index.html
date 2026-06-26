@@ -7,25 +7,30 @@
 </head>
 <body>
 <script type="module">
-import { runDemo, trackPointer } from "../lib/jzdemo.js"
+import { runDemo, panZoom } from "../lib/jzdemo.js"
 
-let baseRot = 0, userSet = false
+// Penrose P3 tiling — infinite aperiodic order from φ. Every finite patch appears infinitely
+// often, yet the whole never repeats. Seven rounds of golden-ratio deflation grow ~1280 triangles;
+// the slow idle rotation reveals five-fold local symmetry. Pan, zoom, and explore: no level of
+// detail repeats, but every neighborhood looks familiar.
+//
+// Gold = fat Robinson triangles (forming fat rhombi), indigo = thin (forming thin rhombi).
+// Black 1-px edges separate tiles so the aperiodic geometry reads at a glance.
+// Drag to pan · scroll to zoom · double-click to reset.
+
+const view = { cx: 0, cy: 0, scale: 1.0 }
+const home = { cx: 0, cy: 0, scale: 1.0 }
+
 const demo = runDemo({
   name: "penrose",
-  hint: "Penrose P3 tiling — aperiodic order from the golden ratio — drag to rotate",
+  hint: "Penrose P3 tiling — gold fat rhombi, indigo thin — drag to pan · scroll to zoom · dbl-click to reset",
+  size: { dpr: 2, budget: null },
   frame: (e, t) => {
-    let rot, zoom
-    if (ptr.down) {
-      rot = (ptr.x * 2 - 1) * Math.PI
-      baseRot = rot; userSet = true
-    } else {
-      rot = baseRot + (userSet ? 0 : t * 0.04)
-    }
-    zoom = 1.0 + 0.08 * Math.sin(t * 0.31)
-    e.frame(t, rot, zoom)
+    e.frame(t, view.cx, view.cy, view.scale)
   },
 })
-const ptr = trackPointer(demo.cv)
+
+panZoom(demo.cv, view, home, () => {}, { drag: true })
 </script>
 </body>
 </html>

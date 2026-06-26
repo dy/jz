@@ -1,26 +1,31 @@
-// Harmonograph — two perpendicular damped pendulums whose swings are summed.
+// Harmonograph — four-pendulum damped oscillator: two per axis (lateral + rotary).
 // x(τ) = A1·sin(f1·τ+p1)·e^{-d1·τ} + A2·sin(f2·τ+p2)·e^{-d2·τ}
 // y(τ) = A3·sin(f3·τ+p3)·e^{-d3·τ} + A4·sin(f4·τ+p4)·e^{-d4·τ}
-// Near-integer frequency ratios yield classic Lissajous-like figures that slowly
-// precess when detuned. The curve is traced as an additive polyline (glow at overlaps).
-// frame(t, detune, phase) shifts the detuning and global phase; drag steers frequency.
+//
+// Drawn white on black: overlapping strokes accumulate additively, so the densely-wound
+// centre knot glows bright while the sparse outer loops stay faint — the trace doubles as a
+// density map. Many fine segments (high STEPS) over a long integration (TMAX) → lots of lines.
+//
+// Near-integer frequency ratios produce the canonical precessional rosette:
+// exactly rational → closed static figure; slightly detuned → breathing rotation.
+// The interesting regime lives at the edge between those two.
+//
+// frame(t, detune, damp) — detune shifts frequency ratio, damp sets envelope speed.
+// Drag in index.html: x→detune, y→damp. Idle: slow LFO cycles both.
+// setParams(f1,f2,f3,f4, p1,p2,p3,p4) rolls a fresh figure each page load.
 
 let W = 0, H = 0, px
 
-let STEPS = 6000     // curve resolution
-let TMAX = 100.0      // τ integration range — long enough for the detuned figure to precess
-                      // through a full rosette, short enough that the damping has spiralled it
-                      // back to the centre by the end (so the trace closes rather than scribbles)
-let A2 = 0.62         // amplitude of the *second* pendulum on each axis, smaller than the first
-                      // — a clean primary ellipse modulated by a secondary, the classic harmonograph
-                      // (equal amplitudes summed to ±2R, overflowing the frame into a chord scribble)
+let STEPS = 24000    // curve resolution — many fine strokes (more lines), honest compute work
+let TMAX  = 420.0    // integration range — traces deeper into the wound-up centre (more loops)
 
-// Per-load figure: frequency quadruple + phase offsets. The host rolls a fresh (curated) set on
-// every page load and feeds it here, so JS and jz draw the identical shape. Defaults reproduce the
-// classic 2:3 rosette if setParams is never called.
-let cfg = new Float64Array(8)   // [f1, f2, f3, f4, p1, p2, p3, p4]
+let A2 = 0.58        // secondary-pendulum amplitude ratio (< 1 keeps figure inside frame)
+
+// Per-load figure: frequency quadruple + phase offsets.
+// The host rolls a fresh (curated) set on every page load and feeds it here.
+let cfg = new Float64Array(8)  // [f1, f2, f3, f4, p1, p2, p3, p4]
 cfg[0] = 2.0; cfg[1] = 3.0; cfg[2] = 3.0; cfg[3] = 2.0
-cfg[4] = 0.0; cfg[5] = 0.0; cfg[6] = 0.0; cfg[7] = 1.5707963267948966
+cfg[4] = 0.0; cfg[5] = 1.1;  cfg[6] = 0.4; cfg[7] = 1.5707963267948966
 
 export let setParams = (f1, f2, f3, f4, q1, q2, q3, q4) => {
   cfg[0] = f1; cfg[1] = f2; cfg[2] = f3; cfg[3] = f4
@@ -33,6 +38,7 @@ export let resize = (w, h) => {
   return px
 }
 
+// Additive pixel blend: accumulate light, clamp to white (dense overlaps glow bright)
 let addpix = (x, y, rr, gg, bb) => {
   if (x < 0 || x >= W || y < 0 || y >= H) return
   let idx = (y | 0) * W + (x | 0)
@@ -56,38 +62,49 @@ let line = (x0, y0, x1, y1, rr, gg, bb) => {
   }
 }
 
-export let frame = (t, detune, phaseShift) => {
+// frame(t, detune, damp)
+//   detune  — frequency offset (0 = locked figure, ±0.06 = slow precession)
+//   damp    — damping speed factor (0.5 = slow decay / large figure, 2.0 = fast spiral to knot)
+export let frame = (t, detune, damp) => {
   // Clear to opaque black
   let total = W * H, i = 0
   while (i < total) { px[i] = (255 << 24); i++ }
 
   let cx = W * 0.5, cy = H * 0.5
   let minDim = W < H ? W : H
-  let R = minDim * 0.26   // first-pendulum amplitude; max excursion R*(1+A2) ≈ 0.42·minDim stays in frame
+  // R scaled so max excursion R*(1+A2) ≈ 0.44·minDim — stays comfortably inside frame
+  let R = minDim * 0.27
 
-  // Per-load frequency quadruple with slight detuning → the figure precesses
+  // Frequency quadruple: small-integer base from cfg + detune on both axes for symmetric precession
   let f1 = cfg[0]
   let f2 = cfg[1] + detune
   let f3 = cfg[2]
-  let f4 = cfg[3] + detune * 0.5
+  let f4 = cfg[3] + detune * 0.5   // half-rate on y → figure twists rather than just sliding
 
-  // Damping (inward spiral over TMAX → the figure starts wide and winds to the centre)
-  let d1 = 0.012, d2 = 0.012, d3 = 0.012, d4 = 0.012
+  // Asymmetric damping: different per-pendulum rates create the characteristic figure collapse
+  // where the x-envelope and y-envelope die at different speeds, generating the skewed final knot.
+  // damp scales the overall rate; individual ratios stay fixed for consistent character.
+  let d1 = 0.010 * damp
+  let d2 = 0.014 * damp   // secondary x-pendulum damps slightly faster
+  let d3 = 0.013 * damp
+  let d4 = 0.009 * damp   // y-primary damps slowest → the spiral outlasts the x-knot
 
-  // Phase offsets: per-load base + the drag/animation shift
-  let p1 = phaseShift + cfg[4]
-  let p2 = cfg[5]
-  let p3 = phaseShift * 0.7 + cfg[6]
-  let p4 = cfg[7]
+  // Phase offsets: per-load base + symmetric phase shift on ALL four oscillators.
+  // Equal phase shift to all four → clean precessional rotation, no axis distortion.
+  let phShift = t * 0.003   // very slow idle drift; host adds faster term on interaction
+  let p1 = phShift + cfg[4]
+  let p2 = phShift + cfg[5]
+  let p3 = phShift * 0.9 + cfg[6]  // slight differential on y gives gentle breathing
+  let p4 = phShift * 0.9 + cfg[7]
 
   let dt = TMAX / STEPS
 
-  // First point
+  // First sample
   let tau0 = 0.0
-  let e10 = Math.exp(-d1 * tau0), e20 = Math.exp(-d2 * tau0)
-  let e30 = Math.exp(-d3 * tau0), e40 = Math.exp(-d4 * tau0)
-  let px0 = cx + R * (Math.sin(f1 * tau0 + p1) * e10 + A2 * Math.sin(f2 * tau0 + p2) * e20)
-  let py0 = cy + R * (Math.sin(f3 * tau0 + p3) * e30 + A2 * Math.sin(f4 * tau0 + p4) * e40)
+  let px0 = cx + R * (Math.sin(f1 * tau0 + p1) * Math.exp(-d1 * tau0)
+                    + A2 * Math.sin(f2 * tau0 + p2) * Math.exp(-d2 * tau0))
+  let py0 = cy + R * (Math.sin(f3 * tau0 + p3) * Math.exp(-d3 * tau0)
+                    + A2 * Math.sin(f4 * tau0 + p4) * Math.exp(-d4 * tau0))
 
   i = 1
   while (i <= STEPS) {
@@ -97,10 +114,10 @@ export let frame = (t, detune, phaseShift) => {
     let nx = cx + R * (Math.sin(f1 * tau + p1) * e1 + A2 * Math.sin(f2 * tau + p2) * e2)
     let ny = cy + R * (Math.sin(f3 * tau + p3) * e3 + A2 * Math.sin(f4 * tau + p4) * e4)
 
-    // Fade out as pendulum damps — single gray, overlaps glow
-    let amp = Math.exp(-d1 * tau)
-    let gv = (60.0 * amp + 14.0) | 0
-    line(px0, py0, nx, ny, gv, gv, gv)
+    // White on black, additive: every stroke deposits the same faint light, so where the curve
+    // crosses itself the ink builds toward white — the bright centre knot is a pure density map.
+    let inten = 26
+    line(px0, py0, nx, ny, inten, inten, inten)
 
     px0 = nx; py0 = ny
     i++

@@ -7,15 +7,29 @@
 </head>
 <body>
 <script type="module">
-import { runDemo } from "../lib/jzdemo.js"
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
+// The triangle builds up row by row from the apex; when it completes it holds, then restarts on
+// the next modulus. Drag left→right to dial the modulus p across 2…16 — primes (2,3,5,7,11,13)
+// give the clean nested lattices, composites (4,6,8,9…) remix them.
+const BUILD = 4.5, HOLD = 1.4, CYCLE = BUILD + HOLD
+const seq = [2, 3, 5, 7, 11, 13]
+let clock = 0
 const demo = runDemo({
   name: "pascal-sierpinski",
-  hint: "Pascal's triangle mod p — black = divisible by p; the Sierpinski fractal morphs between primes 2, 3, 5, 7",
+  hint: "Pascal's triangle mod p — black where p divides C(n,k) · builds up row by row · drag to dial the modulus p (2…16)",
+  size: { dpr: 2, budget: null },          // retina-res — a big, crisp triangle (and more work for the JS↔jz gap)
   frame: (e, t) => {
-    e.frame(t)
+    clock += 1 / 60
+    const local = clock % CYCLE
+    const frac = local < BUILD ? local / BUILD : 1.0      // ramp 0→1, then hold full
+    const cyc = Math.floor(clock / CYCLE)
+    const p = ptr.down ? 2 + Math.floor(ptr.x * 15)       // drag overrides the modulus
+                       : seq[cyc % seq.length]             // else cycle the primes per build
+    e.frame(t, p, frac)
   },
 })
+const ptr = trackPointer(demo.cv)
 </script>
 </body>
 </html>

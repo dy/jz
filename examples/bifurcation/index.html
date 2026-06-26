@@ -9,54 +9,140 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Two independent gestures, like every other zoomable demo: DRAG pans the window, SCROLL zooms
-// toward the cursor. The cascade is self-similar, so zoom scales BOTH axes together (r horizontal,
-// orbit-value x vertical) — letting you dive into a period-doubling fork and see the same structure
-// repeat. Double-click resets. Windows are clamped to the full [2.5,4.0]×[0,1] diagram.
-const home = { r0: 2.5, r1: 4.0, x0: 0, x1: 1 }
-const view = { ...home }
+// Logistic map bifurcation diagram — color-encoded orbit density.
+// Sparse orbits glow indigo; dense periodic attractors glow amber-gold;
+// saturated period-1 fixed points blaze bright gold-white against black chaos.
+// IDLE: slowly pans/zooms into the iconic period-3 window (r≈3.83) and back —
+// revealing the self-similar Feigenbaum cascade without any input.
+// DRAG: pan the window. SCROLL: zoom toward cursor. DBLCLICK: reset to full view.
+
+const FULL = { r0: 2.5, r1: 4.0, x0: 0.0, x1: 1.0 }
+const view = { ...FULL }
+
+// ── Idle LFO: smoothly interpolates between keyframes ──────────────────────
+// The LFO visits the most famous Feigenbaum landmarks in a loop:
+//   full view → period-3 window → zoom into period-6 sub-fork → full view
+const STOPS = [
+  { r0: 2.5,    r1: 4.0,    x0: 0.0,    x1: 1.0    },  // full diagram
+  { r0: 3.70,   r1: 3.95,   x0: 0.12,   x1: 0.88   },  // period-3 window approach
+  { r0: 3.800,  r1: 3.870,  x0: 0.42,   x1: 0.74   },  // inside the period-3 window
+  { r0: 3.826,  r1: 3.858,  x0: 0.48,   x1: 0.72   },  // bifurcation fork in period-3
+  { r0: 2.9,    r1: 3.65,   x0: 0.25,   x1: 0.95   },  // period-doubling cascade
+  { r0: 2.5,    r1: 4.0,    x0: 0.0,    x1: 1.0    },  // back to full
+]
+const DWELL  = 6.0   // seconds at each stop
+const TRAVEL = 3.5   // seconds of eased travel between stops
+
+let userInteracted = false
+let lastInteract = -30  // seconds ago
+
+// smooth easing: ease-in-out cubic
+const ease = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2
+
+const lerp = (a, b, t) => a + (b - a) * t
+const lerpView = (va, vb, t) => ({
+  r0: lerp(va.r0, vb.r0, t),
+  r1: lerp(va.r1, vb.r1, t),
+  x0: lerp(va.x0, vb.x0, t),
+  x1: lerp(va.x1, vb.x1, t),
+})
+
+// compute which LFO stop we're at for a given elapsed time
+const lfoView = (elapsed) => {
+  const cycle = DWELL + TRAVEL
+  const total = STOPS.length * cycle
+  const looped = elapsed % total
+  const idx = Math.floor(looped / cycle)
+  const phase = looped - idx * cycle
+  const next = (idx + 1) % STOPS.length
+  if (phase < DWELL) {
+    return { ...STOPS[idx] }
+  } else {
+    const t = ease((phase - DWELL) / TRAVEL)
+    return lerpView(STOPS[idx], STOPS[next], t)
+  }
+}
+
+let lfoStart = 0
+let lfoBase = { ...FULL }  // where LFO resumes from when interaction ends
 
 const demo = runDemo({
   name: "bifurcation",
-  hint: "Logistic map orbit diagram — drag to pan · scroll to zoom into the Feigenbaum cascade",
-  frame: (e, t) => { e.frame(t, view.r0, view.r1, view.x0, view.x1) },
+  hint: "Logistic-map orbit diagram · drag to pan · scroll to zoom · dblclick to reset — sparse orbits glow indigo, dense attractors amber-gold",
+  size: { dpr: 2, budget: null },
+  frame: (e, t) => {
+    const idleFor = t - lastInteract
+    if (!userInteracted || idleFor > 6.0) {
+      // resume LFO from current view when idle kicks in
+      if (userInteracted && idleFor > 6.0 && idleFor < 6.1) {
+        lfoStart = t
+        lfoBase = { ...view }
+        userInteracted = false
+      }
+      if (!userInteracted) {
+        // blend from lfoBase into LFO over 2s to avoid jarring snap
+        const blendT = Math.min(1.0, (t - lfoStart) / 2.0)
+        const lfoV = lfoView(t - lfoStart)
+        const blended = lerpView(lfoBase, lfoV, ease(blendT))
+        view.r0 = blended.r0; view.r1 = blended.r1
+        view.x0 = blended.x0; view.x1 = blended.x1
+      }
+    }
+    e.frame(t, view.r0, view.r1, view.x0, view.x1)
+  },
 })
 
 const cv = demo.cv
+
 const clamp = () => {
+  // prevent zooming out past full diagram
   if (view.r1 - view.r0 > 1.5) { view.r0 = 2.5; view.r1 = 4.0 }
   if (view.r0 < 2.5) { view.r1 += 2.5 - view.r0; view.r0 = 2.5 }
   if (view.r1 > 4.0) { view.r0 -= view.r1 - 4.0; view.r1 = 4.0 }
-  if (view.x1 - view.x0 > 1.0) { view.x0 = 0; view.x1 = 1 }
-  if (view.x0 < 0) { view.x1 -= view.x0; view.x0 = 0 }
-  if (view.x1 > 1) { view.x0 -= view.x1 - 1; view.x1 = 1 }
+  if (view.x1 - view.x0 > 1.0) { view.x0 = 0.0; view.x1 = 1.0 }
+  if (view.x0 < 0.0) { view.x1 -= view.x0; view.x0 = 0.0 }
+  if (view.x1 > 1.0) { view.x0 -= view.x1 - 1.0; view.x1 = 1.0 }
 }
+
 let down = false, lx = 0, ly = 0
-cv.addEventListener("pointerdown", (e) => { down = true; lx = e.clientX; ly = e.clientY; try { cv.setPointerCapture(e.pointerId) } catch {} })
+
+cv.addEventListener("pointerdown", (e) => {
+  down = true; lx = e.clientX; ly = e.clientY
+  userInteracted = true; lastInteract = demo.t || 0
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+})
 cv.addEventListener("pointermove", (e) => {
   if (!down) return
-  const r = cv.getBoundingClientRect()
-  const dr = (e.clientX - lx) / r.width * (view.r1 - view.r0)   // pan in r (drag right → view left)
-  const dx = (e.clientY - ly) / r.height * (view.x1 - view.x0)  // pan in orbit-value (x increases upward)
+  const rect = cv.getBoundingClientRect()
+  const dr = (e.clientX - lx) / rect.width  * (view.r1 - view.r0)
+  const dx = (e.clientY - ly) / rect.height * (view.x1 - view.x0)
   view.r0 -= dr; view.r1 -= dr
   view.x0 += dx; view.x1 += dx
   lx = e.clientX; ly = e.clientY
+  lastInteract = demo.t || 0
   clamp()
 })
-cv.addEventListener("pointerup", (e) => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener("pointerleave", () => { down = false })
+cv.addEventListener("pointerup",    (e) => { down = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointerleave", ()  => { down = false })
+
 cv.addEventListener("wheel", (e) => {
   e.preventDefault()
-  const r = cv.getBoundingClientRect()
-  const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height
-  const rc = view.r0 + fx * (view.r1 - view.r0)            // r under cursor
-  const xc = view.x1 - fy * (view.x1 - view.x0)            // orbit-value under cursor (top = x1)
-  const f = Math.exp(e.deltaY * 0.0012)                    // >1 zoom out, <1 zoom in
+  userInteracted = true; lastInteract = demo.t || 0
+  const rect = cv.getBoundingClientRect()
+  const fx = (e.clientX - rect.left) / rect.width
+  const fy = (e.clientY - rect.top)  / rect.height
+  const rc = view.r0 + fx * (view.r1 - view.r0)   // r under cursor
+  const xc = view.x1 - fy * (view.x1 - view.x0)   // x-value under cursor
+  const f  = Math.exp(e.deltaY * 0.0012)            // >1=zoom out, <1=zoom in
   view.r0 = rc - (rc - view.r0) * f; view.r1 = rc + (view.r1 - rc) * f
   view.x0 = xc - (xc - view.x0) * f; view.x1 = xc + (view.x1 - xc) * f
   clamp()
 }, { passive: false })
-cv.addEventListener("dblclick", () => { view.r0 = home.r0; view.r1 = home.r1; view.x0 = home.x0; view.x1 = home.x1 })
+
+cv.addEventListener("dblclick", () => {
+  view.r0 = FULL.r0; view.r1 = FULL.r1; view.x0 = FULL.x0; view.x1 = FULL.x1
+  userInteracted = false; lfoStart = demo.t || 0; lfoBase = { ...FULL }
+})
 </script>
 </body>
 </html>
