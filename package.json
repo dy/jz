@@ -1,6 +1,6 @@
 {
   "name": "jz",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Ahead-of-time compiler for the numeric core of JavaScript (DSP, audio, math, parsers) to lean GC-free WASM — valid jz is valid JS, no type annotations, no runtime.",
   "main": "index.js",
   "types": "index.d.ts",
