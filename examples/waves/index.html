@@ -9,49 +9,62 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// The 2D wave equation: each drop rings out slowly, trails a soft wake, fades, and glows where waves cross.
+// 2D wave-equation ripples: drops ring out, fade, and glow where DIFFERENT circles cross. Drops are kept
+// a minimum distance apart (esp. on drag) so they don't stack and self-glare into a bright flash — the
+// glow should come from separate circles meeting, not from a pile of near-identical drops.
+const REACHFRAC = 0.16                // ≈ a ripple's visible reach before it fades (= REACHFRAC * min(W,H))
 let frameCount = 0, nextDrop = 20, lastStepMs = 0, painting = false, lastX = 0, lastY = 0
+let ldx = -1, ldy = -1                // last emitted drop, in canvas pixels
 
-const drop = (x, y) => { if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight) }
+const rmaxPx = () => REACHFRAC * Math.min(demo.W, demo.H)
+const minDist = () => 0.45 * rmaxPx()   // keep drops at least this far apart (no stacking glare)
+const clampX = (v) => v < 12 ? 12 : v > demo.W - 12 ? demo.W - 12 : v
+const clampY = (v) => v < 12 ? 12 : v > demo.H - 12 ? demo.H - 12 : v
+
+// emit a drop in canvas coords, but skip it if it's closer than minDist to the last one (unless forced)
+const emit = (cx, cy, force) => {
+  if (!demo.engine) return
+  if (!force && ldx >= 0) { const dx = cx - ldx, dy = cy - ldy, md = minDist(); if (dx * dx + dy * dy < md * md) return }
+  demo.engine.drop(cx, cy); ldx = cx; ldy = cy
+}
+const dropClient = (x, y, force) => emit(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, force)
 const strokeTo = (x, y) => {
-  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 14))
-  for (let i = 1; i <= n; i++) drop(lastX + dx * i / n, lastY + dy * i / n)
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 8))
+  for (let i = 1; i <= n; i++) dropClient(lastX + dx * i / n, lastY + dy * i / n, false)   // minDist thins these
   lastX = x; lastY = y
 }
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation — ripples ring out slowly, fade, and glow where they cross · click to drop one",
+  hint: "the 2D wave equation — ripples ring out, fade, and glow where they cross · click to drop one",
   size: { budget: 420000 },
   bg: "#000",
-  load: (e) => e.clear(),
+  load: (e) => { e.clear(); ldx = -1; ldy = -1 },
   frame: (e) => {
-    // throttle to ~60 Hz of real time so the deceleration plays at a steady pace on any display
     const now = performance.now()
-    if (now - lastStepMs < 15) return
+    if (now - lastStepMs < 15) return        // throttle to ~60Hz so the slow-down plays at a steady pace
     lastStepMs = now
     frameCount++
     if (frameCount > nextDrop) {
-      // the waves are slow and fade as they spread, so two far-apart drops never meet while still bright.
-      // Drop a small BURST of a couple of near-simultaneous drops a short distance apart, at a random
-      // spot: their fresh rings expand into each other and glint — different circles interfering, which is
-      // the whole point. A fresh lone ring stays dim; only the overlap glows.
-      const cx = demo.W * (0.2 + Math.random() * 0.6), cy = demo.H * (0.2 + Math.random() * 0.6)
-      const a0 = Math.random() * 6.283, gap = 34 + Math.random() * 16
-      const k = 2 + (Math.random() * 2 | 0)               // 2-3 circles
-      for (let i = 0; i < k; i++) { const ang = a0 + i * 6.283 / k; e.drop(cx + Math.cos(ang) * gap, cy + Math.sin(ang) * gap) }
-      nextDrop = frameCount + 120 + Math.random() * 60     // ~2-3s between bursts
+      // place the next ring near the last (so the slow circles overlap & cross), but at least minDist away;
+      // occasionally jump somewhere fresh so the activity spreads across the field.
+      if (ldx >= 0 && Math.random() < 0.7) {
+        const ang = Math.random() * 6.283, rad = minDist() + Math.random() * rmaxPx()
+        emit(clampX(ldx + Math.cos(ang) * rad), clampY(ldy + Math.sin(ang) * rad), true)
+      } else {
+        emit(demo.W * (0.18 + Math.random() * 0.64), demo.H * (0.18 + Math.random() * 0.64), true)
+      }
+      nextDrop = frameCount + 80 + Math.random() * 55   // ~1.6-2.2s
     }
     e.frame(0)
   },
-  // re-roll: clear and scatter a few fresh rings that immediately cross
-  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 5; i++) e.drop(Math.random() * d.W, Math.random() * d.H) },
+  randomize: (e, d) => { e.clear?.(); ldx = -1; ldy = -1; for (let i = 0; i < 4; i++) emit(d.W * (0.3 + Math.random() * 0.4), d.H * (0.3 + Math.random() * 0.4), true) },
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {
   painting = true; lastX = e.offsetX; lastY = e.offsetY
   try { demo.cv.setPointerCapture(e.pointerId) } catch {}
-  drop(e.offsetX, e.offsetY)
+  dropClient(e.offsetX, e.offsetY, true)       // a deliberate click always drops
 })
 demo.cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
 demo.cv.addEventListener("pointerup", (e) => { painting = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
