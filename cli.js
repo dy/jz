@@ -4,10 +4,17 @@
  * JZ CLI - Command-line interface for JZ compiler
  */
 
-import { readFileSync, writeFileSync } from 'fs'
-import { resolve } from 'path'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { resolve, dirname } from 'path'
 import { pathToFileURL } from 'url'
 import jz, { compile } from './index.js'
+
+// Write to `file`, creating its parent directory first. `jz src.js -o dist/out.wasm`
+// must not fail just because `dist/` doesn't exist yet — a fresh checkout where the
+// output dir is gitignored (watr's `dist/`, jz's own build dir) is the common case,
+// and every compiler that takes `-o path/file` is expected to make the path. Without
+// this the CLI dies with `ENOENT: open 'dist/out.wasm'` (the watr CI build failure).
+const writeOut = (file, data) => { mkdirSync(dirname(resolve(file)), { recursive: true }); writeFileSync(file, data) }
 import transform from './transform.js'
 import { resolveModuleGraph } from './src/resolve.js'
 import { createRequire } from 'module'
@@ -129,7 +136,7 @@ async function handleJzify(args) {
   if (outputFile === '-') {
     process.stdout.write(out)
   } else {
-    writeFileSync(outputFile, out)
+    writeOut(outputFile, out)
     console.log(`${inputFile} → ${outputFile} (${out.length} chars)`)
   }
 }
@@ -252,10 +259,10 @@ async function handleCompile(args) {
   if (outputFile === '-') {
     process.stdout.write(result)
   } else if (wat) {
-    writeFileSync(outputFile, result)
+    writeOut(outputFile, result)
     console.log(`${inputFile} → ${outputFile} (${result.length} chars)`)
   } else {
-    writeFileSync(outputFile, result)
+    writeOut(outputFile, result)
     console.log(`${inputFile} → ${outputFile} (${result.byteLength} bytes)`)
   }
 }
