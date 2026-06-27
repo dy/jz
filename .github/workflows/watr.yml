@@ -1,0 +1,57 @@
+name: watr
+# Downstream gate: compile watr (the WASM assembler jz depends on) to wasm with the
+# HEAD jz — `npx jz watr.js -O3 -o dist/watr.wasm` — then run watr's OWN test suite
+# against that wasm (`WATR_WASM=1 node test`). watr is a large, exacting real-world
+# program, so a jz codegen regression that flat-loop benches miss surfaces here as a
+# broad correctness probe (the "compile a big real program and run its tests" signal).
+#
+# jz ↔ watr are mutually dependent (jz uses watr to encode; watr is built BY jz), so the
+# job npm-links both HEAD checkouts: jz encodes with HEAD watr, watr is built by HEAD jz.
+# Kept as its OWN workflow (slow; a downstream integration signal, not a unit gate).
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.svg'
+      - '**/*.html'
+      - '.work/**'
+      - 'LICENSE'
+      - 'CONTRIBUTING.md'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.svg'
+      - '**/*.html'
+      - '.work/**'
+      - 'LICENSE'
+      - 'CONTRIBUTING.md'
+jobs:
+  watr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: checkout jz
+        uses: actions/checkout@v4
+        with:
+          path: jz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: checkout watr
+        uses: actions/checkout@v4
+        with:
+          repository: dy/watr
+          path: watr
+          submodules: recursive
+      - name: install + cross-link HEAD jz ⇄ HEAD watr
+        run: |
+          (cd jz && npm install && npm link)
+          (cd watr && npm install && npm link)
+          (cd jz && npm link watr)   # jz encodes with HEAD watr (opts.pin)
+          (cd watr && npm link jz)   # watr is built by HEAD jz
+      - name: build watr.wasm with HEAD jz
+        working-directory: watr
+        run: npm run build:wasm
+      - name: run watr's own suite against watr.wasm
+        working-directory: watr
+        run: npm run test:wasm
