@@ -35,6 +35,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 import { T, isLeaf, stableKey } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
+import { recursionUnroll } from './recurse.js'
 export { SIMD_PINNED } from './vectorize.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
@@ -116,6 +117,7 @@ export const PASS_NAMES = [
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
+  'recursionUnroll',          // inline a single non-tail self-call to depth N (tree-recursion call-overhead)
   'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref
@@ -132,7 +134,7 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, recursionUnroll: false }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -154,6 +156,8 @@ const LEVEL_PRESETS = Object.freeze({
   size: Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
+    recursionUnroll: false,   // body tripling is a size regression — speed-only
+
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
@@ -3043,6 +3047,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
+  // Recursion-unrolling runs first in 'pre': self-calls are still clean `call`
+  // nodes (watr's inliner hasn't reshaped them) and the freshly-inlined body then
+  // rides every pass below (LICM, fold, sort). Speed-tier only; 'pre' only (so the
+  // post-watr re-optimize doesn't unroll a second time).
+  if (cfg && cfg.recursionUnroll === true && phase === 'pre') recursionUnroll(fn)
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
   // Before LICM: the snapped i32 bound is itself a hoistable hard-op subtree, so
