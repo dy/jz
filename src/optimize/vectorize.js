@@ -4315,8 +4315,8 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
 // public `$math.{sin,cos}` wrap the same core. Their f64x2 mirrors $math.sin2/$math.cos2 (the
 // vectorized reduce+horner, module/math.js:543) are BIT-EXACT per lane to the scalar core — so we
 // can lift the call straight to the *2 helper. Phase-2 adds pow/log/atan2 here (see PPC_CALL2).
-// NOTE: scalar targets here must be kept out of inlineOnce's single-caller inlining (SIMD_PROTECTED
-// in watr/optimize) — else the call node is gone before this lift runs.
+// NOTE: scalar targets here must be kept out of watr's single-caller inlining — jz passes these
+// keys (SIMD_PINNED, below) as watOptimize's `pin` list, else the call node is gone before this lift runs.
 const PPC_CALL2 = {
   '$math.sin_core': '$math.sin2', '$math.cos_core': '$math.cos2',
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
@@ -4326,6 +4326,11 @@ const PPC_CALL2 = {
   // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).
   '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
 }
+
+// Scalar transcendentals the auto-vectorizer rewrites to f64x2 mirrors above. watr's inline
+// passes must NOT dissolve their (single-caller) call nodes before this lift runs — jz passes
+// these to watOptimize's `pin` option (the protection policy lives here, not hardcoded in watr).
+export const SIMD_PINNED = Object.keys(PPC_CALL2)
 
 // Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
 // escape loop: an outer pixel loop whose body computes an f64 value from the pixel index (via

@@ -35,6 +35,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 import { T, isLeaf, stableKey } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
+export { SIMD_PINNED } from './vectorize.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/

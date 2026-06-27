@@ -51,7 +51,7 @@ import { liftIIFEs } from './src/prepare/lift-iife.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import { optimizeFunc, foldStrDispatchF64, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize } from './src/optimize/index.js'
+import { optimizeFunc, foldStrDispatchF64, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize, SIMD_PINNED } from './src/optimize/index.js'
 import { findBodyStart } from './src/ir.js'
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
@@ -613,6 +613,13 @@ const jzCompileInner = (code, opts = {}) => {
   // never matches it), so jz always enables it explicitly.
   if (watrOpts === true) watrOpts = { guardRefine: true }
   else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
+  // Pin jz's scalar transcendentals (the PPC_CALL2 keys the auto-vectorizer rewrites to f64x2
+  // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
+  // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
+  if (cfg.watr) {
+    if (watrOpts === true) watrOpts = {}
+    watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+  }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Stable-pointee module globals: resolve the __ptr_offset once per function.
   // Never-forwarding kinds — every PTR tag outside __ptr_offset's forwarding
