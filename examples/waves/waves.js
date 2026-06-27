@@ -9,11 +9,13 @@
 let W = 0, H = 0, px
 let a, b              // height now / previous
 let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
-let C2 = 0.5          // wave speed² — non-dispersive regime → ONE clean thin ring (no precursor, no train)
+let C2 = 0.42         // base wave speed² (low enough that the amplitude-speed has range to slow down)
+let KAMP = 1.5        // amplitude-dependent speed (shallow-water c²∝height): tall fresh crest is FAST,
+                      // and DECELERATES as it loses height over ~1s — the friction-like slow-down
 let CAP = 1.4         // hard amplitude clamp — backstop so piled-up splashes can never run away to white
-let DAMP = 0.9985     // light damping → rings persist a good while before fading
-let GC = 6.0          // crest brightness — the ring itself (peak strongest), fades gently ∝ amplitude
-let GH = 14.0         // height² boost — constructive overlaps land ≈4× a lone ring → bright intersections
+let DAMP = 0.993      // damping strong enough that old wakes clear instead of piling into a low-freq web
+let GC = 4.0          // crest brightness — DIM lone rings (so crossings stand out)
+let GH = 24.0         // height² boost — a 2-crest overlap ≈4×, a 3-crest overlap ≈9× → multi-wave glare
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -76,10 +78,13 @@ export let frame = (t) => {
       let lap = 0.66667 * (a[rn + x] + a[rs + x] + a[c - 1] + a[c + 1])
               + 0.16667 * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1])
               - 3.33333 * a[c]
-      // plain LINEAR wave at constant speed → ONE clean thin ring. (A friction-like slow-down needs an
-      // amplitude- or frequency-dependent speed, and BOTH shatter the single ring into a wave-train of
-      // concentric rings — so constant speed is the price of the clean thin look.) CAP is a backstop.
-      let nb = (2.0 * a[c] - b[c] + C2 * lap) * DAMP
+      // amplitude-dependent speed → the friction-like slow-down: a tall fresh crest travels fast and
+      // DECELERATES as it flattens over ~1s. (Cost: the dispersion spreads the pulse into a short train
+      // of rings — the price of a visible slow-down.) Clamped under stability; CAP saturates the loop.
+      let ac = a[c] < 0.0 ? -a[c] : a[c]
+      let c2l = C2 + C2 * KAMP * ac
+      if (c2l > 0.66) c2l = 0.66
+      let nb = (2.0 * a[c] - b[c] + c2l * lap) * DAMP
       if (nb > CAP) nb = CAP
       else if (nb < -CAP) nb = -CAP
       b[c] = nb
