@@ -9,11 +9,11 @@
 let W = 0, H = 0, px
 let a, b              // height now / previous
 let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
-let C2 = 0.5          // wave speed² — the non-dispersive regime → clean single crest, no precursor ahead
-let CAP = 1.5         // hard amplitude clamp — a backstop so piled-up splashes can never run away to white
+let C2 = 0.5          // wave speed² — non-dispersive regime → ONE clean thin ring (no precursor, no train)
+let CAP = 1.4         // hard amplitude clamp — backstop so piled-up splashes can never run away to white
 let DAMP = 0.9985     // light damping → rings persist a good while before fading
 let GC = 6.0          // crest brightness — the ring itself (peak strongest), fades gently ∝ amplitude
-let GH = 12.0         // height² boost — constructive overlaps land ≈4× a lone ring → bright intersections
+let GH = 14.0         // height² boost — constructive overlaps land ≈4× a lone ring → bright intersections
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -31,8 +31,8 @@ export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i
 let prof = (d, r, amp) => {
   if (d > r) return 0.0
   let behind = (r - d) / r                                 // 0 at the rim/front .. 1 at the centre
-  let front = d > r * 0.82 ? (r - d) / (r * 0.18) : 1.0    // taper the rim → clean leading edge
-  let tail = Math.exp(-behind * 4.5)                       // decays to ~0 toward the centre
+  let front = d > r * 0.86 ? (r - d) / (r * 0.14) : 1.0    // taper the rim → clean leading edge
+  let tail = Math.exp(-behind * 7.0)                       // steep decay → a THIN ring, ~0 at the centre
   return amp * front * tail
 }
 
@@ -76,13 +76,13 @@ export let frame = (t) => {
       let lap = 0.66667 * (a[rn + x] + a[rs + x] + a[c - 1] + a[c + 1])
               + 0.16667 * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1])
               - 3.33333 * a[c]
-      // plain LINEAR wave (constant speed): the amplitude-dependent "shallow-water" speed gave only a
-      // modest slow-down but, being a feedback loop, pumped energy — refocusing splashes into a white
-      // blob and (piled up) blowing up. Constant speed is rock-stable. CAP stays as a backstop.
+      // plain LINEAR wave at constant speed → ONE clean thin ring. (A friction-like slow-down needs an
+      // amplitude- or frequency-dependent speed, and BOTH shatter the single ring into a wave-train of
+      // concentric rings — so constant speed is the price of the clean thin look.) CAP is a backstop.
       let nb = (2.0 * a[c] - b[c] + C2 * lap) * DAMP
       if (nb > CAP) nb = CAP
       else if (nb < -CAP) nb = -CAP
-      b[c] = nb                                         // next height → into b
+      b[c] = nb
       x++
     }
     y++
@@ -166,7 +166,7 @@ export let frame = (t) => {
     y2 = 0
     while (y2 < h) {
       let bl = sum * inv
-      let add = (bl * 650.0) | 0
+      let add = (bl * 1050.0) | 0
       if (add > 2) addpx(y2 * w + xx, add)
       let ad = y2 + R + 1, sb = y2 - R
       if (ad < h) sum = sum + bloomA[ad * w + xx]
