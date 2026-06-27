@@ -288,6 +288,74 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
 }
 
 // =============================================================================
+// Loop-invariant partial-product hoist for unrolled f64 dot reductions.
+//
+// A fully-unrolled inner reduction over scalar-replaced array cells (mat4's
+// `out[r][c] = Σ a[r][k]·b[k][c]`) lives in the body of an OUTER loop that
+// mutates only a few of those cells (mat4: a[0],a[5],b[0],b[5]). Every product
+// whose two operands are both outer-loop-invariant is therefore the SAME every
+// iteration — yet the body recomputes all of them. rust/LLVM precomputes those
+// invariant partials in a loop prologue (mat4.rs → ~294 lines before its loop);
+// V8/wasmtime/JSC cannot, because at the wasm level they can't prove the cells
+// are loop-invariant (no aliasing model). So jz must hoist them itself.
+//
+// Splitting `s = t0+t1+t2+t3` into `INV = Σ(invariant tk)` (hoisted) + `Σ(variant
+// tk)` (kept) REASSOCIATES the float sum — invariant terms are summed first,
+// regardless of original position — so results differ by ULPs from the strict
+// left-to-right order. That is the SAME class of reorder jz already ships for
+// horizontal/multi-accumulator reductions (policy at lines ~620 and ~1584), and
+// rust itself does it at -O3 without fast-math. Gated to the relaxedFma/speed
+// tier exactly like those, so strict opts keep bit-exact order.
+//
+// Surgical by construction: fires only on a dot that MIXES invariant and variant
+// terms inside a loop. A pure-variant dot (a real matmul kernel, every operand
+// streaming) has no invariant term → untouched. Runs BEFORE the dot-pair
+// vectorizer; a hoisted dot has < DOT_UNROLL accumulate steps so matchF64DotSeq
+// no longer matches it — it stays the (faster here) scalar form, like rust.
+const hoistDotInvariant = (loop, parent, idx, fnLocals, freshIdRef, newLocalDecls) => {
+  const writeSet = new Set()
+  collectWrites(loop, writeSet)
+  const isInv = name => typeof name === 'string' && !writeSet.has(name) && fnLocals.get(name) === 'f64'
+  const invInits = []
+  const processList = (list) => {
+    for (let i = 0; i < list.length;) {
+      const seq = matchF64DotSeq(list, i)
+      if (!seq) { i++; continue }
+      const invKs = [], varKs = []
+      for (let k = 0; k < DOT_UNROLL; k++) (isInv(seq.left[k]) && isInv(seq.right[k]) ? invKs : varKs).push(k)
+      if (invKs.length === 0) { i = seq.end; continue }  // nothing loop-invariant — leave for the vectorizer
+      // INV = Σ invariant products, in original k-order, computed once before the loop.
+      let inv = ['f64.const', '0']
+      for (const k of invKs) inv = ['f64.add', inv, ['f64.mul', ['local.get', seq.left[k]], ['local.get', seq.right[k]]]]
+      const invName = `$__rinv_${freshIdRef.next++}`
+      newLocalDecls.push(['local', invName, 'f64']); fnLocals.set(invName, 'f64')
+      invInits.push(['local.set', invName, inv])
+      // In-loop: seed acc with INV, add only the variant products, then the unchanged store.
+      const repl = [['local.set', seq.acc, ['local.get', invName]]]
+      for (const k of varKs) repl.push(['local.set', seq.acc, ['f64.add', ['local.get', seq.acc], ['f64.mul', ['local.get', seq.left[k]], ['local.get', seq.right[k]]]]])
+      repl.push(['local.set', seq.out, seq.addend ? ['f64.add', ['local.get', seq.acc], seq.addend] : ['local.get', seq.acc]])
+      list.splice(i, seq.end - i, ...repl)
+      i += repl.length
+    }
+  }
+  const scan = (n) => { if (!isArr(n)) return; processList(n); for (let j = 0; j < n.length; j++) if (isArr(n[j])) scan(n[j]) }
+  scan(loop)
+  if (invInits.length) parent.splice(idx, 0, ...invInits)
+}
+
+// Walk a function, hoisting invariant reduction partials out of each loop. Inner
+// loops first (post-order) so a dot is hoisted relative to its tightest enclosing
+// loop, and an already-rewritten dot can't re-match in an outer pass.
+const hoistReductionInvariantsIn = (fn, fnLocals, freshIdRef, newLocalDecls) => {
+  const walk = (node, parent, idx) => {
+    if (!isArr(node)) return
+    for (let i = 0; i < node.length; i++) if (isArr(node[i])) walk(node[i], node, i)
+    if (node[0] === 'loop' && isArr(parent)) hoistDotInvariant(node, parent, idx, fnLocals, freshIdRef, newLocalDecls)
+  }
+  for (let i = 0; i < fn.length; i++) if (isArr(fn[i])) walk(fn[i], fn, i)
+}
+
+// =============================================================================
 // SLP (superword-level parallelism): pack two ADJACENT isomorphic f64 element
 // stores into one f64x2 store — the WITHIN-iteration 2-lane class the loop
 // vectorizer (which packs ACROSS iterations) structurally cannot reach.
@@ -5656,6 +5724,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   const freshIdRef = { next: 0 }
   const newLocalDeclsAll = []
 
+  // Hoist loop-invariant partial products out of unrolled dot reductions (rust/LLVM's
+  // mat4 prologue trick). Reassociates the float sum, so tied to the relaxedFma tier;
+  // runs BEFORE the dot-pair vectorizer so a hoisted dot drops below DOT_UNROLL steps
+  // and stays scalar (faster here than the pack/extract SIMD form — see the lab).
+  if (relaxedFma) hoistReductionInvariantsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
   vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
   // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
   // in the module (else a shifted view could reorder-hazard the packed read/write).

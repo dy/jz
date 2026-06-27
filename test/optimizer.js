@@ -645,6 +645,20 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   almost(main(0), refMain(0), 1e-9)
   almost(main(1), refMain(1), 1e-9)
   almost(main(5), refMain(5), 1e-9)
+
+  // At the speed/relaxedSimd tier the OUTER-loop-invariant partial products are hoisted
+  // out of the n-loop (rust/LLVM's mat4-prologue trick — only a[0],a[5],b[0],b[5] mutate,
+  // so most of each a[r]·b[c] dot is constant across iterations). Each unrolled dot then
+  // has < DOT_UNROLL accumulate steps, so it stays scalar instead of f64x2 — measured ~1.9×
+  // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
+  // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
+  // the bit-exact f64x2 dot pairs.
+  const speedWat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
+  ok(!/f64x2\./.test(speedWat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || speedWat), 'hoisted dots drop the f64x2 pack/extract')
+  const speed = run(src, { optimize: 'speed' })
+  almost(speed.main(0), refMain(0), 1e-9)
+  almost(speed.main(5), refMain(5), 1e-9)
 })
 
 test('fixed integer typed-array locals scalar-replace with element coercion', () => {
