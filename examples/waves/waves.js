@@ -10,12 +10,16 @@ let W = 0, H = 0, px
 let a, b              // height now / previous
 let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
 // Base wave speed². The EFFECTIVE speed is amplitude-dependent (shallow-water style, c²∝height) — see
-// the step below — so a tall fresh pulse bursts out FAST and decelerates to this base speed as it
-// spreads and fades. Base is kept moderate; the host throttles the step rate to keep the pace calm.
-let C2 = 0.5
-let KAMP = 1.2        // how much a tall crest speeds up (fast initial burst → slows as it flattens)
-let DAMP = 0.995      // damping → rings fade as they spread (and so appear to slow & stop) yet last long enough to cross
-let GAIN = 85.0       // render brightness — low, so lone rings stay DIM and only crossings light up
+// the step below — so a tall fresh pulse bursts out FAST and decelerates toward this base speed as it
+// spreads and fades. Base is kept LOW so the slow-down is clearly visible; the host throttles the
+// step rate to keep the overall pace calm.
+let C2 = 0.32
+let KAMP = 1.5        // how much a tall crest speeds up (fast initial burst → clearly slows as it flattens)
+let CAP = 1.5         // hard amplitude clamp — the nonlinear speed is a feedback loop; this saturates it
+                      // so stacking many splashes can never run away to white
+let DAMP = 0.9985     // light damping → rings persist a good while before fading
+let GE = 5.0          // √energy-base brightness — DIM lone rings that fade gently, and fill destructive gaps
+let GH = 14.0         // height² boost — constructive CROSSINGS land ≈4× a lone ring → bright intersections
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -75,8 +79,11 @@ export let frame = (t) => {
       // pulse bursts out fast and slows as it flattens. Clamped below the 9-point stability limit.
       let ac = a[c] < 0.0 ? -a[c] : a[c]
       let c2l = C2 + C2 * KAMP * ac
-      if (c2l > 0.72) c2l = 0.72
-      b[c] = (2.0 * a[c] - b[c] + c2l * lap) * DAMP    // next height → into b
+      if (c2l > 0.7) c2l = 0.7
+      let nb = (2.0 * a[c] - b[c] + c2l * lap) * DAMP
+      if (nb > CAP) nb = CAP                            // hard saturation → the nonlinear loop can't blow up
+      else if (nb < -CAP) nb = -CAP
+      b[c] = nb                                         // next height → into b
       x++
     }
     y++
@@ -118,14 +125,16 @@ export let frame = (t) => {
       let vel = a[c] - b[c]
       let gx = a[c + 1] - a[c - 1], gy = a[c + w] - a[c - w]
       let E = vel * vel + C2 * (gx * gx + gy * gy)
-      // squared energy → high contrast: a lone ring stays DIM, but a crossing (≈2× energy) lands ≈4×
-      // brighter, so the surface only really lights up where ripples INTERSECT.
-      let g = E * GAIN
-      g = g * g
+      // base = √energy (∝ amplitude): DIM lone rings that FADE GENTLY as they spread (∝ 1/√r, like a
+      // real ripple) instead of dropping off abruptly; energy ≥0 so it fills destructive spots — no
+      // dark dampening gaps. HEIGHT² boost: where crests constructively pile up (a crossing) the
+      // height ≈ doubles, so its square is ≈4× — that lights the INTERSECTIONS bright, no darkening.
+      let crest = a[c] > 0.0 ? a[c] : 0.0
+      let g = Math.sqrt(E) * GE + crest * crest * GH
       if (g > 1.0) g = 1.0
       let gi = (g * 255.0) | 0
       px[c] = (255 << 24) | (gi << 16) | (gi << 8) | gi
-      let s = g - 0.32                              // bloom source: only the brighter spots (crossings) glow
+      let s = g - 0.5                               // bloom source: only the bright crossings glow
       gbuf[c] = s > 0.0 ? s : 0.0
       rx++
     }

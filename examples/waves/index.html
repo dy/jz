@@ -16,7 +16,7 @@ let painting = false, lastX = 0, lastY = 0
 // each drop is a touch randomized — radius and strength jitter so no two ripples ring alike. Small
 // radius + gentle amplitude → the drop starts as a soft point and the ring grows out from radius 0.
 const rr = () => 3 + Math.random() * 3
-const ra = () => 0.6 + Math.random() * 0.25
+const ra = () => 0.45 + Math.random() * 0.2
 const drop = (x, y) => {
   if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, rr(), ra())
 }
