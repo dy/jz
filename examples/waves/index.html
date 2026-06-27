@@ -9,16 +9,12 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// autonomous: drop random ripples at random intervals so the surface keeps ringing (screensaver)
-let frameCount = 0, nextDrop = 30, lastStepMs = 0
-let painting = false, lastX = 0, lastY = 0
+// The canonical 2D wave equation: drop a pulse, circular ripples spread, reflect off the walls and
+// interfere. Drag to draw a trail of drops; the surface keeps ringing on its own (screensaver).
+let frameCount = 0, nextDrop = 30, painting = false, lastX = 0, lastY = 0
 
-// each drop is a touch randomized — radius and strength jitter so no two ripples ring alike. Small
-// radius + gentle amplitude → the drop starts as a soft point and the ring grows out from radius 0.
-const rr = () => 3 + Math.random() * 3
-const ra = () => 0.45 + Math.random() * 0.2
 const drop = (x, y) => {
-  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, rr(), ra())
+  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, 4, 1.2)
 }
 const strokeTo = (x, y) => {
   const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 5))
@@ -28,27 +24,20 @@ const strokeTo = (x, y) => {
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation — ripples ring outward and interfere · click to drop one",
+  hint: "the 2D wave equation — ripples ring, reflect, and interfere · click to drop one",
   size: { budget: 420000 },
-  bg: "#000",
-  load: (e) => { e.clear() },
+  bg: "#808080",
+  load: (e) => e.clear(),
   frame: (e) => {
-    // Throttle the simulation to ~50 Hz of REAL time. The harness ticks once per rAF — 120 Hz on many
-    // displays — and at C2≈0.5 that raced (the "too fast"); skipping the extra rAFs keeps the pace calm
-    // and identical on 60/120/144 Hz screens. The harness keeps presenting the last frame, so the gap
-    // between steps doesn't flicker.
-    const now = performance.now()
-    if (now - lastStepMs < 20) return
-    lastStepMs = now
     frameCount++
     if (frameCount > nextDrop) {
-      e.drop(Math.random() * demo.W, Math.random() * demo.H, rr(), ra())
-      nextDrop = frameCount + 55 + Math.random() * 85    // a few rings coexist & cross, not a busy mush
+      e.drop(Math.random() * demo.W, Math.random() * demo.H, 4, 1.4)
+      nextDrop = frameCount + 70 + Math.random() * 160
     }
     e.frame(0)
   },
-  // re-roll: clear the pond and scatter a handful of fresh packets that immediately interfere
-  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 6; i++) e.drop(Math.random() * d.W, Math.random() * d.H, rr(), ra()) },
+  // re-roll: clear the pond and scatter a few fresh drops
+  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 5; i++) e.drop(Math.random() * d.W, Math.random() * d.H, 4, 1.4) },
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {
