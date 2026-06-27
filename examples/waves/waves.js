@@ -18,23 +18,22 @@ let base, blm, btmp, btmp2   // display field / bloom excess / blur scratch (×2
 let dampField          // per-cell damping = global damp × edge sponge
 
 const C2 = 0.08        // wave speed² — small ⇒ SLOW propagation (keep < ~0.7 for 9-point stability)
-const DAMP = 0.996     // global damping per step ⇒ rings fade, but linger a while (gentle)
+const DAMP = 0.998     // global damping per step ⇒ rings fade, but linger a good while (gentle)
 const SPEED = 0.28284  // √C2 — the outgoing-bias offset for a drop
 const MARGIN = 16      // edge-sponge width (cells): absorbs the wave so it doesn't reflect off the walls
 const MARGINDAMP = 0.82
 const DROPR = 18.0, DROPW = 4.0   // ring-pulse initial radius + half-width (large enough that the inward
-const DROPAMP = 0.95              // part converges late & damped → no central flash)
-// Two-stage display so EVERY ring renders the same brightness regardless of age. Stage 1: crest>HI →
-// a consistent RINGLEVEL grey; the low wake & faded tails fall to black; a ring fades only once its
-// crest drops through [LO,HI].
-const LO = 0.20, HI = 0.44, RINGLEVEL = 0.5
-// Stage 2: a crest beyond a single ring's reach (where DIFFERENT circles sum) rises above ringlevel.
-const CROSSLO = 1.05, CROSSHI = 1.9
-const BTHRESH = 1.2    // bloom gate on crest² → only cross-circle overlaps feed the glow (not lone rings)
+const DROPAMP = 0.5               // part converges late & damped → no central flash); GENTLE amplitude
+// Reinhard tone-map  crest·G/(crest·G+1): compresses the age gradient so rings read at a CONSISTENT
+// brightness, while keeping the crest's smooth PROFILE (rich, not a flat grey band). Rings stay dim, so
+// there's headroom for the glare.
+const GAIN = 2.6
+const BTHRESH = 0.28   // bloom gate on crest² (above a single ring) → only cross-circle overlaps GLARE
+const CROSSADD = 0.9   // add crest² straight into the display at overlaps too → a white-hot glint core
 const BRAD = 6         // tight bloom radius → the glint at the intersection
-const BRAD2 = 26       // wide bloom radius → the soft round glow halo around it
-const BLOOMADD = 22.0
-const BLOOMADD2 = 40.0
+const BRAD2 = 32       // wide bloom radius → the soft round glow halo around it
+const BLOOMADD = 26.0
+const BLOOMADD2 = 48.0
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -166,15 +165,15 @@ export let frame = (t) => {
   }
   let tmp = a; a = b; b = tmp              // swap → a is current
 
-  // two-stage display (consistent rings + brighter overlaps) + crest² bloom source
+  // Reinhard-toned rings (consistent + rich) + a crest²-fed bloom that GLARES at cross-circle overlaps
   let i = 0
   while (i < n) {
     let cst = a[i]; if (cst < 0.0) cst = 0.0
-    let tt = (cst - LO) / (HI - LO); if (tt < 0.0) tt = 0.0; else if (tt > 1.0) tt = 1.0
-    let uu = (cst - CROSSLO) / (CROSSHI - CROSSLO); if (uu < 0.0) uu = 0.0; else if (uu > 1.0) uu = 1.0
-    base[i] = RINGLEVEL * (tt * tt * (3.0 - 2.0 * tt)) + (1.0 - RINGLEVEL) * (uu * uu * (3.0 - 2.0 * uu))
+    let cg = cst * GAIN
     let hh = cst * cst, e = hh - BTHRESH
-    blm[i] = e > 0.0 ? e : 0.0
+    let ex = e > 0.0 ? e : 0.0              // only where DIFFERENT circles sum does crest² clear the gate
+    blm[i] = ex                            // → fed to the bloom (the wide halo) below
+    base[i] = cg / (cg + 1.0) + CROSSADD * ex   // ring profile + a white-hot glint core at the overlap
     i++
   }
   blurAdd(BRAD, BLOOMADD)                  // tight glint
