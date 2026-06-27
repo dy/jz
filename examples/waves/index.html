@@ -33,7 +33,7 @@ const demo = runDemo({
     frameCount++
     if (frameCount > nextDrop) {
       e.drop(Math.random() * demo.W, Math.random() * demo.H)
-      nextDrop = frameCount + 26 + Math.random() * 45   // several rings coexist & cross
+      nextDrop = frameCount + 110 + Math.random() * 30   // ~one drop every 2s (rings are long-lived, so they still cross)
     }
     e.frame(0)
   },
