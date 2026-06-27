@@ -12,12 +12,12 @@ import { runDemo } from "../lib/jzdemo.js"
 // 2D wave-equation ripples: drops ring out, fade, and glow where DIFFERENT circles cross. Drops are kept
 // a minimum distance apart (esp. on drag) so they don't stack and self-glare into a bright flash — the
 // glow should come from separate circles meeting, not from a pile of near-identical drops.
-const REACHFRAC = 0.16                // ≈ a ripple's visible reach before it fades (= REACHFRAC * min(W,H))
+const REACHFRAC = 0.34                // a ring's full radius (must match RMAX's fraction in waves.js)
 let frameCount = 0, nextDrop = 20, lastStepMs = 0, painting = false, lastX = 0, lastY = 0
 let ldx = -1, ldy = -1                // last emitted drop, in canvas pixels
 
 const rmaxPx = () => REACHFRAC * Math.min(demo.W, demo.H)
-const minDist = () => 0.45 * rmaxPx()   // keep drops at least this far apart (no stacking glare)
+const minDist = () => 0.25 * rmaxPx()   // ≥ 1/4 of a ring's radius apart (no stacking glare)
 const clampX = (v) => v < 12 ? 12 : v > demo.W - 12 ? demo.W - 12 : v
 const clampY = (v) => v < 12 ? 12 : v > demo.H - 12 ? demo.H - 12 : v
 
@@ -36,7 +36,7 @@ const strokeTo = (x, y) => {
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation — ripples ring out, fade, and glow where they cross · click to drop one",
+  hint: "ripples — each ring bursts out, slows to a stop, fades, and glares where circles cross · click to drop one",
   size: { budget: 420000 },
   bg: "#000",
   load: (e) => { e.clear(); ldx = -1; ldy = -1 },
