@@ -892,7 +892,9 @@ export function splitLoopPrivateScratch(fn) {
       if (!Array.isArray(n)) return true
       const op = n[0]
       if (op === 'local.get') return !W.has(n[1]) || hoistable.has(n[1])
-      if (op === 'global.get') return !globalWrites.has(n[1])
+      // A global is invariant only if not set in the loop AND no call (a callee may mutate
+      // it — no interprocedural effect analysis), matching hoistInvariantLoop's pureGiven.
+      if (op === 'global.get') return !globalWrites.has(n[1]) && !loopHasCall
       if (typeof op !== 'string') return false
       // A side effect inside the RHS (a tee/set defines a local read elsewhere; a store/call
       // mutates state) cannot be relocated out of the loop — reject the whole def.
