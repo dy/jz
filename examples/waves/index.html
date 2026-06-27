@@ -9,7 +9,7 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Expanding ripple rings: each drop bursts out, slows, and fades; where rings overlap they glare.
+// The 2D wave equation: each drop rings out slowly, trails a soft wake, fades, and glows where waves cross.
 let frameCount = 0, nextDrop = 20, lastStepMs = 0, painting = false, lastX = 0, lastY = 0
 
 const drop = (x, y) => { if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight) }
@@ -21,7 +21,7 @@ const strokeTo = (x, y) => {
 
 const demo = runDemo({
   name: "waves",
-  hint: "expanding ripples — each ring bursts out, slows, and fades · overlaps glare · click to drop one",
+  hint: "the 2D wave equation — ripples ring out slowly, fade, and glow where they cross · click to drop one",
   size: { budget: 420000 },
   bg: "#000",
   load: (e) => e.clear(),
@@ -32,8 +32,15 @@ const demo = runDemo({
     lastStepMs = now
     frameCount++
     if (frameCount > nextDrop) {
-      e.drop(Math.random() * demo.W, Math.random() * demo.H)
-      nextDrop = frameCount + 110 + Math.random() * 30   // ~one drop every 2s (rings are long-lived, so they still cross)
+      // the waves are slow and fade as they spread, so two far-apart drops never meet while still bright.
+      // Drop a small BURST of a couple of near-simultaneous drops a short distance apart, at a random
+      // spot: their fresh rings expand into each other and glint — different circles interfering, which is
+      // the whole point. A fresh lone ring stays dim; only the overlap glows.
+      const cx = demo.W * (0.2 + Math.random() * 0.6), cy = demo.H * (0.2 + Math.random() * 0.6)
+      const a0 = Math.random() * 6.283, gap = 34 + Math.random() * 16
+      const k = 2 + (Math.random() * 2 | 0)               // 2-3 circles
+      for (let i = 0; i < k; i++) { const ang = a0 + i * 6.283 / k; e.drop(cx + Math.cos(ang) * gap, cy + Math.sin(ang) * gap) }
+      nextDrop = frameCount + 120 + Math.random() * 60     // ~2-3s between bursts
     }
     e.frame(0)
   },

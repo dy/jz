@@ -1,150 +1,189 @@
-// Expanding ripple rings. Each drop spawns a thin white ring that bursts out fast, DECELERATES (its
-// radius eases toward a maximum), and FADES to nothing — so rings settle and vanish instead of
-// travelling forever. Rings are drawn ADDITIVELY into an intensity buffer, so where they overlap the
-// values sum and the squared tone-map makes the intersections (and their immediate proximity) GLARE
-// far brighter than a lone ring — no dark interference gaps. Black field, white rings.
+// Ripple waves — the 2D wave equation u_tt = c²∇²u, leapfrog in time over two height buffers, with a
+// 9-point isotropic Laplacian (so ripples stay round, not square). Each drop is a RING pulse — a thin
+// annulus, nothing at the centre — so a clean wavefront travels OUT and the equation naturally trails a
+// soft, decaying WAKE behind it: the oscillations a drawn ring can't fake. The speed is deliberately
+// slow (small c²) and the fade fairly quick (light damping); an absorbing edge sponge keeps rings from
+// reflecting off the walls.
 //
-// This is a motion-graphics effect, not the wave PDE — which is exactly why it can do the look the
-// equation can't (a real wavefront travels at constant speed and never localises a clean bright knot).
-// Still a genuine per-pixel jz kernel (draw the ring annuli + tone-map), so the JS⇄jz toggle stands.
+// Render: crest² — only the positive crest, squared — so the leading wavefront is a THIN bright ring and
+// the low-amplitude wake/centre is crushed to black. Then a TWO-SCALE BLOOM post-effect fed ONLY by the
+// bright OVERLAP excess: a tight blur is the glint at the exact intersection, a wide blur is a soft glow
+// HALO spreading into the surrounding area. So lone rings stay dim grey while intersections glare. The
+// box-blur dilutes a thin lone ring's contribution but concentrates an intersection knot's — that's what
+// makes the glow land on crossings, not on the rings themselves.
+//
+// A genuine memory-bound jz kernel (a stencil sweep + separable blurs). resize(w,h) → Uint32Array (ARGB).
 
 let W = 0, H = 0, px
-let acc            // Float32 intensity buffer (additive ring contributions)
-let blm, btmp      // bloom source / scratch (glow around the bright intersections)
-let RMAX = 0.0     // max ring radius — set from the canvas size in resize()
+let a, b               // height now / previous
+let base, blm, btmp, btmp2   // render intensity / bloom excess / blur scratch (×2 for a round double-blur)
+let dampField          // per-cell damping = global damp × edge sponge
 
-let MAXD = 96      // max simultaneous rings (ring buffer of slots)
-let cxs = new Float64Array(MAXD)   // centre x
-let cys = new Float64Array(MAXD)   // centre y
-let age = new Float64Array(MAXD)   // age in frames
-let live = new Int32Array(MAXD)    // 1 = active
-let slot = 0
-
-const LIFE = 320.0    // frames until a ring has fully faded — ~5s at 60Hz (slow, gentle rings)
-const LAMBDA = 14.0   // wavelength: spacing of the concentric crests in each packet → reads as a WAVE
-const RINGW = 2.0     // crest half-thickness in px → thin
-const GAIN = 1.3      // overall brightness — lone rings read as grey, leaving headroom so overlaps stand out
-const SPEED0 = 0.0095 // expansion-easing rate — ~4.5× slower than before: a gentle burst that decelerates
-const BTHRESH = 0.72  // only intensity above this (i.e. where rings overlap) feeds the bloom
-const BRAD = 6        // bloom blur radius → glow spreads into the proximity of each intersection
-const BLOOMADD = 2.6  // how hard the intersection glow is added back
+const C2 = 0.08        // wave speed² — small ⇒ SLOW propagation (keep < ~0.7 for 9-point stability)
+const DAMP = 0.997     // global damping per step ⇒ rings fade (gently enough to still meet & cross)
+const SPEED = 0.28284  // √C2 — the outgoing-bias offset for a drop
+const MARGIN = 16      // edge-sponge width (cells): absorbs the wave so it doesn't reflect off the walls
+const MARGINDAMP = 0.82
+const DROPR = 16.0, DROPW = 3.5   // ring-pulse initial radius + half-width (wide enough that the inward
+const DROPAMP = 0.40              // part converges late & damped → no central flash); a GENTLE amplitude
+const GAIN = 2.0       // render brightness — a lone ring renders dim grey (just a drop dabbing the surface)
+const BTHRESH = 0.75   // bloom gate ABOVE a single ring's brightness → a lone drop never glows; only where
+                       // DIFFERENT circles overlap does the sum clear the gate and bloom (inter-, not self-)
+const BRAD = 7         // tight bloom radius → the glint at the intersection
+const BRAD2 = 36       // wide bloom radius → the big soft glow halo around it
+const BLOOMADD = 18.0
+const BLOOMADD2 = 30.0
+const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
   W = w; H = h
+  a = new Float64Array(w * h); b = new Float64Array(w * h)
+  base = new Float32Array(w * h); blm = new Float32Array(w * h)
+  btmp = new Float32Array(w * h); btmp2 = new Float32Array(w * h)
+  dampField = new Float32Array(w * h)
   px = new Uint32Array(w * h)
-  acc = new Float32Array(w * h)
-  blm = new Float32Array(w * h)
-  btmp = new Float32Array(w * h)
-  let m = w < h ? w : h
-  RMAX = m * 0.42
+  // per-cell damping: global DAMP, ramped down to MARGINDAMP within MARGIN cells of any edge (sponge)
+  let y = 0
+  while (y < h) {
+    let x = 0
+    while (x < w) {
+      let ed = x
+      if (y < ed) ed = y
+      let rx = w - 1 - x; if (rx < ed) ed = rx
+      let ry = h - 1 - y; if (ry < ed) ed = ry
+      let s = DAMP
+      if (ed < MARGIN) s = MARGINDAMP + (DAMP - MARGINDAMP) * (ed / MARGIN)
+      dampField[y * w + x] = s
+      x++
+    }
+    y++
+  }
   return px
 }
 
-export let clear = () => { let i = 0; while (i < MAXD) { live[i] = 0; i++ } }
+export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ } }
 
-// spawn a ring at (x, y) — recycles the oldest slot when full
-export let drop = (x, y) => {
-  let s = slot
-  cxs[s] = x; cys[s] = y; age[s] = 0.0; live[s] = 1
-  slot = s + 1; if (slot >= MAXD) slot = 0
+// ring-pulse drop at (cx,cy): a thin annulus at DROPR, outgoing-biased (b is the same ring one step
+// further IN) so the wave moves outward instead of splitting into an inward half that refocuses.
+export let drop = (cx, cy) => {
+  let rO = DROPR + DROPW + 2.0
+  let x0 = (cx - rO) | 0, x1 = (cx + rO) | 0, y0 = (cy - rO) | 0, y1 = (cy + rO) | 0
+  if (x0 < 1) x0 = 1
+  if (y0 < 1) y0 = 1
+  if (x1 > W - 2) x1 = W - 2
+  if (y1 > H - 2) y1 = H - 2
+  let inv = 1.0 / DROPW
+  let y = y0
+  while (y <= y1) {
+    let dy = y - cy, row = y * W, x = x0
+    while (x <= x1) {
+      let dx = x - cx, d = Math.sqrt(dx * dx + dy * dy)
+      let e = (d - DROPR) * inv
+      if (e > -1.0 && e < 1.0) a[row + x] = a[row + x] + DROPAMP * (1.0 - e * e)
+      let e2 = (d - (DROPR - SPEED)) * inv
+      if (e2 > -1.0 && e2 < 1.0) b[row + x] = b[row + x] + DROPAMP * (1.0 - e2 * e2)
+      x++
+    }
+    y++
+  }
 }
 
-export let frame = (t) => {
-  let w = W, h = H, n = w * h
-  let i = 0
-  while (i < n) { acc[i] = 0.0; i++ }                  // clear the intensity field
-
-  // draw every live ring additively
-  let k = 0
-  while (k < MAXD) {
-    if (live[k] != 0) {
-      let a = age[k] + 1.0
-      age[k] = a
-      if (a >= LIFE) { live[k] = 0 }
-      else {
-        let cx = cxs[k], cy = cys[k]
-        // decelerating radius: fast burst then easing toward RMAX (1 − e^{−age·SPEED0})
-        let R = RMAX * (1.0 - Math.exp(-a * SPEED0))
-        // brightness: linear fade to 0 over the lifetime, so the ring stays clearly visible the whole
-        // time it expands (a faster decay would make the slow wave invisible for most of its travel).
-        let f = 1.0 - a / LIFE
-        if (R > 0.5 && f > 0.002) {
-          let rw = RINGW, inv = 1.0 / rw
-          // one dominant wavefront at d=R, followed by a soft small oscillation a wavelength behind (and a
-          // barely-there second) → reads as a single spreading wave with a gentle trailing ripple.
-          let rOut = R + rw, rIn = R - 2.0 * LAMBDA - rw; if (rIn < 0.0) rIn = 0.0
-          let rOut2 = rOut * rOut, rIn2 = rIn * rIn
-          let x0 = (cx - rOut - 1.0) | 0, x1 = (cx + rOut + 1.0) | 0
-          let y0 = (cy - rOut - 1.0) | 0, y1 = (cy + rOut + 1.0) | 0
-          if (x0 < 0) x0 = 0
-          if (y0 < 0) y0 = 0
-          if (x1 > w - 1) x1 = w - 1
-          if (y1 > h - 1) y1 = h - 1
-          let y = y0
-          while (y <= y1) {
-            let ddy = y - cy, row = y * w, x = x0
-            while (x <= x1) {
-              let ddx = x - cx, d2 = ddx * ddx + ddy * ddy
-              if (d2 <= rOut2 && d2 >= rIn2) {        // only the thin packet band pays for a sqrt
-                let behind = R - Math.sqrt(d2)        // 0 at the leading crest, grows inward
-                let b = 0.0
-                let e0 = behind * inv;                  if (e0 > -1.0 && e0 < 1.0) b = b + (1.0 - e0 * e0)
-                let e1 = (behind - LAMBDA) * inv;       if (e1 > -1.0 && e1 < 1.0) b = b + (1.0 - e1 * e1) * 0.22
-                let e2 = (behind - 2.0 * LAMBDA) * inv; if (e2 > -1.0 && e2 < 1.0) b = b + (1.0 - e2 * e2) * 0.06
-                if (b > 0.0) acc[row + x] = acc[row + x] + b * f
-              }
-              x++
-            }
-            y++
-          }
-        }
-      }
-    }
-    k++
-  }
-
-  // bloom source: only the EXCESS where rings overlap (acc > BTHRESH) → lone rings don't glow, crossings do
-  let p = 0
-  while (p < n) { let e = acc[p] - BTHRESH; blm[p] = e > 0.0 ? e : 0.0; p++ }
-  // separable box blur (running sum), blm →(horizontal)→ btmp →(vertical)→ blm: glow into the proximity
-  let inv = 1.0 / (2.0 * BRAD + 1.0)
+// Blur the bloom excess (blm) by radius R and add weight × blurred into base. A box blur of a bright
+// point is a square; running it TWICE (≈ a Gaussian) gives a ROUND, soft halo. Four separable passes:
+// blm →1H→ btmp →1V→ btmp2 →2H→ btmp →2V→ base. (No array params — jz wants the buffers referenced direct.)
+let blurAdd = (R, weight) => {
+  let w = W, h = H, inv = 1.0 / (2.0 * R + 1.0)
   let y = 0
-  while (y < h) {
+  while (y < h) {                         // 1H: blm → btmp
     let row = y * w, s = 0.0, x = 0
-    while (x <= BRAD) { s = s + blm[row + x]; x++ }
+    while (x <= R) { s = s + blm[row + x]; x++ }
     x = 0
     while (x < w) {
       btmp[row + x] = s * inv
-      let xa = x - BRAD, xr = x + BRAD + 1
-      if (xr < w) s = s + blm[row + xr]
-      if (xa >= 0) s = s - blm[row + xa]
+      if (x + R + 1 < w) s = s + blm[row + x + R + 1]
+      if (x - R >= 0) s = s - blm[row + x - R]
       x++
     }
     y++
   }
   let x2 = 0
-  while (x2 < w) {
+  while (x2 < w) {                        // 1V: btmp → btmp2
     let s = 0.0, yy = 0
-    while (yy <= BRAD) { s = s + btmp[yy * w + x2]; yy++ }
+    while (yy <= R) { s = s + btmp[yy * w + x2]; yy++ }
     yy = 0
     while (yy < h) {
-      blm[yy * w + x2] = s * inv
-      let ya = yy - BRAD, yr = yy + BRAD + 1
-      if (yr < h) s = s + btmp[(yr) * w + x2]
-      if (ya >= 0) s = s - btmp[(ya) * w + x2]
+      btmp2[yy * w + x2] = s * inv
+      if (yy + R + 1 < h) s = s + btmp[(yy + R + 1) * w + x2]
+      if (yy - R >= 0) s = s - btmp[(yy - R) * w + x2]
       yy++
     }
     x2++
   }
+  y = 0
+  while (y < h) {                         // 2H: btmp2 → btmp
+    let row = y * w, s = 0.0, x = 0
+    while (x <= R) { s = s + btmp2[row + x]; x++ }
+    x = 0
+    while (x < w) {
+      btmp[row + x] = s * inv
+      if (x + R + 1 < w) s = s + btmp2[row + x + R + 1]
+      if (x - R >= 0) s = s - btmp2[row + x - R]
+      x++
+    }
+    y++
+  }
+  x2 = 0
+  while (x2 < w) {                        // 2V: btmp → accumulate into base
+    let s = 0.0, yy = 0
+    while (yy <= R) { s = s + btmp[yy * w + x2]; yy++ }
+    yy = 0
+    while (yy < h) {
+      base[yy * w + x2] = base[yy * w + x2] + weight * (s * inv)
+      if (yy + R + 1 < h) s = s + btmp[(yy + R + 1) * w + x2]
+      if (yy - R >= 0) s = s - btmp[(yy - R) * w + x2]
+      yy++
+    }
+    x2++
+  }
+}
 
-  // tone-map: white on black, intensity SQUARED so overlaps already lift, then add the intersection glow
-  let j = 0
-  while (j < n) {
-    let g = acc[j] * GAIN
-    g = g * g + blm[j] * BLOOMADD
-    if (g > 1.0) g = 1.0
+export let frame = (t) => {
+  let w = W, h = H, n = w * h
+  // one leapfrog step: next height → b, from the 9-point Laplacian of a, times the per-cell damping
+  let y = 1
+  while (y < h - 1) {
+    let rc = y * w, rn = rc - w, rs = rc + w, x = 1
+    while (x < w - 1) {
+      let c = rc + x
+      let lap = O * (a[c - 1] + a[c + 1] + a[rn + x] + a[rs + x])
+        + D * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1]) + CEN * a[c]
+      b[c] = (2.0 * a[c] - b[c] + C2 * lap) * dampField[c]
+      x++
+    }
+    y++
+  }
+  let tmp = a; a = b; b = tmp              // swap → a is current
+
+  // render intensity: crest² (positive part, squared) → a thin bright front, the wake/centre dark
+  let i = 0
+  while (i < n) {
+    let cst = a[i]; if (cst < 0.0) cst = 0.0
+    let v = cst * GAIN
+    base[i] = v * v
+    i++
+  }
+  // bloom excess: only the part above BTHRESH (the bright overlaps) — thin lone rings barely contribute
+  i = 0
+  while (i < n) { let e = base[i] - BTHRESH; blm[i] = e > 0.0 ? e : 0.0; i++ }
+  blurAdd(BRAD, BLOOMADD)                  // tight glint
+  blurAdd(BRAD2, BLOOMADD2)               // wide glow halo
+
+  // tone-map → white on black
+  i = 0
+  while (i < n) {
+    let g = base[i]; if (g > 1.0) g = 1.0
     let v = (g * 255.0) | 0
-    px[j] = (255 << 24) | (v << 16) | (v << 8) | v
-    j++
+    px[i] = (255 << 24) | (v << 16) | (v << 8) | v
+    i++
   }
 }
