@@ -759,6 +759,197 @@ const PURE_LICM_OPS = new Set([
  * watr's shared CSE subtrees, snaps spliced before the loop, decls at bodyStart.
  * Idempotent: re-running sees only `(local.get $__liN)` and finds nothing to do.
  */
+// SSA-split loop-private straight-line multi-def scratch so the LICM below can hoist
+// the invariant versions. jz's unroller MERGES each unrolled iteration's `const x`
+// into one multi-def local (e.g. raytrace's sphere loop unrolls 8× sharing $ox/$c),
+// which the LICM cannot hoist — so the per-sphere invariant `c_i = sx_i²+sy_i²+sz_i²
+// −sr_i²` recomputes every pixel instead of once (the 1.24× rust-wasm gap; rust/LLVM
+// keeps them as distinct SSA values and hoists each). Renaming each def to its own
+// version makes them single-def → hoistInvariantLoop lifts the loop-invariant ones.
+//
+// BIT-EXACT: pure renaming + invariant code motion — the same value computed fewer
+// times, no reassociation. Gated to loops with NO v128, so it never disturbs a
+// vectorized loop (whose unrolled shared names the lane/dot vectorizer relies on).
+//
+// SOUND only for a local that, within the loop body, (a) is referenced NOWHERE else in
+// the function (loop-local lifetime — else a post-loop read of the merged name breaks),
+// (b) has every occurrence STRAIGHT-LINE (never under a nested if/block/loop, so a
+// linear walk assigns each use its unique dominating def), (c) is first accessed by a
+// WRITE (no value carried across the back-edge), (d) is only ever `local.set` (never
+// `local.tee`/conditionally defined). Each condition rejects a class that would miscompile.
+export function splitLoopPrivateScratch(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const SCALAR = new Set(['i32', 'i64', 'f64', 'f32'])
+  const localTypes = new Map()
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'local') && typeof c[1] === 'string') localTypes.set(c[1], c[2])
+  }
+  // Whole-function reference count per local (to verify a candidate is loop-local).
+  const fnRefs = new Map()
+  const countRefs = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+      fnRefs.set(n[1], (fnRefs.get(n[1]) || 0) + 1)
+    for (let i = 1; i < n.length; i++) countRefs(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) countRefs(fn[i])
+
+  const hasV128 = (n) => {
+    let f = false
+    const w = (x) => { if (f || !Array.isArray(x)) return; const o = x[0]; if (typeof o === 'string' && (o.startsWith('v128') || /x(2|4|8|16)\b/.test(o) || o.includes('x2.') || o.includes('x4.') || o.includes('x8.') || o.includes('x16.'))) { f = true; return } for (let i = 1; i < x.length; i++) w(x[i]) }
+    w(n); return f
+  }
+  let minted = 0
+  const newDecls = []
+
+  const processLoop = (loop, parent, idx) => {
+    if (loop[0] !== 'loop' || hasV128(loop)) return
+    // Loop write-set: locals assigned anywhere in the loop.
+    const W = new Set()
+    const collectW = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') W.add(n[1]); for (let i = 1; i < n.length; i++) collectW(n[i]) }
+    collectW(loop)
+    // Candidate names: locals set somewhere directly in the loop's statement list.
+    const seen = new Set()
+    for (let i = 2; i < loop.length; i++) {
+      const s = loop[i]
+      if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string') seen.add(s[1])
+    }
+    // Stage 1 — collect SAFE candidates (loop-local, straight-line, first-write, set-only,
+    // ≥2 defs) and record each one's def RHS list for the invariance fixpoint.
+    const cand = new Map()  // name → { defs: [rhs…] }
+    for (const name of seen) {
+      if (!SCALAR.has(localTypes.get(name))) continue
+      let inLoop = 0
+      const cnt = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) inLoop++; for (let i = 1; i < n.length; i++) cnt(n[i]) }
+      cnt(loop)
+      if (inLoop !== (fnRefs.get(name) || 0)) continue
+      let safe = true, first = null, defs = []
+      const scan = (n, depth) => {
+        if (!safe || !Array.isArray(n)) return
+        const op = n[0]
+        if (op === 'local.tee' && n[1] === name) { safe = false; return }
+        if (op === 'local.set' && n[1] === name) {
+          if (depth > 0) { safe = false; return }
+          if (first === null) first = 'w'
+          defs.push(n[2])
+          scan(n[2], depth)
+          return
+        }
+        if (op === 'local.get' && n[1] === name) {
+          if (depth > 0) { safe = false; return }
+          if (first === null) first = 'r'
+          return
+        }
+        const ctrl = op === 'if' || op === 'then' || op === 'else' || op === 'block' || op === 'loop'
+        for (let i = 1; i < n.length; i++) scan(n[i], depth + (ctrl ? 1 : 0))
+      }
+      for (let i = 2; i < loop.length; i++) scan(loop[i], 0)
+      if (safe && first === 'w' && defs.length >= 2) cand.set(name, defs)
+    }
+    if (!cand.size) return
+    // Memory/state guards for load invariance (the biquad miscompile: filter STATE is
+    // loaded AND stored each iteration, so its load is NOT loop-invariant). Match jz's
+    // own model (hoistInvariantLoop line ~750): a load from a base is invariant only if
+    // the loop has NO store sharing any of that load's address locals, NO call (could
+    // store anywhere), and NO global write the value depends on. Read-only coefficient
+    // loads (base never stored) still hoist — the win biquad keeps.
+    const storeAddrLocals = new Set()
+    const globalWrites = new Set()
+    let loopHasCall = false
+    const addrLocals = (a, out) => {
+      if (!Array.isArray(a)) return
+      if ((a[0] === 'local.get' || a[0] === 'local.tee') && typeof a[1] === 'string') out.add(a[1])
+      for (let i = 1; i < a.length; i++) addrLocals(a[i], out)
+    }
+    const scanMem = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (typeof op === 'string') {
+        if (op.startsWith('call')) loopHasCall = true
+        else if (op === 'global.set' && typeof n[1] === 'string') globalWrites.add(n[1])
+        else if (op.endsWith('.store')) addrLocals(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1], storeAddrLocals)
+      }
+      for (let i = 1; i < n.length; i++) scanMem(n[i])
+    }
+    scanMem(loop)
+    // Stage 2 — invariance fixpoint: only split a candidate whose EVERY def is loop-
+    // invariant once its splittable siblings are themselves removed from the write-set
+    // (the cascade: c = ox²+… invariant only after ox hoists). Splitting a VARIANT
+    // (per-iteration) scratch would add register pressure for no hoist — the raytrace
+    // over-split regression.
+    const hoistable = new Set()
+    const loadInvariant = (n) => {
+      if (loopHasCall) return false
+      const ls = new Set()
+      addrLocals(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1], ls)
+      for (const x of ls) if (storeAddrLocals.has(x)) return false
+      return invariant(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1])
+    }
+    const invariant = (n) => {
+      if (!Array.isArray(n)) return true
+      const op = n[0]
+      if (op === 'local.get') return !W.has(n[1]) || hoistable.has(n[1])
+      if (op === 'global.get') return !globalWrites.has(n[1])
+      if (typeof op !== 'string') return false
+      // A side effect inside the RHS (a tee/set defines a local read elsewhere; a store/call
+      // mutates state) cannot be relocated out of the loop — reject the whole def.
+      if (op === 'local.tee' || op === 'local.set' || op === 'global.set' || op.endsWith('.store')) return false
+      if (op.startsWith('call') || op.startsWith('memory.')) return false
+      if (op.endsWith('.load')) return loadInvariant(n)
+      for (let i = 1; i < n.length; i++) if (!invariant(n[i])) return false
+      return true
+    }
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const [name, defs] of cand) {
+        if (hoistable.has(name)) continue
+        if (defs.every(invariant)) { hoistable.add(name); changed = true }
+      }
+    }
+    // Stage 3 — one linear pass over the loop body: each hoistable def is RENAMED to a
+    // fresh version and MOVED OUT of the loop (before it), in source order so the cascade's
+    // data deps stay intact (c = ox²+… emitted after ox). The cheap arithmetic AND the load
+    // both leave the loop; gets stay, rebound to the moved version. (hoistInvariantLoop only
+    // snapshots expensive subexprs, not whole invariant assignments — so we do the motion.)
+    const curOf = new Map()
+    const rewriteGets = (n) => {
+      if (!Array.isArray(n)) return n
+      if (n[0] === 'local.get' && curOf.has(n[1])) return ['local.get', curOf.get(n[1])]
+      return n.map((c, i) => i === 0 ? c : rewriteGets(c))
+    }
+    const hoisted = []
+    const kept = loop.slice(0, 2)  // 'loop' + label
+    for (let i = 2; i < loop.length; i++) {
+      const s = loop[i]
+      if (Array.isArray(s) && s[0] === 'local.set' && hoistable.has(s[1])) {
+        const name = s[1], ty = localTypes.get(name)
+        const nv = `$${name.replace(/^\$/, '')}__sr${minted++}`
+        newDecls.push(['local', nv, ty]); localTypes.set(nv, ty)
+        hoisted.push(['local.set', nv, rewriteGets(s[2])])
+        curOf.set(name, nv)
+      } else {
+        kept.push(rewriteGets(s))
+      }
+    }
+    loop.length = 0
+    for (const x of kept) loop.push(x)
+    parent.splice(idx, 0, ...hoisted)
+  }
+  const walk = (parent, idx) => {
+    const n = parent[idx]
+    if (!Array.isArray(n)) return
+    // Recurse first so an inner loop's hoists land before we process the outer loop.
+    for (let i = 1; i < n.length; i++) walk(n, i)
+    if (n[0] === 'loop') processLoop(n, parent, idx)
+  }
+  for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
+  if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
+}
+
 export function hoistInvariantLoop(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -3104,6 +3295,17 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // freshly-created v128 memargs now — one fewer i32.add per accumulator per
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     if (runVectorizer) foldV128Memargs(fn)
+  }
+  // SSA-split loop-private unrolled scratch (post-vectorize: vectorized loops now carry
+  // v128 and are skipped) so the LICM below hoists the per-iteration invariants the
+  // unroller's name-merging hid — rust/LLVM's free-after-unroll register hoist (closes
+  // the raytrace per-sphere `c_i` recompute). Bit-exact; re-run LICM to lift the splits.
+  if (phase === 'post' && (!cfg || cfg.hoistInvariantLoop !== false)) {
+    splitLoopPrivateScratch(fn)
+    // Iterate LICM for the dependency cascade: c = ox²+… is invariant only once ox is
+    // itself hoisted out, which the single-pass hoister can't see in one go. 4 climbs
+    // covers the deepest scratch chain; idempotent, so it self-terminates.
+    for (let k = 0; k < 4; k++) hoistInvariantLoop(fn)
   }
   // Loop rotation — the LAST shape pass (post-watr only, so no later pass reverts
   // it and the v128 loops are already formed for the skip-guard). Speed-tier: it
