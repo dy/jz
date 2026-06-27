@@ -13,13 +13,13 @@ let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
 // the step below — so a tall fresh pulse bursts out FAST and decelerates toward this base speed as it
 // spreads and fades. Base is kept LOW so the slow-down is clearly visible; the host throttles the
 // step rate to keep the overall pace calm.
-let C2 = 0.32
-let KAMP = 1.5        // how much a tall crest speeds up (fast initial burst → clearly slows as it flattens)
+let C2 = 0.5          // non-dispersive regime → clean single crest, no precursor ripple running ahead
+let KAMP = 1.5        // how much a tall crest speeds up (fast initial burst → slows as it flattens)
 let CAP = 1.5         // hard amplitude clamp — the nonlinear speed is a feedback loop; this saturates it
                       // so stacking many splashes can never run away to white
 let DAMP = 0.9985     // light damping → rings persist a good while before fading
-let GE = 5.0          // √energy-base brightness — DIM lone rings that fade gently, and fill destructive gaps
-let GH = 14.0         // height² boost — constructive CROSSINGS land ≈4× a lone ring → bright intersections
+let GC = 6.0          // crest brightness — the ring itself (peak strongest), fades gently ∝ amplitude
+let GH = 12.0         // height² boost — constructive overlaps land ≈4× a lone ring → bright intersections
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -38,8 +38,9 @@ let prof = (d, r, amp) => {
   return amp * Math.exp(-s * s)
 }
 
-// Seed a central disturbance with ZERO initial velocity — it radiates outward from the centre as a
-// ring that grows from radius 0.
+// Seed a central bump that radiates purely OUTWARD (single clean front growing from radius 0). The
+// previous frame is the bump one step further IN — u(t−dt)=f(d+c·dt) — which encodes outgoing velocity,
+// so the centre doesn't rebound and re-radiate a phantom precursor ahead of the main crest.
 export let drop = (cx, cy, r, amp) => {
   let x0 = cx - r | 0, x1 = cx + r | 0, y0 = cy - r | 0, y1 = cy + r | 0
   if (x0 < 1) x0 = 1
@@ -47,14 +48,16 @@ export let drop = (cx, cy, r, amp) => {
   if (x1 > W - 2) x1 = W - 2
   if (y1 > H - 2) y1 = H - 2
   let r2 = r * r
+  let speed = Math.sqrt(C2)
   let y = y0
   while (y <= y1) {
     let dy = y - cy, row = y * W, x = x0
     while (x <= x1) {
       let dx = x - cx, d2 = dx * dx + dy * dy
       if (d2 <= r2) {
-        let p = prof(Math.sqrt(d2), r, amp)
-        a[row + x] += p; b[row + x] += p
+        let d = Math.sqrt(d2)
+        a[row + x] += prof(d, r, amp)
+        b[row + x] += prof(d + speed, r, amp)   // one step earlier the bump sat further in → moves OUT
       }
       x++
     }
@@ -122,19 +125,18 @@ export let frame = (t) => {
     let row = ry * w, rx = 1
     while (rx < w - 1) {
       let c = row + rx
-      let vel = a[c] - b[c]
-      let gx = a[c + 1] - a[c - 1], gy = a[c + w] - a[c - w]
-      let E = vel * vel + C2 * (gx * gx + gy * gy)
-      // base = √energy (∝ amplitude): DIM lone rings that FADE GENTLY as they spread (∝ 1/√r, like a
-      // real ripple) instead of dropping off abruptly; energy ≥0 so it fills destructive spots — no
-      // dark dampening gaps. HEIGHT² boost: where crests constructively pile up (a crossing) the
-      // height ≈ doubles, so its square is ≈4× — that lights the INTERSECTIONS bright, no darkening.
+      // render the CREST itself (the wave height) — so the brightest point is the PEAK, with nothing
+      // ahead of it (the energy render lit the slopes, which put a false pre-wave in front of the
+      // crest). crest·GC is the ring; it fades ∝ amplitude (gently, like a real ripple).
       let crest = a[c] > 0.0 ? a[c] : 0.0
-      let g = Math.sqrt(E) * GE + crest * crest * GH
+      // height² term: where two crests physically ride over each other (a constructive overlap — a
+      // REGION around the intersection, not just a point) the height ≈ doubles, so this lands ≈4×
+      // brighter → the intersections and their proximity light up.
+      let g = crest * GC + crest * crest * GH
       if (g > 1.0) g = 1.0
       let gi = (g * 255.0) | 0
       px[c] = (255 << 24) | (gi << 16) | (gi << 8) | gi
-      let s = g - 0.5                               // bloom source: only the bright crossings glow
+      let s = g - 0.45                              // bloom source: the bright overlaps glow into their surroundings
       gbuf[c] = s > 0.0 ? s : 0.0
       rx++
     }
