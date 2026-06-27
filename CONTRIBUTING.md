@@ -89,6 +89,7 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 
 - **Don't optimize the compiler source itself.** Readability > cleverness in `src/`. The compiler doesn't need to be fast — the output does.
 - **Valid JZ = valid JS.** Any JZ program must parse and run as standard JavaScript.
+- **WASM conventions, not JS edge-cases (the speed dialect).** The *source* is valid JS, but the *compiled output* targets WASM/native semantics. Where a native language (C, Rust, Zig) may assume something JS can't, JZ's output may take that convention too — **provided the f64 value-precision of real computation is preserved.** Integer wrap at ±2³¹, unchecked typed-array reads, raw UTF-8, NaN bit-patterns and signed-zero follow the machine, not the spec. What JZ will **not** do is trade away a meaningful result's accuracy (no mantissa-trimming, no brutal precision loss). Litmus: *if another native language can presume it here, JZ may too.* Any new speed-mode lowering must stay inside this contract and be added to the [FAQ divergence list](README.md#faq).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No runtime.** Compiled WASM has no jz-specific runtime — just WASM + WASI.
 

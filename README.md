@@ -185,6 +185,8 @@ Not supported
 <details>
 <summary><strong>What are the differences with JS?</strong></summary>
 
+Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases when it's free and the f64 value-precision of real computation is preserved** ([rationale](CONTRIBUTING.md#principles)).
+
 - **Numbers are f64**; integer-proven values (loop counters, array idx, `| 0`) are `i32` and **wrap at ±2³¹**.
 - **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
 - **Objects are fixed-shape structs** — literal keys sit in fixed slots; computed writes (`o[k] = v`) fall back to a per-object hash and enumerate normally, but a dot-key added after the literal (`o.b = 2`) stays readable without enumerating (`Object.keys`/`for…in`). Prefer `Map` for heavy dynamic keys.
