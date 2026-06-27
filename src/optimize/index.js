@@ -3110,6 +3110,9 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // duplicates the loop condition for a fused conditional back-edge (1.35× on the
   // lz/qoi scalar scans — see rotateLoops).
   if (cfg && cfg.rotateLoops === true && phase === 'post') rotateLoops(fn)
+  // Canonicalize boolean conditions (strip redundant `!= 0` / double-`eqz`) — after
+  // rotateLoops so its fused back-edges get cleaned too. Tied to the peephole pass.
+  if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(fn)
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
@@ -3146,6 +3149,39 @@ const ROT_NEG = {
   'i32.eq': 'i32.ne', 'i32.ne': 'i32.eq',
   'i32.lt_s': 'i32.ge_s', 'i32.ge_s': 'i32.lt_s', 'i32.gt_s': 'i32.le_s', 'i32.le_s': 'i32.gt_s',
   'i32.lt_u': 'i32.ge_u', 'i32.ge_u': 'i32.lt_u', 'i32.gt_u': 'i32.le_u', 'i32.le_u': 'i32.gt_u',
+}
+
+// Boolean-context canonicalization. At a true zero/nonzero position — a `br_if`,
+// `if`, `i32.eqz`, or `select` CONDITION — these are all equivalent to the inner
+// value: `i32.ne(X, 0) → X`, `i32.ne(0, X) → X`, `i32.eqz(i32.eqz(X)) → X`. jz
+// emits the redundant compare from `while (x !== 0)` lowering and from rotateLoops'
+// `negate` (which strips one `eqz` but leaves the `i32.ne`). V8 happens to fold it,
+// but JSC/wasmtime needn't — so strip it for MINIMAL output regardless of engine.
+// Only applied at proven boolean positions (never on a value-position `ne`/`eqz`,
+// which produce a real 0/1).
+const boolSimp = (n) => {
+  for (;;) {
+    if (!Array.isArray(n)) return n
+    if (n[0] === 'i32.ne' && n.length === 3) {
+      if (Array.isArray(n[2]) && n[2][0] === 'i32.const' && n[2][1] === 0) { n = n[1]; continue }
+      if (Array.isArray(n[1]) && n[1][0] === 'i32.const' && n[1][1] === 0) { n = n[2]; continue }
+    }
+    if (n[0] === 'i32.eqz' && Array.isArray(n[1]) && n[1][0] === 'i32.eqz' && n[1].length === 2) { n = n[1][1]; continue }
+    return n
+  }
+}
+function simplifyBoolContexts(fn) {
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 1; i < node.length; i++) walk(node[i])
+    const op = node[0]
+    if (op === 'br_if' && node.length === 3) node[2] = boolSimp(node[2])
+    else if (op === 'i32.eqz' && node.length === 2) node[1] = boolSimp(node[1])
+    else if (op === 'if') { const ci = (Array.isArray(node[1]) && node[1][0] === 'result') ? 2 : 1; if (Array.isArray(node[ci])) node[ci] = boolSimp(node[ci]) }
+    else if (op === 'select' && node.length === 4 && Array.isArray(node[3])) node[3] = boolSimp(node[3])
+  }
+  const bodyStart = findBodyStart(fn)
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i])
 }
 
 /**
