@@ -638,6 +638,7 @@ const COMPLEX_FIELD = (d, guarded) => `
     return s
   }`
 test('SIMD per-pixel-color - guarded assign into a transcendental stays bit-exact (domain-color)', () => {
+  if (onKernel()) return  // per-pixel-color path + SIMD-mirror shape is a host-codegen assertion (kernel ignores the optimize level); value parity is the fuzz gate's job
   // Positive control: the UNCONDITIONAL field really is a per-pixel-color candidate — it lifts to
   // f64x2 through the hypot/atan2 mirrors. So the guarded variant below genuinely hits the hazard
   // path (not a loop the vectorizer ignores), and the bail — not luck — is what keeps it correct.
@@ -2561,6 +2562,7 @@ const PPC_POW = `
   export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^mem[i])*0x01000193)|0; return h>>>0 }`
 
 test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact + pow2)', () => {
+  if (onKernel()) return  // per-pixel-color path + 2-wide trig/pow lowering is a host-codegen assertion (kernel ignores the optimize level); value parity is the fuzz gate's job
   const on = runVec(PPC_POW, PPC_ON), no = runVec(PPC_POW, PPC_NO)
   on.render(0.5); no.render(0.5)
   is(on.cs() >>> 0, no.cs() >>> 0, 'sin+sqrt+pow per-pixel-color bit-exact vs scalar')

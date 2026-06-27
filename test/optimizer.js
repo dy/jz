@@ -2601,6 +2601,7 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
 })
 
 test('dead helper does not leak the Eisel-Lemire decimal table', () => {
+  if (onKernel()) return  // needs host-side { modules } wiring + optimize:'size' (the kernel owns its pipeline and ignores both — it can't resolve './lib.js')
   // A dead lib export whose `arr[i] | 0` on an untyped param pulls __to_num →
   // __dec_to_f64 (consumer of the ~2 KB power-of-10 table). watr treeshakes the dead
   // function but NOT the data segment, so the table used to bloat EVERY module ~2 KB.
@@ -2623,6 +2624,7 @@ test('live runtime decimal parsing keeps the Eisel-Lemire table (no false strip)
 })
 
 test('range-narrowing: ToInt32 of a bounded value through a reused local drops the +∞ guard', () => {
+  if (onKernel()) return  // asserts emitted-WAT shape (no i64 round-trip in the loop) at the 'speed' level — a host-codegen assertion the kernel's fixed pipeline doesn't reproduce
   // `xi` (= floor of a [0,255]-bounded Uint8Array read × const) is read twice, so it stays
   // a local; ToInt32(local.get $xi) emits the guarded select(wrap(i64.trunc_sat), 0,
   // f64.ne(x, Inf)). f64Range — resolving $xi's single textual def through the trunc_sat
