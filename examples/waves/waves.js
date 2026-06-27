@@ -17,7 +17,7 @@ let glow               // accumulated intersection glow (builds up over frames, 
 let dampField          // per-cell damping = global damp × edge sponge
 
 const C0 = 0.05        // base wave speed² (the SLOW speed a faded ripple settles to)
-const KAMP = 10.0      // amplitude → speed coupling: a strong front goes faster, then slows as it damps
+const KAMP = 8.0       // amplitude → speed coupling: a strong front goes faster, then slows as it damps
 const CAP = 0.55       // clamp on the local c² (keeps the 9-point stencil stable)
 const DAMP = 0.995     // global damping ⇒ the ripple fades out & disappears by ~10s
 const SPEED = 0.2236   // √C0 — the outgoing-bias offset for a drop
@@ -25,7 +25,7 @@ const MARGIN = 16      // edge-sponge width (cells): absorbs the wave so it does
 const MARGINDAMP = 0.82
 const DROPR = 10.0, DROPW = 3.5   // ring-pulse initial radius + half-width
 const DROPAMP = 1.0
-const GAIN = 1.8       // render scale — crest² gives a crisp bright front on black (wake crushed dark)
+const GAIN = 2.6       // render scale — crest² gives a crisp bright front on black (wake crushed dark)
 const BTHRESH = 0.45   // glare gate on crest² (above a single front) → only cross-circle overlaps glare
 const GLOWDECAY = 0.82 // intersection glow accumulates frame-to-frame and decays at this rate → it builds
                        // up to white-hot while the circles keep crossing, then fades when they part
