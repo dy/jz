@@ -620,7 +620,15 @@ const jzCompileInner = (code, opts = {}) => {
     if (watrOpts === true) watrOpts = {}
     watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
   }
+  // Capture the per-func alias facts (param-distinctness) the emit phase stamped as JS
+  // expandos — watOptimize round-trips the module through watr's printer/parser, which
+  // rebuilds plain arrays and DROPS every non-index property. Without re-attaching, the
+  // 'post' leaf passes (splitLoopPrivateScratch, hoistInvariantLoop) lose the proven
+  // alias model and fall back to weaker/heuristic invariance — the exact reason raytrace's
+  // read-only sphere loads couldn't be SOUNDLY proven loop-invariant after watr ran.
+  const aliasFacts = cfg.watr ? new Map(module.filter(n => Array.isArray(n) && n[0] === 'func' && n.distinctParams).map(n => [n[1], n.distinctParams])) : null
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
+  if (aliasFacts?.size) for (const n of optimized) if (Array.isArray(n) && n[0] === 'func' && aliasFacts.has(n[1])) n.distinctParams = aliasFacts.get(n[1])
   // Stable-pointee module globals: resolve the __ptr_offset once per function.
   // Never-forwarding kinds — every PTR tag outside __ptr_offset's forwarding
   // set {ARRAY, HASH, SET, MAP} — give the same offset for the same bits, so

@@ -739,6 +739,136 @@ const PURE_LICM_OPS = new Set([
   'f64.promote_f32', 'f32.demote_f64', 'select',
 ])
 
+// Resolve a load/store address back to the single typed-array PARAM it derives from — through
+// `local.get`, the arithmetic in PURE_LICM_OPS, and single-def snap locals ($__li/$__ab) — or
+// null if not exactly one / unprovable (a multi-def or unknown local in the address). Built once
+// per function over the proven-distinct `distinctParams` set; the alias substrate both LICM
+// passes query to hoist a read-only input load across a distinct-buffer store (raytrace's spheres
+// vs framebuffer — the alias-analysis LICM rust/clang get for free).
+function buildBaseParamOf(fn, bodyStart, distinctParams) {
+  if (!distinctParams) return () => null
+  const paramNames = new Set()
+  for (let i = 2; i < bodyStart; i++)
+    if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
+  const singleDef = new Map(), defCount = new Map()
+  const scanDefs = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      defCount.set(n[1], (defCount.get(n[1]) || 0) + 1); singleDef.set(n[1], n[2]); scanDefs(n[2]); return
+    }
+    for (let i = 1; i < n.length; i++) scanDefs(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
+  for (const [k, c] of defCount) if (c > 1) singleDef.delete(k)   // multi-def → can't trust the resolution
+  return (addr) => {
+    const found = new Set(); const seen = new Set(); let bad = false
+    const walk = (n) => {
+      if (bad || !Array.isArray(n)) return
+      if (n[0] === 'local.get' && typeof n[1] === 'string') {
+        if (paramNames.has(n[1])) found.add(n[1])
+        else if (singleDef.has(n[1]) && !seen.has(n[1])) { seen.add(n[1]); walk(singleDef.get(n[1])) }
+        else bad = true   // a written/unknown local in the address → base unprovable
+        return
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(addr)
+    return !bad && found.size === 1 ? [...found][0] : null
+  }
+}
+
+// Per-loop invariance/purity analysis — the single proven predicate both LICM passes share.
+// Scans the loop into an effect summary (locals/globals it writes, cells/buffers it stores to,
+// whether it has any call / unsafe call / direct store / v128 op), then closes `pureGiven(node,
+// bound)` over it: true iff `node` is side-effect-free AND loop-invariant, given that the locals
+// in `bound` are private to the candidate (a `local.get` of a bound local reads the in-subtree
+// teed invariant; a free `local.get` must be unwritten by the loop). Memory leaves are admitted
+// only under the summary: a `$__cell_`/distinct-param load iff no aliasing store + no call; a
+// SAFE_OFFSET/READONLY_MEM call iff no unsafe call (+ no direct store for heap reads).
+function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
+  const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
+  let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
+  const scan = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    // A vectorized loop (lane/v128 ops) is already register-tight and hand-tuned;
+    // extra scalar hoisting there only adds spill pressure — keep it conservative.
+    if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
+    if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
+    if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
+    if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
+    if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
+    if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
+      hasDirectStore = true
+      const a = node[1]
+      if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
+      if (distinctParams) { const sb = baseParamOf(a); if (sb) storedBases.add(sb) }   // alias: which buffers this loop writes
+    }
+    for (let i = 1; i < node.length; i++) scan(node[i])
+  }
+  for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+
+  const pureGiven = (node, bound) => {
+    if (!Array.isArray(node)) return true   // bare operand string/number
+    const op = node[0]
+    if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
+    if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
+    // A global is invariant only if not set directly AND no call in the loop —
+    // any callee may mutate it (no interprocedural effect analysis). (Locals are
+    // frame-private, so calls can't touch them; only direct local.set matters.)
+    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasAnyCall
+    if (op === 'local.tee') {
+      if (typeof node[1] !== 'string') return false
+      // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X` inside
+      // it reads the loop-carried (previous-iteration) value, not the teed one. Drop
+      // $X from `bound` for the operand: `local.tee $X (… $X …)` is a loop recurrence
+      // (X = f(X) — e.g. the `while ((nn = nn >>> 1))` induction), NOT invariant.
+      const inner = bound.has(node[1]) ? new Set([...bound].filter(b => b !== node[1])) : bound
+      return pureGiven(node[2], inner)
+    }
+    if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
+      const a = node[1]
+      if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
+        && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
+      // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
+      // this loop writes (base ∉ storedBases) is loop-invariant when its address is invariant —
+      // even across the loop's stores, because they can't alias it. This is what lets rust/clang
+      // hoist read-only input arrays out of a write loop (raytrace's spheres vs the framebuffer).
+      // `pureGiven(a, bound)` proves the address itself invariant (base param unwritten + invariant
+      // offset); the calls guard rules out callee memory mutation.
+      if (distinctParams && !hasAnyCall) {
+        const base = baseParamOf(a)
+        if (base && distinctParams.has(base) && !storedBases.has(base) && pureGiven(a, bound)) return true
+      }
+      return false
+    }
+    if (op === 'call') {
+      if (SAFE_OFFSET_CALLS.has(node[1]))
+        return !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
+      // Read-only heap reads: additionally require no direct store (alias-safe).
+      if (READONLY_MEM_CALLS.has(node[1]))
+        return !hasUnsafeCall && !hasDirectStore && node.slice(2).every(c => pureGiven(c, bound))
+      return false
+    }
+    // A value-producing `if` whose condition and both arms are pure is itself
+    // pure — the tag-dispatch idiom `(if (result f64) tag-check (then read-A)
+    // (else read-B))` that wraps __typed_idx/__str_idx element access.
+    if (op === 'if') {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (!Array.isArray(c)) continue
+        if (c[0] === 'result') continue
+        if (c[0] === 'then' || c[0] === 'else') { if (!c.slice(1).every(x => pureGiven(x, bound))) return false }
+        else if (!pureGiven(c, bound)) return false   // the condition
+      }
+      return true
+    }
+    if (PURE_LICM_OPS.has(op)) return node.slice(1).every(c => pureGiven(c, bound))
+    return false
+  }
+  return { pureGiven, locals, globals, storedCells, storedBases, hasUnsafeCall, hasAnyCall, hasDirectStore, hasV128 }
+}
+
 /**
  * Unified loop-invariant code motion. One principle replaces the three former
  * pattern hoists (ToInt32 / __ptr_offset / cell-load): a MAXIMAL pure subtree
@@ -796,6 +926,12 @@ export function splitLoopPrivateScratch(fn) {
     for (let i = 1; i < n.length; i++) countRefs(n[i])
   }
   for (let i = bodyStart; i < fn.length; i++) countRefs(fn[i])
+  // Same proven alias substrate hoistInvariantLoop uses (re-attached after watOptimize, so it
+  // survives into this 'post' pass) — lets pureGiven prove a read-only input-array load distinct
+  // from the loop's output store, the SOUND replacement for the old address-local-disjointness
+  // heuristic (which assumed two loads/stores in different locals never alias — false in general).
+  const distinctParams = fn.distinctParams || null
+  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
 
   const hasV128 = (n) => {
     let f = false
@@ -807,10 +943,6 @@ export function splitLoopPrivateScratch(fn) {
 
   const processLoop = (loop, parent, idx) => {
     if (loop[0] !== 'loop' || hasV128(loop)) return
-    // Loop write-set: locals assigned anywhere in the loop.
-    const W = new Set()
-    const collectW = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') W.add(n[1]); for (let i = 1; i < n.length; i++) collectW(n[i]) }
-    collectW(loop)
     // Candidate names: locals set somewhere directly in the loop's statement list.
     const seen = new Set()
     for (let i = 2; i < loop.length; i++) {
@@ -850,66 +982,25 @@ export function splitLoopPrivateScratch(fn) {
       if (safe && first === 'w' && defs.length >= 2) cand.set(name, defs)
     }
     if (!cand.size) return
-    // Memory/state guards for load invariance (the biquad miscompile: filter STATE is
-    // loaded AND stored each iteration, so its load is NOT loop-invariant). Match jz's
-    // own model (hoistInvariantLoop line ~750): a load from a base is invariant only if
-    // the loop has NO store sharing any of that load's address locals, NO call (could
-    // store anywhere), and NO global write the value depends on. Read-only coefficient
-    // loads (base never stored) still hoist — the win biquad keeps.
-    const storeAddrLocals = new Set()
-    const globalWrites = new Set()
-    let loopHasCall = false
-    const addrLocals = (a, out) => {
-      if (!Array.isArray(a)) return
-      if ((a[0] === 'local.get' || a[0] === 'local.tee') && typeof a[1] === 'string') out.add(a[1])
-      for (let i = 1; i < a.length; i++) addrLocals(a[i], out)
-    }
-    const scanMem = (n) => {
-      if (!Array.isArray(n)) return
-      const op = n[0]
-      if (typeof op === 'string') {
-        if (op.startsWith('call')) loopHasCall = true
-        else if (op === 'global.set' && typeof n[1] === 'string') globalWrites.add(n[1])
-        else if (op.endsWith('.store')) addrLocals(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1], storeAddrLocals)
-      }
-      for (let i = 1; i < n.length; i++) scanMem(n[i])
-    }
-    scanMem(loop)
-    // Stage 2 — invariance fixpoint: only split a candidate whose EVERY def is loop-
-    // invariant once its splittable siblings are themselves removed from the write-set
-    // (the cascade: c = ox²+… invariant only after ox hoists). Splitting a VARIANT
-    // (per-iteration) scratch would add register pressure for no hoist — the raytrace
-    // over-split regression.
+    // Stage 2 — invariance fixpoint over the SHARED proven predicate. `pureGiven(def, hoistable)`
+    // decides loop-invariance with hoistInvariantLoop's exact model: a `$__cell_`/distinct-param
+    // read-only load is invariant across the loop's stores (sound alias analysis), a global is
+    // invariant only without a loop write or call, and the `bound` set (here `hoistable`) carries
+    // the cascade — a def reading an already-split sibling is invariant once that sibling moves out
+    // (c = ox²+… invariant only after ox hoists). `motionSafe` adds the one extra obligation a
+    // whole-assignment MOTION needs beyond value-invariance: no `local.tee` writing a local read
+    // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
+    // address-local-disjointness load test, which was unsound in general (two distinct locals can
+    // hold the same address) and only worked by luck on the bench shapes.
+    const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf })
+    const motionSafe = (n) => { if (!Array.isArray(n)) return true; if (n[0] === 'local.tee') return false; for (let i = 1; i < n.length; i++) if (!motionSafe(n[i])) return false; return true }
     const hoistable = new Set()
-    const loadInvariant = (n) => {
-      if (loopHasCall) return false
-      const ls = new Set()
-      addrLocals(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1], ls)
-      for (const x of ls) if (storeAddrLocals.has(x)) return false
-      return invariant(typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1])
-    }
-    const invariant = (n) => {
-      if (!Array.isArray(n)) return true
-      const op = n[0]
-      if (op === 'local.get') return !W.has(n[1]) || hoistable.has(n[1])
-      // A global is invariant only if not set in the loop AND no call (a callee may mutate
-      // it — no interprocedural effect analysis), matching hoistInvariantLoop's pureGiven.
-      if (op === 'global.get') return !globalWrites.has(n[1]) && !loopHasCall
-      if (typeof op !== 'string') return false
-      // A side effect inside the RHS (a tee/set defines a local read elsewhere; a store/call
-      // mutates state) cannot be relocated out of the loop — reject the whole def.
-      if (op === 'local.tee' || op === 'local.set' || op === 'global.set' || op.endsWith('.store')) return false
-      if (op.startsWith('call') || op.startsWith('memory.')) return false
-      if (op.endsWith('.load')) return loadInvariant(n)
-      for (let i = 1; i < n.length; i++) if (!invariant(n[i])) return false
-      return true
-    }
     let changed = true
     while (changed) {
       changed = false
       for (const [name, defs] of cand) {
         if (hoistable.has(name)) continue
-        if (defs.every(invariant)) { hoistable.add(name); changed = true }
+        if (defs.every(d => motionSafe(d) && pureGiven(d, hoistable))) { hoistable.add(name); changed = true }
       }
     }
     // Stage 3 — one linear pass over the loop body: each hoistable def is RENAMED to a
@@ -1035,38 +1126,7 @@ export function hoistInvariantLoop(fn) {
   // resolve a load/store address back to the single param it derives from — through `local.get`,
   // `i32.add/sub`, and single-def snap locals ($__li/$__ab from prior ptr-offset hoisting).
   const distinctParams = fn.distinctParams || null
-  let baseParamOf = () => null
-  if (distinctParams) {
-    const paramNames = new Set()
-    for (let i = 2; i < bodyStart; i++)
-      if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
-    const singleDef = new Map(), defCount = new Map()
-    const scanDefs = (n) => {
-      if (!Array.isArray(n)) return
-      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
-        defCount.set(n[1], (defCount.get(n[1]) || 0) + 1); singleDef.set(n[1], n[2]); scanDefs(n[2]); return
-      }
-      for (let i = 1; i < n.length; i++) scanDefs(n[i])
-    }
-    for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
-    for (const [k, c] of defCount) if (c > 1) singleDef.delete(k)   // multi-def → can't trust the resolution
-    // The single typed-array param an address derives from, or null if not exactly one / unresolvable.
-    baseParamOf = (addr) => {
-      const found = new Set(); const seen = new Set(); let bad = false
-      const walk = (n) => {
-        if (bad || !Array.isArray(n)) return
-        if (n[0] === 'local.get' && typeof n[1] === 'string') {
-          if (paramNames.has(n[1])) found.add(n[1])
-          else if (singleDef.has(n[1]) && !seen.has(n[1])) { seen.add(n[1]); walk(singleDef.get(n[1])) }
-          else bad = true   // a written/unknown local in the address → base unprovable
-          return
-        }
-        for (let i = 1; i < n.length; i++) walk(n[i])
-      }
-      walk(addr)
-      return !bad && found.size === 1 ? [...found][0] : null
-    }
-  }
+  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
 
   const processLoop = (loopNode, nested) => {
     // Inner loops first (bottom-up) — an inner hoist creates a local.get the
@@ -1074,28 +1134,9 @@ export function hoistInvariantLoop(fn) {
     for (let i = 1; i < loopNode.length; i++)
       if (Array.isArray(loopNode[i])) processNode(loopNode[i], loopNode, i, true)
 
-    // The loop's effect summary (scans nested loops too — conservative).
-    const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
-    let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
-    const scan = (node) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      // A vectorized loop (lane/v128 ops) is already register-tight and hand-tuned;
-      // extra scalar hoisting there only adds spill pressure — keep it conservative.
-      if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
-      if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-      if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-      if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
-      if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
-      if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
-        hasDirectStore = true
-        const a = node[1]
-        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
-        if (distinctParams) { const sb = baseParamOf(a); if (sb) storedBases.add(sb) }   // alias: which buffers this loop writes
-      }
-      for (let i = 1; i < node.length; i++) scan(node[i])
-    }
-    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+    // The loop's effect summary + the proven invariance/purity predicate (shared with
+    // splitLoopPrivateScratch — see loopInvariance). `locals` is the loop's whole write-set.
+    const { pureGiven, locals, hasV128 } = loopInvariance(loopNode, { distinctParams, baseParamOf })
 
     // Per-subtree local-occurrence counts and write-sets, memoized bottom-up —
     // the tee-privacy check queries them for EVERY candidate node, and the old
@@ -1133,68 +1174,6 @@ export function hoistInvariantLoop(fn) {
     const localCount = new Map()
     for (let i = 1; i < loopNode.length; i++)
       for (const [k, v] of countsOf(loopNode[i])) localCount.set(k, (localCount.get(k) || 0) + v)
-
-    // Pure & invariant given `bound` (locals written *within* the candidate, hence
-    // local to it). A read of a bound local is OK (its in-subtree value is the
-    // teed invariant). A free read must be unwritten by the loop.
-    const pureGiven = (node, bound) => {
-      if (!Array.isArray(node)) return true   // bare operand string/number
-      const op = node[0]
-      if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
-      if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
-      // A global is invariant only if not set directly AND no call in the loop —
-      // any callee may mutate it (no interprocedural effect analysis). (Locals are
-      // frame-private, so calls can't touch them; only direct local.set matters.)
-      if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasAnyCall
-      if (op === 'local.tee') {
-        if (typeof node[1] !== 'string') return false
-        // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X` inside
-        // it reads the loop-carried (previous-iteration) value, not the teed one. Drop
-        // $X from `bound` for the operand: `local.tee $X (… $X …)` is a loop recurrence
-        // (X = f(X) — e.g. the `while ((nn = nn >>> 1))` induction), NOT invariant.
-        const inner = bound.has(node[1]) ? new Set([...bound].filter(b => b !== node[1])) : bound
-        return pureGiven(node[2], inner)
-      }
-      if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
-        const a = node[1]
-        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
-          && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
-        // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
-        // this loop writes (base ∉ storedBases) is loop-invariant when its address is invariant —
-        // even across the loop's stores, because they can't alias it. This is what lets rust/clang
-        // hoist read-only input arrays out of a write loop (raytrace's spheres vs the framebuffer).
-        // `pureGiven(a, bound)` proves the address itself invariant (base param unwritten + invariant
-        // offset); the calls guard rules out callee memory mutation.
-        if (distinctParams && !hasAnyCall) {
-          const base = baseParamOf(a)
-          if (base && distinctParams.has(base) && !storedBases.has(base) && pureGiven(a, bound)) return true
-        }
-        return false
-      }
-      if (op === 'call') {
-        if (SAFE_OFFSET_CALLS.has(node[1]))
-          return !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
-        // Read-only heap reads: additionally require no direct store (alias-safe).
-        if (READONLY_MEM_CALLS.has(node[1]))
-          return !hasUnsafeCall && !hasDirectStore && node.slice(2).every(c => pureGiven(c, bound))
-        return false
-      }
-      // A value-producing `if` whose condition and both arms are pure is itself
-      // pure — the tag-dispatch idiom `(if (result f64) tag-check (then read-A)
-      // (else read-B))` that wraps __typed_idx/__str_idx element access.
-      if (op === 'if') {
-        for (let i = 1; i < node.length; i++) {
-          const c = node[i]
-          if (!Array.isArray(c)) continue
-          if (c[0] === 'result') continue
-          if (c[0] === 'then' || c[0] === 'else') { if (!c.slice(1).every(x => pureGiven(x, bound))) return false }
-          else if (!pureGiven(c, bound)) return false   // the condition
-        }
-        return true
-      }
-      if (PURE_LICM_OPS.has(op)) return node.slice(1).every(c => pureGiven(c, bound))
-      return false
-    }
 
     const isHoistable = (node) => {
       if (!Array.isArray(node)) return false
