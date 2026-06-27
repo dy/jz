@@ -2172,6 +2172,70 @@ const liftFail = (ctx, reason) => {
 }
 
 /** Lift a statement. Returns lifted stmt, or null to skip, or ['__seq__', ...] for multiple. */
+// Conditional lane-local assignment in a stencil/map body — the sibling of the
+// if-STORE path below, but the destination is a 'lane' LOCAL, not memory:
+//   if (C) L = A   [else L = B | else <nested if assigning L>]
+// the saturation / clamp shape (waves' amplitude clamp `if(nb>CAP)nb=CAP; else
+// if(nb<-CAP)nb=-CAP`). Built as ONE nested `v128.bitselect` EXPRESSION so every
+// mask reads the PRE-assignment lane value (no intermediate stores ⇒ order-free,
+// and bit-exact with the scalar select chain — a comparison mask is all-ones /
+// all-zeros per lane, so bitselect is an exact lane select), then a single
+// `local.set` of the laned local. Returns the lifted node, or null when `stmt` is
+// not a lane-assignment if (so the if-STORE path can try). Sets ctx.fail only once
+// committed (a lane-if shape that cannot be lifted).
+function tryLiftLaneIf(stmt, ctx) {
+  const armBody = (arm) => {
+    let body = arm.slice(1)
+    if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {
+      const b = body[0]; let i = 1
+      if (typeof b[i] === 'string' && b[i].startsWith('$')) i++
+      if (isArr(b[i]) && b[i][0] === 'result') i++
+      body = b.slice(i)
+    }
+    return body
+  }
+  // The lane being assigned: the innermost then-arm's single local.set target.
+  const laneOf = (node) => {
+    if (!isArr(node)) return null
+    if (node[0] === 'local.set' && typeof node[1] === 'string' && ctx.localKind.get(node[1]) === 'lane') return node[1]
+    if (node[0] === 'if' && isArr(node[2]) && node[2][0] === 'then') {
+      const body = armBody(node[2])
+      if (body.length === 1) return laneOf(body[0])
+    }
+    return null
+  }
+  const lane = laneOf(stmt)
+  if (!lane) return null
+  // Recurse the if-chain into nested bitselects; each `local.set L = V` is a leaf value.
+  const buildVal = (node) => {
+    if (isArr(node) && node[0] === 'local.set' && node[1] === lane) return liftExprV(node[2], ctx)
+    if (isArr(node) && node[0] === 'if' && isArr(node[2]) && node[2][0] === 'then') {
+      const thenBody = armBody(node[2])
+      if (thenBody.length !== 1) return liftFail(ctx, 'lane-if: non-single then arm')
+      let cond = node[1]
+      if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+      const cmp = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
+      if (!cmp) return liftFail(ctx, 'lane-if: condition is not a lane comparison')
+      const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
+      const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+      const thenVal = buildVal(thenBody[0]); if (ctx.fail) return null
+      const elseArm = (isArr(node[3]) && node[3][0] === 'else') ? armBody(node[3]) : null
+      let elseVal
+      if (elseArm) {
+        if (elseArm.length !== 1) return liftFail(ctx, 'lane-if: non-single else arm')
+        elseVal = buildVal(elseArm[0]); if (ctx.fail) return null
+      } else {
+        elseVal = ['local.get', getOrAllocLanedLocal(lane, ctx.newLanedLocals)]   // no else ⇒ keep current
+      }
+      return ['v128.bitselect', thenVal, elseVal, [cmp, ca, cb]]
+    }
+    return liftFail(ctx, 'lane-if: unrecognized arm shape')
+  }
+  const val = buildVal(stmt)
+  if (ctx.fail || val == null) return null
+  return ['local.set', getOrAllocLanedLocal(lane, ctx.newLanedLocals), val]
+}
+
 function liftStmt(stmt, ctx) {
   if (!isArr(stmt)) {
     // Bare strings like "drop" — produced by stack-form WAT. We unwrap value-blocks
@@ -2255,6 +2319,10 @@ function liftStmt(stmt, ctx) {
   // are trap-free) and emit ONE store of `bitselect(A, B, mask(COND))`. Unlocks per-pixel conditional
   // maps like lorenz's i32x4 trail fade (`if (p & 0xffffff) px[i] = fade(p)`).
   if (op === 'if' && isArr(stmt[2]) && stmt[2][0] === 'then') {
+    // First: conditional lane-LOCAL assignment (clamp/saturation) → bitselect into the laned local.
+    const laneLifted = tryLiftLaneIf(stmt, ctx)
+    if (ctx.fail) return null
+    if (laneLifted) return laneLifted
     const armOf = (arm) => {
       let body = arm.slice(1)
       if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {   // unwrap a single block arm
