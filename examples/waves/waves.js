@@ -9,14 +9,8 @@
 let W = 0, H = 0, px
 let a, b              // height now / previous
 let gbuf, bloomA      // glow bloom: bright-source map + horizontal-blur scratch
-// Base wave speed². The EFFECTIVE speed is amplitude-dependent (shallow-water style, c²∝height) — see
-// the step below — so a tall fresh pulse bursts out FAST and decelerates toward this base speed as it
-// spreads and fades. Base is kept LOW so the slow-down is clearly visible; the host throttles the
-// step rate to keep the overall pace calm.
-let C2 = 0.5          // non-dispersive regime → clean single crest, no precursor ripple running ahead
-let KAMP = 1.5        // how much a tall crest speeds up (fast initial burst → slows as it flattens)
-let CAP = 1.5         // hard amplitude clamp — the nonlinear speed is a feedback loop; this saturates it
-                      // so stacking many splashes can never run away to white
+let C2 = 0.5          // wave speed² — the non-dispersive regime → clean single crest, no precursor ahead
+let CAP = 1.5         // hard amplitude clamp — a backstop so piled-up splashes can never run away to white
 let DAMP = 0.9985     // light damping → rings persist a good while before fading
 let GC = 6.0          // crest brightness — the ring itself (peak strongest), fades gently ∝ amplitude
 let GH = 12.0         // height² boost — constructive overlaps land ≈4× a lone ring → bright intersections
@@ -32,10 +26,14 @@ export let clear = () => { let n = W * H, i = 0; while (i < n) { a[i] = 0.0; b[i
 
 // drop profile: a compact bump peaked at the CENTRE (d=0), falling off to the drop radius. The drop
 // therefore starts as a point and the ring grows OUTWARD from radius 0 (rather than appearing as a
-// ready-made ring of radius r).
+// ready-made ring of radius r). It is a thin RING pulse peaked at the rim with almost nothing at the
+// centre — so there's no central energy to converge and refocus into a bright blob.
 let prof = (d, r, amp) => {
-  let s = d / (r * 0.5)
-  return amp * Math.exp(-s * s)
+  if (d > r) return 0.0
+  let behind = (r - d) / r                                 // 0 at the rim/front .. 1 at the centre
+  let front = d > r * 0.82 ? (r - d) / (r * 0.18) : 1.0    // taper the rim → clean leading edge
+  let tail = Math.exp(-behind * 4.5)                       // decays to ~0 toward the centre
+  return amp * front * tail
 }
 
 // Seed a central bump that radiates purely OUTWARD (single clean front growing from radius 0). The
@@ -78,13 +76,11 @@ export let frame = (t) => {
       let lap = 0.66667 * (a[rn + x] + a[rs + x] + a[c - 1] + a[c + 1])
               + 0.16667 * (a[rn + x - 1] + a[rn + x + 1] + a[rs + x - 1] + a[rs + x + 1])
               - 3.33333 * a[c]
-      // amplitude-dependent speed (shallow-water style): a tall crest travels faster → the fresh
-      // pulse bursts out fast and slows as it flattens. Clamped below the 9-point stability limit.
-      let ac = a[c] < 0.0 ? -a[c] : a[c]
-      let c2l = C2 + C2 * KAMP * ac
-      if (c2l > 0.7) c2l = 0.7
-      let nb = (2.0 * a[c] - b[c] + c2l * lap) * DAMP
-      if (nb > CAP) nb = CAP                            // hard saturation → the nonlinear loop can't blow up
+      // plain LINEAR wave (constant speed): the amplitude-dependent "shallow-water" speed gave only a
+      // modest slow-down but, being a feedback loop, pumped energy — refocusing splashes into a white
+      // blob and (piled up) blowing up. Constant speed is rock-stable. CAP stays as a backstop.
+      let nb = (2.0 * a[c] - b[c] + C2 * lap) * DAMP
+      if (nb > CAP) nb = CAP
       else if (nb < -CAP) nb = -CAP
       b[c] = nb                                         // next height → into b
       x++
