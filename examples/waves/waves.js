@@ -17,9 +17,7 @@ let age = new Float64Array(MAXD), live = new Int32Array(MAXD)
 let slot = 0
 let RMAX = 0.0              // radius a ring eases to before stopping (set from canvas size)
 
-const TGROW = 200.0    // frames to expand & DECELERATE to a stop — fast at first, slowing gradually (~3.3s)
-const LIFE = 600.0     // frames until fully gone — the ring fades out & disappears by ~10s (not forever)
-const FADE0 = 260.0    // holds full brightness until here (consistent), then ramps to 0 by LIFE
+const LIFE = 600.0     // total lifetime (~10s): the ring decelerates AND fades out together, gone by here
 const RINGW = 1.2      // front/ripple half-thickness → thin
 const LAMBDA = 11.0    // spacing of the small trailing oscillations behind the front
 const W0 = 1.0, W1 = 0.28, W2 = 0.12, W3 = 0.05   // front + a short, decaying tail of small ripples
@@ -122,10 +120,9 @@ export let frame = (t) => {
       age[k] = a
       if (a >= LIFE) { live[k] = 0 }
       else {
-        let p = a / TGROW; if (p > 1.0) p = 1.0
-        let R = RMAX * (1.0 - (1.0 - p) * (1.0 - p))   // ease-out: fast, decelerating to a stop at TGROW
-        let f = 1.0
-        if (a > FADE0) f = 1.0 - (a - FADE0) / (LIFE - FADE0)
+        let p = a / LIFE, q = 1.0 - p
+        let R = RMAX * (1.0 - q * q * q)               // cubic ease-out: fast burst, decelerating toward a stop
+        let f = q * Math.sqrt(q)                        // fades AS it slows → fully gone by the time it stops
         if (R > 0.5 && f > 0.01) {
           let cx = cxs[k], cy = cys[k], rw = RINGW, inv = 1.0 / rw
           let rOut = R + rw, rIn = R - 3.0 * LAMBDA - rw; if (rIn < 0.0) rIn = 0.0
