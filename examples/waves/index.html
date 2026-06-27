@@ -9,35 +9,36 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// The canonical 2D wave equation: drop a pulse, circular ripples spread, reflect off the walls and
-// interfere. Drag to draw a trail of drops; the surface keeps ringing on its own (screensaver).
-let frameCount = 0, nextDrop = 30, painting = false, lastX = 0, lastY = 0
+// Expanding ripple rings: each drop bursts out, slows, and fades; where rings overlap they glare.
+let frameCount = 0, nextDrop = 20, lastStepMs = 0, painting = false, lastX = 0, lastY = 0
 
-const drop = (x, y) => {
-  if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, 4, 1.2)
-}
+const drop = (x, y) => { if (demo.engine) demo.engine.drop(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight) }
 const strokeTo = (x, y) => {
-  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 5))
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 14))
   for (let i = 1; i <= n; i++) drop(lastX + dx * i / n, lastY + dy * i / n)
   lastX = x; lastY = y
 }
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation — ripples ring, reflect, and interfere · click to drop one",
+  hint: "expanding ripples — each ring bursts out, slows, and fades · overlaps glare · click to drop one",
   size: { budget: 420000 },
-  bg: "#808080",
+  bg: "#000",
   load: (e) => e.clear(),
   frame: (e) => {
+    // throttle to ~60 Hz of real time so the deceleration plays at a steady pace on any display
+    const now = performance.now()
+    if (now - lastStepMs < 15) return
+    lastStepMs = now
     frameCount++
     if (frameCount > nextDrop) {
-      e.drop(Math.random() * demo.W, Math.random() * demo.H, 4, 1.4)
-      nextDrop = frameCount + 70 + Math.random() * 160
+      e.drop(Math.random() * demo.W, Math.random() * demo.H)
+      nextDrop = frameCount + 26 + Math.random() * 45   // several rings coexist & cross
     }
     e.frame(0)
   },
-  // re-roll: clear the pond and scatter a few fresh drops
-  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 5; i++) e.drop(Math.random() * d.W, Math.random() * d.H, 4, 1.4) },
+  // re-roll: clear and scatter a few fresh rings that immediately cross
+  randomize: (e, d) => { e.clear?.(); for (let i = 0; i < 5; i++) e.drop(Math.random() * d.W, Math.random() * d.H) },
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {
