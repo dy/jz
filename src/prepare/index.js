@@ -196,6 +196,19 @@ const stripBoolNot = c => {
   while (Array.isArray(c) && c[0] === '!' && Array.isArray(c[1]) && c[1][0] === '!') c = c[1][1]
   return c
 }
+// In a statement (value-discarded) position, postfix `x++`/`x--` is lowered to `(++x) − 1` /
+// `(--x) + 1` to recover the old value — but nobody reads it, so drop the ∓1 and keep the bare
+// increment. (`obj.p++` lowers via `obj.p = obj.p + 1`, also wrapped.) Cleaner AST for the loop/
+// recurrence passes; codegen already discarded the ∓1, so this is purely canonicalization.
+const isOne = n => Array.isArray(n) && n[0] == null && n[1] === 1
+const dropDeadPostfix = s => {
+  if (Array.isArray(s) && s.length === 3 && isOne(s[2]) && Array.isArray(s[1])) {
+    const inner = s[1][0]
+    if ((s[0] === '-' && (inner === '++' || inner === '=')) ||
+        (s[0] === '+' && (inner === '--' || inner === '='))) return s[1]
+  }
+  return s
+}
 const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
 
@@ -1636,20 +1649,20 @@ const handlers = {
   '!=='(a, b) { return prepStrictEq('!==', a, b) },
 
   // Statements
-  ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],
+  ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null).map(dropDeadPostfix)],
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
 
   // Block-scoped control flow: push scope for bodies so inner let/const shadows correctly
   'if': (cond, then, els) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); const t = prep(then); popScope()
-    if (els != null) { pushScope(); const e = prep(els); popScope(); return ['if', c, t, e] }
+    pushScope(); const t = dropDeadPostfix(prep(then)); popScope()
+    if (els != null) { pushScope(); const e = dropDeadPostfix(prep(els)); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
   'while': (cond, body) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); const b = prep(body); popScope()
+    pushScope(); const b = dropDeadPostfix(prep(body)); popScope()
     return ['while', c, b]
   },
   // do { body } while (cond) → flag-guarded while: `flag=true; while (flag||cond) { flag=false; body }`.
@@ -2127,7 +2140,7 @@ const handlers = {
           }
         }
       }
-      r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
+      r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prep(step)) : null, dropDeadPostfix(prep(body))]
     } else if (Array.isArray(head) && head[0] === 'of') {
       // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.
       // Divergence from JS: mutating arr during iteration won't extend/shorten the loop.
