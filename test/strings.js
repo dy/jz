@@ -960,8 +960,10 @@ test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () =>
 })
 
 test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge cases', () => {
-  // The multi-byte heap-heap path broadcasts needle[0] and reads an i8x16.eq bitmask —
-  // a scan-bound substr search dropped from 5.7× slower than V8 to ~1.3× (verify-loop floor).
+  // The multi-byte heap-haystack path broadcasts needle[0] and reads an i8x16.eq bitmask —
+  // a scan-bound substr search dropped from 5.7× slower than V8 to ~1.4×. The SIMD window only
+  // touches the HAYSTACK, so a SHORT (SSO, ≤6B) needle — the common ","/"://"/"TARGET" — rides it
+  // too (its bytes fetched SSO-aware), not just heap×heap; that closed an 11×→1.4× gap.
   const wat = compile(`export let f = (h, n) => h.indexOf(n)`, { wat: true })
   ok(/i8x16\.bitmask/.test(wat) && /i8x16\.eq/.test(wat), '__str_indexof carries the SIMD first-byte scan')
 
@@ -970,9 +972,9 @@ test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge c
     export let g = (h, n, k) => h.indexOf(n, k | 0)
     export let e = (h, n) => h.includes(n) ? 1 : 0
   `).exports
-  // heap haystack (>8B), match near the end past a 16-byte window, rare first byte
-  const hay = 'xabcdefgh'.repeat(28) + 'NEEDLE_q', ndl = 'NEEDLE'
-  is(f(hay, ndl), hay.indexOf(ndl))
+  // long heap haystack (>16B, multiple SIMD windows), match near the end, with a SHORT SSO needle
+  const hay = 'xabcdefgh'.repeat(28) + 'TARGET_q'   // 260 B heap; "TARGET" is a 6-byte SSO needle
+  for (const ndl of ['TARGET', 'T', 'ARGE', '_q', 'xa', 'zzz']) is(f(hay, ndl), hay.indexOf(ndl), `SSO needle ${JSON.stringify(ndl)} over long heap`)
   // first-byte collisions + false candidates within a chunk: 'ab' over an 'ab'-dense string
   const dense = 'abababab abab abXab ababYabZ ab!'
   for (const q of ['ab', 'abX', 'abYab', 'abZ', 'ab!', 'qq', '']) is(f(dense, q), dense.indexOf(q), `dense indexOf ${JSON.stringify(q)}`)
@@ -980,5 +982,5 @@ test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge c
   for (const k of [-5, 0, 3, 1000]) is(g(dense, 'ab', k), dense.indexOf('ab', k), `from=${k}`)
   is(g(dense, '', -5), dense.indexOf('', -5))     // empty needle clamps to 0, not -5
   is(g(dense, '', 1000), dense.indexOf('', 1000)) // empty needle clamps to len
-  is(e(hay, ndl), 1); is(e(hay, 'NOPE'), 0)
+  is(e(hay, 'TARGET'), 1); is(e(hay, 'NOPE'), 0)
 })

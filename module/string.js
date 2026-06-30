@@ -674,6 +674,12 @@ export default (ctx) => {
 
   // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
   // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
+  // Needle byte j, SSO-aware (packed-bits extract vs heap load) — lets the SIMD
+  // haystack scan serve SSO needles too (the common short "," / "://" needle),
+  // not just heap×heap. `$nsso` is loop-invariant so the branch predicts away.
+  const nByte = (j) => `(if (result i32) (local.get $nsso)
+    (then ${ssoCharWat('(local.get $ndl)', j)})
+    (else (i32.load8_u (i32.add (local.get $noff) ${j}))))`
   wat('__str_indexof', `(func $__str_indexof (param $hay i64) (param $ndl i64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
@@ -701,12 +707,11 @@ export default (ctx) => {
     (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
     ;; Single-byte needle (the common s.indexOf('/') / s.includes(' ')): scan for one byte without
     ;; the per-position match/j/k bookkeeping. Heap haystack gets a branchless load8_u loop (no
-    ;; per-byte SSO test) — a memchr that closes most of the gap to V8's native search.
+    ;; per-byte SSO test); a 16-wide SIMD scan here would only add splat/window setup that short
+    ;; strings — the bulk of single-char searches — never amortize, so the scalar scan stays.
     (if (i32.eq (local.get $nlen) (i32.const 1))
       (then
-        (local.set $nb (if (result i32) (local.get $nsso)
-          (then ${ssoCharWat('(local.get $ndl)', '(i32.const 0)')})
-          (else (i32.load8_u (local.get $noff)))))
+        (local.set $nb ${nByte('(i32.const 0)')})
         (if (i32.eqz (local.get $hsso))
           (then
             (block $sd (loop $ss
@@ -724,15 +729,17 @@ export default (ctx) => {
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $ss2)))
             (return (i32.const -1))))))
-    ;; Multi-byte needle, both operands heap (the common longer-string case): a SIMD first-byte
-    ;; memchr — broadcast needle[0] across 16 lanes, i8x16.eq a 16-byte haystack window, and read
-    ;; the match-bitmask. Only positions whose first byte matches reach the branchless load8_u
-    ;; verify; the rare match (V8's own StringIndexOf is SIMD here) is what the scalar path lost on.
-    ;; scanEnd = hlen - nlen is the last viable start; the SIMD window stops at hlen-16 (a full
-    ;; 16-byte load stays inside the string), a scalar tail covers the remainder. SSO falls through.
-    (if (i32.and (i32.eqz (local.get $hsso)) (i32.eqz (local.get $nsso)))
+    ;; Multi-byte needle, HEAP haystack (needle SSO or heap): a SIMD first-byte memchr — broadcast
+    ;; needle[0] across 16 lanes, i8x16.eq a 16-byte haystack window, and read the match-bitmask.
+    ;; Only positions whose first byte matches reach the branchless verify; the rare match (V8's own
+    ;; StringIndexOf is SIMD here) is what the scalar path lost on. The SIMD load only touches the
+    ;; haystack, so an SSO needle (the common short "," / "://" / "TARGET") rides this path too —
+    ;; its bytes are fetched SSO-aware via nByte(). scanEnd = hlen-nlen is the last viable start; the
+    ;; window stops at hlen-16 (a full 16-byte load stays inside the string), a scalar tail covers
+    ;; the rest. Only an SSO haystack (≤ MAX_SSO bytes — too short to scan 16-wide) falls through.
+    (if (i32.eqz (local.get $hsso))
       (then
-        (local.set $nb (i32.load8_u (local.get $noff)))
+        (local.set $nb ${nByte('(i32.const 0)')})
         (local.set $scanEnd (i32.sub (local.get $hlen) (local.get $nlen)))
         (local.set $splat (i8x16.splat (local.get $nb)))
         (block $vd (loop $vo
@@ -748,7 +755,7 @@ export default (ctx) => {
             (block $mn (loop $mi
               (br_if $mn (i32.ge_s (local.get $j) (local.get $nlen)))
               (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $k)) (local.get $j)))
-                          (i32.load8_u (i32.add (local.get $noff) (local.get $j))))
+                          ${nByte('(local.get $j)')})
                 (then (local.set $match (i32.const 0)) (br $mn)))
               (local.set $j (i32.add (local.get $j) (i32.const 1)))
               (br $mi)))
@@ -767,7 +774,7 @@ export default (ctx) => {
               (block $mn2 (loop $mi2
                 (br_if $mn2 (i32.ge_s (local.get $j) (local.get $nlen)))
                 (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $i)) (local.get $j)))
-                            (i32.load8_u (i32.add (local.get $noff) (local.get $j))))
+                            ${nByte('(local.get $j)')})
                   (then (local.set $match (i32.const 0)) (br $mn2)))
                 (local.set $j (i32.add (local.get $j) (i32.const 1)))
                 (br $mi2)))
