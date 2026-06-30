@@ -190,7 +190,11 @@ const compileJz = c => {
   // `jz-wasmtime` / `jz-w2c` consume the wasm standalone — no JS host. Lower
   // `console.log` / `performance.now` to WASI Preview 1 so the module's
   // imports are all satisfiable by wasmtime / wasm-rt without per-target shims.
-  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+  // `-O3` (= the `speed` preset compileJzHost uses for the V8 target): without it the CLI
+  // defaulted to level 2, silently under-compiling the standalone targets — no reduceUnroll /
+  // rotateLoops / inlineFns / relaxedSimd. That cost up to 3.5× on Cranelift (dotprod 760→215µs,
+  // hashjoin 11.8k→6.5k, lz 27k→15k), so the wasmtime/w2c rows under-represented jz vs every rival.
+  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
 const benchlibHostSource = () => {
@@ -623,8 +627,8 @@ const TARGET_CMDS = {
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
   'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
   'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
-  'jz-wasmtime': 'jz --host wasi <case>.js → wasmtime --invoke main',
-  'jz-w2c': 'jz --host wasi → wasm2c → clang -O3 -ffp-contract=off',
+  'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
+  'jz-w2c': 'jz --host wasi -O3 → wasm2c → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
   javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',
   tinygo: 'tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)',
