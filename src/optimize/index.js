@@ -590,6 +590,25 @@ const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num
 // `for(j) { ... grid[i][j] ... }` inner loop (the jagged-array deopt).
 const READONLY_MEM_CALLS = new Set(['$__typed_idx', '$__str_idx'])
 
+// PURE FUNCTION calls — result is a function of the ARGUMENTS alone, with no
+// dependence on mutable state: math reads no memory; the string search/compare
+// helpers read only their operands' bytes, and jz strings are IMMUTABLE, so their
+// content can't change under the loop's stores. So on loop-invariant args the
+// RESULT is loop-invariant regardless of anything else the loop does (unlike a
+// READONLY_MEM_CALLS element read, which an aliasing store could invalidate — no
+// !hasDirectStore guard is needed here). Speculative pre-header execution can't
+// trap: math returns NaN/∞ rather than trapping, and a value reaching .indexOf/===
+// is a valid string (in-bounds reads). This is the LICM V8's wasm tier won't do —
+// it treats every call as opaque and recomputes the search/transcendental each
+// iteration. (Math.random is INLINED — it mutates a global PRNG seed, never a
+// `$math.` call — but exclude it by name defensively; $__str_eq_cold is the cold
+// half of __str_eq, equally pure.) byteLen/length stay OUT: $__length is polymorphic
+// over MUTABLE arrays (push changes it), so it isn't arg-pure.
+const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key'])
+const isPureFnCall = (callee) =>
+  typeof callee === 'string' &&
+  ((callee.startsWith('$math.') && !callee.startsWith('$math.random')) || PURE_CALL_I32.has(callee))
+
 export function hoistInvariantPtrOffset(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -797,7 +816,7 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
     if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
     if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
     if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-    if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
+    if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1]) && !isPureFnCall(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
     if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
     if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
       hasDirectStore = true
@@ -844,6 +863,13 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
       return false
     }
     if (op === 'call') {
+      // Pure-function call: invariant iff its ARGS are. No effect-summary barrier —
+      // its result depends on nothing the loop can mutate (math: no memory; string
+      // search/compare: immutable operands), so neither a store nor another call
+      // can invalidate it. This hoists the loop-invariant transcendental / substr
+      // search V8's wasm tier recomputes every iteration.
+      if (isPureFnCall(node[1]))
+        return node.slice(2).every(c => pureGiven(c, bound))
       if (SAFE_OFFSET_CALLS.has(node[1]))
         return !hasUnsafeCall && node.slice(2).every(c => pureGiven(c, bound))
       // Read-only heap reads: additionally require no direct store (alias-safe).
@@ -1089,6 +1115,8 @@ export function hoistInvariantLoop(fn) {
       // SAFE_OFFSET_CALLS all return i32; READONLY_MEM_CALLS return f64 (NaN-boxed element)
       if (SAFE_OFFSET_CALLS.has(node[1])) return 'i32'
       if (READONLY_MEM_CALLS.has(node[1])) return 'f64'
+      if (PURE_CALL_I32.has(node[1])) return 'i32'        // string search/compare → i32
+      if (typeof node[1] === 'string' && node[1].startsWith('$math.')) return 'f64'   // transcendentals → f64
       return null
     }
     if (op === 'local.get' || op === 'local.tee') return localTypes.get(node[1]) ?? null

@@ -19,6 +19,44 @@ import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 
+// Count `call $NAME` nodes that survive INSIDE a loop within the user function $f
+// only (scoped past module builtins, which carry their own loops).
+const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isArray(n) || f) return; if (n[0] === 'func' && n[1] === name) { f = n; return } for (const c of n) w(c) }; w(tree); return f }
+const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, opt), '$f'), n => n[0] === 'call' && n[1] === name)
+
+test('LICM pure calls: invariant transcendental / substr search hoist out of the loop', () => {
+  // V8's wasm tier treats every call as opaque and recomputes it each iteration; jz proves
+  // math + immutable-string search/compare are pure functions of their args and lifts the
+  // invariant ones to the pre-header. Measured: invariant indexOf 649ms→2ms, Math.log 75→16ms.
+  const log = `export const f = (x, n) => { let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + Math.log(x + 3.0); return a }`
+  is(callsInLoop(log, '$math.log'), 0, 'invariant Math.log is hoisted out of the loop')
+
+  const idx = `export const f = (s, n) => { const h = s + "_TARGET_pad_pad"; let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + h.indexOf("TARGET"); return a | 0 }`
+  is(callsInLoop(idx, '$__str_indexof'), 0, 'invariant indexOf (string receiver) is hoisted out of the loop')
+
+  const eq = `export const f = (s, n) => { const h = s + "_pad_pad_pad"; let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + (h === "q_pad_pad_pad" ? 1 : 0); return a | 0 }`
+  is(callsInLoop(eq, '$__str_eq'), 0, 'invariant === is hoisted out of the loop')
+})
+
+test('LICM pure calls: a VARYING arg keeps the call IN the loop (soundness)', () => {
+  // The hoist is gated on every arg being loop-invariant. A per-iteration `from` / needle / arg
+  // must NOT be lifted — else the result would be wrong. (pureGiven returns false on the variant.)
+  const varFrom = `export const f = (s, n) => { const h = s + "_a_a_a_a_a_a"; let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + h.indexOf("a", r % 4); return a | 0 }`
+  ok(callsInLoop(varFrom, '$__str_indexof') >= 1, 'indexOf with a per-iteration `from` stays in the loop')
+
+  const varArg = `export const f = (x, n) => { let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + Math.log(x + r); return a }`
+  ok(callsInLoop(varArg, '$math.log') >= 1, 'Math.log of a per-iteration arg stays in the loop')
+
+  // Same answer with LICM on and off, for invariant AND varying — no miscompile from the hoist.
+  for (const src of [
+    `export const f = (s, n) => { const h = s + "_TT_pad_pad"; let a = 0.0; for (let r = 0; r < n; r = r + 1) { if (r > 3) a = a + h.indexOf("TT") } return a | 0 }`,
+    varFrom, varArg,
+  ]) {
+    const on = jz(src).exports.f, off = jz(src, { optimize: { hoistInvariantLoop: false } }).exports.f
+    for (const args of [['q', 0], ['q', 1], ['q', 25]]) is(on(...args), off(...args), `LICM on===off ${JSON.stringify(args)}`)
+  }
+})
+
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`
     export const main = () => {
