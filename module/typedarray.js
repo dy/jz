@@ -909,6 +909,29 @@ export default (ctx) => {
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
       ctx.features.typedarray = true
+      // Bare array-literal source (`Int32Array.from([…])`, `new Int32Array([…])`): build the
+      // typed array directly — alloc + one native-typed store per element — instead of
+      // materializing an intermediate f64 ARRAY (every element a 9-byte f64.const) plus a
+      // per-element f64→elem copy loop. For an integer view each element then stores as an
+      // i32.const (2 B for small values), so a constant program / lookup table stops
+      // round-tripping through the boxed-f64 array. Fresh alloc per evaluation, so identity
+      // and mutation semantics are unchanged. BigInt views (elemType>7) keep the loop.
+      if (Array.isArray(src) && src[0] === '[' && elemType <= 7
+          && !src.slice(1).some(e => Array.isArray(e) && e[0] === '...')) {
+        const elems = src.slice(1)
+        const out = allocPtr({ type: PTR.TYPED, aux, len: ['i32.const', elems.length * stride], stride: 1, tag: 'tf' })
+        const body = [out.init]
+        for (let k = 0; k < elems.length; k++) {
+          const addr = k === 0 ? ['local.get', `$${out.local}`]
+            : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * stride]]
+          const v = elemType <= 5 ? asI32(emit(elems[k]))
+            : elemType === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
+            : asF64(emit(elems[k]))
+          body.push([store, addr, v])
+        }
+        body.push(out.ptr)
+        return typed(['block', ['result', 'f64'], ...body], 'f64')
+      }
       const srcL = temp('tfs')
       const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
       const out = allocPtr({ type: PTR.TYPED, aux,
