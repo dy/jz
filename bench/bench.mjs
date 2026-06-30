@@ -185,6 +185,9 @@ const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
 const asWasmPath = c => join(caseBuild(c), `${c.id}.as.wasm`)
+// AS size column reads its -Osize build (asc's own size tier), the fair mirror
+// of jz's -Os size column — each compiler's smallest vs each compiler's fastest.
+const asSizeWasmPath = c => join(caseBuild(c), `${c.id}.as.size.wasm`)
 // Rival sources compiled to wasm32-wasi (run in node's V8 — same engine as jz):
 const rustWasmPath = c => join(caseBuild(c), `${c.id}.rust.wasm`)
 const goWasmPath = c => join(caseBuild(c), `${c.id}.go.wasm`)
@@ -500,9 +503,12 @@ const targets = {
   as: {
     name: 'AssemblyScript (asc -O3)',
     available: c => !!c.as && has('asc'),
-    bin: asWasmPath,
+    // Size column = asc -Osize (AS's smallest); timing = the -O3 speed build —
+    // the fair mirror of jz's split (each compiler's best size vs best speed).
+    bin: asSizeWasmPath,
     run: c => tryRun('as', c, () => {
       execFileSync('asc', [c.as, '-O3', '--runtime', 'stub', '--noAssert', '-o', asWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('asc', [c.as, '-Osize', '--runtime', 'stub', '--noAssert', '-o', asSizeWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-as.mjs'), asWasmPath(c)]),
   },
   // ── Rivals compiled to wasm32-wasi, run in node's V8 — the honest apples-to-apples
@@ -644,7 +650,7 @@ const TARGET_CMDS = {
   graaljs: 'graaljs <case>-flat.js',
   porf: 'porf --allocator-chunks=128 run <case>-flat.js',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
-  as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
+  as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
   'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
