@@ -2406,7 +2406,11 @@ export function foldSetToTee(fn) {
         if (use || conflict) return
         const c = node[i]
         if (Array.isArray(c) && c[0] === 'local.get' && c[1] === t) { use = { parent: node, idx: i, underLoop, underCond }; return }
-        rec(c, underLoop || op === 'loop', underCond || isCF(op))
+        // an `if`'s CONDITION (child 1) and all `select` operands evaluate UNCONDITIONALLY when
+        // the construct is reached — only then/else bodies are conditional. Treating the condition
+        // as conditional would wrongly refuse the common `if ((local.tee $t E) …)` fold.
+        const childCond = (op === 'if' && i === 1) || op === 'select' ? underCond : underCond || isCF(op)
+        rec(c, underLoop || op === 'loop', childCond)
       }
       if (use || conflict) return
       // post-order: this node's own effect, relative to the RHS we want to move past it
