@@ -47,6 +47,7 @@ export default (ctx) => {
     'math.acosh': ['math.log'],
     'math.atanh': ['math.log'],
     'math.cbrt': ['math.isFinite'],
+    'math.fifthroot': ['math.isFinite'],
     'math.sumPrecise': ['__ptr_offset', '__len', '__alloc'],
   })
   // Helpers: all math ops take f64 and return f64. Args go through ToNumber
@@ -372,6 +373,24 @@ export default (ctx) => {
     // from exp/log); ±0.5 stays sqrt / the exact pow path (handled above).
     if (isLit(irB)) {
       const c = litVal(irB)
+      // Constant exponent with denominator 5 and < 5 (the sRGB / Rec.709 decode gammas 2.4, 2.2,
+      // and any k/5): x^(k/5) = x^p · fifthroot(x^r), p=⌊c⌋, r=5c−5p ∈ 1..4 — algebraic, no exp/log,
+      // ~3.6e-10 rel err over x ∈ (0,1]. Beats exp(c·log x): the pow microbench drops below V8's
+      // own Math.pow intrinsic. x<0 → NaN to match Math.pow on a non-integer exponent (the exp·log
+      // form's log(<0)=NaN). x=0/+∞/NaN all carry correctly through the power + fifthroot.
+      if (Number.isFinite(c) && c > 0 && c < 5 && !Number.isInteger(c) && Number.isInteger(c * 5)) {
+        inc('math.fifthroot')
+        const t = temp('pw'), g = get(t)
+        const ipow = (k) => k === 1 ? g : k === 2 ? ['f64.mul', g, g]
+          : k === 3 ? ['f64.mul', ['f64.mul', g, g], g] : ['f64.mul', ['f64.mul', g, g], ['f64.mul', g, g]]  // k ∈ 1..4
+        const p = Math.floor(c), r = Math.round(c * 5) - p * 5
+        const root = ['call', '$math.fifthroot', ipow(r)]
+        const body = p === 0 ? root : ['f64.mul', ipow(p), root]
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, irA],
+          ['if', ['result', 'f64'], ['f64.lt', g, ['f64.const', 0]],
+            ['then', ['f64.const', 'nan']], ['else', body]]], 'f64')
+      }
       if (Number.isFinite(c) && !Number.isInteger(c) && c !== 0.5 && c !== -0.5)
         return (inc('math.exp'), inc('math.log'),
           typed(['call', '$math.exp', ['f64.mul', irB, ['call', '$math.log', irA]]], 'f64'))
@@ -1104,6 +1123,27 @@ export default (ctx) => {
     (local.set $t (f64.mul (f64.add (f64.add (local.get $t) (local.get $t)) (f64.div (local.get $a) (f64.mul (local.get $t) (local.get $t)))) (f64.const 0.3333333333333333)))
     (local.set $t (f64.mul (local.get $t) (local.get $s)))
     (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $t))) (else (local.get $t))))`)
+
+  // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits) + 3 Newton steps t=(4t+v/t⁴)/5.
+  // Caller (constant-exponent pow with denominator 5, e.g. the sRGB 2.4 gamma) guarantees v ≥ 0.
+  wat('math.fifthroot', `(func $math.fifthroot (param $v f64) (result f64)
+    (local $t f64) (local $s f64) (local $q f64)
+    (if (i32.eqz (call $math.isFinite (local.get $v))) (then (return (local.get $v))))
+    (if (f64.eq (local.get $v) (f64.const 0.0)) (then (return (f64.const 0.0))))
+    (local.set $s (f64.const 1.0))
+    ;; subnormal: scale by 2^100 = (2^20)^5; fifthroot(2^100) = 2^20
+    (if (f64.lt (local.get $v) (f64.const 2.2250738585072014e-308))
+      (then (local.set $v (f64.mul (local.get $v) (f64.const 1.2676506002282294e30)))
+            (local.set $s (f64.const 9.5367431640625e-07))))
+    (local.set $t (f64.reinterpret_i64
+      (i64.add (i64.div_u (i64.reinterpret_f64 (local.get $v)) (i64.const 5)) (i64.const 0x3325E66666666800))))
+    (local.set $q (f64.mul (local.get $t) (local.get $t)))
+    (local.set $t (f64.mul (f64.add (f64.mul (f64.const 4.0) (local.get $t)) (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q)))) (f64.const 0.2)))
+    (local.set $q (f64.mul (local.get $t) (local.get $t)))
+    (local.set $t (f64.mul (f64.add (f64.mul (f64.const 4.0) (local.get $t)) (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q)))) (f64.const 0.2)))
+    (local.set $q (f64.mul (local.get $t) (local.get $t)))
+    (local.set $t (f64.mul (f64.add (f64.mul (f64.const 4.0) (local.get $t)) (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q)))) (f64.const 0.2)))
+    (f64.mul (local.get $t) (local.get $s)))`)
 
   // Small finite-test helper (NaN→0, ±Inf→0, finite→1). Used by transcendental
   // functions that need to short-circuit on infinite inputs.
