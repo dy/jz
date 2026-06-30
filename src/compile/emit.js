@@ -1553,6 +1553,41 @@ const isCheapPureVal = (n) => {
   return false
 }
 
+// Side-effect-free: no writes (assignment / ++ / --), no calls, no closures, no throw. UNLIKE
+// `isCheapPureVal` this ALLOWS loads, member reads, and `/` `%` — a side-effect-free expr may read
+// memory or trap. It is the right gate for an `if` CONDITION promoted to a `select` condition: the
+// condition is evaluated exactly once whether the lowering branches or selects (any trap fires the
+// same in both, the read order vs the pure value arm is immaterial), so it need only avoid MUTATING
+// state the value arm could read — i.e. be side-effect-free, not unconditionally-evaluable.
+const SIDE_EFFECT_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=',
+  '>>>=', '||=', '&&=', '??=', '++', '--', '()', '=>', 'throw', 'new', 'await', 'yield'])
+const isSideEffectFree = (n) => {
+  if (!Array.isArray(n)) return true
+  if (typeof n[0] === 'string' && SIDE_EFFECT_OPS.has(n[0])) return false
+  for (let i = 1; i < n.length; i++) if (!isSideEffectFree(n[i])) return false
+  return true
+}
+
+const isLit1 = (n) => Array.isArray(n) && n[0] == null && n[1] === 1
+// A void statement whose whole effect is `x = <cheap pure value>` for a simple local `x` — the
+// shape if→select can lower to `x = cond ? value : x`. Recognizes the plain assignment plus the
+// increment forms `++x`/`--x` and their postfix lowerings `(++x) - 1` / `(--x) + 1` (prepare turns
+// `x++` in statement position into the latter; the discarded ∓1 is dead in void context, so the
+// net effect is the increment). Returns `{ lhs, val }` or null.
+function matchVoidLocalStore(s) {
+  if (!Array.isArray(s)) return null
+  if (s[0] === '=' && typeof s[1] === 'string' && isCheapPureVal(s[2])) return { lhs: s[1], val: s[2] }
+  if ((s[0] === '++' || s[0] === '--') && typeof s[1] === 'string')
+    return { lhs: s[1], val: [s[0] === '++' ? '+' : '-', s[1], [, 1]] }
+  // postfix: `x++` → `(++x) - 1`, `x--` → `(--x) + 1`
+  if ((s[0] === '-' || s[0] === '+') && isLit1(s[2]) && Array.isArray(s[1])
+      && (s[1][0] === '++' || s[1][0] === '--') && typeof s[1][1] === 'string') {
+    const inc = s[1][0] === '++'
+    if ((inc && s[0] === '-') || (!inc && s[0] === '+')) return { lhs: s[1][1], val: [inc ? '+' : '-', s[1][1], [, 1]] }
+  }
+  return null
+}
+
 function emitLooseEq(a, b, negate) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -3297,13 +3332,17 @@ export const emitter = {
     // If-conversion (speed tier): `if (cond) x = <cheap pure value>` (no else) → `x = cond ? value
     // : x`, which lowers to a branchless `select`. Removes the data-dependent branch (and its
     // misprediction) from min/max/clamp reductions — e.g. levenshtein's `if (ins < m) m = ins`,
-    // ~27% faster. Gated to the same speed tier as boolConvertToSelect (the select latency/size
-    // trade). Restricted to a plain assignment of a memory-/trap-free expr to a simple local, so
-    // the unconditional false-case eval is free and identical in effect.
-    if (els == null && ctx.transform.optimize?.boolConvertToSelect && isCheapPureVal(cond)) {
+    // ~27% faster — and from heapsort's child pick `if (a[c] < a[c+1]) c++`, the canonical
+    // unpredictable compare that costs jz on x86 (Cranelift/V8-x64 keep the branch; Binaryen, which
+    // AS uses, selects it). The condition is evaluated exactly once whether we branch or select, so
+    // it need only be SIDE-EFFECT-FREE (loads allowed — sort's `a[c] < a[c+1]`); only the assigned
+    // VALUE is evaluated unconditionally, hence must be a cheap, trap-free pure expr. `x++`/`x--`
+    // are admitted as `x = x ± 1`. The already-emitted condition `ce` is reused (`__emitted`), so a
+    // load-bearing condition is not emitted twice.
+    if (els == null && ctx.transform.optimize?.boolConvertToSelect && isSideEffectFree(cond)) {
       const asg = Array.isArray(then) && then[0] === ';' && then.length === 2 ? then[1] : then
-      if (Array.isArray(asg) && asg[0] === '=' && typeof asg[1] === 'string' && isCheapPureVal(asg[2]))
-        return emitVoid(['=', asg[1], ['?:', cond, asg[2], asg[1]]])   // cond cheap-pure → re-emit is free
+      const sel = matchVoidLocalStore(asg)
+      if (sel) return emitVoid(['=', sel.lhs, ['?:', ['__emitted', ce], sel.val, sel.lhs]])
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.
@@ -3566,6 +3605,10 @@ export function emit(node, expect) {
     if (node.loc != null) ctx.error.loc = node.loc
   }
   if (node == null) return null
+  // Pre-emitted IR passthrough: `['__emitted', ir]` returns `ir` untouched. Lets a caller that
+  // already emitted a subtree (e.g. the `if` handler's condition) splice it into an AST-shaped
+  // re-emit (a `?:` for if→select conversion) without emitting it a second time.
+  if (Array.isArray(node) && node[0] === '__emitted') return node[1]
   // Boolean literals carry VAL.BOOL for type observation (valTypeOf reads the
   // AST), but their working representation is the plain number 0/1 — identical
   // codegen to the pre-carrier `[, 1]`/`[, 0]` folding, so no perf is paid.

@@ -1119,6 +1119,61 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
   is(jz(SRC).exports.main(), ref, 'default-tier result bit-exact')
 })
 
+test('if→select: load-bearing condition + postfix x++ → branchless select (heapsort child-pick)', () => {
+  // The sift-down child pick `if (a[c] < a[c+1]) c++` is the canonical unpredictable branch. Its
+  // condition READS memory — unlike a pure min/max guard — but the condition is evaluated exactly
+  // once whether the lowering branches or selects, so if→select still applies (only the assigned
+  // VALUE must be trap-free; the postfix `c++` is admitted as `c = c+1`). Wins on Cranelift/x86,
+  // which keep the branch where V8/arm64 if-converts it itself. Bit-exact everywhere.
+  const SRC = `
+    const pick = (a, n) => {
+      let hits = 0
+      for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c }
+      return hits
+    }
+    export const main = () => {           // call twice so pick stays its own function to inspect
+      const a = new Float64Array(64)
+      let s = 1 | 0
+      for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) & 0xff }
+      return (pick(a, 64) + pick(a, 64)) | 0
+    }
+  `
+  const grab = (wat) => wat.slice(wat.indexOf('(func $pick'), wat.indexOf('\n  (func ', wat.indexOf('(func $pick') + 10) + 1 || undefined)
+  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  ok(/\bselect\b/.test(fn), 'load-bearing child-pick lowered to select at speed tier')
+  const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
+  ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
+  const ref = (() => { const a = []; let s = 1 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) & 0xff }
+    const pick = (n) => { let hits = 0; for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c } return hits }; return (pick(64) + pick(64)) | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'speed-tier bit-exact')
+  is(jz(SRC).exports.main(), ref, 'default-tier bit-exact')
+})
+
+test('if→select: a condition that MUTATES a var the value arm reads is NOT converted (reorder safety)', () => {
+  // `select` evaluates its arms BEFORE its condition; the branch evaluates the condition FIRST. So
+  // converting is sound only when the condition is side-effect-free. Here the condition assigns `x`
+  // and the value arm reads `x` — converting would read x stale. The gate must keep the branch.
+  const SRC = `
+    const f = (a, n) => {
+      let x = 0, acc = -1
+      for (let i = 0; i < n; i++) { if ((x = x + a[i]) > 100) acc = x }   // cond writes x; value arm reads x
+      return acc
+    }
+    export const main = () => {           // two call sites keep f standalone
+      const a = new Int32Array(32)
+      for (let i = 0; i < 32; i++) a[i] = (i * 7) & 31
+      return (f(a, 32) + f(a, 32)) | 0
+    }
+  `
+  const grab = (wat) => wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 4) + 1 || undefined)
+  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  is(/\bselect\b/.test(fn), false, 'side-effecting condition keeps the branch (not folded to select)')
+  const ref = (() => { const a = []; for (let i = 0; i < 32; i++) a[i] = (i * 7) & 31
+    const f = (n) => { let x = 0, acc = -1; for (let i = 0; i < n; i++) { if ((x = x + a[i]) > 100) acc = x } return acc }; return (f(32) + f(32)) | 0 })()
+  is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'speed-tier bit-exact')
+  is(jz(SRC).exports.main(), ref, 'default-tier bit-exact')
+})
+
 test('if→select: f64 ternary with pure arms+cond → branchless select (sign/clamp kernels)', () => {
   // `(h & 1) === 0 ? x : -x` (noise's gradient) lowers to (if (result f64) PURE_COND (then x)
   // (else -x)); both arms and the cond are pure, so fold to a branchless select — the cmov
