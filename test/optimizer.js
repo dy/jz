@@ -1455,6 +1455,17 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(sizePlusVec.vectorizeLaneLocal, true)
   is(sizePlusVec.smallConstForUnroll, false)
   is(sizePlusVec.scalarTypedArrayLen, 8)
+
+  // Pre-analyze loop transforms (compile/index.js) must be OFF at level 0/1 and ON at 2+. They were
+  // absent from PASS_NAMES, so ALL_OFF lacked the keys and `undefined !== false` ran them at EVERY
+  // level — including the self-host L0 fast path the "fastest compile, no opt" contract turns off.
+  for (const n of ['loopIVDivMod', 'loopSquare', 'unrollRecurrence', 'clampPeel']) {
+    is(resolveOptimize(0)[n], false, `${n} off at level 0`)
+    is(resolveOptimize(1)[n], false, `${n} off at level 1`)
+    is(resolveOptimize(2)[n], true, `${n} on at level 2`)
+  }
+  is(resolveOptimize('size').unrollRecurrence, false, 'unrollRecurrence stays off at size (×2 body = size regression)')
+  is(resolveOptimize('speed').unrollRecurrence, true, 'unrollRecurrence on at speed')
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {

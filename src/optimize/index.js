@@ -97,6 +97,14 @@ export const PASS_NAMES = [
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
+  // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
+  // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1
+  // (the self-host fast path) actually skip them, instead of `undefined !== false` running them
+  // unconditionally at every level. ALL_ON keeps them on at level 2+ where they belong.
+  'loopIVDivMod',             // strength-reduce per-iter `i%w` / `(i/w)|0` → incremental i32 counters
+  'loopSquare',               // bounded `i*i < CONST` → Math.imul (i32 product chain)
+  'unrollRecurrence',         // unit-stride DP/scan: scalar-replace arr[j-1]/arr[j] recurrence + ×2 unroll
+  'clampPeel',                // edge-clamp stencil: split into clamp-free interior (vectorizes) + edges
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
