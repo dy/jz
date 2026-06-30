@@ -174,6 +174,11 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
 
 const wasmPath = c => join(caseBuild(c), `${c.id}.wasm`)
 const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
+// Size column reads a dedicated -Os build: the `jz` row reports its SMALLEST
+// wasm (the size-tier compile) alongside its FASTEST time (the speed-tier host
+// build that `run` measures) — each axis shows jz's best profile, mirroring how
+// a real deployment picks -Os for footprint-critical and speed for hot paths.
+const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
@@ -217,7 +222,11 @@ const watrModuleSources = () => ({
   './util.js': readFileSync(join(ROOT, 'node_modules/watr/src/util.js'), 'utf8'),
 })
 
-const compileJzHost = c => {
+// Build a case's host wasm at a given optimize level. `level: 'speed'` is the
+// row's timed/run build; `level: 'size'` is the -Os build the size column reads.
+// Both offload formatting via env.logResult (the benchlibHostSource patch), so
+// the comparison to AS — which offloads via @external logLine — is like-for-like.
+const compileJzAt = (c, optimize) => {
   const isWatr = c.id === 'watr'
   // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
   // real benchlib for the env.logResult-patched host build.
@@ -233,21 +242,33 @@ const compileJzHost = c => {
       ...(isWatr ? watrModuleSources() : {}),
     }
   }
-  const wasm = compile(code, {
+  return compile(code, {
     jzify: isWatr || isGraph,
     modules,
     imports: {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
-    // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
-    // tuning. If any pass at this level produces wrong checksums or crashes,
-    // that's an optimizer bug to be fixed, not a reason to back off.
-    optimize: { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
+    optimize,
     alloc: false,
     ...caseMemory(c),
   })
+}
+
+const compileJzHost = c => {
+  // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
+  // tuning. If any pass at this level produces wrong checksums or crashes,
+  // that's an optimizer bug to be fixed, not a reason to back off. This is the
+  // build `run` times; the size column reads compileJzSize's -Os build instead.
+  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) })
   writeFileSync(jzHostWasmPath(c), wasm)
+}
+
+// -Os build for the size column — jz's smallest wasm for this case (no unroll /
+// inline body-duplication the speed tier trades bytes for). Same source, same
+// host imports, same memory; only the optimize tier differs.
+const compileJzSize = c => {
+  writeFileSync(jzSizeWasmPath(c), compileJzAt(c, { level: 'size' }))
 }
 
 const writeFlat = c => {
@@ -472,8 +493,9 @@ const targets = {
   jz: {
     name: 'jz → V8 wasm',
     available: () => has('node'),
-    bin: jzHostWasmPath,
-    run: c => tryRun('jz', c, () => compileJzHost(c), ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
+    // Size column = the -Os build (jz's smallest); timing = the speed build.
+    bin: jzSizeWasmPath,
+    run: c => tryRun('jz', c, () => { compileJzHost(c); compileJzSize(c) }, ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
   },
   as: {
     name: 'AssemblyScript (asc -O3)',
@@ -621,7 +643,7 @@ const TARGET_CMDS = {
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
   porf: 'porf --allocator-chunks=128 run <case>-flat.js',
-  jz: "compile(src, { optimize: 'speed', alloc: false }) → node (V8 wasm)",
+  jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'asc <case>.as.ts -O3 --runtime stub --noAssert',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
