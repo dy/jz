@@ -5,6 +5,8 @@
 * [ ] Beat all bench cases, all examples - pinned
   * [x] 10 more bench cases - each area covered
 * [ ] compiler architecture perfection
+  * [ ] How to reduce the size of jz.js twice? Is there any structures that can be folded or which don't add any value?
+  * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abstraction altogether to make compilation speed multiple times faster?
 * [ ] jz.wasm beats v8
 * [ ] sourcemaps
 * [ ] jzify
