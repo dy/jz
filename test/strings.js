@@ -984,3 +984,25 @@ test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge c
   is(g(dense, '', 1000), dense.indexOf('', 1000)) // empty needle clamps to len
   is(e(hay, 'TARGET'), 1); is(e(hay, 'NOPE'), 0)
 })
+
+test('concat: t = s + x must NOT mutate s (bump-extend gated to self-accumulation)', () => {
+  // The heap-top in-place EXTEND is sound only when the result replaces its own lhs (`x = x + …`).
+  // A fresh target `t = s + x` over a live, heap-top `s` used to grow s in place (s += 2 bytes/iter).
+  const { loop, after, accum, charAppend } = jz(`
+    export let loop = (s, n) => { let a = 0; for (let r = 0; r < n; r = r + 1) { let t = s + "_x"; a = (a + t.length) | 0 } return a | 0 }
+    export let after = (s) => { for (let r = 0; r < 5; r = r + 1) { let t = s + "_x" } return s.length | 0 }
+    export let accum = (n) => { let buf = ""; for (let i = 0; i < n; i = i + 1) buf = buf + "ab"; return buf.length | 0 }
+    export let charAppend = (s) => { let buf = ""; for (let i = 0; i < s.length; i = i + 1) buf = buf + s[i]; return buf.length | 0 }
+  `).exports
+  const HEAP = "abcdefghij_klmnopqr_stuvwxyz_0123456789"   // 39 B heap, lands at the bump top
+  is(loop(HEAP, 100), 4100)        // 41 × 100 — was 14000 (t grew 41,43,45,… as s mutated)
+  is(after(HEAP), HEAP.length)     // s itself is untouched
+  is(accum(500), 1000)             // self-accumulation still builds correctly (and stays O(N))
+  is(charAppend(HEAP), HEAP.length)
+
+  // a self-accumulation keeps the bump-EXTEND helper; a fresh target gets the non-mutating twin.
+  const accumW = compile(`export let f = (n) => { let b = ""; for (let i = 0; i < n; i = i + 1) b = b + "ab"; return b.length | 0 }`, { wat: true })
+  const freshW = compile(`export let f = (s) => { let t = s + "_x"; return t.length | 0 }`, { wat: true })
+  ok(!/__str_concat_raw_fresh/.test(accumW), 'b = b + "ab" keeps the bump-extend concat (O(N) accumulator)')
+  ok(/__str_concat_raw_fresh/.test(freshW), 't = s + "_x" uses the non-mutating fresh concat')
+})

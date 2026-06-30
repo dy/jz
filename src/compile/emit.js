@@ -2748,7 +2748,15 @@ export const emitter = {
       inc('__to_num')
       return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)
     }
-    return writeVar(name, emit(val), void_)
+    // Self-accumulation `x = x + …` (incl. desugared `x += …`): the new value REPLACES x, so x's
+    // old buffer is dead — the one context where a string concat may bump-EXTEND it in place. The
+    // `+` handler reads this flag for its immediate concat; nested operands clear it (not the target).
+    const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name
+    const prevSA = ctx.func._selfAccumConcat
+    ctx.func._selfAccumConcat = selfAccum ? name : null
+    const ev = emit(val)
+    ctx.func._selfAccumConcat = prevSA
+    return writeVar(name, ev, void_)
   },
 
   // Compound assignments: read-modify-write with type coercion
@@ -2838,15 +2846,18 @@ export const emitter = {
   // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
   '+': (a, b) => {
     if (ctx.func._expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
+    // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
+    // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
+    const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
+    ctx.func._selfAccumConcat = null
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)
     if (vtA === VAL.STRING && vtB === VAL.STRING) {
-      // Fused append-byte: `buf += s[i]` skips 1-char SSO construction +
-      // generic concat dispatch when rhs is a string-index. The byte flows
-      // straight from __char_at into memory, and the bump-extend path elides
-      // the alloc+copy when lhs is the heap-top STRING.
-      if (Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_byte'] && ctx.core.stdlib['__char_at']) {
+      // Fused append-byte: `buf += s[i]` skips 1-char SSO construction + generic concat dispatch
+      // when rhs is a string-index. The byte flows straight from __char_at into memory and bump-
+      // EXTENDS the heap-top lhs — so only when proven self-accumulating (else it mutates a live s).
+      if (selfAccum && Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_byte'] && ctx.core.stdlib['__char_at']) {
         if (valTypeOf(b[1]) === VAL.STRING) {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
@@ -2855,7 +2866,7 @@ export const emitter = {
           ], 'f64')
         }
       }
-      return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx), 'f64')
+      return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx, selfAccum), 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       // An OBJECT operand coerces via ToPrimitive(string) at compile time —
@@ -2875,10 +2886,10 @@ export const emitter = {
       const coercionFree = (vt) => vt === VAL.STRING || vt === VAL.OBJECT || vt === VAL.BOOL
       const cfA = coercionFree(vtA), cfB = coercionFree(vtB)
       const strI64 = (n) => typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
-      if (cfA && cfB) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strOperand(vtB, b), ctx), 'f64')
-      if (cfA) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strI64(b), ctx), 'f64')
-      if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx), 'f64')
-      return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx), 'f64')
+      if (cfA && cfB) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
+      if (cfA) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strI64(b), ctx, selfAccum), 'f64')
+      if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx, selfAccum), 'f64')
+      return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
@@ -2888,6 +2899,12 @@ export const emitter = {
     // operand needs the runtime check.
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
+      // Fully-untyped `+`: the string arm is a runtime-guarded cold path that the engine reaches
+      // only if BOTH operands are strings at runtime, so it keeps the bump-extend `__str_concat`
+      // (its body stays out-of-line — folding it to the smaller _fresh twin would inline this
+      // never-numeric branch into every hot integer loop). The demonstrated `t = s + "lit"` mutation
+      // is a TYPED concat (handled by concatRaw above); a both-untyped self-mutation stays the
+      // documented rare-aliasing tradeoff. Self-accumulation is still safe to extend.
       inc('__str_concat', '__is_str_key')
       const checkA = vtA == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, asF64(emit(a))]]] : null
       const checkB = vtB == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, asF64(emit(b))]]] : null

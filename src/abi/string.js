@@ -373,15 +373,20 @@ export const sso = {
      *  dispatcher's string/array runtime guess (emit.js) would hijack it into a
      *  bogus array concat. A non-builtin name routes through dynamic property
      *  dispatch (load the closure slot, call it) correctly. */
-    cat: (aF64, bF64, ctx) => {
-      ctx.core.includes.add('__str_concat')
-      return ['call', '$__str_concat', ssoI64(aF64), ssoI64(bF64)]
+    // `ext` (default false) opts into the bump-EXTEND fast path — sound only when emit
+    // proves `a` is dead-after (a self-accumulation `x = x + …`). Otherwise the _fresh twin
+    // alloc+copies, never mutating the live `a` operand. (See __str_concat in module/string.js.)
+    cat: (aF64, bF64, ctx, ext = false) => {
+      const fn = ext ? '__str_concat' : '__str_concat_fresh'
+      ctx.core.includes.add(fn)
+      return ['call', '$' + fn, ssoI64(aF64), ssoI64(bF64)]
     },
 
     /** Concat assuming both sides are already strings (skip ToString). */
-    concatRaw: (aF64, bF64, ctx) => {
-      ctx.core.includes.add('__str_concat_raw')
-      return ['call', '$__str_concat_raw', ssoI64(aF64), ssoI64(bF64)]
+    concatRaw: (aF64, bF64, ctx, ext = false) => {
+      const fn = ext ? '__str_concat_raw' : '__str_concat_raw_fresh'
+      ctx.core.includes.add(fn)
+      return ['call', '$' + fn, ssoI64(aF64), ssoI64(bF64)]
     },
   },
 }

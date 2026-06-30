@@ -144,6 +144,8 @@ export default (ctx) => {
   deps({
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_fresh: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat_raw_fresh: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
@@ -1114,6 +1116,18 @@ export default (ctx) => {
         (global.set $__heap (local.get $newHeap))
         (return (f64.reinterpret_i64 (local.get $a)))))` : ''
 
+  // Always-fresh tail: allocate a new buffer and copy both operands. Shared by the
+  // bump-extend concats (reached when `a` is NOT heap-top) and the `_fresh` variants
+  // (which never bump-extend at all — emit routes a NON-self-accumulating `t = s + x`
+  // here so it can't mutate the live `s` the way the heap-top extend would).
+  const allocCopyTail = `
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
+    (i32.store (local.get $off) (local.get $total))
+    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
+    (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+
   // Fused single-byte append: `buf += str[i]` lowers to this when both sides are
   // VAL.STRING and the rhs is a string-index. Skips __str_idx's 1-char SSO
   // construction and __str_concat's type-dispatch — byte goes directly from
@@ -1173,6 +1187,10 @@ export default (ctx) => {
     (i32.store8 (i32.add (local.get $off) (local.get $alen)) (local.get $byte))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
+  // __str_concat / __str_concat_raw bump-EXTEND `a` in place when it is the heap-top own string
+  // (the O(N) accumulator path). Emit calls these ONLY when the source is a self-accumulation
+  // `x = x + …` (so the mutated `a` is dead-after-reassign) or when `a` is a provably-fresh
+  // module-internal temporary; a plain `t = s + x` over a live `s` routes to the _fresh twins.
   wat('__str_concat', `(func $__str_concat (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ta i32) (local $aoff i32) (local $newHeap i32)
@@ -1185,13 +1203,7 @@ export default (ctx) => {
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     ${ssoResultFast}
-    ${concatFast}
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
-    (i32.store (local.get $off) (local.get $total))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
-    (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
+    ${concatFast}${allocCopyTail}`)
 
   wat('__str_concat_raw', `(func $__str_concat_raw (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
@@ -1202,13 +1214,30 @@ export default (ctx) => {
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     ${ssoResultFast}
-    ${concatFast}
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
-    (i32.store (local.get $off) (local.get $total))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
-    (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
+    ${concatFast}${allocCopyTail}`)
+
+  // Non-mutating twins: same SSO-pair fast path, but NEVER bump-extend — always alloc+copy a fresh
+  // buffer, leaving `a` untouched. The default for emit's user-level `+` (any `t = s + x` where the
+  // result is not assigned straight back to `s`), so string immutability holds for live operands.
+  wat('__str_concat_fresh', `(func $__str_concat_fresh (param $a i64) (param $b i64) (result f64)
+    (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
+    (local.set $a (call $__to_str (local.get $a)))
+    (local.set $b (call $__to_str (local.get $b)))
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $total (i32.add (local.get $alen) (local.get $blen)))
+    (if (i32.eqz (local.get $total))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    ${ssoResultFast}${allocCopyTail}`)
+
+  wat('__str_concat_raw_fresh', `(func $__str_concat_raw_fresh (param $a i64) (param $b i64) (result f64)
+    (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $total (i32.add (local.get $alen) (local.get $blen)))
+    (if (i32.eqz (local.get $total))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    ${ssoResultFast}${allocCopyTail}`)
 
   wat('__str_replace', `(func $__str_replace (param $str i64) (param $search i64) (param $repl i64) (result f64)
     (local $idx i32) (local $slen i32)
