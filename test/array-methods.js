@@ -924,3 +924,26 @@ test('typed array: writes through a captured alias reach the original (no scalar
   is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let o = {x:a}; o.x[0]=99; return a[0] }`).f(), 99)
   is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let arr = [a]; arr[0][0]=99; return a[0] }`).f(), 99)
 })
+
+// `new T([literals])` / `T.from([…])` builds the typed array natively — alloc + one
+// native-typed store per element — rather than materializing a boxed-f64 ARRAY (every
+// element a 9-byte f64.const) and a per-element f64→elem copy loop. Pins both the
+// correctness across element kinds AND the absence of the round-trip (no copy loop, and
+// no f64.store for the integer views). The shape jz's own copy-loop→from fusion emits
+// (vm's instruction table: 1977→1382 B once this stopped round-tripping through f64).
+test('typed array from literal: native build, no f64 round-trip', () => {
+  // correctness across signed/unsigned/width/float element kinds
+  is(runHost(`export let f = () => { const a = new Int32Array([10, 20, 30]); return (a[0]+a[1]+a[2])|0 }`).f(), 60)
+  is(runHost(`export let f = () => { const a = Int32Array.from([10, 20, 30, 40]); return (a[0]+a[3])|0 }`).f(), 50)
+  is(runHost(`export let f = () => { const a = new Uint8Array([255, 256, 1]); return (a[0]+a[1]+a[2])|0 }`).f(), 256) // 255 + 0 (wrap) + 1
+  is(runHost(`export let f = () => { const a = new Int16Array([-1, 32768]); return (a[0]+a[1])|0 }`).f(), -32769)     // -1 + (-32768)
+  is(runHost(`export let f = () => { const a = new Float64Array([1.5, 2.25, 3.125]); return a[0]+a[1]+a[2] }`).f(), 6.875)
+  is(runHost(`export let f = () => { const a = new Float32Array([0.5, 0.25]); return a[0]+a[1] }`).f(), 0.75)
+  // element expressions (not just constants) also build directly
+  is(runHost(`export let f = (x) => { const a = new Int32Array([x, x*2, x*3]); return (a[0]+a[1]+a[2])|0 }`).f(7), 42)
+
+  // an integer view from an int literal carries NO f64.store and NO copy loop
+  const wat = compile(`export const f = () => { const a = new Int32Array([1, 2, 3, 4, 5, 6]); return (a[0]+a[5])|0 }`, { wat: true, optimize: { level: 'size' } })
+  ok(!/f64\.store/.test(wat), 'no f64.store: integer literal stored as i32 directly, not via a boxed-f64 array')
+  ok(!/\(loop/.test(wat), 'no copy loop: each element stored inline')
+})
