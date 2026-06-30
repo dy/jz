@@ -2701,7 +2701,10 @@ test('clamp-peel: for-loop stencils (the bench shape) peel + bit-exact + guards 
   // must normalize them (init + 3 while-loops with the step re-appended), with the
   // same guards. A non-unit step must bail.
   const A = 'let A=new Int32Array(4096);'
-  const fires = (s) => /__pke/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
+  // `$__pks` (peel-start boundary) marks a fired peel. (Was `$__pke`, but the
+  // peel-end local can now be fully forward-substituted / dead-store-eliminated away
+  // while the peel structure — start boundary + the 3 split loops — remains.)
+  const fires = (s) => /__pks/.test(jz.compile(s, { wat: true, optimize: 'speed' }))
   const on = (s) => run(s, { optimize: 'speed' }).f, off = (s) => run(s, { optimize: { level: 'speed', clampPeel: false } }).f
   const forBlur = `${A}export let f=(w,r)=>{let s=0;for(let x=0;x<w;x++){let a=0;for(let k=-r;k<=r;k++){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095]}s=(s+a)|0}return s|0}`
   ok(fires(forBlur), 'for-loop stencil peels')

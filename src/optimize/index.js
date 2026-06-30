@@ -2093,6 +2093,29 @@ export function deadStoreElim(fn) {
     return true
   }
 
+  // Control flow inside a statement: a nested write under it may be conditional or
+  // loop-carried, so it can't be treated as an unconditional kill.
+  const hasControlFlow = (node) => {
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op === 'block' || op === 'loop' || op === 'if' || op === 'then' || op === 'else' ||
+        op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' ||
+        op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref' ||
+        op === 'try' || op === 'try_table') return true
+    for (let i = 1; i < node.length; i++) if (hasControlFlow(node[i])) return true
+    return false
+  }
+  // Locals written (set/tee) anywhere in a statement's CHILD subtrees — the
+  // statement's own top-level set/tee is tracked separately by the caller.
+  const collectChildWrites = (node, out) => {
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c)) continue
+      if ((c[0] === 'local.set' || c[0] === 'local.tee') && typeof c[1] === 'string') out.add(c[1])
+      collectChildWrites(c, out)
+    }
+  }
+
   const scanBlock = (items, start, end) => {
     const lastWrite = new Map() // localName → { parent, idx }
 
@@ -2126,6 +2149,26 @@ export function deadStoreElim(fn) {
           if (prev.node[0] === 'local.tee' || isPure(prev.node[2])) dead.push(prev)
         }
         lastWrite.set(node[1], { parent: items, node })
+      }
+
+      // A NESTED unconditional write kills a pending dead store the top-level
+      // tracking above misses: the alloc-header inliner leaves `(local.set $stride
+      // 1)` then reuses the slot via `(local.tee $stride $a1)` nested in the NEXT
+      // statement's value. In a control-flow-free statement every nested write is
+      // unconditional, and the read-invalidation above already dropped any local
+      // this statement reads — so a still-pending write of a nested-written local
+      // (other than this statement's own top-level target) is provably overwritten
+      // before any read. The nested write itself is load-bearing (its value feeds
+      // the expression), so it is not tracked as removable — just clear the slot.
+      if (op !== 'block' && op !== 'loop' && op !== 'if' && !hasControlFlow(node)) {
+        const topName = (op === 'local.set' || op === 'local.tee') ? node[1] : null
+        const nestedWrites = new Set()
+        collectChildWrites(node, nestedWrites)
+        for (const name of nestedWrites) {
+          if (name === topName) continue
+          const prev = lastWrite.get(name)
+          if (prev && (prev.node[0] === 'local.tee' || isPure(prev.node[2]))) { dead.push(prev); lastWrite.delete(name) }
+        }
       }
 
       // Recurse into nested blocks with fresh state
