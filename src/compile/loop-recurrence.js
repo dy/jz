@@ -21,7 +21,7 @@ import { findMutations } from './analyze-scans.js'
 import { litVal, litN, unitIncVar, normalizeLoop, freshLoopId } from './loop-model.js'
 import { rewriteBlocks, closureMutatedVars } from './loop-model.js'
 
-const isArr = Array.isArray
+const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-host kernel rejects a builtin used as a first-class value
 const clone = (n) => isArr(n) ? n.map(clone) : n
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
 
