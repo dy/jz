@@ -325,3 +325,17 @@ test('jz: fixed + rest params', () => {
   const { exports } = jz(`export let f = (a, ...rest) => a + rest.length`)
   is(exports.f(10, 1, 2, 3), 13)
 })
+
+// A parameter literally named `arguments` shadows the implicit arguments object — it's
+// an ordinary parameter, NOT the args array. `f()` with no args ⇒ the param is
+// undefined (regression: jzify's args-object lowering used to rename the body's
+// `arguments` to the args array, so `f()` returned `[]` / typeof "object"). test262
+// language/statements/function/S13_A15_T3.
+test('arguments: a param named `arguments` shadows the args object', () => {
+  is(jz(`function f(arguments){ return arguments } export const main = () => typeof f()`).exports.main(), 'undefined')
+  is(jz(`function f(arguments){ return arguments } export const main = () => f("X")`).exports.main(), 'X')
+  // still an ordinary param alongside others
+  is(jz(`function f(a, arguments){ return a + arguments } export const main = () => (f(2, 3))|0`).exports.main(), 5)
+  // default that references the shadowing param resolves to the param, not an args array
+  is(jz(`function f(arguments = 7){ return arguments } export const main = () => (f())|0`).exports.main(), 7)
+})
