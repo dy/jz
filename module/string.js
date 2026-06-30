@@ -678,11 +678,17 @@ export default (ctx) => {
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
+    (local $splat v128) (local $mask i32) (local $scanEnd i32)
     ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.9 step 4 —
     ;; a known-string needle passes raw, so this helper carries no float-pulling __to_str.
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
-    (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
+    ;; Empty needle matches at clamp(from, 0, hlen) — per 21.1.3.9 step 6 (Min(Max(pos,0),len)).
+    (if (i32.eqz (local.get $nlen))
+      (then (return (select
+        (select (local.get $from) (local.get $hlen) (i32.lt_s (local.get $from) (local.get $hlen)))
+        (i32.const 0)
+        (i32.ge_s (local.get $from) (i32.const 0))))))
     (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
     (local.set $hoff (i32.wrap_i64 (i64.and (local.get $hay) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $noff (i32.wrap_i64 (i64.and (local.get $ndl) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -718,24 +724,53 @@ export default (ctx) => {
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $ss2)))
             (return (i32.const -1))))))
-    ;; Multi-byte needle, both operands heap (the common longer-string case): a first-byte memchr
-    ;; skip + branchless load8_u verify — no per-byte SSO test. SSO operands fall to the general loop.
+    ;; Multi-byte needle, both operands heap (the common longer-string case): a SIMD first-byte
+    ;; memchr — broadcast needle[0] across 16 lanes, i8x16.eq a 16-byte haystack window, and read
+    ;; the match-bitmask. Only positions whose first byte matches reach the branchless load8_u
+    ;; verify; the rare match (V8's own StringIndexOf is SIMD here) is what the scalar path lost on.
+    ;; scanEnd = hlen - nlen is the last viable start; the SIMD window stops at hlen-16 (a full
+    ;; 16-byte load stays inside the string), a scalar tail covers the remainder. SSO falls through.
     (if (i32.and (i32.eqz (local.get $hsso)) (i32.eqz (local.get $nsso)))
       (then
         (local.set $nb (i32.load8_u (local.get $noff)))
+        (local.set $scanEnd (i32.sub (local.get $hlen) (local.get $nlen)))
+        (local.set $splat (i8x16.splat (local.get $nb)))
+        (block $vd (loop $vo
+          (br_if $vd (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (i32.const 16))))
+          (local.set $mask (i8x16.bitmask
+            (i8x16.eq (v128.load (i32.add (local.get $hoff) (local.get $i))) (local.get $splat))))
+          (block $bd (loop $bo
+            (br_if $bd (i32.eqz (local.get $mask)))
+            (local.set $k (i32.add (local.get $i) (i32.ctz (local.get $mask))))   ;; candidate start
+            (br_if $bd (i32.gt_s (local.get $k) (local.get $scanEnd)))            ;; positions only grow
+            (local.set $match (i32.const 1))
+            (local.set $j (i32.const 1))
+            (block $mn (loop $mi
+              (br_if $mn (i32.ge_s (local.get $j) (local.get $nlen)))
+              (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $k)) (local.get $j)))
+                          (i32.load8_u (i32.add (local.get $noff) (local.get $j))))
+                (then (local.set $match (i32.const 0)) (br $mn)))
+              (local.set $j (i32.add (local.get $j) (i32.const 1)))
+              (br $mi)))
+            (if (local.get $match) (then (return (local.get $k))))
+            (local.set $mask (i32.and (local.get $mask) (i32.sub (local.get $mask) (i32.const 1))))  ;; clear lowest match
+            (br $bo)))
+          (local.set $i (i32.add (local.get $i) (i32.const 16)))
+          (br $vo)))
+        ;; scalar tail: positions [i, scanEnd] the SIMD window couldn't cover
         (block $md (loop $mo
-          (br_if $md (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (local.get $nlen))))
+          (br_if $md (i32.gt_s (local.get $i) (local.get $scanEnd)))
           (if (i32.eq (i32.load8_u (i32.add (local.get $hoff) (local.get $i))) (local.get $nb))
             (then
               (local.set $match (i32.const 1))
               (local.set $j (i32.const 1))
-              (block $mn (loop $mi
-                (br_if $mn (i32.ge_s (local.get $j) (local.get $nlen)))
+              (block $mn2 (loop $mi2
+                (br_if $mn2 (i32.ge_s (local.get $j) (local.get $nlen)))
                 (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $i)) (local.get $j)))
                             (i32.load8_u (i32.add (local.get $noff) (local.get $j))))
-                  (then (local.set $match (i32.const 0)) (br $mn)))
+                  (then (local.set $match (i32.const 0)) (br $mn2)))
                 (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                (br $mi)))
+                (br $mi2)))
               (if (local.get $match) (then (return (local.get $i))))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $mo)))
