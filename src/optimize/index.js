@@ -114,6 +114,7 @@ export const PASS_NAMES = [
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'dropDeadZeroInit',
   'deadStoreElim',
+  'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',
@@ -2165,6 +2166,121 @@ export function deadStoreElim(fn) {
 }
 
 /**
+ * Forward-substitute a single-def / single-use local into its sole use, eliminating the local,
+ * its `local.set` and its `local.get`. This is watr's "propagate": jz emits short-lived address/
+ * index temps (`set $t (i32.add …); … (load $t) …`) that the WAT optimizer folds away — the
+ * dominant slice of the watr-optimizer-OFF size gap (a matmul carries ~14 such temps, ≈ the whole
+ * delta). Closing it lets jz lean on its own optimizer instead of watr's.
+ *
+ * SOUND only when moving the def's RHS `E` to the use can't change order or value:
+ *   - `E` is PURE — reads only locals (no load/store/call/global/memory): its value is a function
+ *     of its read-locals alone, and it has no side effects to reorder past intervening statements.
+ *   - the use is at the SAME loop nesting — never under a deeper `loop` than the def (which would
+ *     re-evaluate `E` per iteration and could read a clobbered input).
+ *   - no read-local of `E` is written between the def and the use (incl. the use statement itself).
+ * Anything it can't prove safe is left untouched.
+ */
+export function propagateSingleUse(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Leave a vectorized function alone: it carries v128 lane sequences that are already register-tight,
+  // and forward-substituting into them only adds pressure (mirrors hoistInvariantLoop's hasV128 gate).
+  let hasV128 = false
+  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
+  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
+  if (hasV128) return
+
+  // def/use tally over the whole body. A `local.tee` is both a read and a write — exclude any
+  // tee'd local from candidacy rather than reason about it.
+  const setN = new Map(), getN = new Map(), teed = new Set()
+  const tally = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
+    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
+    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
+    for (let i = 1; i < n.length; i++) tally(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) tally(fn[i])
+
+  const cand = new Set()
+  for (const [name, c] of setN) if (c === 1 && getN.get(name) === 1 && !teed.has(name)) cand.add(name)
+  if (!cand.size) return
+
+  const movablePure = (n) => {
+    if (!Array.isArray(n)) return true
+    const op = n[0]
+    if (op === 'local.get') return true
+    if (op === 'local.set' || op === 'local.tee' || op === 'call' || op === 'call_indirect' || op === 'call_ref'
+      || op === 'global.get' || op === 'global.set' || op === 'memory.size' || op === 'memory.grow'
+      || op === 'memory.copy' || op === 'memory.fill') return false
+    if (typeof op === 'string' && (op.includes('.load') || op.includes('.store') || op.includes('.atomic'))) return false
+    for (let i = 1; i < n.length; i++) if (!movablePure(n[i])) return false
+    return true
+  }
+  const readsOf = (n, out) => { if (!Array.isArray(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out) }
+  const writesAny = (n, R) => { if (!Array.isArray(n)) return false; if ((n[0] === 'local.set' || n[0] === 'local.tee') && R.has(n[1])) return true; for (let i = 1; i < n.length; i++) if (writesAny(n[i], R)) return true; return false }
+  // Locate the (local.get $t) within `root`'s subtree (not root itself); flag if it sits under a
+  // `loop` relative to root (→ would re-evaluate the moved RHS each iteration).
+  const locateUse = (root, t) => {
+    let found = null
+    const rec = (node, underLoop) => {
+      if (found || !Array.isArray(node)) return
+      for (let i = 1; i < node.length; i++) {
+        if (found) return
+        const c = node[i]
+        if (Array.isArray(c) && c[0] === 'local.get' && c[1] === t) { found = { parent: node, idx: i, underLoop }; return }
+        rec(c, underLoop || node[0] === 'loop')
+      }
+    }
+    rec(root, false)
+    return found
+  }
+
+  const removed = new Set()
+  const optimizeList = (list, start) => {
+    for (let i = start; i < list.length; i++) {
+      const s = list[i]
+      if (!Array.isArray(s)) continue
+      // s.length === 3: an explicit-RHS `(local.set $t E)`. A bare `(local.set $t)` (length 2)
+      // binds a value already on the stack — e.g. the try_table catch payload — and has no RHS to
+      // move; treating its undefined RHS as movable would substitute `undefined` into the use.
+      if (s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string' && cand.has(s[1]) && movablePure(s[2])) {
+        const t = s[1], E = s[2], R = new Set(); readsOf(E, R)
+        for (let j = i + 1; j < list.length; j++) {
+          const sj = list[j]
+          const u = Array.isArray(sj) ? locateUse(sj, t) : null
+          if (u) {                                       // found the sole use's statement
+            if (!u.underLoop && !writesAny(sj, R)) {     // same nesting + read-locals intact
+              u.parent[u.idx] = E
+              list.splice(i, 1)
+              cand.delete(t); removed.add(t)
+              i--                                        // re-process from the freed slot (forward chains)
+            }
+            break                                        // use located — stop scanning this candidate
+          }
+          if (writesAny(sj, R)) break                    // a read-local clobbered before the use → can't move
+        }
+        if (removed.has(s[1])) continue
+      }
+      // recurse into nested statement lists
+      if (s[0] === 'block' || s[0] === 'loop') {
+        let k = 1; while (k < s.length && Array.isArray(s[k]) && s[k][0] === 'result') k++
+        optimizeList(s, k)
+      } else if (s[0] === 'if') {
+        for (let k = 1; k < s.length; k++) { const c = s[k]; if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) optimizeList(c, 1) }
+      }
+    }
+  }
+  optimizeList(fn, bodyStart)
+
+  // drop the now-orphaned decls (deferred so the body walk above sees stable indices)
+  if (removed.size) for (let i = fn.length - 1; i >= 2; i--) { const c = fn[i]; if (Array.isArray(c) && c[0] === 'local' && removed.has(c[1])) fn.splice(i, 1) }
+}
+
+/**
  * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
  * function other than `$__start`. Globals written only in `$__start` are
  * init-once: `$__start` runs to completion before any other function, so they
@@ -3253,6 +3369,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       cfg.csePureExpr === false &&
       cfg.dropDeadZeroInit === false &&
       cfg.deadStoreElim === false &&
+      cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
@@ -3314,6 +3431,14 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     if (runVectorizer) foldV128Memargs(fn)
   }
+  // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
+  // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
+  // loop fell from a SIMD body to a scalar unroll, +231 B). For watr:false the whole pipeline is the
+  // 'pre' phase (no 'post' re-run), so vectorize already ran above; for full watr the vectorizer is
+  // deferred to 'post', so skip 'pre' here to stay after it. (propagateSingleUse itself skips any
+  // function the vectorizer already lifted to v128.)
+  const fullWatr_psu = !!(cfg && (cfg.watr === true || typeof cfg.watr === 'object'))
+  if ((phase === 'post' || !fullWatr_psu) && (!cfg || cfg.propagateSingleUse !== false)) propagateSingleUse(fn)
   // SSA-split loop-private unrolled scratch (post-vectorize: vectorized loops now carry
   // v128 and are skipped) so the LICM below hoists the per-iteration invariants the
   // unroller's name-merging hid — rust/LLVM's free-after-unroll register hoist (closes

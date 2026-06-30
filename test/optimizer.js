@@ -13,7 +13,8 @@ import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
-import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop } from '../src/optimize/index.js'
+import { optimizeFunc, resolveOptimize, PASS_NAMES, csePureExprLoop, propagateSingleUse } from '../src/optimize/index.js'
+import { compile } from '../index.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
@@ -2828,5 +2829,28 @@ test('int narrowing: bounded typed-array element products use i32.mul (faithful)
     const { f } = run(src)
     const ref = new Function('n', '"use strict";' + src.replace(/^export let f = /, 'const f = ').replace(/return s\s*}$/, 'return s }') + '; return f(n)')
     for (const n of ns) is(f(n), ref(n), `bit-exact vs JS at n=${n}`)
+  }
+})
+
+test('propagateSingleUse: folds a single-def/single-use pure temp into its use (own-optimizer "propagate")', () => {
+  // jz emits short-lived address/index temps watr's optimizer folds away; this is the jz-side pass.
+  // A pure single-use temp must disappear (local + set + get gone), bit-exact.
+  const localCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local /g) || []).length
+  const src = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
+  const on = localCount(src, { level: 2, watr: false })
+  const off = localCount(src, { level: 2, watr: false, propagateSingleUse: false })
+  ok(on < off, `temp folded: ${off} locals → ${on}`)
+
+  // bit-exact with the pass on vs off across shapes (incl. the no-RHS catch-payload edge: `local.set
+  // $e` with the value on the stack must NOT be treated as a movable temp), and the vectorizer is
+  // untouched (the pass runs AFTER it and skips v128 functions).
+  for (const [s, args] of [
+    [`export let f = (a, n) => { let acc = 0; for (let i = 0; i < n; i++) { let k = i * 3 + 1; acc = (acc + k) | 0 } return acc | 0 }`, [[7]]],
+    [`export let f = () => { try { throw "err" } catch (e) { return e.length } }`, [[]]],
+    [`export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s += buf[i] * 2; return s }`, [[new Float64Array([1, 2, 3, 4]), 4]]],
+  ]) {
+    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
+    const offF = jz(s, { optimize: { level: 2, watr: false, propagateSingleUse: false } }).exports.f
+    for (const a of args) is(onF(...a), offF(...a), `propagateSingleUse on===off ${JSON.stringify(a)}`)
   }
 })
