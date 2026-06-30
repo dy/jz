@@ -1504,6 +1504,8 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   }
   is(resolveOptimize('size').unrollRecurrence, false, 'unrollRecurrence stays off at size (×2 body = size regression)')
   is(resolveOptimize('speed').unrollRecurrence, true, 'unrollRecurrence on at speed')
+  is(resolveOptimize('size').clampPeel, false, 'clampPeel stays off at size (edge-peel triples a stencil loop)')
+  is(resolveOptimize('speed').clampPeel, true, 'clampPeel on at speed (vectorizes the clamp-free interior)')
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {

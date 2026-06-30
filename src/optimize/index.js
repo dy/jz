@@ -167,6 +167,7 @@ const LEVEL_PRESETS = Object.freeze({
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
     recursionUnroll: false,   // body tripling is a size regression — speed-only
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only
+    clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
 
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
