@@ -19,6 +19,24 @@ function usesArguments(node) {
   return false
 }
 
+// A parameter literally named `arguments` (or a destructure / default / rest that
+// binds it) SHADOWS the arguments object: every `arguments` in the body resolves to
+// that parameter, not the args array. So the args-object lowering must not fire —
+// `function f(arguments){ return arguments }` is just a one-param function, and `f()`
+// returns undefined (not the `[]` args object). Mirrors the spec's param-scope
+// shadowing of the implicit `arguments` binding (test262 13_A15_T3).
+function paramsBindArguments(params) {
+  const bound = (p) => {
+    if (p === 'arguments') return true
+    if (!Array.isArray(p)) return false
+    if (p[0] === '=' || p[0] === '...') return bound(p[1])
+    if (p[0] === '[]' || p[0] === '{}' || p[0] === ',') return p.slice(1).some(bound)
+    if (p[0] === ':') return bound(p[2])
+    return false
+  }
+  return paramList(params).some(bound)
+}
+
 function bindsArguments(body) {
   const isArgDecl = s => Array.isArray(s) && (s[0] === 'var' || s[0] === 'let' || s[0] === 'const') &&
     s.slice(1).some(d => d === 'arguments' || (Array.isArray(d) && d[0] === '=' && d[1] === 'arguments'))
@@ -56,6 +74,15 @@ function prependParamDecls(decl, body) {
 /** @param {ReturnType<import('./names.js').createNames>} names */
 export function createArgumentsLowering(names) {
   function lowerArguments(params, body) {
+    // A param named `arguments` shadows the implicit args object: rename it (and its
+    // in-scope body refs — renameArguments stops at nested `function`s, and arrows
+    // legitimately inherit the param) to a fresh binding, so it becomes an ordinary
+    // parameter. No args-object lowering fires, and the strict-subset
+    // `arguments`-unsupported guard never sees the name. (test262 13_A15_T3.)
+    if (paramsBindArguments(params)) {
+      const fresh = names.arg()
+      return lowerArguments(renameArguments(params, fresh), renameArguments(body, fresh))
+    }
     if (bindsArguments(body)) body = renameArguments(body, names.arg())
     const paramsNeedLowering = paramList(params).some(isDestructurePat)
     const usesArgsObj = usesArguments(params) || usesArguments(body)
