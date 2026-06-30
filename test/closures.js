@@ -698,11 +698,12 @@ test('closure-unbox: codegen — local declared as i32', () => {
   const w = jz.compile(`
     export let f = (n) => {
       let g = (x) => x + n
-      return g(1)
+      return g(1) + g(2)
     }
   `, { wat: true, optimize: { watr: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
+  // multi-use closure so the slot survives foldSetToTee (jz's own coalesce of single-use defs)
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
 })

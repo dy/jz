@@ -115,6 +115,7 @@ export const PASS_NAMES = [
   'dropDeadZeroInit',
   'deadStoreElim',
   'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
+  'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',
@@ -2327,6 +2328,142 @@ export function propagateSingleUse(fn) {
 }
 
 /**
+ * Sink a single-def local's RHS to its FIRST use as a `local.tee` (the simplify-locals
+ * transform watr's use-count propagate doesn't do, confirmed by diffing jz+watr vs Binaryen):
+ *
+ *   (local.set $t (call $f ...))           ⇒   (i64.store a (local.tee $t (call $f ...)))
+ *   (i64.store a (local.get $t))                ... later (local.get $t) ...
+ *   ... later (local.get $t) ...
+ *
+ * — removes the standalone `set` statement + the first `local.get` (~2–4 B/site). For a
+ * SINGLE-use local the RHS is forwarded outright (no tee, decl dropped) — this also catches
+ * effectful single-use temps (`call`/`load` RHS) that `propagateSingleUse` skips. Runs after
+ * `propagateSingleUse`, so it sees only the cases that one leaves: multi-use, and effectful.
+ *
+ * Correctness rests on `scanUse`, an eval-order walk that flags a conflict BEFORE the use:
+ *   - a write to any local the RHS reads (R),
+ *   - a control-flow transfer (br/return/throw/…) that could skip the use while a later use lives,
+ *   - for a memory-reading RHS, an intervening memory/global WRITE,
+ *   - for a memory-writing RHS (incl. any call), ANY intervening memory/global access.
+ * Plus: a multi-use fold (and an effectful single-use forward) requires the use to be
+ * UNCONDITIONALLY reached (not under if/loop/block) so the tee always runs before later reads;
+ * never sink under a `loop` (would re-evaluate / re-effect the RHS per iteration).
+ */
+export function foldSetToTee(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // v128 lane sequences are already register-tight — folding only adds pressure (mirrors propagateSingleUse).
+  let hasV128 = false
+  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
+  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
+  if (hasV128) return
+
+  const setN = new Map(), getN = new Map(), teed = new Set()
+  const tally = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
+    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
+    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
+    for (let i = 1; i < n.length; i++) tally(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) tally(fn[i])
+
+  const cand = new Set()
+  for (const [name, c] of setN) if (c === 1 && (getN.get(name) || 0) >= 1 && !teed.has(name)) cand.add(name)
+  if (!cand.size) return
+
+  const readsOf = (n, out) => { if (!Array.isArray(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out) }
+  const noLocalWrite = (n) => {
+    if (!Array.isArray(n)) return true
+    if (n[0] === 'local.set' || n[0] === 'local.tee') return false
+    for (let i = 1; i < n.length; i++) if (!noLocalWrite(n[i])) return false
+    return true
+  }
+  const isWriteOp = (op) => op === 'call' || op === 'call_indirect' || op === 'call_ref' || op === 'return_call'
+    || op === 'return_call_indirect' || op === 'global.set' || op === 'memory.grow' || op === 'memory.copy'
+    || op === 'memory.fill' || (typeof op === 'string' && (op.includes('.store') || op.includes('.atomic')))
+  const isReadOp = (op) => op === 'global.get' || op === 'memory.size' || (typeof op === 'string' && op.includes('.load'))
+  const isCF = (op) => op === 'if' || op === 'loop' || op === 'block' || op === 'try' || op === 'try_table'
+  const isTransfer = (op) => op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return'
+    || op === 'return_call' || op === 'return_call_indirect' || op === 'unreachable' || op === 'throw' || op === 'rethrow'
+  const rhsKind = (n) => {                              // 'writes' | 'reads' | 'pure'
+    let w = false, r = false
+    const rec = (x) => { if (!Array.isArray(x)) return; if (isWriteOp(x[0])) w = true; else if (isReadOp(x[0])) r = true; for (let i = 1; i < x.length; i++) rec(x[i]) }
+    rec(n)
+    return w ? 'writes' : r ? 'reads' : 'pure'
+  }
+  // Walk `root` in eval order for the first `(local.get t)`; return {use, conflict}.
+  // `conflict` reflects only what is evaluated strictly BEFORE the use (or the whole node if no use).
+  const scanUse = (root, t, mode, R) => {
+    let use = null, conflict = false
+    const rec = (node, underLoop, underCond) => {
+      if (use || conflict || !Array.isArray(node)) return
+      const op = node[0]
+      for (let i = 1; i < node.length; i++) {
+        if (use || conflict) return
+        const c = node[i]
+        if (Array.isArray(c) && c[0] === 'local.get' && c[1] === t) { use = { parent: node, idx: i, underLoop, underCond }; return }
+        rec(c, underLoop || op === 'loop', underCond || isCF(op))
+      }
+      if (use || conflict) return
+      // post-order: this node's own effect, relative to the RHS we want to move past it
+      if ((op === 'local.set' || op === 'local.tee') && R.has(node[1])) conflict = true
+      else if (isTransfer(op)) conflict = true
+      else if (mode === 'writes' && (isWriteOp(op) || isReadOp(op))) conflict = true
+      else if (mode === 'reads' && isWriteOp(op)) conflict = true
+    }
+    rec(root, false, false)
+    return { use, conflict }
+  }
+
+  const removed = new Set()
+  const optimizeList = (list, start) => {
+    for (let i = start; i < list.length; i++) {
+      const s = list[i]
+      if (!Array.isArray(s)) continue
+      let folded = false
+      if (s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string' && cand.has(s[1]) && noLocalWrite(s[2])) {
+        const t = s[1], E = s[2], R = new Set(); readsOf(E, R)
+        if (!R.has(t)) {                                  // self-ref RHS reads the very local — leave it
+          const single = (getN.get(t) || 0) === 1
+          const mode = rhsKind(E)
+          for (let j = i + 1; j < list.length; j++) {
+            const sj = list[j]
+            if (!Array.isArray(sj)) continue
+            const { use, conflict } = scanUse(sj, t, mode, R)
+            if (conflict) break                           // unsafe to move RHS this far
+            if (use) {
+              // effectful single-use, or any multi-use, must reach the use unconditionally;
+              // never sink under a loop (re-eval / re-effect).
+              const okCond = (single && mode !== 'writes') ? true : !use.underCond
+              if (!use.underLoop && okCond) {
+                use.parent[use.idx] = single ? E : ['local.tee', t, E]
+                list.splice(i, 1); cand.delete(t); if (single) removed.add(t); i--; folded = true
+              }
+              break
+            }
+          }
+        }
+      }
+      if (folded) continue                                // re-process from the freed slot
+      // recurse into nested statement lists
+      if (s[0] === 'block' || s[0] === 'loop') {
+        let k = 1; while (k < s.length && Array.isArray(s[k]) && s[k][0] === 'result') k++
+        optimizeList(s, k)
+      } else if (s[0] === 'if') {
+        for (let k = 1; k < s.length; k++) { const c = s[k]; if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) optimizeList(c, 1) }
+      }
+    }
+  }
+  optimizeList(fn, bodyStart)
+
+  if (removed.size) for (let i = fn.length - 1; i >= 2; i--) { const c = fn[i]; if (Array.isArray(c) && c[0] === 'local' && removed.has(c[1])) fn.splice(i, 1) }
+}
+
+/**
  * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
  * function other than `$__start`. Globals written only in `$__start` are
  * init-once: `$__start` runs to completion before any other function, so they
@@ -3485,6 +3622,9 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // function the vectorizer already lifted to v128.)
   const fullWatr_psu = !!(cfg && (cfg.watr === true || typeof cfg.watr === 'object'))
   if ((phase === 'post' || !fullWatr_psu) && (!cfg || cfg.propagateSingleUse !== false)) propagateSingleUse(fn)
+  // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
+  // watr's use-count propagate leaves (set→tee fold, incl. effectful single-use forward).
+  if ((phase === 'post' || !fullWatr_psu) && (!cfg || cfg.foldSetToTee !== false)) foldSetToTee(fn)
   // SSA-split loop-private unrolled scratch (post-vectorize: vectorized loops now carry
   // v128 and are skipped) so the LICM below hoists the per-iteration invariants the
   // unroller's name-merging hid — rust/LLVM's free-after-unroll register hoist (closes

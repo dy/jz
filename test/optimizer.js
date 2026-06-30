@@ -2883,8 +2883,9 @@ test('propagateSingleUse: folds a single-def/single-use pure temp into its use (
   // A pure single-use temp must disappear (local + set + get gone), bit-exact.
   const localCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local /g) || []).length
   const src = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
-  const on = localCount(src, { level: 2, watr: false })
-  const off = localCount(src, { level: 2, watr: false, propagateSingleUse: false })
+  // isolate propagateSingleUse: foldSetToTee also forwards single-use temps, so hold it off in both
+  const on = localCount(src, { level: 2, watr: false, foldSetToTee: false })
+  const off = localCount(src, { level: 2, watr: false, propagateSingleUse: false, foldSetToTee: false })
   ok(on < off, `temp folded: ${off} locals → ${on}`)
 
   // bit-exact with the pass on vs off across shapes (incl. the no-RHS catch-payload edge: `local.set
@@ -2898,5 +2899,29 @@ test('propagateSingleUse: folds a single-def/single-use pure temp into its use (
     const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
     const offF = jz(s, { optimize: { level: 2, watr: false, propagateSingleUse: false } }).exports.f
     for (const a of args) is(onF(...a), offF(...a), `propagateSingleUse on===off ${JSON.stringify(a)}`)
+  }
+})
+
+test('foldSetToTee: sinks a single-def RHS into its first use as a tee (simplify-locals watr leaves)', () => {
+  const getCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local\.get /g) || []).length
+  // multi-use single-def: the standalone set becomes a tee at the first use, dropping a get
+  const src = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
+  const on = getCount(src, { level: 2, watr: false })
+  const off = getCount(src, { level: 2, watr: false, foldSetToTee: false })
+  ok(on < off, `tee fold drops a get: ${off} → ${on}`)
+  ok(/\(local\.tee /.test(compile(src, { wat: true, optimize: { level: 2, watr: false } })), 'emits a local.tee')
+
+  // correctness: bit-exact on/off across the shapes a naive sink would miscompile —
+  // a call's side effect must stay unconditional; a load must NOT cross a store to the
+  // same buffer; an RHS must not be sunk into a loop body (re-eval/re-effect).
+  for (const [s, args] of [
+    [`export let f = (n) => { let b = new Float64Array(n); return b.length }`, [[5]]],                                   // effectful single-use forward
+    [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]], // multi-use, conditional later use
+    [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],                   // load must not cross the store (→ 106, not 198)
+    [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 3]]], // RHS not sunk into loop
+  ]) {
+    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
+    const offF = jz(s, { optimize: { level: 2, watr: false, foldSetToTee: false } }).exports.f
+    for (const a of args) is(onF(...a), offF(...a), `foldSetToTee on===off ${JSON.stringify(a)}`)
   }
 })
