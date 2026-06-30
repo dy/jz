@@ -1720,6 +1720,26 @@ export default (ctx) => {
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
+  // Mirror of .indexOf scanning to the highest matching index — no early break, the last hit wins.
+  // Registering it (alongside .string:lastIndexOf) is what lets lastIndexOf leave STRING_ONLY_METHODS:
+  // an untyped receiver now forks string-vs-array at runtime instead of force-narrowing to string
+  // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
+  ctx.core.emit['.lastIndexOf'] = (arr, val) => {
+    const recv = hoistArrayValue(arr)
+    const vv = asF64(emit(val))
+    const eq = arrEqIR(val)
+    const result = tempI32('lx')
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', eq(item, vv),
+        ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]]]]
+    ])
+    return typed(['block', ['result', 'f64'],
+      recv.setup,
+      ['local.set', `$${result}`, ['i32.const', -1]],
+      ...loop,
+      ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
+  }
+
   // .at(i) → array element with negative index support
   ctx.core.emit['.array:at'] = (arr, idx) => {
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)

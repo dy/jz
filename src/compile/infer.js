@@ -130,11 +130,18 @@ export const inferParams = (body, candidates) => {
 // regardless of prior evidence — a later method call can't re-induce a shape
 // already contradicted by an earlier scalar assignment.
 
+// Methods that exist ONLY on String.prototype — seeing one on a bare binding proves
+// it is a string. `indexOf`/`includes`/`lastIndexOf`/`concat`/`slice`/`at` are NOT here:
+// Array.prototype has them too, so the receiver is genuinely ambiguous (and the argument
+// can't disambiguate — String coerces it, Arrays hold strings). Those keep the runtime
+// __ptr_type fork, which is correct for both; forcing `lastIndexOf` to string here used to
+// miscompile `arr.lastIndexOf(x)` to -1. A string-using param still narrows via any of the
+// real discriminators below (charCodeAt, a string assignment, a string-passing call site).
 const STRING_ONLY_METHODS = new Set([
   'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
   'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'normalize', 'localeCompare',
   'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
-  'matchAll', 'match', 'replace', 'replaceAll', 'split', 'lastIndexOf',
+  'matchAll', 'match', 'replace', 'replaceAll', 'split',
 ])
 const ARRAY_ONLY_POISON = new Set([
   'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',

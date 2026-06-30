@@ -115,6 +115,26 @@ test('.indexOf: string via variable still matches', () => {
   is(run(`export let f = () => { let x = "B"; return ["A","B","C"].indexOf(x) }`).f(), 1)
 })
 
+// === .lastIndexOf ===
+// Array.prototype.lastIndexOf — the highest matching index. Previously absent, so the
+// method was force-narrowed to String (STRING_ONLY_METHODS) and `arr.lastIndexOf(x)`
+// silently returned -1. Now a real array path; an UNTYPED receiver forks string-vs-array.
+test('.lastIndexOf: last occurrence wins', () => {
+  is(run(`export let f = () => [1, 5, 3, 5, 2].lastIndexOf(5)`).f(), 3)
+  is(run(`export let f = () => [1, 5, 1, 3].lastIndexOf(1)`).f(), 2)
+})
+test('.lastIndexOf: not found', () => {
+  is(run(`export let f = () => [1, 2, 3].lastIndexOf(9)`).f(), -1)
+})
+test('.lastIndexOf: untyped param array (no longer force-narrowed to string)', () => {
+  is(runHost(`export let f = (a) => a.lastIndexOf(5)`).f([1, 5, 3, 5]), 3)   // host-marshalled array arg
+  is(runHost(`export let f = (a) => a.lastIndexOf(9)`).f([1, 2, 3]), -1)
+})
+test('.lastIndexOf: string receiver still works (via the runtime fork)', () => {
+  is(runHost(`export let f = (s) => s.lastIndexOf("l")`).f('hello'), 3)
+  is(run(`export let f = () => "hello".lastIndexOf("l")`).f(), 3)
+})
+
 // === .includes ===
 
 // `.includes` returns a boolean — surfaced as a real true/false at the export
