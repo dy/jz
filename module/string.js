@@ -693,6 +693,53 @@ export default (ctx) => {
       (i32.wrap_i64 (i64.shr_u (local.get $ndl) (i64.const ${LAYOUT.AUX_SHIFT})))
       (i32.const ${LAYOUT.SSO_BIT})))
     (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
+    ;; Single-byte needle (the common s.indexOf('/') / s.includes(' ')): scan for one byte without
+    ;; the per-position match/j/k bookkeeping. Heap haystack gets a branchless load8_u loop (no
+    ;; per-byte SSO test) — a memchr that closes most of the gap to V8's native search.
+    (if (i32.eq (local.get $nlen) (i32.const 1))
+      (then
+        (local.set $nb (if (result i32) (local.get $nsso)
+          (then ${ssoCharWat('(local.get $ndl)', '(i32.const 0)')})
+          (else (i32.load8_u (local.get $noff)))))
+        (if (i32.eqz (local.get $hsso))
+          (then
+            (block $sd (loop $ss
+              (br_if $sd (i32.ge_s (local.get $i) (local.get $hlen)))
+              (if (i32.eq (i32.load8_u (i32.add (local.get $hoff) (local.get $i))) (local.get $nb))
+                (then (return (local.get $i))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $ss)))
+            (return (i32.const -1)))
+          (else
+            (block $sd2 (loop $ss2
+              (br_if $sd2 (i32.ge_s (local.get $i) (local.get $hlen)))
+              (if (i32.eq ${ssoCharWat('(local.get $hay)', '(local.get $i)')} (local.get $nb))
+                (then (return (local.get $i))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $ss2)))
+            (return (i32.const -1))))))
+    ;; Multi-byte needle, both operands heap (the common longer-string case): a first-byte memchr
+    ;; skip + branchless load8_u verify — no per-byte SSO test. SSO operands fall to the general loop.
+    (if (i32.and (i32.eqz (local.get $hsso)) (i32.eqz (local.get $nsso)))
+      (then
+        (local.set $nb (i32.load8_u (local.get $noff)))
+        (block $md (loop $mo
+          (br_if $md (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (local.get $nlen))))
+          (if (i32.eq (i32.load8_u (i32.add (local.get $hoff) (local.get $i))) (local.get $nb))
+            (then
+              (local.set $match (i32.const 1))
+              (local.set $j (i32.const 1))
+              (block $mn (loop $mi
+                (br_if $mn (i32.ge_s (local.get $j) (local.get $nlen)))
+                (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $i)) (local.get $j)))
+                            (i32.load8_u (i32.add (local.get $noff) (local.get $j))))
+                  (then (local.set $match (i32.const 0)) (br $mn)))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (br $mi)))
+              (if (local.get $match) (then (return (local.get $i))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $mo)))
+        (return (i32.const -1))))
     (block $done (loop $outer
       (br_if $done (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (local.get $nlen))))
       (local.set $match (i32.const 1))
