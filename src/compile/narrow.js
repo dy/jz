@@ -62,12 +62,17 @@ function filterLiveCallSites(callSites, valueUsed) {
 
 function buildCallerCtx() {
   const callerCtx = new Map()
-  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+  const globalTE = ctx.scope.globalTypedElem || new Map()
+  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes, callerTypedElems: globalTE })
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
     for (const p of func.sig.params) if (!facts.locals.has(p.name)) facts.locals.set(p.name, p.type)
-    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes })
+    // Shadow-aware local+global typed-array map: a `const buf = new Int32Array(…)`
+    // local makes `buf[i]` arg reads type i32 at this caller's sites, so a callee
+    // param fed only such elements narrows (else it stays f64 and `1 << p` drags in
+    // __to_num → the whole string↔number stdlib). Mirrors callerTypedElemsFor.
+    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes, callerTypedElems: callerTypedElemsFor(func, globalTE) })
   }
   return callerCtx
 }
@@ -725,6 +730,7 @@ export default function narrowSignatures(programFacts, ast) {
       callee, callerFunc, argList, func, restIdx,
       callerLocals: ctxEntry.callerLocals,
       callerValTypes: ctxEntry.callerValTypes,
+      callerTypedElems: ctxEntry.callerTypedElems,
       callerParamFacts(key) {
         if (!paramFacts.has(key)) paramFacts.set(key, paramFactsOf(paramReps, callerFunc, key))
         return paramFacts.get(key)
@@ -847,7 +853,10 @@ export default function narrowSignatures(programFacts, ast) {
     if (state.callee === state.callerFunc?.name &&
         isRecurIntExpr(arg, new Set(state.func.sig.params.map(p => p.name)), state.callerLocals)) return 'i32'
     if (!state._teOverlay) {
-      const m = new Map(ctx.scope.globalTypedElem || [])
+      // Caller's typed arrays (locals + non-shadowed globals, precomputed shadow-aware
+      // in buildCallerCtx) so a LOCAL `const buf = new Int32Array(…)` makes `buf[i]`
+      // type i32 here — not just module globals / typedCtor-narrowed params.
+      const m = new Map(state.callerTypedElems || ctx.scope.globalTypedElem || [])
       const pf = state.callerParamFacts('typedCtor')
       if (pf) for (const [name, ctor] of pf) if (ctor != null) m.set(name, ctor)
       state._teOverlay = m

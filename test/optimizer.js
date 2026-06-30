@@ -385,6 +385,43 @@ test('known numeric coercions elide __to_num', () => {
   is(calls, 0)
 })
 
+test('cross-call param narrowing: local typed-array elem arg narrows callee param to i32', () => {
+  // nqueens shape: a helper called only with elements of a LOCAL typed array
+  // (`const sizes = new Int32Array(…)`). exprType's arg-type query must see the
+  // caller's local typed arrays (not just module globals / typed PARAMS), else
+  // the param stays f64, `1 << n` coerces via __to_num, and that single call
+  // transitively links the ENTIRE string↔number stdlib (__ftoa/__dec_to_f64/…)
+  // — ~8 KB of otherwise-dead code. Pins the local-typed-elem overlay fix.
+  const wat = jz.compile(`
+    const countN = (n) => (1 << n) - 1
+    export const main = () => {
+      const sizes = new Int32Array(20)
+      for (let q = 0; q < 20; q++) sizes[q] = q + 8
+      let t = 0
+      for (let q = 0; q < 20; q++) t = t + countN(sizes[q])
+      return t | 0
+    }
+  `, { wat: true, optimize: { level: 'speed' } })
+  ok(!/\(func \$__to_num/.test(wat), 'no __to_num: param narrowed from local typed-array elem arg')
+  ok(!/\(func \$__ftoa/.test(wat), 'no __ftoa: float formatter not transitively pulled')
+  ok(!/\(func \$__dec_to_f64/.test(wat), 'no __dec_to_f64: Eisel-Lemire EL table not pulled')
+})
+
+test('cross-call param narrowing: runtime correctness preserved', () => {
+  const { main } = run(`
+    const countN = (n) => (1 << n) - 1
+    export const main = () => {
+      const sizes = new Int32Array(5)
+      for (let q = 0; q < 5; q++) sizes[q] = q + 8
+      let t = 0
+      for (let q = 0; q < 5; q++) t = t + countN(sizes[q])
+      return t | 0
+    }
+  `)
+  // sum of (1<<(q+8))-1 for q=0..4 = (255)+(511)+(1023)+(2047)+(4095) = 7931
+  is(main(), 7931)
+})
+
 test('csePureExprLoop: global.set invalidates cached global.get pure expr', () => {
   const fn = ['func', '$f',
     ['result', 'f64'],
