@@ -40,6 +40,7 @@ import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { narrowBoundedSquare } from './loop-square.js'
+import { unrollRecurrence } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 
@@ -426,6 +427,11 @@ function analyzeFuncForEmit(func, programFacts) {
   // so the sieve's product/counter chain carries i32 instead of f64. Before analyze so the
   // Math.imul typed/narrows like any i32. Off at L0 / `loopSquare:false`.
   if (_o && _o.loopSquare !== false && isBlockBody(func.body)) func.body = narrowBoundedSquare(func.body)
+  // Array-recurrence unroll: a unit-stride DP/scan that reads arr[j-1] and writes arr[j] carries
+  // its value through memory (store→load) and re-pays loop overhead per cell — both of which V8
+  // hides but Cranelift/baseline don't. Scalar-replace the recurrence + unroll ×2 (clang's fix).
+  // Off at L0 / `unrollRecurrence:false`.
+  if (_o && _o.unrollRecurrence !== false && isBlockBody(func.body)) func.body = unrollRecurrence(func.body)
   // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
   // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)

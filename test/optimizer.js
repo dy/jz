@@ -2442,6 +2442,41 @@ test('loop-SR: workflow-found — negative IV start / negative non-multiple star
   ]) for (const w of [2, 3, 5, 7, 16, 0, -2, -3]) for (const h of [1, 3, 8]) is(lsrOn(src)(w, h), lsrOff(src)(w, h), `w=${w} h=${h}`)
 })
 
+// ── Array-recurrence unroll (arr[j-1]/arr[j] DP/scan → scalar carry + ×2 unroll) ──
+// src/compile/loop-recurrence.js. Must be bit-exact vs disabled across ALL trip counts
+// (empty range / 1 / odd / even — the guard + 1-cell tail), and bail (ON==OFF) on any shape
+// it must not transform (non-unit step, an aliasing index, a call/break in the body).
+const recOn = (src) => run(src, { optimize: 'speed' }).f
+const recOff = (src) => run(src, { optimize: { level: 'speed', unrollRecurrence: false } }).f
+
+test('rec-unroll: DP recurrence (arr[j-1]→arr[j]) bit-exact ON vs OFF across trip counts', () => {
+  for (const src of [
+    // single recurrence array, a carried scalar (diag-style), a branch on the IV
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=(k*7)%13|0; let acc=0|0; for(let r=0;r<4;r++){ for(let j=1;j<=n;j++){ const up=a[j]; const ins=a[j-1]+1; let m=up+1; if(ins<m)m=ins; if((r^j)&1)m=m+2; a[j]=m } acc=(acc*31 + a[60])|0 } return acc|0 }`,
+    // recurrence array PLUS a second read-only array (must stay a plain load, not get forwarded)
+    `export let f=(n)=>{ const a=new Int32Array(70),o=new Int32Array(70); for(let k=0;k<70;k++){a[k]=k|0;o[k]=(k*3)%7|0} let s=0|0; for(let j=1;j<=n;j++){ const t=(a[j-1]+o[j-1])|0; a[j]=t; s=(s+t)|0 } return s|0 }`,
+  ]) { const on = recOn(src), off = recOff(src); for (const n of [0, 1, 2, 3, 4, 5, 8, 13, 32, 60]) is(on(n), off(n), `n=${n}`) }
+})
+
+test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call / break in body', () => {
+  for (const src of [
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j+=2){ a[j]=a[j-1]+1 } return a[60]|0 }`,
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<n;j++){ a[j]=(a[j-1]+a[j+1])|0 } return a[60]|0 }`,
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j++){ if(j===5)break; a[j]=a[j-1]+1 } return a[60]|0 }`,
+    // recurrence read AFTER the store (carry would be stale) — must bail, not miscompile
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; let acc=0|0; for(let j=1;j<=n;j++){ const t=(a[j-1]+1)|0; a[j]=t; acc=(acc+a[j-1])|0 } return acc|0 }`,
+    // loop bound mutated in the body (×2 stride would overshoot) — must bail
+    `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; let hi=n; for(let j=1;j<=hi;j++){ const t=(a[j-1]+1)|0; a[j]=t; if(j>30)hi=(hi-1)|0 } return a[60]|0 }`,
+  ]) for (const n of [0, 1, 2, 3, 8, 13, 40]) is(recOn(src)(n), recOff(src)(n), `n=${n}`)
+})
+
+test('rec-unroll: fires (carry local emitted at speed, absent when disabled)', () => {
+  if (onKernel()) return  // host-codegen SHAPE assertion; bit-exactness above is portable
+  const src = `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j++){ const up=a[j]; const ins=a[j-1]+1; let m=up+1; if(ins<m)m=ins; a[j]=m } return a[60]|0 }`
+  ok(/__rec/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'carry present')
+  ok(!/__rec/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', unrollRecurrence: false } })), 'absent when off')
+})
+
 test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / INT_MIN÷-1', () => {
   // The JS integer-division idiom. Lowering to i32.div_s avoids the f64 round-trip;
   // sound for all i32 a,b (the f64 quotient never rounds across the trunc boundary)
