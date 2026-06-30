@@ -1506,6 +1506,10 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize('speed').unrollRecurrence, true, 'unrollRecurrence on at speed')
   is(resolveOptimize('size').clampPeel, false, 'clampPeel stays off at size (edge-peel triples a stencil loop)')
   is(resolveOptimize('speed').clampPeel, true, 'clampPeel on at speed (vectorizes the clamp-free interior)')
+  is(resolveOptimize('size').promoteGlobals, false, 'promoteGlobals off at size (global→local snapshot is dead size weight)')
+  is(resolveOptimize('speed').promoteGlobals, true, 'promoteGlobals on at speed')
+  is(resolveOptimize('size').hoistInvariantLoop, false, 'hoistInvariantLoop off at size (LICM entry temps cost bytes)')
+  is(resolveOptimize('speed').hoistInvariantLoop, true, 'hoistInvariantLoop on at speed')
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {

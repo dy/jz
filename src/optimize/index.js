@@ -172,6 +172,8 @@ const LEVEL_PRESETS = Object.freeze({
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
+    promoteGlobals: false,    // snapshots a multi-read global into an entry local — pure speed (V8 can't CSE a mutable global); the snapshot is dead size weight at -Os
+    hoistInvariantLoop: false,// LICM: hoists loop-invariants to entry temps — a speed/latency trade whose entry cost outweighs the per-iter saving in bytes
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
