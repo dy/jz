@@ -13,12 +13,17 @@ export function headlineStats(results) {
   const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
-  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz && t[tgt] && t[tgt].status !== 'fail' && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+  // A target row counts only when it actually ran (a self-host row can carry a
+  // valid v8 but a failed jz — `medianUs` undefined — which would poison the math).
+  const ran = x => x && x.status !== 'fail' && isFinite(x.medianUs)
+  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t[tgt]) && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
   let peak = 0
-  for (const c of cases) { const t = c.targets; if (t.jz && t.v8 && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
+  for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t.v8) && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
   const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
   return {
     v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf')), rust: f(ratio('rust-wasm')),
+    jsc: f(ratio('jsc')),                    // jz vs JavaScriptCore (Safari's engine)
+    cwasm: f(ratio('c-wasm')),               // jz vs C → wasm (systems-language baseline, same V8)
     asspeed: f(ratio('as')),                 // jz vs AssemblyScript on speed (the hero's 3rd stat)
     assize: f(sizeRatio('as')), porfsize: f(sizeRatio('porf')),
   }

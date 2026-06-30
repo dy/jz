@@ -238,7 +238,7 @@ const TARGETS = {
   v8:    { label: 'Node', band: 'js' },
   deno:  { label: 'Deno', band: 'js' },
   bun:   { label: 'Bun', band: 'js' },
-  jsc:   { label: 'JavaScriptCore', sub: 'Safari', band: 'js' },
+  jsc:   { label: 'JSC', band: 'js' },
   spidermonkey: { label: 'SpiderMonkey', band: 'js', hatch: true },
   graaljs: { label: 'GraalJS', band: 'js', hatch: true },
   jz:    { label: 'JZ', band: 'wasm', strong: true },
@@ -251,9 +251,9 @@ const TARGETS = {
   'c-wasm':    { label: 'C', sub: 'clang → wasm', band: 'wasm' },
   'zig-wasm':  { label: 'Zig', sub: 'zig → wasm', band: 'wasm' },
   tinygo: { label: 'Go', sub: 'TinyGo → wasm', band: 'wasm' },
-  moonbit: { label: 'MoonBit', sub: 'moonrun', band: 'wasm' },
+  moonbit: { label: 'MoonBit', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm', hatch: true },
-  javy:  { label: 'Javy', sub: 'QuickJS in wasm', band: 'wasm', hatch: true },
+  javy:  { label: 'Javy QuickJS', band: 'wasm', hatch: true },
   // Native reference rows (corpus geomean only). `native` sub disambiguates them
   // from the wasm rows above — "C native" vs "C clang → wasm", "Rust native" vs
   // "Rust rustc → wasm". The speed-of-light ceiling, never a per-case row.
@@ -490,11 +490,13 @@ const renderGeomean = () => {
 // (assets/site.css). Stats deep-link to the corpus chart (the hero links to /bench/ → here).
 const STRIP = [
   ['Speed', [
-    ['v8', 'V8'],
-    ['asspeed', 'AssemblyScript'],
-    ['peak', 'V8 (peak SIMD)', 'Needs the WASM SIMD proposal — baseline in Chrome 91+, Firefox 89+, Safari 16.4+, Node 16+; pass noSimd for older engines.'],
-    ['porf', 'Porffor'],
+    ['v8', 'V8 (geomean)'],
+    ['peak', 'V8 max', 'Largest single-case speedup over V8 — typically a SIMD-vectorized kernel. Needs the WASM SIMD proposal (baseline in Chrome 91+, Firefox 89+, Safari 16.4+, Node 16+).'],
+    ['jsc', 'JSC', 'jz vs JavaScriptCore — Safari’s engine, geomean over the corpus.'],
+    ['cwasm', 'C (wasm)', 'jz vs C compiled to wasm (clang → wasm32), run in this same V8 — a systems-language baseline.'],
     ['rust', 'Rust (wasm)'],
+    ['asspeed', 'AssemblyScript'],
+    ['porf', 'Porffor'],
   ]],
   ['Size', [
     ['assize', 'AssemblyScript'],
