@@ -4061,6 +4061,16 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const kTop = kindOf(keepTopC)
   const limitKeep = keepTopC   // initialised here; may be reassigned below for single-break
   let kMid = null, boundExpr, boundI32, itLeft
+  // Compound-top guard `while (A && B)`: classify the SECOND keep too. Left unclassified (kMid=null),
+  // the downstream lift/keepMask treats keepMidC as a per-lane f64 escape — right for the Julia order
+  // (limit, escape) but it then lifts the i32 LIMIT of the mandelbrot order (escape, `it<MAX`) into an
+  // f64 lane and crashes. Setting kMid routes the limit through the scalar guard instead; for the
+  // Julia order kMid='escape' is identical to the old null (both lift). Bail if neither keep is an
+  // escape — a two-limit guard has no per-lane divergence for this vectorizer to exploit.
+  if (compoundTop) {
+    kMid = kindOf(keepMidC)
+    if (kTop === 'limit' && kMid === 'limit') return null
+  }
   if (midBreaks.length === 1) {
     kMid = kindOf(keepMidC)
     if (kTop === kMid) return null

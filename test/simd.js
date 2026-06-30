@@ -2005,6 +2005,40 @@ test('escape-time f64x2 - julia (fixed c, invariant lanes) + odd width', () => {
   is(dc2, sc2)
 })
 
+// Compound-top guard `while (escape && i < MAXIT)` — BOTH conditions in the while head, the ESCAPE
+// FIRST (the natural way to write a mandelbrot). This is the compound-top path; with the escape
+// first, the i32 limit lands in the second keep, which the recognizer left unclassified and tried to
+// lift into an f64 lane → `LANE_PURE.f64.get('i32.const')` crash at every level with vectorization on.
+const escKernCompound = (W, H, MAXIT, x0, dx, y0, dy) => `
+  const W=${W}, H=${H}, MAXIT=${MAXIT}, X0=${x0}, DX=${dx}, Y0=${y0}, DY=${dy}
+  let out = new Uint32Array(W*H)
+  export let render = () => {
+    for (let py=0; py<H; py++) {
+      let cy = Y0 + py*DY
+      for (let px=0; px<W; px++) {
+        let cx = X0 + px*DX
+        let zx=0.0, zy=0.0, i=0
+        while (zx*zx + zy*zy <= 4.0 && i < MAXIT) { let nx = zx*zx - zy*zy + cx; zy = 2.0*zx*zy + cy; zx = nx; i = i + 1 }
+        out[py*W+px] = i
+      }
+    }
+  }
+  export let cs = () => { let h=0x811c9dc5|0; for(let i=0;i<W*H;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }
+`
+test('escape-time f64x2 - compound-top guard, ESCAPE first (mandelbrot) bit-exact + vectorized', () => {
+  const src = escKernCompound(64,64,256,-2.0,2.5/64,-1.25,2.5/64)
+  const [sc, dc] = escRun(src)
+  is(dc, sc)   // bit-exact vs scalar — the fix lifts the escape, scalar-guards the i32 limit
+  // escape-at-top takes the break-on-first fast path (f64x2 + any_true), not the bitselect lockstep
+  const w = wat(src, ESC_VEC)
+  ok(/f64x2/.test(w) && /v128\.any_true/.test(w), 'compound-top escape-first vectorized (fast path)')
+  // odd width (scalar tail) + a tiny MAXIT edge stay bit-exact
+  const [sc2, dc2] = escRun(escKernCompound(63,40,256,-2.0,2.5/63,-1.25,2.5/40))
+  is(dc2, sc2)
+  const [sc3, dc3] = escRun(escKernCompound(32,16,2,-2.0,2.5/32,-1.25,2.5/16))
+  is(dc3, sc3)
+})
+
 // Burning-ship structure: escape break is AFTER the z-update (not before), the
 // squares are inlined (no x2/y2 temps), the update uses Math.abs, the output is a
 // smooth colour read from the post-loop z, and the store uses a parallel `j`
