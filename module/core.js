@@ -129,7 +129,11 @@ export default (ctx) => {
     (local.get $fallback))`
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local.get $val))`
-  ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32))`
+  // Signature must match collection.js's real __dyn_move (i32 result: 1 = an
+  // entry was found+rekeyed, 0 = no-op) — array.js's grow/shift call sites are
+  // built once and call whichever version ends up registered.
+  ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32) (result i32)
+    (i32.const 0))`
 
   // Memory section auto-enabled: compile.js checks ctx.module.modules.ptr
 
@@ -359,6 +363,21 @@ export default (ctx) => {
       (call $__memgrow (local.get $next))
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
+    // __clear rewinds the bump arena, but __dyn_props/__dyn_get_cache_* (declared
+    // unconditionally whenever the collection module loads — module/collection.js)
+    // cache pointers/offsets INTO that arena across calls, so a warm compile-clear-
+    // compile loop needs them reset too — see the post-hoc patch in
+    // src/wat/assemble.js (search "__dyn_props reset") for WHY this can't gate on
+    // `ctx.scope.globals.has(...)` at declaration time: that's true whenever
+    // collection is loaded AT ALL, even for a program that never touches dynamic
+    // props, and __clear's own resolved text is scanned by reachableStdlib — an
+    // unconditional `global.set $__dyn_props` line here would leak that (dead,
+    // for this program) name into non-dyn-prop output, both wasting bytes and
+    // (worse) tripping WAT-substring test assertions like
+    // `!/__dyn_get/.test(wat)` (test/closures.js) since __dyn_get_cache_off/props
+    // contain that substring. The real gate — whether __dyn_set (the only writer
+    // of __dyn_props) is actually reachable — isn't known until AFTER
+    // reachableStdlib runs, so the reset is injected post-hoc once that's settled.
     ctx.core.stdlib['__clear'] = `(func $__clear
       (global.set $__heap (global.get $__heap_reset)))`
   }

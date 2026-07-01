@@ -17,7 +17,7 @@ import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, i
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
-import { strHashLiteral } from './collection.js'
+import { strHashLiteral, dynPropsFilterSetIR } from './collection.js'
 
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
@@ -198,24 +198,43 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
 }
 
 const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
+// knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
+// arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
 const arrayGrowDeps = (knownArray = false) => () => [
-  ...(knownArray ? [] : ['__ptr_type']),
-  '__ptr_offset', '__alloc_hdr', '__mkptr',
+  ...(knownArray ? ['__ptr_offset_fwd'] : ['__ptr_type', '__ptr_offset']),
+  '__alloc_hdr', '__mkptr',
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
 ]
 
+// Marks an ARRAY header slot ($off-16) as "props live in the global __dyn_props
+// table, not here" — written whenever a shift/grow migrates or rekeys an entry
+// there. Any nonzero, non-HASH-tagged i64 works: __dyn_get_t_h / __dyn_set /
+// __dyn_del's ARRAY arms already treat "off-16 nonzero and not HASH-tagged" as
+// "fall through to the global hash" (their only fast-accept is a HASH tag; their
+// only fast-reject is exact zero). -1 decodes to tag 15, which is never PTR.HASH.
+// Without this, a shift migrates props to the global table leaving nonzero
+// leftover header bytes (which happens to satisfy "not zero, so check global") —
+// but a *subsequent grow* allocates a fresh, zeroed header block, erasing that
+// accidental signal and making __dyn_get_t_h wrongly conclude "no props" without
+// ever consulting the global table. Writing this sentinel explicitly (instead of
+// relying on incidental nonzero garbage) closes that gap for both shift and grow.
+const DYN_PROPS_GLOBAL_SENTINEL = '(i64.const -1)'
+
 // Arrays keep dynamic props in the global table because old/new array storage can
-// be forwarded. Relocate that entry when growth moves the backing store.
+// be forwarded. Relocate that entry when growth moves the backing store; mark the
+// new header so a later read/write/delete knows to consult the global table (the
+// fresh __alloc_hdr block zeroes $newOff-16, which alone would read as "no props").
 const maybeDynMoveIR = () => needsArrayDynMove()
-  ? '(call $__dyn_move (local.get $off) (local.get $newOff))'
+  ? `(if (i32.eq (call $__dyn_move (local.get $off) (local.get $newOff)) (i32.const 1))
+      (then (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL})))`
   : ''
 
 // Per-object propsPtr lives in the 16-byte header at $off-16. On grow we copy it
 // from old to new header (still HASH-tagged → unshifted ARRAY case). On shift we
 // migrate it to the global __dyn_props because the forwarding writes overwrite
-// the destination's $newOff-16 slot. The HASH-tag check rejects 0 (no props) and
-// forwarding garbage from a prior shift, so chained shift→grow is safe — the
-// global hash takes over and __dyn_move keeps it in sync.
+// the destination's $newOff-16 slot — headerPropsToGlobalIR marks that slot with
+// DYN_PROPS_GLOBAL_SENTINEL so a later grow's fresh (zeroed) header doesn't lose
+// the signal; maybeDynMoveIR marks it again on every subsequent grow/rekey.
 const headerPropsCopyIR = () => needsArrayDynMove() ? `
     (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
     (if (i32.eq
@@ -238,7 +257,9 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
               (i64.reinterpret_f64 (local.get $root))
               (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff)))
               (i64.reinterpret_f64 (local.get $oldProps)))))
-            (global.set $__dyn_props (local.get $root)))))) ` : ''
+            (global.set $__dyn_props (local.get $root))
+            ${dynPropsFilterSetIR('(local.get $newOff)')}
+            (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
 export default (ctx) => {
   deps({
@@ -449,6 +470,11 @@ export default (ctx) => {
   // guard (non-array ptr → fresh 4-cap buffer) for untyped call sites; the `_known`
   // variant skips it for hot paths that already proved the receiver is an array.
   // Single source of truth: both stdlib entries share the grow/relocate tail.
+  // `_known` callers (all `deps()`-verified ARRAY-only: __arr_push1, __arr_set_length,
+  // the inline-len array store) already proved the tag, so it inlines the raw offset +
+  // forwarding chase (mirrors __arr_idx_known) instead of paying __ptr_offset's
+  // tag-extract + FORWARDING_MASK dispatch — ARRAY always needs the chase (it's
+  // forwarding-capable) but never needs the re-check this variant would otherwise repeat.
   const arrGrow = (name, defensive) => `(func $${name} (param $ptr i64) (param $minCap i32) (result f64)
     ${defensive ? '(local $t i32) ' : ''}(local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
@@ -462,7 +488,8 @@ export default (ctx) => {
       (then
         (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_s (local.get $minCap) (i32.const 4))))
         (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap)))
-        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))` : `(local.set $off (call $__ptr_offset (local.get $ptr)))`}
+        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))` : `(local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${followForwardingWat('$off', { lowGuard: true })}`}
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
       (then (return (f64.reinterpret_i64 (local.get $ptr)))))

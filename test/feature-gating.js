@@ -247,6 +247,31 @@ test('alloc:false omits allocator helper exports', () => {
     ok(/\(memory/.test(w))
 })
 
+// === Proven-ARRAY receivers skip the generic __ptr_offset tag-dispatch ===
+// __arr_grow_known's callers (__arr_push1, __arr_set_length, inline-len array
+// store) have already proven the receiver ARRAY — same contract as __arr_idx_known
+// vs __arr_idx. It inlines the raw offset extract + forwarding chase (ARRAY is
+// forwarding-capable, so the chase itself stays; only the tag re-extract +
+// FORWARDING_MASK dispatch that __ptr_offset repeats is skippable). The defensive
+// __arr_grow (untyped call sites) still needs the generic helper — receiver isn't proven.
+test('__arr_grow_known: proven-ARRAY grow skips the generic __ptr_offset call', () => {
+  if (onKernel()) return  // self-host kernel codegen shape differs; in-process leg owns this
+  const w = wat(`export let f = (a) => { a.push(1); return a.length }`)
+  const body = w.match(/\(func \$__arr_grow_known\b[\s\S]*?\n  \)/)?.[0] || ''
+  ok(body, 'expected __arr_grow_known to be emitted')
+  is(hasCall(body, '__ptr_offset_fwd'), true)  // ARRAY still needs the forwarding chase
+  is(/\(call \$__ptr_offset\b(?!_fwd)/.test(body), false, 'known-ARRAY grow should skip the generic tag-dispatch helper')
+})
+
+test('__arr_grow: defensive (unproven receiver) grow still calls generic __ptr_offset', () => {
+  if (onKernel()) return
+  // .unshift() routes through the defensive __arr_grow (not _known) — see arrayGrowDeps.
+  const w = wat(`export let f = (a, x) => { a.unshift(x); return a.length }`)
+  const body = w.match(/\(func \$__arr_grow\b[\s\S]*?\n  \)/)?.[0] || ''
+  ok(body, 'expected __arr_grow to be emitted')
+  is(/\(call \$__ptr_offset\b(?!_fwd)/.test(body), true, 'defensive grow (unproven receiver) must keep the generic tag-dispatch call')
+})
+
 test('features.closure OFF: no arrows — no closure table', () => {
   const w = wat(`export let f = (x) => x + 1`)
   // Single exported arrow is emitted as a plain wasm func, not a closure

@@ -35,6 +35,21 @@ const WASM = join(ROOT, 'dist', 'jz.wasm')
 const LEVEL = process.env.JZ_LEVEL ?? '0'
 const RUNS = Math.max(8, Number(process.env.JZ_BENCH_RUNS) || 18)
 const WARM = 8
+// Opt-in: one wasm instance per CASE, `_clear()` between the N timed runs (instead
+// of a fresh instance per run). Requires the warm-instance-reuse fix (module-level
+// caches that used to dangle across `_clear` — DOLLAR/stdlibParseCache/programFacts-
+// style Maps, the __dyn_props/__dyn_get_cache_* globals, NULL_IR's missing .slice(),
+// subscript's comment-list cache, watr's err.src/err.loc — see module/core.js
+// __clear, src/ir.js clearDollar, scripts/self.js setupSelf). Still fresh String
+// marshaling per run OUTSIDE the timed region, mirroring timeMinWasm's methodology.
+// KNOWN GAP: a small, content/order-dependent subset of the corpus (observed:
+// tokenizer, json) still traps/errors on a warm 2nd+ compile — an unresolved
+// watr-internal parser/assemble state issue: reproduces even compiling a
+// trivial fixed WAT string twice in one instance with no jz involvement at all
+// (`compile('(module (func (export "f") (result i32) (i32.const 42)))')` twice,
+// 2nd call: "Unknown type i32"). Root cause not yet found. JZ_BENCH_WARM reports
+// such cases as skipped rather than silently mistiming or crashing the whole run.
+const WARM_INSTANCE = /^(1|true|yes)$/i.test(process.env.JZ_BENCH_WARM || '')
 const COUNT_HELPERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
 const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
 const COUNT_SITES = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
@@ -90,6 +105,24 @@ const timeMinWasm = (src) => {
   return best
 }
 
+// JZ_BENCH_WARM=1 variant: ONE instance for the whole case, `_clear()` between the
+// N timed runs. String marshaling (fresh source pointer per run) stays outside the
+// timed region, same as timeMinWasm — the only difference is instantiation is
+// hoisted out of the loop too, removing the ~4% first-touch-page-fault tax fresh-
+// instance timing pays inside the timed region (see .work/selfhost-perf-groundtruth.md).
+// Returns null if the case traps mid-run (caller records it as skipped rather than
+// reporting a bogus/partial time).
+const timeMinWasmWarm = (src) => {
+  const inst = instantiate(wasmBytes, { memory: 8192 })
+  const runOnce = () => { const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); const out = inst.exports.default(sp, 0, lp); inst.memory.read(out); inst.instance.exports._clear() }
+  try {
+    for (let i = 0; i < WARM; i++) runOnce()
+    let best = Infinity
+    for (let r = 0; r < RUNS; r++) { const t = performance.now(); runOnce(); best = Math.min(best, performance.now() - t) }
+    return best
+  } catch { return null }
+}
+
 const readHelperCounters = (exports) => {
   const out = []
   for (const [helper, label] of HELPER_COUNTERS) {
@@ -136,7 +169,7 @@ ensureWasm()
 const wasmBytes = readFileSync(WASM)
 
 const profileLabel = COUNT_SITES ? `helper counters + callsites(${HELPER_SITE_FILTER}) ON` : COUNT_HELPERS ? 'helper counters ON' : ''
-console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${profileLabel ? ` (${profileLabel}; timings are instrumented)` : ''}\n`)
+console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${profileLabel ? ` (${profileLabel}; timings are instrumented)` : ''}${WARM_INSTANCE ? ' [JZ_BENCH_WARM: one instance per case, _clear() between runs]' : ''}\n`)
 console.log('case          js(ms)  wasm(ms)  ratio   parity')
 console.log('─'.repeat(52))
 
@@ -160,7 +193,8 @@ for (const name of CASES) {
   const parity = fnv(jsBytes) === fnv(wasmBytesOut instanceof Uint8Array ? wasmBytesOut : new Uint8Array(wasmBytesOut)) ? 'ok' : 'DIFF'
 
   const js = timeMin(() => compileSelf(src, false, LEVEL))
-  const wasm = timeMinWasm(src)
+  const wasm = WARM_INSTANCE ? timeMinWasmWarm(src) : timeMinWasm(src)
+  if (wasm == null) { skipped.push(`${name}(warm-trap)`); continue }
   sumJs += js; sumWasm += wasm; ratios.push(wasm / js); okN++
   const flag = wasm < js ? '' : ' ⚠'
   console.log(`${name.padEnd(12)} ${js.toFixed(2).padStart(6)} ${wasm.toFixed(2).padStart(9)}  ${(wasm/js).toFixed(2)}×${flag}  ${parity}`)

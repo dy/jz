@@ -149,7 +149,11 @@ export const USE = {
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
 }
-const _bindingUsesCache = new WeakMap()
+let _bindingUsesCache = new WeakMap()
+// Self-host-only: see resetProgramFactsCache (program-facts.js) — swap in a fresh
+// WeakMap so a warm-instance compile-clear-compile loop never reads a dangling
+// arena pointer out of the old backing storage.
+export function resetBindingUsesCache() { _bindingUsesCache = new WeakMap() }
 const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
 const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||

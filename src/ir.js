@@ -354,7 +354,18 @@ export const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
 export const UNDEF_IR = ['f64.const', `nan:${UNDEF_NAN}`]
 export const FALSE_IR = ['f64.const', `nan:${FALSE_NAN}`]
 export const TRUE_IR = ['f64.const', `nan:${TRUE_NAN}`]
-export const nullExpr = () => typed(NULL_IR, 'f64')
+// .slice() before typed(): NULL_IR is a shared module-level template (like its
+// UNDEF_IR/FALSE_IR/TRUE_IR siblings below, which already copy) — typed() tags
+// `.type` onto the node it's given, so calling it on the shared array directly
+// mutates ONE instance repeatedly. Natively harmless (same idempotent value each
+// time, plain GC heap). In the self-hosted kernel `.type=` is a dynamic-key write
+// that lazily allocates a per-object props sidecar the FIRST time it's called —
+// which happens well after module-init (`__start`), so that sidecar lives ABOVE
+// `__heap_reset` in the bump arena and dangles after `_clear` rewinds it: the
+// NEXT `nullExpr()` call (next compile) reads NULL_IR's now-stale header propsPtr
+// and corrupts memory. A missing `.slice()` this whole time — surfaced only by
+// warm-instance reuse actually re-invoking it post-`_clear`.
+export const nullExpr = () => typed(NULL_IR.slice(), 'f64')
 export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 
 /** Materialize the boxed-boolean carrier from a 0/1-valued expression. The atom
@@ -1073,12 +1084,24 @@ export function boxedAddr(name) {
 // construction is a map hit and every downstream comparison is bit-eq.
 // Module-level: in-kernel it lives per instance (arena strings are immortal),
 // natively it is a plain cross-compile cache; the name vocabulary is bounded.
-const DOLLAR = new Map()
+let DOLLAR = new Map()
 export const dollar = (name) => {
   let v = DOLLAR.get(name)
   if (v === undefined) { v = '$' + name; DOLLAR.set(name, v) }
   return v
 }
+// Self-host-only: DOLLAR's keys/values are both arena strings built during compile
+// (the `name`s come from the source being compiled) AND the Map's own backing
+// table is itself an arena allocation. Natively the arena is the host GC heap, so
+// stale entries (or a `.clear()`) are enough — the old backing store just becomes
+// garbage. In-kernel the arena is a bump allocator that `_clear` rewinds between
+// compiles: `.clear()` alone leaves the Map pointing at its OLD backing table,
+// which a later allocation can overwrite while still "owned" by DOLLAR (as opposed
+// to the entries becoming merely unreachable) — so a warm-instance compile loop
+// must swap in a FRESH Map (not just empty this one) after every `_clear`
+// (see scripts/self.js setupSelf). Verified empirically: `.clear()` alone still
+// trapped `__hash_set_local` on the 2nd compile of a warm instance.
+export const clearDollar = () => { DOLLAR = new Map() }
 
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get.
  *  Unboxed pointer locals (repOf(name).ptrKind) tag the returned node with `.ptrKind`

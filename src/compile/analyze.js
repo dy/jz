@@ -81,7 +81,13 @@ import {
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 
-const _bodyFactsCache = new WeakMap()
+let _bodyFactsCache = new WeakMap()
+// Self-host-only: see resetProgramFactsCache (program-facts.js) — the WeakMap's own
+// backing storage is an arena allocation that a warm-instance `_clear` rewinds, so
+// a compile-clear-compile loop must swap in a fresh instance, not just rely on
+// per-body identity misses (which natively is enough since AST nodes are fresh
+// each compile and the old WeakMap contents just become GC-unreachable).
+export function resetBodyFactsCache() { _bodyFactsCache = new WeakMap() }
 
 // Per-name monotone fact trackers over a pluggable {get,set,delete} store. First
 // observation wins; a conflicting later one poisons the name (and clears the store

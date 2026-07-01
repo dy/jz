@@ -21,7 +21,7 @@ import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal } from '.
 // it re-tokenizes ~KB of text every compile. Parse once per distinct resolved
 // string, then hand out a deep clone (downstream passes mutate nodes in place).
 // Module-level on purpose: the cache persists across compile() calls.
-const stdlibParseCache = new Map()  // resolved WAT string → pristine parsed tree
+let stdlibParseCache = new Map()  // resolved WAT string → pristine parsed tree
 const cloneTemplate = (node) => {
   if (!Array.isArray(node)) return node
   const copy = node.map(cloneTemplate)
@@ -33,6 +33,11 @@ const parseTemplate = (str) => {
   if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
   return cloneTemplate(tmpl)
 }
+// Self-host-only: see clearDollar (src/ir.js) — same dangling-arena-pointer hazard,
+// and the same fix: swap in a fresh Map, don't just `.clear()` the old one (its
+// backing table is itself an arena allocation `_clear` invalidates). Must run every
+// compile in a warm-instance loop (see scripts/self.js setupSelf).
+export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
@@ -654,6 +659,33 @@ export function pullStdlib(sec) {
           if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, capture)
           else startFn.push(capture)
         }
+      }
+      // __dyn_props reset: __clear rewinds the bump arena, but __dyn_props /
+      // __dyn_get_cache_off / __dyn_get_cache_props (module/collection.js) cache
+      // pointers/offsets INTO that arena across calls — a warm compile-clear-
+      // compile loop (self-host kernel: one instance, `_clear()` between compiles)
+      // needs them reset too, or a later compile can read a dangling pointer or,
+      // worse, alias a stale cached OFFSET onto a freshly-reused arena address
+      // (an ABA hazard, not just a dangling one). Only patched in when __dyn_set
+      // (the sole writer of __dyn_props) actually SURVIVED reachability pruning
+      // (line ~616, just above) — those globals are declared unconditionally
+      // whenever the collection module loads, so gating on mere declaration
+      // (`ctx.scope.globals.has`) would inject a dead `global.set $__dyn_props`
+      // into every such program, wasting bytes and leaking the __dyn_get_cache_*
+      // names into WAT text that never otherwise mentions dynamic props (tripping
+      // coarse `!/__dyn_get/.test(wat)`-style assertions — see test/closures.js).
+      if (ctx.core.includes.has('__dyn_set')) {
+        const resets = []
+        if (ctx.scope.globals.has('__dyn_props')) resets.push(`(global.set $__dyn_props (f64.const 0))`)
+        // The membership filter mirrors the table: emptying __dyn_props makes every
+        // set bit a stale false-positive — safe, but a warm compile-clear loop would
+        // saturate the filter and erode its skip rate. Reset them together.
+        if (ctx.scope.globals.has('__dyn_props_filter')) resets.push(`(global.set $__dyn_props_filter (i64.const 0))`)
+        if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const -1))`)
+        if (ctx.scope.globals.has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
+        if (resets.length) ctx.core.stdlib['__clear'] = `(func $__clear
+          (global.set $__heap (global.get $__heap_reset))
+          ${resets.join('\n          ')})`
       }
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not

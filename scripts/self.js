@@ -18,6 +18,10 @@ import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { liftIIFEs } from '../src/prepare/lift-iife.js'
 import compileAst from '../src/compile/index.js'
 import { resetProgramFactsCache } from '../src/compile/program-facts.js'
+import { resetBodyFactsCache } from '../src/compile/analyze.js'
+import { resetBindingUsesCache } from '../src/compile/analyze-scans.js'
+import { clearDollar } from '../src/ir.js'
+import { clearStdlibParseCache } from '../src/wat/assemble.js'
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from '../src/compile/emit.js'
@@ -62,11 +66,26 @@ function optimizeTail(module, cfg) {
 // a JSON string of the host-facing `opts.optimize` value (level number, alias
 // string, or per-pass object via resolveOptimize), falsy → optimize off.
 // Every entry takes the same (source, strict, optJSON) triple.
+//
+// clearDollar/clearStdlibParseCache: unlike resetProgramFactsCache (a WeakMap +
+// generation counter — stale entries just go unreachable), DOLLAR and
+// stdlibParseCache are plain Maps whose keys AND values are built fresh each
+// compile. Natively that's inert extra retention across repeated compile() calls
+// (real GC heap). In-kernel the arena is a bump allocator that `_clear` rewinds
+// between compiles (warm-instance reuse, see bench-selfhost.mjs JZ_BENCH_WARM) —
+// a post-`_clear` allocation can overwrite a dangling entry's bytes, so any entry
+// surviving a `_clear` is a correctness bug (wrong bytes read back), not just
+// waste. Must run every compile (not just after the first `_clear`) since it's
+// cheap and callers may `_clear` in any pattern.
 function setupSelf(strict, optJSON) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
   resetProgramFactsCache()
+  resetBodyFactsCache()
+  resetBindingUsesCache()
+  clearDollar()
+  clearStdlibParseCache()
   ctx.transform.jzify = jzify
   ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
   ctx.transform.strict = !!strict

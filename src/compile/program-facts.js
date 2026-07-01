@@ -66,13 +66,23 @@ export function observeNodeFacts(node, f) {
   }
 }
 
-const _programFactsCache = new WeakMap()
-const _moduleInitSlotCache = new WeakMap()
-const _bodyIntCertainCache = new WeakMap()
+let _programFactsCache = new WeakMap()
+let _moduleInitSlotCache = new WeakMap()
+let _bodyIntCertainCache = new WeakMap()
 let _programFactsGen = 0
 
-/** Drop all cached program-fact walks (called at compile entry). */
-export function resetProgramFactsCache() { _programFactsGen++ }
+/** Drop all cached program-fact walks (called at compile entry).
+ *  Natively the gen bump alone is enough (stale entries just go unreachable on a
+ *  real GC heap). In the self-host kernel these WeakMaps' own backing storage is
+ *  itself an arena allocation that `_clear` rewinds between compiles in a warm-
+ *  instance loop — a post-`_clear` alloc can overwrite the WeakMap's internal
+ *  bytes, so we also swap in fresh WeakMap instances (cheap: O(1), no traversal). */
+export function resetProgramFactsCache() {
+  _programFactsGen++
+  _programFactsCache = new WeakMap()
+  _moduleInitSlotCache = new WeakMap()
+  _bodyIntCertainCache = new WeakMap()
+}
 
 /** Drop cached walks for specific AST roots (in-place module rewrites). */
 export function invalidateProgramFactsCache(...roots) {

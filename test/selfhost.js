@@ -181,3 +181,40 @@ test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib
   // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
   is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
 })
+
+// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
+// and pin byte-parity against a fresh instance compiling the same programs. Exercises
+// the caches that used to dangle across a warm `_clear` (all now reset/copy-on-tag
+// per compile): DOLLAR + stdlibParseCache (src/ir.js, src/wat/assemble.js — swap in a
+// fresh Map, not `.clear()`, since the old backing table is itself an arena
+// allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
+// program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
+// __dyn_get_cache_off / __dyn_get_cache_props globals (module/core.js __clear, reset
+// alongside __heap), NULL_IR's missing `.slice()` before `typed()` (src/ir.js —
+// mutating the shared template in place left a dangling props sidecar), and
+// subscript's comment-list cache (external fix, feature/comment.js — rebuilds once
+// per top-level parse() instead of once ever). compile-clear-compile-clear-compile:
+// three rounds catch a fix that only survives ONE `_clear` (e.g. a reset that clears
+// state but not a downstream 1-slot cache pointing at it).
+test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
+  const src = 'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i * i; return s }'
+  const level = '0'
+  const fresh = () => {
+    const inst = instantiate(readFileSync(SELF), { memory: 8192 })
+    const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String(level))
+    const bin = inst.memory.read(out)
+    return bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  }
+  const baseline = fresh()
+  ok(baseline.length > 8, 'fresh-instance baseline compiled')
+
+  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  for (let round = 0; round < 3; round++) {
+    const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String(level))
+    const bin = warm.memory.read(out)
+    const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+    is(bytes.length, baseline.length, `round ${round}: byte length matches fresh instance`)
+    ok(bytes.every((b, i) => b === baseline[i]), `round ${round}: byte-identical to fresh instance`)
+    warm.instance.exports._clear()
+  }
+})

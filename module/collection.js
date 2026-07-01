@@ -23,6 +23,22 @@ const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
 const INIT_CAP = 8    // initial capacity (must be power of 2)
 
+// __dyn_props global-table membership filter (see __dyn_props_filter's declGlobal
+// comment). offExpr is an i32 WAT expr for the offset key. Mix folds the offset's
+// mid bits (allocations are 8-byte aligned, so raw low bits are useless) down to
+// a 6-bit bucket in a 64-bit bitset — never-false-negative, no false-negative risk
+// from collisions (a collision just makes the filter's "maybe present" wider).
+const dynPropsFilterBitIR = (offExpr) =>
+  `(i64.shl (i64.const 1) (i64.extend_i32_u (i32.and (i32.xor (i32.shr_u ${offExpr} (i32.const 3)) (i32.shr_u ${offExpr} (i32.const 9))) (i32.const 63))))`
+// Set the filter bit for an offset key that was just inserted into the global table.
+export const dynPropsFilterSetIR = (offExpr) =>
+  `(global.set $__dyn_props_filter (i64.or (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
+// True (i32) when the filter bit is clear — i.e. offExpr is PROVEN never inserted,
+// safe to skip the __ihash_get_local probe entirely. False (bit set) means "maybe
+// present, maybe a collision" — falls through to the real probe.
+export const dynPropsFilterMissIR = (offExpr) =>
+  `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
+
 // Clamp to the >=2 convention (0=empty slot, 1=tombstone) — shared by every hash
 // producer (SSO mix, byte-FNV, __jp_str, buildInternTable) so they all clamp identically.
 const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
@@ -562,6 +578,18 @@ export default (ctx) => {
 
   if (!ctx.scope.globals.has('__dyn_props'))
     declGlobal('__dyn_props', 'f64')
+  // Never-false-negative membership filter over offsets ever inserted into the
+  // global __dyn_props table: a 64-bit bitset, bit = mix(off) & 63 for every
+  // offset key ever written there (see dynPropsFilterSetIR — all 3 insert
+  // sites: __dyn_set's global-table fallback, __dyn_move's own rekey, and
+  // array.js's headerPropsToGlobalIR). Probe sites (__dyn_move, __dyn_del's
+  // global fallback) test the bit first and skip the __ihash_get_local probe
+  // on a clear bit — sound because misses are never possible (bits are only
+  // ever set, never cleared; a false positive just falls through to the real
+  // probe). __dyn_props itself is never reset by __clear (see core.js), so
+  // this filter doesn't need resetting either.
+  if (!ctx.scope.globals.has('__dyn_props_filter'))
+    declGlobal('__dyn_props_filter', 'i64')
   // 1-slot inline cache for the global __dyn_props lookup. Hot path for
   // metacircular workloads (watr WAT parser): ~96% of execution sits in
   // __dyn_get_t / __ihash_get_local. Caches last-seen (off → propsPtr) at
@@ -1445,7 +1473,14 @@ export default (ctx) => {
     (if (i64.eqz (local.get $root))
       (then (local.set $root (i64.reinterpret_f64 (call $__hash_new)))))
     (local.set $objKey (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off))))
-    (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
+    ;; Filter: a clear bit proves this offset was never inserted — the probe
+    ;; would miss, so skip straight to "no existing props" without calling
+    ;; __ihash_get_local. A set bit (maybe-present, or a collision) falls
+    ;; through to the real probe. Never a false negative — see filter's decl.
+    (local.set $oldProps
+      (if (result i64) ${dynPropsFilterMissIR('(local.get $off)')}
+        (then (i64.const ${UNDEF_NAN}))
+        (else (call $__ihash_get_local (local.get $root) (local.get $objKey)))))
     (local.set $props
       (if (result i64) (call $__is_nullish (local.get $oldProps))
         (then (i64.reinterpret_f64 (call $__hash_new_small)))
@@ -1455,6 +1490,7 @@ export default (ctx) => {
       (then
         (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
         (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root)))
+        ${dynPropsFilterSetIR('(local.get $off)')}
         (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
           (then (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props)))))))
     (local.get $val))`
@@ -1540,17 +1576,30 @@ export default (ctx) => {
     ;; Fallback: global __dyn_props keyed by offset.
     (local.set $root (i64.reinterpret_f64 (global.get $__dyn_props)))
     (if (i64.eqz (local.get $root)) (then (return (local.get $hit))))
+    ;; Filter-proven absent: this offset was never inserted into __dyn_props,
+    ;; so there's nothing to delete — skip the __ihash_get_local probe.
+    (if ${dynPropsFilterMissIR('(local.get $off)')} (then (return (local.get $hit))))
     (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
     (if (call $__is_nullish (local.get $props)) (then (return (local.get $hit))))
     (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))`
 
-  ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32)
+  // Called on EVERY array shift/grow once __dyn_set is included (module has any
+  // dynamic-prop write) — almost always a miss (arrays with dyn props are rare).
+  // The filter bit lets a miss return in O(1) globals-only work instead of an
+  // __ihash_get_local probe (hash + bucket walk). Sound: a clear bit proves
+  // $oldOff was never inserted, so the probe below would find nothing anyway.
+  // Returns i32 1 if an entry was found+rekeyed, 0 on a no-op — callers use this
+  // to know whether to mark the relocated array's header (see DYN_PROPS_GLOBAL_SENTINEL).
+  ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32) (result i32)
     (local $props i64) (local $root i64)
-    (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return)))
+    (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return (i32.const 0))))
+    (if ${dynPropsFilterMissIR('(local.get $oldOff)')} (then (return (i32.const 0))))
     (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $oldOff)))))
-    (if (call $__is_nullish (local.get $props)) (then (return)))
+    (if (call $__is_nullish (local.get $props)) (then (return (i32.const 0))))
     (local.set $root (call $__ihash_set_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff))) (local.get $props)))
-    (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root))))`
+    (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root)))
+    ${dynPropsFilterSetIR('(local.get $newOff)')}
+    (i32.const 1))`
 
   // Generated HASH probe functions
   ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.features.external, true)

@@ -283,6 +283,44 @@ test('.shift: dynamic properties move with array', () => {
   }`).f(), 227)
 })
 
+test('.shift: dynamic properties survive a second shift (global-table rekey)', () => {
+  is(run(`export let f = () => {
+    let a = [1, 2, 3, 4]
+    a.name = 7
+    a.shift()
+    a.shift()
+    return a.name + a.length * 100 + a[0] * 10
+  }`).f(), 237)
+})
+
+test('.shift then grow: dynamic properties survive both (global-table move, then relocate)', () => {
+  is(run(`export let f = () => {
+    let a = [1, 2]
+    a.name = 9
+    a.shift()
+    a.push(3)
+    a.push(4)
+    a.push(5)
+    return a.name + a.length * 100 + a[0] * 10 + a[3]
+  }`).f(), 434)
+})
+
+// A dyn-props membership filter over the global table must never skip a TRUE
+// entry: exercise a props-carrying array (forces the global table non-empty)
+// alongside a plain array whose shift/grow must stay a correct no-op miss.
+test('.shift/.push: plain array unaffected by another array\'s dynamic props (filter miss stays correct)', () => {
+  is(run(`export let f = () => {
+    let tagged = [1, 2, 3]
+    tagged.name = 7
+    tagged.shift()
+    let plain = [10, 20, 30]
+    plain.shift()
+    plain.push(40)
+    plain.push(50)
+    return tagged.name + plain.length * 100 + plain[0] * 10 + plain[2]
+  }`).f(), 647)
+})
+
 // === .unshift ===
 
 test('.unshift: prepends and pulls grow helper', () => {

@@ -585,9 +585,9 @@ export default (ctx) => {
         ['f64.store',
           ['i32.sub', ['local.get', `$${dstOff}`], ['i32.const', 16]],
           ['f64.load', ['i32.sub', ['local.get', `$${srcOff}`], ['i32.const', 16]]]],
-        ['call', '$__dyn_move',
+        ['drop', ['call', '$__dyn_move',
           ['local.get', `$${srcOff}`],
-          ['local.get', `$${dstOff}`]],
+          ['local.get', `$${dstOff}`]]],
         ['local.get', `$${dst}`]], 'f64')
     }
     const schema = resolveSchema(proto)
@@ -610,9 +610,9 @@ export default (ctx) => {
               ['f64.store',
                 ['i32.sub', ['local.get', `$${dstOff2}`], ['i32.const', 16]],
                 ['f64.load', ['i32.sub', ['local.get', `$${srcOff2}`], ['i32.const', 16]]]],
-              ['call', '$__dyn_move',
+              ['drop', ['call', '$__dyn_move',
                 ['local.get', `$${srcOff2}`],
-                ['local.get', `$${dstOff2}`]],
+                ['local.get', `$${dstOff2}`]]],
               ['local.get', `$${dst2}`]]],
             ['else', ['local.get', `$${value}`]]]] , 'f64')
       }
