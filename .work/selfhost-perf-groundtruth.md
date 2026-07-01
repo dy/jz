@@ -587,6 +587,56 @@ shift/grow once the table is non-empty — 870k of 877k __ihash_get_local calls 
 pass (~4% of wasm time), almost all misses. A cheap membership filter (never-false-negative
 bit filter over inserted offsets, or a per-array has-props signal) would skip them.
 
+## SESSION 6 cont — four more levers landed (2026-07-01 evening)
+
+Post-invariant re-profile (names -O2, corpus ×12): helpers 62.4% / compiler-own 30.9% /
+host 6.7%. __str_eq collapsed 472→161 ticks (invariant confirmed); new top: __str_hash 287
+(~7%), __ptr_offset(+fwd) 302 (~7%), dyn/hash cluster ~13%. Four levers implemented in
+parallel worktrees, integrated + validated sequentially:
+
+1. **SSO fast-hash** (62452a5) — __str_hash's SSO branch: 6-iteration lane-FNV → 7-op
+   multiplicative mix over the packed payload. Hash agreement updated at every point:
+   strHashLiteral (ssoEncode→ssoMix / byteFnv dispatch, all literal-prehash sites route
+   through it), __jp_str audited (feeds only the schema-cache sequence hash — no agreement
+   needed), interned statics unaffected (≥7B/non-ASCII by construction). Cross-producer ×
+   cross-consumer hash battery in test/strings.js.
+2. **dyn-props probe filter** (42dc91c) — 64-bit never-false-negative bitset over offsets
+   ever inserted into the global __dyn_props table gates the __dyn_move/__dyn_set/__dyn_del
+   fallback probes. Its survival pin EXPOSED a real pre-existing bug: shift-then-grow of a
+   props-carrying array silently dropped the props (grow's zeroed header erased the
+   accidental off-16 "check global" signal) — fixed with an explicit sentinel + i32-returning
+   __dyn_move.
+3. **proven decode inline** (42dc91c) — __arr_grow_known inlines the raw offset extract
+   (receiver proven ARRAY by all 3 call sites, __arr_idx_known contract). Full re-audit
+   confirmed the Opp1 verdict still holds for src-side sites (defaulted kinds, HASH/SET/MAP
+   forward too) — left untouched, documented.
+4. **warm-instance reuse** (42dc91c) — one instance, _clear between compiles, byte-identical
+   output for 21/22 corpus programs. The dangling-cache set was much larger than documented:
+   DOLLAR + stdlibParseCache + program-facts/body-facts/binding-uses caches (all swapped
+   fresh, .clear() insufficient — the Map's own backing store is an arena allocation), a
+   nullExpr shared-template in-place mutation (latent), __clear now resets
+   __dyn_props/__dyn_props_filter/__dyn_get_cache_* (injected post-reachability), PLUS
+   companion fixes in watr (err.loc/src expando props → module state; suite green) and
+   subscript (comment table rebuilt per parse; suite green). JZ_BENCH_WARM=1 bench mode;
+   warm round-trip pinned in test/selfhost.js.
+   **Unresolved:** tokenizer/json still trap on warm 2nd compile — reproduces with plain
+   watr-in-kernel compiling a trivial module twice ("Unknown type i32", string token
+   corruption); extensively bisected, not yet root-caused; bench reports them `skipped`.
+
+**RESULTS (quiet machine, 22-program corpus, L0):**
+- fresh-instance: **1.11×** slower (was 1.21× → 1.35× at session start)
+- warm-instance (JZ_BENCH_WARM=1): **1.00× — parity with V8**, mandelbrot/crc32 at 0.98×
+  (20/22; tokenizer/json skipped on the watr warm bug)
+Gates: fuzz 1000×opt{0..3} 0-divergence; selfhost 16/16; full suite 2598 pass, 13 fail =
+exactly the pre-existing Phase-2 set, zero new failures.
+
+**Remaining gap to <1.0 fresh:** first-touch page faults (~4%, structural to
+fresh-instance methodology — warm mode is the honest apples-to-apples), the dyn-get
+dictionary cluster (~9%), __str_byteLen/char_at volume, and compiler-own recursive
+walkers (~31% of ticks — inference/representation-carrier class). Also: fix the watr
+warm-recompile bug to get tokenizer/json into warm mode; commit the watr + subscript
+companion fixes upstream (uncommitted in their repos).
+
 ## Synthesis across #1/#3/#4 — the tax is distributed, not a fixable primitive
 
 Three expert/audit-recommended primitive optimizations, all measured: #1+#3 V8-negligible (V8 inlines
