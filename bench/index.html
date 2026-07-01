@@ -83,6 +83,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* stat strip — the SAME Speed/Size metric block as the landing hero (shared .mstats/.stat in
    assets/site.css); the two groups sit side by side in one row under the title (wraps if narrow). */
 #strip { display: flex; flex-wrap: wrap; gap: clamp(28px, 5vw, 56px); align-items: flex-start; }
+/* bench hook: bolder than the shared landing-hero stat size, and a clearer group caption */
+#strip .stat b { font-size: clamp(34px, 4.6vw, 46px); letter-spacing: -.02em; }
+#strip .stat span { font-size: 12px; }
+#strip .mlabel { font-weight: 600; color: var(--ink); }
+#strip .mstats { gap: clamp(18px, 2.4vw, 34px); }
 
 /* bar rows */
 .row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
@@ -265,6 +270,36 @@ const TARGETS = {
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
+// One-line engine descriptions — surfaced as the per-row label tooltip so the chart
+// stays terse: a bare "JSC" row is fine when hovering explains it's Safari’s engine.
+const DESC = {
+  v8: 'Google V8 — the JavaScript engine in Node.js and Chrome.',
+  deno: 'Deno — a V8-based JavaScript/TypeScript runtime.',
+  bun: 'Bun — a fast runtime built on JavaScriptCore.',
+  jsc: 'JavaScriptCore — Safari & WebKit’s JavaScript engine (the standalone `jsc` shell).',
+  spidermonkey: 'SpiderMonkey — Firefox’s JavaScript engine.',
+  graaljs: 'GraalJS — GraalVM’s JavaScript engine.',
+  jz: 'JZ — your JavaScript compiled to WebAssembly, run in this V8.',
+  wat: 'Hand-written WebAssembly text — the practical wasm floor for a kernel.',
+  'jz-wasmtime': 'JZ’s wasm run standalone under Wasmtime (WASI) — no JS host.',
+  as: 'AssemblyScript — a TypeScript-flavoured language compiled to wasm (asc -O3).',
+  porf: 'Porffor — an ahead-of-time JavaScript → wasm compiler.',
+  'rust-wasm': 'Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8.',
+  'go-wasm': 'Go compiled to wasm (gc → wasm32-wasip1), run in this same V8.',
+  'c-wasm': 'C compiled to wasm (clang → wasm32-wasi), run in this same V8.',
+  'zig-wasm': 'Zig compiled to wasm (zig → wasm32-wasi), run in this same V8.',
+  tinygo: 'Go via the TinyGo compiler → wasm.',
+  moonbit: 'MoonBit — a wasm-first language, run on its moonrun (V8) runner.',
+  jawsm: 'jawsm — a JavaScript → wasm compiler.',
+  javy: 'Javy — the QuickJS interpreter shipped inside a wasm module (Bytecode Alliance).',
+  nat: 'C compiled to a native binary (clang -O3 -march=native) — the speed-of-light ceiling.',
+  'jz-w2c': 'JZ’s wasm lowered to a native binary via wasm2c → clang -O3.',
+  rust: 'Rust native binary (rustc -O, target-cpu=native).',
+  zig: 'Zig native binary (ReleaseFast).',
+  go: 'Go native binary (gc).',
+  shermes: 'Static Hermes — JavaScript ahead-of-time compiled to a native binary.',
+  numpy: 'NumPy — vectorized C kernels driven from Python.',
+}
 const BREAK = 12      // linear bars; rows past this are cut, number printed
 // Self-referential 'compiler' cases (jz/watr/jessie compiling code) are hidden
 // from the page + headline geomean — they're a different question from the
@@ -387,13 +422,13 @@ const stripClassSub = (label, sub) =>
 
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, cls }) => {
+const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, cls, tip }) => {
   const cut = rel > BREAK
   const w = cut ? 100 : (rel / maxLin * 100)
   const barCls = `${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}`
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   return `<div class="row${strong ? ' strong' : ''}">
-    <span class="lab">${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
+    <span class="lab"${tip ? ` data-tip="${esc(tip)}"` : ''}>${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
     <span class="bar"><i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
     <span class="val">${esc(text)}${size ? `<span class="sz">${esc(fmtB(size))}</span>` : ''}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
   </div>`
@@ -473,7 +508,7 @@ const renderGeomean = () => {
     for (const r of bandRows) {
       const cov = r.tid && coverage(r.tid)
       const sub = cov && cov.attempted > cov.ran ? `${cov.ran} / ${cov.attempted} ran` : nCases(r.n)
-      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub,
+      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub, tip: DESC[r.tid],
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
     }
   }
@@ -488,19 +523,22 @@ const renderGeomean = () => {
 // The same metric styling as the landing hero (assets/headline.js),
 // the same Speed / Size grouping and labels, rendered with the shared .mstats/.stat styles
 // (assets/site.css). Stats deep-link to the corpus chart (the hero links to /bench/ → here).
+// The hook: 4 bold speed numbers, not a 9-way table (the corpus chart below carries the
+// full comparison). vs V8 = your runtime; V8 max = the headline single-case win; vs JSC =
+// Safari's engine (so it's every browser, not just V8); vs C→wasm = beats a systems language,
+// apples-to-apples in the same V8. Labels stay terse — the title tooltip spells each out.
+// 3 bold speed numbers, each a distinct aspect — typical (your runtime), peak (best case),
+// and the moat (near-native). Not a 9-way table; the corpus chart below carries the full
+// comparison. Labels stay terse — the title tooltip spells each out.
 const STRIP = [
   ['Speed', [
-    ['v8', 'V8 (geomean)'],
-    ['peak', 'V8 max', 'Largest single-case speedup over V8 — typically a SIMD-vectorized kernel. Needs the WASM SIMD proposal (baseline in Chrome 91+, Firefox 89+, Safari 16.4+, Node 16+).'],
-    ['jsc', 'JSC', 'jz vs JavaScriptCore — Safari’s engine, geomean over the corpus.'],
-    ['cwasm', 'C (wasm)', 'jz vs C compiled to wasm (clang → wasm32), run in this same V8 — a systems-language baseline.'],
-    ['rust', 'Rust (wasm)'],
-    ['asspeed', 'AssemblyScript'],
-    ['porf', 'Porffor'],
+    ['v8', 'V8 average', 'jz vs Node/V8 — geometric mean speedup across the corpus (your runtime).'],
+    ['peak', 'V8 max', 'Largest single-case speedup over V8 — a SIMD-vectorized kernel. Needs WASM SIMD (baseline Chrome 91+/Firefox 89+/Safari 16.4+/Node 16+).'],
+    ['cwasm', 'C', 'jz vs C compiled to wasm (clang → wasm32), run in this same V8 — and on the corpus jz ≈ native clang -O3 (1.01×). Near-native, from plain JavaScript.'],
   ]],
   ['Size', [
-    ['assize', 'AssemblyScript'],
-    ['porfsize', 'Porffor'],
+    ['assize', 'AssemblyScript', 'jz wasm bytes ÷ AssemblyScript (-Oz) bytes — median over the corpus (lower = jz smaller).'],
+    ['porfsize', 'Porffor', 'jz wasm bytes ÷ Porffor bytes — median (Porffor bundles a JS runtime).'],
   ]],
 ]
 const renderStrip = () => {
@@ -556,7 +594,7 @@ const cardRows = c => {
   // independent), not dumped at the end. The raw µs differs by machine; the × is the compare.
   const all = [
     ...ran.map(r => ({ rel: r.medianUs / base, p: {
-      label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
+      label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band, tip: DESC[r.tid],
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
