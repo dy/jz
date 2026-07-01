@@ -1107,6 +1107,74 @@ const hasSideEffect = (node) => {
  *   a non-`$__li` preamble, an impure value, or any array content AFTER the loop
  *   bails. When false, ANY non-loop array content in the block bails.
  */
+// A transparent block — no label (first child isn't a `$label` string) and no result — is
+// pure statement grouping: wasm locals are function-scoped, and an unlabeled resultless block
+// is neither a branch target nor a value producer, so it can ONLY appear in statement position
+// (a resultless block in value position is a type error). jz emits one per source statement
+// group; watr's mergeBlocks/vacuum flattens them post-hoc. The vectorizer is jz LOWERING
+// (pre-watr), so it normalizes them itself IN PLACE — splicing each transparent block's
+// children into its parent's statement list — so every recognizer (scaffold-consuming AND
+// raw-node) reads the flat statement lists they were tuned against. Post-order: children are
+// already flat when a block is spliced up. A labeled block (branch target) or result-carrying
+// block (value producer) is kept — including the `(block $brk (loop …))` SIMD scaffold itself.
+function normalizeTransparentBlocks(node) {
+  if (!isArr(node)) return
+  for (let i = 1; i < node.length; i++) normalizeTransparentBlocks(node[i])
+  for (let i = node.length - 1; i >= 1; i--) {
+    const c = node[i]
+    if (isArr(c) && c[0] === 'block' &&
+        !(typeof c[1] === 'string' && c[1].startsWith('$')) &&
+        !(isArr(c[1]) && c[1][0] === 'result'))
+      node.splice(i, 1, ...c.slice(1))
+  }
+}
+
+// Fold the arithmetic identities watr's `identity` pass removes but jz emits raw — most
+// importantly `i<<0` (a byte-stride address for a u8/i8 array: `base + (i << 0)`), which the
+// vectorizer's address matchers, tuned on watr's folded IR, read as bare `i`. Also the trivial
+// `x±0`, `x|0`, `x^0`, `x<<0/>>0`, `x*1`. In place, bottom-up; returns the (possibly folded)
+// node so a parent can rebind. Pure syntactic identities — always sound, watr-equivalent.
+function foldVecIdentities(node) {
+  if (!isArr(node)) return node
+  for (let i = 1; i < node.length; i++) node[i] = foldVecIdentities(node[i])
+  if (node.length !== 3) return node
+  const op = node[0], a = node[1], b = node[2]
+  const ci = (n) => isArr(n) && (n[0] === 'i32.const' || n[0] === 'i64.const') ? Number(n[1]) : NaN
+  const rb = ci(b), ra = ci(a)
+  switch (op) {
+    case 'i32.shl': case 'i32.shr_s': case 'i32.shr_u':
+    case 'i64.shl': case 'i64.shr_s': case 'i64.shr_u':
+      return rb === 0 ? a : node                       // x << 0 = x (right-identity only)
+    case 'i32.add': case 'i32.or': case 'i32.xor':
+    case 'i64.add': case 'i64.or': case 'i64.xor':
+      return rb === 0 ? a : (ra === 0 ? b : node)      // x±0, x|0, x^0 (either side)
+    case 'i32.sub': case 'i64.sub':
+      return rb === 0 ? a : node                       // x - 0 = x
+    case 'i32.mul': case 'i64.mul':
+      return rb === 1 ? a : (ra === 1 ? b : node)      // x*1
+    default: return node
+  }
+}
+
+// Canonicalize jz's `if COND (then (br L))` break-idiom to watr's `br_if L COND` — the shape the
+// loop-scan recognizers (byte-scan, divergent-escape) match. watr's `brif` pass does this
+// post-hoc; the pre-watr vectorizer needs it now. Only the statement-form (no result), no-else,
+// single-`br`-then shape becomes a br_if — anything richer is left untouched for watr. In place,
+// top-down (a converted br_if has no nested `if` to revisit).
+function canonicalizeIfBr(node) {
+  if (!isArr(node)) return
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (isArr(c) && c[0] === 'if' && c.length === 3 &&
+        !(isArr(c[1]) && c[1][0] === 'result') &&
+        isArr(c[2]) && c[2][0] === 'then' && c[2].length === 2 &&
+        isArr(c[2][1]) && c[2][1][0] === 'br' && c[2][1].length === 2 && typeof c[2][1][1] === 'string')
+      // `(br L)` only — a value-carrying `(br L v)` would lose its operand under br_if's 2-arg form.
+      node[i] = ['br_if', c[2][1][1], c[1]]
+    else canonicalizeIfBr(c)
+  }
+}
+
 function matchBlockLoop(blockNode, opts = {}) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
   const allowPreamble = !!opts.allowPreamble
@@ -2355,13 +2423,40 @@ function aosGather(expr, ctx) {
 // used 3× and itself nests spow): naive expr substitution would duplicate each arg per use and
 // blow up exponentially (there is no CSE pass after the 'post' vectorizer). Binding keeps the
 // SIMD body the same size as the scalar call graph.
-function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef) {
+// Infer the wasm type of a value node — from its `.type` expando (jz stamps every instruction) or
+// the op prefix (`f64.add`→f64, `i32.mul`→i32, v128 ops→v128). Used to declare inline temps.
+function nodeWasmType(n) {
+  if (isArr(n)) {
+    if (typeof n.type === 'string') return n.type
+    const op = n[0]
+    if (typeof op === 'string') {
+      if (op.startsWith('f64.') || op === 'f64x2.extract_lane') return 'f64'
+      if (op.startsWith('f32.')) return 'f32'
+      if (op.startsWith('i64.')) return 'i64'
+      if (op.startsWith('i32.')) return 'i32'
+      if (op.startsWith('f64x2.') || op.startsWith('f32x4.') || op.startsWith('i32x4.') || op.startsWith('i8x16.') || op.startsWith('i16x8.') || op.startsWith('i64x2.') || op.startsWith('v128.')) return 'v128'
+    }
+  }
+  return null
+}
+
+// Inline a pure function call into an expression, returning a `(block (result T) …binds… value)`
+// (or the bare value if no binding was needed) — or null if the callee isn't straight-line pure.
+// `resultType` is the callee's result type ('f64' by default, the vectorizer's only use). When a
+// `localSink` array is passed, the fresh `$__ia` binding temps are declared into it (`['local', n, T]`)
+// so a general caller can hoist them into the enclosing function; the vectorizer omits it (its lane
+// lift re-types the block). Params must be read-only (else the substitution model breaks).
+function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink = null, resultType = 'f64', tempPrefix = '$__ia') {
   const callee = pureFuncMap && pureFuncMap.get(callNode[1])
   if (!callee) return null
   const bodyStart = findBodyStart(callee)
   if (bodyStart < 0) return null
-  const params = []
-  for (let i = 2; i < bodyStart; i++) { const d = callee[i]; if (isArr(d) && d[0] === 'param' && typeof d[1] === 'string') params.push(d[1]) }
+  const params = [], paramType = new Map(), localType = new Map()
+  for (let i = 2; i < bodyStart; i++) {
+    const d = callee[i]
+    if (isArr(d) && d[0] === 'param' && typeof d[1] === 'string') { params.push(d[1]); paramType.set(d[1], d[2]) }
+    else if (isArr(d) && d[0] === 'local' && typeof d[1] === 'string') localType.set(d[1], d[2])
+  }
   const args = callNode.slice(2)
   if (args.length !== params.length) return null
   const body = callee.slice(bodyStart)
@@ -2377,19 +2472,31 @@ function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef) {
   const isTrivial = (n) => isArr(n) && (n[0] === 'f64.const' || n[0] === 'i32.const' ||
     (n[0] === 'local.get' && typeof n[1] === 'string') || (n[0] === 'global.get' && typeof n[1] === 'string'))
   const pre = []
-  const bindOnce = (name, valueExpr, alreadySubbed) => {
+  const bindOnce = (name, valueExpr, declType, alreadySubbed) => {
     const v = alreadySubbed ? valueExpr : sub(valueExpr)
     if (isTrivial(v)) { subst.set(name, v); return }   // cheap → substitute directly, no temp
-    const bn = `$__ia${freshIdRef.next++}`
+    const bn = `${tempPrefix}${freshIdRef.next++}`
+    const t = declType || nodeWasmType(v) || 'f64'
+    if (localSink) localSink.push(['local', bn, t])
     pre.push(['local.set', bn, v])
     subst.set(name, ['local.get', bn])
   }
-  params.forEach((p, i) => bindOnce(p, args[i], true))   // args live in the OUTER scope — do NOT sub
-  const wrap = (val) => pre.length ? ['block', ['result', 'f64'], ...pre, val] : val
+  params.forEach((p, i) => bindOnce(p, args[i], paramType.get(p), true))   // args live in the OUTER scope — do NOT sub
+  // Leak guard: a callee local reached only via `local.tee` (a CSE'd subexpression) or set inside
+  // control flow is NOT captured by the top-level bindOnce, so its name would survive into the caller
+  // where it isn't declared ("$x not in scope"). Bail (keep the call) if ANY callee-local name remains
+  // in the inlined result — the substitution model only safely handles straight-line param+set locals.
+  // The leak check applies ONLY to the general inliner (which passes a localSink and splices the
+  // result verbatim into the caller). The VECTORIZER path (localSink == null) re-processes the
+  // returned expression in its lane context — a tee'd callee local becomes a lane local there — so
+  // it must NOT bail on the leak, or pure helpers with a CSE'd tee (spow's `av`) stop vectorizing.
+  const calleeLocals = new Set([...paramType.keys(), ...localType.keys()])
+  const leaks = (n) => isArr(n) && (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) || n.some((c, i) => i > 0 && leaks(c)))
+  const wrap = (val) => { const r = pre.length ? ['block', ['result', resultType], ...pre, val] : val; return (localSink && leaks(r)) ? null : r }
   for (let k = 0; k < body.length; k++) {
     const stmt = body[k]
     if (!isArr(stmt)) return null
-    if (stmt[0] === 'local.set' && typeof stmt[1] === 'string' && stmt.length === 3) { bindOnce(stmt[1], stmt[2], false); continue }
+    if (stmt[0] === 'local.set' && typeof stmt[1] === 'string' && stmt.length === 3) { bindOnce(stmt[1], stmt[2], localType.get(stmt[1]), false); continue }
     if (stmt[0] === 'return' && stmt.length === 2) return wrap(sub(stmt[1]))
     // Trailing value expression = implicit return (a bare `if`/`block`/… as the function's last
     // statement, `(v) => cond ? a : b`). Earlier non-set/non-return statements can't be values.
@@ -2397,6 +2504,53 @@ function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef) {
     return null
   }
   return null
+}
+
+// Statement-position containers: a call that is a DIRECT child here may be a statement (void /
+// block-fallthrough), where the value-producing `(block (result T) …)` inline form is ill-typed.
+// The general inliner only rewrites calls in operand (value) position — the common `x = f(…)`,
+// `a[i] = f(…)`, `f(…) * k` shapes — and recurses into these so nested-in-operand calls still inline.
+const INLINE_STMT_CTX = new Set(['block', 'loop', 'func', 'then', 'else', 'if'])
+
+// General pre-watr pure-function inlining — jz LOWERING (runs before the vectorizer). Replaces a
+// `(call $g …)` in value position with $g's inlined body when $g is PURE (pureFuncMap) and
+// straight-line. jz decides by PURITY + TYPES — knowledge watr's untyped, size-gated inliner lacks —
+// exposing the callee's arithmetic to the vectorizer / narrower / const-folder. watr keeps only the
+// mechanical residual. Bit-exact: params are read-only, args bind once (or substitute if trivial),
+// the callee's straight-line body becomes a result-typed block. Fresh temps are declared into `fn`.
+export function inlinePureFnsInFn(fn, pureFuncMap, freshIdRef, canInline) {
+  if (!isArr(fn) || fn[0] !== 'func' || !pureFuncMap || !pureFuncMap.size || !canInline || !canInline.size) return
+  const selfName = fn[1]
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const newLocals = []
+  const resultTypeOf = (callee) => {
+    for (let i = 2; i < callee.length; i++) {
+      const d = callee[i]
+      if (!isArr(d)) break
+      if (d[0] === 'result') return d[1]
+      if (d[0] !== 'param' && d[0] !== 'export' && d[0] !== 'local' && d[0] !== 'type') break
+    }
+    return 'f64'
+  }
+  const walk = (node) => {
+    if (!isArr(node)) return node
+    const parentIsStmt = INLINE_STMT_CTX.has(node[0])
+    for (let i = 1; i < node.length; i++) {
+      let child = node[i]
+      if (!isArr(child)) continue
+      child = walk(child)          // recurse first → inline nested calls (e.g. in this call's args)
+      node[i] = child
+      if (!parentIsStmt && child[0] === 'call' && typeof child[1] === 'string' &&
+          child[1] !== selfName && canInline.has(child[1]) && pureFuncMap.has(child[1])) {
+        const inlined = inlinePureCallExpr(child, pureFuncMap, freshIdRef, newLocals, resultTypeOf(pureFuncMap.get(child[1])), '$__gi')
+        if (inlined != null) node[i] = inlined
+      }
+    }
+    return node
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
@@ -4825,10 +4979,13 @@ const PPC_CALL2 = {
   '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
 }
 
-// Scalar transcendentals the auto-vectorizer rewrites to f64x2 mirrors above. watr's inline
-// passes must NOT dissolve their (single-caller) call nodes before this lift runs — jz passes
-// these to watOptimize's `pin` option (the protection policy lives here, not hardcoded in watr).
-export const SIMD_PINNED = Object.keys(PPC_CALL2)
+// Transcendentals the auto-vectorizer bridges to f64x2 mirrors — BOTH the scalar sources (kept
+// intact in the vectorized loop's scalar tail) AND the f64x2 mirrors themselves (the calls the
+// SIMD path emits). jz passes this to watOptimize's `pin` option so watr's inliner dissolves
+// NEITHER: the scalar tail keeps calling `$math.cbrt` and the SIMD body keeps calling
+// `$math.cbrt_v` (inlining the small per-lane repack mirror would erase the vectorized call the
+// lift produced). The protection policy lives here in jz, not hardcoded in watr.
+export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.values(PPC_CALL2)])]
 
 // Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
 // escape loop: an outer pixel loop whose body computes an f64 value from the pixel index (via
@@ -6071,6 +6228,20 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   if (bodyStart < 0) return
   const fnName = typeof fn[1] === 'string' ? fn[1] : '(anon)'
   let whyNotN = 0
+
+  // Normalize jz's per-statement `block` grouping into flat statement lists ONCE, up front —
+  // the recognizers below (both the scaffold consumers and the raw-node matchers like ramp-map,
+  // stencil, per-pixel) were tuned on watr's flattened shape. Pre-watr, jz wraps each source
+  // statement group in a transparent block; without this every loop body would arrive as a
+  // single opaque `block` node and no lift would fire. Walking `fn` itself also flattens a
+  // top-level body block (decls never match — they aren't blocks).
+  normalizeTransparentBlocks(fn)
+  // Canonicalize the raw arithmetic identities watr would fold (chiefly `i<<0` byte addresses),
+  // so the address/value matchers read dataflow, not jz's un-folded emission.
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = foldVecIdentities(fn[i])
+  // Canonicalize the `if COND (then (br L))` break idiom to `br_if L COND` (watr's brif shape),
+  // so the loop-scan recognizers see the branch form they were tuned against.
+  canonicalizeIfBr(fn)
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()

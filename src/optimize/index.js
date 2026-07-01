@@ -36,7 +36,7 @@ const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANT
 import { T, isLeaf, stableKey } from '../ast.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { recursionUnroll } from './recurse.js'
-export { SIMD_PINNED } from './vectorize.js'
+export { SIMD_PINNED, inlinePureFnsInFn } from './vectorize.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
@@ -82,12 +82,12 @@ const FALSE_BITS = atomNanHex(4)
  *     because the dead tag-dispatch shapes it folds only EXIST after that
  *     layer's inlining, and its output feeds that layer's fold/branch cleanup
  *     within the same fixpoint rounds.
- * Sequencing (driven by index.js): optimizeFunc 'pre' → watOptimize →
- * optimizeFunc 'post'. The 'post' re-run exists because watr-layer inlining
- * re-introduces rebox/unbox pairs at spliced boundaries that only
- * fusedRewrite knows how to fold; csePureExprLoop similarly only pays off
- * over the inlined shape. Passes must stay idempotent — both phases may
- * see the same function.
+ * Sequencing: optimizeFunc runs ONCE, in the 'pre' phase (src/wat/assemble.js
+ * optimizeModule), then watOptimize is the sole and final optimizer. There is no
+ * post-watr re-run — re-running jz's leaf passes on watr's output both violated the
+ * "watr is the only optimizer, once, fixpoint" architecture and miscompiled (dropped a
+ * reassigned-param tee, corrupted SIMD frames). The `phase` param is vestigial: no
+ * caller passes 'post'. See .work/research.md → "Vectorizer → lowering (pre-watr)".
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -3248,6 +3248,38 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  * Called in the 'post' phase of optimizeFunc, before vectorizeLaneLocal, so the
  * cleaned IR is what the vectorizer pattern-matches.
  */
+// Build the "pure for SIMD lane-inline" map consumed by tryPerPixelColor's Phase-2
+// user-function inline (cfg._pureFuncMap). A user function qualifies when its body has
+// no side effects: no global.set, no memory store, and no call except $math.* / $__to_num
+// (a pure numeric coercion the lane lift strips). foldStrDispatchF64 runs first
+// (idempotent) so the purity check sees the folded body — dead __is_str_key dispatch on a
+// proven-f64 param would otherwise read as impure. Built in the emit phase (optimizeModule),
+// BEFORE the per-function lane vectorizer runs, so callee bodies are still clean scalar.
+export function buildPureFuncMap(funcs) {
+  const pureFuncMap = new Map()
+  const hasSideEffect = (node) => {
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op === 'global.set') return true
+    if (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) return true
+    if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.') && node[1] !== '$__to_num') return true
+    if (op === 'call_indirect' || op === 'call_ref') return true
+    return node.some((c, i) => i > 0 && hasSideEffect(c))
+  }
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func') continue
+    const name = fn[1]
+    if (typeof name !== 'string' || name.startsWith('$math.') || name.startsWith('$__')) continue
+    foldStrDispatchF64(fn)
+    const bodyStart = findBodyStart(fn)
+    if (bodyStart < 0) continue
+    let pure = true
+    for (let i = bodyStart; i < fn.length; i++) if (hasSideEffect(fn[i])) { pure = false; break }
+    if (pure) pureFuncMap.set(name, fn)
+  }
+  return pureFuncMap
+}
+
 export function foldStrDispatchF64(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -3542,8 +3574,12 @@ export function unswitchTypedParamLoop(fn) {
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  * @param globalTypes optional global name → wasm type map (for promoteGlobals)
  * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
- * @param phase 'pre' (default, pre-watr leaf pass) or 'post' (re-run after watr) —
- *        gates the passes that only pay off once watr has reshaped the IR.
+ * @param phase always 'pre' now — jz's optimizer runs once, before watr (there is no
+ *        post-watr re-run; the block was deleted). The `phase === 'post'` gates below are
+ *        INERT: they fence passes (csePureExprLoop, splitLoopPrivateScratch+LICM, rotateLoops)
+ *        that only paid off after watr's inlining — the LICM/rotation whose loss regressed
+ *        raytrace/lz. Kept as the reference to MIGRATE INTO watr (phase 2, see .work/research.md),
+ *        not live code. `phase` is otherwise vestigial.
  */
 export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre', reachableWrites) {
   if (cfg && cfg.hoistPtrType === false &&
@@ -3587,14 +3623,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
-  // Vectorizer runs PRE-watr unless full watr is enabled (`watr: true`). For full watr,
-  // defer to post — full passes (notably `inlineOnce` + the post-inline `propagate`
-  // sweep) reshape the IR so much that pre-watr SIMD patterns get scrambled. Light
-  // watr (or no watr) leaves the lane locals intact for vectorize to pattern-match,
-  // and lets a non-trivial chunk of SIMD survive the propagate+fold pipeline.
   if (cfg && cfg.vectorizeLaneLocal === true) {
-    const fullWatr = cfg.watr === true || typeof cfg.watr === 'object'
-    const runVectorizer = (fullWatr && phase === 'post') || (!fullWatr && phase !== 'post')
+    // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
+    // re-optimize). watr is the sole optimizer that runs after, and it preserves the
+    // v128 the lift produces. `phase === 'post'` is now vestigial (no post caller).
+    const runVectorizer = phase !== 'post'
     // Phase 1: fold dead string-dispatch blocks on proven-f64 locals BEFORE
     // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
@@ -3624,27 +3657,26 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // 'pre' phase (no 'post' re-run), so vectorize already ran above; for full watr the vectorizer is
   // deferred to 'post', so skip 'pre' here to stay after it. (propagateSingleUse itself skips any
   // function the vectorizer already lifted to v128.)
-  const fullWatr_psu = !!(cfg && (cfg.watr === true || typeof cfg.watr === 'object'))
-  if ((phase === 'post' || !fullWatr_psu) && (!cfg || cfg.propagateSingleUse !== false)) propagateSingleUse(fn)
+  // Forward-substitute single-use temps AFTER the vectorizer (which now always runs in
+  // 'pre', above) — propagateSingleUse itself skips any function already lifted to v128.
+  if (!cfg || cfg.propagateSingleUse !== false) propagateSingleUse(fn)
   // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
   // watr's use-count propagate leaves (set→tee fold, incl. effectful single-use forward).
-  if ((phase === 'post' || !fullWatr_psu) && (!cfg || cfg.foldSetToTee !== false)) foldSetToTee(fn)
-  // SSA-split loop-private unrolled scratch (post-vectorize: vectorized loops now carry
-  // v128 and are skipped) so the LICM below hoists the per-iteration invariants the
-  // unroller's name-merging hid — rust/LLVM's free-after-unroll register hoist (closes
-  // the raytrace per-sphere `c_i` recompute). Bit-exact; re-run LICM to lift the splits.
-  if (phase === 'post' && (!cfg || cfg.hoistInvariantLoop !== false)) {
+  if (!cfg || cfg.foldSetToTee !== false) foldSetToTee(fn)
+  // SSA-split loop-private unrolled scratch, then re-run LICM to hoist the freed per-iteration
+  // invariants (rust/LLVM's free-after-unroll register hoist — the raytrace per-sphere `c_i`
+  // recompute). Its input is UNROLLED/INLINED scratch, which today only exists after watr's
+  // inlining — so pre-watr it's a no-op (raytrace stays regressed). Gated OFF (`cfg.splitScratch`,
+  // default false) until jz gains pre-watr inlining (phase-2); the logic is the migration target.
+  if (cfg && cfg.splitScratch === true && (!cfg || cfg.hoistInvariantLoop !== false)) {
     splitLoopPrivateScratch(fn)
-    // Iterate LICM for the dependency cascade: c = ox²+… is invariant only once ox is
-    // itself hoisted out, which the single-pass hoister can't see in one go. 4 climbs
-    // covers the deepest scratch chain; idempotent, so it self-terminates.
     for (let k = 0; k < 4; k++) hoistInvariantLoop(fn)
   }
-  // Loop rotation — the LAST shape pass (post-watr only, so no later pass reverts
-  // it and the v128 loops are already formed for the skip-guard). Speed-tier: it
-  // duplicates the loop condition for a fused conditional back-edge (1.35× on the
-  // lz/qoi scalar scans — see rotateLoops).
-  if (cfg && cfg.rotateLoops === true && phase === 'post') rotateLoops(fn)
+  // Loop rotation — the LAST shape pass. Runs in the pre phase (the only phase now); the
+  // vectorizer above has already formed the v128 loops it skips. Speed-tier: it duplicates the
+  // loop condition for a fused conditional back-edge (1.35× on the lz/qoi scalar scans). watr's
+  // loopify is disabled when vectorizing, so nothing downstream reverts the rotation.
+  if (cfg && cfg.rotateLoops === true) rotateLoops(fn)
   // Canonicalize boolean conditions (strip redundant `!= 0` / double-`eqz`) — after
   // rotateLoops so its fused back-edges get cleaned too. Tied to the peephole pass.
   if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(fn)

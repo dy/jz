@@ -2722,6 +2722,32 @@ test('SIMD inline - small v128 helpers fold into every caller at speed, bit-exac
   is((wat(INLINE_SRC, { optimize: 'speed' }).match(/call \$(len|sdf)/g) || []).length, 0, 'speed inlines the whole SIMD helper chain → 0 calls')
 })
 
+// jz semantic inliner is OPT-IN (optimize.inlinePureFns) — the architectural home for purity+type-driven
+// inlining, exercised here even though it's off in the default corpus build.
+const INLINE_OPT = { optimize: { vectorizeLaneLocal: true, watr: true, inlinePureFns: true } }
+test('jz semantic inliner - small single-caller pure helper inlines pre-watr, exposing vectorization', () => {
+  // A pure single-caller helper called in a map loop is opaque to the vectorizer as a `call`. jz
+  // inlines it as LOWERING (pre-watr, purity+size-gated) so the arithmetic is visible → the loop lifts
+  // to f64x2. This is the jz-owns-semantic-inlining borderline (watr keeps only mechanical residual).
+  const src = `const g = (x) => x*x + 2.0*x - 1.0
+    export let f = (n) => { const a = new Float64Array(n); for (let i=0;i<n;i++) a[i] = g(i*0.5)
+      let s = 0.0; for (let i=0;i<n;i++) s += a[i]; return s }`
+  is(runVec(src, INLINE_OPT).f(64), runVec(src, NOVEC).f(64), 'inlined-helper map bit-exact vs scalar')
+  const w = wat(src, INLINE_OPT)
+  ok(!/call \$g/.test(w), 'single-caller pure helper $g is inlined (no residual call)')
+  ok(hasV128(w), 'the map lifts to v128 once the helper arithmetic is exposed')
+})
+
+test('jz semantic inliner - tee-heavy helper stays correct (leak guard, no undeclared local)', () => {
+  // `av` is read twice → jz CSEs it to a `local.tee`. Splicing the callee verbatim would leak `av`
+  // as an undeclared caller local ("$av not in scope"); the general inliner's leak guard bails (keeps
+  // the call) rather than emit invalid IR. Either way the result must be bit-exact vs the scalar oracle.
+  const src = `const q = (a) => { const av = a < 0.0 ? -a : a; return av * av }
+    export let f = (n) => { const o = new Float64Array(n); for (let i=0;i<n;i++) o[i] = q(i - 30.0)
+      let s = 0.0; for (let i=0;i<n;i++) s += o[i]; return s }`
+  is(runVec(src, INLINE_OPT).f(64), runVec(src, NOVEC).f(64), 'tee-helper map bit-exact (leak guard safe)')
+})
+
 // Integer convolution column-strip-mine (tryConvColumn): the int8 conv2d / dense-MAC kernel. After
 // the K×K receptive-field loops unroll at speed, the output-column loop is a straight-line f64
 // reduction `acc = bias + Σ inp[…+ox]·wt[…]` over int8 taps → requantize (>>SHIFT), ReLU-clamp,

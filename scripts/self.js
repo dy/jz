@@ -21,18 +21,16 @@ import { resetProgramFactsCache } from '../src/compile/program-facts.js'
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from '../src/compile/emit.js'
-import { resolveOptimize, optimizeFunc, collectVolatileGlobals } from '../src/optimize/index.js'
+import { resolveOptimize, SIMD_PINNED } from '../src/optimize/index.js'
 import watOptimize from 'watr/optimize'
-import { appendLateStdlib } from '../src/wat/assemble.js'
 import jzify from '../jzify/index.js'
 
-// Optimization tail, identical to index.js's host-facing compile(): watOptimize
-// (CSE/DCE/const-fold/vectorize-lane SIMD at the WAT level) then the optimizeFunc
-// 'post' pass that re-folds the rebox/unbox roundtrips watr's inliner reintroduces
-// at closure boundaries. Gated on cfg.watr, so an optimize:false config is a no-op
-// and the byte leg (compileSelf, resolveOptimize(false)) stays untouched. Running it
-// here is what keeps the self-host kernel's codegen on par with native — the SIMD/
-// narrowing/SROA shape tests validate exactly this output.
+// Optimization tail, mirroring index.js's host-facing compile(): watOptimize is the SOLE, final
+// optimizer. All lowering — incl. auto-vectorization and the f64x2 mirror append — already ran in
+// compileAst (src/compile/index.js → optimizeModule → optimizeFunc 'pre'), so there is NO post-watr
+// re-optimize here: re-running jz's leaf passes on watr's output miscompiled (dropped a reassigned-
+// param tee) and violated the "watr is the only optimizer, once, fixpoint" architecture — the exact
+// reason index.js's post-block was deleted. Gated on cfg.watr, so optimize:false is a no-op.
 function optimizeTail(module, cfg) {
   let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
   if (cfg.vectorizeLaneLocal) {
@@ -53,16 +51,10 @@ function optimizeTail(module, cfg) {
   if (watrOpts === true) watrOpts = { guardRefine: true }
   else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
   if (!cfg.watr) return module
-  const optimized = watOptimize(module, watrOpts)
-  const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
-  const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-  const volatileGlobals = collectVolatileGlobals(funcs)
-  for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post')
-  // Mirror index.js: the 'post' lane vectorizer injects f64x2 stdlib mirrors ($math.log_v / cos2 / …)
-  // that weren't present when the stdlib was pulled + treeshaken — append any now-referenced helper
-  // body, else the self-host emits `call $math.log_v` with no matching func ("Unknown func $math.log_v").
-  appendLateStdlib(optimized)
-  return optimized
+  // Pin the scalar transcendentals + their f64x2 mirrors so watr's inliner keeps the calls the
+  // pre-watr vectorizer emitted (mirror index.js).
+  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+  return watOptimize(module, watrOpts)
 }
 
 // Shared front half of every kernel entry: reset ctx, apply the option JSON,

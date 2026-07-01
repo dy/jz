@@ -36,7 +36,7 @@ const parseTemplate = (str) => {
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
-import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from '../optimize/index.js'
+import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
 import { installHelperCounters, instrumentHelperCounter } from '../helper-counters.js'
@@ -535,7 +535,7 @@ const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.a
 // assembled. Append any referenced-but-missing mirror body (fixpoint over their own calls, though
 // the trig mirrors call nothing). moduleArr is mutated in place; non-mirror references are left for
 // watr to resolve (a genuine missing helper is the kernel's own pull, already satisfied).
-export function appendLateStdlib(moduleArr) {
+export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
   const stdlib = ctx.core.stdlib
   const have = new Set()
   for (const n of moduleArr) if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string') have.add(n[1])
@@ -549,7 +549,12 @@ export function appendLateStdlib(moduleArr) {
       const name = ref.slice(1)
       if (have.has(ref) || !LATE_VEC_HELPERS.has(name) || stdlib[name] == null) continue
       const node = parseTemplate(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
-      moduleArr.push(node[0] === 'module' ? node[1] : node)
+      const body = node[0] === 'module' ? node[1] : node
+      pushTarget.push(body)
+      // Keep the scan array in sync so the fixpoint can resolve a mirror that itself
+      // calls another mirror (cbrt_v → log_v/exp_v). When pushTarget IS moduleArr the
+      // single push already did this.
+      if (pushTarget !== moduleArr) moduleArr.push(body)
       have.add(ref)
       added = true
     }
@@ -718,7 +723,44 @@ export function optimizeModule(sec, profiler) {
     const stable = stablePtrGlobalNames()
     if (stable.size) for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, reachableWrites)
   })
+  // Build the pure-function map for tryPerPixelColor's Phase-2 lane inline BEFORE the
+  // per-function vectorizer runs — the vectorizer is jz lowering (pre-watr), so it needs
+  // its inline candidates now, not after watr. Bodies are still clean scalar here.
+  if (cfg && cfg.vectorizeLaneLocal === true) {
+    const pureFuncMap = buildPureFuncMap(allFuncs)
+    if (pureFuncMap.size) {
+      cfg._pureFuncMap = pureFuncMap
+      // jz semantic inlining (LOWERING) — inline pure user functions into their call sites BEFORE the
+      // vectorizer, so it sees the callee arithmetic (the pow/decode a colour helper hides). jz owns
+      // this because the decision is purity+type-driven; watr keeps only mechanical residual inlining.
+      // Gated to SINGLE-CALLER pure functions: inlining the sole call site is a guaranteed win (removes
+      // the call AND the now-dead function, zero size cost). Multi-caller small helpers stay watr's
+      // size-gated mechanical job at the speed tier — jz doesn't duplicate that.
+      // SMALL single-caller only: inlining a small pure helper (a `spow`/`decode` colour term) into its
+      // sole caller exposes its arithmetic to the vectorizer at zero size cost. Inlining a LARGE function
+      // (a whole conversion loop) is neutral-to-harmful (worse layout/regalloc, measured on colorpq), and
+      // watr's own inlineOnce already handles the mechanical single-caller case — so jz stays out of it.
+      // OPT-IN (default off): correct + fuzz-clean, but inlining across the corpus changes a lot of
+      // pinned output-shape assertions for no measured bench win (the current regressions are outer-strip/
+      // widening recognition + watr wasm-opt-class, not inlining). Kept as the architectural home for
+      // semantic inlining, enabled per-compile via `optimize.inlinePureFns: true`, until a real case pays.
+      if (cfg.inlinePureFns === true) t('inlinePureFns', () => {
+        const callCount = new Map()
+        const countCalls = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') callCount.set(n[1], (callCount.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countCalls(n[i]) }
+        for (const s of allFuncs) countCalls(s)
+        const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, i) => a + (i > 0 ? nodeCount(c) : 0), 0)
+        const INLINE_MAX = 48
+        const canInline = new Set([...pureFuncMap.keys()].filter(name =>
+          callCount.get(name) === 1 && nodeCount(pureFuncMap.get(name)) <= INLINE_MAX))
+        if (canInline.size) { const idRef = { next: 0 }; for (const s of allFuncs) inlinePureFnsInFn(s, pureFuncMap, idRef, canInline) }
+      })
+    }
+  }
   t('optimizeFuncs', () => { for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, 'pre', reachableWrites) })
+  // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
+  // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
+  // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.
+  if (cfg && cfg.vectorizeLaneLocal === true) t('appendLateStdlib', () => appendLateStdlib(allFuncs, sec.stdlib))
   if (!cfg || cfg.arenaRewind !== false) {
     const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
     const fnByName = new Map()

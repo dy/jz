@@ -110,3 +110,27 @@ for (const { name, src } of MEM_PROGRAMS) {
     }
   })
 }
+
+// ── Reassigned-parameter / side-effecting-select-arm: a value written to a PARAM (or local)
+// then read must observe the write. These surfaced only at opt ≥ 2 (watr runs): the `x = 0`
+// compiles as a `local.tee` inside a ToInt32 `|0` idiom or a ternary else-arm, and watr's
+// constant-`select` fold used to drop the discarded arm — dropping the write, so the read saw
+// the incoming param. `select` evaluates BOTH arms, so the fold is only sound when the discarded
+// arm is pure (watr fix: `isPure(discardedArm)`). Also caught by the differential fuzzer
+// (seeds 90/2833/3611); pinned deterministically here across the watr opt levels.
+const REASSIGN_PROGRAMS = [
+  { name: 'param = 0; return p|p', src: `export let f = (p0) => { p0 = 0; p0 = 0; return (p0 | p0) }`, args: [12345.678], want: 0 },
+  { name: 'param = 0; const-ternary reads it', src: `export let f = (p0, p1) => { p1 = 0; let v0 = ((3 === 3) ? 0 : p1); return p1 }`, args: [1, 6995.66], want: 0 },
+  { name: 'local = p; local = 0; shift reads it', src: `export let f = (p0, p1) => { let v0 = 0; let v1 = p0; v1 = 0; v0 = (0 >> v1); return v1 }`, args: [12345.678, 1], want: 0 },
+]
+for (const { name, src, args, want } of REASSIGN_PROGRAMS) {
+  test(`differential reassign: ${name}`, () => {
+    const ref = jsRef(src)
+    ok(Object.is(ref(...args), want), `oracle sanity: js ${name} = ${ref(...args)} (expected ${want})`)
+    for (const level of [0, 1, 2, 3, 'speed']) {
+      const { exports: { f } } = jz(src, { optimize: { level } })
+      const got = f(...args)
+      ok(Object.is(got, want), `${name}@${level} → jz ${got} ≠ ${want}`)
+    }
+  })
+}

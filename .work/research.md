@@ -627,17 +627,43 @@ form BEFORE vectorizing (as lowering, not as a second optimizer pass — see the
   194/194; jz SIMD suite 148/154 (the 6 failures are all *missing-optimization* asserts — the bit-exact
   checks pass, i.e. safe scalar fallback), full suite 2572 pass.
 
-*Phase 2 — OPEN. Deleting the post-block regressed RUNTIME (size is neutral: +0.3% at -Os,
-−4% at speed). Measured current-vs-HEAD (worktree), speed tier:*
-  - **raytrace 1.73×, lz 1.31× slower** — pure scalar: the post-block's `splitLoopPrivateScratch`
-    (per-sphere LICM *after* watr inlined the loop) and `rotateLoops` (fused back-edge) have no watr
-    equivalent. → **watr must gain LICM + loop rotation** ("binaryen-level passes", pinned in watr).
-  - **nbody 1.23× (f64x2 36→9), blur 2.05× (v128 24→16), colorpq 1.82×** — degraded SIMD: the old
-    vectorizer ran *post*-watr, so watr's inlining had already EXPOSED the arithmetic the SLP/dot-pair
-    and blur recognizers pack. Pre-watr they see un-inlined bodies → fewer lanes. This is the core
-    tension: **vectorization quality depends on inlining.** Resolve by doing more jz-side inlining as
-    LOWERING before the pre-watr vectorizer (jz already has `pureFuncMap` + `recursionUnroll`), so the
-    recognizers see inlined code — NOT by moving vectorize back after watr.
+*Phase 2 — IN PROGRESS. Deleting the post-block regressed RUNTIME (size neutral). Recovery is
+two-pronged, per the "jz owns lowering, watr owns mechanical optimization" borderline.*
+
+**Borderline (decided):** a transform belongs where the KNOWLEDGE that makes it optimal lives.
+  - **Inlining is jz's** — the *decision* (what to inline, to expose which lowering) needs purity
+    (`pureFuncMap`), types, and the downstream vectorizer/narrower, all of which jz has and watr
+    (untyped WAT, size-gated, semantically blind) does not. **Built (`inlinePureFnsInFn`, vectorize.js),
+    but OPT-IN / off by default (`optimize.inlinePureFns`).** It inlines SMALL (≤48 nodes) SINGLE-CALLER
+    pure functions before the vectorizer, leak-guarded (bails if a callee `local.tee` would escape — but
+    ONLY on the general path; the vectorizer's own lane-inline re-processes tees). Correct + fuzz-clean;
+    pinned in test/simd.js. **Finding — its marginal value doesn't justify default-on:** for a
+    *vectorizable* loop the vectorizer ALREADY lane-inlines the pure call (same `inlinePureCallExpr`),
+    and watr's `inlineOnce` already folds single-caller functions — so the general pass is redundant
+    except in the narrow case where a `call` blocks the vectorizer's *loop recognition* (before the
+    lane-lift). Default-on inlined broadly across the corpus, churning 121 pinned output-shape asserts
+    for zero bench win. Left opt-in as the correct architectural home; revisit scoped to
+    recognition-unblocking when a real case needs it.
+  - **LICM, loop-rotation, CSE, coalesce are watr's** — mechanical, no high-level knowledge. Making
+    watr wasm-opt-class (add these "binaryen-level" passes, pinned in watr's suite) is the other prong.
+
+**Recovered:** `rotateLoops` re-enabled in the PRE phase (it's a pure loop-shape transform, needs no
+inlining, survives watr) → **lz 15914 vs HEAD 15950** (full), fuzz-clean.
+
+**Remaining regressions (measured current-vs-HEAD, speed tier), with the concrete lever:**
+  - **nbody 1.28× (f64x2 36→9, no `f64x2.sqrt`)** — `tryOuterStrip` (2 pixels `i`/`i+1` in lanes over
+    the inner `j`-reduction) under-fires on the RAW pre-watr loop shape. → jz vectorizer recognition
+    (same class as the Phase-1 canon gaps, in the outer-strip recognizer).
+  - **blur 2.02× (v128 24→16)** — the i16x8 widening-blur recognizer packs fewer lanes pre-watr. →
+    jz vectorizer recognition.
+  - **raytrace 1.75×** — NO calls in the sphere loop; lost the post-block's LICM + load-CSE cleanup of
+    watr's output. `splitLoopPrivateScratch` is a NO-OP pre-watr (its unrolled-scratch input only
+    exists post-inline; gated off as `cfg.splitScratch`). → **watr LICM + load-CSE** (wasm-opt-class).
+  - **colorpq 1.82×** — vectorizes fine (470 f64x2); the slowdown is redundant scalar glue watr's
+    post-vectorize CSE used to clean. → **watr CSE** (wasm-opt-class).
+So the inliner (built, correct) does not by itself recover these four — they are outer-strip/widening
+recognition (jz) + watr wasm-opt-class LICM/CSE. The inliner recovers the DIFFERENT class (small
+single-caller pure helper feeding a map), and is the correct architectural home regardless.
 
 *Remaining missing-optimization gaps (safe scalar today, bit-exact — pinned SIMD asserts):*
   1. AoS constant-exponent pow → exp∘log (jz doesn't emit pre-watr — recognizer/inline shape).

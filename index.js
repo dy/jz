@@ -16,12 +16,13 @@
  *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
  *        narrowing fixpoint) with IR generation via the emitter table (src/compile/emit.js).
  *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
- *        Also calls optimizeFunc (src/optimize/index.js): `hoistPtrType` + fused peephole/inline/memarg walk.
+ *        The emit phase (src/wat/assemble.js optimizeModule) then runs jz's ONLY optimizer pass —
+ *        optimizeFunc (src/optimize/index.js): `hoistPtrType` + fused peephole/inline/memarg walk +
+ *        auto-vectorization. All lowering, incl. SIMD, happens here — BEFORE watr.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
- *     ↓  watOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
- *     ↓  optimizeFunc 2nd pass — re-folds rebox/unbox roundtrips that watOptimize's inliner
- *        re-introduces at inline boundaries (caller's boxPtrIR meets callee's
- *        i32.wrap_i64(i64.reinterpret_f64 __env)). watr's peephole doesn't cover this.
+ *     ↓  watOptimize (opt-out via opts.optimize=false) — the SOLE, FINAL optimizer: CSE, DCE, const
+ *        fold, inline, coalesce. Runs ONCE, as a fixpoint. No jz pass touches WAT after it (bar the
+ *        stable-global-offset hoist, a phase-2 watr-migration candidate). See .work/research.md.
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
  *
  * # State
@@ -44,15 +45,13 @@ import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import watrPrint from "watr/print";
 import watOptimize from "watr/optimize";
-import { appendLateStdlib } from './src/wat/assemble.js'
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import { optimizeFunc, foldStrDispatchF64, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize, SIMD_PINNED } from './src/optimize/index.js'
-import { findBodyStart } from './src/ir.js'
+import { collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize, SIMD_PINNED } from './src/optimize/index.js'
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
@@ -620,24 +619,14 @@ const jzCompileInner = (code, opts = {}) => {
     if (watrOpts === true) watrOpts = {}
     watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
   }
-  // Capture the per-func alias facts (param-distinctness) the emit phase stamped as JS
-  // expandos — watOptimize round-trips the module through watr's printer/parser, which
-  // rebuilds plain arrays and DROPS every non-index property. Without re-attaching, the
-  // 'post' leaf passes (splitLoopPrivateScratch, hoistInvariantLoop) lose the proven
-  // alias model and fall back to weaker/heuristic invariance — the exact reason raytrace's
-  // read-only sphere loads couldn't be SOUNDLY proven loop-invariant after watr ran.
-  const aliasFacts = cfg.watr ? new Map(module.filter(n => Array.isArray(n) && n[0] === 'func' && n.distinctParams).map(n => [n[1], n.distinctParams])) : null
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
-  if (aliasFacts?.size) for (const n of optimized) if (Array.isArray(n) && n[0] === 'func' && aliasFacts.has(n[1])) n.distinctParams = aliasFacts.get(n[1])
-  // Stable-pointee module globals: resolve the __ptr_offset once per function.
-  // Never-forwarding kinds — every PTR tag outside __ptr_offset's forwarding
-  // set {ARRAY, HASH, SET, MAP} — give the same offset for the same bits, so
-  // the snapshot only needs the global's VALUE stable through the function:
-  // the reachable-writes call graph proves that precisely. Independent of watr
-  // (the auto-config turns watr off for large sources — exactly the
-  // module-global DSP-state programs this pass exists for: rfft, diffusion);
-  // when watr DID run, it goes before the post leaf passes so the snapped
-  // local participates in hoistAddrBase/cseScalarLoad.
+  // Stable-pointee module globals: resolve the __ptr_offset once per function. Never-forwarding
+  // kinds — every PTR tag outside __ptr_offset's forwarding set {ARRAY, HASH, SET, MAP} — give the
+  // same offset for the same bits, so the snapshot only needs the global's VALUE stable through the
+  // function: the reachable-writes call graph proves that precisely. This is the ONE jz pass still
+  // touching WAT after watr; it exists because watr has no stable-global-offset hoist of its own
+  // (the module-global DSP programs it serves — rfft, diffusion — run with watr auto-OFF anyway).
+  // TODO(phase-2): migrate into watr so the "watr is the sole optimizer" invariant holds fully.
   if (cfg.hoistGlobalPtrOffset !== false) {
     const stableGlobals = stablePtrGlobalNames()
     if (stableGlobals.size) {
@@ -646,57 +635,13 @@ const jzCompileInner = (code, opts = {}) => {
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }
   }
-  // Final peephole pass: watOptimize's inliner can re-introduce rebox/unbox at boundaries
-  // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
-  // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
-  // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
-  if (cfg.watr) {
-    // Build global name→type map from ctx.scope.globalTypes for promoteGlobals
-    const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
-    // Build pure-function map for Phase 2 user-function inline in tryPerPixelColor.
-    // A function is "pure for SIMD inline" if its body contains no side effects:
-    // no global.set, no memory stores, no calls outside $math.*.
-    // foldStrDispatchF64 is run first (idempotent) so the purity check sees the
-    // folded body — dead __is_str_key dispatch would otherwise look impure.
-    if (cfg.vectorizeLaneLocal === true) {
-      const allFuncs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-      const pureFuncMap = new Map()
-      const hasSideEffect = (node) => {
-        if (!Array.isArray(node)) return false
-        const op = node[0]
-        if (op === 'global.set') return true
-        if (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) return true
-        // `$__to_num` is a pure numeric coercion (identity on a finite f64) — the vectorizer
-        // strips it in the lane lift, where every value is a genuine f64. Treating it as pure
-        // lets a helper like `decode(v) = v>=0 ? … : …` (whose param jz conservatively coerces)
-        // qualify for lane inline. Scoped to this builder → only affects vectorizer inlining.
-        if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.') && node[1] !== '$__to_num') return true
-        if (op === 'call_indirect' || op === 'call_ref') return true
-        return node.some((c, i) => i > 0 && hasSideEffect(c))
-      }
-      for (const fn of allFuncs) {
-        const name = fn[1]
-        if (typeof name !== 'string' || name.startsWith('$math.') || name.startsWith('$__')) continue
-        // Fold dead str-dispatch blocks so purity check sees the clean form.
-        foldStrDispatchF64(fn)
-        const bodyStart = findBodyStart(fn)
-        if (bodyStart < 0) continue
-        let pure = true
-        for (let i = bodyStart; i < fn.length; i++) if (hasSideEffect(fn[i])) { pure = false; break }
-        if (pure) pureFuncMap.set(name, fn)
-      }
-      if (pureFuncMap.size) cfg._pureFuncMap = pureFuncMap
-    }
-    time('watrReopt', () => {
-      const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-      const volatileGlobals = collectVolatileGlobals(funcs)
-      const reach = collectReachableGlobalWrites(funcs)
-      for (const node of funcs) optimizeFunc(node, cfg, globalTypesMap, volatileGlobals, 'post', reach)
-    })
-    // The 'post' lane vectorizer can inject stdlib calls (e.g. the f64x2 trig mirror $math.cos2)
-    // absent from the already-pulled+treeshaken module — append any now-referenced helper body.
-    appendLateStdlib(optimized)
-  }
+  // NO post-watr optimizer. jz does ALL lowering — including auto-vectorization — BEFORE watr
+  // (src/wat/assemble.js optimizeModule → optimizeFunc 'pre'); watr is the sole optimizer and runs
+  // exactly ONCE, as a fixpoint. Re-running jz's leaf passes on watr's output (the former 'post'
+  // phase) both violated that architecture AND miscompiled: its propagate/fold sweep dropped a
+  // reassigned-param `local.tee` write and corrupted the divergent-escape SIMD frame (mandelbrot).
+  // The f64x2 stdlib mirrors the pre-watr vectorizer injects are appended in the emit phase
+  // (optimizeModule's appendLateStdlib); nothing post-watr needs to touch the module.
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))
