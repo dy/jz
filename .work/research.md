@@ -582,3 +582,50 @@ either proven minimal or at a floor no wasm producer can beat. Benchmarks are
 the contract holds; the perf-fuzzer and bias audit find the invariants not yet
 formalized. "We win benchmarks" is induction against a moving target; "we emit
 waste-free locally-optimal code with bounded variance" is deduction.
+
+
+### Vectorizer → lowering (pre-watr). North star.
+
+**Principle.** Vectorization is a jz *lowering* decision ("turn this array-map into SIMD"), NOT
+optimization. It belongs in jz, BEFORE watr. Today it runs post-watr and pattern-matches *syntax*,
+so watr reshapes the loop and jz has to *recanonicalize watr's output back* into the shape the
+vectorizer expects — a symptom of two bugs: (1) a syntactic recognizer that breaks under any
+reshaping, (2) a high-level transform running after the low-level optimizer, forced to reconstruct
+structure the optimizer erased. The post-watr `optimizeFunc` meddling with WAT is that inversion.
+
+**Target pipeline (one canonical form, one optimizer, no round-trip):**
+```
+jz:   parse → lower  (value model + inline pure helpers + vectorize array-maps → clean canonical IR incl. SIMD)
+watr: optimize ONCE  (coalesce/DCE/fold/rebox — machine-level, SIMD-preserving, LAST)
+```
+
+**Recognizers read DATAFLOW, not syntax** — induction var + affine memory access + pure body — so
+they're invariant under canonicalization. This is the load-bearing change; it kills recanonicalization.
+
+**Steps (each gated by: ALL pinned vectorizations still trigger, bit-exact):**
+1. Pin EVERY recognizer with a regression test (kernel triggers it + bit-exact vs scalar + asserts v128). Safety net first.
+2. Build `pureFuncMap` + loop canonicalization in LOWERING (pre-watr) — they're vectorizer inputs, move with it.
+3. Rewrite recognizers dataflow-first (one at a time, verified bit-exact against current output). ~5700 lines of shape-matching → semantic.
+4. Move vectorize to pre-watr; DELETE jz's post-watr `optimizeFunc`/WAT meddling entirely.
+5. Make watr SIMD-preserving (inline/propagate/coalesce keep v128 valid), pinned in watr's suite.
+
+**Invariants:** no jz WAT pass after watr; watr is the sole optimizer, runs once, last; every pinned
+vectorization keeps firing bit-exact; watr never scrambles v128.
+
+Generic folds watr lacked already migrating in: rebox-fold `wrap∘reinterpret∘reinterpret∘extend → x`
+(watr `afbdd97`).
+
+**Feasibility PROVEN (experiment, reverted).** Moved the whole canonicalize+vectorize block to run on
+`module` BEFORE watOptimize (build pureFuncMap pre-watr too). Result: **~150 of 154 SIMD tests pass
+pre-watr** — simple maps, reductions, stencils, mem-copy, ramp-map, byte-scan, blur, channel-reduce,
+most per-pixel, tone-map, SLP all vectorize on jz's form and survive watr (watr already preserves
+v128; fft kept its f64x2). Only **4 categories break**, all transcendental/narrowing canonicalization
+that lands differently pre-watr:
+  1. AoS constant-exponent pow → exp∘log  (exponent constant-pool timing: pooled `$…_pg` global vs inline f64.const)
+  2. AoS stride-3 transcendentals cbrt/exp/pow  ($math.*_v mirror / PPC_CALL2 interaction with watr inline)
+  3. narrowing `a[i]|0` → trunc_sat  (ToInt32 idiom shape not canonical pre-watr)
+  4. per-pixel-color sin+sqrt+pow  (same transcendental class)
+So the remaining rewrite is BOUNDED: fix these 4 canonicalizations to fire before the pre-watr
+vectorizer (run hoistConstantPool / the ToInt32 canon / PPC pinning in lowering, ahead of vectorize),
+NOT a 5700-line dataflow rewrite. Then flip permanently + delete the post-watr block + full verify
+(suite+fuzz+selfhost+bench). The pinned SIMD suite is the exact regression gate for each fix.
