@@ -608,6 +608,12 @@ const jzCompileInner = (code, opts = {}) => {
     if (watrOpts === true) watrOpts = { inline: 'simd' }
     else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
   }
+  // watr LICM (speed tier): hoist loop-invariant pure arithmetic AFTER watr's inlining exposes it
+  // (the raytrace per-iteration NaN/Inf guard pairs). Mechanical — lives in watr, jz just enables it.
+  if (cfg.watrLicm) {
+    if (watrOpts === true) watrOpts = { licm: true }
+    else if (typeof watrOpts === 'object' && watrOpts.licm === undefined) watrOpts.licm = true
+  }
   // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
   // never matches it), so jz always enables it explicitly.
   if (watrOpts === true) watrOpts = { guardRefine: true }

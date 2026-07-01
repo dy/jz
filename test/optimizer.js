@@ -58,6 +58,24 @@ test('LICM pure calls: a VARYING arg keeps the call IN the loop (soundness)', ()
   }
 })
 
+test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () => {
+  if (onKernel()) return  // kernel bundles its own watr at build time — host-codegen assertion only
+  // The raytrace shape: the invariant only EXISTS after watr's inlineOnce splices the helper
+  // body into the loop — jz's pre-watr LICM can't see it (a user call isn't hoistable), so
+  // the hoist must come from watr's own licm pass, enabled by cfg.watrLicm at speed.
+  // Math.max lowers to the pure `f64.max` (a ternary would lower to `if`, which licm
+  // rightly refuses — control flow isn't a hoistable value op).
+  const src = `
+    const g = (x, y) => Math.max(x, y) * 3.0 + 1.0
+    export let f = (k, n) => { let s = 0.0; for (let i = 0; i < n; i++) s = s + g(k, 2.5) + i; return s }`
+  const wat = compile(src, { wat: true, optimize: 'speed' })
+  ok(/\$__licm/.test(wat), 'watr licm hoists the inlined invariant (a $__licm local exists)')
+  // Bit-exact: licm on === off across invariant-max branches and the zero-trip loop.
+  const on = jz(src, { optimize: 'speed' }).exports.f
+  const off = jz(src, { optimize: { level: 'speed', watrLicm: false } }).exports.f
+  for (const args of [[1.0, 4], [9.0, 4], [2.5, 3], [1.0, 0]]) is(on(...args), off(...args), `watr licm on===off ${JSON.stringify(args)}`)
+})
+
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`
     export const main = () => {
