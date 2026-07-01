@@ -362,10 +362,11 @@ const ICO = {
 // total. Families mirror the bench README's groupings: dense float math vs the
 // integer / control-flow & gather-scatter kernels it separates them from.
 const FAMILY = {
-  // numeric — dense f64 math, linear algebra, physics, stencils
-  mat4: 'numeric', poly: 'numeric', dotprod: 'numeric', mandelbrot: 'numeric',
-  matmul: 'numeric', heat: 'numeric', nbody: 'numeric', lorenz: 'numeric',
-  particle: 'numeric', spmv: 'numeric',
+  // math — dense f64 math, linear algebra, physics, stencils (integer is its own family below,
+  // so "numeric" would wrongly swallow it — this bucket is specifically the float kernels)
+  mat4: 'math', poly: 'math', dotprod: 'math', mandelbrot: 'math',
+  matmul: 'math', heat: 'math', nbody: 'math', lorenz: 'math',
+  particle: 'math', spmv: 'math',
   // integer — i32 / bit / hash / sort / search / dispatch
   bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
   radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
@@ -604,7 +605,7 @@ const renderStrip = () => {
 }
 
 // ── per-case cards ───────────────────────────────────────────────────────────
-const CHIPS = ['all', 'numeric', 'integer', 'audio', 'image', 'string', 'alloc']
+const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc']
 const famCount = f => f === 'all' ? CASES.length : CASES.filter(c => FAMILY[c.id] === f).length
 const renderChips = () => {
   $('chips').innerHTML = CHIPS.map(f => {
