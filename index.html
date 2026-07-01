@@ -285,6 +285,22 @@
         width: 120px;
       }
 
+      /* substrate-class glyph before each stat label (JS · WASM · native) — the marks the bench
+   chart uses. Brand colours pinned to their dark values (the hero is a fixed dark island). */
+      .metrics .stat span {
+        display: inline-flex;
+        align-items: center;
+      }
+      .metrics .cico {
+        width: 12px;
+        height: 12px;
+        margin-right: 5px;
+        flex: none;
+      }
+      .metrics .cls-js { color: #f0db4f; }
+      .metrics .cls-wasm { color: #9a8bf5; }
+      .metrics .cls-native { color: var(--dim); }
+
       /* logo — the opaque jz mark in the 2×2 major cell, offset 1px to the bottom-right: a hairline gap on the
    TOP/LEFT keeps those grid lines visible, while the bottom/right edges sit flush ON the grid lines (no gap).
    (At full 2-unit size its opaque black covered the top/left lines — a grid line sits at the cell's start edge.) */
@@ -1240,9 +1256,9 @@
             <span class="mlabel">Speed</span>
             <div class="mrow">
               <div class="mstats">
-                <a class="stat" href="bench/"><b :text="v8">2.7×</b><span>V8</span></a>
-                <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span>AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="rust">2.6×</b><span>Rust (wasm)</span></a>
+                <a class="stat" href="bench/"><b :text="v8">2.7×</b><span data-cls="js">V8</span></a>
+                <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span data-cls="wasm">AssemblyScript</span></a>
+                <a class="stat" href="bench/"><b :text="rustnat">1.03×</b><span data-cls="native">Rust</span></a>
               </div>
             </div>
           </div>
@@ -1473,7 +1489,7 @@
       // as plain JS; the FPS/ms readout times its frame. The real REPL (wat · console) is embedded below.
       import jz from './dist/jz.js'
       import sprae from './assets/sprae.js'
-      import { headlineStats } from './assets/headline.js'
+      import { headlineStats, CLS_ICO } from './assets/headline.js'
       const $ = id => document.getElementById(id)
 
         // Blueprint grid: inset --grid-pad from the band's top-left in pure CSS — stable, no JS origin to set.
@@ -1483,14 +1499,18 @@
         // which we fill from the fresh bench numbers so the row always reflects the latest run.
         ; (async () => {
           const m = sprae(document.querySelector('.pitch'),
-            { v8: '2.5×', asspeed: '2.8×', rust: '2.6×', peak: '13.5×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
+            { v8: '2.5×', asspeed: '2.8×', rustnat: '1.03×', peak: '13.5×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
+          // prepend the substrate-class glyph to each stat label (JS · WASM · native),
+          // the same marks the bench chart uses — one shared source (CLS_ICO).
+          for (const el of document.querySelectorAll('.metrics .stat span[data-cls]'))
+            el.insertAdjacentHTML('afterbegin', CLS_ICO[el.dataset.cls] || '')
           try {
             const r = await (await fetch('bench/results.json')).json()
             const s = headlineStats(r)               // shared with the bench page → identical figures
             if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
             if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
             if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
-            if (s.rust) m.rust = s.rust              // jz vs Rust → wasm (apples-to-apples)
+            if (s.rustnat) m.rustnat = s.rustnat     // jz vs native Rust — reaches native systems speed
           } catch { }
         })()
 

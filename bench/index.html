@@ -44,6 +44,8 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
 
 /* tooltips — custom bubble, replaces the slow OS title popup */
 [data-tip] { position: relative; cursor: help; }
+[data-tip=""] { cursor: inherit; }
+[data-tip=""]::after, [data-tip=""]::before { content: none; }
 [data-tip]::after, [data-tip]::before {
   opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .14s ease, transform .14s ease; }
 [data-tip]::after {
@@ -231,7 +233,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { headlineStats } from '../assets/headline.js'
+import { headlineStats, CLS_ICO } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 
 // ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
@@ -341,11 +343,8 @@ const ICO = {
 // substrate-class glyphs: JS + WebAssembly brand marks (Simple Icons); native is a
 // 2-stroke terminal prompt (>_, "runs as a native binary") — a different silhouette
 // from the two square brand marks, kept quiet (gray) since native is the reference.
-const CLS_ICO = {
-  js: `<svg class="cico cls-js" viewBox="0 0 24 24" aria-hidden="true"><title>JS</title><path fill="currentColor" d="M0 0h24v24H0V0zm22.034 18.276c-.175-1.095-.888-2.015-3.003-2.873-.736-.345-1.554-.585-1.797-1.14-.091-.33-.105-.51-.046-.705.15-.646.915-.84 1.515-.66.39.12.75.42.976.9 1.034-.676 1.034-.676 1.755-1.125-.27-.42-.404-.601-.586-.78-.63-.705-1.469-1.065-2.834-1.034l-.705.089c-.676.165-1.32.525-1.71 1.005-1.14 1.291-.811 3.541.569 4.471 1.365 1.02 3.361 1.244 3.616 2.205.24 1.17-.87 1.545-1.966 1.41-.811-.18-1.26-.586-1.755-1.336l-1.83 1.051c.21.48.45.689.81 1.109 1.74 1.756 6.09 1.666 6.871-1.004.029-.09.24-.705.074-1.65l.046.067zm-8.983-7.245h-2.248c0 1.938-.009 3.864-.009 5.805 0 1.232.063 2.363-.138 2.711-.33.689-1.18.601-1.566.48-.396-.196-.597-.466-.83-.855-.063-.105-.11-.196-.127-.196l-1.825 1.125c.305.63.75 1.172 1.324 1.517.855.51 2.004.675 3.207.405.783-.226 1.458-.691 1.811-1.411.51-.93.402-2.07.397-3.346.012-2.054 0-4.109 0-6.179l.004-.056z"/></svg>`,
-  wasm: `<svg class="cico cls-wasm" viewBox="0 0 24 24" aria-hidden="true"><title>WASM</title><path fill="currentColor" d="M14.745,0c0,0.042,0,0.085,0,0.129c0,1.52-1.232,2.752-2.752,2.752c-1.52,0-2.752-1.232-2.752-2.752 c0-0.045,0-0.087,0-0.129H0v24h24V0H14.745z M11.454,21.431l-1.169-5.783h-0.02l-1.264,5.783H7.39l-1.824-8.497h1.59l1.088,5.783 h0.02l1.311-5.783h1.487l1.177,5.854h0.02l1.242-5.854h1.561l-2.027,8.497H11.454z M20.209,21.431l-0.542-1.891h-2.861l-0.417,1.891 h-1.59l2.056-8.497h2.509l2.5,8.497H20.209z M17.812,15.028l-0.694,3.118h2.159l-0.796-3.118H17.812z"/></svg>`,
-  native: `<svg class="cico cls-native" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><title>native</title><path d="M4 17l6-6-6-6M12 19h8"/></svg>`,
-}
+// CLS_ICO (the JS/WASM/native class glyphs) is imported from assets/headline.js — the
+// single source shared with the landing hero, so a class reads the same mark on both.
 
 // Every case lands in exactly one family so the chip counts sum to the corpus
 // total. Families mirror the bench README's groupings: dense float math vs the
@@ -454,12 +453,11 @@ const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, c
   const w = cut ? 100 : (rel / maxLin * 100)
   const barCls = `${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}`
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
-  // The label doubles as the link to that target's source (or, for a failure, the tracker);
-  // the tooltip carries the detail. A plain <span> when there's neither.
-  const attrs = `${tip ? ` data-tip="${esc(tip)}"` : ''}${href ? ` href="${esc(href)}" target="_blank" rel="noopener"` : ''}`
+  // The tooltip rides the whole row so it fires wherever you hover; the label doubles as
+  // the link to that target's source. No tip → no data-tip (no empty ghost bubble).
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
-  const lab = href ? `<a class="lab lnk"${attrs}>${inner}</a>` : `<span class="lab"${attrs}>${inner}</span>`
-  return `<div class="row${strong ? ' strong' : ''}">
+  const lab = href ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>` : `<span class="lab">${inner}</span>`
+  return `<div class="row${strong ? ' strong' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
     ${lab}
     <span class="bar"><i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
     <span class="val">${esc(text)}${size ? `<span class="sz">${esc(fmtB(size))}</span>` : ''}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
@@ -478,12 +476,13 @@ const failKind = reason => {
 }
 const failRow = (label, sub, cls, reason, href) => {
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
-  const tip = `${reason || 'did not compile/run'} — click to report / track on GitHub.`
+  const why = reason || 'did not compile/run'
+  const tip = href ? `${why} — click to report / track on GitHub.` : why
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href
-    ? `<a class="lab lnk" data-tip="${esc(tip)}" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
-    : `<span class="lab" data-tip="${esc(reason || 'did not compile/run')}">${inner}</span>`
-  return `<div class="row fail">
+    ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<span class="lab">${inner}</span>`
+  return `<div class="row fail" data-tip="${esc(tip)}">
     ${lab}
     <span class="bar"></span>
     <span class="val">${esc(failKind(reason))}</span>
@@ -579,7 +578,7 @@ const renderGeomean = () => {
 const STRIP = [
   ['Speed', [
     ['v8', 'V8', 'js', 'jz vs Node/V8 — geometric-mean speedup across the corpus (your runtime). Up to 13.8× on the best single case (dotprod).'],
-    ['rust', 'Rust → wasm', 'wasm', 'jz vs Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8 — jz beats a systems language, apples-to-apples.'],
+    ['rust', 'Rust wasm', 'wasm', 'jz vs Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8 — jz beats a systems language, apples-to-apples.'],
     ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native) — the speed-of-light ceiling. jz matches it (1.01×), from plain JavaScript.'],
   ]],
   ['Size', [
@@ -665,7 +664,7 @@ const renderCards = () => {
     const play = `<span class="actions"><button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}</span>`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
-      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size" tabindex="0" data-tip="JZ-compiled .wasm over the wire">${fmtB(sz)}</span>` : ''}${play}</h3>
+      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size">${fmtB(sz)}</span>` : ''}${play}</h3>
       ${rows}
     </div>`
   }
