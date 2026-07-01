@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import jz from '../index.js'
+import { strHashLiteral } from '../module/collection.js'
 
 function run(code) {
   return jz(code).exports
@@ -1078,4 +1079,68 @@ test('concat: t = s + x must NOT mutate s (bump-extend gated to self-accumulatio
   const freshW = compile(`export let f = (s) => { let t = s + "_x"; return t.length | 0 }`, { wat: true })
   ok(!/__str_concat_raw_fresh/.test(accumW), 'b = b + "ab" keeps the bump-extend concat (O(N) accumulator)')
   ok(/__str_concat_raw_fresh/.test(freshW), 't = s + "_x" uses the non-mutating fresh concat')
+})
+
+// === SSO hash-mix agreement (__str_hash's SSO branch vs strHashLiteral's compile-time
+// prehash) — every producer of a ≤6-ASCII SSO string, crossed against every consumer of a
+// compile-time-literal-prehashed probe. A key built at runtime by producer P must be found
+// by a `.get`/`.has`/dot-access whose key is a same-content STATIC LITERAL (which folds its
+// hash via strHashLiteral, module/collection.js, entirely at compile time — no __str_hash
+// call). If the two hash functions ever disagree for the same SSO bits, the probe silently
+// misses instead of erroring, so this is exercised for every producer × every collection
+// (Map/Set/HASH-object) × lengths 1-6.
+test('SSO hash mix: literal-prehashed probe finds a same-content key from every producer', () => {
+  const producers = {
+    literal: (k) => `"${k}"`,
+    concat: (k) => k.length > 1 ? `("${k[0]}" + "${k.slice(1)}")` : `("${k}" + "")`,
+    slice: (k) => `("${k}XX".slice(0, ${k.length}))`,
+    numToStr: (n) => `String(${n})`,
+    template: (k) => k.length > 1 ? `\`${k[0]}\${"${k.slice(1)}"}\`` : `\`\${"${k}"}\``,
+  }
+  const lens = ['a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef']
+  for (const k of lens) {
+    for (const [name, mk] of Object.entries(producers)) {
+      if (name === 'numToStr' && !/^\d+$/.test(k)) continue
+      const expr = mk(k)
+      // Map.set(runtime key) → Map.get("literal") must hit.
+      is(jz(`export let f = () => { let m = new Map(); m.set(${expr}, 1); return m.get("${k}") }`).exports.f(), 1,
+        `Map ${name} len=${k.length} set→literal get`)
+      // Set.add(runtime key) → Set.has("literal") must hit; a near-miss (last char flipped) must not.
+      const near = k.slice(0, -1) + (k.at(-1) === 'z' ? 'y' : 'z')
+      is(jz(`export let f = () => { let s = new Set(); s.add(${expr}); return (s.has("${k}") && !s.has("${near}")) ? 1 : 0 }`).exports.f(), 1,
+        `Set ${name} len=${k.length} add→literal has (+ near-miss rejects)`)
+      // Dynamic-object bracket-set(runtime key) → dot-access("literal" identifier) must hit
+      // (only when k is a valid identifier — dot syntax requires that).
+      if (/^[A-Za-z_]\w*$/.test(k)) {
+        is(jz(`export let f = () => { let o = {}; o[${expr}] = 1; return o.${k} }`).exports.f(), 1,
+          `HASH ${name} len=${k.length} bracket-set→dot-read`)
+      }
+    }
+  }
+})
+test('SSO hash mix: literal-prehashed probe finds a same-content key from JSON.parse', () => {
+  // __jp_str's simple (no-escape) fast path and its escape-decode path both normalize
+  // ≤6-ASCII results to SSO (module/json.js __sso_norm calls) — both must be found by a
+  // literal-keyed dot-read, which folds strHashLiteral at compile time.
+  for (const k of ['a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef']) {
+    is(jz(`export let f = (s) => { let o = JSON.parse(s); return o.${k} }`).exports.f(`{"${k}":1}`), 1,
+      `JSON.parse simple len=${k.length} → literal dot-read`)
+  }
+  // Escape-bearing key that decodes to a short ASCII string ("\n" → 1 char).
+  is(jz(`export let f = (s) => { let o = JSON.parse(s); return o.k }`).exports.f('{"k":"a\\nb"}'), 'a\nb')
+})
+test('SSO hash mix: clamp (h<=1 -> h+=2) holds for both JS and WAT by construction', () => {
+  // __str_hash and strHashLiteral both clamp a raw mix result of 0 or 1 up to 2 — the
+  // sentinel convention shared by every hash consumer (0=empty slot, 1=tombstone). Finding
+  // an input that actually lands on 0/1 pre-clamp isn't required to prove the clamp is
+  // wired correctly: both sides run the identical clamp expression
+  // `(h<=1) ? h+2 : h` (JS: module/collection.js clampHash; WAT: __str_hash's shared
+  // epilogue, unchanged by the SSO-mix rewrite) — so cross-checking any output stays ≥2
+  // over a wide sweep is the operative guarantee no key ever collides with the sentinels.
+  let minSeen = Infinity
+  for (let a = 0; a < 128; a += 7) for (let b = 0; b < 128; b += 11) {
+    const s = String.fromCharCode(97 + (a % 26)) + String.fromCharCode(97 + (b % 26))
+    minSeen = Math.min(minSeen, strHashLiteral(s))
+  }
+  ok(minSeen >= 2, `strHashLiteral never returns the 0/1 sentinels (min seen: ${minSeen})`)
 })

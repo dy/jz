@@ -585,10 +585,14 @@ export default (ctx) => {
   declGlobal('__jpstr', 'i32')  // input string offset
   declGlobal('__jplen', 'i32')  // input length
   declGlobal('__jppos', 'i32')  // current parse position
-  // Side-channel hash for the most-recently-parsed string. __jp_str folds an
-  // FNV-1a pass into its scan loop; __jp_obj forwards it to __hash_set_local_h
-  // and skips the redundant __str_hash call inside the generic insert. 0 is a
-  // sentinel meaning "string had escapes — recompute via __str_hash".
+  // Side-channel hash for the most-recently-parsed string. __jp_str folds a
+  // byte-FNV-1a pass into its scan loop; __jp_obj mixes it straight into the
+  // schema-cache's key-SEQUENCE hash ($hh, __jp_schema_get's probe key) — an
+  // independent hash from __str_hash, so it need not agree bit-for-bit with the
+  // runtime string hash (a schema-cache hit is verified by direct i64 key-array
+  // comparison, not by hash equality). 0 is a sentinel meaning "string had
+  // escapes"; it still mixes into $hh (a false schema-cache collision is caught
+  // by the verify step, never silently wrong).
   declGlobal('__jp_keyh', 'i32')
   // Sticky syntax-error flag. Set by any parser sub-routine on malformed input;
   // checked once by __jp after the top-level value, which throws if it is set.
@@ -636,9 +640,10 @@ export default (ctx) => {
 
   // Parse string (after opening " consumed). Single-pass scan that folds three
   // concerns into one byte loop: simplicity flag (no escapes / no high-bit),
-  // SSO byte packing for ≤4-char ASCII keys, and FNV-1a hash. The hash is
-  // stashed in $__jp_keyh so __jp_obj can use the prehashed insert and skip
-  // a redundant __str_hash call.
+  // SSO byte packing for ≤4-char ASCII keys, and byte-FNV-1a hash. The hash is
+  // stashed in $__jp_keyh so __jp_obj can mix it into the schema-cache sequence
+  // hash without re-scanning the key bytes (see the $__jp_keyh declaration above
+  // for why it need not match __str_hash's SSO-mix output).
   // Hex nibble: '0'-'9' / 'a'-'f' / 'A'-'F' → 0..15; anything else → 0 (lenient).
   ctx.core.stdlib['__hex1'] = `(func $__hex1 (param $c i32) (result i32)
     (if (i32.le_u (i32.sub (local.get $c) (i32.const 48)) (i32.const 9))
@@ -724,8 +729,11 @@ export default (ctx) => {
     ;; Loop exited on the closing quote (34) or EOF (-1); the latter means an
     ;; unterminated string literal.
     (if (i32.eq (local.get $ch) (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
-    ;; Stash hash. 0/1 bumped to 2 to match __str_hash convention; escape strings
-    ;; (simple==0) get sentinel 0 so __jp_obj falls back to non-prehashed insert.
+    ;; Stash hash. 0/1 bumped to 2 to match __str_hash's clamp convention (kept for
+    ;; sentinel consistency, though __jp_obj's consumer — the schema sequence hash —
+    ;; doesn't itself need agreement with __str_hash). Escape strings (simple==0) get
+    ;; sentinel 0, which still mixes into $hh (harmless: __jp_schema_get verifies by
+    ;; key-array compare, not hash equality).
     (global.set $__jp_keyh
       (if (result i32) (local.get $simple)
         (then (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
@@ -951,8 +959,8 @@ export default (ctx) => {
       (i32.store (i32.add (local.get $entry) (i32.const 4)) (local.get $sid)))
     (local.get $sid))`
 
-  // Parse object → OBJECT (schema-tagged, slot-based) when key sequence has a
-  // cached/registerable shape; falls back to HASH only on extreme key counts.
+  // Parse object → OBJECT (schema-tagged, slot-based), always, via the runtime
+  // schema cache (no HASH fallback in this build — every key sequence gets a sid).
   // Builds a transient (key, val) buffer during parse, then resolves a sid via
   // the runtime schema cache, allocs an OBJECT, and copies values into slots.
   // Walk-side `obj.prop` accesses then route through the OBJECT fast path

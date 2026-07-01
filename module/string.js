@@ -39,14 +39,16 @@ const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + 
 // (SLICE_BIT at 45 stays 0). 6 chars fit (6*7=42, + 3-bit len). ASCII-only — a byte
 // ≥0x80 falls back to a heap string. The 7-bit-uniform layout makes equal short strings
 // content-bit-equal (so `op === 'tag'` is a bare i64.eq) and never touches memory.
-const MAX_SSO = 6
+export const MAX_SSO = 6
 const SSO_LEN_SHIFT = 10  // length occupies aux bits 10-12 (= payload bits 42-44)
 const SSO_CHAR_MASK = '0x3ffffffffff'  // payload bits 0-41: the 6 × 7-bit char lanes
 // JS: ASCII string → { aux, offset }, or null when ineligible (too long / non-ASCII).
 // BigInt-free (i32 ops only) so the self-hosted compiler — which runs this to encode
 // every string literal — stays on jz's numeric core. offset = payload bits 0-31, aux =
 // bits 32-46; char i at bit i*7 (chars 0-3 fit the offset, char 4 straddles, char 5 → aux).
-const ssoEncode = (str) => {
+// Exported: collection.js's strHashLiteral reuses this to build the exact lo/hi pair
+// __str_hash's SSO branch mixes — single source of truth for the packing (see its use).
+export const ssoEncode = (str) => {
   if (str.length > MAX_SSO || !/^[\x00-\x7f]*$/.test(str)) return null
   let offset = 0, auxChars = 0
   for (let i = 0; i < str.length; i++) {
@@ -214,13 +216,17 @@ export default (ctx) => {
   // so a heap-free program stays heap-free — no allocator, no memory, no exports.
   inc('__mkptr', '__alloc')
 
-  // === String literal: "abc" → SSO if ≤4 ASCII, else static data ===
+  // === String literal: "abc" → SSO if ≤6 ASCII, else static data ===
 
   bind('str', (str) => {
     if (ctx.features.sso) {
       const sso = ssoEncode(str)
       if (sso) return mkPtrIR(PTR.STRING, sso.aux, sso.offset)
     }
+    // Falls through to the static-data path below ONLY when ssoEncode returned null
+    // (>6 bytes or non-ASCII) — so an interned static NEVER carries ≤6-ASCII content,
+    // and its cached hash (below) stays byte-FNV without needing the SSO mix
+    // (__str_hash's SSO branch, module/collection.js, never sees an interned pointer).
     const bytes = new TextEncoder().encode(str)
     const len = bytes.length
     if (!ctx.memory.shared) {
@@ -240,7 +246,9 @@ export default (ctx) => {
       const offset = ctx.runtime.data.length
       if (interned) {
         // byte-FNV + clamp — must equal __str_hash's output exactly (it hashes
-        // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels)
+        // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels).
+        // Always the byte-FNV branch, never the SSO mix: this string is here
+        // because ssoEncode rejected it (see the guard above).
         let h = 0x811c9dc5 | 0
         for (let i = 0; i < len; i++) h = Math.imul(h ^ bytes[i], 0x01000193) | 0
         if (h <= 1) h = (h + 2) | 0

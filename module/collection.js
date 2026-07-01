@@ -15,6 +15,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { STR_INTERN_BIT, ssoBitI64Hex } from '../layout.js'
+import { ssoEncode } from './string.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 
@@ -22,10 +23,41 @@ const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
 const INIT_CAP = 8    // initial capacity (must be power of 2)
 
-export function strHashLiteral(str) {
+// Clamp to the >=2 convention (0=empty slot, 1=tombstone) — shared by every hash
+// producer (SSO mix, byte-FNV, __jp_str, buildInternTable) so they all clamp identically.
+const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
+
+// SSO mix: 7 ops over the packed NaN-box lo/hi (see __str_hash's SSO branch,
+// module/collection.js below, for the WAT twin — both MUST compute the same value).
+// lo = offset (payload bits 0-31), hi = aux masked to bits 0-12 (length + char 4-5
+// tail — SSO_BIT itself is excluded by the mask, so hi only carries discriminating
+// content). Replaces the old 6-iteration per-char FNV loop with a fixed-cost mix.
+const ssoMix = (lo, hi) => {
+  let h = Math.imul(hi ^ 0x9E3779B9, 0x85EBCA6B)
+  h = Math.imul(lo ^ h, 0xC2B2AE35)
+  h = (h ^ (h >>> 15)) | 0
+  return clampHash(h) >>> 0
+}
+
+// Byte-FNV-1a over UTF-8-ish bytes (charCodeAt & 0xFF — ASCII-only callers guarantee
+// codepoint < 0x80, so this equals the byte value). Heap strings (>6 bytes or non-ASCII)
+// keep this; __str_hash's heap branch and buildInternTable's static-intern prehash both
+// compute the identical function — see module/string.js bind('str') and internProbeWat.
+const byteFnv = (str) => {
   let h = 0x811c9dc5 | 0
   for (let i = 0; i < str.length; i++) h = Math.imul(h ^ (str.charCodeAt(i) & 0xFF), 0x01000193) | 0
-  return h <= 1 ? (h + 2) | 0 : h
+  return clampHash(h)
+}
+
+// Compile-time hash for an ASCII string LITERAL — must equal __str_hash's runtime
+// result for the same content: ≤6-ASCII strings are ALWAYS SSO (module/string.js header
+// invariant), so they use the new ssoMix; longer/non-ASCII strings stay on heap and use
+// byte-FNV. Callers (litKeyHash below, module/core.js, module/array.js, module/json.js)
+// pass ASCII content — non-ASCII goes through the runtime __str_hash path instead.
+export function strHashLiteral(str) {
+  const sso = ssoEncode(str)
+  if (sso) return ssoMix(sso.offset | 0, sso.aux & 0x1FFF)
+  return byteFnv(str)
 }
 
 const HASH_BUF = new ArrayBuffer(8)
@@ -47,10 +79,12 @@ function numConstLiteral(expr) {
 
 // Compile-time probe hash for a LITERAL collection/property key, else null. A numeric
 // constant → numHashLiteral; an ASCII string literal → strHashLiteral. The string case is
-// ASCII-only on purpose: strHashLiteral folds `charCodeAt(i) & 0xFF`, which equals __str_hash /
-// __map_hash (FNV-1a over the UTF-8 bytes) ONLY for code points < 0x80 — a non-ASCII literal
-// would fold a different hash than its stored key and silently miss, so it falls back to the
-// runtime hash. Lets `m.get("if")` / `m.has("x")` skip the per-access __map_hash call.
+// ASCII-only on purpose: strHashLiteral's byte-FNV branch folds `charCodeAt(i) & 0xFF`,
+// which equals __str_hash / __map_hash (FNV-1a over the UTF-8 bytes) ONLY for code points
+// < 0x80 — a non-ASCII literal would fold a different hash than its stored key and silently
+// miss, so it falls back to the runtime hash. (The ≤6-ASCII branch uses the SSO mix instead —
+// still ASCII-only, since ssoEncode itself rejects non-ASCII and returns null.) Lets
+// `m.get("if")` / `m.has("x")` skip the per-access __map_hash call.
 const ASCII_KEY = /^[\x00-\x7f]*$/
 const litKeyHash = (key) => {
   const num = numConstLiteral(key)
@@ -925,28 +959,31 @@ export default (ctx) => {
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
-  // FNV-1a hash of string content (works on both SSO and heap strings)
-  // FNV-1a. ~95M calls in watr self-host. Inline char-fetch: hoist type/offset out of the
-  // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
-  // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
+  // SSO branch: fixed 7-op avalanche mix over the packed NaN-box lo/hi, replacing the
+  // old 6-iteration per-char FNV loop (~36 ops worst case). lo = payload bits 0-31
+  // (the $off field, which for an SSO ptr IS the packed chars 0-3 + low nibble of
+  // char 4 — no memory, no per-char extraction), hi = aux masked to 13 bits (length
+  // + char 4-5 tail; SSO_BIT itself sits at aux bit 14, outside the mask, so it never
+  // pollutes the mix). Same lo/hi pair strHashLiteral (module/collection.js, JS side)
+  // builds from ssoEncode's {offset, aux} — the two MUST compute the identical
+  // constant-for-constant mix or literal-prehashed probes silently miss. Heap strings
+  // (>6 bytes or non-ASCII) are unaffected: they keep byte-FNV-1a below.
+  // ~95M calls in watr self-host; SSO is the overwhelming majority post-invariant
+  // (ec6a229: any ≤6-byte ASCII string IS SSO).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s i64) (result i32)
-    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32)
-    (local.set $h (i32.const 0x811c9dc5))
+    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32) (local $hi i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $s) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.shr_u (local.get $aux) (i32.const 14)))
       (then
-        (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
-        (block $ds (loop $ls
-          (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $h (i32.mul
-            (i32.xor (local.get $h)
-              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
-            (i32.const 0x01000193)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $ls))))
+        (local.set $hi (i32.and (local.get $aux) (i32.const 0x1FFF)))
+        (local.set $h (i32.mul
+          (i32.xor (local.get $off) (i32.mul (i32.xor (local.get $hi) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+          (i32.const 0xC2B2AE35)))
+        (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15)))))
       (else
+        (local.set $h (i32.const 0x811c9dc5))
         ;; canonical interned static: cached post-clamp FNV at -8 (see layout.js)
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
               (i32.and (i32.ge_u (local.get $off) (i32.const 8))
