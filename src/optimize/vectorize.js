@@ -916,21 +916,61 @@ function firstAccess(node, name) {
  *
  * Returns { strideLog2, teeName?: string } or null.
  */
-function matchLaneOffset(off, ind, offsetTees) {
+// The per-iteration element count P (≥2) of an array-of-structs index `P*ind`, or null. Accepts the
+// `(i32.mul P ind)`/`(i32.mul ind P)` form (non-power-of-2 P — RGB's 3) AND the strength-reduced
+// power-of-2 form `(i32.shl ind S)` = ind·2^S (a `const j = 2*i`/`4*i` folds to a shift — complex/
+// RGBA). P is the ELEMENT stride, not a byte offset.
+function matchConstMulIV(node, ind) {
+  if (!isArr(node) || node.length !== 3) return null
+  if (node[0] === 'i32.mul') {
+    let p = null
+    if (isLocalGet(node[1], ind)) p = constNum(node[2])
+    else if (isLocalGet(node[2], ind)) p = constNum(node[1])
+    return (p != null && p >= 2 && p <= 64) ? p : null
+  }
+  if (node[0] === 'i32.shl' && isLocalGet(node[1], ind)) {
+    const s = constNum(node[2])
+    if (s != null && s >= 1 && s <= 6) return 1 << s   // ind·2^S, stride 2..64
+  }
+  return null
+}
+
+function matchLaneOffset(off, ind, offsetTees, allowAos, aosPix, idxTees) {
   if (isArr(off) && off[0] === 'local.get' && typeof off[1] === 'string' &&
       offsetTees && offsetTees.has(off[1])) {
-    return { strideLog2: offsetTees.get(off[1]), teeName: null }
+    return { strideLog2: offsetTees.get(off[1]), pixelStride: (aosPix && aosPix.get(off[1])) || 1, teeName: null }
   }
   let teeName = null
   let n = off
   if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
-  // (i32.shl (local.get ind) (i32.const K))
-  if (isArr(n) && n[0] === 'i32.shl' && n.length === 3 && isLocalGet(n[1], ind)) {
+  // (i32.shl <ind-scaled> (i32.const K))
+  if (isArr(n) && n[0] === 'i32.shl' && n.length === 3) {
     const k = constNum(n[2])
-    if (k != null && k >= 0 && k <= 3) return { strideLog2: k, teeName }
+    if (k != null && k >= 0 && k <= 3) {
+      if (isLocalGet(n[1], ind)) return { strideLog2: k, pixelStride: 1, teeName }
+      // AoS (array-of-structs / interleaved channels), P elements per iteration, element
+      // byte-size 1<<K. Only under allowAos (tryVectorize gathers/scatters the lanes); every
+      // other recognizer returns null here. Two shapes: the folded `(i32.mul P ind)`, and a
+      // pixel-index local `(local.get $J)` with $J = P*ind (the `const j = P*i`, via idxTees).
+      if (allowAos) {
+        const p = matchConstMulIV(n[1], ind)
+        if (p != null) return { strideLog2: k, pixelStride: p, teeName }
+        if (isArr(n[1]) && n[1][0] === 'local.get' && idxTees && idxTees.has(n[1][1])) {
+          const pj = idxTees.get(n[1][1])
+          if (pj > 1) return { strideLog2: k, pixelStride: pj, teeName }
+        }
+      }
+    }
+    // POWER-OF-2 AoS stride: `a[P*i]` (P = 2,4,8 — complex/RGBA/…) folds `(P*i)<<3` to a single
+    // `(i32.shl ind K)` with K = 3 + log2(P) > 3. The excess shift over the f64 element (3) is the
+    // pixel stride. f64 lane only — scanForLoadsStores' `1<<strideLog2 === elemSize` gate keeps
+    // strideLog2=3 (=8 bytes), so a folded narrower-lane stride can't be mis-accepted here.
+    else if (allowAos && k != null && k >= 4 && k <= 9 && isLocalGet(n[1], ind)) {
+      return { strideLog2: 3, pixelStride: 1 << (k - 3), teeName }
+    }
   }
   // (local.get ind) — stride 1
-  if (isLocalGet(n, ind)) return { strideLog2: 0, teeName }
+  if (isLocalGet(n, ind)) return { strideLog2: 0, pixelStride: 1, teeName }
   return null
 }
 
@@ -944,13 +984,13 @@ function matchLaneOffset(off, ind, offsetTees) {
  *   `strideLog2` = K for i32.shl form, 0 for plain add form.
  *   `base` is the loop-invariant base subtree.
  */
-function matchLaneAddr(addr, ind, addrLocals, offsetTees) {
+function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPix, idxTees) {
   let teeName = null
   let n = addr
   // (local.get $A) where $A holds a previously-tee'd FULL lane-address.
   if (isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' && addrLocals && addrLocals.has(n[1])) {
     const e = addrLocals.get(n[1])
-    return { strideLog2: e.strideLog2, base: e.base, teeName: null, viaLocal: n[1] }
+    return { strideLog2: e.strideLog2, pixelStride: e.pixelStride || 1, base: e.base, teeName: null, viaLocal: n[1] }
   }
   if (isArr(n) && n[0] === 'local.tee' && n.length === 3) {
     teeName = n[1]
@@ -958,9 +998,9 @@ function matchLaneAddr(addr, ind, addrLocals, offsetTees) {
   }
   if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
   const a = n[1], b = n[2]
-  const off = matchLaneOffset(b, ind, offsetTees)
+  const off = matchLaneOffset(b, ind, offsetTees, allowAos, aosPix, idxTees)
   if (!off) return null
-  return { strideLog2: off.strideLog2, base: a, teeName, offsetTeeName: off.teeName }
+  return { strideLog2: off.strideLog2, pixelStride: off.pixelStride || 1, base: a, teeName, offsetTeeName: off.teeName }
 }
 
 /**
@@ -969,17 +1009,30 @@ function matchLaneAddr(addr, ind, addrLocals, offsetTees) {
  * Returns the consistent strideLog2, or null if any write to it diverges.
  * This soundness check backs every `(local.get $T)` resolved via `offsetTees`.
  */
-function _offsetLocalStride(body, name, ind) {
-  let stride = null, found = false, ok = true
+function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
+  let stride = null, found = false, ok = true, pix = null
   function walk(n) {
     if (!isArr(n)) return
     if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
       found = true
       const v = n[2]
       let k = null
-      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3 && isLocalGet(v[1], ind)) {
-        k = constNum(v[2])
-        if (k == null || k < 0 || k > 3) ok = false
+      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3) {
+        const kk = constNum(v[2])
+        // Power-of-2 AoS offset local `(i32.shl ind K)` with K>3 — matches matchLaneOffset's
+        // power-of-2 arm: element shift 3, pixel stride 2^(K-3). Verify all writes share one P.
+        if (allowAos && isLocalGet(v[1], ind) && kk != null && kk >= 4 && kk <= 9) {
+          k = 3; const p = 1 << (kk - 3); if (pix == null) pix = p; else if (pix !== p) ok = false
+        }
+        else if (isLocalGet(v[1], ind)) { k = kk; if (k == null || k < 0 || k > 3) ok = false }
+        else if (allowAos && kk != null && kk >= 0 && kk <= 3) {
+          // AoS offset local (i32.shl <P·ind> K) — folded `(i32.mul P ind)` or a pixel-index
+          // local `(local.get $J)` with $J = P·ind (idxTees). Verify every write shares one P.
+          let p = matchConstMulIV(v[1], ind)
+          if (p == null && isArr(v[1]) && v[1][0] === 'local.get' && idxTees && idxTees.get(v[1][1]) > 1) p = idxTees.get(v[1][1])
+          if (p != null) { k = kk; if (pix == null) pix = p; else if (pix !== p) ok = false }
+          else ok = false
+        } else ok = false
       } else if (isLocalGet(v, ind)) {
         k = 0
       } else ok = false
@@ -992,6 +1045,16 @@ function _offsetLocalStride(body, name, ind) {
   }
   for (const s of body) walk(s)
   return found && ok ? stride : null
+}
+
+// True if the tree contains any branch or return — control flow that a flattened value-block
+// lift can't preserve (an early `br`/`return` out of the block changes which value is produced).
+const hasBranchOrReturn = (node) => {
+  if (!isArr(node)) return false
+  const op = node[0]
+  if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return') return true
+  for (let i = 1; i < node.length; i++) if (hasBranchOrReturn(node[i])) return true
+  return false
 }
 
 // True if any node in the tree writes a global. When false for a loop body,
@@ -1104,7 +1167,7 @@ function matchBlockLoop(blockNode, opts = {}) {
  * Try to vectorize the inner loop. Returns the replacement node array
  * (synthetic outer block) or null on no match.
  */
-function tryVectorize(bl, fnLocals, freshIdRef) {
+function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // Consumes the shared scaffold descriptor (matchBlockLoop, computed once by the
   // dispatch). The LICM `$__li` preamble is cloned ahead of the SIMD block; each
   // set is pure & loop-invariant, so the kept scalar tail harmlessly re-runs it.
@@ -1125,6 +1188,28 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   // Offset tees: name → strideLog2. A CSE'd `i << K` shared across base
   // pointers (map loops over distinct arrays). Soundness re-checked post-scan.
   const offsetTees = new Map()
+  // AoS (array-of-structs) de-interleave: this recognizer alone accepts a pixel-stride
+  // access `base[P*i + c]` (interleaved RGB/vec3/complex). allowAos enables it in every
+  // shared matcher; aosPix carries P for a CSE'd offset tee; aosPixelStride is the loop's
+  // single P (1 = plain stride-1, unchanged). Set once, verified equal across all sites.
+  const allowAos = true
+  const aosPix = new Map()
+  let aosPixelStride = 1
+  // Pixel-INDEX locals: `$J = P*i` (the `const j = 3*i` of an AoS loop, kept as its own local
+  // pre-watr). A channel address is then `base + ((local.get $J) << K)`; idxTees lets
+  // matchLaneOffset resolve $J → pixel-stride P. Value -1 marks an inconsistent local (bail).
+  const idxTees = new Map()
+  {
+    const walk = (n) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
+        const p = matchConstMulIV(n[2], incVar)
+        if (p != null) idxTees.set(n[1], idxTees.has(n[1]) && idxTees.get(n[1]) !== p ? -1 : p)
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    for (const s of body) walk(s)
+  }
 
   // The compute/lane type is the WIDEST FLOAT among all loads+stores. A narrower
   // float/int LOAD is then a widening read (INT_WIDEN_F32 / f32→f64), a narrower
@@ -1146,6 +1231,26 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   for (const s of body) scanFloatWidth(s)
   if (preFloat) { laneType = preFloat; stride = LANE_INFO[preFloat].stride }
 
+  // Record a memory site's pixel stride. An AoS stride (P>1) is f64-lane only (the gather/scatter
+  // lifts 2 f64 lanes). Strides are collected for the post-scan uniformity gate: EVERY site must
+  // share one stride, else the loop mixes stride-1 and stride-P accesses (e.g. AoS-struct loads
+  // feeding stride-1 array stores) and a single gather/scatter delta would corrupt the odd sites.
+  const siteStrides = []
+  const recordAos = (m) => {
+    const ps = m.pixelStride || 1
+    if (ps > 1) {
+      if (laneType !== 'f64') return false
+      if (aosPixelStride === 1) aosPixelStride = ps
+      if (m.offsetTeeName) aosPix.set(m.offsetTeeName, ps)
+    }
+    siteStrides.push(ps)
+    return true
+  }
+  // The real address is node[1], unless a folded `offset=N` memarg precedes it (node[1] is the
+  // string `offset=N`, node[2] the address) — the AoS channels `d[j+1]`,`d[j+2]` and stencil
+  // neighbours arrive this way.
+  const memAddr = (node) => (typeof node[1] === 'string' && node[1].startsWith('offset=')) ? node[2] : node[1]
+
   function scanForLoadsStores(node, parent, pi) {
     if (!isArr(node)) return true
     const op = node[0]
@@ -1162,10 +1267,11 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
       } else if (lt !== laneType && !widenInt) {
         return false
       }
-      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
+      const m = matchLaneAddr(memAddr(node), incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== (widenInt ? LANE_INFO[lt].stride : stride)) return false
-      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      if (!recordAos(m)) return false
+      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, pixelStride: m.pixelStride, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'load' })
       return true
@@ -1178,27 +1284,30 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
       const narrowing = laneType != null && sty !== laneType && isNarrowStore(laneType, sty)
       if (laneType != null && sty !== laneType && !narrowing) return false
       if (laneType == null) { laneType = sty; stride = LANE_INFO[laneType].stride }
-      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
+      const memarg = typeof node[1] === 'string' && node[1].startsWith('offset=')
+      const m = matchLaneAddr(memAddr(node), incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== (narrowing ? LANE_INFO[sty].stride : stride)) return false
-      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      if (!recordAos(m)) return false
+      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, pixelStride: m.pixelStride, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'store' })
-      // Recurse into VALUE child (idx 2) — it's data, not address.
-      if (!scanForLoadsStores(node[2], node, 2)) return false
+      // Recurse into VALUE child (idx 2, or 3 past an offset= memarg) — it's data, not address.
+      const valIdx = memarg ? 3 : 2
+      if (!scanForLoadsStores(node[valIdx], node, valIdx)) return false
       return true
     }
     // local.set/tee of an address local outside a load/store context (e.g.
     // `(local.set $a (i32.add base (i32.shl i 2)))` as a standalone stmt) —
     // record so a later `(local.get $a)` resolves.
     if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string' && node.length === 3) {
-      const valM = matchLaneAddr(['local.tee', node[1], node[2]], incVar, addrLocals, offsetTees)
+      const valM = matchLaneAddr(['local.tee', node[1], node[2]], incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
       if (valM && valM.teeName) {
-        addrLocals.set(valM.teeName, { strideLog2: valM.strideLog2, base: valM.base })
+        addrLocals.set(valM.teeName, { strideLog2: valM.strideLog2, pixelStride: valM.pixelStride, base: valM.base })
       }
-      // Standalone offset compute: `(local.set $t (i32.shl i K))`.
-      const offM = matchLaneOffset(node[2], incVar, offsetTees)
-      if (offM) offsetTees.set(node[1], offM.strideLog2)
+      // Standalone offset compute: `(local.set $t (i32.shl i K))` (or AoS `(i32.shl (mul P i) K)`).
+      const offM = matchLaneOffset(node[2], incVar, offsetTees, allowAos, aosPix, idxTees)
+      if (offM) { offsetTees.set(node[1], offM.strideLog2); if (offM.pixelStride > 1) aosPix.set(node[1], offM.pixelStride) }
     }
     // Recurse into all children
     for (let i = 1; i < node.length; i++) {
@@ -1212,11 +1321,14 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   if (body.some(hasGlobalSet)) return null  // a global write breaks the "global.get is invariant" splat
   if (!laneType) return null  // no memory ops — vectorizing buys nothing
   if (loadStoreSites.length === 0) return null
+  // Uniform stride gate: an AoS loop must have EVERY load/store at the same pixel stride. A mix of
+  // stride-1 and stride-P sites can't share one lift stride — bail (stays scalar, always correct).
+  if (aosPixelStride > 1 && siteStrides.some(s => s !== aosPixelStride)) return null
 
   // Soundness gate for offset-tee resolution: every `(local.get $T)` we
   // accepted as `i << K` is only valid if EVERY write of $T is that offset.
   for (const [name, k] of offsetTees) {
-    if (_offsetLocalStride(body, name, incVar) !== k) return null
+    if (_offsetLocalStride(body, name, incVar, allowAos, idxTees) !== k) return null
   }
 
   // Classify all locals referenced in body.
@@ -1252,7 +1364,7 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
       // Discriminate lane-data vs address-tee. Address tees hold i32 addresses,
       // not vector data. We classify by checking the local's declared type.
       const decl = fnLocals.get(name)
-      if (decl === 'i32' && (offsetTees.has(name) || _isAddressLocal(body, name, incVar))) {
+      if (decl === 'i32' && (addrLocals.has(name) || offsetTees.has(name) || _isAddressLocal(body, name, incVar) || _isPixelIndexLocal(body, name, incVar))) {
         localKind.set(name, 'addr')
       } else {
         localKind.set(name, 'lane')
@@ -1288,7 +1400,7 @@ function tryVectorize(bl, fnLocals, freshIdRef) {
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → laneName (bare string; see getOrAllocLanedLocal)
   const extraLocals = []  // canon temps allocated during lift
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals }
   const lifted = []
   for (const s of body2) {
     const r = liftStmt(s, ctx)
@@ -2175,6 +2287,24 @@ function _isAddressLocal(body, name, ind) {
   return foundTee && onlyAsAddrTee
 }
 
+// A pixel-INDEX local — every write is `(i32.mul P ind)` — is the `const j = P*i` of an
+// AoS loop (feeds channel addresses `base + ((j+c)<<K)`). Classified as 'addr' so the lift
+// keeps it a recomputed scalar i32, never a v128 lane. (Only tryVectorize consults this.)
+function _isPixelIndexLocal(body, name, ind) {
+  let found = false, ok = true
+  function walk(n) {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name && n.length === 3) {
+      found = true
+      if (matchConstMulIV(n[2], ind) == null) ok = false
+      return
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (const s of body) walk(s)
+  return found && ok
+}
+
 // ---- Lifter ----------------------------------------------------------------
 
 // Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
@@ -2188,6 +2318,85 @@ function getOrAllocLanedLocal(name, newLanedLocals) {
     newLanedLocals.set(name, laneName)
   }
   return laneName
+}
+
+// AoS de-interleave gather/scatter (ctx.aosPixelStride P > 1). The SIMD block steps the IV
+// by `lanes`, so a scalar address `A` points at pixel i, channel c; pixel i+1's same channel
+// is P elements = P*elemSize bytes further — reachable as a static load/store `offset`.
+// aosAddrPair yields two address forms that evaluate `A` exactly ONCE (teeing when needed).
+function aosAddrPair(addr, ctx) {
+  if (isArr(addr) && addr[0] === 'local.get') return { a0: addr, a1: addr }               // live local — read twice, free
+  if (isArr(addr) && addr[0] === 'local.tee' && addr.length === 3) return { a0: addr, a1: ['local.get', addr[1]] }
+  const g = `$__aosa${ctx.freshIdRef.next++}`                                              // bare expr — tee into a scratch
+  ctx.extraLocals.push(['local', g, 'i32'])
+  return { a0: ['local.tee', g, addr], a1: ['local.get', g] }
+}
+const aosLoad = (off, addr) => off ? ['f64.load', `offset=${off}`, addr] : ['f64.load', addr]
+const aosStore = (off, addr, val) => off ? ['f64.store', `offset=${off}`, addr, val] : ['f64.store', addr, val]
+
+// A scalar `(f64.load [offset=X] A)` → the f64x2 [pixel i chan, pixel i+1 chan]. Bit-exact:
+// the two lanes are the exact bytes the two scalar iterations read.
+function aosGather(expr, ctx) {
+  const delta = ctx.aosPixelStride * LANE_INFO.f64.stride
+  let baseOff = 0, addr
+  if (typeof expr[1] === 'string' && expr[1].startsWith('offset=')) { baseOff = parseInt(expr[1].slice(7)) || 0; addr = expr[2] }
+  else addr = expr[1]
+  const { a0, a1 } = aosAddrPair(addr, ctx)
+  return ['f64x2.replace_lane', 1, ['f64x2.splat', aosLoad(baseOff, a0)], aosLoad(baseOff + delta, a1)]
+}
+
+// Inline a PURE user function call `(call $f ARG…)` into a single scalar value-BLOCK, feeding
+// the result back through liftExprV so the callee's ternaries/compares/transcendentals lift via
+// the SAME machinery (no separate restricted inliner). Bails (null) on any non-value statement
+// (store/loop/impure) — only straight-line pure helpers (spow, a signed-power, …) inline.
+//
+// Every argument AND every callee local is bound ONCE to a fresh block-local; param/local reads
+// substitute to `(local.get bind)`. This is critical for NESTED calls (spow whose ratio arg is
+// used 3× and itself nests spow): naive expr substitution would duplicate each arg per use and
+// blow up exponentially (there is no CSE pass after the 'post' vectorizer). Binding keeps the
+// SIMD body the same size as the scalar call graph.
+function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef) {
+  const callee = pureFuncMap && pureFuncMap.get(callNode[1])
+  if (!callee) return null
+  const bodyStart = findBodyStart(callee)
+  if (bodyStart < 0) return null
+  const params = []
+  for (let i = 2; i < bodyStart; i++) { const d = callee[i]; if (isArr(d) && d[0] === 'param' && typeof d[1] === 'string') params.push(d[1]) }
+  const args = callNode.slice(2)
+  if (args.length !== params.length) return null
+  const body = callee.slice(bodyStart)
+  for (const p of params) if (writesName(body, p)) return null   // params must be read-only
+  const subst = new Map()
+  const sub = (n) => {
+    if (!isArr(n)) return n
+    if (n[0] === 'local.get' && typeof n[1] === 'string' && subst.has(n[1])) return subst.get(n[1])
+    return n.map((c, i) => i === 0 ? c : sub(c))
+  }
+  // A constant / bare local read is free to duplicate — substitute it directly (no binding),
+  // which also keeps a constant exponent literal at the `pow` node so it can lower to 2-wide exp∘log.
+  const isTrivial = (n) => isArr(n) && (n[0] === 'f64.const' || n[0] === 'i32.const' ||
+    (n[0] === 'local.get' && typeof n[1] === 'string') || (n[0] === 'global.get' && typeof n[1] === 'string'))
+  const pre = []
+  const bindOnce = (name, valueExpr, alreadySubbed) => {
+    const v = alreadySubbed ? valueExpr : sub(valueExpr)
+    if (isTrivial(v)) { subst.set(name, v); return }   // cheap → substitute directly, no temp
+    const bn = `$__ia${freshIdRef.next++}`
+    pre.push(['local.set', bn, v])
+    subst.set(name, ['local.get', bn])
+  }
+  params.forEach((p, i) => bindOnce(p, args[i], true))   // args live in the OUTER scope — do NOT sub
+  const wrap = (val) => pre.length ? ['block', ['result', 'f64'], ...pre, val] : val
+  for (let k = 0; k < body.length; k++) {
+    const stmt = body[k]
+    if (!isArr(stmt)) return null
+    if (stmt[0] === 'local.set' && typeof stmt[1] === 'string' && stmt.length === 3) { bindOnce(stmt[1], stmt[2], false); continue }
+    if (stmt[0] === 'return' && stmt.length === 2) return wrap(sub(stmt[1]))
+    // Trailing value expression = implicit return (a bare `if`/`block`/… as the function's last
+    // statement, `(v) => cond ? a : b`). Earlier non-set/non-return statements can't be values.
+    if (k === body.length - 1) return wrap(sub(stmt))
+    return null
+  }
+  return null
 }
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
@@ -2320,7 +2529,10 @@ function liftStmt(stmt, ctx) {
       // Address-only local: lift the value as-is (it's i32 arithmetic on ind).
       return ['local.set', name, stmt[2]]
     }
-    if (kind === 'lane') {
+    // 'lane', or an UNCLASSIFIED local — which can only be one introduced by an inlined pure
+    // callee (classification covers every original body local; a pure helper's temps are fresh
+    // per-iteration lane values, never loop-carried). Both lift as lane data.
+    if (kind === 'lane' || kind === undefined) {
       const laneName = getOrAllocLanedLocal(name, ctx.newLanedLocals)
       const v = liftExprV(stmt[2], ctx)
       if (ctx.fail) return null
@@ -2330,11 +2542,30 @@ function liftStmt(stmt, ctx) {
   }
 
   if (STORE_OPS[op]) {
+    const sty = STORE_OPS[op]
+    // AoS de-interleave scatter: `(f64.store [offset=X] A V)` → tee the f64x2 V once, then
+    // write lane 0 at X (pixel i) and lane 1 at X + P*elemSize (pixel i+1) — the exact two
+    // scalar stores. Handles the folded `offset=` memarg form (channels d[j+1], d[j+2]).
+    if (ctx.aosPixelStride > 1) {
+      if (sty !== ctx.laneType) return liftFail(ctx, 'AoS narrowing store unsupported')
+      let baseOff = 0, addr, val
+      if (typeof stmt[1] === 'string' && stmt[1].startsWith('offset=')) { baseOff = parseInt(stmt[1].slice(7)) || 0; addr = stmt[2]; val = stmt[3] }
+      else { addr = stmt[1]; val = stmt[2] }
+      const v = liftExprV(val, ctx)
+      if (ctx.fail) return null
+      const delta = ctx.aosPixelStride * LANE_INFO.f64.stride
+      const { a0, a1 } = aosAddrPair(addr, ctx)
+      const vt = `$__aosv${ctx.freshIdRef.next++}`
+      ctx.extraLocals.push(['local', vt, 'v128'])
+      return ['__seq__',
+        ['local.set', vt, v],
+        aosStore(baseOff, a0, ['f64x2.extract_lane', 0, ['local.get', vt]]),
+        aosStore(baseOff + delta, a1, ['f64x2.extract_lane', 1, ['local.get', vt]])]
+    }
     const addr = stmt[1]  // we leave addresses as-is (scalar i32 expressions)
     // Handle memarg if present (last positional after addr/val): unlikely in
     // pre-watr IR for this shape; bail if more than 3 children.
     if (stmt.length !== 3) return liftFail(ctx, `${op} with memarg`)
-    const sty = STORE_OPS[op]
     // Narrowing store: a narrower element written from a wider float lane (`o[i] =
     // narrow(f(x))` — codec encode / downsample). The scalar store value carries a
     // conversion (f32.demote_f64, or the float→int ToInt32 idiom); peel it, lift the
@@ -2494,6 +2725,9 @@ function liftExprV(expr, ctx) {
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
     if (LOAD_OPS[op] !== ctx.laneType) return liftFail(ctx, `${op}: load type ≠ lane type ${ctx.laneType}`)
+    // AoS de-interleave: consecutive elements are DIFFERENT channels, so a plain v128.load
+    // would mix channels — gather the same channel of pixels i, i+1 into the f64x2 instead.
+    if (ctx.aosPixelStride > 1) return aosGather(expr, ctx)
     // memarg form `(T.load offset=N addr)` — the stencil neighbour `a[i+1]` jz folds
     // onto `a[i]`'s address tee. `v128.load offset=N` reads the N-byte-shifted vector,
     // i.e. the (a[i+1], a[i+2]) pair — exactly the δ-shifted lane data. Preserve it.
@@ -2536,7 +2770,22 @@ function liftExprV(expr, ctx) {
     if (kind === 'addr' || name === ctx.incVar) {
       return liftFail(ctx, `${name}: address/induction var used as lane data`)
     }
-    return liftFail(ctx, `${name}: unclassified local in value position`)
+    // Unclassified (undefined) & not the IV/addr: a local introduced by an inlined pure callee —
+    // read its lane shadow (the matching lane-set default above allocated it).
+    return ['local.get', getOrAllocLanedLocal(name, ctx.newLanedLocals)]
+  }
+
+  // `(local.tee $x V)` in value position — a CSE temp inside a value expression (e.g. the base
+  // teed for reuse in an inlined `x**(k/5)` fifthroot / a repeated subexpression). Lift V into the
+  // lane shadow of $x and tee it: later `(local.get $x)` reads resolve to the same shadow.
+  if (op === 'local.tee' && typeof expr[1] === 'string' && expr.length === 3) {
+    const name = expr[1]
+    const kind = ctx.localKind.get(name)
+    if (kind === 'lane' || kind === undefined) {
+      const v = liftExprV(expr[2], ctx); if (ctx.fail) return null
+      return ['local.tee', getOrAllocLanedLocal(name, ctx.newLanedLocals), v]
+    }
+    return liftFail(ctx, `local.tee ${name}: non-lane local in value position`)
   }
 
   // Loop-invariant global (e.g. a hoistConstantPool'd const, or any global the
@@ -2553,6 +2802,24 @@ function liftExprV(expr, ctx) {
     const inner = expr[1]
     const inv = isArr(inner) && (inner[0] === 'global.get' || (inner[0] === 'local.get' && ctx.localKind.get(inner[1]) === 'invariant'))
     if (inv) return [info.splat, expr]
+    // Sign / small-int ternary `cond ? A : B` (A,B integer literals) lowered to
+    // `(f64.convert_i32_s (select (i32.const A) (i32.const B) COND))` — e.g. `a<0 ? -1 : 1`.
+    // Convert the literals to f64 and bitselect by COND's lane mask (the f64-lane ternary).
+    if (ctx.laneType === 'f64' && isArr(inner) && inner[0] === 'select' && inner.length === 4 &&
+        isI32Const(inner[1]) && isI32Const(inner[2])) {
+      let cond = inner[3]
+      if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+      const cmpS = isArr(cond) && cond.length === 3 ? LANE_COMPARE.f64?.[cond[0]] : null
+      if (cmpS) {
+        const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
+        const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+        const mtmp = `$__mask${ctx.freshIdRef.next++}`
+        ctx.extraLocals.push(['local', mtmp, 'v128'])
+        return ['block', ['result', 'v128'],
+          ['local.set', mtmp, [cmpS, ca, cb]],
+          ['v128.bitselect', ['f64x2.splat', ['f64.const', inner[1][1]]], ['f64x2.splat', ['f64.const', inner[2][1]]], ['local.get', mtmp]]]
+      }
+    }
   }
 
   // NaN-canonicalization wrapper (float lanes only; integer lanes never carry
@@ -2594,9 +2861,24 @@ function liftExprV(expr, ctx) {
   }
   if ((ctx.laneType === 'f64' || ctx.laneType === 'f32') && op === 'block') {
     const m = matchCanonBlock(expr, ctx.laneType)
-    if (!m) return liftFail(ctx, 'non-canonical value-block')
-    const coreV = liftExprV(m.core, ctx)
-    return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+    if (m) { const coreV = liftExprV(m.core, ctx); return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info) }
+    // General value-block (a let-binding): `(block [label] (result T) …laneSets… TAILVALUE)`.
+    // jz emits these for an inlined value function (e.g. `av ** e` → an exp∘log block). Lift the
+    // intermediate lane-local sets, then the tail value. Sound ONLY when the block is straight-line
+    // (no br/br_if/br_table/return targeting it — an early-exit can't be flattened) — bail otherwise.
+    let bi = 1
+    if (typeof expr[bi] === 'string') bi++
+    if (isArr(expr[bi]) && expr[bi][0] === 'result') bi++
+    const parts = expr.slice(bi)
+    if (parts.length === 0 || parts.some(hasBranchOrReturn)) return liftFail(ctx, 'non-canonical value-block')
+    const out = ['block', ['result', 'v128']]
+    for (let k = 0; k < parts.length - 1; k++) {
+      const l = liftStmt(parts[k], ctx); if (ctx.fail) return null
+      if (l != null) { if (Array.isArray(l) && l[0] === '__seq__') out.push(...l.slice(1)); else out.push(l) }
+    }
+    const tail = liftExprV(parts[parts.length - 1], ctx); if (ctx.fail) return null
+    out.push(tail)
+    return out
   }
 
   // Conditional select — jz lowers `cond ? X : Y` to (if (result LT) COND (then X)
@@ -2615,8 +2897,13 @@ function liftExprV(expr, ctx) {
     const resTy = isArr(expr[1]) && expr[1][0] === 'result' ? expr[1][1] : null
     if (resTy !== ctx.laneType && !(ctx.laneType === 'f32' && resTy === 'f64')) return liftFail(ctx, 'conditional without lane-typed result')
     const thenN = expr[3], elseN = expr[4]
-    if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length !== 2) return liftFail(ctx, 'malformed conditional then-branch')
-    if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length !== 2) return liftFail(ctx, 'malformed conditional else-branch')
+    // A branch is `(then …preludeSets… TAILVALUE)` — usually just the tail (length 2), but jz's
+    // NaN-canonicalization of a negation tees the value first (`(then (set $t (neg a)) (canon $t))`),
+    // so accept intermediate lane-local sets before the tail. Both branches evaluate speculatively
+    // (lane-pure ⇒ trap-free); each tail is snapshotted into its own temp BEFORE the other branch's
+    // prelude runs, so a shared prelude local can't clobber the already-computed value.
+    if (!isArr(thenN) || thenN[0] !== 'then' || thenN.length < 2) return liftFail(ctx, 'malformed conditional then-branch')
+    if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length < 2) return liftFail(ctx, 'malformed conditional else-branch')
     let cond = expr[2]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]  // strip `!= 0`
     // f32 lane: operands were promoted, so the compare is `f64.*` — use its f32x4 form
@@ -2626,13 +2913,28 @@ function liftExprV(expr, ctx) {
     if (!cmpSimd) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
     const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
     const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
-    const x = liftExprV(thenN[1], ctx); if (ctx.fail) return null
-    const y = liftExprV(elseN[1], ctx); if (ctx.fail) return null
-    const mtmp = `$__mask${ctx.freshIdRef.next++}`
-    ctx.extraLocals.push(['local', mtmp, 'v128'])
+    // Lift a branch: its prelude sets, then its tail value snapshotted into `outTmp`.
+    const liftArm = (arm, outTmp) => {
+      const out = []
+      for (let i = 1; i < arm.length - 1; i++) {
+        const l = liftStmt(arm[i], ctx); if (ctx.fail) return null
+        if (l != null) { if (Array.isArray(l) && l[0] === '__seq__') out.push(...l.slice(1)); else out.push(l) }
+      }
+      const v = liftExprV(arm[arm.length - 1], ctx); if (ctx.fail) return null
+      out.push(['local.set', outTmp, v])
+      return out
+    }
+    const id = ctx.freshIdRef.next++
+    const tv = `$__then${id}`, ev = `$__else${id}`, mtmp = `$__mask${id}`
+    ctx.extraLocals.push(['local', tv, 'v128'], ['local', ev, 'v128'], ['local', mtmp, 'v128'])
+    // Mask FIRST: COND may carry an address `local.tee` the branch values read, so it must run
+    // before them (matching scalar order — COND evaluates before the taken branch).
+    const maskSet = ['local.set', mtmp, [cmpSimd, ca, cb]]
+    const thenSeq = liftArm(thenN, tv); if (ctx.fail) return null
+    const elseSeq = liftArm(elseN, ev); if (ctx.fail) return null
     return ['block', ['result', 'v128'],
-      ['local.set', mtmp, [cmpSimd, ca, cb]],
-      ['v128.bitselect', x, y, ['local.get', mtmp]]]
+      maskSet, ...thenSeq, ...elseSeq,
+      ['v128.bitselect', ['local.get', tv], ['local.get', ev], ['local.get', mtmp]]]
   }
 
   // Lane-pure op?
@@ -2655,6 +2957,55 @@ function liftExprV(expr, ctx) {
     const b = liftExprV(expr[2], ctx)
     if (ctx.fail) return null
     return [entry.simd, a, b]
+  }
+
+  // Transcendental call → its bit-exact f64x2 mirror (pow/exp/log/exp2/sin/cos/atan2/hypot).
+  // f64 lane only (the *2/_v helpers are f64x2). SIMD_PINNED keeps the scalar target alive
+  // through watr's single-caller inlining so the `call` node still exists at lift time.
+  // `$__to_num` is a numeric coercion jz wraps around a helper param it couldn't prove is f64
+  // (e.g. `decode(src[j])`), boxing it via `i64.reinterpret_f64` first. In the lane every value
+  // is already a genuine finite f64, so `__to_num(reinterpret_i64(x)) == x` — lift straight
+  // through, peeling the box round-trip.
+  if (op === 'call' && expr[1] === '$__to_num' && expr.length === 3) {
+    let arg = expr[2]
+    if (isArr(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) arg = arg[1]
+    return liftExprV(arg, ctx)
+  }
+
+  // `$math.pow(x, c)` with a CONSTANT non-integer exponent → truly-2-wide `exp_v(c · log_v(x))`.
+  // Bit-identical to the scalar `$math.pow` for EVERY x when c is non-integer (verified: negative
+  // base → NaN and x=0 → 0/∞ both carry through log/exp identically; only the integer fast path
+  // differs, and it is excluded). This is exactly jz's own emit-time lowering of `x ** const`. The
+  // win: spow's `av ** nv` (runtime exponent, so it reached here as a `$math.pow` call, exponent
+  // now the substituted constant) computes both lanes through the vectorized log/exp polys instead
+  // of the per-lane scalar `$math.pow2` — the difference between ~1× and ~2× on pow-bound pixels.
+  if (op === 'call' && ctx.laneType === 'f64' && expr[1] === '$math.pow' && expr.length === 4) {
+    const ex = expr[3]
+    let c = null
+    if (isArr(ex) && ex[0] === 'f64.const') c = +ex[1]
+    else if (isArr(ex) && ex[0] === 'local.get' && ctx.constLocals && ctx.constLocals.has(ex[1])) c = ctx.constLocals.get(ex[1])
+    if (c != null && Number.isFinite(c) && !Number.isInteger(c)) {
+      const base = liftExprV(expr[2], ctx); if (ctx.fail) return null
+      return ['call', '$math.exp_v', ['f64x2.mul', ['f64x2.splat', ex], ['call', '$math.log_v', base]]]
+    }
+  }
+
+  if (op === 'call' && ctx.laneType === 'f64' && PPC_CALL2[expr[1]]) {
+    const args = []
+    for (let i = 2; i < expr.length; i++) { const a = liftExprV(expr[i], ctx); if (ctx.fail) return null; args.push(a) }
+    return ['call', PPC_CALL2[expr[1]], ...args]
+  }
+
+  // Pure user-function call → inline its body as a value-expr and lift that (handles the callee's
+  // ternaries/compares/pow via the arms above). Depth-guarded against pure→pure recursion.
+  if (op === 'call' && ctx.laneType === 'f64' && ctx.pureFuncMap && ctx.pureFuncMap.has(expr[1]) && ctx.inlineDepth < 8) {
+    const inlined = inlinePureCallExpr(expr, ctx.pureFuncMap, ctx.freshIdRef)
+    if (inlined != null) {
+      ctx.inlineDepth++
+      const v = liftExprV(inlined, ctx)
+      ctx.inlineDepth--
+      return v
+    }
   }
 
   return liftFail(ctx, `${op}: no lane-pure SIMD mapping for ${ctx.laneType}`)
@@ -4468,6 +4819,7 @@ const PPC_CALL2 = {
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
   '$math.pow': '$math.pow2',   // 2-arg; bit-exact per-lane scalar (cancellation-sensitive — see module/math.js)
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
+  '$math.cbrt': '$math.cbrt_v', '$math.fifthroot': '$math.fifthroot_v',   // 1-arg; per-lane scalar repack
   // log/exp/exp2: TRUE f64x2 polys — both lanes one evaluation (≈2×, beats V8 native log). Bit-exact
   // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).
   '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
@@ -5731,6 +6083,24 @@ export function vectorizeLaneLocal(fn, opts = {}) {
     }
   }
 
+  // Loop-invariant constant locals — hoistConstantPool's `$…_pg` pool (`set $L (f64.const C)`,
+  // written exactly once). name → numeric value, used to resolve a constant `pow` exponent that
+  // reached the loop as a pooled local rather than a literal.
+  const constLocals = new Map()
+  {
+    const setCount = new Map()
+    const walkC = (n) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
+        setCount.set(n[1], (setCount.get(n[1]) || 0) + 1)
+        if (isArr(n[2]) && n[2][0] === 'f64.const') constLocals.set(n[1], +n[2][1])
+      }
+      for (let i = 1; i < n.length; i++) walkC(n[i])
+    }
+    for (let i = bodyStart; i < fn.length; i++) walkC(fn[i])
+    for (const [k, c] of setCount) if (c !== 1) constLocals.delete(k)   // multiply-written → not invariant
+  }
+
   const freshIdRef = { next: 0 }
   const newLocalDeclsAll = []
 
@@ -5769,7 +6139,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
-        ?? tryVectorize(bl, fnLocals, freshIdRef)
+        ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
         ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil)

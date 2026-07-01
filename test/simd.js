@@ -88,6 +88,93 @@ test('SIMD f64x2 - rounding ops (floor/ceil/trunc) lift, bit-exact at edges', ()
   ok(/f64x2\.floor/.test(w) && /f64x2\.ceil/.test(w) && /f64x2\.trunc/.test(w), 'expected f64x2 rounding ops')
 })
 
+// === AoS (array-of-structs) de-interleave — interleaved-channel loops `base[P*i + c]` ===
+// A stride-P loop (interleaved RGB / vec3 / complex) gathers each channel's two-pixel pair into an
+// f64x2, computes per-channel, scatters back. Each kernel is checked bit-exact vs the scalar oracle
+// AND asserted to actually lift. Self-contained (typed arrays constructed in-module → params infer f64).
+
+test('SIMD AoS - stride-3 RGB map vectorizes, bit-exact', () => {
+  const src = `
+    const N = 300
+    const mk = (n) => { const o = new Float64Array(n*3); let s = 0x1234abcd|0
+      for (let i=0;i<n*3;i++){ s^=s<<13; s^=s>>>17; s^=s<<5; o[i]=(s>>>0)/4294967296*2+0.001 } return o }
+    const f = (src, dst, n) => { for (let i=0;i<n;i++){ const j=3*i
+      dst[j]=src[j]*2+src[j+1]; dst[j+1]=src[j+1]-src[j+2]*0.5; dst[j+2]=Math.sqrt(src[j+2]) } }
+    export let main = () => { const s=mk(N), d=new Float64Array(N*3); f(s,d,N)
+      let h=0; for(let i=0;i<N*3;i++) h+=d[i]*(i+1); return h }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'stride-3 RGB map bit-exact')
+  ok(hasV128(wat(src, SIMD_OPT)), 'stride-3 RGB map lifts to v128')
+})
+
+test('SIMD AoS - stride-3 transcendentals (cbrt/exp/pow) vectorize, bit-exact, odd N tail', () => {
+  const src = `
+    const N = 257
+    const mk = (n) => { const o = new Float64Array(n*3); for(let i=0;i<n*3;i++) o[i]=(i%97)*0.013+0.01; return o }
+    const f = (src, dst, n) => { for (let i=0;i<n;i++){ const j=3*i
+      dst[j]=Math.cbrt(src[j]); dst[j+1]=Math.exp(src[j+1]); dst[j+2]=src[j+2]**0.7 } }
+    export let main = () => { const s=mk(N), d=new Float64Array(N*3); f(s,d,N)
+      let h=0; for(let i=0;i<N*3;i++) h+=d[i]*(i+1); return h }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'stride-3 cbrt/exp/pow bit-exact (odd N)')
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'transcendental map lifts to v128')
+  ok(/math\.cbrt_v/.test(w), 'cbrt lifts to its f64x2 mirror')
+})
+
+test('SIMD AoS - constant-exponent pow lifts to 2-wide exp∘log (not per-lane pow2)', () => {
+  // spow's `av ** e` (constant e via inline) == exp(e·log av) bit-for-bit → both lanes through
+  // log_v/exp_v, not the per-lane scalar $math.pow2. The sign/abs ternaries lower to bitselect.
+  const src = `
+    const N = 200
+    const spow = (a, e) => { const s = a<0?-1:1, av = a<0?-a:a; return s * av ** e }
+    const mk = (n) => { const o = new Float64Array(n*3); for(let i=0;i<n*3;i++) o[i]=(i%50)*0.04-1; return o }
+    const f = (src, dst, n) => { for (let i=0;i<n;i++){ const j=3*i
+      dst[j]=spow(src[j],0.159); dst[j+1]=spow(src[j+1],0.7); dst[j+2]=spow(src[j+2],0.3) } }
+    export let main = () => { const s=mk(N), d=new Float64Array(N*3); f(s,d,N)
+      let h=0; for(let i=0;i<N*3;i++) h+=d[i]*(i+1); return h }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'stride-3 signed-pow bit-exact')
+  const w = wat(src, SIMD_OPT)
+  ok(/math\.exp_v/.test(w) && /math\.log_v/.test(w), 'constant-exp pow lifts to exp_v∘log_v')
+  ok(!/math\.pow2/.test(w), 'no per-lane scalar pow2 for the constant exponent')
+})
+
+test('SIMD AoS - mixed stride (struct loads + array stores) bails, stays correct', () => {
+  // Stride-3 object-field loads feeding stride-1 array stores can't share one gather/scatter delta
+  // — the recognizer must bail to scalar rather than corrupt the odd-stride sites.
+  const src = `
+    const N = 512
+    export let main = () => {
+      const rows = []
+      for (let i=0;i<N;i++) rows.push({ x:i*0.5, y:i+1, z:(i&7)-3 })
+      const xs=new Float64Array(N), ys=new Float64Array(N), zs=new Float64Array(N)
+      for (let i=0;i<N;i++){ const p=rows[i]; xs[i]=p.x+p.y*0.25; ys[i]=p.y-p.z*0.5; zs[i]=p.z+p.x*0.125 }
+      return xs[N-1]+ys[N-1]+zs[N-1]
+    }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'mixed-stride loop matches scalar')
+})
+
+test('SIMD AoS - power-of-2 strides (complex stride-2, RGBA stride-4) vectorize, bit-exact', () => {
+  // `2*i` / `4*i` fold `(P*i)<<3` to a single `i<<K` (K = 3+log2 P); the excess shift is the stride.
+  const complex = `
+    const N = 256
+    const mk = (n) => { const o = new Float64Array(n*2); for(let i=0;i<n*2;i++) o[i]=(i%40)*0.05-1; return o }
+    const f = (src, dst, n) => { for (let i=0;i<n;i++){ const j=2*i
+      dst[j]=src[j]*0.5-src[j+1]; dst[j+1]=src[j+1]*0.5+src[j]*2 } }   // interleaved [re,im]
+    export let main = () => { const s=mk(N), d=new Float64Array(N*2); f(s,d,N)
+      let h=0; for(let i=0;i<N*2;i++) h+=d[i]*(i+1); return h }`
+  is(runVec(complex, SIMD_OPT).main(), runVec(complex, NOVEC).main(), 'complex stride-2 bit-exact')
+  ok(hasV128(wat(complex, SIMD_OPT)), 'complex stride-2 lifts to v128')
+
+  const rgba = `
+    const N = 256
+    const mk = (n) => { const o = new Float64Array(n*4); for(let i=0;i<n*4;i++) o[i]=(i%40)*0.05+0.1; return o }
+    const f = (src, dst, n) => { for (let i=0;i<n;i++){ const j=4*i
+      dst[j]=Math.sqrt(src[j]); dst[j+1]=src[j+1]*2; dst[j+2]=src[j+2]+src[j]; dst[j+3]=src[j+3] } }
+    export let main = () => { const s=mk(N), d=new Float64Array(N*4); f(s,d,N)
+      let h=0; for(let i=0;i<N*4;i++) h+=d[i]*(i+1); return h }`
+  is(runVec(rgba, SIMD_OPT).main(), runVec(rgba, NOVEC).main(), 'RGBA stride-4 bit-exact')
+  ok(hasV128(wat(rgba, SIMD_OPT)), 'RGBA stride-4 lifts to v128')
+})
+
 // Self-host parity: jz.wasm miscompiled deep property reads of an ARG-passed object (the lift
 // chain's `ctx` — NaN-box schema corrupted across arg boundaries at call-depth 2-3), so
 // getOrAllocLanedLocal read back a wrong slot and EVERY map lift silently scalarized in the
@@ -1007,7 +1094,9 @@ test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
 // negative test pins the boundary so future changes don't accidentally
 // promise AoS support without a real struct-splitting carrier.
 
-test('vectorize: AoS-interleaved stride>1 does NOT lift (parity intact)', () => {
+// A power-of-2 AoS stride (`a[i*2]`) strength-reduces `(2*i)<<3` to a single `i<<4` shift; the
+// recognizer reads the excess shift over the f64 element (3) as the pixel stride and lifts it.
+test('vectorize: power-of-2 AoS stride (a[i*2]) lifts, bit-exact', () => {
   const src = `
     export const main = () => {
       const N = 1024
@@ -1020,7 +1109,7 @@ test('vectorize: AoS-interleaved stride>1 does NOT lift (parity intact)', () => 
     }
   `
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  ok(!/\$__simd_loop\d+/.test(wat(src, SIMD_OPT)), 'AoS strided access should not lift to SIMD')
+  ok(hasV128(wat(src, SIMD_OPT)), 'power-of-2 stride-2 access lifts to SIMD')
 })
 
 // Regression: sibling loops that each lift the SAME source local to a v128

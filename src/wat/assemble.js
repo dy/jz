@@ -529,7 +529,7 @@ function reachableStdlib(sec) {
 // (PPC_CALL2). These are the ONLY helpers appendLateStdlib may add; restricting to them avoids
 // touching helpers that live in other module sections (ext-stdlib, imports) where a blind
 // referenced-but-absent scan would wrongly re-append and duplicate them.
-const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v'])
+const LATE_VEC_HELPERS = new Set(['math.sin2', 'math.cos2', 'math.pow2', 'math.atan2_2', 'math.hypot_2', 'math.log_v', 'math.exp_v', 'math.exp2_v', 'math.cbrt_v', 'math.fifthroot_v'])
 
 // A late pass can reference one of the f64x2 mirrors that wasn't present when the stdlib was first
 // assembled. Append any referenced-but-missing mirror body (fixpoint over their own calls, though

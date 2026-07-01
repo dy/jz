@@ -666,7 +666,11 @@ const jzCompileInner = (code, opts = {}) => {
         const op = node[0]
         if (op === 'global.set') return true
         if (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) return true
-        if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.')) return true
+        // `$__to_num` is a pure numeric coercion (identity on a finite f64) — the vectorizer
+        // strips it in the lane lift, where every value is a genuine f64. Treating it as pure
+        // lets a helper like `decode(v) = v>=0 ? … : …` (whose param jz conservatively coerces)
+        // qualify for lane inline. Scoped to this builder → only affects vectorizer inlining.
+        if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.') && node[1] !== '$__to_num') return true
         if (op === 'call_indirect' || op === 'call_ref') return true
         return node.some((c, i) => i > 0 && hasSideEffect(c))
       }

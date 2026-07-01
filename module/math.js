@@ -606,6 +606,17 @@ export default (ctx) => {
     (f64x2.replace_lane 1
       (f64x2.splat (call $math.hypot (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $y))))
       (call $math.hypot (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $y)))))`, ['math.hypot'])
+  // cbrt/fifthroot: same per-lane scalar repack (their scalar bodies are branchy exponent-split +
+  // Newton, no cheap 2-lane poly). BIT-EXACT by construction. Unlocks the Oklab/OkLCh path (3 cbrt
+  // per pixel) and the sRGB/Rec.709 `x**(k/5)` gamma so their surrounding f64x2 arithmetic vectorizes.
+  wat('math.cbrt_v', `(func $math.cbrt_v (param $x v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.cbrt (f64x2.extract_lane 0 (local.get $x))))
+      (call $math.cbrt (f64x2.extract_lane 1 (local.get $x)))))`, ['math.cbrt'])
+  wat('math.fifthroot_v', `(func $math.fifthroot_v (param $x v128) (result v128)
+    (f64x2.replace_lane 1
+      (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $x))))
+      (call $math.fifthroot (f64x2.extract_lane 1 (local.get $x)))))`, ['math.fifthroot'])
   // True f64x2 log — both lanes through one fdlibm poly (≈2× over two scalar calls). The HOT path
   // (both lanes a normal finite x>0) mirrors $math.log's normal branch op-for-op: bit-exact (the
   // sqrt2-center conditional becomes a per-lane bitselect; the i32 exponent k becomes an f64 via the
