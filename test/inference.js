@@ -1087,3 +1087,33 @@ test('result i32-narrowing: a typed-array-element return narrows to i32 (post-ty
   ok(!/__to_str|__typed_idx|trunc_sat/.test(lookup), 'no ToNumber/__typed_idx dispatch on the returned element')
   ok(!/convert_i32/.test(lookup), 'no i32→f64 rebox inside lookup — the element stays i32 end to end')
 })
+
+// A helper `f(src[i])` where the receiver `src` is a typed-array PARAMETER of the caller: the
+// element is a Number, so f's param is numeric and skips `__to_num`. Previously only bare-name /
+// global-binding args carried caller value-type context to the call-site val lattice — a typed
+// PARAM's element type was invisible, so the param stayed polymorphic and every use pulled the
+// __to_num string-parse tree (which then blocks the SIMD lane-inline of colour helpers like lin).
+test('param VAL.NUMBER: a helper fed typed-array-PARAM elements skips __to_num', () => {
+  if (onWasi()) return  // wasi run-reserved locals rename; the param type is the portable assertion
+  // Two call sites keep `lin` standalone (single-caller inline would hide the param proof).
+  const wat = jz.compile(`
+    let lin = (c) => c <= 0.04045 ? c / 12.92 : (c + 0.055) * 1.5
+    let run = (src, dst, n) => { let i = 0; while (i < n) { dst[i] = lin(src[i]) + lin(src[i] + 1); i++ } }
+    export let main = () => { let s = new Float64Array(64), d = new Float64Array(64); run(s, d, 64); return d[3] }
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  const lin = wat.match(/\(func \$lin\b[\s\S]*?\n  \)/)[0]
+  ok(/\(param \$c f64\)/.test(lin), 'lin param stays f64')
+  ok(!/\$__to_num/.test(lin), 'lin param is numeric (fed Float64Array-param elements) — no __to_num coercion')
+})
+
+// Soundness: the typed-array-element propagation must fire ONLY for a provably-TYPED receiver.
+// A string literal arg to the same numeric helper must still ToNumber-coerce, not read raw bits.
+test('param VAL.NUMBER: string arg to a numeric helper still coerces (bounded narrowing)', () => {
+  is(jz(`let lin = (c) => c / 2 + 1; export let main = () => lin("8") + lin(10)`, { optimize: 'speed' }).exports.main(), 11)
+})
+
+// Soundness: a BigInt64Array element is VAL.BIGINT, not VAL.NUMBER — the ctor decides, so the
+// helper's param must NOT be narrowed to Number (its i64 bigint carrier must survive).
+test('param VAL.NUMBER: BigInt64Array element stays BigInt (ctor-gated, not narrowed to Number)', () => {
+  is(jz(`let h = (x) => x + 1n; export let main = () => { let a = new BigInt64Array(3); a[0] = 5n; return Number(h(a[0])) }`, { optimize: 'speed' }).exports.main(), 6)
+})

@@ -18,6 +18,7 @@ import { scanBoundedLoops, exprType, typedElemCtor } from '../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from '../kind.js'
+import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep } from '../reps.js'
 import {
   paramFactsOf, ensureParamRep, mergeParamFact,
@@ -769,7 +770,17 @@ export default function narrowSignatures(programFacts, ast) {
   const inferValAtSite = (arg, state) => {
     const v = inferValType(arg, state.callerValTypes)
     if (v != null) return v
-    if (typeof arg !== 'string') return null
+    if (typeof arg !== 'string') {
+      // Typed-array element read `recv[i]` where the receiver is a TYPED param/local of the CALLER:
+      // valTypeOf can't see this (it queries ctx.func, not the caller), so `f(src[i])` with a
+      // Float64Array PARAM `src` never propagated Number to f's param. Mirror VT['[]'] exactly,
+      // but resolve the receiver through the caller's own context — sound: only fires when the
+      // receiver is provably VAL.TYPED, and the ctor decides Number vs BigInt (BigInt64Array).
+      if (Array.isArray(arg) && arg[0] === '[]' && arg.length === 3 && typeof arg[1] === 'string' &&
+          (state.callerValTypes?.get(arg[1]) || ctx.scope.globalValTypes?.get(arg[1])) === VAL.TYPED)
+        return typedCtorElemValType(state.callerTypedElems?.get(arg[1])) || VAL.NUMBER
+      return null
+    }
     const fromParam = state.callerParamFacts('val')?.get(arg)
     if (fromParam != null) return fromParam
     const def = state.callerFunc?.defaults?.[arg]
