@@ -5,15 +5,18 @@
 * [ ] Beat all bench cases, all examples - pinned
   * [x] 10 more bench cases - each area covered
 * [ ] compiler architecture perfection
-  * [ ] How to reduce the size of jz.js twice? Is there any structures that can be folded or which don't add any value?
-  * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abstraction altogether to make compilation speed multiple times faster?
+  * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
+  * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abstraction altogether to make compilation speed multiple times faster? Some folding or waste cutout possible - what can be killed of merged without effect?
+  * [ ] How to shave off the size of produced wasms? Attain level better than wasm-opt for produced wasms? We have three options - own post-watr wat optimize pass, watr/optimize or wasm-opt, but ideally we'd internalize the optimizer so that's more efficient than wasm-opt, as well as fast.
 * [ ] jz.wasm beats v8
+  * I need your expertize in making jz.wasm faster than v8. I suspect there's too many string ops, or strings are too complex and could be done simpler OR not versatile enough, or there's some internal structure missing or redundant, or some internal optimizations possible, to reach the level of jz.wasm performing faster than jz.js. Now it's seemingly slower and we need to beat V8 and JSC.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
 * [ ] color-space
 * [ ] audiojs
 * [ ] unplugin
+* [ ] hsluv wasm https://www.hsluv.org/implementations/
 
 ## Floatbeat (what's a good name?)
 
