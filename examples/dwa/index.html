@@ -16,7 +16,7 @@ let mySeed = (Math.random() * 2e9) | 0
 
 const demo = runDemo({
   name: "dwa",
-  hint: "Dynamic Window Approach (Fox / Burgard / Thrun) — after Andrew Davison's robotics-course demo. The robot scores every reachable wheel-velocity arc for progress and clearance and drives the best. Drag to move the goal",
+  hint: "Dynamic Window Approach — the robot scores every reachable velocity arc for progress and clearance, then drives the best. Drag to move the goal",
   size: { dpr: 2, budget: null },
   // apply the current layout seed on every (re)load so resize / engine-swap keep the same combination
   load: (e) => { if (e.seed) e.seed(mySeed); else e.init() },
@@ -30,16 +30,17 @@ const steer = () => { if (demo.engine && ptr.down) demo.engine.setGoal(ptr.x, pt
 demo.cv.addEventListener("pointerdown", steer)
 demo.cv.addEventListener("pointermove", steer)
 
-// Credit the source/inspiration — Davison's original interactive demo — beside the wiki/code links.
-const desc = document.querySelector(".jz-desc")
-if (desc) {
-  desc.appendChild(document.createTextNode("  ·  "))
+// Credit the source/inspiration — Davison's original interactive demo — ON the same line as the
+// wiki/code links (append to .jz-links, not .jz-desc, so it doesn't drop to its own row).
+const links = document.querySelector(".jz-links")
+if (links) {
+  links.appendChild(document.createTextNode("  ·  "))
   const a = document.createElement("a")
   a.className = "jz-wiki"
   a.href = "https://www.doc.ic.ac.uk/~ajd/Planning/"
   a.target = "_blank"; a.rel = "noopener"
   a.textContent = "original"
-  desc.appendChild(a)
+  links.appendChild(a)
 }
 </script>
 </body>

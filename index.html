@@ -285,8 +285,8 @@
         width: 120px;
       }
 
-      /* substrate-class glyph before each stat label (JS · WASM · native) — the marks the bench
-   chart uses. Brand colours pinned to their dark values (the hero is a fixed dark island). */
+      /* substrate-class glyph before each stat label (JS · WASM · native) — same marks + themed
+   brand colours as the bench chart (.cico.cls-* in assets/site.css); here just size + spacing. */
       .metrics .stat span {
         display: inline-flex;
         align-items: center;
@@ -295,11 +295,7 @@
         width: 12px;
         height: 12px;
         margin-right: 5px;
-        flex: none;
       }
-      .metrics .cls-js { color: #f0db4f; }
-      .metrics .cls-wasm { color: #9a8bf5; }
-      .metrics .cls-native { color: var(--dim); }
 
       /* logo — the opaque jz mark in the 2×2 major cell, offset 1px to the bottom-right: a hairline gap on the
    TOP/LEFT keeps those grid lines visible, while the bottom/right edges sit flush ON the grid lines (no gap).

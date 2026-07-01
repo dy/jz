@@ -37,6 +37,12 @@
   --band:  light-dark(#d5d8dc, #000000);   /* chrome blends with the page (header has no band) */
   --line:  light-dark(#bbbec2, #1c1c25);   /* hairline — darker than the gray so it shows (never white) */
 
+  /* substrate-class brand colours (JS gold · WASM violet · native quiet gray) — themed light-dark
+     pairs so the class glyphs on the bench chart, the strip, and the landing hero all track the theme. */
+  --cls-js:     light-dark(#caa10a, #f0db4f);
+  --cls-wasm:   light-dark(#654ff0, #9a8bf5);
+  --cls-native: light-dark(#6c6c78, #8a8a93);
+
   /* ── ONE shared content column for every page (landing hero, bench, examples): content-left snapped
      to the 80px grid, width = cw. So the column lines up edge-to-edge as you move between pages. ── */
   --U: 80px;             /* major grid unit — also the rounding step for the shared inset */
@@ -58,6 +64,14 @@
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
+
+/* substrate-class glyphs (JS / WASM / native), shared by the bench chart, the strip, and the
+   landing hero. Markup comes from CLS_ICO in assets/headline.js; colour via currentColor + the
+   themed --cls-* tokens. Default size fits the dense bench rows; the strip/hero bump it locally. */
+.cico { width: 11px; height: 11px; flex: none; }
+.cico.cls-js     { color: var(--cls-js); }
+.cico.cls-wasm   { color: var(--cls-wasm); }
+.cico.cls-native { color: var(--cls-native); }
 
 /* One selection highlight site-wide (else pages without their own fall back to the browser blue):
    ink-on-white in light, white-on-black in dark. */

@@ -17,10 +17,8 @@
   --mid: light-dark(#6c6c78, #8a8a93);     /* secondary text */
   --faint: light-dark(#e3e3e9, #1c1c25);   /* hairlines / bar tracks */
   --red: light-dark(#d61f1f, #ff5a5a);
-  /* class-glyph brand colour: JS = gold, WASM = violet (#654FF0). Native's terminal
-     glyph uses the neutral --mid gray (no brand), so no colour token for it. */
-  --cls-js: light-dark(#caa10a, #f0db4f);
-  --cls-wasm: light-dark(#654ff0, #9a8bf5);
+  /* --cls-js / --cls-wasm / --cls-native (the class-glyph brand colours) come themed from
+     assets/site.css, shared with the landing hero. */
   --padx: 40px;   /* matches the shared column in assets/site.css (which also gives --cw/--colw/--gx-pad) */
 }
 html { scroll-behavior: smooth; }
@@ -50,16 +48,18 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
   opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .14s ease, transform .14s ease; }
 [data-tip]::after {
   content: attr(data-tip); position: absolute; left: 0; bottom: calc(100% + 9px); z-index: 30;
-  width: max-content; max-width: 270px;
+  width: max-content; max-width: 280px; white-space: pre-line;   /* honour \n in the tip → real line breaks */
   background: var(--ink); color: var(--paper);
   font: 400 11.5px/1.5 var(--sans); text-transform: none; letter-spacing: normal; text-align: left;
   padding: 8px 11px; transform: translateY(4px); box-shadow: 0 4px 16px rgba(0, 0, 0, .22); }
 [data-tip]::before {
   content: ''; position: absolute; left: 13px; bottom: calc(100% + 4px); z-index: 30;
   border: 5px solid transparent; border-top-color: var(--ink); transform: translateY(4px); }
+/* ~.4s dwell before a tip appears — hovering across the chart no longer flickers a bubble on
+   every row; it hides instantly on leave (delay only on the show). */
 [data-tip]:hover::after, [data-tip]:focus-visible::after,
 [data-tip]:hover::before, [data-tip]:focus-visible::before {
-  opacity: 1; visibility: visible; transform: translateY(0); }
+  opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .4s; }
 
 /* intro */
 .intro { display: flex; flex-direction: column; gap: 22px; margin-top: 42px; }
@@ -95,9 +95,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* bar rows */
 .row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* label doubling as the source / tracker link — looks like the label, underlines on hover/focus */
-a.lab.lnk { color: inherit; text-decoration: none; cursor: pointer; }
-a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+/* label doubling as the source / tracker link — persistently underlined like every content link
+   across the site (faint by default so a card of them stays calm; full-strength on hover/focus). */
+a.lab.lnk { color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--mute); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration-color: currentColor; }
 .row .lab .cico { vertical-align: -1.5px; margin-right: 4px; }   /* sits just before the label */
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
@@ -107,12 +108,8 @@ a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration: underline; text-unde
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid light-dark(#b6b9be, var(--ink)); background: light-dark(#e7e9ec, var(--paper)); min-width: 2px; }   /* competitors: a faintly whitish fill + soft gray border in light (the solid black JZ bar still stands out); outline-only on black in dark */
 .bar i.solid { background: var(--ink); }
 .bar i.diff { border-color: var(--red); }
-/* class glyph: before each per-row label and on the corpus group headers (.bandlab).
-   currentColor tint — JS gold, WASM violet, native a quiet gray terminal mark. */
-.cico { width: 11px; height: 11px; }
-.cico.cls-js { color: var(--cls-js); }
-.cico.cls-wasm { color: var(--cls-wasm); }
-.cico.cls-native { color: var(--mid); }
+/* class glyph (.cico base + themed cls-* colours live in assets/site.css) — here just its
+   placement before each per-row label and on the corpus group headers (.bandlab). */
 .bandlab .cico { vertical-align: -1.5px; margin-right: 6px; }
 .bar .cut { position: absolute; right: 8px; top: 0; bottom: 0; width: 7px; background: var(--paper);
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
@@ -309,7 +306,16 @@ const DESC = {
 // Per-target source file — each row links to the exact implementation it measured, so you
 // can see how that language wrote the kernel. (Every JS engine runs the same <case>.js.)
 const REPO = 'https://github.com/dy/jz/blob/main/bench'
-const ISSUES = 'https://github.com/dy/jz/issues'
+// Each competitor's own issue tracker — when a target fails our valid JS, that's ITS miscompile /
+// limitation to fix, so the row links to a search of that project's issues for the error (find the
+// existing report, or file one from there). jz's own targets point back at jz.
+const REPOS = {
+  porf: 'CanadaHonk/porffor', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
+  'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
+  graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
+  jz: 'dy/jz', 'jz-wasmtime': 'dy/jz', 'jz-w2c': 'dy/jz', wat: 'dy/jz', 'c-wasm': 'dy/jz', nat: 'dy/jz',
+}
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
   porf: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js',
@@ -318,17 +324,23 @@ const SRC_EXT = {
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
 }
 const srcHref = (tid, caseId) => SRC_EXT[tid] ? `${REPO}/${caseId}/${caseId}${SRC_EXT[tid]}` : null
-const issueHref = (tid, caseId, reason) =>
-  `${ISSUES}/new?title=${encodeURIComponent(`${tid} fails bench/${caseId}`)}&body=${encodeURIComponent((reason || '').slice(0, 500))}`
+// Failure → a search of the failing project's issue tracker for the error text (existing report or new).
+const issueHref = (tid, caseId, reason) => {
+  const repo = REPOS[tid]
+  if (!repo) return null
+  const q = (reason || '').replace(/^exit \d+:\s*/i, '').slice(0, 60).trim()
+  return `https://github.com/${repo}/issues?q=` + encodeURIComponent(`is:issue ${q}`)
+}
 // The CLI the harness used for this target (meta.invocations), with <case> filled in.
 const cliOf = (tid, caseId) => (DATA?.meta?.invocations?.[tid] || '').replace(/<case>/g, caseId) || null
-// A row's hover tooltip: what the engine is, whether it got the right answer, how it ran.
+// A row's hover tooltip — three terse lines (engine · result · the exact command). All of it is
+// data-driven from results.json (parity, run count, meta.invocations), so it tracks any case change.
 const rowTip = (tid, parity, runs, cli) => [
   DESC[tid],
-  parity === 'DIFF' ? '⚠ Different result — checksum ≠ jz, so this run is excluded from the ranking.' : 'Result matches jz.',
-  runs ? `Median of ${runs} runs.` : null,
-  cli ? `Ran: ${cli}` : null,
-].filter(Boolean).join(' ')
+  parity === 'DIFF' ? '⚠ different result — excluded from the ranking'
+    : runs ? `✓ matches jz · median of ${runs} runs` : '✓ matches jz',
+  cli || null,
+].filter(Boolean).join('\n')
 const BREAK = 12      // linear bars; rows past this are cut, number printed
 // Self-referential 'compiler' cases (jz/watr/jessie compiling code) are hidden
 // from the page + headline geomean — they're a different question from the
@@ -477,7 +489,7 @@ const failKind = reason => {
 const failRow = (label, sub, cls, reason, href) => {
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   const why = reason || 'did not compile/run'
-  const tip = href ? `${why} — click to report / track on GitHub.` : why
+  const tip = [why, href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n')
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href
     ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
@@ -488,17 +500,14 @@ const failRow = (label, sub, cls, reason, href) => {
     <span class="val">${esc(failKind(reason))}</span>
   </div>`
 }
-// Per-target corpus coverage: of the cases it was tried on, how many ran. Surfaces
-// the gap (Porffor runs a third of the kernels) instead of hiding the misses.
+// Per-target corpus coverage against the WHOLE corpus — how many of every case this target ran
+// correctly. Denominator is the full corpus (not just cases it was tried on), so a target that only
+// ports a subset reads honestly: NumPy covers 10 / N (only the numeric kernels have a NumPy port),
+// Porffor fewer still (it crashes on several). Surfaces the gap instead of hiding the misses.
 const coverage = tid => {
-  let ran = 0, attempted = 0
-  for (const c of CORPUS) {
-    const r = c.targets[tid]
-    if (!r) continue
-    attempted++
-    if (r.status !== 'fail') ran++
-  }
-  return { ran, attempted }
+  let ran = 0
+  for (const c of CORPUS) { const r = c.targets[tid]; if (r && r.status !== 'fail') ran++ }
+  return { ran, attempted: CORPUS.length }
 }
 
 // ── headline: banded geomeans, normalized to the fastest row ─────────────────
@@ -542,15 +551,16 @@ const renderGeomean = () => {
     // so corpus rows stay icon-free — no redundant per-row glyph under the header.
     html += `<div class="bandlab">${CLS_ICO[band] || ''}${lab}</div>`
     for (const r of bandRows) {
-      const cov = r.tid && coverage(r.tid)
-      const partial = cov && cov.attempted > cov.ran
+      // coverage only for real targets — the synthetic your-browser rows (__jzlive/__jslive) aren't
+      // in the corpus, so they'd read 0/N; they just show their case count.
+      const cov = TARGETS[r.tid] && coverage(r.tid)
+      const partial = cov && cov.ran < cov.attempted
       const sub = partial ? `${cov.ran} / ${cov.attempted} cases` : nCases(r.n)
-      // Corpus tooltip: engine description, plus — when it didn't run every case — why
-      // (the geomean averages only the cases it completed correctly; the misses show as
-      // muted rows in the per-case cards below).
+      // Corpus tooltip: engine line, then — when it didn't cover the whole corpus — why (two lines,
+      // terse). The geomean averages only the cases it ran correctly; the misses show as muted cards.
       const tip = [DESC[r.tid], partial
-        ? `Ran ${cov.ran} of ${cov.attempted} cases correctly — the geomean counts only those; the rest couldn’t compile/run or gave a different result (see the cards below).`
-        : null].filter(Boolean).join(' ')
+        ? `ran ${cov.ran} of ${cov.attempted} — the rest failed or have no ${stripClassSub(r.label, r.sub)} port (see the cards)`
+        : null].filter(Boolean).join('\n')
       html += rowHtml({ label: stripClassSub(r.label, r.sub), sub, tip,
         rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
     }
@@ -566,24 +576,20 @@ const renderGeomean = () => {
 // The same metric styling as the landing hero (assets/headline.js),
 // the same Speed / Size grouping and labels, rendered with the shared .mstats/.stat styles
 // (assets/site.css). Stats deep-link to the corpus chart (the hero links to /bench/ → here).
-// The hook: 4 bold speed numbers, not a 9-way table (the corpus chart below carries the
-// full comparison). vs V8 = your runtime; V8 max = the headline single-case win; vs JSC =
-// Safari's engine (so it's every browser, not just V8); vs C→wasm = beats a systems language,
-// apples-to-apples in the same V8. Labels stay terse — the title tooltip spells each out.
-// 3 bold speed numbers, each a distinct aspect — typical (your runtime), peak (best case),
-// and the moat (near-native). Not a 9-way table; the corpus chart below carries the full
-// comparison. Labels stay terse — the title tooltip spells each out.
-// One stat per substrate class (the band glyph carries the category): your JS engine,
-// a systems language → wasm, and the native ceiling. Each cell is [key, label, band, tip].
+// 3 bold speed numbers, each a distinct aspect — typical (your runtime), a systems language → wasm,
+// and the native ceiling — plus 2 size numbers. Not a 9-way table; the corpus chart below carries the
+// full comparison. One stat per substrate class (the band glyph carries the category). Labels stay
+// terse; the title tooltip spells each out — including the exact build flags behind every ratio.
+// Each cell is [key, label, band, tip].
 const STRIP = [
   ['Speed', [
-    ['v8', 'V8', 'js', 'jz vs Node/V8 — geometric-mean speedup across the corpus (your runtime). Up to 13.8× on the best single case (dotprod).'],
-    ['rust', 'Rust wasm', 'wasm', 'jz vs Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8 — jz beats a systems language, apples-to-apples.'],
-    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native) — the speed-of-light ceiling. jz matches it (1.01×), from plain JavaScript.'],
+    ['v8', 'V8', 'js', 'jz vs Node / V8 — geometric-mean speedup across the corpus (your runtime).\nUp to 13.8× on the best single case (dotprod).'],
+    ['rust', 'Rust wasm', 'wasm', 'jz vs Rust → wasm (rustc --target wasm32-wasip1 -C opt-level=3), run in this same V8.\njz beats a systems language, apples-to-apples.'],
+    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) — the speed-of-light ceiling.\njz matches it (1.01×), from plain JavaScript.'],
   ]],
   ['Size', [
-    ['assize', 'AssemblyScript', 'wasm', 'jz wasm bytes ÷ AssemblyScript (-Oz) bytes — median over the corpus (lower = jz smaller).'],
-    ['porfsize', 'Porffor', 'wasm', 'jz wasm bytes ÷ Porffor bytes — median (Porffor bundles a JS runtime).'],
+    ['assize', 'AssemblyScript', 'wasm', 'jz ÷ AssemblyScript wasm bytes, median over the corpus — each compiler at its smallest:\njz optimize:"size"  vs  asc -Osize --runtime stub --noAssert.\nLower = jz smaller.'],
+    ['porfsize', 'Porffor', 'wasm', 'jz ÷ Porffor wasm bytes, median — jz optimize:"size" vs porf default.\nPorffor bundles a JS runtime in every module, so its output is larger.'],
   ]],
 ]
 const renderStrip = () => {
