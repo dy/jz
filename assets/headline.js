@@ -23,7 +23,8 @@ export function headlineStats(results) {
   return {
     v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf')), rust: f(ratio('rust-wasm')),
     jsc: f(ratio('jsc')),                    // jz vs JavaScriptCore (Safari's engine)
-    cwasm: f(ratio('c-wasm')),               // jz vs C → wasm (systems-language baseline, same V8)
+    cwasm: f(ratio('c-wasm')),               // jz vs C → wasm (same V8)
+    nat: f(ratio('nat'), 2),                 // jz vs native C (clang -O3) — the native ceiling (≈ parity)
     asspeed: f(ratio('as')),                 // jz vs AssemblyScript on speed (the hero's 3rd stat)
     assize: f(sizeRatio('as')), porfsize: f(sizeRatio('porf')),
   }
