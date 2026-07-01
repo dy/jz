@@ -331,16 +331,17 @@ const issueHref = (tid, caseId, reason) => {
   const q = (reason || '').replace(/^exit \d+:\s*/i, '').slice(0, 60).trim()
   return `https://github.com/${repo}/issues?q=` + encodeURIComponent(`is:issue ${q}`)
 }
-// The CLI the harness used for this target (meta.invocations), with <case> filled in.
-const cliOf = (tid, caseId) => (DATA?.meta?.invocations?.[tid] || '').replace(/<case>/g, caseId) || null
-// A row's hover tooltip — three terse lines (engine · result · the exact command). All of it is
-// data-driven from results.json (parity, run count, meta.invocations), so it tracks any case change.
-const rowTip = (tid, parity, runs, cli) => [
-  DESC[tid],
-  parity === 'DIFF' ? '⚠ different result — excluded from the ranking'
-    : runs ? `✓ matches jz · median of ${runs} runs` : '✓ matches jz',
-  cli || null,
-].filter(Boolean).join('\n')
+// A row's hover tooltip — a data-tip bubble (pre-line), grouped into blank-line-separated
+// paragraphs: (1) what the target is + parity vs jz, (2) a why-so-fast note when a native build
+// breaks the wasm ceiling. Perf / size / × and the exact command are NOT repeated here — those
+// already ride the row, and the invocations live in results.json.
+const rowTip = (tid, parity, note) => {
+  const status = parity === 'DIFF' ? '⚠ different result — not ranked' : '✓ matches jz'
+  return [
+    [DESC[tid], status].filter(Boolean).join('\n'),
+    note || null,
+  ].filter(Boolean).join('\n\n')
+}
 const BREAK = 12      // linear bars; rows past this are cut, number printed
 // Self-referential 'compiler' cases (jz/watr/jessie compiling code) are hidden
 // from the page + headline geomean — they're a different question from the
@@ -490,7 +491,7 @@ const failKind = reason => {
 const failRow = (label, sub, cls, reason, href) => {
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   const why = reason || 'did not compile/run'
-  const tip = [why, href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n')
+  const tip = [why, href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n\n')
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href
     ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
@@ -632,6 +633,14 @@ const cardRows = c => {
   const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
   const base = anchor < Infinity ? anchor : ok[0].medianUs
   const lab = r => stripClassSub(r.label, r.sub)
+  // When a native binary is many× faster than the wasm/JS anchor, that gap is a WebAssembly ISA
+  // ceiling — 128-bit SIMD, no wide (byte) or carry-less multiply — not a jz codegen miss. The
+  // note explains the outsized × the row already shows (so it stays a "why", not a repeat of the
+  // number): e.g. alpha's per-byte blend, or crc32's carry-less-multiply folding.
+  const NATIVE_EDGE = 8
+  const simdTip = r => r.band === 'native' && base > 0 && base / r.medianUs >= NATIVE_EDGE
+    ? `WebAssembly can't express this kernel as fast — its SIMD is 128-bit with no wide-byte or carry-less multiply, so native pulls far ahead here. A wasm ceiling, not a jz one.`
+    : null
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
   const lrows = l && (l.js || l.jzwasm)
@@ -647,7 +656,7 @@ const cardRows = c => {
   const all = [
     ...ran.map(r => ({ rel: r.medianUs / base, p: {
       label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
-      tip: rowTip(r.tid, r.parity, c.runs, cliOf(r.tid, c.id)), href: srcHref(r.tid, c.id),
+      tip: rowTip(r.tid, r.parity, simdTip(r)), href: srcHref(r.tid, c.id),
       text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,

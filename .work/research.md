@@ -586,46 +586,69 @@ waste-free locally-optimal code with bounded variance" is deduction.
 
 ### Vectorizer → lowering (pre-watr). North star.
 
-**Principle.** Vectorization is a jz *lowering* decision ("turn this array-map into SIMD"), NOT
-optimization. It belongs in jz, BEFORE watr. Today it runs post-watr and pattern-matches *syntax*,
-so watr reshapes the loop and jz has to *recanonicalize watr's output back* into the shape the
-vectorizer expects — a symptom of two bugs: (1) a syntactic recognizer that breaks under any
-reshaping, (2) a high-level transform running after the low-level optimizer, forced to reconstruct
-structure the optimizer erased. The post-watr `optimizeFunc` meddling with WAT is that inversion.
+**PRINCIPLE (load-bearing, non-negotiable).**
+> **There must be NO post-watr optimizer and NO jz WAT twiddling after watr — optimization is watr's
+> sole job.** jz does all *lowering* (the value model, pure-helper inlining, and auto-vectorization —
+> "turn this array-map into SIMD" is a lowering decision, not an optimization). watr is the *only*
+> optimizer, it runs *once*, *last*, and it must be a **fixpoint**: never run the optimizer multiple
+> times or interleave jz passes around it. One canonical form → one optimizer → done. Any jz pass that
+> reads or rewrites WAT *after* watr is an architecture violation and a bug magnet (see below).
 
 **Target pipeline (one canonical form, one optimizer, no round-trip):**
 ```
 jz:   parse → lower  (value model + inline pure helpers + vectorize array-maps → clean canonical IR incl. SIMD)
 watr: optimize ONCE  (coalesce/DCE/fold/rebox — machine-level, SIMD-preserving, LAST)
 ```
+Recognizers should read DATAFLOW (induction var + affine access + pure body), not syntax, so they're
+invariant under canonicalization. Where they still read syntax, jz canonicalizes to watr's normal
+form BEFORE vectorizing (as lowering, not as a second optimizer pass — see the canon helpers below).
 
-**Recognizers read DATAFLOW, not syntax** — induction var + affine memory access + pure body — so
-they're invariant under canonicalization. This is the load-bearing change; it kills recanonicalization.
+**STATUS — Phase 1 DONE (correctness + architecture), Phase 2 OPEN (perf recovery).**
 
-**Steps (each gated by: ALL pinned vectorizations still trigger, bit-exact):**
-1. Pin EVERY recognizer with a regression test (kernel triggers it + bit-exact vs scalar + asserts v128). Safety net first.
-2. Build `pureFuncMap` + loop canonicalization in LOWERING (pre-watr) — they're vectorizer inputs, move with it.
-3. Rewrite recognizers dataflow-first (one at a time, verified bit-exact against current output). ~5700 lines of shape-matching → semantic.
-4. Move vectorize to pre-watr; DELETE jz's post-watr `optimizeFunc`/WAT meddling entirely.
-5. Make watr SIMD-preserving (inline/propagate/coalesce keep v128 valid), pinned in watr's suite.
+*Phase 1 — landed & verified (this branch):*
+- Vectorizer + `pureFuncMap` build + `appendLateStdlib` moved to the emit/pre phase
+  (`src/wat/assemble.js optimizeModule`). `optimizeFunc`'s `runVectorizer = phase !== 'post'`.
+- **The jz post-watr `optimizeFunc('post')` block is DELETED** (`index.js`). This was BOTH an
+  architecture violation AND a correctness bug: re-running jz's propagate/fold sweep on watr's output
+  dropped a reassigned-param `local.tee` write (`p=0; …p…` returned the stale param) and corrupted the
+  divergent-escape SIMD frame (mandelbrot 2 px wrong). **Deleting it fixed every one of those.**
+- Pre-watr canonicalization helpers (jz lowering, NOT a post-optimizer), run once at the top of
+  `vectorizeLaneLocal`: `normalizeTransparentBlocks` (flatten jz's per-statement `(block …)` grouping —
+  watr's mergeBlocks does this post-hoc, the pre-watr recognizers need it up front), `foldVecIdentities`
+  (`i<<0`→`i` byte-stride address, `x±0`, `x|0`, `x*1` — watr's identity fold), `canonicalizeIfBr`
+  (`if C (then (br L))`→`br_if L C` — watr's brif). These make the syntactic recognizers see watr's
+  flattened shape without any post-watr round-trip.
+- `SIMD_PINNED` now pins BOTH the scalar transcendentals AND their f64x2 mirrors (`$math.cbrt_v`, …),
+  so watr's inliner dissolves neither (the SIMD path keeps calling the mirror).
+- **Found + fixed a real watr bug:** constant-condition `select` fold dropped a side-effecting DISCARDED
+  arm (`select` evaluates BOTH arms; `p=0` compiled as the else arm of `cond?0:p` was lost). Fixed in
+  `watr/src/optimize.js` (guard the fold on `isPure(discardedArm)`), pinned in `watr/test/optimize.js`.
+- **Verification:** differential fuzz **76 204 comparisons, 0 divergence**; selfhost 15/15; watr suite
+  194/194; jz SIMD suite 148/154 (the 6 failures are all *missing-optimization* asserts — the bit-exact
+  checks pass, i.e. safe scalar fallback), full suite 2572 pass.
 
-**Invariants:** no jz WAT pass after watr; watr is the sole optimizer, runs once, last; every pinned
-vectorization keeps firing bit-exact; watr never scrambles v128.
+*Phase 2 — OPEN. Deleting the post-block regressed RUNTIME (size is neutral: +0.3% at -Os,
+−4% at speed). Measured current-vs-HEAD (worktree), speed tier:*
+  - **raytrace 1.73×, lz 1.31× slower** — pure scalar: the post-block's `splitLoopPrivateScratch`
+    (per-sphere LICM *after* watr inlined the loop) and `rotateLoops` (fused back-edge) have no watr
+    equivalent. → **watr must gain LICM + loop rotation** ("binaryen-level passes", pinned in watr).
+  - **nbody 1.23× (f64x2 36→9), blur 2.05× (v128 24→16), colorpq 1.82×** — degraded SIMD: the old
+    vectorizer ran *post*-watr, so watr's inlining had already EXPOSED the arithmetic the SLP/dot-pair
+    and blur recognizers pack. Pre-watr they see un-inlined bodies → fewer lanes. This is the core
+    tension: **vectorization quality depends on inlining.** Resolve by doing more jz-side inlining as
+    LOWERING before the pre-watr vectorizer (jz already has `pureFuncMap` + `recursionUnroll`), so the
+    recognizers see inlined code — NOT by moving vectorize back after watr.
 
-Generic folds watr lacked already migrating in: rebox-fold `wrap∘reinterpret∘reinterpret∘extend → x`
-(watr `afbdd97`).
+*Remaining missing-optimization gaps (safe scalar today, bit-exact — pinned SIMD asserts):*
+  1. AoS constant-exponent pow → exp∘log (jz doesn't emit pre-watr — recognizer/inline shape).
+  2. per-pixel-color domain-color: the `$__ppc` wrapper is emitted pre-watr but **watr DCEs it**
+     (SIMD-preservation gap — like the select bug, a watr fix).
+  3. julia "invariant lanes" (fixed-c, z0=0): divergent-escape doesn't fire when nothing varies per
+     pixel (MANDEL, per-pixel c, DOES vectorize).
 
-**Feasibility PROVEN (experiment, reverted).** Moved the whole canonicalize+vectorize block to run on
-`module` BEFORE watOptimize (build pureFuncMap pre-watr too). Result: **~150 of 154 SIMD tests pass
-pre-watr** — simple maps, reductions, stencils, mem-copy, ramp-map, byte-scan, blur, channel-reduce,
-most per-pixel, tone-map, SLP all vectorize on jz's form and survive watr (watr already preserves
-v128; fft kept its f64x2). Only **4 categories break**, all transcendental/narrowing canonicalization
-that lands differently pre-watr:
-  1. AoS constant-exponent pow → exp∘log  (exponent constant-pool timing: pooled `$…_pg` global vs inline f64.const)
-  2. AoS stride-3 transcendentals cbrt/exp/pow  ($math.*_v mirror / PPC_CALL2 interaction with watr inline)
-  3. narrowing `a[i]|0` → trunc_sat  (ToInt32 idiom shape not canonical pre-watr)
-  4. per-pixel-color sin+sqrt+pow  (same transcendental class)
-So the remaining rewrite is BOUNDED: fix these 4 canonicalizations to fire before the pre-watr
-vectorizer (run hoistConstantPool / the ToInt32 canon / PPC pinning in lowering, ahead of vectorize),
-NOT a 5700-line dataflow rewrite. Then flip permanently + delete the post-watr block + full verify
-(suite+fuzz+selfhost+bench). The pinned SIMD suite is the exact regression gate for each fix.
+**Invariants (must hold on landing):** no jz WAT pass after watr; watr sole optimizer, once, last,
+fixpoint; every pinned vectorization fires bit-exact; watr never scrambles v128; no bench runtime
+regression vs the pre-migration baseline.
+
+Generic folds watr lacked, migrated in: rebox-fold `wrap∘reinterpret∘reinterpret∘extend → x`
+(watr `afbdd97`); constant-select side-effect guard (this branch).

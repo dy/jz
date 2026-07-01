@@ -291,6 +291,11 @@
         display: inline-flex;
         align-items: center;
       }
+      .metrics .stat span i {   /* the (average)/(native) qualifier — a quiet italic note after the target */
+        font-style: italic;
+        font-size: .9em;
+        margin-left: .35em;
+      }
       .metrics .cico {
         width: 12px;
         height: 12px;
@@ -1242,19 +1247,19 @@
             <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
             <h1>Computational JS <br class="hb">at native speed</h1>
           </div>
-          <p class="sub">Compile your JS to WASM ahead of time. No rewrite, no lock-in. <span class="nb">Same source, <b><span :text="v8">2.5×</span> faster</b>.</span> For DSP, visuals, numerics and more.</p>
+          <p class="sub">Compile your JS to WASM. No runtime, no GC, tiny output.<br> For DSP, math, visuals and more.</p>
         </div>
 
         <div class="pcol pright">
           <!-- top-right quadrant: "Speed" over the three selling stats (one line) + bench link.
            peak-SIMD, Porffor and the size figures live on the bench strip (the expanded view). -->
           <div class="metrics">
-            <span class="mlabel">Speed</span>
+            <span class="mlabel">Faster than</span>
             <div class="mrow">
               <div class="mstats">
-                <a class="stat" href="bench/"><b :text="v8">2.7×</b><span data-cls="js">V8</span></a>
+                <a class="stat" href="bench/"><b :text="v8">2.7×</b><span data-cls="js">V8<i>(average)</i></span></a>
                 <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span data-cls="wasm">AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="rustnat">1.03×</b><span data-cls="native">Rust</span></a>
+                <a class="stat" href="bench/"><b :text="rustnat">1.03×</b><span data-cls="native">Rust<i>(native)</i></span></a>
               </div>
             </div>
           </div>
