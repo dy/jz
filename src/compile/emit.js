@@ -25,7 +25,7 @@ import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex } from '../ctx.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
@@ -1652,6 +1652,16 @@ function emitLooseEq(a, b, negate) {
   // spec-on/spec-off differential (zero divergence at optimize 0 and 2).
   const strEqResult = (r) => negate ? typed(['i32.eqz', r], 'i32') : r
   const aStr = rawA === VAL.STRING, bStr = rawB === VAL.STRING
+  // SSO literal (≤6 ASCII — its NaN-box IS its content, see module/string.js codec):
+  // under the ≤6-ASCII⇒SSO producer invariant, content equality ⟺ bit equality
+  // against ANY operand — an equal string must be the same SSO pattern, a heap
+  // string can't hold ≤6-ASCII content, and a non-string never equals a string
+  // (bit-aliasing NaNs behave identically to the pre-existing bit-eq fast path).
+  // So the whole compare collapses to ONE i64.eq/ne — no call, no fallback.
+  const ssoLit = (n) => ctx.features.sso && isLiteralStr(n) && n[1].length <= 6 && /^[\x00-\x7f]*$/.test(n[1])
+  if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b))) {
+    return typed([`i64.${negate ? 'ne' : 'eq'}`, asI64(va), asI64(vb)], 'i32')
+  }
   if (aStr && bStr) {
     inc('__str_eq')
     return strEqResult(typed(['call', '$__str_eq', asI64(va), asI64(vb)], 'i32'))
@@ -1660,14 +1670,26 @@ function emitLooseEq(a, b, negate) {
     const uVal = bStr ? va : vb, lVal = bStr ? vb : va   // u: unknown side, l: known string
     inc('__is_str_key', '__str_eq')
     const u = tempI64('seq'), l = tempI64('seq'), uG = ['local.get', `$${u}`], lG = ['local.get', `$${l}`]
+    // On bit-mismatch, an SSO operand can't content-match anything (invariant
+    // above) — one inline bit test skips the __is_str_key/__str_eq tail. Sound
+    // for a non-string u too: the test only ever short-circuits to "not equal",
+    // and a non-string never equals a string.
+    const tail = ctx.features.sso
+      ? ['if', ['result', 'i32'],
+          ['i64.ne', ['i64.and', ['i64.or', uG, lG], ['i64.const', ssoBitI64Hex()]], ['i64.const', 0]],
+          ['then', ['i32.const', 0]],
+          ['else', ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
+            ['then', ['call', '$__str_eq', uG, lG]],
+            ['else', ['i32.const', 0]]]]]
+      : ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
+          ['then', ['call', '$__str_eq', uG, lG]],
+          ['else', ['i32.const', 0]]]
     return strEqResult(typed(['block', ['result', 'i32'],
       ['local.set', `$${u}`, asI64(uVal)],
       ['local.set', `$${l}`, asI64(lVal)],
       ['if', ['result', 'i32'], ['i64.eq', uG, lG],
         ['then', ['i32.const', 1]],
-        ['else', ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
-          ['then', ['call', '$__str_eq', uG, lG]],
-          ['else', ['i32.const', 0]]]]]], 'i32'))
+        ['else', tail]]], 'i32'))
   }
   inc('__eq')
   const call = typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')

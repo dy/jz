@@ -510,6 +510,83 @@ intern-probe write cost, on a V8 that already vectorizes the byte loop. Not wort
 miscompile-sensitive insert-path change. The audit's intuition ("the first serious __str_eq reducer")
 doesn't survive measurement: the byte-walk is NOT the __str_eq tax — most __str_eq is already cheap.
 
+## SESSION 6 (2026-07-01) — ≤6-ASCII⇒SSO producer invariant + bare-i64.eq string compares
+
+**Fresh profile (-O2 names build, corpus ×12):** kernel helpers = **65%** of wasm-side ticks
+(compiler-own 29%, host interop 6%). Clusters: __str_eq(+cold) 11.1%, hash/dyn-get 15.5%,
+__str_hash 6.5%, __ptr_offset(+fwd) 7.0%. __eq is GONE (6 ticks — the ===-spec landed).
+Call counts per corpus pass (helper counters): ~6M __str_eq of which **3.73M go COLD**
+(byte-walk), 2.9M __str_hash, 2.06M __dyn_get_t_h (55% arriving UNhashed via __dyn_get_t),
+6.5M allocs, 4.9M __memgrow checks, 870k of 877k __ihash_get_local from __dyn_move
+(array shift/grow props-migration probes — next target). Page faults (fresh 512MB instance,
+first-touch in timed region): ~4% — real but secondary.
+
+**Root insight:** the cold __str_eq class is MIXED SSO×heap compares — an SSO token vs an
+interned heap literal can't short-circuit, so it byte-walks via per-char calls. Cause: the
+6-char SSO extension (session 4) never reached the PRODUCERS — concat's SSO fast path was
+still `total ≤ 4` (i32-packing era), append_byte `alen < 4`, slice_view routed 5-6-byte
+slices to VIEWS, __mkstr/jp_str/pad ≤4. Worse: **append_byte's SSO gate was DEAD CODE all
+along** — `(i32.and (i32.eq ta 4) (i32.and aux 0x4000))` bitwise-ANDs a boolean 1 with the
+raw 0x4000 mask ⇒ always 0 (masked for years because __str_eq content-walked the heap
+results). Every `buf += s[i++]` tokenizer accumulation built HEAP short strings.
+
+**Landed — the invariant: any ≤6-byte all-ASCII string value is SSO, at every producer**
+(module/string.js header documents it as load-bearing):
+- concat ×4: both-SSO splice extended to ≤6 (i64 lane math) + general mixed/heap short-pack
+  (walk ≤6 source bytes, bail non-ASCII) — zero-alloc short concats.
+- append_byte: SSO path fixed (the dead gate) + extended to <6 with i64 packing.
+- __str_case: SSO in ⇒ SSO out (register case-map, no alloc). slice_view: ≤6 → SSO pack.
+- __mkstr (ftoa/itoa/static_str — ALL number→string): ≤4 → ≤6 ('false' was heap!).
+- __jp_str (JSON parse), URI codecs, __bytes_decode, repeat, pad: __sso_norm epilogue
+  (new no-call helper normalizing fresh short heap strings).
+- Host side already normalized (interop.js session-5).
+
+**Exploits (all gated on ctx.features.sso):**
+- __str_eq prelude: ANY one-SSO operand + bit-ne ⇒ 0 (one test kills the whole mixed class;
+  cold now sees only heap×heap true candidates).
+- emitLooseEq: `x === "≤6-ASCII lit"` → **bare i64.eq/ne — no call, no fallback** (the
+  literal's NaN-box IS its content); heap-literal sites gain an inline u-SSO⇒0 test before
+  __is_str_key. schemaKeyEq (dyn_get/dyn_set schema arms — the #1 measured __str_eq caller)
+  gains the same inline one-SSO⇒ne skip.
+
+**Justified pin updates:** perf-ratchet nest 6086→6977 (lexical loop-op count now includes
+the kernel pack loops — ≤6-iteration producer-time loops, not user hot-loop work);
+golden 'unknown/dynamic object' 8673→9146 (+473: pack paths + inline schema-key skips);
+slice-view test slices >6 now (short slices SSO instead of view); str-eq spec pin expects
+bare i64.eq for SSO literals. New invariant pin battery in test/strings.js (every producer
+=== SSO-literal).
+
+**Two latent bugs the invariant EXPOSED (both root-fixed):**
+1. `__str_append_byte`'s SSO gate was dead code — `(i32.and (i32.eq ta 4) (i32.and aux
+   0x4000))` bitwise-ANDs the boolean 1 with the raw mask ⇒ always 0. Every `buf += s[i]`
+   tokenizer accumulation built heap short strings, forever. Fixed with an explicit i32.ne.
+   Swept all modules for the boolean-AND-bitmask anti-pattern — this was the only instance.
+2. Template literals (`` `$${n}` `` — the compiler's own wasm-identifier builder) lower via
+   `strcat` (module/string.js bind), an INLINE alloc+copy producer that never normalized —
+   the kernel registered SSO '$add5' at decl but heap '$add5' at use ⇒ self-host "Unknown
+   global $add5". strcat's result now routes through __sso_norm. Pinned in test/strings.js.
+
+**RESULT (clean same-machine A/B, corpus × 22, L0, 22/22 byte-parity):**
+- baseline (HEAD + watr@2c0a7b4): **1.35×** slower (js 298.5ms / wasm 403.9ms)
+- with the invariant work:        **1.21×** slower (js 310.1ms / wasm 373.7ms)
+→ **~10% wasm-side win** — the largest single mover of the campaign (prior best −2.75%).
+Validation: fuzz 2000 seeds × opt{0..3} 0-divergence, selfhost 15/15, test/watr.js 35/35,
+strings 144, mem 46, selfhost-includes green.
+
+**CAUTION for future producers:** a new string constructor that leaks a ≤6-ASCII HEAP
+string silently breaks `===`. Route short results through __sso_norm / the pack paths.
+
+**Suite triage note (2026-07-01):** the 13 red tests in the full suite (SIMD pow-lift /
+per-pixel-color / julia / blur lane pins, slp, unswitch, deopt-D2, devirt, golden
+typed-array 930→1151) fail IDENTICALLY at jz HEAD 5282b1f with published watr 5.0.0 —
+they are the documented Phase-2 vectorizer-recovery targets of the pre-watr-migration
+commit (see research.md "Phase 2 — IN PROGRESS"), not regressions from this session.
+
+**Next measured lever:** __dyn_move probes the global __dyn_props hash on EVERY array
+shift/grow once the table is non-empty — 870k of 877k __ihash_get_local calls per corpus
+pass (~4% of wasm time), almost all misses. A cheap membership filter (never-false-negative
+bit filter over inserted offsets, or a per-array has-props signal) would skip them.
+
 ## Synthesis across #1/#3/#4 — the tax is distributed, not a fixable primitive
 
 Three expert/audit-recommended primitive optimizations, all measured: #1+#3 V8-negligible (V8 inlines

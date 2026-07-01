@@ -1528,7 +1528,11 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // 4-byte cached-hash header and __str_eq/__eq/__str_hash gain the interned
 // short-circuits (bit-ne canonicals answer without touching bytes). Pure-size
 // cost at L2; 'size' preset keeps internStrings off and its own pins.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 8673)
+// 8673→9146: the ≤6-ASCII⇒SSO invariant (module/string.js) — concat/mkstr gain
+// the 6-char pack paths and the dyn_get/dyn_set schema-key compares inline a
+// one-SSO⇒ne bit test before the __str_eq fallback, so SSO-keyed miss steps
+// skip the call entirely. Size cost buys the bare-i64.eq string-compare class.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9146)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js

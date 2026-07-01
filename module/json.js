@@ -147,7 +147,7 @@ export default (ctx) => {
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
-    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__ishex', '__utf8_enc'],
+    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__ishex', '__utf8_enc', '__sso_norm'],
     __hex4: ['__hex1'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
@@ -738,13 +738,14 @@ export default (ctx) => {
         (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $len) (i32.const 10))) (local.get $sso)))))
     ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
     ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
+    ;; 5-6 char ASCII results route through __sso_norm (string-module invariant).
     (if (local.get $simple)
       (then
         (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
         (local.set $off (i32.add (local.get $off) (i32.const 4)))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
         (memory.copy (local.get $off) (i32.add (global.get $__jpstr) (local.get $start)) (local.get $len))
-        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))))
+        (return (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off))))))
     ;; Copy chars to new string (handles escapes inline)
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
@@ -795,7 +796,8 @@ export default (ctx) => {
     ${ADV(1)}  ;; skip closing "
     ;; Store actual length in header
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+    ;; escape-decoded result may be short ASCII ("\\n" → 1 char) → normalize (invariant)
+    (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off))))`
 
   // Parse number
   ctx.core.stdlib['__jp_num'] = `(func $__jp_num (result f64)

@@ -14,7 +14,9 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
-import { STR_INTERN_BIT } from '../layout.js'
+import { STR_INTERN_BIT, ssoBitI64Hex } from '../layout.js'
+
+const SSO_BIT_I64 = ssoBitI64Hex()
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -1031,10 +1033,19 @@ export default (ctx) => {
   // when the bit-eq already decided — that bare call per schema-key step was
   // the hottest __str_eq producer in the self-host (the kernel includes __jp
   // for optJSON, so the fallback arm is always compiled in).
+  // The __str_eq fallback (JSON-parsed heap keys) is prefixed by an inline
+  // one-SSO⇒ne test when SSO is on: any SSO operand with unequal bits cannot
+  // content-match (≤6-ASCII⇒SSO invariant, module/string.js), so the call —
+  // the hottest __str_eq producer in the self-host — is skipped for every
+  // SSO-keyed miss step; only heap-vs-heap candidates still pay it.
   const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
     ? `(if (result i32) (i64.eq ${storedKey} ${userKey})
         (then (i32.const 1))
-        (else (call $__str_eq ${storedKey} ${userKey})))`
+        (else ${ctx.features.sso
+          ? `(if (result i32) (i64.ne (i64.and (i64.or ${storedKey} ${userKey}) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+            (then (i32.const 0))
+            (else (call $__str_eq ${storedKey} ${userKey})))`
+          : `(call $__str_eq ${storedKey} ${userKey})`}))`
     : `(i64.eq ${storedKey} ${userKey})`
   const buildObjectSchemaArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))

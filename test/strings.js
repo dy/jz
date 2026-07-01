@@ -364,12 +364,20 @@ test('string: .slice no args', () => {
 // receiver is provably a string and the binding provably never escapes.
 
 test('slice-view: fires for non-escaping local-string slice', () => {
+  // The slice must be >6 bytes: ≤6-ASCII results SSO-pack instead of becoming a
+  // view (the ≤6-ASCII⇒SSO invariant — a short VIEW would break bit-equality).
   const wat = compile(`export let f = () => {
-    let s = 'hello world'
-    let t = s.slice(0, 5)
-    return t === 'hello' ? 1 : 0
+    let s = 'hello big world'
+    let t = s.slice(0, 9)
+    return t === 'hello big' ? 1 : 0
   }`, { wat: true })
   ok(wat.includes('__str_slice_view'), 'non-escaping slice should lower to a view')
+  is(run(`export let f = () => {
+    let s = 'hello big world'
+    let t = s.slice(0, 9)
+    return t === 'hello big' ? 1 : 0
+  }`).f(), 1)
+  // ≤6-byte slice of the same shape stays correct (SSO-packed, not a view)
   is(run(`export let f = () => {
     let s = 'hello world'
     let t = s.slice(0, 5)
@@ -921,6 +929,66 @@ test('SSO 7-bit: JSON.parse 4-char key/value round-trips', () => {
   is(run(`export let f = () => JSON.parse('{"name":"jdef"}').name`).f(), 'jdef')
 })
 
+// === ≤6-ASCII⇒SSO producer invariant (module/string.js header) ===
+// Every producer must normalize a short ASCII result to SSO: `x === "shortLit"`
+// lowers to a bare i64.eq and __str_eq decides any one-SSO compare by bits, so a
+// producer that leaks a ≤6-ASCII HEAP string silently breaks string equality.
+// Each case below builds a short string through a different producer and compares
+// it against an SSO literal — a leak makes the compare return false.
+test('SSO invariant: concat (both-SSO splice, mixed pack, coerced)', () => {
+  is(run(`export let f = () => ("abc" + "def") === "abcdef" ? 1 : 0`).f(), 1)
+  is(run(`export let f = (s) => (s.slice(0, 3) + "de") === "abcde" ? 1 : 0`).f('abcxyzzz'), 1)
+  is(run(`export let f = (s) => ("x" + s) === "xab" ? 1 : 0`).f('ab'), 1)
+  is(run(`let t = true; export let f = () => (t + "") === "true" ? 1 : 0`).f(), 1)
+  is(run(`let x = false; export let f = () => (x + "") === "false" ? 1 : 0`).f(), 1)
+})
+test('SSO invariant: builder append stays SSO through 6 chars', () => {
+  is(run(`export let f = () => { let s = ""; s += "ab"; s += "cd"; s += "ef"; return s === "abcdef" ? 1 : 0 }`).f(), 1)
+  is(run(`export let f = (x) => { let s = ""; for (let i = 0; i < 5; i++) s += x[i]; return s === "abcde" ? 1 : 0 }`).f('abcdef'), 1)
+})
+test('SSO invariant: number formatting (mkstr/ftoa/static_str)', () => {
+  is(run(`export let f = (n) => String(n) === "123456" ? 1 : 0`).f(123456), 1)
+  is(run(`export let f = (n) => (n + "") === "-1.5" ? 1 : 0`).f(-1.5), 1)
+  is(run(`export let f = (n) => (n + "") === "NaN" ? 1 : 0`).f(NaN), 1)
+  is(run(`export let f = (n) => n.toString(16) === "ff" ? 1 : 0`).f(255), 1)
+})
+test('SSO invariant: toUpperCase/toLowerCase of SSO stays SSO', () => {
+  is(run(`export let f = (s) => s.toUpperCase() === "ABCDEF" ? 1 : 0`).f('abcdef'), 1)
+  is(run(`export let f = (s) => s.slice(0, 5).toLowerCase() === "abcde" ? 1 : 0`).f('ABCDEXYZ'), 1)
+})
+test('SSO invariant: repeat / pad short results', () => {
+  is(run(`export let f = (s) => s.repeat(2) === "ababab".slice(0, 4) ? 1 : 0`).f('ab'), 1)
+  is(run(`export let f = (s) => s.padStart(5, "0") === "00abc" ? 1 : 0`).f('abc'), 1)
+  is(run(`export let f = (s) => s.padEnd(6, ".") === "abc..." ? 1 : 0`).f('abc'), 1)
+})
+test('SSO invariant: split pieces and trim results', () => {
+  is(run(`export let f = (s) => s.split(",")[1] === "bcdef" ? 1 : 0`).f('aaaaaaa,bcdef,cc'), 1)
+  is(run(`export let f = (s) => s.trim() === "abcde" ? 1 : 0`).f('   abcde   '), 1)
+})
+test('SSO invariant: JSON.parse 5-6 char strings (simple + escape paths)', () => {
+  is(run(`export let f = (s) => JSON.parse(s).k === "hello" ? 1 : 0`).f('{"k":"hello"}'), 1)
+  is(run(String.raw`export let f = (s) => JSON.parse(s).k === "a\nb" ? 1 : 0`).f('{"k":"a\\nb"}'), 1)
+})
+test('SSO invariant: URI codecs short results', () => {
+  is(run(`export let f = (s) => decodeURIComponent(s) === "a b" ? 1 : 0`).f('a%20b'), 1)
+  is(run(`export let f = (s) => encodeURIComponent(s) === "abc" ? 1 : 0`).f('abc'), 1)
+})
+test('SSO invariant: String.fromCharCode multi-arg', () => {
+  is(run(`export let f = () => String.fromCharCode(97, 98, 99, 100, 101) === "abcde" ? 1 : 0`).f(), 1)
+})
+test('SSO invariant: template literal short results (the $-name builder shape)', () => {
+  // The kernel builds wasm identifiers via \`$\${name}\` — a leaked short heap
+  // string here broke the self-host ("Unknown global $add5").
+  is(run('export let f = (s) => `$${s}` === "$a5" ? 1 : 0').f('a5'), 1)
+  is(run('export let f = (s) => `x${s}y${s}` === "xa5ya5" ? 1 : 0').f('a5'), 1)
+  is(run('export let f = (n) => `f${n}` === "f12" ? 1 : 0').f(12), 1)
+})
+test('SSO invariant: long/non-ASCII strings still content-compare (heap fallback intact)', () => {
+  is(run(`export let f = (s) => (s + "n") === "function" ? 1 : 0`).f('functio'), 1)
+  is(run(`export let f = (s) => s === "héllo" ? 1 : 0`).f('héllo'), 1)
+  is(run(`export let f = (s) => (s + "é") === "aé" ? 1 : 0`).f('a'), 1)
+})
+
 // === `x === "literal"` specialization (emit.js emitLooseEq) ===
 // The compiler's hottest comparison (`node[0] === 'if'` AST-tag dispatch). When one
 // operand is statically a string, emit skips the generic __eq NaN-box dispatch and
@@ -950,9 +1018,14 @@ test('str-eq spec: tag-dispatch chain + Map heap key + symmetric placement', () 
   is(jz(`let x = "i"+"f"; export let main = () => ("if" === x) | 0`).exports.main(), 1)  // literal on the left
 })
 test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () => {
-  // `x === "lit"` (x untyped, exported param) routes through __is_str_key/__str_eq, NOT __eq.
-  const strEq = compile(`export let f = (x) => (x === "if") | 0`, { wat: true })
-  ok(/\$__is_str_key/.test(strEq) && /\$__str_eq/.test(strEq), 'string === literal uses __is_str_key + __str_eq')
+  // `x === "shortLit"` (≤6 ASCII) is a bare i64.eq — the SSO literal's NaN-box IS its
+  // content and every producer normalizes short ASCII to SSO, so no call is needed.
+  const ssoEq = compile(`export let f = (x) => (x === "if") | 0`, { wat: true })
+  ok(!/\$__is_str_key|\$__str_eq|\$__eq\b/.test(ssoEq), 'SSO-literal === is a bare i64.eq, no helper calls')
+  ok(/i64\.eq/.test(ssoEq), 'SSO-literal === compares NaN-box bits')
+  // `x === "longLiteral"` (>6 chars, heap static) keeps the guarded fallback.
+  const strEq = compile(`export let f = (x) => (x === "function") | 0`, { wat: true })
+  ok(/\$__is_str_key/.test(strEq) && /\$__str_eq/.test(strEq), 'heap-literal === uses __is_str_key + __str_eq')
   ok(!/\$__eq\b/.test(strEq), 'string === literal does NOT call the generic __eq')
   // numeric === must not be dragged into the string path.
   const numEq = compile(`export let f = (x) => (x === 5) | 0`, { wat: true })

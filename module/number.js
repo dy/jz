@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
-import { ssoBitI64Hex } from '../layout.js'
+import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
 import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
@@ -554,11 +554,12 @@ export default (ctx) => {
   // Hot (~60M calls in watr self-host via __ftoa). bulk memory.copy is ~10× faster than
   // a hand-rolled byte loop (wasm2c lowers it to memcpy under PGO+LTO).
   ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
-    (local $off i32) (local $i i32) (local $packed i32) (local $b i32)
-    ;; SSO fast path: ≤4 ASCII bytes pack into the pointer with no allocation, so a
+    (local $off i32) (local $i i32) (local $packed i64) (local $b i32)
+    ;; SSO fast path: ≤6 ASCII bytes pack into the pointer with no allocation, so a
     ;; number-format result doesn't displace a heap-top accumulator — keeping the
     ;; canonical \`s += n.toString(r)\` builder O(n) via the bump-extend path.
-    (if (i32.le_u (local.get $len) (i32.const 4))
+    ;; ≤6-ASCII⇒SSO is also the string-module INVARIANT __str_eq relies on.
+    (if (i32.le_u (local.get $len) (i32.const 6))
       (then
         (block $heap
           (loop $pk
@@ -566,11 +567,16 @@ export default (ctx) => {
               (then
                 (local.set $b (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
                 (br_if $heap (i32.ge_u (local.get $b) (i32.const 0x80)))
-                ;; 7-bit ASCII SSO: char i at bit i*7 (chars fit the offset for len ≤4); len at aux bits 10-12.
-                (local.set $packed (i32.or (local.get $packed) (i32.shl (local.get $b) (i32.mul (local.get $i) (i32.const 7)))))
+                ;; 7-bit ASCII SSO: char i at payload bit i*7; len at payload bits 42-44.
+                (local.set $packed (i64.or (local.get $packed)
+                  (i64.shl (i64.extend_i32_u (local.get $b)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $pk))))
-          (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (i32.shl (local.get $len) (i32.const 10))) (local.get $packed))))))
+          (return (f64.reinterpret_i64 (i64.or
+            (i64.or
+              (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
+              (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 42)))
+            (local.get $packed)))))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
