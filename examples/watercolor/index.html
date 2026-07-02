@@ -9,22 +9,29 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-const R = 7
-let t = 0, nextDrip = 30, painting = false
+const R = 11
+let t = 0, nextDrip = 30, nextStir = 90, painting = false
 const demo = runDemo({
   name: "watercolor",
-  hint: "ink diffusing through wet paper",
-  size: { budget: 150000 },
-  bg: "#f6f2e9",
+  hint: "ink on flowing water — press to bloom a drop, drag to comb marbled tendrils",
+  size: { budget: 180000 },
+  bg: "#000",
   load: (e) => e.clear(),
-  // re-roll: wash the paper and drip a fresh scatter of ink blooms
+  // re-roll: wash the bath and drip a fresh scatter of ink blooms
   randomize: (e, d) => { e.clear(); for (let i = 0; i < 5; i++) { const a = Math.random() * 6.28; e.paint(Math.random() * d.W, Math.random() * d.H, R + 3, Math.cos(a) * 0.6, Math.sin(a) * 0.6) } },
   frame: (e) => {
     t++
     if (!painting && t > nextDrip) {
       const a = Math.random() * 6.28
-      e.paint(Math.random() * demo.W, Math.random() * demo.H, R + 2, Math.cos(a) * 0.5, Math.sin(a) * 0.5)
-      nextDrip = t + 70 + Math.random() * 90
+      e.paint(demo.W * (0.1 + Math.random() * 0.8), demo.H * (0.1 + Math.random() * 0.8), R + 4, Math.cos(a) * 0.35, Math.sin(a) * 0.35)
+      nextDrip = t + 180 + Math.random() * 140   // one drop every ~3-5s — the bath clears between
+    }
+    // ambient current: a slow wandering stir keeps the bath alive (ink-less — it only combs)
+    if (t > nextStir) {
+      const a2 = t * 0.05 + Math.random() * 1.5
+      e.stir(demo.W * (0.5 + Math.sin(t * 0.011) * 0.3), demo.H * (0.5 + Math.cos(t * 0.007) * 0.3),
+        Math.min(demo.W, demo.H) * 0.14, Math.cos(a2) * 0.35, Math.sin(a2) * 0.35)
+      nextStir = t + 90 + Math.random() * 70
     }
     e.frame(0)
   },
@@ -48,6 +55,19 @@ demo.cv.addEventListener("pointerdown", (e) => {
 demo.cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
 demo.cv.addEventListener("pointerup", (e) => { painting = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
 demo.cv.addEventListener("pointerleave", () => { painting = false })
+
+// Credit the source/inspiration — the suminagashi GPU-fluid toy this bath's algorithm follows
+// (vorticity confinement + absorbance ink) — ON the same line as the wiki/code links.
+const links = document.querySelector(".jz-links")
+if (links) {
+  links.appendChild(document.createTextNode("  ·  "))
+  const a = document.createElement("a")
+  a.className = "jz-wiki"
+  a.href = "https://suminagashi-fjdbyyqi.manus.space/"
+  a.target = "_blank"; a.rel = "noopener"
+  a.textContent = "original"
+  links.appendChild(a)
+}
 </script>
 </body>
 </html>

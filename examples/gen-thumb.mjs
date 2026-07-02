@@ -48,8 +48,11 @@ if (name === 'marble' && exports.drop) {
 }
 if (name === 'waves' && exports.drop) {
   exports.clear?.()
-  for (const [fx, fy] of [[0.3, 0.34], [0.62, 0.4], [0.5, 0.62], [0.4, 0.52], [0.72, 0.62]])
-    exports.drop(fx * W, fy * H, 4, 1.5)
+  // stagger the drops like real use — co-timed rings sum co-phased and bloom white
+  for (const [fx, fy] of [[0.3, 0.34], [0.62, 0.4], [0.5, 0.62], [0.4, 0.52], [0.72, 0.62]]) {
+    exports.drop(fx * W, fy * H)
+    for (let i = 0; i < 26; i++) exports.frame(i)
+  }
 }
 if (name === 'watercolor' && exports.paint) {
   exports.clear?.()
@@ -93,7 +96,7 @@ const FRAME_ARGS = {
 
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, lenia: 120, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
-                 dla: 600, wireworld: 200, waves: 90, cloth: 130, maze: 200, sph: 500,
+                 dla: 600, wireworld: 200, waves: 50, cloth: 130, maze: 200, sph: 500,
                  erosion: 80, lbm: 150, watercolor: 200, cradle: 36,
                  buddhabrot: 120, lorenz: 320, pendulum: 175, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230 }[name] ?? 1

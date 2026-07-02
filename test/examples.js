@@ -55,28 +55,55 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
     ok(!/call \$math\.pow2/.test(it), 'interference no longer needs the per-lane-scalar $math.pow2 mirror');
 });
 
-// Stencil vectorizer (experimental): waves is a 2-D 5-point sweep over two height
-// buffers swapped each frame. With experimentalStencil the inner x-loop lifts to f64x2
-// (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). It must be BIT-EXACT to the
-// scalar pipeline end-to-end — the swap is outside the loop so the in-loop read/write
-// bases stay distinct (no aliasing); a lane-parallel stencil reorders nothing per lane.
-test('example: waves 5-point stencil vectorizes f64x2 and stays bit-exact', () => {
-    const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
+// Stencil vectorizer (experimental): watercolor's curl / vorticity-confinement / divergence /
+// gradient-subtract / capillary-bleed sweeps are 2-D neighbour stencils over f64 fields (the
+// Gauss–Seidel pressure loop is loop-carried and rightly stays scalar). With experimentalStencil
+// the pure sweeps lift to f64x2 (neighbour loads f[c±1] / f[c±w], derived IV c=r+x). It must be
+// BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders nothing per lane.
+test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/watercolor/watercolor.js', import.meta.url), 'utf8');
     // experimentalStencil is now default-on at speed (the build options), so the SCALAR baseline
     // turns it explicitly off; the vectorized side is the plain build.
+    const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    ok(sten > base, `watercolor sweeps vectorize via the stencil pass (${base} → ${sten} f64x2)`);
+    const run = (opts) => {
+        const { exports } = jz(src, opts);
+        const px = exports.resize(64, 48);
+        exports.clear();
+        exports.paint(32, 20, 6, 1.2, 0.4); exports.paint(16, 30, 5, -0.8, 0.2); exports.stir(48, 30, 10, 0.5, -0.9);
+        for (let f = 0; f < 30; f++) exports.frame(f);
+        return Array.from(px);
+    };
+    const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
+    is(simd.length, scal.length);
+    ok(simd.filter(v => v & 0xffffff).length > 300, `watercolor renders a live field (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'watercolor SIMD stencils bit-exact vs scalar (3072 px, 30 frames)');
+});
+
+// Stencil vectorizer: waves is the 2-D nonlinear wave equation — a 9-point sweep over two
+// height buffers swapped each frame. With experimentalStencil the inner x-loop lifts to
+// f64x2 (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). BIT-EXACT end-to-end — the
+// swap is outside the loop so the in-loop read/write bases stay distinct (no aliasing);
+// the shadow-ring glint splats and tone map are untouched scalar.
+test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
+    const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     ok(sten > base, `waves frame vectorizes via the stencil pass (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
-        const px = exports.resize(40, 30);
-        exports.drop(20, 15, 9, 6.0); exports.drop(10, 8, 5, 3.0);
+        // the field must outsize the edge sponge (MARGIN 16 a side) or the render crushes to black
+        const px = exports.resize(128, 96);
+        exports.clear();
+        exports.drop(64, 48); exports.drop(44, 56);
         for (let f = 0; f < 25; f++) exports.frame(f);
         return Array.from(px);
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
     is(simd.length, scal.length);
-    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (1200 px, 25 frames)');
+    ok(simd.filter(v => v & 0xffffff).length > 300, `waves renders fronts + glints (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 25 frames)');
 });
 
 // Outer-loop strip-mine (experimental): metaballs sums an inverse-square field over every blob
