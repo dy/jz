@@ -619,9 +619,25 @@ parallel worktrees, integrated + validated sequentially:
    companion fixes in watr (err.loc/src expando props → module state; suite green) and
    subscript (comment table rebuilt per parse; suite green). JZ_BENCH_WARM=1 bench mode;
    warm round-trip pinned in test/selfhost.js.
-   **Unresolved:** tokenizer/json still trap on warm 2nd compile — reproduces with plain
-   watr-in-kernel compiling a trivial module twice ("Unknown type i32", string token
-   corruption); extensively bisected, not yet root-caused; bench reports them `skipped`.
+   **Warm-trap hunt (2026-07-01 late):** the earlier "watr-internal" diagnosis was wrong.
+   Two SEPARATE danglers:
+   - **tokenizer — FIXED (7a5a3b6):** src/abi/string.js memoized ssoBitI64Hex() in a
+     module-level cell; the kernel's copy of that string lives in the arena → warm round 2
+     interpolated the dangling pointer's garbage into `(i64.const …)` → watr "Bad int".
+     Memo dropped (laziness kept, caching removed); charCodeAt shape added to the selfhost
+     warm round-trip pin.
+   - **json — OPEN, precisely localized:** minimal repro = a module containing BOTH a
+     JSON.parse walk (`const o = JSON.parse(SRC); o.items; for(...items.length...)`,
+     long non-const SRC) AND any Math.* call. Round-2 emit traps reading a STALE MAP:
+     named-kernel stack (lookupValType split into sub-fns):
+     `__map_get ← m65_reps$lvtOverlay (ctx.func.localValTypesOverlay) ← lookupValType ←
+     readVar ← emit ← closure630 (Math emitter) ← emitBuiltinCall`. All overlay
+     installers save/restore correctly and _bodyFactsCache/setupSelf resets are wired —
+     the stale handle reaches a round-2 ctx.func slot through an unidentified path
+     (suspects: an emitter-table closure env from round 1, or a ctx.func record surviving
+     reset). Delta-debug reducer + probe harness in the session transcript; repro is 3
+     lines. Bench warm mode reports json `skipped`; fresh mode and the perf pin corpus
+     are unaffected.
 
 **RESULTS (quiet machine, 22-program corpus, L0):**
 - fresh-instance: **1.11×** slower (was 1.21× → 1.35× at session start)
