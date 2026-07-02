@@ -744,3 +744,18 @@ differential harness). Also open: codegen i32-global pin, unknown-receiver NUMBE
 pin (unswitch now fires there — likely re-pin), closure-parser golden +1478, ratchet
 buf, watr-side licm-before-devirt in finish() (swap), 5 pre-existing stragglers
 (for-in dyn-keys, slice-view ×2, uncatchable sanity, Object.create OOB).
+
+## Session 8 — durable-dynprops v2: landed, exposed deeper strata, parked again
+The atomic re-land (all sites: get_t_h dual-check global→sidecar for init-time keys,
+set gate, del ORs both sources, __obj_clone merge, enumerate/json 3-way merges;
+expr/any/prehashed verified delegating — no change needed) is DESIGN-CORRECT and
+saved as .work/durable-dynprops-policy-v2.patch (772 lines). Reverted because it
+EXPOSES two pre-existing strata that net-worsen the gates (fresh pin 1.05×→OOB):
+1. Array-growth forwarding is not _clear-safe: grow writes the forwarding sentinel
+   into the OLD (durable) header pointing at an EPHEMERAL target — outlives it.
+   Fix needs a durable relocation registry consulted by followForwardingWat/
+   __ptr_offset_fwd (~25% of compile ticks, dozens of inline sites). Own campaign.
+2. Un-root-caused fresh-instance OOB: durable module-scope closure invoked across
+   two loops + cross-module calls (mat4 repro), independent of _clear.
+Landing order when resumed: (1) forwarding registry, (2) OOB #2, (3) re-apply v2.
+Warm pin + json 22/22 + JZ_BENCH_WARM all block on this chain.
