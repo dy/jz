@@ -197,7 +197,11 @@ test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib
 // three rounds catch a fix that only survives ONE `_clear` (e.g. a reset that clears
 // state but not a downstream 1-slot cache pointing at it).
 test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
-  const src = 'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i * i; return s }'
+  // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
+  // decomposition, whose module-level ssoBitI64 memo used to dangle across
+  // _clear (warm round 2 emitted `(i64.const <garbage bytes>)` → watr
+  // "Bad int" — the tokenizer warm-trap). The memo is gone; this pins it.
+  const src = 'export let main = (s) => { let h = 0; for (let i = 0; i < 10; i++) h += i * i + s.charCodeAt(0); return h }'
   const level = '0'
   const fresh = () => {
     const inst = instantiate(readFileSync(SELF), { memory: 8192 })

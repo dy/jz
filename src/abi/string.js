@@ -59,9 +59,14 @@ const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 import { isReassigned, isLeaf } from '../ast.js'
 import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
 
-/** Pre-shifted SSO discriminator — layout.js is cycle-free; memoized at first use. */
-let _ssoBitI64 = null
-const ssoBitI64 = () => _ssoBitI64 ??= ssoBitI64Hex()
+/** Pre-shifted SSO discriminator — layout.js is cycle-free; the thunk exists for
+ *  load-order laziness ONLY. Deliberately NOT memoized: a module-level memo of a
+ *  runtime-BUILT string dangles across the self-host kernel's `_clear()` arena
+ *  rewind (warm compile #2 interpolated the stale pointer's garbage bytes into
+ *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR /
+ *  stdlibParseCache (see scripts/self.js setupSelf). Recomputing is a few ops at
+ *  emit time; correctness over a micro-memo. */
+const ssoBitI64 = () => ssoBitI64Hex()
 
 /** Allocate a fresh i64 local in the current function. Replicated here (not
  *  imported from `src/ir.js`) to keep this module loadable during ctx.js
