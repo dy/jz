@@ -368,6 +368,12 @@
         text-wrap: pretty;
       }
 
+      /* hero install chip — the conversion action beside the pitch, indented with the sub */
+      .pleft .install {
+        margin-left: var(--u2);
+        margin-top: 20px;
+      }
+
       /* body prose — same type as the FAQ answers; black body text; indented 1 mid-unit (40px) from the logo */
       .pitch .sub b {
         color: var(--ink);
@@ -665,6 +671,10 @@
           margin-left: 0;
         }
 
+        .pleft .install {
+          margin-left: 0;
+        }
+
         /* description, speed metrics + op/s sit flush with the logo on mobile (−40px) */
         .cta-live {
           gap: 14px;
@@ -774,6 +784,11 @@
       @media (max-width: 960px) {
         .try {
           margin-top: calc(-2 * var(--U));
+        }
+
+        /* stacked hero has no room for the install chip — the CLI-section chip serves small screens */
+        .pleft .install {
+          display: none;
         }
       }
 
@@ -1189,8 +1204,8 @@
         text-decoration-color: var(--mute);
       }
 
-      /* FOOTER — the shared footer (brand · nav columns · author+license) lives in assets/site.css, the ONE
-   definition reused on the landing, bench and examples so they can never drift. No copy here. */
+      /* FOOTER — the shared footer (brand · nav columns · credit over "MIT · ॐ") lives in assets/site.css,
+   the ONE definition reused on the landing, bench and examples so they can never drift. No copy here. */
 
       /* Reduced motion: kill CSS transitions/animations (engine knob, hovers) — the standard reset.
    The grid pulses (.grid-current) stay ON: they're sparse, dim, slow ambient motion (no flashing,
@@ -1223,7 +1238,7 @@
         <a href="examples/">examples</a>
         <a href="bench/">bench</a>
         <a href="repl/">repl</a>
-        <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
+        <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.8.1</span> <span class="exp">experimental</span></a>
         <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
           <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
@@ -1257,9 +1272,9 @@
             <span class="mlabel">Faster than</span>
             <div class="mrow">
               <div class="mstats">
-                <a class="stat" href="bench/"><b :text="v8">2.7×</b><span data-cls="js">V8<i>(average)</i></span></a>
-                <a class="stat" href="bench/"><b :text="asspeed">2.8×</b><span data-cls="wasm">AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="rustnat">1.03×</b><span data-cls="native">Rust<i>(native)</i></span></a>
+                <a class="stat" href="bench/"><b :text="v8">1.9×</b><span data-cls="js">V8<i>(average)</i></span></a>
+                <a class="stat" href="bench/"><b :text="asspeed">1.7×</b><span data-cls="wasm">AssemblyScript</span></a>
+                <a class="stat" href="bench/"><b :text="rust">1.7×</b><span data-cls="wasm">Rust<i>(wasm)</i></span></a>
               </div>
             </div>
           </div>
@@ -1419,6 +1434,7 @@
           <div class="ans">
             <p>It’s <b>experimental</b> (pre-1.0) — ABI can still shift.</p>
             <p>But: CI gates the full suite, test262, the bench, and the self-compile. A fuzzer diffs every kernel against the same source in V8.</p>
+            <p>And the exit is free: valid JZ is valid JS — drop the compile step and the same file keeps running.</p>
           </div>
         </details>
 
@@ -1475,8 +1491,7 @@
         </nav>
         <div class="legal">
           <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
-          <span class="by"><a href="https://github.com/dy">dy</a></span>
-          <span class="lic"><a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
+          <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
         </div>
       </div>
     </footer>
@@ -1500,7 +1515,7 @@
         // which we fill from the fresh bench numbers so the row always reflects the latest run.
         ; (async () => {
           const m = sprae(document.querySelector('.pitch'),
-            { v8: '2.5×', asspeed: '2.8×', rustnat: '1.03×', peak: '13.5×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
+            { v8: '1.9×', asspeed: '1.7×', rust: '1.7×', peak: '13.3×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
           // prepend the substrate-class glyph to each stat label (JS · WASM · native),
           // the same marks the bench chart uses — one shared source (CLS_ICO).
           for (const el of document.querySelectorAll('.metrics .stat span[data-cls]'))
@@ -1511,7 +1526,7 @@
             if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
             if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
             if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
-            if (s.rustnat) m.rustnat = s.rustnat     // jz vs native Rust — reaches native systems speed
+            if (s.rust) m.rust = s.rust              // jz vs Rust → wasm — apples-to-apples, same engine
           } catch { }
         })()
 
@@ -1535,6 +1550,14 @@
         const openFaq = id => { const d = document.getElementById(id)?.closest('details'); if (d) d.open = true }
         document.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', () => openFaq(a.getAttribute('href').slice(1))))
         if (location.hash.length > 1) openFaq(location.hash.slice(1))
+
+      // the hero install chip: click-to-copy (no type-on — it's above the fold, visible at once)
+      const inst1 = $('install1')
+      if (inst1) inst1.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText('npm install jz') } catch { }
+        inst1.classList.add('copied')
+        setTimeout(() => inst1.classList.remove('copied'), 1400)
+      })
 
       // the lone install chip (CLI section): click-to-copy
       const inst3 = $('install3')

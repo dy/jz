@@ -73,15 +73,25 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`hashjoin`](hashjoin/hashjoin.js) | probe-dominated relational hash join (build small, stream a large probe side, sum matched payloads) — the database/dataframe kernel and JZ's boss case: `probe()` returns a typed-array element through a param JZ can't yet prove is i32, so `sum + probe()` lowers to a polymorphic number-or-string add per probe — then the only case JZ trailed V8; proving the return i32 measured 8.7 → 5.2 ms, jz now beats V8 1.3× |
 | [`dispatch`](dispatch/dispatch.js) | data-driven dispatch through a table of 8 first-class functions — one call site fans out per an unpredictable opcode stream; the megamorphic call-site / virtual-dispatch kernel (strategy tables, event pipelines, effect chains), the classic call-IC deopt shape |
 | [`shapes`](shapes/shapes.js) | per-variant measure summed over records of 8 heterogeneous object shapes — every access site sees 8 hidden classes; the megamorphic property-load / hidden-class kernel (JSON rows, AST nodes, ECS entities), the classic load-IC deopt shape — and JZ's widest gap (the schema union falls to dynamic-property probes) |
+| [`strbuild`](strbuild/strbuild.js) | per-record string formatting (`id,name,value\n` per row: int→string + concat + char fold) — the serializer/logger inner loop, the string-allocation deopt shape (a giant `+=` accumulator is deliberately avoided: eager no-GC strings make it quadratic in allocation — jz exhausts memory on it) |
+| [`wordcount`](wordcount/wordcount.js) | token-frequency counting into a plain object with 512 computed string keys over a skewed stream — the group-by/histogram kernel; a JIT drops the object to dictionary mode (the keyed-store deopt), while jz's string-keyed hash store + interning carry it |
+| [`immutable`](immutable/immutable.js) | integer particle step in the immutable-update idiom — every step replaces each record with a fresh `{x,y,vx,vy}` (React/Redux-style state); value-semantics natives get it free, a JIT leans on young-gen GC + escape analysis, jz pays a bump allocation per object — the escape-analysis/SROA probe |
+| [`colorconv`](colorconv/colorconv.js) | sRGB → Oklab over an image buffer — EOTF pow → 3×3 → cbrt → 3×3; lab probe for pow/cbrt intrinsic quality |
+| [`colorlch`](colorlch/colorlch.js) | sRGB → OkLCh fused in one loop (pow → 3×3 → cbrt → 3×3 → sqrt + atan2); lab probe — the fused body must never lose to the split loops |
+| [`colorlog`](colorlog/colorlog.js) | ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3; lab probe for runtime-exponent pow/exp2 |
+| [`colorpq`](colorpq/colorpq.js) | sRGB → JzAzBz — 3×3 → ST 2084 PQ (≈12 signed-pow) → 3×3; lab probe for signed pow with non-constant exponent |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
 
-The `watr`, `jessie`, and `jz` rows are self-referential — JZ (or its deps)
-compiling code. They stay runnable (`--cases=watr,jessie,jz`) and gated in
-`test/bench.js`, but are hidden from the bench page and the headline geomean SVG:
-they answer a different question (compiler throughput on itself) from the
-cross-language kernel comparison the page is about.
+The **`lab` rows** — the self-referential `watr`/`jessie`/`jz` (JZ or its deps
+compiling code) and the JS-only intrinsic probes `colorconv`/`colorlch`/
+`colorlog`/`colorpq` (pow/cbrt/exp2/atan2 gap trackers with no cross-language
+ports; their transcendental checksums legitimately diverge per libm) — answer
+jz-internal questions, not the cross-language kernel comparison. They sit out
+every aggregate (the geomean SVG, the page strip and geomeans, the aggregate
+table below) but stay visible on the bench page under the `lab` chip and
+runnable via `--cases=…`; the self-host rows stay gated in `test/bench.js`.
 
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
@@ -212,9 +222,9 @@ wasm-in-V8 would be a wrong-class single-case compare.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **4.62 ms** | **1.93×** | **1.6 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.51 ms | 1.37× | 1.8 kB | ok |
-| V8 (node) raw JS | 8.93 ms | 1.00× | 3.2 kB | ok |
+| **JZ → V8 wasm** | **4.68 ms** | **1.94×** | **1.7 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.59 ms | 1.38× | 1.8 kB | ok |
+| V8 (node) raw JS | 9.09 ms | 1.00× | 3.2 kB | ok |
 | hand-WAT → V8 wasm | 6.49 ms | 1.90× | 767 B | ok |
 
 JZ beats V8 raw JS by 2.1× and AS by 1.4×. The typed-array scalarization,
@@ -225,9 +235,9 @@ that matches the hand-WAT floor.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.77 ms** | **11.11×** | **1.5 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.60 ms | 1.29× | 1.4 kB | ok |
-| V8 (node) raw JS | 8.55 ms | 1.00× | 1.2 kB | ok |
+| **JZ → V8 wasm** | **0.77 ms** | **11.15×** | **1.5 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.72 ms | 1.28× | 1.4 kB | ok |
+| V8 (node) raw JS | 8.60 ms | 1.00× | 1.2 kB | ok |
 | hand-WAT → V8 wasm | 8.12 ms | 1.47× | 414 B | ok |
 
 JZ is 5.9× faster than V8 raw JS and 4.6× faster than AS. The scalarized
@@ -238,9 +248,9 @@ this from JS source.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.14 ms** | **12.18×** | **1.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.82 ms | 2.02× | 1.3 kB | ok |
-| V8 (node) raw JS | 1.66 ms | 1.00× | 1014 B | ok |
+| **JZ → V8 wasm** | **0.13 ms** | **12.30×** | **1.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.79 ms | 2.06× | 1.3 kB | ok |
+| V8 (node) raw JS | 1.64 ms | 1.00× | 1014 B | ok |
 
 JZ is 12.9× faster than V8 raw JS and 5.9× faster than AS. The bimorphic
 `sum` (called with both `Float64Array` and `Int32Array`) stays on typed
@@ -250,10 +260,10 @@ paths without falling back to generic dispatch.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.94 ms** | **4.14×** | **1.0 kB** | **ok** |
-| V8 (node) raw JS | 3.88 ms | 1.00× | 1005 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 9.20 ms | 0.42× | 1.3 kB | ok |
-| hand-WAT → V8 wasm | 3.56 ms | 1.09× | 355 B | ok |
+| **JZ → V8 wasm** | **0.99 ms** | **3.81×** | **1.0 kB** | **ok** |
+| V8 (node) raw JS | 3.77 ms | 1.00× | 1005 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.11 ms | 0.41× | 1.3 kB | ok |
+| hand-WAT → V8 wasm | 3.49 ms | 1.08× | 355 B | ok |
 
 JZ is 4.0× faster than V8 raw JS and 8.8× faster than AS. The i32 hot path
 (`Math.imul`, `|0`, `>>>0`) now lowers to raw `i32` ops without NaN-box
@@ -263,9 +273,9 @@ overhead on every operation.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.06 ms** | **2.06×** | **2.0 kB** | **ok** |
+| **JZ → V8 wasm** | **0.06 ms** | **2.16×** | **2.0 kB** | **ok** |
 | AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.13× | 1.5 kB | ok |
-| V8 (node) raw JS | 0.13 ms | 1.00× | 2.0 kB | ok |
+| V8 (node) raw JS | 0.14 ms | 1.00× | 2.0 kB | ok |
 
 JZ is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
 `charCodeAt`-heavy scan. Both are well ahead of V8.
@@ -274,9 +284,9 @@ JZ is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.27 ms** | **2.32×** | **1.4 kB** | **ok** |
-| V8 (node) raw JS | 0.62 ms | 1.00× | 1.3 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 0.79 ms | 0.78× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **0.27 ms** | **2.25×** | **1.4 kB** | **ok** |
+| V8 (node) raw JS | 0.60 ms | 1.00× | 1.3 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 0.80 ms | 0.76× | 1.8 kB | ok |
 
 JZ is 2.3× faster than V8 raw JS and 2.9× faster than AS. Closure +
 `Array.map` lowers to a preallocated typed loop with no per-iteration alloc.
@@ -286,9 +296,9 @@ V8's JIT does not inline the closure across the `map` boundary.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.67 ms** | **1.97×** | **1.7 kB** | **ok** |
-| V8 (node) raw JS | 1.31 ms | 1.00× | 1.1 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 1.37 ms | 0.96× | 1.9 kB | ok |
+| **JZ → V8 wasm** | **0.67 ms** | **2.00×** | **1.7 kB** | **ok** |
+| V8 (node) raw JS | 1.34 ms | 1.00× | 1.1 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 1.40 ms | 0.96× | 1.9 kB | ok |
 
 JZ is 1.9× faster than V8 raw JS and 2.0× faster than AS. Schema-slot
 reads are direct field offsets; the gap is small because the workload is
@@ -298,9 +308,9 @@ memory-bound.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| AssemblyScript (asc -O3 --runtime stub) | 8.34 ms | 1.09× | 1.3 kB | ok |
-| **JZ → V8 wasm** | **7.88 ms** | **1.15×** | **1.1 kB** | **ok** |
-| V8 (node) raw JS | 9.05 ms | 1.00× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 8.85 ms | 1.11× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **8.45 ms** | **1.16×** | **1.1 kB** | **ok** |
+| V8 (node) raw JS | 9.83 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.1× faster than V8 raw JS and ties AS. The dense f64 hot loop with
 conditional break compacts to 1.0 kB — the smallest wasm in the suite.
@@ -309,7 +319,7 @@ conditional break compacts to 1.0 kB — the smallest wasm in the suite.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.20 ms** | **1.33×** | **9.6 kB** | **ok** |
+| **JZ → V8 wasm** | **0.22 ms** | **1.22×** | **9.7 kB** | **ok** |
 | V8 (node) raw JS | 0.27 ms | 1.00× | 1.2 kB | ok |
 
 JZ is 1.3× faster than V8 raw JS. The runtime parser is specialized to the
@@ -319,9 +329,9 @@ inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **5.14 ms** | **1.64×** | **1.6 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 7.72 ms | 1.09× | 1.8 kB | ok |
-| V8 (node) raw JS | 8.43 ms | 1.00× | 1.6 kB | ok |
+| **JZ → V8 wasm** | **5.41 ms** | **1.64×** | **1.6 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 7.93 ms | 1.12× | 1.8 kB | ok |
+| V8 (node) raw JS | 8.87 ms | 1.00× | 1.6 kB | ok |
 
 JZ is 1.6× faster than V8 raw JS and 1.4× faster than AS. Call-heavy
 nested loops with typed-array index propagation stay on the i32 path.
@@ -330,9 +340,9 @@ nested loops with typed-array index propagation stay on the i32 path.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **8.02 ms** | **1.13×** | **1.1 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 8.74 ms | 1.04× | 1.3 kB | ok |
-| V8 (node) raw JS | 9.06 ms | 1.00× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **8.62 ms** | **1.12×** | **1.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.74 ms | 1.10× | 1.3 kB | ok |
+| V8 (node) raw JS | 9.62 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.2× faster than V8 raw JS and ties AS. Integer narrowing and
 typed-array parameter propagation keep the LUT lookup on raw i32.
@@ -421,46 +431,64 @@ dependent-gather / branchy-DP** kernels, not in dense scalar or dispatch loops.
 Like the batch above, these stay bench-only (out of `test/bench.js`) until the gap
 closes.
 
-### Deopt kernels — megamorphic dispatch & shapes
+### Deopt kernels — dispatch, shapes, strings, maps, allocation
 
-Two cases aimed square at the *deoptimization* shapes — the dynamic patterns
+Five cases aimed square at the *deoptimization* shapes — the dynamic patterns
 that make a JIT bail out of optimized code, and that an AOT compiler must
-instead resolve statically. Both are pure i32 (bit-identical everywhere) and
-data-shuffled, so no branch predictor, inline cache, or devirtualizer can settle
-on a fast path. `dispatch` fans one call site out to a table of 8 first-class
-functions — the megamorphic **call-IC** shape (virtual calls, strategy tables,
-effect chains). `shapes` sums a per-variant measure over records of 8
-heterogeneous object shapes — the megamorphic **load-IC** shape (JSON rows, AST
-nodes, ECS entities). The static rivals write what a static language writes: a
-function-pointer table, and a tagged union / kind-tagged record + branch.
+instead resolve statically. All are bit-identical across every target and
+data-shuffled, so no branch predictor, inline cache, or devirtualizer can
+settle on a fast path. Together they cover the dynamic-JS surface jz commits to
+compile well: **calls** (`dispatch` — one call site fans out to a table of 8
+first-class functions, the megamorphic call-IC shape), **hidden classes**
+(`shapes` — records of 8 heterogeneous object shapes at one access site, the
+megamorphic load-IC shape), **string churn** (`strbuild` — per-record
+int→string + concat, the serializer inner loop), **keyed maps** (`wordcount` —
+counting into a plain object with 512 computed string keys, the
+dictionary-mode keyed-store deopt), and **allocation** (`immutable` — a fresh
+`{x,y,vx,vy}` per particle per step, the React/Redux-style immutable update).
+The static rivals write what a static language writes: fn-pointer tables,
+tagged unions, stack-buffer formatting, string hash maps, value-type structs.
 
 | case | JZ | vs V8 | vs AS | vs native C | what it probes |
 | --- | ---: | ---: | ---: | ---: | --- |
-| **dispatch** — fn-table dispatch | **9.70 ms** | 0.90× | **1.31×** | 0.49× | `call_indirect` vs megamorphic call IC |
-| **shapes** — 8-shape record scan | 19.04 ms | 0.17× | 0.07× | 0.07× | schema-union access vs megamorphic load IC |
+| **dispatch** — fn-table dispatch | **10.4 ms** | 0.84× | **1.23×** | 0.46× | `call_indirect` vs megamorphic call IC |
+| **strbuild** — per-record formatting | 1.83 ms | 0.92× | 0.83× | 0.83× | int→string + concat temporaries |
+| **wordcount** — string-keyed counting | 8.80 ms | 0.30× | 0.93× | 0.28× | dynamic keys vs dictionary-mode IC |
+| **immutable** — fresh-object step | 1.32 ms | 0.33× | 0.52× | 0.06× | escape analysis / allocation churn |
+| **shapes** — 8-shape record scan | 18.1 ms | 0.19× | 0.06× | 0.09× | schema-union access vs megamorphic load IC |
 
-The two probes split jz's dynamic story cleanly. On `dispatch` **jz leads the
-systems-language wasm field** — AS 1.31×, Rust/C/Zig/Go→wasm 1.1–1.2× — its
-data-selected `call_indirect` is already tighter than what the systems languages
-ship through the same table (only MoonBit's moonrun row edges it, 0.91×); the
-remaining field is JIT call machinery — V8 0.90×, and JavaScriptCore's call ICs
-win the case outright at ~2.3 ms — with bounded-table devirt (guarded direct
-calls over the 8 known closures) the lever to close it. `shapes` is the opposite
-— **the widest gap in the suite, by design**: the 8-schema union defeats
-schema-slot inference, so every field read lowers through the `__dyn_get`
-dynamic-property probe — ~6× behind V8's megamorphic IC and ~13× behind AS's
-kind-tagged flat struct (which ties native C). The general fix is shape-set
-devirt: a bounded schema union at an access site should lower to a tag-switch
-over direct slot loads — the static mirror of a polymorphic IC. `dispatch`
-passes the fastest-wasm gate; `shapes` is pinned red in its `WASM_TODO` as the
-loudest open item.
+The probes split jz's dynamic story cleanly. On `dispatch` **jz leads the
+systems-language wasm field** — AS 1.23×, Rust/C/Zig/Go→wasm 1.05–1.2× — its
+data-selected `call_indirect` is already tighter than what the systems
+languages ship through the same table (only MoonBit's moonrun row edges it);
+the remaining field is JIT call machinery — V8 0.84×, and JavaScriptCore's
+call ICs win the case outright at ~2.3 ms — with bounded-table devirt (guarded
+direct calls over the 8 known closures) the lever to close it. `strbuild` is
+near-parity with V8 but rust-wasm leads 1.3× (and zig-wasm's stack-buffer
+formatting 4.5×) — per-temporary `__str_concat` allocation and generic
+`__itoa` are the levers. (The giant `out +=` accumulator variant is
+deliberately excluded: eager no-GC strings make it quadratic in allocation —
+jz exhausts memory on it. A real landmine for jz users, documented in the
+case header.) `wordcount` ties AS's Map while V8's dictionary mode runs 3.3×
+ahead and a plain C strcmp table 10× — per-op string hashing is the gap,
+interning the lever. `immutable` trails every rival — jz bump-allocates each
+escaping object with no scalar replacement and no reclamation, where V8's
+young-gen GC recycles and value-semantics natives never allocate at all.
+`shapes` stays **the widest gap in the suite, by design**: the 8-schema union
+defeats schema-slot inference, so every field read lowers through the
+`__dyn_get` dynamic-property probe — ~5× behind V8's megamorphic IC and ~16×
+behind AS's kind-tagged flat struct (which ties native C); the general fix is
+shape-set devirt — a bounded schema union lowering to a tag-switch over direct
+slot loads, the static mirror of a polymorphic IC. `dispatch` passes the
+fastest-wasm gate; `shapes`, `wordcount`, `immutable`, and `strbuild` are
+pinned red in `WASM_TODO` — the deopt work list, loudest first.
 
 ### watr — WAT-to-wasm compiler on small corpus
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| V8 (node) raw JS | 0.85 ms | 1.00× | 2.6 kB | ok |
-| **JZ → V8 wasm** | **0.88 ms** | **0.97×** | **238.1 kB** | **DIFF** |
+| V8 (node) raw JS | 0.97 ms | 1.00× | 2.6 kB | ok |
+| **JZ → V8 wasm** | **0.96 ms** | **1.00×** | **244.3 kB** | **DIFF** |
 
 JZ is 1.07× slower than V8 raw JS on this large compiler bundle. The size
 (144 kB) is the full jz-compiled watr parser + encoder + optimizer; V8's JIT
@@ -472,21 +500,24 @@ Aggregate geomean (JZ / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.51×** | — |
-| AssemblyScript | **0.53×** | **1.00×** |
+| V8 (node) | **0.53×** | — |
+| AssemblyScript | **0.58×** | **1.06×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
-self-hosting rows `watr` (1.07×) and `jessie` (1.28×) plus the two deliberate
-deopt probes `dispatch` and `shapes` above. AS is beaten on speed across the
-shared cases except the tracked gather/probe gaps (`dict`, `noise`,
-`levenshtein`) and `shapes`. On size JZ now matches AS (geomean 1.00×) —
-JZ wins on speed and holds size parity.
+self-host lab rows (`watr`, `jessie`) and the deliberate deopt probes above
+(`dispatch`, `shapes`, `wordcount`, `immutable`, `strbuild` — the dynamic-JS
+work list). AS is beaten on speed across the shared cases except the tracked
+gather/probe gaps (`dict`, `noise`, `levenshtein`) and the deopt probes
+(`shapes`, `immutable`, `strbuild`; `wordcount` is a tie). On size JZ matches
+AS (geomean ~1.0×) — JZ wins on speed and holds size parity.
 
 Against the systems languages compiled to the same target — **WebAssembly, run in
-V8** — JZ is **1.9× faster than C, 1.9× than Rust, and 3.9× than Go** (geomean).
-That apples-to-apples wasm field is the headline chart above, and JZ holds
-**geomean parity with native `clang -O3`** itself (1.06×) — the lone non-wasm
-reference row, the speed-of-light ceiling, never a per-case beat-claim.
+V8** — JZ is **1.6× faster than C, 1.7× than Rust, and 3.4× than Go** (geomean,
+deopt probes included). That apples-to-apples wasm field is the headline chart
+above. Native `clang -O3` — the lone non-wasm reference row, the speed-of-light
+ceiling, never a per-case beat-claim — now leads the corpus geomean 1.2×: the
+deopt probes are exactly where native value semantics and mature runtimes pull
+ahead, and closing them is the current work list.
 
 Case-by-case summary:
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { renderBenchSvg } from '../scripts/bench-svg.mjs'
+import { LAB } from '../assets/headline.js'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -65,6 +66,13 @@ const CASE_NAMES = {
   spmv: 'sparse matrix×vector (CSR)',
   dispatch: 'function-table dispatch',
   shapes: 'polymorphic shape scan',
+  strbuild: 'per-record string formatting',
+  wordcount: 'word-frequency map (string keys)',
+  immutable: 'immutable-update particle step',
+  colorconv: 'sRGB → Oklab batch',
+  colorlch: 'sRGB → OkLCh (fused)',
+  colorlog: 'ARRI LogC4 → XYZ',
+  colorpq: 'sRGB → JzAzBz (PQ)',
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-host)',
@@ -76,11 +84,17 @@ const CASE_NAMES = {
 // workload IS the compiler (scripts/self.js), so the jz row runs the full
 // self-host: jz.wasm compiling JavaScript.
 const GRAPH_CASES = new Set(['jessie', 'jz'])
-// Self-referential 'compiler' cases (jz/watr/jessie compiling code) are excluded
-// from the headline geomean SVG + bench page — a different question from the
-// cross-language kernel comparison. Still runnable via --cases and gated in
-// test/bench.js.
-const HIDDEN_FROM_GEOMEAN = new Set(['watr', 'jessie', 'jz'])
+// The LAB set (imported — one definition in assets/headline.js): self-referential
+// 'compiler' cases (jz/watr/jessie compiling code) plus the JS-only intrinsic
+// probes (color*). Excluded from every aggregate — the headline geomean SVG here,
+// the page/hero stats, the README aggregate table — because they answer
+// jz-internal questions (self-host throughput, open intrinsic gaps), not the
+// cross-language kernel comparison. Still measured, still on the bench page under
+// the `lab` chip.
+const HIDDEN_FROM_GEOMEAN = LAB
+// Only the self-host graph bundles stay out of bench/web/ — their wasm is multi-MB
+// (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
+const NO_WEB = new Set(['watr', 'jessie', 'jz'])
 const graphSources = (c) => {
   const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' })
   return { code: g.code, modules: g.modules }
@@ -701,10 +715,10 @@ for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case
 // --emit-web: compile just the page's playable cases to bench/web/*.wasm and
 // stop — no measurement, no native/JS-engine toolchains. The cheap step
 // pages.yml runs to (re)build the live in-page runner's artifacts at deploy.
-// Self-host rows (jz/watr/jessie) are hidden from the page, so they're never
-// emitted — that's the multi-MB jz.wasm we keep out of the deploy entirely.
+// Self-host graph rows (jz/watr/jessie, NO_WEB) are never emitted — that's the
+// multi-MB jz.wasm we keep out of the deploy entirely.
 if (EMIT_WEB) {
-  const { built } = emitWebWasm(selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid)))
+  const { built } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
   console.log(`wrote bench/web/{${built.join(',')}}.wasm`)
   process.exit(0)
 }
@@ -915,9 +929,9 @@ if (JSON_PATH) {
   }
 
   // Per-case wasm for the in-page runner (playable cases only — the self-host
-  // rows are hidden from the page, so their multi-MB artifacts never ship).
+  // graph rows (NO_WEB) never ship their multi-MB artifacts).
   // compileMs lands back on each case as the page's live compile-time reference.
-  const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid)))
+  const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
   for (const [cid, ms] of Object.entries(compileMs)) if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = ms
   writeFileSync(JSON_PATH, JSON.stringify(jsonOut, null, 1))
   console.log(`\nwrote ${JSON_PATH} + bench/web/{${built.join(',')}}.wasm`)

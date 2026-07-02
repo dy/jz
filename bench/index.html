@@ -229,7 +229,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { headlineStats, CLS_ICO } from '../assets/headline.js'
+import { headlineStats, CLS_ICO, LAB } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 
 // ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
@@ -342,11 +342,14 @@ const rowTip = (tid, parity, note) => {
   ].filter(Boolean).join('\n\n')
 }
 const BREAK = 12      // linear bars; rows past this are cut, number printed
-// Self-referential 'compiler' cases (jz/watr/jessie compiling code) are hidden
-// from the page + headline geomean — they're a different question from the
-// cross-language kernel comparison. Still runnable via `bench.mjs --cases` and
-// gated in test/bench.js.
-const HIDDEN = new Set(['watr', 'jessie', 'jz'])
+// LAB (imported — one definition in assets/headline.js): the jz-internal probe
+// cases (self-host compiler rows + JS-only intrinsic color* probes). They answer
+// jz-internal questions, not the cross-language comparison, so they sit out
+// every aggregate (geomeans, strip, coverage, run-all) but stay visible as
+// cards under the `lab` chip.
+// Self-host graph rows: no bench/web wasm (multi-MB) and no browser-resolvable
+// module graph — their cards carry no repl/run actions.
+const NO_RUN = new Set(['watr', 'jessie', 'jz'])
 // idiomatic glyphs: play triangle for the repl, code chevrons for source
 const ICO = {
   play: `<svg class="ico" viewBox="0 0 12 12" width="9" height="9" aria-hidden="true"><path fill="currentColor" d="M2.5 1.3v9.4l7-4.7z"/></svg>`,
@@ -375,11 +378,15 @@ const FAMILY = {
   biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio', wav: 'audio',
   // image — raster / pixel / render / procedural
   blur: 'image', conv2d: 'image', qoi: 'image', raytrace: 'image', noise: 'image', alpha: 'image',
-  colorconv: 'image', colorlch: 'image', colorlog: 'image', colorpq: 'image',
   // string — text / parse / codec / sequence
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
+  strbuild: 'string', wordcount: 'string',
   // alloc — allocation / closures / object layout
-  callback: 'alloc', aos: 'alloc', shapes: 'alloc',
+  callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc',
+  // lab — jz-internal probes: self-host compiler rows + JS-only intrinsic gap
+  // trackers (no cross-language field; excluded from every aggregate)
+  watr: 'lab', jessie: 'lab', jz: 'lab',
+  colorconv: 'lab', colorlch: 'lab', colorlog: 'lab', colorpq: 'lab',
 }
 const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
   mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
@@ -392,7 +399,9 @@ const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', 
   levenshtein: 'dp · min', hash: 'murmur · i32', sieve: 'scatter · i32', radixsort: 'radix · scatter',
   dict: 'hash · probe', nqueens: 'recursion · bitmask', vm: 'dispatch · i32',
   hashjoin: 'join · probe', dispatch: 'calls · megamorphic', shapes: 'shapes · megamorphic',
-  colorconv: 'oklab · cbrt', colorlch: 'oklch · polar', colorlog: 'logc4 · exp2', colorpq: 'jzazbz · pow' }
+  colorconv: 'oklab · cbrt', colorlch: 'oklch · polar', colorlog: 'logc4 · exp2', colorpq: 'jzazbz · pow',
+  watr: 'compiler · self', jessie: 'parser · self', jz: 'selfhost · compiler',
+  strbuild: 'concat · alloc', wordcount: 'keys · dict-mode', immutable: 'alloc · gc' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -438,6 +447,12 @@ const INSIGHTS = {
   colorlog: 'ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3 matrix; runtime-exponent pow/exp2 is where jz trails V8’s intrinsics.',
   colorpq: 'sRGB → JzAzBz — 3×3 → PQ curve (≈12 signed-pow calls) → 3×3; the sign branch + runtime-exponent pow blocks vectorization.',
   shapes: 'Records of 8 heterogeneous object shapes hit one access site — a JIT load-IC goes megamorphic, the hidden-class deopt shape. jz’s schema union falls back to a dynamic-property probe (__dyn_get) per field read — the widest gap in the suite (AS’s flat tagged struct ties native C). The general fix is shape-set devirt: a bounded schema union should lower to a tag-switch over direct slot loads.',
+  watr: 'jz-compiled watr (WAT → wasm compiler) vs raw V8 on the same source — a self-host row: V8’s profile-guided JIT tiers the long-running string-heavy bundle, jz trails ~1.1×.',
+  jessie: 'The subscript/jessie JS parser over a source corpus, jz-compiled vs raw V8 — branch-, allocation- and recursion-heavy front-end work on the linear-memory string substrate.',
+  jz: 'The jz compiler compiling JavaScript as jz.wasm — the self-host row; output bytes are checksummed, so the parity gate doubles as a determinism proof.',
+  strbuild: 'Per-record CSV-line formatting — int→string, concat, char fold; the serializer inner loop. jz’s eager linear-memory strings land near V8’s rope-backed concat; AS’s leaner UTF-16 concat leads. (A single giant `out +=` accumulator is deliberately avoided: eager strings with no GC make it quadratic in allocation.)',
+  wordcount: 'Token counting into a plain object with 512 computed string keys — in a JIT the object falls to dictionary mode, the keyed-store deopt. jz’s string-keyed hash store ties AS’s Map but trails V8’s tuned dictionary ~3× — string hashing/interning is the lever.',
+  immutable: 'Every step replaces each particle with a fresh {x,y,vx,vy} — the React/Redux-style immutable update. Value-semantics natives get it free; V8’s young-gen GC + escape analysis wins the managed field; jz pays a real bump allocation per object with no scalar replacement — the escape-analysis/SROA probe.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -592,9 +607,9 @@ const renderGeomean = () => {
 // Each cell is [key, label, band, tip].
 const STRIP = [
   ['Speed', [
-    ['v8', 'V8', 'js', 'jz vs Node / V8 — geometric-mean speedup across the corpus (your runtime).\nUp to 13.8× on the best single case (dotprod).'],
+    ['v8', 'V8', 'js', 'jz vs Node / V8 — geometric-mean speedup across the corpus (your runtime).\nOver 13× on the best single case (dotprod).'],
     ['rust', 'Rust wasm', 'wasm', 'jz vs Rust → wasm (rustc --target wasm32-wasip1 -C opt-level=3), run in this same V8.\njz beats a systems language, apples-to-apples.'],
-    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) — the speed-of-light ceiling.\njz matches it (1.01×), from plain JavaScript.'],
+    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) — the speed-of-light ceiling,\nfrom plain JavaScript. Below 1× = native ahead; the deopt probes are the open gap.'],
   ]],
   ['Size', [
     ['assize', 'AssemblyScript', 'wasm', 'jz ÷ AssemblyScript wasm bytes, median over the corpus — each compiler at its smallest:\njz optimize:"size"  vs  asc -Osize --runtime stub --noAssert.\nLower = jz smaller.'],
@@ -613,7 +628,7 @@ const renderStrip = () => {
 }
 
 // ── per-case cards ───────────────────────────────────────────────────────────
-const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc']
+const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc', 'lab']
 const famCount = f => f === 'all' ? CASES.length : CASES.filter(c => FAMILY[c.id] === f).length
 const renderChips = () => {
   $('chips').innerHTML = CHIPS.map(f => {
@@ -684,7 +699,7 @@ const renderCards = () => {
     const rows = cardRows(c)
     if (!rows) continue
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
-    const play = `<span class="actions"><button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>${srcLink}</span>`
+    const play = `<span class="actions">${NO_RUN.has(c.id) ? '' : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>`}${srcLink}</span>`
     const sz = c.targets.jz?.bytes
     html += `<div class="card" data-cid="${c.id}">
       <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size">${fmtB(sz)}</span>` : ''}${play}</h3>
@@ -799,12 +814,13 @@ const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).re
 // ── boot ─────────────────────────────────────────────────────────────────────
 try {
   DATA = await fetch('./results.json').then(r => { if (!r.ok) throw 0; return r.json() })
-  const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c })).filter(c => !HIDDEN.has(c.id))
-  // CORPUS = cases where jz actually RAN (a {status:'fail'} jz entry is present but
-  // carries no median, so it must not seed the geomeans).
+  const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
+  // CORPUS = aggregate cases: jz actually RAN (a {status:'fail'} jz entry carries
+  // no median, so it must not seed the geomeans) and not LAB — the jz-internal
+  // probes stay out of geomeans/strip/coverage/run-all but render as cards.
   const jzRan = c => c.targets.jz && c.targets.jz.status !== 'fail'
-  CORPUS = all.filter(jzRan)
-  CASES = CORPUS.concat(all.filter(c => !jzRan(c)))
+  CORPUS = all.filter(c => jzRan(c) && !LAB.has(c.id))
+  CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
   renderMeta(); renderChips(); renderAll()
 } catch {
   $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet — run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'

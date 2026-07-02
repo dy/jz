@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { LAB } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const RESULTS = join(ROOT, 'bench', 'results.json')
@@ -89,7 +90,9 @@ for (let i = 0; i < lines.length; i++) {
 let text = out.join('\n')
 
 // ── aggregate geomean table (V8 + AssemblyScript rows; Porffor needs its own subset, left alone) ──
-const okCases = Object.keys(C).filter((c) => C[c].targets?.jz?.parity === 'ok')
+// LAB (imported — one definition in assets/headline.js): the jz-internal probe
+// cases sit out the aggregate.
+const okCases = Object.keys(C).filter((c) => !LAB.has(c) && C[c].targets?.jz?.parity === 'ok')
 const ratios = (t, metric) => okCases.map((c) => {
   const jz = C[c].targets.jz, o = C[c].targets[t]
   if (!o) return null

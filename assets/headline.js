@@ -8,8 +8,17 @@
 //   assize/porfsize  MEDIAN of jz.wasm / target.wasm bytes (apples-to-apples binary↔binary)
 // Parity-DIFF runs (a target that produced the WRONG answer) are excluded — speed on a
 // wrong result isn't a fair comparison (matters for Porffor, which miscompiles several).
+// The LAB set — jz-internal probe cases: the self-host compiler rows (jz/watr/
+// jessie compiling code) and the JS-only intrinsic probes (color* — pow/cbrt/
+// exp2/atan2 gap trackers with no cross-language ports). They answer jz-internal
+// questions, not the cross-language comparison, so every aggregate excludes them.
+// The ONE definition, shared by every consumer: bench/bench.mjs (geomean SVG +
+// web emit), bench/index.html (page corpus + `lab` chip), scripts/bench-readme.mjs
+// (README aggregate table), and headlineStats below (hero + strip).
+export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq'])
+
 export function headlineStats(results) {
-  const cases = Object.values(results.cases || {})
+  const cases = Object.entries(results.cases || {}).filter(([id]) => !LAB.has(id)).map(([, c]) => c)
   const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
