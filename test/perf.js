@@ -856,7 +856,8 @@ test('codegen: integer-global inference narrows numeric globals, demoting only o
       N = n; half = n >>> 1; bSi = 2.0 / n;
       width = w; offset = width * h; scale = bSi * 2;
     };
-  `, { wat: true })
+    export let sum = () => N + half + bSi + width + offset + scale;
+  `, { wat: true })  // reader export keeps the globals live under watr's export-rooted liveness
   is(decl(wat, 'N'), '(mut i32)', 'N (param assign) → i32')
   is(decl(wat, 'half'), '(mut i32)', 'half (>>> shift) → i32')
   is(decl(wat, 'width'), '(mut i32)', 'width (param assign) → i32')
@@ -1071,7 +1072,12 @@ test('codegen: unknown-receiver index with NUMBER key skips __is_str_key dispatc
   const n = (re) => (fMatch.match(re) || []).length
   is(n(/__is_str_key/g), 0, 'NUMBER key never needs the string-key dispatch')
   is(n(/__dyn_get/g), 0, 'no dynamic-property fallback for a numeric index')
-  ok(/\$__typed_idx[\s\S]*?\(local\.get \$i\)/.test(fMatch), 'reads with the raw i32 index')
+  // watr's inliner may dissolve __typed_idx entirely — the pin's intent is "raw i32
+  // index, no f64 round-trip": either the helper call with the raw index, or a fully
+  // inlined load with no boxing of $i.
+  ok(/\$__typed_idx[\s\S]*?\(local\.get \$i\)/.test(fMatch)
+    || (/(f64|i32)\.load/.test(fMatch) && !/f64\.convert_i32_s \(local\.get \$i\)/.test(fMatch)),
+    'reads with the raw i32 index')
 })
 
 test('codegen: pure scalar function — minimal binary', () => {
@@ -1553,7 +1559,11 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 10315) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
+}`, 12623) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
+// 10315→12623: ES own-prop shadowing on unknown receivers (the builtin-shadow sidecar probe,
+// session 7) — a closure-heavy parser is all unknown-receiver method calls. Timing pins stayed
+// green; the jessie-campaign levers (namespace SRoA, descriptor devirt) re-type these receivers
+// and are expected to claw the probe bytes back.
 // Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
 // local only when nothing in the body can mutate `buf` (no writes to it, no
 // calls — any call may reach `buf` through an alias the compiler can't track).
@@ -1573,4 +1583,6 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 930)
+}`, 1111)
+// 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
+// a7c2eb3 with the same linked watr; timing caps green).
