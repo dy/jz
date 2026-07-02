@@ -546,24 +546,24 @@ export default (ctx) => {
     __hash_set_local: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr'],
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: ['__map_hash', '__alloc_hdr_n', '__mkptr'],
-    __dyn_get_t: ['__dyn_get_t_h', '__str_hash'],
+    __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
-    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local'],
+    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_t: () => ctx.features.external
-      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop']
-      : ['__dyn_get_t', '__hash_get_local'],
+      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str']
+      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str'],
     __dyn_get_any_t_h: () => ctx.features.external
       ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
       : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq', '__is_str_key', '__to_str'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
-    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish'],
+    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str'],
     __coll_clear: ['__ptr_type', '__ptr_offset'],
   })
 
@@ -1165,9 +1165,15 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
-  // Thin wrapper: hash the key once, delegate to the prehashed body. Constant-key
-  // call sites bypass this and call $__dyn_get_t_h directly with strHashLiteral().
+  // Thin wrapper: ToPropertyKey the runtime key, hash it once, delegate to the
+  // prehashed body. Constant-key call sites bypass this and call $__dyn_get_t_h
+  // directly with strHashLiteral() (compile-time keys are already strings).
+  // ToPropertyKey: a non-string key (number/bool/null/undefined) addresses the
+  // same slot as its string form — o[97] ≡ o['97'] (JS spec). Writes stringify
+  // (emit-assign's staticPropertyKey fold, __dyn_set below), so reads must too.
   ctx.core.stdlib['__dyn_get_t'] = `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
 
   ctx.core.stdlib['__dyn_get_t_h'] = () => `(func $__dyn_get_t_h (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
@@ -1297,6 +1303,9 @@ export default (ctx) => {
     ;; __hash_get_local fallback below (heap read at a bogus offset → OOB).
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
+    ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
     (if (result i64)
       (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
@@ -1342,6 +1351,9 @@ export default (ctx) => {
       : `(i64.const ${UNDEF_NAN})`
     return `(func $__dyn_get_any_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
     (local $val i64)
+    ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     ;; A real number receiver (f===f — NaN-boxed pointers are NaN) has no dynamic
     ;; props: \`(5).foo\` is undefined. Without this guard the bits are reinterpreted as
     ;; a pointer and \`__dyn_get_t\` reads heap at a bogus offset → OOB for large values.
@@ -1391,6 +1403,9 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
     (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
+    ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ;; CLOSURE with no env (offset 0): key __dyn_props on the function table index — see __dyn_get_t.
@@ -1530,6 +1545,9 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
     (local $root i64) (local $props i64) (local $oldProps i64)
     (local $off i32) (local $type i32) (local $hit i32) ${buildObjectSchemaSetLocals()}
+    ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ${buildObjectSchemaDelArm()}

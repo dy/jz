@@ -94,13 +94,23 @@ function applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped = false }
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    // A narrowed param type is a CALLER-side contract; the body keeps it only if it
+    // never writes the param (a body write emits through the generic f64 assign path
+    // — `a += 1` after an i32 narrow is a validation-failing local.set type clash).
+    // Same exclusion validateIntConstParams applies, for the same reason.
+    let mutated = null
     for (const [k, r] of reps) {
       if (k === restIdx || k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (func.defaults?.[p.name] != null) continue
+      if (r.wasm !== 'v128' && (r.wasm !== 'i32' || p.type === 'i32')) continue
+      if (mutated === null) {
+        mutated = new Set()
+        if (func.body) findMutations(func.body, new Set(func.sig.params.map(p => p.name)), mutated)
+      }
+      if (mutated.has(p.name)) continue
       // SIMD: a param passed a v128 (lane vector) at every call site is a v128 param.
       if (r.wasm === 'v128') { p.type = 'v128'; continue }
-      if (r.wasm !== 'i32' || p.type === 'i32') continue
       if (skipTyped && r.val === VAL.TYPED) continue
       p.type = 'i32'
     }

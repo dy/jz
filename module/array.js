@@ -735,23 +735,34 @@ export default (ctx) => {
     }
     // HASH receiver with runtime string key: probe the HASH directly via
     // __hash_get_local. Mirrors the literal-key path above but defers the
-    // hash computation to runtime. When the key's val-type is unknown at
-    // compile time, gate on __is_str_key — HASH has no numeric-key
-    // semantics, so non-string keys return undef.
+    // hash computation to runtime. Non-string keys (known-numeric, or the
+    // runtime-dispatch else-arm) go through __dyn_get_expr, whose entry
+    // ToPropertyKey-normalizes — `h[97]` reads the '97' slot the (also
+    // normalizing) write stored. A known HASH is never an array, so there is
+    // no hot array-index path to protect here.
     if (vt === VAL.HASH) {
       if (keyType === VAL.STRING) {
         inc('__hash_get_local')
         return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
       }
       if (useRuntimeKeyDispatch) {
-        inc('__hash_get_local', '__is_str_key')
+        inc('__hash_get_local', '__is_str_key', '__dyn_get_expr')
         const keyTmp = temp()
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, asF64(emit(idx))],
           ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
             ['then', ['f64.reinterpret_i64', ['call', '$__hash_get_local', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]]],
-            ['else', undefExpr()]]], 'f64')
+            ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]]]]], 'f64')
       }
+      inc('__dyn_get_expr')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
+    }
+    // OBJECT receiver with a non-string key: never an array element — route to the
+    // ToPropertyKey-normalizing dyn read (the WRITE side already goes to __dyn_set;
+    // see the numeric-index design note below, which stays scoped to UNKNOWN receivers).
+    if (vt === VAL.OBJECT && keyType !== VAL.STRING) {
+      inc('__dyn_get_expr')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
     }
     // Known array → direct f64 element load, skip string check
     if (keyType === VAL.STRING)

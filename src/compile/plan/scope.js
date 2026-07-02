@@ -435,8 +435,16 @@ export const flattenFuncNamespaces = (ast) => {
   ast.length = 0
   for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
   invalidateProgramFactsCache(ast)
-  for (const fn of ctx.func.list)
+  for (const fn of ctx.func.list) {
     if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
+    // Default-param values are AST stored OUTSIDE fn.body (fn.defaults) — a
+    // closure default like subscript's `dispatch = (ops, tail, fn = (…) => {…
+    // parse.id(…) …})` reads func-props too. Missing them left the read on the
+    // dynamic __dyn_get path while every write had dissolved into the global —
+    // disjoint stores, so the read yielded undefined (the tokenizer's word-guard
+    // collapsed and `init` lexed as `in`+`it`).
+    if (fn.defaults) for (const k of Object.keys(fn.defaults)) fn.defaults[k] = rewrite(fn.defaults[k])
+  }
   // The defining `f.prop = …` writes live in moduleInits for bundled programs —
   // rewrite them too, or reads would resolve to an unwritten global.
   if (ctx.module.moduleInits)

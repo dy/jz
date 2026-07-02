@@ -127,6 +127,11 @@ export default (ctx) => {
     (i64.const ${UNDEF_NAN}))`
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj i64) (param $key i64) (param $fallback i64) (result i64)
     (local.get $fallback))`
+  // Sidecar probe entry (sidecarOverride / the builtin-shadow method fork): with
+  // no dyn-props module there are no own props — the probe always misses and the
+  // builtin arm runs, which is exactly the stub-world semantics.
+  ctx.core.stdlib['__dyn_get_expr'] = `(func $__dyn_get_expr (param $obj i64) (param $key i64) (result i64)
+    (i64.const ${UNDEF_NAN}))`
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local.get $val))`
   // Signature must match collection.js's real __dyn_move (i32 result: 1 = an

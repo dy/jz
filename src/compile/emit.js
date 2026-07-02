@@ -2355,6 +2355,20 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
   if (ctx.core.emit[`.${method}`] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+    // Statically-UNKNOWN receiver: an OWN property named like the builtin shadows it
+    // (ES prototype semantics) — the runtime analogue of `objectShadow` above. Without
+    // this fork, subscript's `d.map(a)` descriptor mapper (or any user method colliding
+    // with Array.prototype names) is hijacked by the builtin and reads array layout off
+    // an object. Probe the dyn-prop sidecar: own closure wins, else the builtin runs —
+    // emitted ONCE (the builtin bodies are large inline emitters; a dual-arm emission
+    // doubled closure-heavy golden sizes). __dyn_get_expr guards real-number receivers
+    // itself, so no f===f pre-fork is needed. Gated on the string module (the probe key
+    // is a string literal): a string-less program has no user string props to shadow.
+    if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
+      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
+        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+        (o) => asF64(callMethod(o, ctx.core.emit[`.${method}`])))
+    }
     return callMethod(obj, ctx.core.emit[`.${method}`])
   }
 }
@@ -2704,8 +2718,15 @@ export const emitter = {
         ...results.flatMap(dropSpread),
         ['f64.const', 0])
     }
-    return typed(['block', ['result', last.type],
+    const seq = typed(['block', ['result', last.type],
       ...results.slice(0, -1).flatMap(dropSpread), last], last.type)
+    // The sequence's VALUE is `last` — carry its value metadata, or downstream
+    // coercions misread the carrier: an i32 OBJECT/CLOSURE pointer without its
+    // ptrKind gets f64.convert_i32_s'd (`return (fn.a = 1, fn)` returned the raw
+    // heap offset as a number). Same bug-class as the ternary's tagPtr (below).
+    if (last.ptrKind != null) { seq.ptrKind = last.ptrKind; if (last.ptrAux != null) seq.ptrAux = last.ptrAux }
+    if (last.unsigned) seq.unsigned = last.unsigned
+    return seq
   },
   'let': emitDecl,
   'const': emitDecl,
@@ -3459,6 +3480,7 @@ export const emitter = {
   },
 
   'for': (init, cond, step, body) => {
+    if (process.env.JZ_DUMP_FOR) console.error('EMIT-FOR init:', JSON.stringify(init), '\n  cond:', JSON.stringify(cond), '\n  step:', JSON.stringify(step))
     if (body === undefined) return err('for-in/for-of not supported')
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
