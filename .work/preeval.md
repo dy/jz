@@ -30,3 +30,8 @@ imports/Date/random/observable effects; differential fuzz stays the floor
 EXISTING SUBSTRATE: static.js (staticValue/staticPropertyKey/staticObjectProps),
 bindStaticGlobal, intConst interproc consts, unrollSmallConstFor, forInUnroll,
 watr const-fold. Unify — one preEval pass over prepared AST, fixpoint.
+
+## AFTER pre-eval — standing perf goals (user, 2026-07-02)
+- jz.wasm self-compile beats jz.js (stands; pinned in test/selfhost-perf.js)
+- jessie.wasm bench cases FASTER than jessie.js — needs a pin
+- watr.wasm FASTER than watr.js — needs a pin
