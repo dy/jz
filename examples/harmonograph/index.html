@@ -18,7 +18,8 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 //   Drag up←→down    : damp    (0.5 top = slow envelope / lush, 2.0 bottom = tight spiral)
 //   Idle             : slow LFO cycles detune + damp — traverses the full dynamic range
 //
-// Color reads physics: amber/orange outer loops (full amplitude) → teal/cyan center knot.
+// Brightness reads physics: sparse outer loops (full amplitude) stay faint, the densely-wound
+// center knot accumulates bright.
 
 const FIGURES = [
   [2, 3, 3, 2], [3, 2, 2, 3], [2, 5, 3, 4], [4, 3, 3, 2],

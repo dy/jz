@@ -1,7 +1,7 @@
 // Markus–Lyapunov fractal ("Zircon Zity"). Every pixel (a,b) runs the logistic map
 // x_{n+1} = r·x·(1−x) where r alternates between a and b per a forcing sequence.
 // The Lyapunov exponent λ = (1/N)·Σ log|r·(1−2x)| measures chaos: λ<0 means order
-// (stable cycle, warm gold palette), λ≥0 means chaos (near-black with cool tint).
+// (stable cycle, bright), λ≥0 means chaos (black).
 // The boundary between them is the fractal. ox,oy pan offsets are frame args (f64)
 // so they never get narrowed to i32. resize→Uint32Array; frame(t,ox,oy) renders.
 
@@ -52,13 +52,15 @@ export let frame = (t, ox, oy, span) => {
         if (si >= SEQLEN) si = 0
         wi++
       }
-      // accumulate 160 iters for Lyapunov exponent
+      // accumulate 160 iters for Lyapunov exponent — λ = (1/N)·Σ log|f′(xₙ)| pairs
+      // each rₙ with the PRE-update xₙ (f′(x) = r·(1−2x)), so take the derivative
+      // before advancing the map
       let L = 0.0
       let ai = 0
       while (ai < 160) {
         let r = (seq[si] < 1) ? a : b
-        x = r * x * (1.0 - x)
         let deriv = Math.abs(r * (1.0 - 2.0 * x))
+        x = r * x * (1.0 - x)
         if (deriv > 0.0) L = L + Math.log(deriv)
         si = si + 1
         if (si >= SEQLEN) si = 0

@@ -11,7 +11,7 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 const demo = runDemo({
   name: "sph",
-  hint: "SPH fluid — smoothed-particle hydrodynamics · drag to push it",
+  hint: "particle liquid — every pair repels & drags within a smoothing radius, O(N²) · drag to push it",
   size: { budget: 500000 },
   load: (e) => e.init(),
   frame: (e) => { if (e.setPointer) e.setPointer(ptr.x, ptr.y, ptr.down ? 1 : 0); e.frame(0) },

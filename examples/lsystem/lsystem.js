@@ -297,31 +297,20 @@ export let frame = (t, systemIdx, progress) => {
   tdepth[0] = 0
   let segCount = 0
 
-  // starting orientation for each system
-  // Koch: heading = 0 (right)
-  // Dragon: heading = 0
-  // Sierpinski: depends on depth parity — we use 0
-  // Plant: heading = -PI/2 (upward, since sin heading goes Y-down in screen coords)
-  // Actually let's use heading=PI*1.5 for plant so it grows upward (screen Y increases downward)
+  // Starting heading: 0 (rightward) for Koch/dragon/Sierpiński; the plant grows UP,
+  // i.e. -PI/2 in screen coords (y increases downward). The turtle starts at (0,0) in
+  // turtle space, which the bounds fit projects to (offX, offY).
   if (si == 3) {
-    dh = -1.5707963267948966  // -PI/2: heading up (y decreases)
+    dh = -1.5707963267948966
   } else {
     dh = 0.0
   }
-  dx = offX + minX * scale  // start at transformed origin
-  dy = offY + minY * scale
-
-  // Actually start turtle at canvas-projected (0,0) equivalent:
-  // The bounds pass started at (0,0) in turtle space → screen = (offX, offY)
-  // Wait: the initial turtle pos in bounds pass is (0,0), so screen = (0*scale+offX, 0*scale+offY)
   dx = offX
   dy = offY
 
-  // Re-init heading correctly for draw pass (bounds pass had dh=0 for all, same start)
   if (si == 3) {
-    dh = -1.5707963267948966
-    // The bounds pass used dh=0 for plant — we need to redo bounds with same heading.
-    // Re-run bounds with plant heading = -PI/2
+    // The shared bounds pass above ran with heading 0 — redo it with the plant's
+    // -PI/2 heading so the fit matches what the draw pass will actually trace.
     bx = 0.0; by = 0.0; bh = -1.5707963267948966
     minX = 0.0; maxX = 0.0; minY = 0.0; maxY = 0.0; first = 1
     tdepth[0] = 0

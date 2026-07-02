@@ -1,6 +1,6 @@
 // Pascal's triangle mod p — colour C(n,k) by whether p divides it and the Sierpiński fractal
 // falls out. Mod 2 is the classic Sierpiński triangle; every prime p births its own lattice of
-// (p choose 2) sub-triangles (Lucas' theorem), and composite moduli remix it. Drawn black & white:
+// p(p+1)/2 sub-triangles per level (Lucas' theorem), and composite moduli remix it. Drawn black & white:
 // a cell is lit when C(n,k) mod p ≠ 0, black (a void) when p divides it. The figure BUILDS UP row
 // by row from the apex — the host ramps how many rows are revealed, so you watch the fractal grow.
 // Rows are built incrementally, row[k] = (prev[k-1] + prev[k]) mod p; the revealed triangle is

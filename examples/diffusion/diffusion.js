@@ -9,7 +9,7 @@
 // keeps four permanently-named arrays (uA/uB/vA/vB) and toggles which
 // "ping" is current via a flip bit, manually selecting A or B.
 //
-// Parameters: Du=0.16, Dv=0.08, F=0.06, k=0.062  (fingerprint / coral)
+// Parameters: Du=0.16, Dv=0.08, F=0.054, k=0.062  (fingerprint / coral)
 // frame() runs STEPS sub-steps per call for visible evolution at 60 fps.
 
 let W = 0, H = 0

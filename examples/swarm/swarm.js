@@ -1,14 +1,13 @@
-// Swarm — "mouches", reproduced verbatim from mouches.swf (decompiled). There is NO
-// velocity/momentum/gravity/bounce — that's the whole point. Two interval loops:
-//
-//   tInit (every ~200ms):  each fly picks a fresh RANDOM target near the cursor:
-//        tx = cursorx + random(AREA) - AREA/2 ;  ty = cursory + random(AREA) - AREA/2
-//   moochasMove (every frame):  ease toward that target + a flow-field wander, face it:
-//        _x += (tx-_x)>>1 * MOOCHSPEED + 2*cos(_y/10)
-//        _y += (ty-_y)>>1 * MOOCHSPEED + 2*sin(_x/10)
+// Swarm — "mouches", after mouches.swf (decompiled). There is NO velocity/momentum/
+// gravity/bounce — that's the whole point. The swf ran two interval loops: every
+// ~200ms each fly picks a fresh RANDOM target near the cursor (tx = cursorx +
+// random(AREA) − AREA/2), and every frame shift-eases toward it plus a cos/sin
+// flow-field nudge. This port keeps the same skeleton — periodic random re-target +
+// ease — but replaces the shift-ease and fixed flow field with a smooth lerp and a
+// decorrelated per-fly wander (no closed streamlines, so flies can't fall into orbits).
 //
 // The per-fly random re-targeting is what makes the motion look randomized (not an orbit);
-// the lerp+wander gives the lazy buzz. Each fly is a triangle facing its target.
+// the lerp+wander gives the lazy buzz. Each fly is a triangle facing its motion.
 // Coordinates are kept in pixels (as in the swf). resize(w,h) → Uint32Array.
 
 let W = 0, H = 0, px

@@ -1,6 +1,6 @@
 // Barnsley fern — chaos game IFS (Iterated Function System). Four affine maps are chosen
 // at random by probability; repeated application drives a point toward the fern attractor.
-// State (x, y) is persistent: each frame() adds ~40000 iterations, accumulating a density
+// State (x, y) is persistent: each frame() adds ~200000 iterations, accumulating a density
 // map that is log-tone-mapped to green-channel pixels, giving a smooth luminosity gradient.
 //
 // Wind sway: f2 (the main stem/leaf map, p=0.85) is perturbed each frame by `sway`, a

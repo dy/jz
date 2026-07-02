@@ -5,8 +5,8 @@
 // Iteration: z_{n+1} = (|Re z| + i|Im z|)² + c
 // Written out: xt = x²−y²+cx;  y = 2·|x·y|+cy;  x = xt
 //
-// Smooth coloring via fractional iteration (log-log trick) avoids banding.
-// Color: warm ember/fire palette — black→deep-red→orange→yellow→white.
+// Smooth coloring via fractional iteration (log-log trick) avoids banding;
+// rendered grayscale (√-eased), matching the gallery's ink-on-black language.
 // frame(t, cx, cy, halfH, rot) — cx/cy/halfH/rot passed as f64 args (avoids i32 narrowing).
 //
 // `rot` gives the ship LIFE without a free parameter to morph (unlike Julia's c): each squaring

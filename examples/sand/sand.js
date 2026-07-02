@@ -14,17 +14,14 @@ let parity = 0  // flips scan direction each frame to avoid drift bias
 let C_EMPTY = (255 << 24) | (14 << 16) | (14 << 8) | 14
 let C_WALL  = (255 << 24) | (96 << 16) | (98 << 8) | 104
 
-let vel               // water horizontal momentum per cell (-1/0/+1), travels with the water
-
 export let resize = (w, h) => {
   W = w; H = h
   cell = new Int32Array(w * h)
-  vel = new Int32Array(w * h)
   px = new Uint32Array(w * h)
   return px
 }
 
-export let clear = () => { let n = W * H, i = 0; while (i < n) { cell[i] = 0; vel[i] = 0; i++ } }
+export let clear = () => { let n = W * H, i = 0; while (i < n) { cell[i] = 0; i++ } }
 
 // Paint a disc of element `el` (sand/water scattered so it looks granular).
 export let paint = (cx, cy, r, el) => {
@@ -51,7 +48,6 @@ export let paint = (cx, cy, r, el) => {
 
 let swap = (a, b) => {
   let t = cell[a]; cell[a] = cell[b]; cell[b] = t
-  let v = vel[a]; vel[a] = vel[b]; vel[b] = v
 }
 
 export let frame = (t) => {

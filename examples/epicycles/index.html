@@ -22,8 +22,8 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 //   • Drag left↔right to scrub through the approximation regime
 //   • Double-click → reset to preset shape
 //
-// Arms are colored by frequency: amber (big slow) → teal → violet (tiny fast).
-// The ghost curve (dim blue) shows the full target; the cyan trace shows reconstruction.
+// Arms shade by frequency: big slow circles bright and thick, tiny fast ones dim and fine.
+// The ghost curve (dim grey) shows the full target; the bright trace shows reconstruction.
 
 const SHAPES = ["a heart", "a rose", "a star", "a figure-eight", "a spirograph", "an epicycloid"]
 let shape = Math.floor(Math.random() * SHAPES.length)

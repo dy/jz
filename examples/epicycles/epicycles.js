@@ -3,8 +3,8 @@
 // The DFT decomposes the curve into N frequency components. Sorted by magnitude, each
 // becomes one spinning arm. frame(t, phi, terms) renders the chain using only the first
 // `terms` components: sweep from 1 (blocky silhouette) to 256 (exact reconstruction).
-// High-freq arms are thinner and cooler (blue/violet); low-freq arms are thick and warm
-// (amber/red). The ghost curve shows the full target; the bright traced path accumulates.
+// High-freq arms draw thinner and dimmer, low-freq arms thick and bright, so the chain
+// reads big→small. The ghost curve shows the full target; the bright traced path accumulates.
 // Gibbs ringing is visible at sharp corners when terms ≈ 20–60.
 //
 // Interaction (host-side): ptr.down paints a custom closed path → DFT on release.
@@ -153,19 +153,6 @@ export let recompute = () => {
   computeDFT()
 }
 
-// ── HSL → 0xAABBGGRR (verified jz-safe decomposition) ──
-let hslColor = (h, s, l) => {
-  let c = (1.0 - Math.abs(2.0 * l - 1.0)) * s
-  let h6 = h * 6.0
-  let hm2 = h6 - 2.0 * Math.floor(h6 * 0.5)
-  let x = c * (1.0 - Math.abs(hm2 - 1.0))
-  let r1 = 0.0, g1 = 0.0, b1 = 0.0
-  if (h6 < 1.0) { r1 = c; g1 = x } else if (h6 < 2.0) { r1 = x; g1 = c } else if (h6 < 3.0) { g1 = c; b1 = x } else if (h6 < 4.0) { g1 = x; b1 = c } else if (h6 < 5.0) { r1 = x; b1 = c } else { r1 = c; b1 = x }
-  let m = l - c * 0.5
-  let r = ((r1 + m) * 255.0) | 0, g = ((g1 + m) * 255.0) | 0, b = ((b1 + m) * 255.0) | 0
-  return (255 << 24) | (b << 16) | (g << 8) | r
-}
-
 // Blend pixel at idx toward (r,g,b) with alpha a
 let bl = (idx, r, g, b, a) => {
   let p = px[idx]
@@ -308,7 +295,7 @@ export let frame = (t, phi, terms) => {
   if (traceCount < 1) traceCount = 1
   if (traceCount > TRACE_STEPS - 1) traceCount = TRACE_STEPS - 1
 
-  // Draw the traced path with thick cyan glow
+  // Draw the traced path bright with a soft additive glow
   let tj2 = 0
   while (tj2 < traceCount) {
     let tx0 = traceX[tj2], ty0 = traceY[tj2]

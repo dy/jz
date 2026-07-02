@@ -1,6 +1,6 @@
 // Schrödinger equation — Visscher leapfrog, double-slit potential.
 // ψ = R + iI evolved as staggered real/imaginary fields.
-// Render: brightness = |ψ|², hue = phase angle.
+// Render: brightness = |ψ|².
 //
 // Visscher scheme (stable), forward-time Schrödinger ∂ψ/∂t = i(½∇²ψ − Vψ):
 //   R_{n+1} = R_n + dt*(-0.5*L(I_n) + V*I_n)

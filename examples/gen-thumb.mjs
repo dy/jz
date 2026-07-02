@@ -41,10 +41,13 @@ if (name === 'dla' && exports.seed) exports.seed()
 if (name === 'wireworld' && exports.seed) exports.seed()
 if (name === 'marble' && exports.drop) {
   exports.clear?.()
-  for (let i = 0; i < 11; i++) exports.drop((0.12 + i * 0.075) * W, (0.42 + (i % 2) * 0.18) * H, W * 0.05)
-  exports.tine(0.05 * W, 0.3 * H, 0.95 * W, 0.32 * H)
-  exports.tine(0.95 * W, 0.62 * H, 0.05 * W, 0.6 * H)
-  exports.tine(0.3 * W, 0.95 * H, 0.34 * W, 0.05 * H)
+  // suminagashi "stones": repeated drops at one point push the earlier rings outward
+  // into concentric bands; then a few SHORT combs (tine shear scales with stroke length)
+  for (const [fx, fy] of [[0.26, 0.32], [0.66, 0.26], [0.36, 0.72], [0.74, 0.66]])
+    for (let i = 0; i < 8; i++) exports.drop(fx * W, fy * H, W * 0.05)
+  exports.tine(0.2 * W, 0.52 * H, 0.52 * W, 0.48 * H)
+  exports.tine(0.82 * W, 0.44 * H, 0.5 * W, 0.5 * H)
+  exports.tine(0.48 * W, 0.78 * H, 0.52 * W, 0.5 * H)
 }
 if (name === 'waves' && exports.drop) {
   exports.clear?.()
@@ -61,35 +64,37 @@ if (name === 'watercolor' && exports.paint) {
 }
 // Per-example frame() args for a representative still (most math demos take interactive
 // params; the bare frame(f/60) default would pass `undefined`). fn receives (f, warmup).
+// NB: pass EVERY kernel frame() param — a trailing undefined arg reaches the kernel as
+// NaN and blacks the whole frame. Values mirror each driver's home view.
 const GOLDEN = 2.3999632297286535
 const FRAME_ARGS = {
-  newton:        () => [0, 1.0, 0.0],
+  newton:        () => [0, 1.0, 0.0, 0, 0, 1.6],
   'times-table': () => [0, 2.0, 280],
   boids:         (f) => [f / 60, -1, -1, 0],
-  burningship:   () => [0, -0.45, -0.5, 1.35],
-  lyapunov:      () => [0, 0, 0],
-  buddhabrot:    (f) => [f / 60],
-  bifurcation:   () => [0, 2.5, 4.0],
+  burningship:   () => [0, -0.45, -0.5, 1.35, 0],
+  lyapunov:      () => [0, 0, 0, 1.5],
+  buddhabrot:    (f) => [f / 60, -0.5, 0, 1.1],
+  bifurcation:   () => [0, 2.5, 4.0, 0.0, 1.0],
   lorenz:        (f) => [f / 60, -0.4],
   pendulum:      (f) => [f / 60],
-  ulam:          () => [130, 3000],
-  'pascal-sierpinski': () => [0],
-  'gauss-primes': () => [0, 0, 0],
-  'domain-color': () => [0, 0.3, 0.2, 0, 0],
+  ulam:          () => [0, 0, 0, 2],   // zoomed out — dense prime-diagonal speckle
+  'pascal-sierpinski': () => [0, 2, 1.0],   // mod 2 fully revealed — the classic Sierpiński
+  'gauss-primes': () => [0, 0, 0, 1],
+  'domain-color': () => [0, 0.3, 0.2, 0, 0, 2.5],
   chladni:       () => [3, 5],          // (n,m) wave numbers — a clean mid-complexity figure
   hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
-  dithering:     () => [1.0, 5],        // Floyd–Steinberg of the lit sphere
-  phyllotaxis:   () => [0, GOLDEN],
-  harmonograph:  () => [0, 0.06, 0.5],
+  dithering:     () => [1.0, 5, 0],     // Floyd–Steinberg of the lit sphere
+  phyllotaxis:   () => [0, GOLDEN, 3600, 1.0],
+  harmonograph:  () => [0, 0.06, 0.5, 0, 0, 1, 0.3],
   truchet:       () => [0, 30],
-  fern:          (f) => [f / 60, 0],
+  fern:          (f) => [f / 60, 0, 0, 0, 1, 0],
   lsystem:       () => [0, 1, 1.0],   // dragon curve — boldest, distinct from pascal/fern
-  epicycles:     (f, w) => [f / 60, (f / w) * 6.2831853],
+  epicycles:     (f, w) => [f / 60, (f / w) * 6.2831853, 96],
   apollonian:    () => [0, 0, 0, 1],
   hyperbolic:    () => [0, 0],
   ising:         (f) => [f / 60, 2.2],
   rule30:        (f) => [f / 60, 30],
-  penrose:       () => [0, 0.0, 1.0],
+  penrose:       () => [0, 0.0, 0.0, 1.0],
   percolation:   (f) => [f / 60, 0.62],
   schrodinger:   (f) => [f / 60],
 }

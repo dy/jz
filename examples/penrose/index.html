@@ -10,7 +10,7 @@
 import { runDemo, panZoom } from "../lib/jzdemo.js"
 
 // Penrose P3 tiling — infinite aperiodic order from φ. Every finite patch appears infinitely
-// often, yet the whole never repeats. Seven rounds of golden-ratio deflation grow ~1280 triangles;
+// often, yet the whole never repeats. Seven rounds of golden-ratio deflation grow ~6100 triangles;
 // the slow idle rotation reveals five-fold local symmetry. Pan, zoom, and explore: no level of
 // detail repeats, but every neighborhood looks familiar.
 //
@@ -18,8 +18,9 @@ import { runDemo, panZoom } from "../lib/jzdemo.js"
 // Black 1-px edges separate tiles so the aperiodic geometry reads at a glance.
 // Drag to pan · scroll to zoom · double-click to reset.
 
-const view = { cx: 0, cy: 0, scale: 1.0 }
-const home = { cx: 0, cy: 0, scale: 1.0 }
+// the deflated patch is the unit decagon — scale 0.45 overfills a wide viewport with it
+const view = { cx: 0, cy: 0, scale: 0.45 }
+const home = { cx: 0, cy: 0, scale: 0.45 }
 
 const demo = runDemo({
   name: "penrose",
@@ -28,8 +29,9 @@ const demo = runDemo({
   frame: (e, t) => {
     e.frame(t, view.cx, view.cy, view.scale)
   },
-  // re-roll: fly to a random patch of the (never-repeating) tiling at a random zoom
-  randomize: () => { view.cx = (Math.random() - 0.5) * 6; view.cy = (Math.random() - 0.5) * 6; view.scale = 0.6 + Math.random() * 2.6 },
+  // re-roll: fly to a random patch of the tiling at a random zoom — staying inside the
+  // unit-decagon patch the deflation actually covers
+  randomize: () => { view.cx = (Math.random() - 0.5) * 0.8; view.cy = (Math.random() - 0.5) * 0.8; view.scale = 0.12 + Math.random() * 0.33 },
 })
 
 panZoom(demo.cv, view, home, () => {}, { drag: true })

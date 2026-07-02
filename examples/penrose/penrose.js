@@ -1,6 +1,6 @@
 // Penrose P3 tiling via Robinson triangle deflation (substitution). φ=(1+√5)/2 governs
 // two triangle shapes — fat (36° apex, gold rhombus fill) and thin (108° apex, indigo fill).
-// A "sun" of 10 fat triangles seeds 7 rounds of deflation (~128× triangle count), filling a
+// A "sun" of 10 fat triangles seeds 7 rounds of deflation (growth φ²/round → ~6100 triangles), filling a
 // large enough patch to pan/zoom across without seeing the edge. All geometry is pre-computed
 // once in resize(); frame(t, cx, cy, zoom) transforms, rasterizes, and draws 1-px black tile
 // edges — making the aperiodic structure immediately legible.
@@ -10,7 +10,7 @@
 //
 // Color: fat Robinson triangles → warm gold (hue≈0.12), thin → deep indigo (hue≈0.70).
 // Edge outlines: each triangle's three edges are drawn as 1-px darkened lines after fill,
-// revealing the clean P3 rhombus and dart/kite geometry.
+// revealing the clean P3 rhombus geometry.
 //
 // Float64Array storage for all triangle coords — jz narrows plain let-globals to i32.
 // resize(w,h) → Uint32Array; frame(t, cx, cy, zoom) renders.
@@ -76,14 +76,14 @@ export let resize = (w, h) => {
     count++
   }
 
-  // 7 levels of deflation (≈1280 triangles → rich detail at zoom)
+  // 7 levels of deflation (≈6100 triangles → rich detail at zoom)
   let LEVELS = 7
   let src = buf0, dst = buf1, srcN = count
   for (let lvl = 0; lvl < LEVELS; lvl++) {
     let dstN = 0
     let ok = 1
     for (let i = 0; i < srcN; i++) {
-      if (dstN + 2 > MAX_TRI) { ok = 0; break }
+      if (dstN + 3 > MAX_TRI) { ok = 0; break }
       let base = i * 7
       let type = src[base]
       let ax = src[base+1], ay = src[base+2]
@@ -105,18 +105,27 @@ export let resize = (w, h) => {
         dst[d2+3] = cx2; dst[d2+4] = cy2; dst[d2+5] = ax; dst[d2+6] = ay
         dstN++
       } else {
-        // THIN: Q = B + (A−B)·inv (1/φ from B along BA)
+        // THIN: the Robinson P3 substitution deflates a thin into THREE children —
+        // Q = B + (A−B)·inv, R = B + (C−B)·inv → two thin + one fat, all with legs
+        // scaled by exactly 1/φ, covering the parent exactly (growth φ² per level)
         let qx = bx2 + (ax - bx2) * inv
         let qy = by2 + (ay - by2) * inv
-        // child 1: THIN apex=C
+        let rx = bx2 + (cx2 - bx2) * inv
+        let ry = by2 + (cy2 - by2) * inv
+        // child 1: THIN apex=R
         let d1 = dstN * 7
-        dst[d1]   = 1; dst[d1+1] = cx2; dst[d1+2] = cy2
-        dst[d1+3] = ax; dst[d1+4] = ay; dst[d1+5] = qx; dst[d1+6] = qy
+        dst[d1]   = 1; dst[d1+1] = rx; dst[d1+2] = ry
+        dst[d1+3] = cx2; dst[d1+4] = cy2; dst[d1+5] = ax; dst[d1+6] = ay
         dstN++
-        // child 2: FAT  apex=Q
+        // child 2: THIN apex=Q
         let d2 = dstN * 7
-        dst[d2]   = 0; dst[d2+1] = qx; dst[d2+2] = qy
-        dst[d2+3] = bx2; dst[d2+4] = by2; dst[d2+5] = cx2; dst[d2+6] = cy2
+        dst[d2]   = 1; dst[d2+1] = qx; dst[d2+2] = qy
+        dst[d2+3] = rx; dst[d2+4] = ry; dst[d2+5] = bx2; dst[d2+6] = by2
+        dstN++
+        // child 3: FAT  apex=R
+        let d3 = dstN * 7
+        dst[d3]   = 0; dst[d3+1] = rx; dst[d3+2] = ry
+        dst[d3+3] = qx; dst[d3+4] = qy; dst[d3+5] = ax; dst[d3+6] = ay
         dstN++
       }
     }

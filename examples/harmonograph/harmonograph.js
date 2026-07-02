@@ -1,4 +1,4 @@
-// Harmonograph — four-pendulum damped oscillator: two per axis (lateral + rotary).
+// Harmonograph — four-pendulum damped oscillator: two lateral pendulums per axis.
 // x(τ) = A1·sin(f1·τ+p1)·e^{-d1·τ} + A2·sin(f2·τ+p2)·e^{-d2·τ}
 // y(τ) = A3·sin(f3·τ+p3)·e^{-d3·τ} + A4·sin(f4·τ+p4)·e^{-d4·τ}
 //
@@ -89,8 +89,8 @@ export let frame = (t, detune, damp, panX, panY, zoom, spin) => {
   let d3 = 0.013 * damp
   let d4 = 0.009 * damp   // y-primary damps slowest → the spiral outlasts the x-knot
 
-  // Phase offsets: per-load base + symmetric phase shift on ALL four oscillators.
-  // Equal phase shift to all four → clean precessional rotation, no axis distortion.
+  // Phase offsets: per-load base + a common precession shift — full on x, ×0.9 on y,
+  // so the figure rotates while breathing gently instead of turning rigidly.
   let phShift = spin        // host-driven precession phase (the host slows it when zoomed in)
   let p1 = phShift + cfg[4]
   let p2 = phShift + cfg[5]

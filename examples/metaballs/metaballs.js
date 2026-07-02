@@ -4,8 +4,8 @@
 // blobs is the hot path: pure multiply-add-reciprocal, no transcendentals.
 //
 // Blobs drift and bounce off the walls. Press and hold to grow a fresh blob under
-// the cursor (release to let it drift off); the field is shaded through a black→red→
-// orange→yellow→white "heat" ramp for a molten look.
+// the cursor (release to let it drift off); the field shades grayscale, crossing
+// the ~1 membrane into white.
 // resize(w,h) → Uint32Array; frame(t) mutates px in place.
 
 let W = 0, H = 0, px

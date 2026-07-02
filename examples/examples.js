@@ -24,7 +24,7 @@ export const examples = [
   { name: 'lyapunov',     title: 'Lyapunov',          blurb: 'Markus–Lyapunov “zircon” — order in gold, chaos in dark' },
   { name: 'domain-color', title: 'Domain Coloring',   blurb: 'a complex function as an analytic landscape — zeros sink dark, poles flare bright' },
   { name: 'fern',         title: 'Barnsley Fern',     blurb: 'the chaos game on four affine maps grows a fern that sways' },
-  { name: 'sph',          title: 'SPH Fluid',         blurb: 'SPH particle fluid — smoothed-particle hydrodynamics' },
+  { name: 'sph',          title: 'Particle Fluid',    blurb: 'smoothed-particle-style liquid — pairwise repulsion & viscosity, the classic O(N²) sum' },
   { name: 'lbm',          title: 'Lattice-Boltzmann', blurb: 'lattice-Boltzmann flow — a von Kármán vortex street' },
   { name: 'cloth',        title: 'Cloth',             blurb: 'Verlet spring-mass cloth — grab and swing it' },
   { name: 'waves',        title: 'Waves',             blurb: 'the 2D wave equation, nonlinear — drops burst, slow & interfere; crossings glare' },
@@ -65,7 +65,7 @@ export const examples = [
   { name: 'ising',        title: 'Ising Model',       blurb: 'Metropolis spin flips — magnetic domains order & melt through Tc' },
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — a spanning cluster snaps in at p_c' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'ink on flowing water — a vortical fluid bath; drops bloom, strokes comb' },
-  { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — drop ink, comb it into swirls' },
+  { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — stacked drops push into concentric stones, combs draw them to swirls' },
   { name: 'dithering',    title: 'Dithering',         blurb: 'one smooth image, four 1-bit dithers — threshold, ordered, Floyd–Steinberg, Atkinson' },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray-sphere intersection' },
 ]

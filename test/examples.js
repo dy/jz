@@ -498,10 +498,12 @@ test('example: game-of-life output natively matches WASM', () => {
                         (mem[y   * w + xm1] & 1)                          + (mem[y   * w + xp1] & 1) +
                         (mem[yp1 * w + xm1] & 1) + (mem[yp1 * w + x] & 1) + (mem[yp1 * w + xp1] & 1);
 
+                    // mirrors the kernel's black-theme inversion: survivors hold full
+                    // brightness, the dying carry the fading afterglow (alive bit off)
                     let self = mem[y * w + x];
                     if (self & 1) {
-                        if ((aliveNeighbors & 0b1110) == 0b0010) rot(x, y, self);
-                        else mem[offset + (y * width + x)] = (BGR_DEAD | 0xff000000) >>> 0;
+                        if ((aliveNeighbors & 0b1110) == 0b0010) mem[offset + (y * width + x)] = (self | 0xff000000) >>> 0;
+                        else rot(x, y, self & ~1);
                     } else {
                         if (aliveNeighbors == 3) mem[offset + (y * width + x)] = (BGR_ALIVE | 0xff000000) >>> 0;
                         else rot(x, y, self);

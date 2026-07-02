@@ -1,43 +1,16 @@
 // Domain coloring — every pixel is a complex number z = x+iy; the function f(z) is evaluated
-// and the result is colored by argument (hue) and magnitude (brightness+contour rings).
+// and rendered as a grayscale analytic landscape: brightness from |f| (zeros sink black,
+// poles flare white), phase lobes from arg f shading light/dark petals around each feature.
 // f(z) = (z²−1)·(z−c) / (z²+c2) where c,c2 are small complex constants that orbit slowly.
-// Zeros of the numerator make black spots; poles of the denominator blow up to white.
-// Contour rings of |f| grid the field like a topographic map.
 // frame(t, cx, cy, pan_x, pan_y) renders; cx/cy orbit the constant c so zeros/poles drift.
 
 let W = 0, H = 0, px
-
-// Store pan offset as Float64Array so fractional state survives jz narrowing
-let st = new Float64Array(4)  // [panX, panY, unused, unused]
 
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
   return px
 }
-
-// HSV→RGB; h,s,v in [0,1], outputs r,g,b packed as three 0..255 ints in a Uint8Array
-let hsv_buf = new Uint8Array(3)
-let hsv2rgb = (h, s, v) => {
-  let h6 = h * 6.0
-  let i = h6 | 0
-  let f = h6 - i
-  let p = v * (1.0 - s)
-  let q = v * (1.0 - s * f)
-  let u = v * (1.0 - s * (1.0 - f))
-  let r = 0.0, g = 0.0, b = 0.0
-  if (i == 0) { r = v; g = u; b = p }
-  else if (i == 1) { r = q; g = v; b = p }
-  else if (i == 2) { r = p; g = v; b = u }
-  else if (i == 3) { r = p; g = q; b = v }
-  else if (i == 4) { r = u; g = p; b = v }
-  else { r = v; g = p; b = q }
-  hsv_buf[0] = (r * 255.0) | 0
-  hsv_buf[1] = (g * 255.0) | 0
-  hsv_buf[2] = (b * 255.0) | 0
-}
-
-let TWO_PI = 6.283185307179586
 
 // scale = half-height of the viewport in world units (2.5 = the default whole-plane view); shrink
 // it to zoom in. panX/panY recentre. All f64 args so they stay fractional through jz.

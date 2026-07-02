@@ -47,12 +47,16 @@ export let step = () => {
                 (mem[y   * w + xm1] & 1)                          + (mem[y   * w + xp1] & 1) +
                 (mem[yp1 * w + xm1] & 1) + (mem[yp1 * w + x] & 1) + (mem[yp1 * w + xp1] & 1);
 
+            // NB: the AS original rots SURVIVORS and snaps the dying to an opaque dead
+            // color — its dead color is a visible magenta, so that reads as trails. On
+            // this gallery's black theme that fades still-lifes to invisible; inverted
+            // here: the living hold full brightness, the dying carry the fading afterglow.
             let self = mem[y * w + x];
             if (self & 1) {
                 if ((aliveNeighbors & 0b1110) == 0b0010) {
-                    rot(x, y, self);
+                    mem[offset + (y * width + x)] = (self | 0xff000000) >>> 0;
                 } else {
-                    mem[offset + (y * width + x)] = (BGR_DEAD | 0xff000000) >>> 0;
+                    rot(x, y, self & ~1);   // dies: alive bit off, brightness starts its fade-out
                 }
             } else {
                 if (aliveNeighbors == 3) {

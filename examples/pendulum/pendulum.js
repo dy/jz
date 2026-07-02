@@ -4,7 +4,7 @@
 // arm first flips over the top (|θ2_unwrapped| > π). Log-scale → blue→red→yellow.
 // Never-flips → black. Progressive: renders ceil(H/45) rows per frame.
 //
-// RK4 with dt=0.02. Cap at 1200 steps (~24 time units).
+// RK4 with dt=0.02. Cap at 1700 steps (~34 time units).
 // State: θ1,θ2,ω1,ω2 per-pixel — computed on the fly row-by-row.
 // Persistent: px (pixel buffer), cursor (current row).
 // Float64Array for fractional state that must survive across frames (none here
@@ -12,16 +12,17 @@
 
 let W = 0, H = 0, px
 let cursor = new Int32Array(1)  // current row being computed
-const MAX_STEPS = 1200
+const MAX_STEPS = 1700
 const DT = 0.02
 const CAP_T = MAX_STEPS * DT  // ~24.0
 
 // double pendulum accelerations (m=l=g=1, equal masses)
 // a1 and a2 from standard Lagrangian, simplified for m1=m2=1, l1=l2=1, g=1
+// denominator 2m₁+m₂−m₂·cos2Δ = 3−cos2Δ = 2·(2−cos²Δ) for m₁=m₂=1
 let accel1 = (th1, th2, w1, w2) => {
   let d = th1 - th2
   let cd = Math.cos(d), sd = Math.sin(d)
-  let den = 2.0 - cd * cd
+  let den = 2.0 * (2.0 - cd * cd)
   if (den < 1e-12) den = 1e-12
   return (-3.0 * Math.sin(th1) - Math.sin(th1 - 2.0 * th2) - 2.0 * sd * (w2 * w2 + w1 * w1 * cd)) / den
 }
@@ -29,7 +30,7 @@ let accel1 = (th1, th2, w1, w2) => {
 let accel2 = (th1, th2, w1, w2) => {
   let d = th1 - th2
   let cd = Math.cos(d), sd = Math.sin(d)
-  let den = 2.0 - cd * cd
+  let den = 2.0 * (2.0 - cd * cd)
   if (den < 1e-12) den = 1e-12
   return (2.0 * sd * (2.0 * w1 * w1 + 2.0 * Math.cos(th1) + w2 * w2 * cd)) / den
 }
@@ -67,8 +68,9 @@ let integrate = (th1, th2) => {
     let a2_k4 = accel2(t1c, t2c, w1c, w2c)
     let new_w1 = w1 + (DT / 6.0) * (a1_k1 + 2.0 * a1_k2 + 2.0 * a1_k3 + a1_k4)
     let new_w2 = w2 + (DT / 6.0) * (a2_k1 + 2.0 * a2_k2 + 2.0 * a2_k3 + a2_k4)
-    let new_th1 = th1 + DT * w1
-    let new_th2 = th2 + DT * w2
+    // θ̇ = ω, so the angle stages are the stage omegas: full RK4, not Euler
+    let new_th1 = th1 + (DT / 6.0) * (w1 + 2.0 * w1a + 2.0 * w1b + w1c)
+    let new_th2 = th2 + (DT / 6.0) * (w2 + 2.0 * w2a + 2.0 * w2b + w2c)
     let dth2 = new_th2 - th2
     while (dth2 > Math.PI) dth2 = dth2 - 2.0 * Math.PI
     while (dth2 < -Math.PI) dth2 = dth2 + 2.0 * Math.PI

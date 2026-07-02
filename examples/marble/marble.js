@@ -21,24 +21,30 @@ export let resize = (w, h) => {
 }
 export let clear = () => { let n = W * H, i = 0; while (i < n) { ink[i] = 0.0; i++ } shade = 0.25 }
 
-// drop a disc of ink; each drop a different shade so the swirls read
+// drop a disc of ink; each drop a different shade so the swirls read. The bath is
+// incompressible, so a drop PUSHES the whole surface outward: prior ink at distance d
+// from the center lands at d′ = √(d²+r²) — the area-preserving drop map of Kaji's
+// "Mathematical Marbling". Stacked drops displace each other into the classic
+// concentric stone rings. Backward-mapped like tine(): a pixel at distance d ≥ r
+// gathers from √(d²−r²); inside the disc it takes the fresh shade.
 export let drop = (cx, cy, r) => {
   shade += 0.21; if (shade > 0.95) shade = 0.28
-  let x0 = cx - r | 0, x1 = cx + r | 0, y0 = cy - r | 0, y1 = cy + r | 0
-  if (x0 < 0) x0 = 0
-  if (y0 < 0) y0 = 0
-  if (x1 > W - 1) x1 = W - 1
-  if (y1 > H - 1) y1 = H - 1
-  let r2 = r * r, y = y0
-  while (y <= y1) {
-    let dy = y - cy, row = y * W, x = x0
-    while (x <= x1) {
+  let r2 = r * r, y = 0
+  while (y < H) {
+    let dy = y - cy, row = y * W, x = 0
+    while (x < W) {
       let dx = x - cx
-      if (dx * dx + dy * dy <= r2) ink[row + x] = shade
+      let d2 = dx * dx + dy * dy
+      if (d2 <= r2) tmp[row + x] = shade
+      else {
+        let k = Math.sqrt((d2 - r2) / d2)
+        tmp[row + x] = sample(cx + dx * k, cy + dy * k)
+      }
       x++
     }
     y++
   }
+  let s = ink; ink = tmp; tmp = s
 }
 
 let sample = (fx, fy) => {
