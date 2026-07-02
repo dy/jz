@@ -228,3 +228,16 @@ chain or it bails).
   byte-for-byte reproduced on the same clean baseline (pre-existing,
   unrelated — a warm-instance-reuse OOB trap). Full suite (`npm test`):
   2644/2650, the 6 failures all independently confirmed pre-existing.
+
+## jessie.wasm profile (2026-07-02, helper counters, one 2.6KB parse = 115,803 calls)
+ptr_offset 31.3% | dyn-prop read chain ~46% (dyn_get_t_h 15.8 + map_hash 10.5 +
+str_hash 10.4 + ihash_get_local 10.3 + dyn_get_t 8.4 + dyn_set 1.5) | alloc ~5%.
+≈7 dyn-prop reads per source char: parse.space/parse.id/d.op/d.l/fn.ops expando
+traffic IS the parser. Attack order for 4.24×→≤1.0:
+1. flattenFuncNamespaces: admit ESCAPING-as-callee namespaces (parse escapes →
+   currently disqualified → every parse.* read = global-hash probe). Escape-as-
+   callee ≠ escape-as-table.
+2. Monomorphic descriptor reads (dispatch loop d.op/d.l/p/word/kw) → schema slot
+   devirtualization, skip hash+scan.
+3. ptr_offset hoists for module-global cur/lookup shapes.
+Init snapshotting (tier 3) kills setup cost, not these per-parse reads — both needed.
