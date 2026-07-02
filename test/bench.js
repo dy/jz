@@ -268,6 +268,7 @@ const WASM_TODO = {
   // does the same (hoistReductionInvariantsIn, speed tier): 2068→1079µs, beats rust-wasm 1.5×.
   qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1× (within CI jitter band).',
   dict:     'open-addressing linear-probe hash table — AS leads ~1.09×. NOT a narrowing leak: the hot insert/probe/lookup loop is verified clean i32 (0 trunc_sat / 0 f64.convert / 0 reinterpret in $runKernel; the 2 f64.const-nan are discarded void-insert returns, the module f64 is all in benchlib). Same scalar-codegen-race class as qoi — the probe loop`s branch/bounds quality, no jz-side narrowing fix.',
+  shapes:   'megamorphic-shape property access — the deopt kernel aimed at the schema union. measure() reads records of 8 object shapes at one site, and every field load lowers through the __dyn_get_any_t_h dynamic-property probe (23 sites in the emitted WAT) instead of schema slots: jz ~21 ms vs AS ~1.3 ms (flat kind-tagged struct, ties native C) and V8 ~3.7 ms (megamorphic IC stub). The widest gap in the suite, by design. The general fix is shape-set devirt: a BOUNDED schema union at an access site should lower to a tag-switch over direct slot loads (the static mirror of a polymorphic IC), never per-field dynamic probes.',
 }
 const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
 

@@ -221,8 +221,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
     </nav>
     <div class="legal">
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
-      <span class="by"><a href="https://github.com/dy">dy</a></span>
-      <span class="lic"><a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
+      <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
   </div>
 </footer>
@@ -371,15 +370,16 @@ const FAMILY = {
   // integer — i32 / bit / hash / sort / search / dispatch
   bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
   radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
-  hashjoin: 'integer',
+  hashjoin: 'integer', dispatch: 'integer',
   // audio — DSP / per-sample loop-carried signal
   biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio', wav: 'audio',
   // image — raster / pixel / render / procedural
   blur: 'image', conv2d: 'image', qoi: 'image', raytrace: 'image', noise: 'image', alpha: 'image',
+  colorconv: 'image', colorlch: 'image', colorlog: 'image', colorpq: 'image',
   // string — text / parse / codec / sequence
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
   // alloc — allocation / closures / object layout
-  callback: 'alloc', aos: 'alloc',
+  callback: 'alloc', aos: 'alloc', shapes: 'alloc',
 }
 const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
   mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
@@ -391,7 +391,8 @@ const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', 
   noise: 'perlin · gather', alpha: 'blend · i32', base64: 'codec · lut', lz: 'lz · match',
   levenshtein: 'dp · min', hash: 'murmur · i32', sieve: 'scatter · i32', radixsort: 'radix · scatter',
   dict: 'hash · probe', nqueens: 'recursion · bitmask', vm: 'dispatch · i32',
-  hashjoin: 'join · probe' }
+  hashjoin: 'join · probe', dispatch: 'calls · megamorphic', shapes: 'shapes · megamorphic',
+  colorconv: 'oklab · cbrt', colorlch: 'oklch · polar', colorlog: 'logc4 · exp2', colorpq: 'jzazbz · pow' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -430,7 +431,13 @@ const INSIGHTS = {
   dict: 'Open-addressing hash table — multiply-shift hash scatter + dependent-load probe-chain gather with unpredictable branches; the gather shape jz lowers least tightly today.',
   nqueens: 'Bitmask N-Queens counter — deep backtracking recursion + per-node available-columns branch; the call/recursion-codegen probe.',
   vm: 'Tiny bytecode interpreter — fetch-decode-dispatch if/else opcode chain + indirect code-array loads; the VM/regex-engine inner loop jz wins outright, even vs native clang.',
-  hashjoin: 'Probe-dominated relational hash join — the database/dataframe kernel, and jz’s boss case: probe() returns vals[h], a typed-array element through a function PARAM jz can’t yet prove is i32 — so sum + probe() lowers to the polymorphic number-or-string add (f64 round-trip + __is_str_key + __str_concat) per probe, the only case jz loses to V8. Propagate the param’s typed-array rep into the return type so the + folds to i32.add: measured 8.7 → 5.2 ms, flipping jz from 1.3× behind V8 to 1.3× ahead — fastest of all.',
+  hashjoin: 'Probe-dominated relational hash join — the database/dataframe kernel, and jz’s boss case: probe() returns vals[h], a typed-array element through a function PARAM jz can’t yet prove is i32 — so sum + probe() lowers to the polymorphic number-or-string add (f64 round-trip + __is_str_key + __str_concat) per probe — then the only case jz lost to V8. Propagate the param’s typed-array rep into the return type so the + folds to i32.add: measured 8.7 → 5.2 ms, flipping jz from 1.3× behind V8 to 1.3× ahead — fastest of all.',
+  dispatch: 'One call site fans out to 8 first-class functions picked by data — a JIT call-IC goes megamorphic here, the classic deopt shape. jz lowers it to call_indirect and leads every wasm rival; only V8’s tuned megamorphic call stubs stay ahead. The general fix is bounded-table devirt: guarded direct calls over the 8 known closures.',
+  colorconv: 'sRGB → Oklab per pixel — EOTF pow → 3×3 → cbrt → 3×3. The matrix MAD chains beat V8; Math.cbrt/pow intrinsic quality is the gap.',
+  colorlch: 'sRGB → OkLCh fused in one loop — pow → 3×3 → cbrt → 3×3 → sqrt+atan2. The fused body schedules mixed transcendentals worse than two split loops — a register-pressure/vectorization target.',
+  colorlog: 'ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3 matrix; runtime-exponent pow/exp2 is where jz trails V8’s intrinsics.',
+  colorpq: 'sRGB → JzAzBz — 3×3 → PQ curve (≈12 signed-pow calls) → 3×3; the sign branch + runtime-exponent pow blocks vectorization.',
+  shapes: 'Records of 8 heterogeneous object shapes hit one access site — a JIT load-IC goes megamorphic, the hidden-class deopt shape. jz’s schema union falls back to a dynamic-property probe (__dyn_get) per field read — the widest gap in the suite (AS’s flat tagged struct ties native C). The general fix is shape-set devirt: a bounded schema union should lower to a tag-switch over direct slot loads.',
 }
 // detected visitor engine
 const ENGINE = (() => {

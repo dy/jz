@@ -63,6 +63,8 @@ const CASE_NAMES = {
   sieve: 'Sieve of Eratosthenes',
   vm: 'bytecode interpreter dispatch',
   spmv: 'sparse matrix×vector (CSR)',
+  dispatch: 'function-table dispatch',
+  shapes: 'polymorphic shape scan',
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-host)',
