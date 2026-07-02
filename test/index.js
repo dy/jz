@@ -34,6 +34,7 @@ const TESTS = [
   'external',
   'watr',
   'optimizer',
+  'preeval',
   'inference',
   'unsigned',
   'perf',

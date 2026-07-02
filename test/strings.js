@@ -365,19 +365,25 @@ test('string: .slice no args', () => {
 // receiver is provably a string and the binding provably never escapes.
 
 test('slice-view: fires for non-escaping local-string slice', () => {
+  // `s` is built from a PARAM (not a literal): a literal receiver is now a preEval
+  // compile-time constant fold (test/preeval.js covers that path — it beats a view
+  // outright, folding straight to the result) and would never reach the runtime view
+  // lowering this test targets. Concatenating a param keeps `s` a genuine runtime
+  // string (provably string-typed, but not constant-foldable) so the view mechanism
+  // is still the one being exercised.
   // The slice must be >6 bytes: ≤6-ASCII results SSO-pack instead of becoming a
   // view (the ≤6-ASCII⇒SSO invariant — a short VIEW would break bit-equality).
-  const wat = compile(`export let f = () => {
-    let s = 'hello big world'
+  const wat = compile(`export let f = (p) => {
+    let s = p + ' big world'
     let t = s.slice(0, 9)
     return t === 'hello big' ? 1 : 0
   }`, { wat: true })
   ok(wat.includes('__str_slice_view'), 'non-escaping slice should lower to a view')
-  is(run(`export let f = () => {
-    let s = 'hello big world'
+  is(run(`export let f = (p) => {
+    let s = p + ' big world'
     let t = s.slice(0, 9)
     return t === 'hello big' ? 1 : 0
-  }`).f(), 1)
+  }`).f('hello'), 1)
   // ≤6-byte slice of the same shape stays correct (SSO-packed, not a view)
   is(run(`export let f = () => {
     let s = 'hello world'
@@ -433,17 +439,18 @@ test('slice-view: slice of a long heap string', () => {
 })
 
 test('slice-view: concat operand keeps view (read-only use)', () => {
-  const wat = compile(`export let f = () => {
-    let s = 'abcdefg'
+  // `s` is built from a param — see the comment on the previous test.
+  const wat = compile(`export let f = (p) => {
+    let s = p + 'defg'
     let t = s.slice(1, 4)
     return ('X' + t) === 'Xbcd' ? 1 : 0
   }`, { wat: true })
   ok(wat.includes('__str_slice_view'), 'a + operand is a read-only use — view stays')
-  is(run(`export let f = () => {
-    let s = 'abcdefg'
+  is(run(`export let f = (p) => {
+    let s = p + 'defg'
     let t = s.slice(1, 4)
     return ('X' + t) === 'Xbcd' ? 1 : 0
-  }`).f(), 1)
+  }`).f('abc'), 1)
 })
 
 test('slice-view: escaping slice copies — returned binding', () => {

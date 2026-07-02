@@ -48,6 +48,7 @@ import watOptimize from "watr/optimize";
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'
+import { preEval } from './src/prepare/pre-eval.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
@@ -516,8 +517,12 @@ const jzCompileInner = (code, opts = {}) => {
   // path. A no-op when there are none.
   parsed = time('liftIIFE', () => liftIIFEs(parsed))
   if (!opts.strict) parsed = time('jzify', () => jzify(parsed))
-  const ast = time('prepare', () => prepare(parsed))
+  let ast = time('prepare', () => prepare(parsed))
   assertCtxInvariants('post-prepare')
+  // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
+  // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
+  // over the prepared AST + every ctx.func.list body, before compile ever sees them.
+  ast = time('preEval', () => preEval(ast))
 
   // Auto-detect optimization tuning from source characteristics when the user
   // hasn't provided any optimize option. detectOptimizeConfig has two *live*
