@@ -653,6 +653,37 @@ walkers (~31% of ticks — inference/representation-carrier class). Also: fix th
 warm-recompile bug to get tokenizer/json into warm mode; commit the watr + subscript
 companion fixes upstream (uncommitted in their repos).
 
+## SESSION 6 cont-2 — flow-fact lever + the domination miscompile it exposed
+
+**Measured-first negatives (two independent agents, zero code):** the dyn-get
+schema-arm linear scan is NOT hot — ~24k iterations/compile at 4.6 avg keys, no schema
+>32 keys; watr's INSTR is an ARRAY (dyn-props path), TYPE/SECTION resolve via static
+slots. 98.5% of dyn-gets resolve in the sidecar hash probe at ~1.26 iterations. The
+dyn cluster's residue is fixed per-call dispatch overhead — near its structural floor
+without representation change. Don't re-chase the hash-index idea.
+
+**Flow-fact lever (emit.js):** decl value-kind facts now recorded at emitDecl (right
+after each init emit) instead of one statement late in emitBlockBody — for-init decls
+(the for-of desugar: `let arrVar = __iter_arr(x), idx = 0, len = arrVar.length`) now
+carry ARRAY facts, so loop-body `arrVar[i]`/`.length` take the array fast path instead
+of __typed_idx/__length.
+
+**Pre-existing MISCOMPILE the lever exposed (root-fixed):** the overlay recorded facts
+whose sites don't dominate later reads — `let x = [7,8]; if (c) x = 5; x.length`
+dereferenced the number 5 through the ARRAY fast path (OOB) at HEAD, before any new
+change. Fix: per-block nested-assignment blocklist (collectNestedAssigns) — a name
+written at any nested position (if/loop/closure body, for-step) carries no overlay
+fact; top-level `=` re-records (dominates). Declarations are NOT reassignments (a
+for-init `let x = …` must not block x — that subtlety preserves the whole lever).
+Pinned: 3 flow-fact tests in test/inference.js.
+
+**RESULTS (full 22-case corpus, quiet machine):**
+- fresh-instance: **1.06×** (1.35× at session start → 1.21 → 1.11 → 1.06)
+- warm-instance: **0.97× — jz.wasm is FASTER than jz.js-on-V8** (21/22; tokenizer now
+  warm-clean after the ssoBitI64 fix; json still skipped on the lvtOverlay dangler)
+Gates: fuzz 1000×opt{0..3} 0-div, selfhost 16/16, perf pin green (warm 0.927× /
+fresh 1.027× on the pin subset), full suite zero new failures.
+
 ## Synthesis across #1/#3/#4 — the tax is distributed, not a fixable primitive
 
 Three expert/audit-recommended primitive optimizations, all measured: #1+#3 V8-negligible (V8 inlines
