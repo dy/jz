@@ -732,3 +732,15 @@ JS tier beats V8's wasm tier on this helper-heavy shape regardless. This is the 
 the moat is the ARCHITECTURAL SUBSTRATE (unified EffectFacts/Alias facts, canonical mid-level IR, a
 V8-wasm lowering lab) + MEASUREMENT INFRASTRUCTURE (durable helper-counter harness = audit #5, coverage
 matrix = audit #1), NOT another primitive. Build the measurement tool first; let it pick the next target.
+
+## Session 7 — subscript 10.5.0/10.5.1 compat + recognizer restoration
+Six engine fixes unblocked self-hosting the rewritten subscript tokenizer core (see
+parser-bugs.js pins); seven pre-watr recognizer regressions restored (diagnosis fleet
++ serial fixes). subscript upstream: for-head re-association + decl-comma continuation
+(417c895, +1). watr npm-clobber bit twice — node_modules/watr must stay a link.
+OPEN: kernel gate red on "Unknown instruction f64.nearest" — in-kernel miscompile of
+watr's INSTR-dict refactor (native watr green; reduce via the native-jz-compile-watr
+differential harness). Also open: codegen i32-global pin, unknown-receiver NUMBER-key
+pin (unswitch now fires there — likely re-pin), closure-parser golden +1478, ratchet
+buf, watr-side licm-before-devirt in finish() (swap), 5 pre-existing stragglers
+(for-in dyn-keys, slice-view ×2, uncatchable sanity, Object.create OOB).
