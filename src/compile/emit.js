@@ -24,6 +24,7 @@
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
+  ASSIGN_OPS,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex } from '../ctx.js'
 import { includeForStringOnly } from '../autoload.js'
@@ -1079,6 +1080,17 @@ export function emitDecl(...inits) {
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
     const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
+    // Record the declared name's valTypeOf(init) into the flow overlay right after
+    // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
+    // to do this itself, one statement late), but for decls that live INSIDE a `for`
+    // node's init clause, which emitBlockBody's per-statement loop never sees directly
+    // (e.g. src/prepare/index.js's for-of/for-in desugar: `let arrVar = __iter_arr(node),
+    // idx = 0, len = arrVar.length`). valTypeOf consults ctx.func.refinements first, so
+    // an early-return `Array.isArray` guard on `node` now correctly flows into `arrVar`
+    // (and therefore into `len`'s own init two decls later in the same `let`) — every
+    // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
+    // instead of falling to the generic __typed_idx/__length dispatch.
+    setFlowVal(name, valTypeOf(init))
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
     // isReassigned is conservative across nested arrow shadows — we miss the optimization
@@ -1412,6 +1424,67 @@ export function emitVoid(node) {
   return items
 }
 
+// Record a name's valTypeOf(rhs) fact into the live localValTypesOverlay layer (tier #2
+// in reps.js's lookup priority — see lookupValType). `let`/`const` decls record this
+// themselves at their emit site (emitDecl, right after each `emit(init)`); this helper
+// covers the remaining case emitBlockBody drives directly: a bare `name = rhs`
+// reassignment statement.
+function setFlowVal(name, vt) {
+  if (!ctx.func.localValTypesOverlay || !isBoundName(name)) return
+  // A name reassigned at any NESTED position of the current block (inside an
+  // if/loop/closure body, a for's step, …) carries NO overlay fact: the recording
+  // site doesn't dominate the reassignment, so the fact can go stale while the
+  // binding is live — `let x = [7,8]; if (c) x = 5; x.length` read the number 5
+  // through the ARRAY fast path (OOB): a latent pre-existing miscompile, widened
+  // when decl recording moved into emitDecl and began covering for-init decls
+  // (`for (let x = […]; x.length; x = 0)`). Top-level `=` statements stay
+  // recordable — the block driver re-records at each, so the fact always
+  // reflects the latest dominating write.
+  if (ctx.func.flowValBlocked?.has(name)) return
+  if (vt) ctx.func.localValTypesOverlay.set(name, vt)
+  else ctx.func.localValTypesOverlay.delete(name)
+}
+
+// Names assigned at a NESTED position within this block's statements: anything
+// except top-level `name = rhs` statement heads and top-level decl heads (both
+// re-recorded by the emit drivers as they pass). Walks into closures too — a
+// closure assigning an outer name can run between the recording and any later
+// read. ++/-- count as assignments (conservative: their result is numeric, but
+// blocking keeps the rule uniform).
+function collectNestedAssigns(stmts) {
+  const blocked = new Set()
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    // A decl's `['=', name, init]` pairs are DECLARATIONS, not reassignments
+    // (same as isReassigned's let/const handling) — a nested `for (let x = …)`
+    // init must not block x; only a true write in cond/step/body does.
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2])
+      }
+      return
+    }
+    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof n[1] === 'string') blocked.add(n[1])
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (const s of stmts) {
+    if (!Array.isArray(s)) continue
+    const op = s[0]
+    if (op === '=' && typeof s[1] === 'string') { walk(s[2]); continue }   // top-level target re-records
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < s.length; i++) {
+        const d = s[i]
+        if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2])   // decl head re-records; walk init
+      }
+      continue
+    }
+    walk(s)
+  }
+  return blocked
+}
+
 /** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitVoid per statement.
  *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
  *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
@@ -1422,32 +1495,21 @@ export function emitBlockBody(node) {
   const accumulated = []
   const prevValOverlay = ctx.func.localValTypesOverlay
   ctx.func.localValTypesOverlay = new Map(prevValOverlay || [])
-  const setFlowVal = (name, vt) => {
-    if (!isBoundName(name)) return
-    if (vt) ctx.func.localValTypesOverlay.set(name, vt)
-    else ctx.func.localValTypesOverlay.delete(name)
-  }
-  const updateFlowVal = (stmt) => {
-    if (!Array.isArray(stmt)) return
-    const op = stmt[0]
-    if (op === '=' && typeof stmt[1] === 'string') {
-      setFlowVal(stmt[1], valTypeOf(stmt[2]))
-      return
-    }
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < stmt.length; i++) {
-        const d = stmt[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string')
-          setFlowVal(d[1], valTypeOf(d[2]))
-      }
-    }
-  }
+  // Nested-assignment blocklist for this block. Per-block own-scan is sufficient:
+  // an outer name whose fact was blocked in the outer block never entered the
+  // outer overlay (which this block's overlay copies), and a name reassigned at
+  // THIS block's top level re-records right after the assignment (dominating the
+  // rest of this block) — the scan blocks exactly the recordings that don't
+  // dominate their possible staleness point.
+  const prevFlowBlocked = ctx.func.flowValBlocked
+  ctx.func.flowValBlocked = collectNestedAssigns(stmts)
   try {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
       if (s == null || typeof s === 'number') continue
       out.push(...emitVoid(s))
-      updateFlowVal(s)
+      // `let`/`const` decls self-record via emitDecl; only a bare reassignment needs it here.
+      if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]))
       // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
       // Skip names that are reassigned later — refinement would be unsound past the assignment.
       if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
@@ -1468,6 +1530,7 @@ export function emitBlockBody(node) {
     }
   } finally {
     ctx.func.localValTypesOverlay = prevValOverlay
+    ctx.func.flowValBlocked = prevFlowBlocked
     // Restore prior refinements on block exit.
     for (let i = accumulated.length - 1; i >= 0; i--) {
       const [name, prev] = accumulated[i]

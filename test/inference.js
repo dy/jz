@@ -1117,3 +1117,29 @@ test('param VAL.NUMBER: string arg to a numeric helper still coerces (bounded na
 test('param VAL.NUMBER: BigInt64Array element stays BigInt (ctor-gated, not narrowed to Number)', () => {
   is(jz(`let h = (x) => x + 1n; export let main = () => { let a = new BigInt64Array(3); a[0] = 5n; return Number(h(a[0])) }`, { optimize: 'speed' }).exports.main(), 6)
 })
+
+// === flow-fact overlay soundness (emitDecl/setFlowVal + collectNestedAssigns) ===
+// The overlay (reps.js lookup tier #2) records decl/assignment value kinds as emit
+// passes them. A fact is only sound while its recording site DOMINATES every read:
+// a name reassigned at a NESTED position (if/loop/closure body, for-step) must carry
+// no fact — `let x = [7,8]; if (c) x = 5; x.length` used to read the number 5
+// through the ARRAY fast path (OOB trap): a latent miscompile that predated the
+// for-init extension which exposed it.
+test('flow-fact: nested conditional reassignment invalidates the decl fact', () => {
+  const f = jz('export let f = (n) => { let x = [7,8]; if (n > 0) x = 5; return x.length === undefined ? -1 : x.length }').exports.f
+  is(f(1), -1, 'reassigned arm: number has no .length')
+  is(f(-1), 2, 'untouched arm keeps the array')
+})
+test('flow-fact: for-init decl reassigned in the step carries no stale fact', () => {
+  const f = jz('export let f = () => { let s = 0; for (let x = [1,2,3]; x.length; x = 0) { s += x.length; if (s > 3) break } return s }').exports.f
+  is(f(), 3, 'condition re-evaluates against the reassigned number, not the stale array')
+})
+test('flow-fact: for-of desugar keeps the array fast path (the win the guard must not kill)', () => {
+  const { f, g } = jz(`
+    export let f = () => { let s = 0; for (const v of [10, 20, 30]) s += v; return s }
+    export let g = (n) => { let x = [7,8]; if (n > 0) x = 5; let s = 0; for (let i = 0; i < 2; i++) s += x === 5 ? 1 : x[i]; return s }
+  `).exports
+  is(f(), 60)
+  is(g(1), 2)
+  is(g(-1), 15)
+})
