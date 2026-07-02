@@ -684,6 +684,44 @@ Pinned: 3 flow-fact tests in test/inference.js.
 Gates: fuzz 1000×opt{0..3} 0-div, selfhost 16/16, perf pin green (warm 0.927× /
 fresh 1.027× on the pin subset), full suite zero new failures.
 
+## json warm-trap — root-cause session (2026-07-01 night): landmine found, policy designed & parked
+
+**Diagnostic method that worked:** instrument the kernel's growth/sidecar-install paths
+with a "durable receiver" check (`off < __heap_reset` at write) + exported counters +
+key capture. Array/hash GROWTH of durable containers: **zero** (that class is clean).
+Durable-object SIDECAR installs: **exactly one** — key `"unreachable"`, receiver =
+**watr's INSTR array** (compile.js:1040 lazily repurposes the init-built INSTR array
+into a name→opcode dict via `INSTR[nm]=…` on first compile). In-kernel that installs a
+round-arena sidecar whose pointer survives in the durable header across `_clear` — a
+landmine any program can hit when round-2 allocations alias it (mat4 tolerates it by
+luck; the earlier lvtOverlay-garbage read and the cyclic finalizeClosureTable tree are
+both downstream corruption symptoms, not causes).
+
+**The conceptual fix (designed, implemented, REVERTED — saved as
+.work/durable-dynprops-policy.patch):** durable receivers (off < __heap_reset at
+runtime) route dyn props to the GLOBAL __dyn_props table (which __clear resets) —
+prop lifetime matches storage; init-time writes still take sidecars (heap_reset is
+data-end-seeded during __start, so init sidecars land durable). Template gating via
+`heapResetWat()` (expansion-time declGlobal check, const-0 fallback for alloc-pruned/
+shared modules). Patched arms: __dyn_get_t_h (ARRAY zero-shortcut + OBJECT + TYPED/SET/
+MAP), __dyn_set ×3, __dyn_del ×3 — native tests all green, BUT the kernel broke
+(selfhost 15 fail, "Unknown instruction 23/$inc"): the PREHASHED dot-access paths
+(`__hash_get_local_h` via core.js:709, `__dyn_get_expr_t_h`, `__dyn_get_any_t_h`) and
+the enumeration merges (Object.keys / for-in / stringify schema∪dyn-props) still read
+sidecars directly — writes went global, those reads missed → watr's INSTR dict
+half-visible → immediate-consumption misalignment. **The policy is right but must land
+on ALL dyn-prop paths atomically**: get_t_h/set/del (patch has them) + expr_t_h +
+any_t_h + the core.js prehashed dot path + enumeration merges + __dyn_move. A focused
+follow-up session task; the patch file is the starting point.
+
+**json's cycle persisted even under the partial policy** — there is at least one MORE
+dangler beyond INSTR (the reduced repro needs the JSON walk + several extra module
+functions; trap = self-recursion in finalizeClosureTable's scan over a cyclic tree).
+Re-reduce after the policy lands fully.
+
+Perf state unchanged and re-confirmed after revert: pin warm 0.911× / fresh 1.024×,
+selfhost 16/16.
+
 ## Synthesis across #1/#3/#4 — the tax is distributed, not a fixable primitive
 
 Three expert/audit-recommended primitive optimizations, all measured: #1+#3 V8-negligible (V8 inlines
