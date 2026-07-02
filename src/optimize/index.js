@@ -846,10 +846,13 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
     const op = node[0]
     if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
     if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
-    // A global is invariant only if not set directly AND no call in the loop —
-    // any callee may mutate it (no interprocedural effect analysis). (Locals are
-    // frame-private, so calls can't touch them; only direct local.set matters.)
-    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasAnyCall
+    // A global is invariant only if not set directly AND no UNSAFE call in the loop —
+    // an unproven callee may mutate it (no interprocedural effect analysis). SAFE_OFFSET/
+    // READONLY_MEM/NON_MUTATING/pure calls are jz's own runtime helpers, audited to never
+    // touch a user global, so they don't block this the way an arbitrary call does — same
+    // distinction READONLY_MEM_CALLS purity already makes below. (Locals are frame-private,
+    // so calls can't touch them; only direct local.set matters.)
+    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasUnsafeCall
     if (op === 'local.tee') {
       if (typeof node[1] !== 'string') return false
       // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X` inside
@@ -3469,7 +3472,25 @@ export function unswitchTypedParamLoop(fn) {
     if (!Array.isArray(incNode) || incNode[0] !== 'local.set' || !Array.isArray(incNode[2]) || incNode[2][0] !== 'i32.add') return
     const incVar = incNode[1], inc = incNode[2]
     if (!(Array.isArray(inc[1]) && inc[1][0] === 'local.get' && inc[1][1] === incVar && Array.isArray(inc[2]) && inc[2][0] === 'i32.const' && inc[2][1] === 1)) return
-    const body = loopNode.slice(3, endIdx - 1)
+    // Pre-watr, jz wraps every multi-statement expression-group in `(block (result T) …)`
+    // — as a dropped expression-statement (drop follows) or as an if-arm's tail value.
+    // watr's own vacuum/mergeBlocks used to flatten this post-hoc (when this pass ran
+    // post-watr); now it runs pre-watr and must see through the wrapper itself. Unlabeled
+    // ⇒ not a branch target (the normalizeTransparentBlocks convention, generalized here to
+    // result-carrying blocks since these are unambiguous STATEMENT-LIST positions — never
+    // operand slots), so a flattened VIEW is exactly equivalent. Non-mutating: the matched
+    // `if` node is shared with the verbatim blockNode preserved as the bit-exact else-
+    // fallback, so the scan must not restructure it in place.
+    const flattenStmts = (arr, from) => {
+      const out = []
+      for (let i = from; i < arr.length; i++) {
+        const c = arr[i]
+        if (Array.isArray(c) && c[0] === 'block' && Array.isArray(c[1]) && c[1][0] === 'result') out.push(...flattenStmts(c, 2))
+        else out.push(c)
+      }
+      return out
+    }
+    const body = flattenStmts(loopNode, 3).slice(0, -2)  // drop the trailing incNode/br (already validated above)
     if (body.length < 4) return
 
     // Find the polymorphic-store `if` by scanning (it's followed by a `drop` of its
@@ -3481,8 +3502,12 @@ export function unswitchTypedParamLoop(fn) {
       let thenArm = null, elseArm = null
       for (let k = 2; k < c.length; k++) { const a = c[k]; if (Array.isArray(a)) { if (a[0] === 'then') thenArm = a; else if (a[0] === 'else') elseArm = a } }
       if (!thenArm || !elseArm) continue
+      const thenStmts = flattenStmts(thenArm, 1)
       let p = null
-      for (let k = 1; k < thenArm.length; k++) { const a = thenArm[k]; if (Array.isArray(a) && a[0] === 'local.set' && f64Params.has(a[1]) && Array.isArray(a[2]) && a[2][0] === 'local.get') p = a[1] }
+      for (const a of thenStmts) {
+        if (Array.isArray(a) && a[0] === 'local.set' && f64Params.has(a[1]) && Array.isArray(a[2]) &&
+            (a[2][0] === 'local.get' || (a[2][0] === 'call' && a[2][1] === '$__arr_set_idx_ptr'))) p = a[1]
+      }
       if (!p || !has(thenArm, (x) => x[0] === 'call' && x[1] === '$__arr_set_idx_ptr')) continue
       // The bare `f64.store(__ptr_offset(o)+i<<3)` is the non-ARRAY fallback. It may be
       // nested under an OBJECT/HASH → __dyn_set guard (emitPolymorphicElementStore's
@@ -3633,7 +3658,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
     if (runVectorizer && (!cfg || cfg.unswitchTypedParamLoop !== false)) unswitchTypedParamLoop(fn)
     if (runVectorizer) foldStrDispatchF64(fn)
-    if (runVectorizer) vectorizeLaneLocal(fn, {
+    if (runVectorizer && vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
       relaxedFma: cfg.relaxedSimd === true,
       blurMP: cfg.blurMultiPixel !== false,
@@ -3643,7 +3668,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       pureFuncMap: cfg._pureFuncMap || null,
       toneMap: cfg.experimentalToneMap !== false,
       slp: cfg.experimentalSlp !== false,  // SLP default-on (testing single-use fix)
-    })
+    }) && typeof fn[1] === 'string') (cfg._vectorizedFnNames ??= new Set()).add(fn[1])
     // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled
     // multi-accumulator reduction (a[i],a[i+2],a[i+4]…) and stencil/strided reads.
     // fusedRewrite's memarg fold already ran (above, before vectorize), so fold the

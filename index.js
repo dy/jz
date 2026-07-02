@@ -624,6 +624,12 @@ const jzCompileInner = (code, opts = {}) => {
   if (cfg.watr) {
     if (watrOpts === true) watrOpts = {}
     watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
+    // Boundary-wrapped functions (`$name`/`$name$exp`) the vectorizer just lifted: keep
+    // watr's default inlineOnce from merging $name into $name$exp, which would otherwise
+    // rename every $__ppc*/$__esc*/... local & label the lift produced with its own
+    // $__inl{N}_ prefix, burying the marker's leading `$` (cosmetic-only cost: one
+    // un-eliminated wrapper call per top-level invocation, not per loop iteration).
+    if (cfg._vectorizedFnNames?.size) watrOpts.pin = [...watrOpts.pin, ...cfg._vectorizedFnNames]
   }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Stable-pointee module globals: resolve the __ptr_offset once per function. Never-forwarding

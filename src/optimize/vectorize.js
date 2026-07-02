@@ -533,7 +533,11 @@ const slpStorePairsIn = (node, fnLocals, freshIdRef, newLocalDecls, getCounts) =
   for (let i = 0; i < node.length; i++) {
     const u0 = slpUnitAt(node, i, getCounts)
     if (!u0) continue
-    const u1 = slpUnitAt(node, u0.hi + 1, getCounts)
+    // u1's MATCH index is its store's index, which for the flat tee'd shape is one PAST
+    // its span's lo (the tee'd `local.set` precedes it) — try both hi+1 (inline/block-wrapped,
+    // where lo===hi) and hi+2 (flat tee'd, where the store sits at lo+1) and keep whichever
+    // yields a unit that actually starts right after u0.
+    const u1 = slpUnitAt(node, u0.hi + 1, getCounts) || slpUnitAt(node, u0.hi + 2, getCounts)
     if (!u1 || u1.lo !== u0.hi + 1) continue
     if (u1.off - u0.off !== 8 || !slpSameBase(u0.addr, u1.addr)) continue
     // RAW hazard: the high store's value must not read the low store's target — the pack
@@ -1463,6 +1467,39 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
       return s
     })
     if (dropped.size) body2 = inlined.filter(s => !dropped.has(s))
+  }
+
+  // A signum ternary (`a<0?-1:1`) is commonly CSE'd into its own lane-local just before its
+  // sole use (`set $s (select (i32.const -1)(i32.const 1) COND); … f64.convert_i32_s($s) …`),
+  // hiding it from liftExprV's `f64.convert_i32_s(select …)` fusion (below), which only matches
+  // the select INLINE. Post-watr this local hop would already be copy-propagated away; pre-watr
+  // it survives. When such a lane-local is read exactly once, and that read is inside a
+  // `f64.convert_i32_s`, inline the select back — same "sink a single-use def into its sole
+  // specialized consumer" trick as the narrowing-store case above.
+  {
+    const getCount2 = new Map()
+    const countGets2 = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount2.set(n[1], (getCount2.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets2(n[i]) }
+    for (const s of body2) countGets2(s)
+    const dropDefs = new Set()
+    const inlineSign = (n) => {
+      if (!isArr(n)) return n
+      if (n[0] === 'f64.convert_i32_s' && n.length === 2 && isArr(n[1]) && n[1][0] === 'local.get' &&
+          typeof n[1][1] === 'string' && getCount2.get(n[1][1]) === 1) {
+        const nm = n[1][1]
+        const def = body2.find(x => isArr(x) && x[0] === 'local.set' && x[1] === nm && x.length === 3)
+        if (def && isArr(def[2]) && def[2][0] === 'select' && def[2].length === 4 && isI32Const(def[2][1]) && isI32Const(def[2][2])) {
+          dropDefs.add(def)
+          return ['f64.convert_i32_s', def[2]]
+        }
+      }
+      return n.map((c, i) => i === 0 ? c : inlineSign(c))
+    }
+    const inlined2 = body2.map(inlineSign)
+    // Two-pass: inlineSign allocates a fresh array for every node it visits (even unchanged
+    // ones), so filtering `inlined2` by `dropDefs.has(...)` would fail on reference identity —
+    // `dropDefs` holds references into the PRE-map `body2`, so the drop-filter must run against
+    // `body2` (matching indices into `inlined2`), not against the mapped output.
+    if (dropDefs.size) body2 = body2.map((s, i) => dropDefs.has(s) ? null : inlined2[i]).filter(s => s != null)
   }
 
   // Build lifted body. If anything fails to lift, bail.
@@ -4103,7 +4140,26 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   const rBound = ic[2][1][2]
   if (!(isLocalGet(rBound) || isI32Const(rBound))) return null
 
-  // the RGBA store: 4 consecutive i32.store8 at `ab1 + c`, ab1 tee'd in the first.
+  // the RGBA store: 4 i32.store8 at `ab1 + c`, ab1 tee'd in the first. jz's raw pre-watr
+  // emission of `dst[o]=(sr/win)|0` materializes the divide into its own single-use temp
+  // (`tw = sr/win; store(tw)`) — pre-watr propagateSingleUse runs AFTER the vectorizer
+  // (ordered there so it doesn't scramble the dot-pair matcher), so this indirection is
+  // never folded before this recognizer sees it, unlike the old post-watr pipeline where
+  // watr's own copy-prop had already inlined it into the store operand. Resolve that one-hop
+  // indirection here: if a store's value is a bare local.get and the statement immediately
+  // before it is that local's SOLE def in the loop, substitute the def's RHS.
+  const resolvedTemps = new Set()
+  const resolveStoreVal = (idx, val) => {
+    if (!(isArr(val) && val[0] === 'local.get')) return val
+    const t = val[1], prev = loopNode[idx - 1]
+    if (!(isArr(prev) && prev[0] === 'local.set' && prev.length === 3 && prev[1] === t)) return val
+    let uses = 0
+    const count = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && n[1] === t) uses++; n.forEach(count) }
+    count(loopNode)
+    if (uses !== 1) return val
+    resolvedTemps.add(t)
+    return prev[2]
+  }
   let storeIdx = -1
   for (let i = innerIdx + 1; i + 3 <= bodyEnd; i++) {
     const s0 = loopNode[i]
@@ -4112,11 +4168,14 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   if (storeIdx < 0) return null
   const s0 = loopNode[storeIdx]
   const ab1 = s0[1][1], dstExpr = s0[1][2]      // ab1 local, its address expr
-  const storeVals = [s0[2]]
+  const storeVals = [resolveStoreVal(storeIdx, s0[2])]
+  let scanIdx = storeIdx + 1
   for (let c = 1; c < 4; c++) {
-    const s = loopNode[storeIdx + c]
+    if (isArr(loopNode[scanIdx]) && loopNode[scanIdx][0] === 'local.set') scanIdx++   // skip the next store's div-into-temp
+    const s = loopNode[scanIdx]
     if (!(isArr(s) && s[0] === 'i32.store8' && s[1] === `offset=${c}` && isLocalGet(s[2], ab1))) return null
-    storeVals.push(s[3])
+    storeVals.push(resolveStoreVal(scanIdx, s[3]))
+    scanIdx++
   }
   // each store value must read its accumulator (the divided sum)
   for (let c = 0; c < 4; c++) if (!readsVar(storeVals[c], accInits[c])) return null
@@ -4171,7 +4230,10 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   const newInnerBlock = innerBlock.map(c => c === innerLoop ? newInnerLoop : c)
   // store epilogue: the o=(row+x)<<2 setup, then ab1, then per pixel j set acc_c to
   // its lane and reuse the scalar store template at byte offset j*4+c.
-  const preStore = loopNode.slice(innerIdx + 1, storeIdx)   // `o = (row+x)<<2` etc.
+  // `o = (row+x)<<2` etc. — drop resolved-away div-into-temp defs (unused now; storeVals
+  // carries their RHS directly), else a dead `tw15 = sr/win` reading a stale `sr` gets
+  // carried into the 4-pixel loop (harmless — unused — but unnecessary bytes/work).
+  const preStore = loopNode.slice(innerIdx + 1, storeIdx).filter(s => !(isArr(s) && s[0] === 'local.set' && resolvedTemps.has(s[1])))
   const epilogue = [...preStore, ['local.set', ab1, dstExpr]]
   for (let j = 0; j < 4; j++) {
     const vec = j < 2 ? accLo : accHi, base = (j % 2) * 4
@@ -4632,22 +4694,49 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   const outcomeVarSetEarly = new Set(midBreaks.flatMap(mb => mb.assigns.map(a => a.name)))
   const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
   const perPxInit = new Map()     // c-var → its per-pixel init expr
+  // Pre-watr, jz's raw lowering hasn't run DCE yet — obody[0..innerIdx) may hold pre-loop f64
+  // locals the OLD post-watr recognizer never saw (watr had already deleted them). Two live
+  // shapes beyond direct escape-loop reads (cVars, already populated by the liftable() walk
+  // above): (a) truly dead — a per-pixel grid coord the update ignores (Julia fixed-c: cx/cy
+  // computed but the orbit never reads them — mandelbrot's dual DOES read them); safe to drop.
+  // (b) a carried var's z0 seed reads it INDIRECTLY through one extra local (Julia/Newton
+  // per-pixel z0: x0 = <ramp>; zx = x0) — cVars only sees reads INSIDE the escape loop, so x0
+  // is invisible to it even though it IS the real seed expression. Close that gap with a
+  // needed-set fixpoint before classifying, so x0 promotes to a c-var exactly like a directly
+  // read grid coord — liftCLane already resolves a cVar reference at emit.
+  const epilogue = obody.slice(innerIdx + 1)
+  const preStmts = []
   for (let i = 0; i < innerIdx; i++) {
     const s = obody[i]
     if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3) return null
-    const tgt = s[1]
+    preStmts.push({ tgt: s[1], expr: s[2] })
+  }
+  const preTgt = new Set(preStmts.map(p => p.tgt))
+  // A pre-loop local promotes to a c-var only if some OTHER classified site actually reads it —
+  // never one of the reserved roles (carried/temp/itVar/outcome), which already have their own
+  // per-lane home and must keep taking their existing branch below.
+  const promotable = (v) => !carried.has(v) && !temp.has(v) && v !== itVar && !outcomeVarSetEarly.has(v)
+  const needed = new Set(cVars)
+  for (const { tgt, expr } of preStmts) if (carried.has(tgt)) for (const v of preTgt) if (promotable(v) && readsVar(expr, v)) needed.add(v)
+  for (const e of epilogue) for (const v of preTgt) if (promotable(v) && readsVar(e, v)) needed.add(v)
+  for (let changed = true; changed;) {
+    changed = false
+    for (const { tgt, expr } of preStmts) if (needed.has(tgt))
+      for (const v of preTgt) if (v !== tgt && promotable(v) && !needed.has(v) && readsVar(expr, v)) { needed.add(v); changed = true }
+  }
+  for (const { tgt, expr } of preStmts) {
     if (carried.has(tgt)) {
       // z₀ seed: a constant (mandelbrot/burning-ship z₀=0) OR a per-pixel expr (Julia set, where
       // z₀ = the pixel and c is constant — the dual of mandelbrot). liftCLane handles both at emit.
-      carriedInit.set(tgt, s[2])
+      carriedInit.set(tgt, expr)
     } else if (temp.has(tgt)) { /* recomputed each iteration — init ignored */ }
-    else if (tgt === itVar) { if (constNum(s[2]) !== 0) return null }
-    else if (cVars.has(tgt)) perPxInit.set(tgt, s[2])
+    else if (tgt === itVar) { if (constNum(expr) !== 0) return null }
+    else if (needed.has(tgt)) { cVars.add(tgt); perPxInit.set(tgt, expr) }
     else if (outcomeVarSetEarly.has(tgt)) { /* i32 outcome var default init — ignored, handled per-lane */ }
+    else if (!hasSideEffect(expr)) { /* dead per-pixel local — the escape update never reads it, drop */ }
     else return null
   }
   for (const c of carried) if (!carriedInit.has(c)) return null
-  const epilogue = obody.slice(innerIdx + 1)
   // The epilogue runs scalar per lane; it may only read carried/it/pixel-IV/invariant
   // values (each statement's reads, before that statement's writes). A read of an
   // inner-loop temp or a per-pixel c-var has no post-loop per-lane value → bail.
@@ -6274,6 +6363,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
 
   const freshIdRef = { next: 0 }
   const newLocalDeclsAll = []
+  // Whether a REAL SIMD lift happened (as opposed to the scalar tryStrengthReduceIV
+  // fallback below, which also populates newLocalDeclsAll with plain i32 locals) —
+  // the caller pins the function's $name/$name$exp boundary wrapper on this, so a
+  // false positive here would needlessly block watr's inlineOnce on a non-SIMD fn.
+  let simdFired = false
 
   // Hoist loop-invariant partial products out of unrolled dot reductions (rust/LLVM's
   // mat4 prologue trick). Reassociates the float sum, so tied to the relaxedFma tier;
@@ -6284,6 +6378,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
   // in the module (else a shifted view could reorder-hazard the packed read/write).
   if (slp && !ctx.features.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
+  if (newLocalDeclsAll.length) simdFired = true
 
   // Walk body recursively. Process inner-most matches first (post-order)
   // so we don't try to vectorize an outer loop whose inner is the lane-local one.
@@ -6332,6 +6427,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           `${fnName}: loop #${whyNotN} not vectorized — ${_whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
           { fn: `${fnName}#${whyNotN}` })
       }
+      if (r) simdFired = true   // one of the real SIMD recognizers above matched
       // Scalar IV strength-reduction is a non-SIMD fallback; it may still fire.
       r = r ?? tryStrengthReduceIV(bl, fnLocals, freshIdRef)
       if (r) {
@@ -6356,4 +6452,5 @@ export function vectorizeLaneLocal(fn, opts = {}) {
     // so keep one decl per name (all dups are the identical `['local', name, 'v128']`).
     fn.splice(bodyStart, 0, ...new Map(newLocalDeclsAll.map(d => [d[1], d])).values())
   }
+  return simdFired
 }
