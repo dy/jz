@@ -106,6 +106,14 @@ const SAMPLES = [
   ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
+  // Typed-array element WRITE with a literal RHS ('samples[j] > 0'-shaped repro,
+  // .work/selfhost-perf-groundtruth.md): jzify's isDestructurePat (jzify/hoist-vars.js)
+  // misclassified `arr[i] = v` as a destructuring-assignment pattern — both share the
+  // '[]' tag pre-prepare(), disambiguated only by arity (pattern length ≤2, element
+  // access always length 3). Native jzify reconstructs byte-identical IR either way for
+  // this shape (masking it); the kernel's compiled pattern-walk path throws "expected
+  // emitted IR value … got empty value" (src/ir.js asF64) instead. See test/parser-bugs.js.
+  ['typed-elem-write-literal', 'export let main = () => { const s = new Float64Array(5); s[0] = 3; return s[0] === 3 ? 1 : 0 }', 1],
 ]
 
 for (const [label, src, expected] of SAMPLES) {

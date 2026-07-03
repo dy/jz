@@ -1,6 +1,7 @@
 import test from 'tst'
 import jz, { compile } from '../index.js'
 import { is, ok } from 'tst/assert.js'
+import { isDestructurePat } from '../jzify/hoist-vars.js'
 
 test('bracketless nested conditionals', () => {
     let src = `
@@ -206,4 +207,41 @@ test('for-in/of heads: assignment/sequence sources re-associate', () => {
     is(jz('export let main = () => { let cm, s, r = 0; for (s in cm = {a:1,b:2}) r++; return r * 10 + cm.a }').exports.main(), 21)
     is(jz('export let main = () => { let a, v, r = 0; for (v of a = [1,2,3]) r += v; return r + a.length }').exports.main(), 9)
     is(jz('export let main = () => { let s, k = 0, r = 0; for (s in (k = 5, {m:1,n:2})) r++; return r * 10 + k }').exports.main(), 25)
+})
+
+// ── jzify pre-prepare '[]'-tag ambiguity (self-host typed-elem-compare hunt) ──
+// A `'[]'`-tagged node means two different things before prepare() splits them
+// into `'['` (array literal) / `'[]'` (element access): a destructure pattern
+// (`[a,b] = …` → `['[]', commaSeqOrSingleElem]`, length ≤ 2) and an element
+// write (`arr[i] = …` → `['[]', receiver, index]`, ALWAYS length 3). jzify's
+// `isDestructurePat` checked only the tag, so `arr[i] = v` — any bracket
+// assignment, any receiver (array/typed array/plain object) — misclassified as
+// a destructuring assignment and was walked as a pattern instead of falling
+// through to the plain-assignment path.
+
+test('isDestructurePat: element-access target is not a destructuring pattern (arity, not tag alone)', () => {
+    // The exact shape confusion: both share op '[]', disambiguated only by length.
+    ok(!isDestructurePat(['[]', 'arr', [null, 0]]), 'arr[0] (element access, length 3) is not a pattern')
+    ok(!isDestructurePat(['[]', 'arr', 'i']), 'arr[i] (element access, length 3) is not a pattern')
+    ok(isDestructurePat(['[]', [',', 'a', 'b']]), '[a,b] (2-elem pattern, length 2) is still a pattern')
+    ok(isDestructurePat(['[]', 'a']), '[a] (1-elem pattern, length 2) is still a pattern')
+    ok(isDestructurePat(['{}', 'a']), '{a} (object pattern) is still a pattern — untouched by the fix')
+})
+
+test('element-assignment target is never mistaken for a destructuring pattern', () => {
+    // Native jzify happened to reconstruct byte-identical IR for the simple
+    // receiver-name + literal-index shape either way (the wrong pattern-walk and
+    // the right generic-transform fallback are both no-ops here) — masking the
+    // misclassification natively. The self-hosted kernel exercises the (wrong)
+    // pattern-walk's own compiled path and throws "expected emitted IR value …
+    // got empty value" (src/ir.js asF64) for ANY bracket-assignment with this
+    // shape — typed array, plain array, or plain-object dynamic key alike.
+    // (charter repro, minimally reduced from `samples[j] > 0`'s enclosing program)
+    is(jz('export let main = () => { const s = new Float64Array(5); s[0] = 3; return s[0] }').exports.main(), 3)
+    is(jz('export let main = () => { const a = [1, 2]; a[0] = 9; return a[0] }').exports.main(), 9)
+    is(jz('export let main = () => { const h = {}; let k = "x"; h[k] = 9; return h[k] }').exports.main(), 9)
+    is(jz('export let f = (samples, j) => samples[j] > 0\nexport let main = () => { const s = new Float64Array(5); s[0] = 3; return f(s, 0) | 0 }').exports.main(), 1)
+    // Destructuring assignment (a genuine pattern target) must stay unaffected.
+    is(jz('export let main = () => { let a, b; [a, b] = [1, 2]; return a * 10 + b }').exports.main(), 12)
+    is(jz('export let main = () => { let a; [a] = [7]; return a }').exports.main(), 7)
 })

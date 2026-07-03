@@ -880,3 +880,134 @@ native-only, unaffected. `test/differential.js` has one unrelated pre-existing r
 (`round half-integers: round(7) → jz 4 ≠ js 5`) also present before this session,
 confirmed unrelated (a native, non-self-host rounding-semantics test; nothing this
 session touched is on that path).
+
+## RESOLVED — root cause was jzify, not module/array.js; the `.typed:[]` suspect was a red herring
+
+The `ctx.core.emit['.typed:[]']` dyn-prop suspicion above was wrong. Bisection (marker
+`err()` calls threaded through `emit()`/`emitElementAssign`/`.typed:[]=`, then through
+`compileAst`/`prepare`/`lower` via two new temporary diagnostic exports on `self.js` —
+`diagPrepareOnly`/`diagLowerOnly`, run-then-reverted) localized the throw to BEFORE
+`compileAst` ever starts (`ctx.func.current`/`ctx.error.node` still at their `reset()`
+values at the throw — confirmed meaningful by cross-checking a real, unrelated kernel
+error, which also never showed `ctx.func.current?.name`: that field is simply *never*
+populated in this build, native or kernel — `sig` objects carry no `.name`, `ctx.func`
+current holds the sig; a pre-existing, harmless message-cosmetic gap, not a clue). A
+`strict:1` call (`parse` + `liftIIFEs` only, skipping `jzify`) compiled the repro fine —
+isolating the bug to **`jzify`**, which none of `parse.js`/`prepare/`/`type.js`/etc.
+import `ir.js`'s `asF64` from, so the "empty value" text was misleading: `asF64` was
+never called from jzify at all in the sense of a direct call — see mechanism below.
+
+**Root cause: `jzify/hoist-vars.js`'s `isDestructurePat`.** Pre-`prepare()`, a `'[]'`-
+tagged node is ambiguous — jessie's parser doesn't yet split array-literal/destructure-
+pattern (`[a,b]` → `['[]', commaSeqOrSingleElem]`, length ≤ 2) from element-access
+(`arr[i]` → `['[]', receiver, index]`, ALWAYS length 3) — `prepare()` does that split
+into `'['` vs `'[]'` tags, but jzify runs first and only checked the tag:
+```js
+Array.isArray(p) && (p[0] === '[]' || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
+```
+So `arr[i] = v` — ANY bracket assignment, ANY receiver (typed array, plain array, plain
+object with a dynamic key) — misclassified as a destructuring-assignment pattern and got
+walked by `transformPattern`/`hoistPattern` (treating `arr`/`i` as binding targets)
+instead of falling through to the generic `[op, ...args.map(transform)]` path. For the
+receiver-name + literal/simple-index shape every real destructuring/element-access
+program in the native suite happens to use, **both paths reconstruct byte-identical
+IR** (proven: `compile()` output for the repro and for the whole `test/selfhost-perf.js`
+6-case corpus is byte-for-byte, hash-identical with vs without the fix) — a pure
+coincidence of this shape, not a general safety net, which is exactly why this sat
+latent through every native test run. The self-hosted kernel exercises `transformPattern`/
+`hoistPattern`'s OWN compiled code path instead of the generic fallback's, and that path
+is where the divergence turns real — the two are equivalent in *result* but not in
+*execution*, and only the *wrong* one's compiled form throws `asF64`'s null guard deep in
+its own call graph (not traced further than that — once the true root cause was pinned
+and the fix was this precise and this cleanly proven risk-free, chasing the exact
+mis-instruction inside `transformPattern`'s -O2-compiled body stopped being worth it).
+
+**Fix (`jzify/hoist-vars.js`):**
+```js
+Array.isArray(p) && ((p[0] === '[]' && p.length !== 3) || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
+```
+Arity disambiguates: element access is always exactly `[op, receiver, index]`;
+literal/pattern arrays never reach length 3 (multi-element forms comma-wrap into a
+single second slot). `p[0]==='{}'` needs no such guard — object *member* access is a
+different tag (`.`/computed `[]` on an object still routes through the same `'[]'` check
+above; `'{}'` is exclusively literal/pattern).
+
+**Validated:** 26-case targeted native differential (typed/plain-array/hash element
+writes with literal/string/bool/null RHS across receiver types, PLUS array/object
+destructuring — basic, single-element, nested, defaults, rest, params, for-of, swap) —
+all pass, optimize on and off. Full native suite: 2595/2650 pass, the same 55 pre-
+existing failures with and without the fix (confirmed via stash A/B — this doc's "13
+pre-existing" note is stale; 55 is the current baseline, unrelated to this fix).
+`test/parser-bugs.js`/`test/differential.js`/`test/statements.js`/`test/simd.js`: zero
+new failures (stash A/B'd `simd.js`'s 2 reds and `differential.js`'s 1 red too — both
+pre-existing). `test/selfhost.js`: 19/19 → **20/20** (new `typed-elem-write-literal`
+sample pinning the exact charter repro through the kernel). Pinned natively too:
+`isDestructurePat` unit-checked directly (`test/parser-bugs.js`) plus the end-to-end
+shapes, so a regression is caught even if a future native coincidence masks it again.
+
+## OPEN (new, separate) — self-host build produces INVALID wasm for most of the bench corpus at runtime level 0 (blocks the ratio gates, unrelated to the fix above)
+
+Fixing the jzify bug above unblocks `test/selfhost-perf.js`'s ratio gates from throwing
+on every case — but doing so exposes TWO further, pre-existing, unrelated gaps that were
+never reachable before (nothing ever got far enough into a corpus run to hit them).
+**Proven pre-existing, not caused by the jzify fix**, by a strict A/B: reverting the
+jzify fix and rebuilding reproduces the ORIGINAL "compiler internal: expected emitted IR
+value" throw on all 22/22 corpus programs in both warm and fresh scripted benches (0/22
+measurable) — i.e. neither of the two issues below was ever observable before this
+session, in any prior kernel build, because the corpus never got past this doc's
+`OPEN`-section bug on a single case.
+
+1. **Most of the corpus compiles to genuinely INVALID wasm at the kernel's runtime
+   level 0** (`s.exports.default(src, 0, '0')`, what both perf test files use). Spot-
+   checked mat4/json/sort/crc32/bitwise/callback: all fail `new WebAssembly.Module()`
+   identically — `type error in return[0] (expected f64, got i32)` — same shape as the
+   session-5 `narrowI32Results`-adjacent -O2 self-host miscompiles this doc has already
+   fixed twice (CMP_MANTISSA, sourceInline). Native `compile(src, {optimize:'0'})` for
+   every one of these programs is valid + byte-identical with/without the jzify fix, so
+   this is a KERNEL-BUILD-TIME issue (self.js compiled to wasm by native jz, `optimize:
+   {level:2, watr:{packData:false}}`), not a general compiler bug. Reproduces
+   identically at self-host BUILD level 1 too (still watr-on) — not the level-2-only
+   passes; narrower bisection (watr on/off, per-pass) not done — same shape as every
+   prior "OPEN (next)" hand-off in this doc, scoped out here as a fresh, separate hunt.
+   `bench-selfhost.mjs`'s parity check (`fnv(jsBytes)===fnv(wasmBytes)`) flags this as
+   `⚠ DIFF` on literally every case (21/21 that compile) — it never runs
+   `new WebAssembly.Module()`, so it under-reports: DIFF here usually means invalid, not
+   "benign encoding" as the session-4/5 "2 bytes off" precedent assumed.
+2. **Warm-instance reuse (`_clear()` between compiles, ONE instance) now traps on
+   100% of the 22-case corpus** (`fnv`/parity aside — every case throws before
+   producing bytes at all), both in `test/selfhost-perf.js`'s warm-instance gate
+   (`Unknown memory end` — a watr `id()` lookup miss, i.e. a WAT-text reference to a
+   memory index that doesn't exist in the current module, the dangling-cross-compile-
+   cache shape this doc's "json warm-trap"/"durable-dynprops" sections already
+   describe) and in `JZ_BENCH_WARM=1 node scripts/bench-selfhost.mjs` (all 22 report
+   `warm-trap`, mat4→fft two-case repro throws `memory access out of bounds` — same
+   class, different concrete trap, consistent with a dangling-pointer bug whose exact
+   symptom depends on what the stale offset now aliases). This is the SAME open
+   landmine class the "json warm-trap"/durable-dynprops-v2 sessions already found and
+   parked (INSTR-dict sidecar + array-growth-forwarding + at-least-one-more dangler) —
+   just now visible across the WHOLE corpus instead of one program, because nothing
+   previously survived long enough in a warm instance to hit it twice.
+
+**Measured (this session, quiet-ish machine, corpus × 22, level 0):** fresh-instance
+geomean **1.40×** slower than jz.js (21/22 — `aos` traps OOM even fresh; every
+compiling case flagged `DIFF` per the invalid-wasm finding above, so this ratio is
+honest wall-clock but not a clean parity-gated number the way session 6's 1.06×/0.97×
+were). `test/selfhost-perf.js`'s 6-case subset: fresh geomean **1.34–1.36×** (cap
+1.22×, FAIL), warm throws immediately (cap 1.08×, FAIL — unmeasurable, same as this
+doc's prior "unmeasurable, not merely over cap" framing for the OLD bug). Both ratio
+numbers are consistent across repeated runs and proven unrelated to the jzify fix
+(byte-identical native compiles; A/B on the OLD kernel shows 0/22 measurable either
+way) — they are the corpus's first-ever real measurement, not a regression to chase in
+this session's diff. `json` specifically: no longer special-cased — it fails the SAME
+way as the rest of the corpus now (warm-trap; fresh compiles but is invalid wasm),
+folded into the general finding above rather than being the one outlier it was in
+session 5.
+
+**Next session:** two independent hunts, in order — (1) the invalid-wasm return-type
+mismatch (narrower, more likely to be a single miscompiled pass given the uniform
+"type error in return[0]" signature across every program tested — start with
+`narrowI32Results`/`src/compile/narrow.js` compiled at self-host build level, the same
+diagnostic-marker technique this session used); (2) the corpus-wide warm-instance
+dangling reference (larger scope — likely needs the parked durable-dynprops-v2 policy
+finished, not a local fix). Both block the ratio gates; neither blocks `test:self` (its
+samples are too simple to reach either) or anything native.

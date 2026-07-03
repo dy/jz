@@ -5,8 +5,21 @@
 
 import { JZ_BLOCK_OPS } from '../src/ast.js'
 
+// A `'[]'`-tagged node is ambiguous pre-prepare(): an array literal/destructure
+// pattern (`[a, b]` → `['[]', commaSeqOrSingleElem]`, length ≤ 2 — empty `[]`
+// is length 1, one element is length 2, 2+ elements comma-wrap into that one
+// slot) and an element-access expression (`arr[i]` → `['[]', receiver, index]`,
+// ALWAYS exactly length 3 — two separate args, never comma-wrapped) share the
+// tag until prepare() splits them into `'['` (literal) vs `'[]'` (access).
+// Length disambiguates: without it, `arr[i] = v` misclassifies as a
+// destructuring assignment and gets walked as a pattern (`arr`/`i` treated as
+// binding targets) instead of falling through to the plain-assignment path.
+// Native jzify happens to reconstruct byte-identical IR either way for this
+// shape (both the pattern-walk and the generic-transform fallback are no-ops
+// on a receiver-name + literal-index pair) — masking it there; the self-hosted
+// kernel exercises the (wrong) pattern-walk's own compiled path and diverges.
 export const isDestructurePat = p =>
-  Array.isArray(p) && (p[0] === '[]' || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
+  Array.isArray(p) && ((p[0] === '[]' && p.length !== 3) || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
 
 export function hoistVars(node, names) {
   if (node == null || !Array.isArray(node)) return node
