@@ -1070,9 +1070,12 @@ function emitFunc(func, funcFacts, programFacts) {
     // externref so no `ref.is_null` branch is needed.
     if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
+    // emit(defVal) ONCE, before branching on t — same self-host miscompile class as
+    // emit.js's 'return' handler. See .work/selfhost-perf-groundtruth.md.
+    const emittedDefVal = emit(defVal)
     defaultInits.set(pname,
       ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
-        ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
+        ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emittedDefVal) : asI32(emittedDefVal)]]])
   }
 
   // Box params that are mutably captured: allocate cell, copy param value

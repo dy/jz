@@ -1011,3 +1011,124 @@ diagnostic-marker technique this session used); (2) the corpus-wide warm-instanc
 dangling reference (larger scope — likely needs the parked durable-dynprops-v2 policy
 finished, not a local fix). Both block the ratio gates; neither blocks `test:self` (its
 samples are too simple to reach either) or anything native.
+
+## RESOLVED — fresh-corpus invalid-wasm root-caused to a ternary-duplicated `emit()` call in emit.js's 'return' handler; NOT narrowI32Results
+
+**Root cause (pinned via WAT diff on the charter repro + ddmin, not the build-level
+bisection the prior hand-off suggested):** `narrowI32Results` was a red herring — native
+and the kernel agree byte-for-byte on every narrowing decision. The divergence is
+downstream, in the RETURN-VALUE rebox. `emit.js`'s `'return'` op handler computed the
+reboxed IR as:
+```js
+const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
+```
+`emit(expr)` is called separately, inline, once per ternary arm — only one arm ever
+executes, and both textually reference the identical `expr` AST subtree. Behaviorally
+identical in plain JS (function-call argument evaluation doesn't care whether the call
+site is written once-and-stored or twice-inline-in-dead-and-live-branches) — but the
+SELF-HOSTED kernel, at every self-host BUILD level (0/1/2, ruling out watr/sourceInline/
+any single optimizer pass) and every runtime optimize level, drops the `f64.convert_i32_s`/
+`_u` rebox on the taken arm's result. A function whose result narrowSignatures correctly
+leaves at f64 (e.g. because narrowing is blocked by an unrelated same-name value-used
+shadow elsewhere in the program, or — more naturally — by mixed return-tail kinds: one
+f64 tail, one `(expr)|0` i32-shaped tail) then returns the RAW i32 bits where the wasm
+validator expects f64: `type error in return[0]: expected f64, got i32`, identical
+signature on every corpus program that has any such shape.
+
+**Method that found it:** kernel exports (`compileWat`/`default`) on bench/mat4+benchlib
+reproduced `Compiling function #42 failed: type error in return[0]`; mapping the wasm
+function index to the WAT function list (both dumps have the same 49 functions in the
+same order) landed on `$medianUs` — benchlib's `return (samples[(samples.length-1)>>1]
+*1000)|0`. Diffing native vs kernel WAT for that ONE function showed the kernel's
+`(return (i32.or …))` missing native's `(return (f64.convert_i32_s (i32.or …)))` wrapper
+verbatim — everything else byte-identical. ddmin on the INPUT source (not jz's own
+source) shrank the trigger from the full corpus to an 8-line snippet, and separately
+confirmed `medianUs` was blocked from narrowing by `printResult`'s PARAM (also named
+`medianUs`, used in a template literal) — `isFuncRef` (src/ast.js) is a scope-blind bare
+NAME match, so `valueUsed` picks up the parameter as if it referenced the outer function.
+Harmless pessimization on its own (native still compiles it correctly, just unnarrowed),
+but it's exactly the shape (f64-result function, i32-shaped return tail) the real bug
+needs — and arises naturally too, via mixed-kind return tails, no name collision needed.
+
+**Fix (`src/compile/emit.js`, the `'return'` handler):** materialize `emit(expr)` into a
+local ONCE, before branching:
+```js
+const emitted = emit(expr)
+const ir = pk != null ? asPtrOffset(emitted, pk) : asParamType(emitted, rt)
+```
+`compile/index.js`'s sibling call site (the expression-bodied-arrow tail path —
+`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`)
+already used this materialize-then-branch shape and was NEVER affected — confirming the
+shape, not the helper functions (`asF64`/`asParamType`/`tcoTailRewrite`, all pure and
+individually correct), is what the self-hosted kernel mishandles. Root cause not
+localized further than "the kernel, at every build/runtime optimize level, sometimes
+drops a coercion wrapper when its argument is a call repeated verbatim across ternary
+arms instead of hoisted to a local" — same "don't chase the exact miscompiled
+instruction once the fix is this precise and this cleanly proven" call the isDestructurePat
+session made.
+
+**Shape-class swept, not just the one site (`Agent`, general-purpose, unproven leads
+deprioritized — see below):** found the SAME shape (nested call duplicated verbatim
+across ternary arms, wrapped by DIVERGING coercions per arm) at `storedValue` (defined
+identically in `module/object.js:42` and `src/compile/emit-assign.js:27` —
+`valTypeOf(node) === VAL.BOOL ? boolBoxIR(emit(node)) : asF64(emit(node))`, the boxed-
+property/array-element store path) and the default-parameter initializer
+(`src/compile/index.js`, `t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))`).
+Fixed all three the same way (materialize once). The OTHER ~14 sites the sweep flagged
+mostly duplicate a call under the SAME wrapper in both arms (no type divergence) or a
+cheap/pure helper — lower-confidence matches to this specific mechanism, left untouched
+rather than speculatively "fixed" (see the writeVar finding below for why textual
+duplication alone isn't a reliable predictor).
+
+**A SEPARATE, NOT-fixed bug surfaced by broader validation — `src/ir.js`'s `writeVar`:**
+running the full native suite through `JZ_TEST_TARGET=jz.wasm` (broader than the charter
+repro) found `[a] = [7]` (single-element array-destructuring ASSIGNMENT, not declaration)
+and the even more minimal `(a) => { a = 3 | 0; return a }` (no destructuring at all) ALSO
+emit invalid wasm through the kernel — `local.set[0] expected type f64, found i32.const`.
+Confirmed PRE-EXISTING (reproduces identically on the untouched original kernel) and
+UNRELATED to the fix above (`writeVar`'s coercion is `coerced = t === 'v128' ? valIR :
+t === 'f64' ? asF64(valIR) : asI32(valIR)` — valIR is a parameter, not a duplicated call,
+so the emit.js mechanism doesn't apply). Diagnosed with a single minimal `err()` guard
+(proved `localType` IS a valid type string, just not `'f64'` when it should be — ruling
+out a garbage/corrupted value) but THREE different structural rewrites of the consuming
+ternary (reuse `asParamType`, rename the three colliding `const t` declarations across
+writeVar's boxed/global/local branches to match the documented `specializeBimorphicTyped`
+name-collision bug shape, convert to an if/else chain) all failed to fix it — while
+merely ADDING an inert diagnostic statement masked it every time (classic self-host
+heisenbug: any perturbation to the function's shape dodges it). Points at `ctx.func.locals`
+(or its population from `analyzeBody`) resolving the wrong-but-valid type for this
+specific shape, not at the coercion dispatch itself — genuinely not localized further.
+**Confirmed NOT to affect the 22-case bench corpus** (direct `new WebAssembly.Module()`
+validation, not just the parity-hash check) or the charter's gates — reverted the
+attempted fixes, left `src/ir.js` untouched. Next session: instrument `analyzeBody`'s
+locals-map construction itself (not its consumer) for this exact shape, or try the
+native-differential harness (compile `ir.js` as self.js's literal entry, one level of
+indirection) instead of the two-level kernel.
+
+**Also found, NOT fixed, confirmed pre-existing and out of scope:** `export let f = (x,
+c) => { if (c) return; return (x*1000)|0 }` (bare `return;` sibling, at the kernel's
+DEFAULT runtime optimize level — level 2, not the level-0 the charter's repro uses) traps
+`memory access out of bounds` inside `compileAst` itself (before WAT encoding) — confirmed
+via clean A/B against the untouched original kernel, so unrelated to every fix above.
+Native WAT for this exact shape shows heavy level-2 inlining of the truthiness check plus
+an i64-carrier boundary wrapper (`c`'s NaN-canonicalization-safe crossing) — likely an
+interaction between those two systems, not the return-handler fix. Excluded from the
+`test/parser-bugs.js` pin (would make the pin lie about what's fixed); noted inline there.
+
+**Results:** kernel now compiles the bench corpus to genuinely VALID wasm — 21/22 corpus
+programs (`aos` OOMs even fresh, pre-existing, unrelated), 20/22 byte-identical to native
+(`json`'s pre-existing, already-documented value-encoding diff is the only non-`aos`
+non-parity case, and it's still valid wasm). `test/selfhost.js` 20/20. `test/selfhost-
+perf.js` fresh-instance ratio gate is now MEASURABLE for the first time — geomean
+**1.32–1.36×** across repeated runs (cap 1.22×, over-cap but every case valid; warm-
+instance still throws on the separately-documented, pre-existing dangling-cache class).
+`scripts/bench-selfhost.mjs` full 22-case corpus geomean **1.39–1.43×**. Native: zero
+regressions — full suite 2624/2654 pass identically with and without every fix in this
+session (A/B'd via temporary `git show HEAD:<file>` swaps, not stash/checkout, to avoid
+disturbing concurrent work in this repo), the same 29 pre-existing failures (`devirt`,
+SROA, uncatchable-throw, `perf-ratchet: buf`, …) either way; `test/differential.js` 22/23
+(the one red is the pre-existing, unrelated `round(7)` case); `test/statements.js`
+183/183; `test/parser-bugs.js` 77/77 native AND (new pin) 3/3 under `JZ_TEST_TARGET=
+jz.wasm`. Files: `src/compile/emit.js` (the fix), `src/compile/emit-assign.js` +
+`module/object.js` (`storedValue`, same class), `src/compile/index.js` (default-param
+init, same class), `test/parser-bugs.js` (pin).

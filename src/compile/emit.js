@@ -2824,7 +2824,25 @@ export const emitter = {
     if (expr == null) return [...finalizers, typed(['return', undefExpr()], 'void')]
     const rt = ctx.func.current?.results[0] || 'f64'
     const pk = ctx.func.current?.ptrKind
-    const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
+    // Emit ONCE, before branching on pk — self-host miscompile: the equivalent inline
+    // form `pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)`
+    // (emit(expr) repeated once per ternary arm, only one ever executing) is behaviorally
+    // identical in JS but the self-hosted kernel drops the f64.convert_i32_s/u rebox on
+    // the taken arm's result — an i32-typed return tail comes back bare (unconverted) in
+    // a non-narrowed (f64-result) function, so the wasm validator sees "expected f64, got
+    // i32" at every return site shaped like `return (expr)|0` inside a function whose
+    // result the narrower left at f64 (e.g. blocked by an unrelated same-name shadow
+    // elsewhere — narrowI32Results itself is unaffected either way). compile/index.js's
+    // sibling call site (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) :
+    // asParamType(ir, …)`) already used this materialize-then-branch shape and was never
+    // affected — mirroring it here is both the fix and the more idiomatic form (DRY: one
+    // emit call instead of a copy per arm). Root cause not fully localized beyond "the
+    // self-hosted kernel, at every optimize level 0-2, treats a value produced by a call
+    // repeated textually across both arms of a ternary differently from one materialized
+    // to a local first" — pinned in test/parser-bugs.js rather than chased further into
+    // the kernel's own call/branch codegen. See .work/selfhost-perf-groundtruth.md.
+    const emitted = emit(expr)
+    const ir = pk != null ? asPtrOffset(emitted, pk) : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)
     if (Array.isArray(tcoed) && tcoed[0] === 'return_call' && finalizers.length === 0) {

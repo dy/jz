@@ -39,7 +39,14 @@ const objectToStringTagForVal = (obj) => {
   return val ? OBJECT_TO_STRING_TAGS[val] : null
 }
 
-const storedValue = (node) => valTypeOf(node) === VAL.BOOL ? boolBoxIR(emit(node)) : asF64(emit(node))
+// emit(node) ONCE, before branching — same self-host miscompile class as emit.js's
+// 'return' handler (src/compile/emit.js): emit(node) called separately inline per
+// ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
+// behaviorally identical in JS but self-host-fragile. See .work/selfhost-perf-groundtruth.md.
+const storedValue = (node) => {
+  const emitted = emit(node)
+  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
+}
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')

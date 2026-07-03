@@ -245,3 +245,43 @@ test('element-assignment target is never mistaken for a destructuring pattern', 
     is(jz('export let main = () => { let a, b; [a, b] = [1, 2]; return a * 10 + b }').exports.main(), 12)
     is(jz('export let main = () => { let a; [a] = [7]; return a }').exports.main(), 7)
 })
+
+// ── emit.js 'return' handler: ternary-duplicated emit() call (fresh-corpus invalid-wasm hunt) ──
+// `dist/jz.wasm` compiled the bench corpus to genuinely INVALID wasm: "type error in
+// return[0]: expected f64, got i32", identical signature on every case (mat4, json, sort,
+// crc32, bitwise, callback, …). Not a narrowI32Results decision bug (both native and the
+// kernel agree on which functions narrow) — the divergence is downstream, in how the
+// RETURN VALUE gets reboxed once a function's result stays f64 (unnarrowed) but a return
+// tail is i32-shaped (`(expr) | 0` needs `f64.convert_i32_s`). The 'return' op handler
+// computed that rebox as `pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr),
+// rt)` — emit(expr) called separately, once inline per ternary arm, only one ever executing.
+// Behaviorally identical in JS (same AST subtree, one call happens either way) — but the
+// SELF-HOSTED kernel, at every self-host build level (0/1/2) and every runtime optimize
+// level, drops the rebox on the taken arm's result. compile/index.js's sibling call site
+// (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`)
+// already materializes the call to a local first and was never affected — mirroring that
+// shape in emit.js's 'return' handler is the fix.
+test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function converts to f64', () => {
+    // Mixed return kinds (one f64 tail, one i32-shaped `|0` tail) is the natural way a
+    // function's result stays unnarrowed while still needing the i32→f64 return-site rebox —
+    // no contrived call-graph tricks required.
+    is(jz('export let f = (x, c) => { if (c) return x; return (x * 1000) | 0 }').exports.f(3.5, 0), 3500)
+    is(jz('export let f = (x, c) => { if (c) return x; return (x * 1000) | 0 }').exports.f(3.5, 1), 3.5)
+    // NOTE: a bare `return;` on one path (hasBareReturn) ALSO blocks narrowing the same way,
+    // and is fixed the same way through THIS handler — but `export let f = (x, c) => { if
+    // (c) return; return (x*1000)|0 }` still traps ("memory access out of bounds") through
+    // the kernel at runtime level 2, on the untouched pre-fix kernel too (confirmed via a
+    // clean A/B) — a separate, deeper, PRE-EXISTING self-host bug in the level-2 inliner's
+    // interaction with the boundary i64-carrier wrapper for a 2nd exported param, not this
+    // session's fix or regression. Left OPEN — see .work/selfhost-perf-groundtruth.md.
+    // charter repro: minimally reduced from bench/mat4 + bench/_lib/benchlib.js's `medianUs`/
+    // `printResult` pair — a same-named PARAMETER elsewhere in the program (`printResult`'s
+    // `medianUs` param, used in a template literal) marks the top-level `medianUs` function
+    // valueUsed (scope-blind name match — a separate, harmless pessimization, not this bug),
+    // so its `(expr) | 0` tail stays unnarrowed exactly like the mixed-tail case above.
+    is(jz(`
+        const medianUs = (samples) => { return samples[0] | 0 }
+        const printResult = (medianUs) => String(medianUs)
+        export let main = () => medianUs([3.5])
+    `).exports.main(), 3)
+})

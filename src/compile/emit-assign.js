@@ -24,7 +24,14 @@ import { emit } from '../bridge.js'
 
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom.
-const storedValue = (node) => valTypeOf(node) === VAL.BOOL ? boolBoxIR(emit(node)) : asF64(emit(node))
+// emit(node) ONCE, before branching — same self-host miscompile class as emit.js's
+// 'return' handler (src/compile/emit.js): emit(node) called separately inline per
+// ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
+// behaviorally identical in JS but self-host-fragile. See .work/selfhost-perf-groundtruth.md.
+const storedValue = (node) => {
+  const emitted = emit(node)
+  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
+}
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
 function arrayIndexKey(key) {
