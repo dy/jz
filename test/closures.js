@@ -865,6 +865,31 @@ test('func-namespace SROA: single-write only-called slot direct-calls, no table'
   ok(!/__dyn_set/.test(w), 'no __dyn_set for a single-write only-called slot')
 })
 
+test('func-namespace SROA: cross-module single-write only-called slot direct-calls, no table', () => {
+  // subscript's asi.js writes `parse.enter`/`parse.exit` onto parse.js's
+  // EXPORTED `parse` — the lift's name must carry parse.js's module prefix
+  // (the base function's OWNING module), not asi.js's (the module that
+  // TEXTUALLY contains the write). The dead-write matcher used to reconstruct
+  // the expected name from the local module's own mangling, so a
+  // cross-module lift never matched and both the write and every
+  // `parse.enter()`/`parse.exit()` call stayed on the dyn-prop path forever —
+  // exactly the hot tokenizer probes this pin catches. Two-module shape: m1
+  // exports `lex` and calls its own `.next` slot; m2 (a DIFFERENT module)
+  // supplies the single write.
+  const code = `import { lex } from './m1.js'
+import './m2.js'
+export let f = () => lex('x')`
+  const modules = {
+    './m1.js': `export let lex = (s) => lex.next() + lex.next()`,
+    './m2.js': `import { lex } from './m1.js'
+lex.next = () => 7`,
+  }
+  is(run(code, { modules }).f(), 14)
+  const w = jz.compile(code, { modules, wat: true })
+  ok(!/__dyn_set/.test(w), 'no __dyn_set for a cross-module single-write only-called slot')
+  ok(!/__dyn_get/.test(w), 'the call devirtualizes too — no __dyn_get left to read a dropped write')
+})
+
 test('func-namespace SROA: escaping namespace keeps the dynamic path correct', () => {
   // `api` escapes via a bare-value alias — the property table could be reached
   // through the alias, so flattening is disqualified; correctness must hold.

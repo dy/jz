@@ -1556,6 +1556,16 @@ export function analyzeStructInline(funcFacts, programFacts) {
  *     (direct calls, no storage at all).
  *   - otherwise → a mutable f64 module global (`global.get` / `global.set`).
  *
+ * Escape-as-CALLEE vs escape-as-TABLE: `f`/`f.PROP` appearing as a call's
+ * callee (`f(...)`, `f?.(...)`, `f.prop(...)`, `f.prop?.(...)`) or as the
+ * exported value (`export`) hands out only the invoked/callable function
+ * VALUE — never a handle onto f's property table — so neither disqualifies.
+ * Every other bare mention of `f` (stored into a data structure, aliased
+ * `let g = f`, compared, an argument to anything but treated as a plain call
+ * position, `f[computed]`/`f?.[computed]`) COULD leak a reference the table
+ * is reachable through, so it still disqualifies (`start strict`: this is
+ * deliberately not trying to prove higher-order callback safety yet).
+ *
  * Returns `Map<funcName, { disq, props:Set, valRead:Set,
  * writes:Map<prop,[{rhs,atInit}]> }>` — `valRead` is the subset of props read
  * as a value (not merely called). `flattenFuncNamespaces` (plan.js) turns it
@@ -1626,22 +1636,29 @@ export function analyzeFuncNamespaces(ast) {
       return
     }
 
-    if (op === '()') {
+    // `f(...)` / `f?.(...)` and `f.PROP(...)` / `f.PROP?.(...)` — escape-as-
+    // CALLEE, not escape-as-table. Calling f (or a prop of f) hands the host/
+    // callee only the invoked function VALUE, never f's property table, so
+    // neither shape disqualifies. `prep()` keeps `?.()` a distinct op from
+    // `()` (same flattened-args shape — see prepare/index.js's `'?.()'`
+    // handler) — mirror both here, exactly as `boundSafeCalls` does.
+    if (op === '()' || op === '?.()') {
       const m = memberOf(node[1])
       if (m) rec(m[1]).props.add(m[2])
-      else if (!isFuncRef(node[1], funcNames)) visit(node[1], false)  // bare f(...) ok
+      else if (!isFuncRef(node[1], funcNames)) visit(node[1], false)  // bare f(...)/f?.(...) ok
       for (let i = 2; i < node.length; i++) visit(node[i], false)
       return
     }
 
     // `f.PROP` / `f?.PROP` as a plain value (read) — not the callee of a call
-    // (those are handled by the `()` branch above). A value-read means the
-    // property's stored value must stay retrievable; devirt cannot drop it.
+    // (those are handled by the `()`/`?.()` branch above). A value-read means
+    // the property's stored value must stay retrievable; devirt cannot drop it.
     const m = memberOf(node)
     if (m) { const r = rec(m[1]); r.props.add(m[2]); r.valRead.add(m[2]); return }
 
-    // Computed `f[k]` — the key set is no longer static.
-    if (op === '[]' && isFuncRef(node[1], funcNames)) {
+    // Computed `f[k]` / `f?.[k]` — the key set is no longer static: a genuine
+    // table escape (unlike computed CALL args, this reaches arbitrary props).
+    if ((op === '[]' || op === '?.[]') && isFuncRef(node[1], funcNames)) {
       rec(node[1]).disq = true
       for (let i = 2; i < node.length; i++) visit(node[i], false)
       return
