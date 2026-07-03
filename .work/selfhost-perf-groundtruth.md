@@ -759,3 +759,13 @@ EXPOSES two pre-existing strata that net-worsen the gates (fresh pin 1.05×→OO
    two loops + cross-module calls (mat4 repro), independent of _clear.
 Landing order when resumed: (1) forwarding registry, (2) OOB #2, (3) re-apply v2.
 Warm pin + json 22/22 + JZ_BENCH_WARM all block on this chain.
+
+## OPEN (next): in-kernel OPCODE-dict miscompile — 'Unknown instruction f64.nearest'
+String corruption fixed watr-side; residual 4 selfhost reds = kernel's embedded
+watr can't resolve f64.nearest (+1 empty-name, +1 vectorizer internal). Native
+watr green ⇒ jz miscompiles watr const.js's eager dict build
+(`for (...) typeof(item=TABLE[i])==='number' ? code=item : ([nm,imm]=item.split(' '),
+OPCODE[nm]=code++, ...)`) — suspects: comma-expr-in-ternary-arm value semantics,
+destructuring-from-split, code++ interleave. Reduce natively: jz-compile const.js
++ probe OPCODE['f64.nearest'] (same harness as the parse.id hunt, scratchpad
+tok-min.mjs pattern). Then the tone-map vectorizer 'empty value' internal.
