@@ -769,3 +769,11 @@ OPCODE[nm]=code++, ...)`) — suspects: comma-expr-in-ternary-arm value semantic
 destructuring-from-split, code++ interleave. Reduce natively: jz-compile const.js
 + probe OPCODE['f64.nearest'] (same harness as the parse.id hunt, scratchpad
 tok-min.mjs pattern). Then the tone-map vectorizer 'empty value' internal.
+
+UPDATE: const.js build-loop rewrite (canonical flat form, committed watr-side,
+watr suite 590 green) did NOT clear the f64.nearest kernel reds ⇒ the miscompile
+is in the LOOKUP path, not the dict build: compile.js's instr()/HANDLER consumers
+reading OPCODE/IMM (682-key heap-string dict reads in-kernel), or module state
+around them. Reduce: jz-compile const.js+probe first (rule out build in-kernel too),
+then compile.js's instr dispatch on a minimal (f64.nearest) module — same native
+differential harness. Tone-map vectorizer 'empty value' internal = separate 5th red.
