@@ -84,6 +84,28 @@ const SAMPLES = [
   ['math-sqrt',   'export let main = () => (Math.abs(Math.sqrt(2) - 1.4142135623730951) < 1e-9) | 0', 1],
   ['math-exp',    'export let main = () => (Math.abs(Math.exp(0.3) - 1.3498588075760032) < 1e-6) | 0', 1],
   ['math-expm1',  'export let main = () => (Math.abs(Math.expm1(0.3) - 0.3498588075760032) < 1e-6) | 0', 1],
+  // OPCODE-dict miscompile (2026-07): watr's packData (data-segment zero-run trim/merge/
+  // split, watr/src/optimize.js) corrupted jz's internStrings-encoded static data
+  // (src/compile/index.js buildInternTable: an 8-byte [hash u32][len u32] header + a
+  // sparse open-addressing intern-probe table, both zero-run-dense) — ONLY at self-host
+  // scale (native jz building dist/jz.wasm from the full self.js graph; a wrapped or
+  // reduced graph doesn't reproduce it). Surfaced as watr's OWN embedded instr() throwing
+  // "Unknown instruction f64.nearest" when the kernel compiled a program whose Math.exp/
+  // sin/cos/tan/pow/expm1/sinh lowering pulls in a WAT-TEXT stdlib template (module/
+  // math.js, parsed by watr's parser at KERNEL RUNTIME) containing that opcode name —
+  // never on Math.round's f64.nearest (a plain JS array-literal AST node, a different
+  // construction path const.js's OPCODE dict has no trouble matching). Bisected via
+  // optimize's object-config form on the exact self.js entry: {level:1, watr:true} and
+  // {level:2, watr:false} both compile the kernel correctly; watr + internStrings
+  // TOGETHER are required, and disabling watr's packData pass alone (its ~20 other
+  // passes + internStrings stay on) fixes it. Fixed in scripts/selfhost-build.mjs
+  // (optimize: {level, watr:{packData:false}}) — jz's own build orchestration choosing a
+  // watr config safe for self-compile, not a source workaround (watr is de-forked; jz
+  // doesn't patch it). math-exp/math-expm1 above already cover this path; sin/cos/pow
+  // add coverage for Math functions no other selfhost.js sample reaches.
+  ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
+  ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
+  ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
 ]
 
 for (const [label, src, expected] of SAMPLES) {

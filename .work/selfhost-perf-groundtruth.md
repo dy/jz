@@ -777,3 +777,106 @@ reading OPCODE/IMM (682-key heap-string dict reads in-kernel), or module state
 around them. Reduce: jz-compile const.js+probe first (rule out build in-kernel too),
 then compile.js's instr dispatch on a minimal (f64.nearest) module — same native
 differential harness. Tone-map vectorizer 'empty value' internal = separate 5th red.
+
+## RESOLVED — OPCODE-dict lookup miscompile root-caused to watr's packData + jz's internStrings
+
+**Both the dict build AND the dynamic lookup are individually correct** — proven by a
+native-differential harness (native jz compiling watr's const.js/compile.js, a probe
+driver, node_modules symlinked into scratch): `OPCODE['f64.nearest']` (literal key) and
+`watrCompile('(module (func (f64.nearest …)))')` (parser-tokenized key) both give 158 /
+match jz.js at every optimize level, even bundling the FULL self.js+watr graph (139
+modules, one level of native-jz compilation). The bug needs a SECOND property: **self.js
+must be the literal graph ENTRY** (`resolveModuleGraph(self.js)`, matching the real
+build exactly) — re-exporting it from a wrapper module (`export {default as compileSelf}
+from '…/self.js'`), or reaching watr's `const.js`/`watr.js` via an extra direct import
+(even one that resolves to the identical realpath through a different symlink chain),
+changes treeshake/dedup enough to hide the bug. `self-mirror.js` (self.js's own source,
+relative imports rewritten to absolute, entry unchanged, module count 130 matching the
+real build exactly) is the reliable native repro — one level of indirection cheaper than
+debugging the actual two-level-compiled kernel.
+
+**Bisecting `optimize`'s object-config form (`{level, watr, internStrings, …}`) on that
+exact entry found the minimal pair:** `{level:1, watr:true}` and `{level:2, watr:false}`
+BOTH compile the kernel correctly (native jz, one level); only watr's default pass suite
+**+ internStrings together** reproduce it — matching this codebase's established
+multi-factor self-host bug shape (session 3's −O2 comment-hang needed watr AND the Q1
+group together). **Disabling watr's `packData` pass alone** (its ~20 other passes +
+internStrings stay on) fixes it, at both the minimal bisection config and the real
+default level-2 config.
+
+**Mechanism (as far as pinned without editing watr):** `buildInternTable`
+(src/compile/index.js) gives interned static strings (5–32 bytes, `internStrings` on) an
+8-byte `[hash u32][len u32]` header instead of the plain 4-byte `[len u32]` one, plus a
+separate sparse open-addressing intern-probe table (`buildInternTable`) — both are
+zero-run-dense (a length/hash field's high bytes, empty probe-table slots). watr's
+`packData` (src/optimize.js) drops "long" interior zero runs from data segments,
+relying on wasm's implicit zero-init to restore them at instantiation — a generic,
+previously-safe size optimization that a small (~300-literal) native repro does NOT
+reproduce, so it needs the self-host kernel's actual interned-literal density/shape to
+misfire; the exact byte-level fault (which zero-run, which downstream read) wasn't
+pinned further given the "don't touch watr" constraint — there's nothing to patch
+locally, and characterizing it deeper only matters for an eventual upstream report.
+STRING CONTENT itself is never corrupted (confirmed: `op` arrives at watr's `instr()`
+with the exact right bytes — the error message interpolates `${op}` and prints
+`f64.nearest` correctly); watr's OWN parser tokenizes opcode names via `buf += str[i++]`
+(char-by-char concat, never `.slice()`, so `internStrings`' slice-probe never even sees
+watr's tokens) while jz's own array-literal AST nodes (Math.round's
+`['f64.nearest', …]`) never touch this path at all — explaining why Math.round was
+always immune while every OTHER f64.nearest site (all reached via a WAT-TEXT stdlib
+template — `module/math.js`'s `math.exp2`/`math.sin`/`math.cos` — parsed by watr's
+parser at KERNEL RUNTIME) tripped it.
+
+**Fix (scripts/selfhost-build.mjs):** wrap the self-host build's `optimize` level in
+`{level, watr: {packData: false}}` instead of the bare number/string. Kernel size
++37 KB (0.8%) from the disabled zero-trim; no other behavior change (watr's other
+~20 passes + internStrings stay on, matching every prior session's build-lever work).
+Pinned: `test/selfhost.js` gains `math-sin`/`math-cos`/`math-pow` samples (new coverage
+— `math-exp`/`math-expm1` already covered `math.exp2`'s WAT-text f64.nearest, but no
+prior sample reached `math.sin`/`math.cos`, whose f64.nearest lives directly in their
+OWN templates, or `Math.pow`'s general path).
+
+**Results:** `test/selfhost.js` 11/16 → **19/19** (16 original + 3 new samples; all 4
+f64.nearest-shaped reds fixed — math-sqrt/math-exp/math-expm1/LICM — warm-instance reuse
+was already green, contra this doc's "parked" note two sessions ago). `test/parser-
+bugs.js` 13/13, `test/statements.js` 183/183 unaffected (both gates only exercise
+native jz — this bug and fix are purely in the self-host BUILD orchestration).
+
+## OPEN (new, separate) — in-kernel typed-array-element comparison miscompile, blocks selfhost-perf.js
+
+Found while chasing the "tone-map vectorizer 'empty value'" 5th red (test/selfhost.js's
+last test): it is NOT SIMD-specific and NOT new — it's **pre-existing** (reproduces
+identically on a from-scratch kernel build with the bare `optimize:2` config, i.e.
+present before this session's packData fix and before it) and **much bigger blast
+radius than one test**: `test/selfhost-perf.js`'s two ratio-gate tests (`warm-instance`/
+`fresh-instance ≤ cap`) both THROW (not just measure high) on EVERY ONE of their 6 bench
+cases (mat4/fft/biquad/sort/crc32/mandelbrot) — the perf gate is currently
+**unmeasurable**, not merely over cap.
+
+**Minimal repro (native jz correct; kernel-only, at `optimize:'0'` — the level the
+running kernel uses to compile these bench cases, no watr/internStrings involved on
+that inner compile):**
+```js
+export let f = (samples, j) => samples[j] > 0
+export let main = () => { const s = new Float64Array(5); s[0] = 3; return f(s, 0) | 0 }
+```
+`jz(src).exports.f(new Float64Array([3,0,0,0,0]), 0)` → `true` at every native optimize
+level. Through the kernel (`compileSelf(src, 0, '0')`) → throws `compiler internal:
+expected emitted IR value in <module>, got empty value` (src/ir.js:57's `asF64` null
+guard — some `emit()` call in the comparison's codegen path returns `null`/`undefined`
+instead of an IR node). Same plain-array version (`const s = [3,0,0,0,0]`) compiles
+fine — **TYPED-array-element-in-comparison specifically**, not arrays/comparisons
+generally. Suspect (unconfirmed): `module/array.js`'s `ctx.core.emit['[]']` handler
+gates its typed-array fast path on `ctx.core.emit['.typed:[]']` truthiness — another
+dyn-prop-shaped lookup (`ctx.core.emit` is `derive(proto)`, grown across modules the
+same way `OPCODE`/`ctx.core.stdlibDeps` are) — worth checking first since it matches
+this session's whole pattern, but NOT bisected/proven the way the packData fix above
+was; treat as a fresh hunt, not a confirmed cause.
+
+**Impact:** blocks `test/selfhost-perf.js`'s ratio gates entirely (can't measure a
+ratio when the wasm throws mid-corpus). Does not affect the `test:self` build/sample
+gates (none of the 19 selfhost.js samples index a typed array in a comparison) or
+`test:matrix`/`test:262`/native perf (`test/perf-ratchet.js`, `test/bench.js`) — all
+native-only, unaffected. `test/differential.js` has one unrelated pre-existing red
+(`round half-integers: round(7) → jz 4 ≠ js 5`) also present before this session,
+confirmed unrelated (a native, non-self-host rounding-semantics test; nothing this
+session touched is on that path).
