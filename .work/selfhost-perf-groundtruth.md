@@ -1141,3 +1141,13 @@ mirror — config drift vs the real build path suspected, or a genuinely distinc
 second class. Disable stays until reduced the same way (extract failing kernel
 WAT → packData in isolation → byte-image diff → encode-stage bisect). Charter:
 same method as the ';' hunt, start from the 6 failing sample names.
+
+RETRACTION (2026-07-05): there is NO packData class 2. The 14/20 "residual" was
+class 1 through the PUBLISHED watr 5.1.0 tarball (released 07-03, BEFORE c90aa41
+landed) — the npm-install link-clobber landmine, third occurrence. Proven A/B:
+pre-fix 5.1.0 → 14/20 with exact class-1 signatures; watr HEAD → 20/20 full
+default config, five independent builds. watr got: generalized byte-image
+regression test + 5.1.1 version bump (6fff69b, 45a89e8) — PUBLISH PENDING (user).
+jz TODO once 5.1.1 published (or link guaranteed): bump dep, DELETE the packData
+disable in scripts/selfhost-build.mjs (deferred now only to avoid dist collision
+with the in-flight warm-chain agent).
