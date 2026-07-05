@@ -39,6 +39,75 @@ export const dynPropsFilterSetIR = (offExpr) =>
 export const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
+// The post-init high-water mark (see module/core.js's __heap_reset) as a WAT operand —
+// everything at/above it is EPHEMERAL (this compile's own arena, wiped by `_clear`);
+// everything below it is DURABLE (module-init state, survives `_clear` forever). Falls
+// back to a literal 0 (every offset reads as "ephemeral") when the module has no
+// `__heap_reset` global at all (no allocator, or shared memory, whose reset is a plain
+// HEAP.START rewind with no high-water-mark concept — see core.js). Read at
+// template-EXPANSION time (thunked callers only — see durableFwdLogIR/heapResetWat
+// consumers), so it observes the FINAL declaration state, not whatever was true when
+// collection.js's own module body first ran.
+export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(global.get $__heap_reset)' : '(i32.const 0)'
+
+// A growable ARRAY/HASH/SET/MAP relocates by leaving a forwarding header behind
+// (cap=-1 sentinel at off-4, new offset at off-8 — see layout.js's followForwardingWat).
+// That is only safe WITHIN one compile round: `_clear()` rewinds the arena but never
+// zeroes memory, so a forward written into a DURABLE header (offOld < __heap_reset,
+// i.e. the block predates this round) permanently points at an EPHEMERAL target that
+// the next round's allocations silently overwrite — any later chase through the
+// durable alias then lands on garbage or goes OOB (.work/selfhost-perf-groundtruth.md,
+// "array-growth forwarding is not _clear-safe"). Growing an EPHEMERAL block needs no
+// protection: everything reachable from it is ephemeral too, so the whole chain (old
+// header, new header, and every durable-side reference to it — there are none, by
+// construction) is reclaimed together at `_clear()`.
+//
+// Fix: at the grow/shift site, BEFORE writing the forward (while off/len/cap — the
+// header's pre-relocation state — are still live locals), log the durable→ephemeral
+// transition to a small resettable side-table (module/core.js's __durable_fwd_log/
+// __durable_fwd_heal) instead of (or rather: in addition to, so the in-round chase
+// still works) trusting the header alone. `_clear()` then HEALS each logged header
+// back to its exact pre-relocation (len, cap) — undoing the forward mark, so the
+// durable block reverts to self-contained, non-forwarding, and correct (its own
+// element/entry cells were never touched by the relocation; only the header words
+// were). This keeps followForwardingWat/__ptr_offset_fwd (the hot chase, ~25% of
+// self-host compile ticks) completely UNTOUCHED — the check only runs on the already-
+// cold relocation path, and the heal sweep only runs inside `_clear()`, bounded by
+// however many durable relocations happened that round (0 in the overwhelmingly
+// common case).
+//
+// Checks BOTH ends, not just "is off durable": a fresh `__alloc_hdr`/`__alloc_hdr_n`
+// target (grow, genUpsert/genUpsertGrow) is unconditionally ephemeral whenever the
+// source-durable check can even fire (any allocation live past `__start`'s tail-
+// capture is by construction >= the now-final `__heap_reset`), so newOff's own check
+// is redundant there — but `.shift()`'s "new" header is just `off + 8`, a position
+// INSIDE the same block, not a fresh allocation: ordinarily still durable (shifting a
+// durable array is legitimate, persistent state and must NOT be undone at `_clear`),
+// and only crosses into ephemeral in the one-in-8-bytes edge case where `off` sits
+// exactly at `__heap_reset - 8`. Requiring both conditions everywhere makes the
+// invariant self-evidently correct at every call site instead of relying on a
+// per-caller argument about what its "new" offset can be.
+// Emits nothing at all (not even a call site) when there's no `__heap_reset` to compare
+// against — shared memory's `__clear` is a plain rewind-to-HEAP.START with no high-water
+// mark (core.js), so EVERYTHING resets uniformly there and no state is ever "durable" to
+// begin with (a separate, pre-existing, documented gap — see core.js's shared-memory
+// `__clear` comment). Testing `ctx.scope.globals.has('__heap_reset')` directly (not just
+// deferring to heapResetWat()'s own `(i32.const 0)` fallback, which would still emit an
+// always-false-but-present call) matters for self-host inclusion: array.js's/
+// collection.js's deps() edges declare '__durable_fwd_log' unconditionally at every grow/
+// shift site, so core.js must ALSO unconditionally register the function whenever those
+// sites exist — but core.js only defines __durable_fwd_log/__durable_fwd_heal in the
+// owned-memory branch (they need __heap/__heap_reset, which shared memory doesn't have).
+// A shared-memory build reaching this function with the fallback would therefore
+// reference a never-registered stdlib name, tripping assemble.js's `internal: stdlib
+// '__durable_fwd_log' was requested but never registered` sanity check.
+export const durableFwdLogIR = (off, newOff, len, cap) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  return `
+    (if (i32.and (i32.lt_u (local.get $${off}) ${heapResetWat()}) (i32.ge_u (local.get $${newOff}) ${heapResetWat()}))
+      (then (call $__durable_fwd_log (local.get $${off}) (local.get $${len}) (local.get $${cap}))))`
+}
+
 // Clamp to the >=2 convention (0=empty slot, 1=tombstone) — shared by every hash
 // producer (SSO mix, byte-FNV, __jp_str, buildInternTable) so they all clamp identically.
 const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
@@ -221,6 +290,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
                 (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $rl)))
+        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
@@ -392,8 +462,12 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           // Forward-mark the old header (cap=-1 sentinel at -4, new offset at -8) and
           // keep the boxed pointer the caller holds: any alias resolves through
           // __ptr_offset. This preserves JS reference identity for a grown dict held in
-          // multiple places (e.g. ctx.core.emit), which remint cannot.
-          ? `(i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+          // multiple places (e.g. ctx.core.emit), which remint cannot. Log the pre-grow
+          // (off, size, cap) first (durableFwdLogIR — no-op unless $off predates this
+          // round) so `_clear` can heal a durable header instead of leaving it forwarded
+          // at an ephemeral target that the next round overwrites.
+          ? `${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))`
@@ -514,13 +588,26 @@ export default (ctx) => {
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
   const ifExt = (name) => () => ctx.features.external ? [name] : []
+  // Whether durableFwdLogIR emits a real call (vs '' — see its own comment): only when
+  // __heap_reset exists (owned-memory builds; shared memory never declares it — core.js).
+  // Gates the deps() edges below the SAME way, so a shared-memory build (where core.js
+  // never registers __durable_fwd_log/__durable_fwd_heal) never requests a name nothing
+  // delivers.
+  const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
   deps({
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
-    __set_add: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n'],
+    // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
+    // EXPLICIT edge, not left to the auto-dep scan — genUpsert/genUpsertGrow's
+    // `forward` branch always contains a durableFwdLogIR() call, but self-host's
+    // realize/regex-scan auto-deps path silently drops a helper reachable only that
+    // way (the "Unknown func $__clamp_idx" shape documented in
+    // test/selfhost-includes.js) — that test would fail (and the kernel would trap)
+    // without these edges.
+    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : [])],
     __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
     __set_delete: ['__map_hash', '__same_value_zero'],
-    __map_set: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n'],
+    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : [])],
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset'] : ['__map_set', '__ptr_offset'],
     __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset'] : ['__same_value_zero', '__ptr_offset'],
     __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
@@ -529,9 +616,10 @@ export default (ctx) => {
     __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
     __map_delete: ['__map_hash', '__same_value_zero'],
     __map_from: ['__ptr_type', '__ptr_offset', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
-    __hash_set: () => ctx.features.external
-      ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set']
-      : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set'],
+    __hash_set: () => [
+      ...(ctx.features.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
+      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
+    ],
     __hash_get: () => ctx.features.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop']
       : ['__str_hash', '__str_eq', '__ptr_type'],
@@ -543,7 +631,7 @@ export default (ctx) => {
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: ['__str_eq'],
-    __hash_set_local: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr'],
+    __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : [])],
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: ['__map_hash', '__alloc_hdr_n', '__mkptr'],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
@@ -1059,7 +1147,11 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEqG, PTR.HASH)
-  ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
+  // Thunked (not called eagerly) so genUpsertGrow's durableFwdLogIR reads
+  // heapResetWat()'s FINAL declaration state — see collection.js's heapResetWat
+  // comment; module load order isn't otherwise settled at the time this string
+  // would eagerly evaluate (same reasoning as module/core.js's __obj_clone).
+  ctx.core.stdlib['__hash_set_local'] = () => genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
   // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
   // Used as the bucket-level primitive for __dyn_del.
   ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)

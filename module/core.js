@@ -42,6 +42,8 @@ export default (ctx) => {
     __alloc_hdr_n: ['__alloc'],
     __coll_order: ['__alloc'],
     __obj_clone: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr'],
+    __durable_fwd_log: ['__alloc'],
+    __durable_fwd_heal: [],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -385,6 +387,46 @@ export default (ctx) => {
     // reachableStdlib runs, so the reset is injected post-hoc once that's settled.
     ctx.core.stdlib['__clear'] = `(func $__clear
       (global.set $__heap (global.get $__heap_reset)))`
+
+    // Durable relocation log — see collection.js's durableFwdLogIR for the full
+    // rationale (array/hash/set/map growth forwards a DURABLE header into an
+    // EPHEMERAL new block; `_clear` must heal that back before rewinding the arena
+    // or the durable alias dangles forever). `__durable_fwd_buf` is allocated
+    // lazily (raw `__alloc`, no forwarding-capable header of its own — it must
+    // never recurse into the bug it exists to fix) on the first durable grow of a
+    // round; `__durable_fwd_heal` (wired into `__clear` post-hoc, see
+    // src/wat/assemble.js) restores every logged header to its pre-grow (len, cap)
+    // and resets both globals to 0 so the buffer is re-allocated fresh next round —
+    // it only needs to survive from "logged this round" to "healed at this round's
+    // `_clear`", never across a reset. 256 entries is a trap-on-overflow ceiling
+    // for a count that is 0 in the overwhelmingly common program (real durable-
+    // growth sites are a handful of compiler-internal structures, not user data).
+    declGlobal('__durable_fwd_buf', 'i32')
+    declGlobal('__durable_fwd_n', 'i32')
+    ctx.core.stdlib['__durable_fwd_log'] = `(func $__durable_fwd_log (param $off i32) (param $len i32) (param $cap i32)
+      (local $base i32) (local $n i32)
+      (if (i32.eqz (global.get $__durable_fwd_buf))
+        (then (global.set $__durable_fwd_buf (call $__alloc (i32.const 3072)))))
+      (local.set $n (global.get $__durable_fwd_n))
+      (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
+      (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $n) (i32.const 12))))
+      (i32.store (local.get $base) (local.get $off))
+      (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
+      (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $cap))
+      (global.set $__durable_fwd_n (i32.add (local.get $n) (i32.const 1))))`
+    ctx.core.stdlib['__durable_fwd_heal'] = `(func $__durable_fwd_heal
+      (local $i i32) (local $n i32) (local $base i32) (local $off i32)
+      (local.set $n (global.get $__durable_fwd_n))
+      (block $done (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $i) (i32.const 12))))
+        (local.set $off (i32.load (local.get $base)))
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.load (i32.add (local.get $base) (i32.const 4))))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load (i32.add (local.get $base) (i32.const 8))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+      (global.set $__durable_fwd_n (i32.const 0))
+      (global.set $__durable_fwd_buf (i32.const 0)))`
   }
 
   // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH

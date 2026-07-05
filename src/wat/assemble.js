@@ -674,8 +674,12 @@ export function pullStdlib(sec) {
       // into every such program, wasting bytes and leaking the __dyn_get_cache_*
       // names into WAT text that never otherwise mentions dynamic props (tripping
       // coarse `!/__dyn_get/.test(wat)`-style assertions — see test/closures.js).
+      // Both blocks below extend the SAME `__clear` body — accumulate into one
+      // shared list and rebuild once, so whichever runs second doesn't clobber the
+      // other's addition (a program can need both: dyn-props AND durable-growth
+      // relocation both reach here independent of each other).
+      const resets = []
       if (ctx.core.includes.has('__dyn_set')) {
-        const resets = []
         if (ctx.scope.globals.has('__dyn_props')) resets.push(`(global.set $__dyn_props (f64.const 0))`)
         // The membership filter mirrors the table: emptying __dyn_props makes every
         // set bit a stale false-positive — safe, but a warm compile-clear loop would
@@ -683,10 +687,33 @@ export function pullStdlib(sec) {
         if (ctx.scope.globals.has('__dyn_props_filter')) resets.push(`(global.set $__dyn_props_filter (i64.const 0))`)
         if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const -1))`)
         if (ctx.scope.globals.has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
-        if (resets.length) ctx.core.stdlib['__clear'] = `(func $__clear
+      }
+      // Durable relocation heal (collection.js's durableFwdLogIR / core.js's
+      // __durable_fwd_log/__durable_fwd_heal): only reachable when some growable
+      // ARRAY/HASH/SET/MAP relocation site actually logged a durable→ephemeral
+      // forward this build — see durableFwdLogIR's header comment for the full
+      // rationale. Must run before the next round can allocate over the logged
+      // ephemeral targets, so it belongs in `__clear` alongside the arena rewind
+      // (order vs the rewind itself doesn't matter — `_clear` never zeroes memory,
+      // only moves the bump pointer — but keeping it grouped with the other resets
+      // reads as "finish with this round's bookkeeping, then reclaim its arena").
+      if (ctx.core.includes.has('__durable_fwd_log')) {
+        // __durable_fwd_heal is called ONLY from this injected `__clear` text — it has
+        // no OTHER call site for reachableStdlib (line ~582, already run) to have found
+        // it through, so (unlike __durable_fwd_log itself, whose deps() edges at every
+        // grow/shift call site make it self-host-robust — see test/selfhost-includes.js)
+        // it needs an explicit include here, mirroring the `__alloc`/`__alloc_hdr`/
+        // `__clear` late-add just above. `inc()`, not a raw `ctx.core.includes.add()`:
+        // the former is what test/selfhost-includes.js's source-scan recognizes as an
+        // explicit (self-host-safe) edge. No further resolveIncludes() needed:
+        // __durable_fwd_heal's body calls nothing else (raw i32 loads/stores + global
+        // get/set only).
+        inc('__durable_fwd_heal')
+        resets.push(`(call $__durable_fwd_heal)`)
+      }
+      if (resets.length) ctx.core.stdlib['__clear'] = `(func $__clear
           (global.set $__heap (global.get $__heap_reset))
           ${resets.join('\n          ')})`
-      }
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not
     // just the default 1 — otherwise a module whose constants exceed 64 KiB emits a data

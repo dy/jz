@@ -17,7 +17,7 @@ import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, i
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
-import { strHashLiteral, dynPropsFilterSetIR } from './collection.js'
+import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR } from './collection.js'
 
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
@@ -198,11 +198,23 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
 }
 
 const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
+// Whether durableFwdLogIR emits a real call (vs '' — see its own comment): only when
+// __heap_reset exists (owned-memory builds; shared memory never declares it — core.js).
+// Gates the deps() edge below the SAME way, so a shared-memory build (where core.js
+// never registers __durable_fwd_log/__durable_fwd_heal) never requests a name nothing
+// delivers — see collection.js's durableFwdLogIR comment for the full rationale.
+const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
 // knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
 // arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
+// '__durable_fwd_log' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's
+// body always contains a durableFwdLogIR() call, but self-host's realize/regex-scan
+// auto-deps path silently drops a helper reachable only that way (the exact
+// "Unknown func $__clamp_idx" shape documented in test/selfhost-includes.js) — that
+// test would fail (and the kernel would trap) without this line.
 const arrayGrowDeps = (knownArray = false) => () => [
   ...(knownArray ? ['__ptr_offset_fwd'] : ['__ptr_type', '__ptr_offset']),
   '__alloc_hdr', '__mkptr',
+  ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
 ]
 
@@ -268,6 +280,7 @@ export default (ctx) => {
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
       '__ptr_offset',
+      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
     __arr_fill: ['__ptr_offset', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
@@ -502,6 +515,7 @@ export default (ctx) => {
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
+    ${durableFwdLogIR('off', 'newOff', 'len', 'oldCap')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
@@ -1057,6 +1071,21 @@ export default (ctx) => {
   ctx.core.emit['.shift'] = (arr) => (inc('__arr_shift'),
     typed(['call', '$__arr_shift', asI64(emit(arr))], 'f64'))
 
+  // durableFwdLogIR on the off->newOff mark below: unlike grow (whose newOff is always
+  // a FRESH allocation, unconditionally ephemeral whenever off reads durable), shift's
+  // newOff is just off+8 — normally still in the SAME durability class as off, so a
+  // shift of a durable array is ordinarily legitimate persistent state that must survive
+  // `_clear`. It only crosses into ephemeral in the one-in-8-bytes edge case where off
+  // sits exactly at __heap_reset-8, which durableFwdLogIR's two-sided check (source
+  // durable AND target ephemeral) catches without misfiring on the common case.
+  // rawOff's OWN path-compression rewrite (off->newOff becomes rawOff->newOff two lines
+  // below the mark) needs no separate log call: if rawOff is durable, its header no
+  // longer holds real (len, cap) at this point — it already holds a forward — so
+  // whichever EARLIER relocation first turned rawOff from real data into a forward
+  // record (the only place a durable rawOff's true pre-relocation state could still be
+  // read) already logged it then, under its own off/newOff names. Healing restores
+  // rawOff's header wholesale from that entry, independent of how many times its
+  // forward target is rewritten afterward by path compression.
   ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
     (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
@@ -1077,8 +1106,11 @@ export default (ctx) => {
             (i32.store (i32.add (local.get $off) (i32.const 4))
               (select (i32.sub (local.get $cap) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $cap) (i32.const 0))))
             ${maybeDynMoveIR()}
+            ${durableFwdLogIR('off', 'newOff', 'len', 'cap')}
             (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
             (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+            ;; rawOff path-compression below needs no durableFwdLogIR call of its own —
+            ;; see the comment above this function.
             (if (i32.and (i32.ne (local.get $rawOff) (local.get $off)) (i32.ge_u (local.get $rawOff) (i32.const 8)))
               (then
                 (i32.store (i32.sub (local.get $rawOff) (i32.const 8)) (local.get $newOff))

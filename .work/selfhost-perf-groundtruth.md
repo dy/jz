@@ -1151,3 +1151,134 @@ regression test + 5.1.1 version bump (6fff69b, 45a89e8) — PUBLISH PENDING (use
 jz TODO once 5.1.1 published (or link guaranteed): bump dep, DELETE the packData
 disable in scripts/selfhost-build.mjs (deferred now only to avoid dist collision
 with the in-flight warm-chain agent).
+
+## Warm-chain session (2026-07-05): forwarding fixed + validated; durable-dynprops
+## v2 re-applied then reverted — a NEW self-host-only miscompile, precisely bisected
+
+**Root cause #1 (array/hash/set/map growth forwards a DURABLE header into an
+EPHEMERAL target) — FIXED, validated, landed.** Design: a durable relocation LOG,
+not a registry consulted by the chase (keeps followForwardingWat/__ptr_offset_fwd
+— ~25% of compile ticks — completely untouched, per the charter's preference).
+At every forward-mark site (array.js's `arrGrow` shared by __arr_grow/
+__arr_grow_known, `__arr_shift`; collection.js's `genUpsert` shared by __set_add/
+__map_set, `genUpsertGrow` shared by __hash_set_local/__hash_set), BEFORE the
+existing forward-mark stores, a new check `durableFwdLogIR(off, newOff, len, cap)`
+(module/collection.js) tests **both** ends — `off < __heap_reset` (source is
+durable) **and** `newOff >= __heap_reset` (target is ephemeral) — and if both hold,
+calls a new `$__durable_fwd_log(off, len, cap)` (module/core.js) that appends to a
+tiny raw side-buffer (lazily `__alloc`'d, 256-entry trap-on-overflow ceiling, no
+forwarding-capable header of its own so it can't recurse into the bug it exists to
+fix). `_clear` (post-hoc rebuild in src/wat/assemble.js, alongside the existing
+__dyn_props reset — refactored to a single shared `resets` array so the two
+independent reset blocks compose instead of clobbering) now also calls
+`$__durable_fwd_heal`, which restores every logged header's exact pre-relocation
+`(len, cap)` — undoing the forward mark — then zeroes both log globals so the
+buffer re-allocates fresh next round. Two-sided check (not just "is off durable")
+matters for `.shift()` specifically: its "new" header is `off+8`, INSIDE the same
+block, not a fresh allocation, so it's ordinarily still durable (shifting a durable
+array is legitimate persistent state that must survive `_clear` — only the
+one-in-8-bytes edge case where `off` sits at `__heap_reset-8` crosses into
+ephemeral); grow's newOff is unconditionally a fresh `__alloc_hdr` call so the
+second condition is provably redundant there, but checking it anyway makes the
+invariant self-evidently correct at every site instead of a per-caller argument.
+All four call sites needed an EXPLICIT `deps()` edge for `__durable_fwd_log` (not
+left to the auto-dep scan) — this is the *exact* `test/selfhost-includes.js`
+"Unknown func $__clamp_idx" shape: the new helper is reachable only via a template
+body reference, and self-host's realize/regex-scan auto-deps path silently drops
+that. Also gated (`needsDurableFwdLog`/shared-memory check) so a shared-memory
+build — which never declares `__heap_reset`, hence `durableFwdLogIR` emits `''`,
+no call at all — never requests a name core.js never registers there (a real
+regression caught by `test/mem.js`'s shared-memory suite, fixed by making the
+IR-emit function itself (not just its runtime condition) test
+`ctx.scope.globals.has('__heap_reset')` and emit nothing when absent).
+**Validated:** native suite 2626/2654 (same 27 pre-existing reds with or without,
+confirmed via worktree A/B — `perf-ratchet: buf`, `devirt`, SROA, regex-stress,
+Math.cbrt(27), the opt3-only `Math.imul(Math.min(Math.sqrt(negative)))` fuzz
+seed=30 NaN-vs-0 case, all reproduce identically at clean HEAD); test/selfhost.js
+20/20; test/selfhost-perf.js fresh-instance gate MEASURABLE at 1.34–1.37× (matches
+the pre-session ~1.35 baseline, no regression); `scripts/bench-selfhost.mjs` fresh
+21/22 (aos OOMs fresh, pre-existing), geomean 1.44×.
+
+**Root cause #2 (durable-dynprops-v2) — RE-ANCHORED, NATIVELY CORRECT, BUT BLOCKED
+by a new self-host-only OOB — reverted, not landed.** Re-applied
+`.work/durable-dynprops-policy-v2.patch`'s design onto current files by hand
+(`git apply` conflicted on module/collection.js — patch's own heapResetWat
+insertion point now collided with root-cause-#1's; module/core.js — deps-block
+context shifted; module/object.js — `storedValue` was rewritten to the
+materialize-once shape by the emit.js session, changing `emitEnumerateObject`'s
+surrounding text — `module/json.js` and `test/perf.js` applied cleanly, no
+drift there). Native result: **fully correct** — 2626/2654 (same pre-existing
+reds), test/objects.js 116/116 (incl. the "dynamically-added props… carry over"
+dyn-clone case), test/json.js 60/60, test/mem.js 46/46, test/selfhost-includes.js
+green after adding the same explicit-deps treatment root-cause-#1 needed
+(`__dyn_get_t_h`'s new durable-read block calls `$__hash_get_local_h` — added to
+its deps() list; the `__clear`-only `$__durable_fwd_heal`/schema-arm-style
+late-adds already covered by root-cause-#1's `inc()` pattern).
+
+**Self-hosted: fresh-instance corpus compile traps `memory access out of bounds`
+on EVERY case (mat4 alone reproduces it, no `_clear` involved — this is NOT the
+warm-reuse dangling-cache class, a strictly earlier failure).** Bisected by
+selectively reverting each of the four touched functions (one at a time, rebuild,
+retest against the minimal `mat4`-through-kernel repro) since the native suite
+gave zero signal (100% green throughout): `__dyn_set`, `__obj_clone`,
+`__dyn_del` — each independently reverted, crash PERSISTS. Only reverting
+`__dyn_get_t_h`'s new durable-receiver read block fixes it. Ruled out inside
+that block, in order: (1) build-optimize level — crashes identically at kernel
+`optimize:2` (default), `:1`, and `:false` (pure mechanical translation, no
+optimizer pass involved at all — rules out the project's usual "-O2 self-host
+miscompile" pattern entirely); (2) duplicate non-nested WAT label names
+(`buildObjectSchemaArm`'s hardcoded `$kdone`/`$kloop` now emitted from TWO call
+sites in one function) — gave every call site a `ctx.func.uniq++`-suffixed
+unique label (mirroring `emitEnumerateObject`'s `id` pattern) — crash persisted
+unchanged, so NOT a label collision; (3) the new global-table probe
+(`__ihash_get_local`/`__is_nullish`/`__hash_get_local_h` reached via
+`dynPropsFilterMissIR`) — removing it alone (keeping the sidecar-check +
+`buildObjectSchemaArm()`) still crashes; (4) the sidecar-check — removing it
+alone (keeping the global probe + schema-arm) still crashes; (5) narrowed to
+**`buildObjectSchemaArm()` itself, called from this one new position, with
+every other piece of the block removed** (just the global probe, no sidecar, no
+schema-arm → does NOT crash, but silently returns wrong values — a source string
+gets visibly corrupted, `median` → `m̭edian`, i.e. omitting the schema fallback
+is a real correctness bug on its own, not a safe simplification); re-adding
+*only* `buildObjectSchemaArm()` (global probe + schema-arm, no sidecar) →
+crashes; global probe alone with schema-arm removed entirely (not just skipped)
+→ does not crash. So the crash needs `buildObjectSchemaArm()` called from
+`__dyn_get_t_h`'s new (early, pre-array-chase-adjacent) position specifically,
+independent of duplication, independent of optimize level. **Not root-caused
+further** — `$off` is provably identical at the new vs. original call position
+for an OBJECT receiver (nothing between function entry and the new position
+touches `$off` for non-CLOSURE non-ARRAY types), so the "why" remains open.
+Given the hard gate (fresh must stay measurable, must not regress) leaves no
+room to ship a fresh-instance trap, **v2 was reverted in full** (collection.js
+restored to HEAD then root-cause-#1's pieces only were re-applied cleanly;
+core.js's `__obj_clone` reverted to its pre-patch body; object.js restored to
+HEAD; json.js and test/perf.js `git checkout`'d back to HEAD) rather than
+shipped broken or left half-applied (which would have desynced __dyn_set's
+write-target from __dyn_get_t_h's read-source — worse than not landing it at
+all). `.work/durable-dynprops-policy-v2.patch` itself is untouched and remains
+the correct starting point.
+
+**Net effect on the warm-instance gate: unchanged from session start.**
+`test/selfhost-perf.js`'s warm-instance gate and `JZ_BENCH_WARM=1
+scripts/bench-selfhost.mjs` (0/22, every case `warm-trap` on `Unknown memory
+end`) still fail exactly as documented above ("json warm-trap… INSTR sidecar")
+— root-cause-#1 alone was never going to fix that class (it protects
+off-4/off-8 growth-forwarding; the INSTR landmine is an off-16 dyn-props-sidecar
+issue, v2's actual target) — and v2, the fix for THAT class, is blocked by the
+self-host-only bug above. **Next session: root-cause the
+`buildObjectSchemaArm`-from-new-position OOB** (try: native-differential harness
+compiling collection.js as a literal self.js-style entry, one level of
+indirection cheaper than the two-level kernel, per this doc's own established
+technique; or instrument `$sid`/`$kbits`/`$koff`/`$nkeys`/`$idx` with exported
+counters at kernel runtime to see which one diverges) **then re-apply v2**
+(the patch/design needs no changes — only this kernel-only reader bug blocks
+it). Files this session: module/array.js, module/collection.js, module/core.js,
+src/wat/assemble.js (all landed, root-cause-#1 only) — module/object.js,
+module/json.js, test/perf.js untouched (reverted back to HEAD, matching git
+status). Also fixed in-passing: `node_modules/watr` had silently drifted to the
+pre-c90aa41 published 5.1.0 tarball (this session's OWN clean-baseline check
+caught it independently of the "packData-on residual" entry above) —
+`npm link watr` unblocked test/selfhost.js from 14/20 to 20/20 before any of
+this session's own code changes; superseded mid-session by the real 5.1.1
+publish (this doc's entry above), final state uses the published dependency,
+not the link.
