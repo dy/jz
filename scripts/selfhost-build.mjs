@@ -31,27 +31,12 @@ const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
 const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
 const HELPER_SITE_FILTER = /^(1|true|yes)$/i.test(HELPER_SITES) ? 'ptr_offset' : HELPER_SITES
 const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT : +SELF_OPT)
-// watr's packData (data-segment zero-run trim/merge/split, src/optimize.js) miscompiles
-// the kernel's OWN interned static-string data (internStrings pass, src/compile/index.js
-// buildInternTable: [hash u32][len u32][bytes] statics + a sparse open-addressing intern
-// probe table — both zero-run-dense) at self-host scale. Surfaces as the kernel's embedded
-// watr throwing "Unknown instruction f64.nearest" (OPCODE dyn-prop lookup miss) when the
-// running kernel compiles a program whose Math.exp/sin/cos/tan/pow/expm1 lowering pulls in
-// a WAT-text stdlib template (module/math.js) containing that opcode name — the template
-// text is tokenized by watr's OWN parser at KERNEL RUNTIME, unlike Math.round's f64.nearest
-// (a plain JS array-literal AST node, never miscompiled). Isolated by bisecting the OPTIMIZE
-// pass config against the exact self.js module graph (native jz compiling self.js AS THE
-// LITERAL ENTRY — wrapping it in another module changes reachability/dedup enough to hide
-// the bug): {level:1, watr:true} and {level:2, watr:false} both compile the kernel correctly;
-// watr + internStrings TOGETHER are required, and disabling packData alone (watr's other
-// ~20 passes + internStrings stay on) fixes it at both the minimal and the real level-2
-// config. Root cause lives in watr/optimize.js's packData; jz doesn't fork watr anymore
-// (de-forked), so this is jz's own build orchestration choosing a safe watr config for its
-// self-compile, not a source workaround. See .work/selfhost-perf-groundtruth.md.
+// packData corruption was root-caused watr-side (isDroppable ';'-comment guard,
+// fixed in watr 5.1.1 with byte-image regression tests) — full default config again.
 const wasm = compile(g.code, {
   modules: g.modules,
   memory: 8192,
-  optimize: selfOptLevel === false ? false : { level: selfOptLevel, watr: { packData: false } },
+  optimize: selfOptLevel,
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
