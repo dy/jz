@@ -1132,3 +1132,12 @@ SROA, uncatchable-throw, `perf-ratchet: buf`, …) either way; `test/differentia
 jz.wasm`. Files: `src/compile/emit.js` (the fix), `src/compile/emit-assign.js` +
 `module/object.js` (`storedValue`, same class), `src/compile/index.js` (default-param
 init, same class), `test/parser-bugs.js` (pin).
+
+## packData-on residual (2026-07-05): SECOND corruption class
+watr c90aa41 (';'-comment fix, pinned) is at HEAD and necessary but NOT
+sufficient: real kernel build with full default watr config → selfhost 14/20
+(6 reds). The reducing agent's 20/20 packData-on verification used a scratch
+mirror — config drift vs the real build path suspected, or a genuinely distinct
+second class. Disable stays until reduced the same way (extract failing kernel
+WAT → packData in isolation → byte-image diff → encode-stage bisect). Charter:
+same method as the ';' hunt, start from the 6 failing sample names.
