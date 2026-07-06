@@ -1292,3 +1292,17 @@ preEval: SHA-identical kernels (and self.js never ran it in-kernel). subscript:
 not cleanly separable but dyn-chain growth tracks watr, not subscript.
 Actionable upstream: diff watr optimize.js/compile.js 5.0.0→5.1.1 heuristics for
 the two named pools; pin kernel-helper-elimination as a watr perf regression test.
+
+## Heuristic hunt status (2026-07-06): dedupe-deferral fix INERT on the kernel
+watr probe harness committed (test/jz-kernel-perf.mjs — 129s build, WATR_ROOT A/B,
+counters). The dedupe×specializeParams deferral fix (uncommitted in watr
+src/optimize.js) verified on its synthetic probe but changes NOTHING on the
+kernel: dyn_get_t_h 158,187 / typed_idx 100,427 — byte-for-byte the broken-5.1.1
+counts; ratio 1.441x. Either the deferred groups don't carry these calls or
+inlineOnce declines them (check: soleCaller's callRefs may count calls from
+functions treeshake hasn't dropped yet, or the groups' members are pinned/multi-
+caller on the real kernel). NEXT: instrument dedupe on the KERNEL build — log
+deferred-group count + member names; if 0/near-0, the guilty heuristic is
+elsewhere (candidates: inlineOnce's own caps vs 5.0.0, macro-inline gate,
+export-rooted liveness keeping wrappers alive). The 47-min build scare was box
+contention (129s quiet); rounds are capped at 6 — no fixpoint pathology.
