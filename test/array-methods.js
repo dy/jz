@@ -985,3 +985,43 @@ test('typed array from literal: native build, no f64 round-trip', () => {
   ok(!/f64\.store/.test(wat), 'no f64.store: integer literal stored as i32 directly, not via a boxed-f64 array')
   ok(!/\(loop/.test(wat), 'no copy loop: each element stored inline')
 })
+
+// `.every()` on a typed-array FIELD of a heap-returned object crashes the
+// compiler ("internal: Cannot read properties of null (reading '0')", isLit via
+// emit) — the receiver's element type flows through an object schema, not a
+// local binding. The same call on a bare local Float32Array compiles fine, and
+// direct `.norm.every(...)` property access crashes identically to the
+// destructured form. Live instance: time-stretch/psola.js
+// (`norm.every((v) => v <= 1e-8)` on a render()-returned buffer pair).
+// Flip `test.todo` → `test` when fixed.
+test.todo('every: typed-array field of heap-returned object', () => {
+  const { test } = runHost(`
+    let render = (n) => {
+      let norm = new Float32Array(n)
+      for (let i = 0; i < n; i++) norm[i] = 0
+      return { norm }
+    }
+    export let test = (n) => {
+      let { norm } = render(n)
+      if (norm.every((value) => value <= 1e-8)) return 1
+      return 0
+    }`)
+  is(test(4), 1)
+})
+
+// `typedArray.set(src)` on an array held in a DYNAMICALLY-ADDED struct field is a
+// silent no-op — the store compiles but writes nowhere, so the field keeps zeros.
+// The same `.set` on a local binding or a literal-schema field works. Live instance:
+// time-stretch pvoc/pvoc-lock/transient (`state.prev = new Float64Array(n)` on the
+// stftBatch state object, then `state.prev.set(phase)` each frame — WASM output
+// silently diverges from JS). Flip `test.todo` → `test` when fixed.
+test.todo('set: into typed-array field added dynamically to an empty object', () => {
+  const { f } = runHost(`export let f = () => {
+    const s = {}
+    s.a = new Float64Array(4)
+    const b = new Float64Array([1, 2, 3, 4])
+    s.a.set(b)
+    return s.a[0] * 1000 + s.a[3]
+  }`)
+  is(f(), 1004)
+})

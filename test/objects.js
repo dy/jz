@@ -6,6 +6,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64 } from '../interop.js'
+import { onWasi } from './_matrix.js'
 import { run } from './util.js'
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {
@@ -1337,4 +1338,59 @@ test('spread copy: dynamically-added props on the source carry over, independent
     }
   `)
   is(r.go(), 1169)
+})
+
+// Two Map caches holding DIFFERENT struct schemas that share a field name ('perm'
+// here, at different slot positions) — reading the field through one cache returns
+// zeros: the slot resolves against the other schema's layout. Deleting the unused
+// second shape fixes the first. Live instance: fourier-transform/index.js — the
+// split-radix `cache` entry {x, spectrum, complex, bSi, tw, stages, perm} vs the
+// complex-FFT `cCache` entry {perm, twRe, twFwd, twInv} silently zeroed fft() output
+// end-to-end. Flip `test.todo` → `test` when fixed.
+test.todo('shape collision: same field name in two Map-cached schemas reads the right slot', () => {
+  const r = run(`
+    const cacheA = new Map()
+    const cacheB = new Map()
+    function makeA(n) {
+      const x = new Float64Array(n)
+      const perm = new Uint32Array(n)
+      for (let i = 0; i < n; i++) perm[i] = n - 1 - i
+      const e = { x, perm }
+      cacheA.set(n, e)
+      return e
+    }
+    function makeB(n) {
+      const twRe = new Float64Array(n)
+      const perm = new Uint32Array(n)
+      for (let i = 0; i < n; i++) perm[i] = i
+      const e = { perm, twRe }
+      cacheB.set(n, e)
+      return e
+    }
+    export function g(n) {
+      const e = cacheB.get(n) || makeB(n)
+      return e.perm[0] + e.twRe[0]
+    }
+    export function f(n) {
+      const e = cacheA.get(n) || makeA(n)
+      let s = 0
+      for (let i = 0; i < n; i++) s = s * 10 + e.perm[i]
+      return s
+    }
+  `)
+  is(r.f(8), 76543210)
+})
+
+// Optional chaining on a host-marshalled object arg always yields undefined —
+// `o?.factor` reads nothing while plain `o.factor` on the same arg works, so the
+// idiomatic `opts?.x ?? dflt` silently collapses to the default. Live instance:
+// every @audio/stretch-* entry (`opts?.factor ?? 1` → WASM always stretched by 1×,
+// compiled and ran without any error). Flip `test.todo` → `test` when fixed.
+test.todo('optional chain reads a marshalled object arg like a plain member read', () => {
+  if (onWasi()) return  // wasi: js-object arg
+  const opt = run(`export let f = (o) => o?.factor ?? 1`)
+  const plain = run(`export let f = (o) => o.factor ?? 1`)
+  is(plain.f({ factor: 2 }), 2)
+  is(opt.f({ factor: 2 }), 2)
+  is(opt.f(null), 1)
 })
