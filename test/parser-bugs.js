@@ -285,3 +285,16 @@ test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function co
         export let main = () => medianUs([3.5])
     `).exports.main(), 3)
 })
+
+test('?.() on a statically-lifted func-prop direct-calls (dead-write-drop pair)', () => {
+    // The drop-dead-write plan assumes `f.prop(...)` call sites lower to direct
+    // calls; the `?.()` emitter lacked that static arm, so the write was dropped
+    // AND the read went to the never-written dyn table → undefined.
+    const src = `const p = (s) => s
+p.step = (x) => x * 2
+export let main = () => p.step?.(21)`
+    for (const optimize of [false, true]) is(jz(src, { optimize }).exports.main(), 42)
+    // nullish/unknown shapes keep short-circuiting
+    is(jz('const p = (s) => s\nexport let main = () => p.nope?.(1) === undefined ? 1 : 0').exports.main(), 1)
+    is(jz('let f = null\nexport let main = () => f?.() === undefined ? 1 : 0').exports.main(), 1)
+})

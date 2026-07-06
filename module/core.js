@@ -1173,6 +1173,20 @@ export default (ctx) => {
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
   ctx.core.emit['?.()'] = (callee, ...args) => {
+    // Statically-lifted func-prop callee: `p.step?.()` where prepare lifted
+    // `p.step = arrow` into the named function `p$step`. Non-nullish by
+    // construction, so the optional is moot — delegate to the full `()` dispatch
+    // (direct call). Without this arm the dead-write-drop plan (which assumes
+    // call sites lower to direct calls) drops the write while this emitter read
+    // the never-written dyn table → undefined. multiProp (reassigned) slots stay
+    // dynamic: their live value is the prop-global and may legitimately be nullish.
+    if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string') {
+      const base = ctx.scope.chain[callee[1]] || callee[1]
+      if (ctx.func.names.has(`${base}$${callee[2]}`) && !ctx.func.multiProp.has(`${base}.${callee[2]}`)) {
+        const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+        return asF64(ctx.core.emit['()'](callee, callArgs))
+      }
+    }
     // Method-reference callee: `recv.m(...)` or `recv?.m(...)` form. Methods are
     // statically registered emitters and aren't real closure values, so route them
     // as a direct method call. The outer optional short-circuits when the receiver
