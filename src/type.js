@@ -552,31 +552,49 @@ const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
 const INT_CLOSED_OPS = new Set(['+', '-', '*'])  // `%` handled separately — int only for nonzero divisor
 const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
 
-function collectIntDefs(body) {
+// `capturedNames`, when given, additionally folds in defs found INSIDE nested
+// arrow bodies — but ONLY for names in that set, and only when found there;
+// the top-level (own-scope) collection below is completely unaffected either
+// way. Default callers (no `capturedNames`) get byte-identical behavior to
+// before: an ordinary local can't be assigned from inside a nested arrow
+// without becoming a closure capture, so stopping at `=>` is exact there. A
+// captured (boxed) variable is exactly the case where it CAN — its cell-type
+// decision (src/compile/index.js's closure-capture narrowing) needs those
+// writes too, wherever in the closure tree they live. Doesn't track arrow-body
+// shadowing (a same-named nested param/`let` re-declaring `name`) — same
+// direction of imprecision `boxedCaptures`' own `findMutations` already
+// accepts for the boxing decision itself: at worst this forgoes the i32 cell
+// fast path (falls back to the always-safe f64 cell), it can never mis-widen
+// an actually-non-integer write to i32.
+function collectIntDefs(body, capturedNames) {
   const defs = new Map()
-  const pushDef = (name, rhs) => {
+  const pushDef = (name, rhs, inArrow) => {
+    if (inArrow && !capturedNames.has(name)) return
     let list = defs.get(name)
     if (!list) { list = []; defs.set(name, list) }
     list.push(rhs)
   }
-  const collect = (node) => {
+  const collect = (node, inArrow) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
-    if (op === '=>') return
+    if (op === '=>') {
+      if (capturedNames && capturedNames.size) collect(args[1], true)
+      return
+    }
     if (op === 'let' || op === 'const') {
       for (const a of args)
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2])
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2], inArrow)
     } else if (op === '=' && typeof args[0] === 'string') {
-      pushDef(args[0], args[1])
+      pushDef(args[0], args[1], inArrow)
     } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
                !CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
-      pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
+      pushDef(args[0], [op.slice(0, -1), args[0], args[1]], inArrow)
     } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
-      pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
+      pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]], inArrow)
     }
-    for (const a of args) collect(a)
+    for (const a of args) collect(a, inArrow)
   }
-  collect(body)
+  collect(body, false)
   return defs
 }
 
@@ -623,9 +641,13 @@ function makeIsIntExpr(intCertain) {
   }
 }
 
-/** Monotone fixpoint over binding defs in `body`. Map name → intCertain. */
-export function intCertainMap(body) {
-  const defs = collectIntDefs(body)
+/** Monotone fixpoint over binding defs in `body`. Map name → intCertain.
+ *  `capturedNames` (optional): also fold in defs of these specific names found
+ *  inside nested arrow bodies — see collectIntDefs. Only src/compile/index.js's
+ *  boxed-cell narrowing passes this; every other caller keeps the default
+ *  own-scope-only behavior unchanged. */
+export function intCertainMap(body, capturedNames) {
+  const defs = collectIntDefs(body, capturedNames)
   if (defs.size === 0) return new Map()
   const intCertain = new Map()
   for (const name of defs.keys()) intCertain.set(name, true)

@@ -677,3 +677,226 @@ test('cross-module: importer `.length = 0` between owner pushes keeps one array'
     }`, { modules: mods })
   is(exports.t(), 19)
 })
+
+// === Destructured export declarations ===
+
+// A destructuring export declaration (`export let { a } = obj`) must register its
+// bindings in the module's export table. The single-module form compiles; only the
+// cross-module import fails ("'a' is not exported from …"). Surfaced by
+// window-function/util.js (`export let { cos, sin, abs, … } = Math`), which blocks
+// compiling every package that windows a signal. Fix in prepare's export
+// registration, then flip `test.todo` → `test`.
+test.todo('cross-module: destructured export declaration registers bindings', () => {
+  const { exports } = jz(
+    `import { a } from './dep.js'; export let f = () => a`,
+    { modules: { './dep.js': 'export let { a } = { a: 1 }' } }
+  )
+  is(exports.f(), 1)
+})
+
+// A factory-produced default export (`export default make(...)` returning a
+// closure) compiles when its module is the entry, but loses the binding when
+// default-imported from another module: "'thing' is not in scope". Closures,
+// factories, and default exports are each documented subset. Live instance:
+// every pitch-shift algorithm package ends with
+// `export default makePitchShift(batch, stream)`; any cross-package default
+// import (shift-hybrid, root aggregators) fails on this.
+// Flip `test.todo` → `test` when fixed.
+test.todo('cross-module: default-imported factory-produced closure', () => {
+  const { exports } = jz(
+    `import thing from './dep.js'; export let test = (x) => thing(x)`,
+    { modules: { './dep.js': `
+      let make = (a, b) => (x) => a(x) + b(x)
+      let double = (x) => x * 2
+      let square = (x) => x * x
+      export default make(double, square)` } }
+  )
+  is(exports.test(3), 15)  // double(3) + square(3)
+})
+
+// Binary-encode-only crash: a default-exported function that memoizes state on
+// its own function object (the taylor-window idiom `c._w = …; c._N = N`)
+// combined — in the same module graph — with an export-only higher-order
+// function (`generate(fn, N)` calling an unknown `fn`) dies in encode with
+// "'__a3' is not in scope" (AST [";"]), while `--wat` emission of the identical
+// graph succeeds. Either piece alone compiles; simplified variants of the memo
+// idiom also compile, so the trigger is sensitive to taylor's exact shape —
+// the taylor.js below is verbatim window-function source, minimally re-based
+// onto a stub util. Live instance: window-function's taylor.js /
+// ultraspherical.js + util.js generate. Flip `test.todo` → `test` when fixed.
+test.todo('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
+  const util = `
+    export let PI = Math.PI
+    export let PI2 = 2 * Math.PI
+    export let cos = (x) => Math.cos(x)
+    export let acosh = (x) => Math.acosh(x)
+    export let pow = (x, y) => Math.pow(x, y)
+    export let normalize = (w) => {
+      let peak = 0
+      for (let i = 0; i < w.length; i++) if (Math.abs(w[i]) > peak) peak = Math.abs(w[i])
+      if (peak > 0) for (let i = 0; i < w.length; i++) w[i] /= peak
+      return w
+    }
+    export let generate = (fn, N) => {
+      let w = new Float64Array(N)
+      for (let i = 0; i < N; i++) w[i] = fn(i, N)
+      return w
+    }`
+  const taylor = `
+    import { cos, acosh, pow, PI, PI2, normalize } from './util.js'
+    export default function taylor (i, N, nbar, sll) {
+      if (nbar == null) nbar = 4
+      if (sll == null) sll = 30
+      let c = taylor
+      if (c._N !== N || c._nb !== nbar || c._s !== sll) {
+        let A = acosh(pow(10, sll / 20)) / PI
+        let s2 = nbar * nbar / (A * A + (nbar - 0.5) * (nbar - 0.5))
+        let Fm = new Float64Array(nbar - 1)
+        for (let m = 1; m < nbar; m++) {
+          let num = 1, den = 1
+          for (let n = 1; n < nbar; n++) {
+            num *= 1 - m * m * s2 / (A * A + (n - 0.5) * (n - 0.5))
+            if (n !== m) den *= 1 - m * m / (n * n)
+          }
+          Fm[m - 1] = (m % 2 ? 1 : -1) * num / (2 * den)
+        }
+        let w = new Float64Array(N)
+        for (let n = 0; n < N; n++) {
+          let v = 1
+          for (let m = 1; m < nbar; m++) v += 2 * Fm[m - 1] * cos(PI2 * m * (n - (N - 1) / 2) / N)
+          w[n] = v
+        }
+        c._w = normalize(w); c._N = N; c._nb = nbar; c._s = sll
+      }
+      return c._w[i]
+    }`
+  const { exports } = jz(
+    `import taylor from './taylor.js'; export let test = () => taylor(1, 8)`,
+    { modules: { './taylor.js': taylor, './util.js': util } }
+  )
+  ok(Math.abs(exports.test() - 0.48492204743452627) < 1e-6)  // reference: same source under node
+})
+
+// A top-level const in a NON-ENTRY bundled module initialized by a Math.* call reads
+// back truncated to its integer part — Math.PI * 2 → 6, Math.sqrt(2) → 1,
+// Math.cos(1) → 0 — both when imported by name and when read inside its own module's
+// functions. A plain-arithmetic const in the same position (`1.1 * 2`) is exact, and
+// the same Math.* const in the ENTRY module is exact. Compiles and runs clean —
+// silently wrong. Live instance: noise-reduction/util.js `export const PI2 =
+// Math.PI * 2` — every RBJ biquad coefficient (notch/HP/LP/peaking) is computed at a
+// truncated cutoff angle, so dehum/dewind/deesser wasm output diverges from JS
+// (~1e-2 abs after IIR feedback compounds). Flip `test.todo` → `test` when fixed.
+test.todo('cross-module: Math.*-initialized const in a dep module reads back exact', () => {
+  const { exports } = jz(
+    `import { TWO_PI, R2 } from './util.js'
+     export let f = () => TWO_PI
+     export let g = () => R2`,
+    { modules: { './util.js': 'export const TWO_PI = Math.PI * 2\nexport const R2 = Math.sqrt(2)' } }
+  )
+  is(exports.f(), Math.PI * 2)
+  is(exports.g(), Math.sqrt(2))
+})
+
+// A dependency module — non-entry, imported by another module — that both CALLS a
+// private function internally AND re-exports it under an alias
+// (`export { helper as poles }`) failed to compile: "'helper' is not in scope".
+// Root cause (prepareModule, src/prepare/index.js): `exportLocal(exportName,
+// localName)` mangles and renames the LOCAL function, then keys the walk-lookup
+// map (`moduleExports`) by `exportName` only. In-module call sites reference the
+// ORIGINAL local name, not the export alias, so when the two differ the walk
+// that rewrites call sites to the mangled name never finds an entry for the
+// local name — the call site is left pointing at a function that no longer
+// exists post-rename. The un-aliased case (`export {helper}`, `exportLocal(name,
+// name)`) never surfaced this: there exportName === localName, so the single map
+// entry accidentally served both purposes. The deferred `export default alias`
+// resolution had the identical bug via its own (now-removed) inline copy of the
+// same logic. Fixed generally: `exportLocal` now also keys the map by
+// `localName` whenever it differs from `exportName`, and the default-export
+// path delegates to `exportLocal` instead of re-deriving it.
+// Live instance: digital-filter/iir/butterworth.js — `butterworthPoles` is
+// called internally (line 24, inside the default-exported `butterworth`) and
+// re-exported `export { butterworthPoles as poles }` (line 38); every
+// audio-filter module that imports butterworth as a dependency (biquad design,
+// filter chains) failed to compile on this.
+test('cross-module: dependency module calling AND aliased-re-exporting the same private helper', () => {
+  const { exports } = jz(
+    `import outer from './dep.js'; export let f = (n) => outer(n)`,
+    { modules: { './dep.js': `
+      export default function outer (n) { return helper(n) }
+      function helper (n) {
+        let arr = []
+        for (let i = 0; i < n; i++) arr.push(i * 2)
+        return arr
+      }
+      export { helper as poles }` } }
+  )
+  is(exports.f(3), [0, 2, 4])
+})
+
+// Boundary case: an aliased re-export with NO internal call to the aliased
+// name anywhere else in the module. This already worked before the fix above
+// (exportName === the only reference to `helper` is the export itself, so the
+// missing walk-lookup key was never actually consulted) — pinned so the fix
+// doesn't accidentally narrow the working case while widening the broken one.
+test('cross-module: aliased re-export with no internal call to the aliased name', () => {
+  const { exports } = jz(
+    `import { poles } from './dep.js'; export let f = (n) => poles(n)`,
+    { modules: { './dep.js': `
+      function helper (n) { return n * 3 }
+      export { helper as poles }` } }
+  )
+  is(exports.f(4), 12)
+})
+
+// Same bug, reached through `export default helper` instead of a named `as`
+// alias — `export default X` is itself an aliased export (exportName
+// 'default' vs localName `X`), the deferred resolution branch `exportLocal`
+// now also covers. `helper` here is the CALLEE (not the caller) of an
+// unexported sibling `caller`, re-exported so `caller` stays reachable.
+test('cross-module: dependency module calling AND default-exporting the same private helper', () => {
+  const { exports } = jz(
+    `import { go } from './dep.js'; export let f = (n) => go(n)`,
+    { modules: { './dep.js': `
+      function caller (n) { return helper(n) }
+      function helper (n) { return n * 2 }
+      export default helper
+      export let go = (n) => caller(n)` } }
+  )
+  is(exports.f(21), 42)
+})
+
+// The original repro's shape restated explicitly: the function that CALLS the
+// aliased helper is itself the module's `export default` — pins that a
+// default-exported caller (not just a default-exported callee, above) keeps
+// resolving its internal call after the callee gets renamed under its alias.
+test('cross-module: default-exported caller invoking an aliased-re-exported callee', () => {
+  const { exports } = jz(
+    `import outer from './dep.js'; export let f = (n) => outer(n)`,
+    { modules: { './dep.js': `
+      export default function outer (n) { return helper(n) * 10 }
+      function helper (n) { return n + 1 }
+      export { helper as poles }` } }
+  )
+  is(exports.f(4), 50)
+})
+
+// Deeper: the alias survives a SECOND module hop — a middle module imports the
+// already-aliased name and re-exports it again under yet another alias, while
+// ALSO calling the original module's caller (so both mangled names from the
+// first hop's rename must still resolve correctly).
+test('cross-module: aliased re-export survives a second module hop', () => {
+  const { exports } = jz(
+    `import { roots } from './mid.js'; export let f = (n) => roots(n)`,
+    { modules: {
+      './dep.js': `
+        export default function outer (n) { return helper(n) }
+        function helper (n) { return n * 2 }
+        export { helper as poles }`,
+      './mid.js': `
+        import outer, { poles } from './dep.js'
+        export let go = (n) => outer(n)
+        export { poles as roots }`,
+    } }
+  )
+  is(exports.f(5), 10)
+})

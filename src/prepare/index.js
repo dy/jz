@@ -852,6 +852,14 @@ function prep(node) {
   // strict enforces the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
   if ((op === '==' || op === '!=') && ctx.transform.strict)
     err(`strict mode: \`${op}\` is prohibited — use \`${op}=\`. (jz's \`${op}\` doesn't coerce, but the canonical subset is \`===\`/\`!==\` only.)`)
+  // A builtin-namespace member alias (`let sin = Math.sin`, `let {sin} = Math`)
+  // carries no storage — writing through it would silently target nothing.
+  // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead
+  // of per-op handlers, so none of them need their own copy of this check.
+  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof args[0] === 'string') {
+    const aliasKey = builtinAliasKeyOf(args[0])
+    if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage`)
+  }
   if (op == null) {
     if (typeof args[0] === 'string') {
       includeForStringValue()
@@ -1066,6 +1074,176 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   }
 }
 
+// --- Builtin-namespace member aliasing --------------------------------------
+// `let/const name = NS.member` (`let sin = Math.sin`) and destructuring
+// (`let { sin, PI } = Math`, incl. rename `{ pow: myPow }`) bind straight to
+// the resolved emit key (`math.sin`) instead of materializing a real global —
+// there's no first-class "Math.sin" runtime value, only the compiler's own
+// dispatch table, so the alias makes every later reference to `name` behave
+// exactly as if the source had written `Math.sin` there directly:
+//   - `name(x)` — the bare-identifier branch in `prep()` (and `resolveCallee`)
+//     already returns a dotted `scope.chain`/block-scope entry bare, so the
+//     call lowers straight to `$math.sin`, no boxing, no arity ceiling (the
+//     general shape behind the `const alias = fn` fast path above).
+//   - a bare non-call reference falls through to the SAME first-class-value /
+//     constant-fold path a literal `Math.sin` reference hits at emit time
+//     (`builtinFunctionValue` / arity-0 constant fold) — succeeds or fails
+//     identically to the dotted form; never silently wrong.
+// Exports and reassignment are rejected with a clear error (see `registerBuiltinAlias`
+// and the reassignment guard in the main `prep()` dispatch) rather than
+// silently targeting no storage.
+
+/** `node` is the flat dotted emit key prep's own `.` handler would produce for
+ *  `NS.member` (e.g. `'math.sin'`) — i.e. a real, already-resolved builtin
+ *  reference, not an ordinary value/expression. */
+function builtinMemberKey(node) {
+  return typeof node === 'string' && node.includes('.') && ctx.core.emit[node] != null ? node : null
+}
+
+/** Pure syntactic extraction of `{ a, b: c }` → `[[target, member], …]` (handles
+ *  rename). Returns null for any shape a plain namespace has no notion of: rest,
+ *  defaults, computed keys, nested patterns. Shared by the declaration-form
+ *  alias path (`namespaceMemberAliases`) and the assignment-form path
+ *  (`namespaceMemberAssigns`) below — they differ only in what they do with
+ *  each [target, member] pair. */
+function namespaceObjectPatternPairs(pattern) {
+  if (!Array.isArray(pattern) || pattern[0] !== '{}' || pattern.length !== 2) return null
+  const items = patternItems(pattern[1])
+  const pairs = []
+  for (const item of items) {
+    if (typeof item === 'string') pairs.push([item, item])
+    else if (Array.isArray(item) && item[0] === ':' && typeof item[1] === 'string' && typeof item[2] === 'string')
+      pairs.push([item[2], item[1]])
+    else return null
+  }
+  return pairs
+}
+
+/** `let { a, b: c } = NS` where NS is a known builtin module — expand to one
+ *  alias per key (handles rename). Returns null (falls through to the generic
+ *  runtime-destructure path) for any shape `namespaceObjectPatternPairs` rejects,
+ *  or an unknown member. */
+function namespaceMemberAliases(pattern, mod) {
+  const pairs = namespaceObjectPatternPairs(pattern)
+  if (!pairs) return null
+  // Module init (registers the mod's ctx.core.emit['mod.member'] handlers) is
+  // lazy — same as the '.' handler's own `includeModule(mod)` call — so it must
+  // run BEFORE the emit-key lookups below, not after.
+  includeModule(mod)
+  const aliases = []
+  for (const [target, member] of pairs) {
+    const key = `${mod}.${member}`
+    if (ctx.core.emit[key] == null) return null
+    aliases.push([target, key])
+  }
+  return aliases
+}
+
+/** `({ a, b: c } = NS)` — assignment-form namespace destructure. Unlike the
+ *  declaration form above, each target is a PRE-EXISTING binding (a real local/
+ *  global, or itself another alias), not a fresh one — so it can't be resolved
+ *  to a compile-time-only alias; it needs a real assignment. Lower to one plain
+ *  `target = NS.member` per key, reusing the raw (unprepped) `NS` node so the
+ *  ordinary `.` handler does the module-include/arity/shadow work, exactly as
+ *  it would for a literal `target = NS.member` written by hand — proven to
+ *  compile and run correctly (see the reassignment-into-a-real-binding case
+ *  the `.` handler already supports). Returns null for the same unsupported
+ *  shapes `namespaceObjectPatternPairs` rejects. */
+function namespaceMemberAssigns(pattern, rhsRaw) {
+  const pairs = namespaceObjectPatternPairs(pattern)
+  if (!pairs) return null
+  return pairs.map(([target, member]) => ['=', target, ['.', rhsRaw, member]])
+}
+
+/** Bind `name` to builtin emit key `key` at the current scope (module
+ *  `scope.chain` at depth 0, block scope otherwise) instead of declaring a
+ *  real global/local — mirrors the `const alias = fn` function-alias fast
+ *  path in `prepDecl`. `includeForCallableValue` is pre-armed exactly when the
+ *  '.' handler would arm it (arity > 0), so an incidental first-class use
+ *  (`let g = sin` elsewhere) still finds closure support wired up. */
+function registerBuiltinAlias(name, key) {
+  if (ctx.func.exports[name]) err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
+  if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
+  if (depth === 0) {
+    ctx.scope.chain[name] = key
+  } else {
+    const fnNames = funcLocalNames[funcLocalNames.length - 1]
+    if (fnNames) fnNames.add(name)
+    if (scopes.length > 0) scopes[scopes.length - 1].set(name, key)
+  }
+}
+
+/** True (returning the key) iff bare identifier `name` currently resolves — via
+ *  block scope or module `scope.chain` — to a builtin-member alias. Pure read,
+ *  no side effects; mirrors the resolution order of the bare-identifier branch
+ *  in `prep()` (block scope first, chain otherwise). Used by the reassignment
+ *  guard: an alias carries no storage, so `name = …` must error, not miscompile. */
+function builtinAliasKeyOf(name) {
+  if (typeof name !== 'string') return null
+  const key = scopes.length && isDeclared(name) ? resolveScope(name) : ctx.scope.chain[name]
+  return builtinMemberKey(key)
+}
+
+// jzify hoists top-level `function` declarations to the front of their
+// enclosing `;` block (mirroring JS function-hoisting — see jzify/transform.js
+// `transformScope`), so a hoisted function's body can be PREPPED — and any
+// builtin-namespace alias it references resolved — before a SIBLING
+// `let {sin} = Math` / `let sin = Math.sin` the function calls appears in the
+// statement list. Real JS gets away with this because the function isn't
+// CALLED until the whole block has finished initializing; jz's prepare pass
+// resolves each reference eagerly in one linear walk, so without this the
+// alias isn't registered yet and the reference falls through unresolved (a
+// dangling local at watr assembly, not a caught compile error). Scanning every
+// sibling `let`/`const` up front and registering any alias-shaped one makes
+// alias resolution order-independent within the block — matching how a REAL
+// global (declareGlobal) already resolves order-independently, since compile
+// (not prepare) looks those up by name after the whole module has been prepped.
+function preRegisterBuiltinAliases(stmts) {
+  // A sibling `let Math = {…}` in this SAME block shadows the builtin even
+  // though — being an unordered pre-scan — it hasn't been individually
+  // prepped yet (so `shadowsBuiltin`/`userGlobals` don't know about it yet
+  // either). Collect every name this block itself declares up front so the
+  // scan below can treat it exactly like an outer-scope shadow.
+  const blockDeclared = new Set()
+  for (const stmt of stmts) {
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const')) continue
+    for (const i of stmt.slice(1)) {
+      const target = Array.isArray(i) && i[0] === '=' ? i[1] : i
+      bindingNames(target, blockDeclared)
+    }
+  }
+  // Bare identifier `name` names an as-yet-unshadowed builtin module — null
+  // when `name` is shadowed (by this block, an outer scope, a function, or a
+  // user global) or simply isn't a known module name.
+  const builtinModOf = (name) => {
+    if (typeof name !== 'string' || blockDeclared.has(name) || shadowsBuiltin(name)) return null
+    const mod = ctx.scope.chain[name]
+    return mod && !mod.includes('.') && hasModule(mod) ? mod : null
+  }
+  for (const stmt of stmts) {
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const')) continue
+    for (const i of stmt.slice(1)) {
+      if (!Array.isArray(i) || i[0] !== '=') continue
+      const [, name, init] = i
+      if (isDestructPattern(name) && typeof init === 'string') {
+        const mod = builtinModOf(init)
+        if (mod) {
+          const aliases = namespaceMemberAliases(name, mod)
+          if (aliases) for (const [target, key] of aliases) registerBuiltinAlias(target, key)
+        }
+      } else if (!isDestructPattern(name) && typeof name === 'string' && Array.isArray(init) &&
+                 init[0] === '.' && typeof init[1] === 'string' && typeof init[2] === 'string') {
+        const mod = builtinModOf(init[1])
+        if (mod) {
+          includeModule(mod)
+          const key = `${mod}.${init[2]}`
+          if (ctx.core.emit[key] != null) registerBuiltinAlias(name, key)
+        }
+      }
+    }
+  }
+}
+
 /** Prepare let/const declaration. */
 function prepDecl(op, ...inits) {
   const rest = []
@@ -1119,7 +1297,50 @@ function prepDecl(op, ...inits) {
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
     const normed = prep(init)
 
+    // `let/const name = NS.member` (`let sin = Math.sin`) — prep's `.` handler
+    // already resolved this to the flat dotted emit key; alias `name` to it
+    // (see registerBuiltinAlias) instead of declaring a real global/local that
+    // would box the builtin as a first-class value on every reference.
+    if (!isDestructPattern(name) && typeof name === 'string') {
+      const memberKey = builtinMemberKey(normed)
+      if (memberKey) { registerBuiltinAlias(name, memberKey); continue }
+      // `const M = Math` at module top level — a bare reference to a whole
+      // builtin namespace (no member, no dot). Same reasoning as above: there's
+      // no runtime namespace object to box, so alias `name` straight to the
+      // module name in `scope.chain` instead of declaring a real global — the
+      // existing `mod = ctx.scope.chain[obj]` check in the '.' handler (the
+      // SAME table `Math` itself resolves through) then resolves `M.sqrt`
+      // exactly like a direct `Math.sqrt` reference would, with no further
+      // changes needed there.
+      // Module top-level only (`depth === 0`, where `registerBuiltinAlias`
+      // writes to `scope.chain`): at depth ≠ 0 it writes to the block-scoped
+      // `scopes` stack instead, which the '.' handler does not consult for this
+      // shape — extending it there would require distinguishing a genuine
+      // alias from an ordinary un-renamed local that merely happens to be
+      // NAMED like a module ('fn', 'json', 'date', … — these self-map to their
+      // own name), which is more risk than the shape's value justifies. A nested-
+      // function `const M = Math; M.sqrt(x)` still falls through to the
+      // pre-existing generic path (test.todo pinned in test/destruct.js).
+      // `normed !== name` guards the depth-0 case against the same identity-
+      // self-map false positive (e.g. a cross-module host-import alias that
+      // happens to be named after a module).
+      if (depth === 0 && typeof normed === 'string' && normed !== name && hasModule(normed)) {
+        registerBuiltinAlias(name, normed); continue
+      }
+    }
+
     if (isDestructPattern(name)) {
+      // `let/const {a, b: c} = NS` where NS resolved (above) to a known builtin
+      // module — alias each key directly (see namespaceMemberAliases) instead
+      // of running the generic runtime object-destructure below, which has no
+      // way to read a property off a namespace that isn't a real heap object.
+      if (typeof normed === 'string' && hasModule(normed)) {
+        const aliases = namespaceMemberAliases(name, normed)
+        if (aliases) {
+          for (const [target, key] of aliases) registerBuiltinAlias(target, key)
+          continue
+        }
+      }
       // Register each binding both as a module global (depth 0) and in the
       // current arrow's local scope (depth ≠ 0). Without the local registration
       // the name is invisible to `isUnresolvableBareIdent`, so a later
@@ -1394,6 +1615,20 @@ const handlers = {
     // Destructuring assignment: [a, ...r] = expr or ({x: a} = expr)
     // Distinguishing from index assignment: destructuring patterns have exactly one payload node.
     if (isDestructPattern(lhs) && lhs.length === 2) {
+      // `({sqrt, abs} = Math)` — see namespaceMemberAssigns. Checked ahead of the
+      // generic runtime-destructure path below, which has no way to read a
+      // property off a namespace that isn't a real heap object.
+      if (lhs[0] === '{}' && typeof rhs === 'string' && !shadowsBuiltin(rhs)) {
+        const mod = ctx.scope.chain[rhs]
+        // `mod !== rhs` excludes an identity self-map (an ordinary host-import
+        // alias or un-renamed binding resolves to its OWN name) — see the same
+        // guard's rationale in the '.' handler and prepDecl's namespace-value alias.
+        if (mod && mod !== rhs && !mod.includes('.') && hasModule(mod)) {
+          const assigns = namespaceMemberAssigns(lhs, rhs)
+          if (assigns) return prep([';', ...assigns])
+        }
+      }
+
       const scalar = scalarArrayDestruct(lhs, rhs)
       if (scalar) return scalar
 
@@ -1655,7 +1890,10 @@ const handlers = {
   '!=='(a, b) { return prepStrictEq('!==', a, b) },
 
   // Statements
-  ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null).map(dropDeadPostfix)],
+  ';': (...stmts) => {
+    preRegisterBuiltinAliases(stmts)
+    return [';', ...stmts.map(prep).filter(x => x != null).map(dropDeadPostfix)]
+  },
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
 
@@ -2537,6 +2775,16 @@ function prepareModule(specifier, source) {
   const exportLocal = (exportName, localName) => {
     const mangled = `${prefix}$${localName}`
     moduleExports.set(exportName, mangled)
+    // Aliased export (`export { helper as poles }`, `export default helper`):
+    // exportName ('poles'/'default') is what IMPORTERS see, but in-module call
+    // sites still reference the ORIGINAL local name ('helper') verbatim — the
+    // walk below rewrites references by exact string match against this same
+    // map, so without a second entry keyed on localName it never finds them and
+    // they dangle as a call to a function that no longer exists post-rename
+    // ("'helper' is not in scope"). Un-aliased exports (`export {helper}`,
+    // `exportLocal(name, name)`) already have exportName === localName, so this
+    // is a no-op there.
+    if (localName !== exportName) moduleExports.set(localName, mangled)
     const func = ctx.func.list.find(f => f.name === localName)
     if (func) { renameFunc(func, mangled); func._modulePrefix = prefix }
     if (ctx.scope.globals.has(localName)) {
@@ -2585,16 +2833,12 @@ function prepareModule(specifier, source) {
       // Already renamed as a named export
       moduleExports.set('default', moduleExports.get(alias))
     } else {
-      // Not a named export — rename the function/global
-      const mangled = `${prefix}$${alias}`
-      moduleExports.set('default', mangled)
-      const func = ctx.func.list.find(f => f.name === alias)
-      if (func) renameFunc(func, mangled)
-      if (ctx.scope.globals.has(alias)) {
-        ctx.scope.globals.set(mangled, ctx.scope.globals.get(alias))
-        ctx.scope.globals.delete(alias)
-        if (ctx.scope.userGlobals.has(alias)) { ctx.scope.userGlobals.delete(alias); ctx.scope.userGlobals.add(mangled) }
-      }
+      // Not a named export — rename the function/global. `export default helper`
+      // is itself an aliased export (exportName 'default' vs localName `alias`),
+      // the same shape `exportLocal` already handles (incl. registering `alias`
+      // as its own walk-lookup key) — delegate instead of re-deriving the same
+      // logic with a narrower (and previously buggy — see exportLocal) copy.
+      exportLocal('default', alias)
     }
   }
 

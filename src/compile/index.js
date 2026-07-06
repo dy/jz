@@ -30,6 +30,7 @@ import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs } from '../ast.js'
 import { valTypeOf } from '../kind.js'
 import { intLiteralValue } from '../static.js'
+import { intCertainMap } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
@@ -573,15 +574,30 @@ function analyzeFuncForEmit(func, programFacts) {
     : new Set()
 
   // Closure-capture narrowing: a boxed var whose every defining RHS — owner
-  // body AND nested arrows, the narrower's intCertain contract — is integer-
-  // valued keeps its CELL in i32, so readVar/writeVar skip the f64↔i32
-  // round-trip per access. Params are excluded: their cell is seeded from the
-  // raw f64 param value, which would desync an i32-read cell. Same asm.js-style
-  // range contract as plain intCertain locals.
+  // body AND nested arrows — is integer-valued keeps its CELL in i32, so
+  // readVar/writeVar skip the f64↔i32 round-trip per access. Params are
+  // excluded: their cell is seeded from the raw f64 param value, which would
+  // desync an i32-read cell. Same asm.js-style range contract as plain
+  // intCertain locals.
+  //
+  // `ctx.func.localReps.get(name).intCertain` (forward-propagated in analyze.js
+  // via the plain, single-arg `intCertainMap(body)`) only sees defs in THIS
+  // scope's own top level — correct for an ordinary local (it can't be
+  // assigned from inside a nested arrow without becoming a capture) but blind
+  // to the writes that make a name "boxed" in the first place: `let env = 0;
+  // let set = () => { env = 1.5 }` has no top-level def contradicting `env`'s
+  // integer init, so it read back intCertain=true and the cell stayed i32,
+  // silently truncating every closure-body float write. Recompute instead with
+  // `capturedNames` — collectIntDefs' arrow-descending mode — scoped to just
+  // the boxed names, so their nested-arrow write sites join the SAME fixpoint.
   const cellTypes = new Set()
-  for (const name of ctx.func.boxed.keys()) {
-    if (sig.params.some(p => p.name === name)) continue
-    if (ctx.func.localReps?.get(name)?.intCertain === true) cellTypes.add(name)
+  const boxedNames = new Set(ctx.func.boxed.keys())
+  if (boxedNames.size) {
+    const capturedIntCertain = intCertainMap(body, boxedNames)
+    for (const name of boxedNames) {
+      if (sig.params.some(p => p.name === name)) continue
+      if (capturedIntCertain.get(name) === true) cellTypes.add(name)
+    }
   }
 
   // Snapshot each param's JS-boundary carrier while reps are live — synthesizeBoundaryWrappers

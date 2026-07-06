@@ -1464,10 +1464,14 @@ test.todo('fields named like TypedArray accessors resolve like any other field',
 // the identical nested-array shape (no host object involved) returns correctly.
 // Checked README's FAQ ("differences with JS", "How to pass numbers, strings,
 // arrays, objects") and CONTRIBUTING.md — neither documents host-object writes as
-// lossy; this isn't a decided JS/WASM tradeoff, it looks like an unintentional gap
-// in the External round-trip. Fix it to persist, or at least throw instead of
-// silently dropping the write. Flip `test.todo` → `test` when fixed.
-test.todo('nested write through a host-passed plain-object param is silently lost', () => {
+// lossy; this isn't a decided JS/WASM tradeoff, it was an unintentional gap in the
+// External round-trip. Fixed in emitElementAssign (src/compile/emit-assign.js):
+// `obj.prop[idx] = val`, when `obj`'s type is unresolved, now writes the mutated
+// container back onto `obj.prop` via `__hash_set` after the normal (copy-based)
+// element write — see test/external.js's "indexed write through an
+// external-object field persists" for the full mechanism (same root cause, fixed
+// once for both).
+test('nested write through a host-passed plain-object param is silently lost', () => {
   const { f } = run(`export let f = (params) => {
     params.state = new Array(1)
     params.state[0] = [7, 9]
@@ -1492,9 +1496,9 @@ test.todo('nested write through a host-passed plain-object param is silently los
 // External-specific, not a general aliasing bug). This is the load-bearing idiom of
 // the audiojs digital-filter/audio-filter ecosystem — `params.state` / `params.coefs`
 // biquad state lazily allocated once and reused across `filter(buffer, params)`
-// calls — so output silently degrades to stale/NaN from the second call on. Flip
-// `test.todo` → `test` when fixed.
-test.todo('memory.Object() property reads alias nested container writes', () => {
+// calls — so output silently degraded to stale/NaN from the second call on. Fixed
+// by the same emitElementAssign write-back described in the sibling test above.
+test('memory.Object() property reads alias nested container writes', () => {
   const { exports: { f }, memory } = jz(`export let f = (params) => {
     params.state[0] = [7, 9]
     return params.state[0][0]

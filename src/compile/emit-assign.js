@@ -176,6 +176,47 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist,
 export { persistBindingPtr }
 
 export function emitElementAssign(arr, idx, val) {
+  // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
+  // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
+  // always re-marshals a FRESH, disconnected copy of a container-valued
+  // property (`wrapVal` deep-copies an array into fresh wasm memory, no
+  // identity preserved with the host), so an index-write through THAT read —
+  // whichever branch below performs it — mutates a copy nobody keeps; the
+  // host object's own property is never touched, and a later read starts
+  // over from the original, unmutated value. Recurse first with `arr`
+  // replaced by a temp holding the (already-read) property value: every
+  // existing branch (ARRAY/TYPED/HASH/OBJECT/polymorphic) applies to it
+  // unchanged, including array-grow relocation (persistBinding keeps the temp
+  // current). Then write the (possibly-relocated) mutated container back onto
+  // the SAME property via `__hash_set` — the same general dynamic-property-set
+  // primitive a plain `obj.prop = val` on an unknown-type receiver already
+  // uses below, whose own type guard (genUpsertGrow, module/collection.js)
+  // dispatches HASH natively, EXTERNAL to `__ext_set`, anything else to
+  // `__dyn_set` — so a genuinely native (non-external) receiver, whose
+  // property read already returned the live pointer with nothing to write
+  // back, just re-stores the same pointer (idempotent). `mem.read` (interop.js)
+  // already recursively decodes an ARRAY pointer back to a real JS array on
+  // the host side, so this round-trips correctly, including one level of
+  // array-of-arrays nesting.
+  if (Array.isArray(arr) && arr[0] === '.' && typeof arr[2] === 'string' && valTypeOf(arr[1]) == null) {
+    const [, obj, prop] = arr
+    const objTmp = temp('eao'), arrTmp = temp('eaf'), resultTmp = temp('ear')
+    ctx.func.locals.set(objTmp, 'f64')
+    ctx.func.locals.set(arrTmp, 'f64')
+    ctx.func.locals.set(resultTmp, 'f64')
+    if (ctx.transform.host !== 'wasi') ctx.features.external = true
+    inc('__hash_set')
+    const storeIR = emitElementAssign(arrTmp, idx, val)
+    return block64(
+      ['local.set', `$${objTmp}`, asF64(emit(obj))],
+      ['local.set', `$${arrTmp}`, asF64(emit(['.', objTmp, prop]))],
+      ['local.set', `$${resultTmp}`, storeIR],
+      ['drop', ['call', '$__hash_set',
+        ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+        asI64(emit(['str', prop])),
+        ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
+      ['local.get', `$${resultTmp}`])
+  }
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = ctx.func._expect === 'void'

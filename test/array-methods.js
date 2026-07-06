@@ -986,15 +986,28 @@ test('typed array from literal: native build, no f64 round-trip', () => {
   ok(!/\(loop/.test(wat), 'no copy loop: each element stored inline')
 })
 
-// `.every()` on a typed-array FIELD of a heap-returned object crashes the
-// compiler ("internal: Cannot read properties of null (reading '0')", isLit via
-// emit) — the receiver's element type flows through an object schema, not a
-// local binding. The same call on a bare local Float32Array compiles fine, and
-// direct `.norm.every(...)` property access crashes identically to the
-// destructured form. Live instance: time-stretch/psola.js
-// (`norm.every((v) => v <= 1e-8)` on a render()-returned buffer pair).
-// Flip `test.todo` → `test` when fixed.
-test.todo('every: typed-array field of heap-returned object', () => {
+// `.every()` on a typed-array FIELD of a heap-returned object crashed the
+// compiler ("internal: Cannot read properties of null (reading '0')") — the
+// receiver's element type flows through an object schema, not a local
+// binding, so `resolveElem` (module/typedarray.js) can't trace it back to a
+// `new XArray(...)` ctor and `typedLoop` returned null. TWO compounding bugs:
+// (1) emit.js's `tryStaticDispatch` treated ANY non-undefined return from a
+// `.${vt}:${method}` emitter — including this `null` "can't handle it" sentinel
+// — as a definitive match, so dispatch stopped instead of falling through to a
+// working strategy, and the null IR reached a consumer and crashed; (2) even
+// with (1) fixed, "fall through" would have meant module/array.js's generic
+// `.every` (`arrayLoop`), which assumes 8-byte f64-boxed elements — wrong for a
+// real typed array's packed native bytes (proven separately: the sibling
+// `.map` case, which already had its own "fall back to generic" special case,
+// silently returns garbage — a latent bug of the same shape, left as-is since
+// no test exercises it and it isn't one of this pass's 18). Fixed at the root:
+// `typedLoop` (shared by every/some/find*/indexOf/includes/reduce/forEach) now
+// falls back to `__typed_get_idx` — the same runtime aux-tag dispatch
+// `.reverse`/`.sort`/`.fill`/`.copyWithin` already use unconditionally — when
+// the concrete element kind can't be proven statically. Live instance:
+// time-stretch/psola.js (`norm.every((v) => v <= 1e-8)` on a render()-returned
+// buffer pair).
+test('every: typed-array field of heap-returned object', () => {
   const { test } = runHost(`
     let render = (n) => {
       let norm = new Float32Array(n)
@@ -1009,12 +1022,29 @@ test.todo('every: typed-array field of heap-returned object', () => {
   is(test(4), 1)
 })
 
-// `typedArray.set(src)` on an array held in a DYNAMICALLY-ADDED struct field is a
-// silent no-op — the store compiles but writes nowhere, so the field keeps zeros.
-// The same `.set` on a local binding or a literal-schema field works. Live instance:
-// time-stretch pvoc/pvoc-lock/transient (`state.prev = new Float64Array(n)` on the
-// stftBatch state object, then `state.prev.set(phase)` each frame — WASM output
-// silently diverges from JS). Flip `test.todo` → `test` when fixed.
+// `typedArray.set(src)` on an array held in a DYNAMICALLY-ADDED struct field was a
+// silent no-op — a receiver whose static type is fully unknown (a dyn-prop field
+// carries no schema/ctor tracking at all) never reached ANY `.typed:*` emitter:
+// emitMethodCall's dispatch has no arm for "unknown-type receiver, but a
+// TYPED-specific emitter also exists for this method name" (the sibling of the
+// STRING-vs-generic runtime fork it already has), so `.set` fell to the generic
+// emitter — module/collection.js's `Map.prototype.set(key, val)` — silently
+// mistaking the source array for a Map key. (Confirmed the same root cause is
+// not `.set`-specific: `.forEach`/`.fill` on the identical shape misfired too —
+// a 3-element Float64Array's `.forEach` callback fired 24 times, 3 × its 8-byte
+// stride, because the generic path also misreads a typed array's BYTE-length
+// header as a raw element count.) Fixed with a new runtime ptr-type fork
+// (src/compile/emit.js, mirrors the existing string fork) that checks the
+// receiver's actual tag and dispatches `.typed:${method}` when it really is a
+// typed array. The same local binding or a literal-schema field already worked
+// (vt was known there, reaching `.typed:set` via static dispatch). Live
+// instance: time-stretch pvoc/pvoc-lock/transient (`state.prev = new
+// Float64Array(n)` on the stftBatch state object, then `state.prev.set(phase)`
+// each frame — WASM output silently diverged from JS).
+// The emit-side fix for this shape (see the todo-batch session) miscompiles the
+// SELF-HOST kernel (tokenizer loses `let` — bisected to that emit.js hunk alone;
+// preserved in the session scratchpad as keep-emit.js). Needs the in-kernel
+// discipline pass before re-landing. Flip `test.todo` → `test` when fixed.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}

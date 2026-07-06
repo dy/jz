@@ -665,7 +665,21 @@ export function analyzeBody(body) {
  */
 function widenLocalTypes(body, locals) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
-  const intCounters = intCertainMap(body)
+  // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
+  // ARROW — a captured, mutated variable. analyzeBody runs before boxedCaptures
+  // populates ctx.func.boxed, so recompute the same "some arrow writes this
+  // name" fact locally via findMutations (which already doesn't skip `=>`).
+  // Threaded into intCertainMap and both widening walks below: none of them
+  // used to look past a `=>` boundary, so `let env = 0; let set = () => { env
+  // = 1.5 }` never saw the closure-body float write — `env` stayed provably-int
+  // (keepI32 exempted it from Pass A, Pass B never re-checked its only visible
+  // def, the never-a-def-of-1.5 one), and the ENCLOSING FUNCTION's own result
+  // then narrowed to i32 (narrowI32Results trusts this same `locals` map),
+  // silently truncating the return. Gated on nestedNames.size so the common
+  // case (no nested reassignment anywhere) keeps the original, cheaper walk.
+  const nestedNames = new Set()
+  findMutations(body, new Set(locals.keys()), nestedNames)
+  const intCounters = intCertainMap(body, nestedNames)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => i32SafeIdx.has(name) || (intCounters.get(name) === true && !f64IdxVars.has(name))
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
@@ -678,7 +692,8 @@ function widenLocalTypes(body, locals) {
       if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !keepI32(a)) locals.set(a, 'f64')
       if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b) && !keepI32(b)) locals.set(b, 'f64')
     }
-    if (op !== '=>') for (const a of args) widenPass(a)
+    if (op === '=>') { if (nestedNames.size) widenPass(args[1]) }
+    else for (const a of args) widenPass(a)
   }
   widenPass(body)
 
@@ -688,7 +703,7 @@ function widenLocalTypes(body, locals) {
     const recheck = (node) => {
       if (!Array.isArray(node)) return
       const op = node[0]
-      if (op === '=>') return
+      if (op === '=>') { if (nestedNames.size) recheck(node[2]); return }
       if (op === 'let' || op === 'const') {
         for (let i = 1; i < node.length; i++) {
           const a = node[i]

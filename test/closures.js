@@ -1040,18 +1040,39 @@ test('identifiers named like Object methods resolve as plain variables (proto-le
   is(run('export let main = () => { let o = {valueOf: 5, x: 2}; return o.valueOf + o.x }').main(), 7, 'object property valueOf unaffected')
 })
 
-// A write to a captured variable FROM INSIDE the closure body does not join the
-// shared cell's type. If every outer-visible value is integer (`let env = 0`),
-// the cell stays i32 and closure-side f64 stores truncate silently: `env = 1.5`
-// reads back 1; a one-pole accumulator `env = c*env + (1-c)*x` collapses to 0
-// forever. Outer-side float writes DO widen (`let n = 0; fn; n = 0.5` is fine) —
-// only closure-body writes are missing from the join. Initializing with a
-// non-integer literal (0.5) or an f64 param sidesteps it, which is why the shape
-// hides in real code until state starts at 0. Live instance: dynamics-processor
-// envelope.js (`let env = 0; return (x) => { env = c*env + (1-c)*mag; … }`) —
-// every envelope-based processor (compressor, limiter, deesser, ducker, compand)
-// compiled clean and ran as a silent passthrough. Flip test.todo → test when fixed.
-test.todo('closure: f64 write from closure body widens an int-initialized captured cell', () => {
+// A write to a captured variable FROM INSIDE the closure body did not join the
+// shared cell's type. If every outer-visible value was integer (`let env = 0`),
+// the cell stayed i32 and closure-side f64 stores truncated silently: `env = 1.5`
+// read back 1; a one-pole accumulator `env = c*env + (1-c)*x` collapsed to 0
+// forever. Outer-side float writes DID widen (`let n = 0; fn; n = 0.5` was fine) —
+// only closure-body writes were missing from the join.
+//
+// ROOT CAUSE — the SAME "stops at `=>`" blind spot in THREE independent places,
+// all now fixed together (they share the shape, not just the symptom):
+//   1. src/type.js collectIntDefs (the intCertainMap fixpoint): its body walker
+//      returned immediately on any `=>` node, so a captured name's ONLY visible
+//      "definition" was its outer declaration — the closure-body reassignment
+//      never contradicted it, so intCertain stayed (wrongly) true forever.
+//   2. src/compile/index.js's closure-capture narrowing consumed that same
+//      intCertain to decide the boxed CELL's storage width (i32 vs f64) —
+//      inherited the blind spot.
+//   3. src/compile/analyze.js's widenLocalTypes (the general i32→f64 local-
+//      width fixpoint, feeding narrowI32Results' decision on the ENCLOSING
+//      FUNCTION's own wasm result type) had the identical `=>`-skip in its own
+//      body walker — so even once (1)/(2) were fixed and the cell itself read/
+//      wrote as genuine f64, `env`'s reported LOCAL type stayed i32, and
+//      `return env` narrowed the whole function to i32, truncating at the
+//      return site instead of the cell.
+// Fix: collectIntDefs/intCertainMap gained an opt-in `capturedNames` mode that
+// also folds in defs found inside nested arrows (used only by the boxed-cell
+// narrowing call site — every other caller is unaffected); widenLocalTypes
+// computes the same "reassigned somewhere, maybe inside an arrow" name set via
+// findMutations (already `=>`-transparent) and threads it through its own two
+// widening walks the same way. Live instance: dynamics-processor envelope.js
+// (`let env = 0; return (x) => { env = c*env + (1-c)*mag; … }`) — every
+// envelope-based processor (compressor, limiter, deesser, ducker, compand)
+// compiled clean and ran as a silent passthrough.
+test('closure: f64 write from closure body widens an int-initialized captured cell', () => {
   const { f } = run(`export let f = () => {
     let env = 0
     let set = () => { env = 1.5 }
@@ -1061,7 +1082,7 @@ test.todo('closure: f64 write from closure body widens an int-initialized captur
   is(f(), 1.5)
 })
 
-test.todo('closure: one-pole accumulator in returned closure (envelope follower)', () => {
+test('closure: one-pole accumulator in returned closure (envelope follower)', () => {
   const { f } = run(`
     let follower = (c) => {
       let env = 0

@@ -397,3 +397,167 @@ test('typeof: destructured matches indexed', async () => {
   }`)
   is(f(), 'match')
 })
+
+// Destructuring the Math builtin must bind members like the equivalent alias
+// `let abs = Math.abs` (which compiles and runs). Idiomatic shorthand in the
+// wild: window-function/util.js `export let { cos, sin, abs, … } = Math`, and
+// fourier-transform/index.js `const { sqrt, sin, cos, abs, SQRT1_2, SQRT2 } = Math`.
+test('destruct: from Math builtin namespace', () => {
+  const { exports: { f } } = jz(`let { abs } = Math
+export let f = (x) => abs(x)`)
+  is(f(-3), 3)
+})
+
+test('destruct: Math namespace in function body', () => {
+  const { exports: { f } } = jz(`export let f = (x) => { let { max, abs } = Math; return max(abs(x), 2) }`)
+  is(f(-5), 5)
+})
+
+test('destruct: renamed member `{ pow: myPow }`', () => {
+  const { exports: { f } } = jz(`const { pow: myPow } = Math
+export let f = (x, y) => myPow(x, y)`)
+  is(f(2, 10), 1024)
+})
+
+test('destruct: constant member `{ SQRT2 }`', () => {
+  const { exports: { f } } = jz(`const { SQRT2 } = Math
+export let f = (x) => x * SQRT2`)
+  is(f(2), 2 * Math.SQRT2)
+})
+
+// fourier-transform/index.js line 7, verbatim shape — blocks compiling every
+// package (noise-reduction: stft/wiener/omlsa/specsub/dereverb/vad/…) that
+// windows a signal through it.
+test('destruct: fourier-transform-shaped multi-name destructure', () => {
+  const { exports: { f } } = jz(`const { sqrt, sin, cos, abs, SQRT1_2, SQRT2 } = Math
+export let f = (v) => sqrt(abs(v)) * SQRT1_2 * SQRT2`)
+  is(f(-4), Math.sqrt(Math.abs(-4)) * Math.SQRT1_2 * Math.SQRT2)
+})
+
+// Module top-level `let { … } = Math` must not collide with the compiler's
+// own internal globals of the same name in a multi-module bundle (observed as
+// "'abs' conflicts with a compiler internal — choose a different name"). A
+// plain user binding `let abs = (x) => x` (no Math involved) already compiles
+// fine, so the collision was specific to the destructure path.
+test('destruct: top-level `let {abs} = Math` in a multi-module bundle', () => {
+  const { exports } = jz(
+    `import { go } from './dep.js'
+    let { abs, exp, max } = Math
+    export let f = (v) => max(abs(v), go(v))`,
+    { modules: { './dep.js': `export let go = (x) => x + 1` } }
+  )
+  is(exports.f(-5), Math.max(Math.abs(-5), -5 + 1))
+})
+
+// A user binding named `Math` must shadow the builtin namespace — destructuring
+// from it reads the user's own object, not Math.sqrt.
+test('destruct: user `Math` binding shadows the builtin', () => {
+  const { exports: { f } } = jz(`let Math = { sqrt: (x) => x }
+const { sqrt } = Math
+export let f = (v) => sqrt(v)`)
+  is(f(7), 7)
+})
+
+// Adversarial: a plain user variable/global that happens to be spelled like
+// one of the compiler's own INTERNAL module names ('math', 'fn', 'array', …
+// — the lowercase emit-key prefix, distinct from the capitalized `Math`
+// builtin) must resolve as an ordinary binding. The namespace-alias fast path
+// keys off resolved values, and an un-renamed local self-maps to its own name
+// in the scope table — so a variable literally named `math`/`fn` must not be
+// mistaken for a compile-time alias to the `math`/`fn` module.
+test('destruct: user variable named like an internal module name (`math`) is not intercepted', () => {
+  const { exports: { f } } = jz(`let math = { sqrt: (x) => x + 1 }
+export let f = (v) => math.sqrt(v)`)
+  is(f(7), 8)
+})
+
+test('destruct: bare local named like an internal module name (`fn`) compiles as an ordinary binding', () => {
+  const { exports: { g } } = jz(`let fn = 5
+export let g = () => fn`)
+  is(g(), 5)
+})
+
+// Assignment-form destructure (`({x} = Math)`, no declaration) goes through a
+// different prepare path than `let {x} = Math` — pin it separately.
+test('destruct: assignment-form `({sqrt, abs} = Math)`', () => {
+  const { exports: { f } } = jz(`let sqrt, abs
+;({sqrt, abs} = Math)
+export let f = (v) => sqrt(abs(v))`)
+  is(f(-9), 3)
+})
+
+// Namespace-as-value aliasing (`const M = Math; M.sqrt(x)`) is the same class
+// of bug: no first-class Math value exists, so `M` must alias the module
+// itself, not box a runtime namespace object.
+test('destruct: namespace-as-value alias `const M = Math`', () => {
+  const { exports: { f } } = jz(`const M = Math
+export let f = (v) => M.sqrt(v)`)
+  is(f(9), 3)
+})
+
+// Same alias, declared inside a function body instead of at module top level.
+// The top-level form (above) aliases `M` through `scope.chain` — the same flat
+// table `Math` itself resolves through, so the '.' handler needs no changes.
+// Inside a function, `registerBuiltinAlias` would instead have to write `M`
+// into the block-scoped `scopes` stack, which the '.' handler's `mod =
+// ctx.scope.chain[obj]` check does not consult — extending it there requires
+// distinguishing a genuine alias from an ordinary un-renamed local that merely
+// happens to be NAMED like a module (e.g. a `fn` callback parameter self-maps
+// to its own name), which is more risk to the hottest path in prepare than
+// this rarer shape justifies.
+// Re-verified independently (2026-07-06): confirmed in src/prepare/index.js —
+// `resolveCallee`'s bare-identifier branch DOES check `scopes.length &&
+// isDeclared(callee) ? resolveScope(callee) : ctx.scope.chain[callee]`, but its
+// sibling `.`-callee branch a few lines down reads only `ctx.scope.chain[obj]`,
+// exactly as diagnosed — the fix is real and roughly as scoped as described.
+// Left AS TODO this session for an ADDITIONAL, independent reason: this file is
+// mid-edit by the user this session (git status dirty, non-empty diff already
+// present) and the project's own discipline for this pass forbids touching it
+// while that's true — not just the architectural-risk call above. Flip
+// `test.todo` → `test` when fixed.
+test.todo('destruct: namespace-as-value alias inside a function body', () => {
+  const { exports: { f } } = jz(`export let f = (v) => { const M = Math; return M.sqrt(v) }`)
+  is(f(16), 4)
+})
+
+// A builtin-namespace alias carries no storage (it's a compile-time-only
+// rewrite to the resolved emit key) — reassigning it must be a clear compile
+// error, never a silent miscompile that targets nothing.
+test('destruct: reassigning a plain alias `let sin = Math.sin` is a compile error', () => {
+  let error
+  try { compile(`let sin = Math.sin
+sin = 5
+export let f = () => sin`) } catch (e) { error = e }
+  ok(error && /Cannot reassign 'sin'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+})
+
+test('destruct: reassigning a destructured member `{abs}` is a compile error', () => {
+  let error
+  try { compile(`let { abs } = Math
+abs = 5
+export let f = () => abs`) } catch (e) { error = e }
+  ok(error && /Cannot reassign 'abs'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+})
+
+test('destruct: reassigning a function-scope destructured member is a compile error', () => {
+  let error
+  try { compile(`export let f = (x) => { let { abs } = Math; abs = 5; return abs }`) } catch (e) { error = e }
+  ok(error && /Cannot reassign 'abs'/.test(error.message), `expected a reassignment error, got: ${error?.message}`)
+})
+
+// jzify hoists top-level `function` declarations to the front of their
+// enclosing block (mirroring JS function-hoisting), so a `function`-declared
+// helper can textually precede the `let {…} = Math` alias it calls. Real JS
+// gets away with this because the helper isn't invoked until the whole module
+// has finished initializing — pin that jz resolves the alias the same way.
+test('destruct: hoisted sibling function references a Math alias declared later in source order', () => {
+  const { exports } = jz(`
+    export default function run(x) { return helper(x) }
+    let { exp } = Math
+    function helper(x) { return exp(x) }
+  `)
+  // jz's own exp kernel (module/math.js) approximates, so this diverges from
+  // V8's native Math.exp by a few ulps — tolerance, not exact equality (same
+  // convention as test/math.js's `almost`).
+  ok(Math.abs(exports.default(1) - Math.exp(1)) < 1e-6, `expected ~${Math.exp(1)}, got ${exports.default(1)}`)
+})

@@ -438,3 +438,21 @@ test('spread: multi-prop unknown-schema spread is HASH — no ambient-schema slo
   ok(/\$__hash_new/.test(wat), 'unknown-source multi-prop spread builds a HASH (emitDynamicSpread)')
   ok(/\$__hash_get|\$__dyn_get/.test(wat), 'spread result read uses the HASH/dyn path, not a raw schema slot')
 })
+
+// Rest-param spread through a function-typed parameter compiles when the callee
+// has a concrete call site somewhere in the module graph (specialization), but
+// an export-only higher-order function — `fn` never bound to a concrete
+// function — routes through emitUnknownCalleeCall, which rejects the spread:
+// "Spread (...) can only be used in function/method calls or array literals".
+// Rest params and spread-in-calls are each documented subset. Live instance:
+// window-function/util.js generate/apply/enbw/scallopLoss/cola
+// (`fn(i, N, ...params)`) — blocks compiling any module importing that file.
+// Flip `test.todo` → `test` when fixed.
+test.todo('spread: rest-param spread through export-only unknown callee', () => {
+  const wasm = compile(`export let generate = (fn, N, ...params) => {
+    let w = new Float64Array(N)
+    for (let i = 0; i < N; i++) w[i] = fn(i, N, ...params)
+    return w
+  }`)
+  ok(wasm.length > 0)
+})

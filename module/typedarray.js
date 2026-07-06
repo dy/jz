@@ -1459,9 +1459,7 @@ export default (ctx) => {
   // typedLoop(arr, bodyFn, opts?) emits the common shape every typed iteration
   // method needs: resolve elemType from the receiver's tracked ctor, set up
   // (ptr, len, i) locals, walk i in [0, len), per iteration load arr[i] as f64
-  // and pass it to bodyFn. Returns the IR setup statements. Returns null if the
-  // element type can't be resolved — callers fall back to the generic array
-  // emitter.
+  // and pass it to bodyFn. Returns the IR setup statements.
   //
   // bodyFn(loadElem, i, len, ptr, exitLabel) returns IR statements. loadElem is
   // a function (called lazily so it isn't materialized for unused-item paths)
@@ -1470,30 +1468,63 @@ export default (ctx) => {
   // resolution). `i`/`len`/`ptr` are i32 local-name strings.
   const typedLoop = (arr, bodyFn) => {
     const r = resolveElem(arr)
-    if (!r) return null
-    const { et, isView, isBigInt } = r
-    if (isBigInt) return null  // BigInt: defer to generic .map (returns BigInts via f64-bits NaN-box)
-    const va = emit(arr)
-    const len = tempI32('tll'), ptr = tempI32('tlp'), i = tempI32('tli')
     const id = ctx.func.uniq++
     const exit = `$brk${id}`
-    inc('__len')
-    const loadElem = () => {
-      const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', SHIFT[et]]]]
-      if (et === 7) return typed(['f64.load', off], 'f64')
-      if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
-      return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+    const len = tempI32('tll'), i = tempI32('tli')
+    // Static fast path: concrete element kind (and non-BigInt-ness) proven at
+    // compile time — direct-typed load, no per-element dispatch.
+    if (r && !r.isBigInt) {
+      const { et, isView } = r
+      const va = emit(arr)
+      const ptr = tempI32('tlp')
+      inc('__len')
+      const loadElem = () => {
+        const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', SHIFT[et]]]]
+        if (et === 7) return typed(['f64.load', off], 'f64')
+        if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
+        return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+      }
+      const setup = [
+        ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', exit, ['loop', `$loop${id}`,
+          ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ...bodyFn(loadElem, i, len, ptr, exit),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]]]
+      return { setup, ptr, len, i, exit, et, isView, loadElem }
     }
+    // Dynamic fallback: concrete element kind (or BigInt-ness) isn't provable
+    // statically — `resolveElem` only tracks a receiver traced back to a bare
+    // `new XArray(...)` binding, so a TYPED value that instead flowed through
+    // an object field, a return value, or any other opaque path (still proven
+    // *some* typed array — that's how it dispatched here at all — just not
+    // WHICH one) has no ctor to key off. Read every element through
+    // __typed_get_idx: the SAME runtime aux-tag dispatch .reverse/.sort/.fill/
+    // .copyWithin already use UNCONDITIONALLY (module/core.js), correct for
+    // any concrete kind including BigInt, one indirect call slower per
+    // element than the static path above. This used to `return null`, which
+    // every caller propagated as "unsupported" up to emitMethodCall — for a
+    // receiver already proven VAL.TYPED that either crashed downstream (null
+    // IR reaching a consumer) or, if a caller "fell back to the generic array
+    // emitter" instead, would misread the typed array's packed native bytes
+    // as 8-byte f64 slots (module/array.js's arrayLoop is ARRAY-only) —
+    // silent corruption, not a fallback. This is the sound one.
+    inc('__typed_get_idx', '__len')
+    const av = temp('tla')
+    const loadElem = () => typed(['call', '$__typed_get_idx',
+      ['i64.reinterpret_f64', ['local.get', `$${av}`]], ['local.get', `$${i}`]], 'f64')
     const setup = [
-      ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
+      ['local.set', `$${av}`, asF64(emit(arr))],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${av}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', exit, ['loop', `$loop${id}`,
         ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ...bodyFn(loadElem, i, len, ptr, exit),
+        ...bodyFn(loadElem, i, len, null, exit),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]]]
-    return { setup, ptr, len, i, exit, et, isView, loadElem }
+    return { setup, ptr: null, len, i, exit, et: null, isView: false, loadElem }
   }
 
   // === Typed iteration emitters ===
