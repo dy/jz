@@ -18,7 +18,7 @@ import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
-import { nanPrefixHex } from '../layout.js'
+import { nanPrefixHex, encodePtrHi, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
 
@@ -801,6 +801,51 @@ export default (ctx) => {
     return typed(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'f64')
   }
 
+  // Top 32 bits of the i64 NaN-box carrier: NAN_PREFIX | PTR tag (TAG_SHIFT=47)
+  // | schemaId aux (AUX_SHIFT=32) — layout.js packs all three above bit 31, so
+  // masking the whole high word and comparing to encodePtrHi(OBJECT, sid) proves
+  // "is an OBJECT" AND "is exactly this schema" in one i64 compare; the low
+  // word (this instance's heap offset) is irrelevant and stays unmasked.
+  const OBJECT_SCHEMA_HI_MASK = '0xFFFFFFFF00000000'
+  const objectSchemaGuardHex = (sid) => i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)
+
+  /** Monomorphic schema-slot devirtualization for a receiver whose static type
+   *  is fully unknown (emitPropAccess's `vt == null` case, the __dyn_get_any_t_h
+   *  path). `guard` (from ctx.schema.guardedSlotOf) proves `prop` names a field
+   *  on exactly one registered schema program-wide: the subscript dispatch-
+   *  descriptor pattern (`d.op`/`d.l`/`d.word`) and jz's own emit-table/IR-node
+   *  reads under self-host are both a hot dot-read whose receiver is ALWAYS
+   *  that one schema in practice, even though it flows through a parameter or
+   *  array element the static analysis never pins to VAL.OBJECT.
+   *
+   *  Emits a single masked i64 compare (OBJECT_SCHEMA_HI_MASK) then a direct
+   *  payload-slot load; any other receiver (a different schema, or not an
+   *  OBJECT at all) falls to `slow()` — the exact call this site would have
+   *  emitted with no guard at all, so this can only ever be as fast, never
+   *  wrong. Soundness: collection.js's __dyn_set schema arm
+   *  (buildObjectSchemaSetArm) mirrors every dynamic write to a schema-named
+   *  key into the payload slot, so the slot stays authoritative even after an
+   *  `obj[k] = v` write through the dyn-props sidecar/global table — schema
+   *  fields are never shadowed by a dynamic write. */
+  function emitSchemaSlotGuarded(va, guard, slow) {
+    const bits = asI64(va?.type ? va : typed(va, 'f64'))
+    const cond = ['i64.eq',
+      ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]],
+      ['i64.const', objectSchemaGuardHex(guard.sid)]]
+    // PTR.OBJECT never forwards (FORWARDING_MASK — ctx.js — only ARRAY/HASH/
+    // SET/MAP headers relocate on growth), so once the guard above has proven
+    // the tag, the payload offset is a bare mask: no __ptr_offset call needed.
+    // ptrOffsetIR (src/ir.js) always emits that call for an untyped node — it
+    // has no way to know the forwarding check is dead here — so this inlines
+    // the same extraction __ptr_offset itself would perform for an OBJECT tag.
+    const off = ['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]]
+    const fast = typed(ctx.abi.object.ops.load(off, guard.slot), 'f64')
+    return typed(['if', ['result', 'f64'],
+      cond,
+      ['then', fast],
+      ['else', slow()]], 'f64')
+  }
+
   function emitHashGetLocalConst(base, key, prop) {
     inc('__hash_get_local_h')
     const receiver = asI64(base?.type ? base : typed(base, 'f64'))
@@ -931,12 +976,18 @@ export default (ctx) => {
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
-        if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt, prop)
+        const isWasi = ctx.transform.host === 'wasi'
         // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
         // PTR.EXTERNAL arm is dead unless host externals are already in play —
         // don't force the __ext_prop import just for an optional read.
-        if (!fromOptional) ctx.features.external = true
-        return emitDynGetAnyTyped(va, key, vt, prop)
+        if (!isWasi && !fromOptional) ctx.features.external = true
+        const slow = () => isWasi ? emitDynGetExprTyped(va, key, vt, prop) : emitDynGetAnyTyped(va, key, vt, prop)
+        // Monomorphic schema-slot devirtualization (see emitSchemaSlotGuarded):
+        // `prop` uniquely identifies one registered schema program-wide, so
+        // guard on it instead of always paying the full dynamic dispatch
+        // (durable-receiver check + ihash probe + schema-table scan).
+        const guard = ctx.schema.guardedSlotOf(prop)
+        return guard ? emitSchemaSlotGuarded(va, guard, slow) : slow()
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
       // undefined. Without this the value falls to the __hash_get fallback, which

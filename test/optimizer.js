@@ -534,6 +534,29 @@ test('dynamic prop reads reuse receiver type tag', () => {
   ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
 })
 
+test('monomorphic schema-slot devirtualization: singleton-schema dot-read compiles to aux-guard + load, no call', () => {
+  if (onWasi()) return  // wasi: external object WAT name differs in the fallback arm
+  // `o`'s static type is fully unknown (exported-fn parameter, no caller evidence —
+  // the exact __dyn_get_any_t_h precondition), but "a" names a field on exactly one
+  // registered schema program-wide (mk's {a,b,c}), so ctx.schema.guardedSlotOf fires.
+  // optimize:0 keeps the emitted shape stable regardless of the outer test run's
+  // JZ_TEST_OPTIMIZE leg — this pins module/core.js's emit-time lever itself, not
+  // a watr optimizer pass.
+  const wat = jz.compile(`
+    const mk = () => ({ a: 1, b: 2, c: 3 })
+    export const build = () => mk()
+    export const getA = (o) => o.a
+  `, { wat: true, optimize: 0 })
+  // Guard: one masked i64 compare against the packed (NAN_PREFIX|tag|schemaId)
+  // high word — proves "is an OBJECT" AND "is exactly this schema" at once.
+  ok(/0xFFFFFFFF00000000/.test(wat), 'expected the tag+aux guard mask constant')
+  const thenArm = wat.match(/\(then\s*\(f64\.load\b[\s\S]{0,120}?\)\)/)
+  ok(thenArm, 'expected a direct f64.load in the guarded (then) arm')
+  if (thenArm) ok(!/call/.test(thenArm[0]), 'the guarded fast path must not call any helper')
+  // The generic dispatch remains reachable as the polymorphic fallback, never removed.
+  ok(/\(call \$__dyn_get_any_t_h\b/.test(wat), 'generic dyn dispatch remains as the polymorphic fallback')
+})
+
 test('polymorphic object prop reads use typed object dispatch', () => {
   const src = `
     const left = () => ({ x: 11, y: 100 })

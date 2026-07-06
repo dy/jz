@@ -106,6 +106,28 @@ export function initSchema(ctx) {
     return slot
   }
 
+  /** Devirtualization guard for a receiver whose static type is fully unknown
+   *  (valTypeOf gives up entirely — no OBJECT proof at all, unlike `slotOf`'s
+   *  structural fallback which *requires* one). Returns `{sid, slot}` when
+   *  `prop` names a field on exactly ONE registered schema anywhere in the
+   *  program — the subscript dispatch-descriptor pattern (`d.op`/`d.l`/`d.word`)
+   *  and jz's own emit-table/IR-node reads under self-host both flow through a
+   *  parameter or array element the static analysis never pins to VAL.OBJECT,
+   *  even though every value that ever reaches the read is, in practice, that
+   *  one schema. Unlike `slotOf`, the caller MUST runtime-guard the read (a
+   *  masked NaN-box compare proving tag==OBJECT && aux==sid at once — see
+   *  module/core.js's emitSchemaSlotGuarded) rather than trusting it
+   *  unconditionally: with no static OBJECT evidence, the receiver could
+   *  legitimately be anything, and the guard is what makes that safe. Two or
+   *  more distinct schemas sharing the name (bucket.length > 1) is left to
+   *  dynamic dispatch — a multi-way guard chases diminishing returns the
+   *  common case (a genuine program-wide-unique field name) doesn't need. */
+  ctx.schema.guardedSlotOf = (prop) => {
+    const bucket = byProp.get(prop)
+    if (!bucket || bucket.length !== 1) return null
+    return { sid: bucket[0].id, slot: bucket[0].slot }
+  }
+
   /** Resolve the monomorphic slot value-type for `varName.prop`, or null.
    *  Precise path only: requires the variable to have a bound `schemaId`
    *  (ValueRep or `ctx.schema.vars`). Structural-subtyping is intentionally

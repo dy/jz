@@ -1394,3 +1394,174 @@ test.todo('optional chain reads a marshalled object arg like a plain member read
   is(opt.f({ factor: 2 }), 2)
   is(opt.f(null), 1)
 })
+
+// Plain-object fields sharing a name with a TypedArray accessor misresolve when
+// the receiver arrives through a call arg — the whole name class, one per symptom:
+// `buffer` reads NaN/garbage (missing-field read is NOT undefined, so the lazy-init
+// guard `if (!params.buffer) params.buffer = …` never allocates; a literal-declared
+// `{ buffer: arr }` read back through an arg yields garbage, and reading its
+// `.length` traps "Offset is outside the bounds of the DataView"); `byteLength` /
+// `byteOffset` read 0; `length` dies at compile with "'__schema_tbl' is not a known
+// global". Any other name — `_buf`, `buf`, `ptr` — behaves. Silent wrong results.
+// Live instance: audio-effect — flanger/chorus/vibrato/delay/multitap/haas keep
+// ring-buffer state in `params.buffer` and emit NaN or dry-only output; mixer reads
+// `{buffer, gain}` inputs and traps. Renaming the field to `_buf` makes all six
+// bit-exact vs JS. Flip `test.todo` → `test` when fixed.
+test.todo('fields named like TypedArray accessors resolve like any other field', () => {
+  // name class: lazy-init guard on a missing field, numeric payload
+  for (const name of ['buffer', 'byteLength', 'byteOffset', 'length']) {
+    const r = run(`
+      let eff = (params) => {
+        if (!params.${name}) { params.${name} = 7 }
+        return params.${name} * 6
+      }
+      export let f = () => {
+        let p = { fs: 8000 }
+        eff(p)
+        return eff(p)
+      }
+    `)
+    is(r.f(), 42, name)
+  }
+  // typed-array payload under 'buffer': alloc once, then persist across calls
+  const g = run(`
+    let calls = 0
+    let eff = (params) => {
+      if (!params.buffer) { params.buffer = new Float64Array(4); calls = calls + 1 }
+      params.buffer[0] = params.buffer[0] + 21
+      return params.buffer[0] * 10 + calls
+    }
+    export let f = () => {
+      let p = { fs: 8000 }
+      eff(p)
+      return eff(p)   // alloc once → buffer[0] = 42, calls = 1 → 421
+    }
+  `)
+  is(g.f(), 421)
+  // literal-declared buffer field read back through a call arg
+  const m = run(`
+    let pick = (inputs) => inputs[0].buffer[0] * inputs[0].gain
+    export let f = () => {
+      let a = new Float64Array(2)
+      a[0] = 21
+      return pick([{ buffer: a, gain: 2 }])
+    }
+  `)
+  is(m.f(), 42)
+})
+
+// A nested-container WRITE through a host-passed plain-object param silently
+// vanishes. `params` arrives from the host as `{}` — no compiled schema matches an
+// empty key set, so it marshals through the same host-reference (External) fallback
+// as the next test below. A direct top-level property SET on `params` itself
+// (`params.state = new Array(1)`) round-trips for real (interop.js's `__ext_set`
+// decodes and stores it on the real host object), but the NESTED write one line
+// later (`params.state[0] = [7, 9]`) targets whatever `params.state` reads back as —
+// and every External property read re-marshals a fresh, disconnected copy
+// (`__ext_prop` calls `mem.wrapVal` on the live value, allocating new wasm memory
+// each time), so the index-set lands on a copy that is immediately discarded, never
+// on the value actually stored on the host object. A local `state` variable holding
+// the identical nested-array shape (no host object involved) returns correctly.
+// Checked README's FAQ ("differences with JS", "How to pass numbers, strings,
+// arrays, objects") and CONTRIBUTING.md — neither documents host-object writes as
+// lossy; this isn't a decided JS/WASM tradeoff, it looks like an unintentional gap
+// in the External round-trip. Fix it to persist, or at least throw instead of
+// silently dropping the write. Flip `test.todo` → `test` when fixed.
+test.todo('nested write through a host-passed plain-object param is silently lost', () => {
+  const { f } = run(`export let f = (params) => {
+    params.state = new Array(1)
+    params.state[0] = [7, 9]
+    return params.state[0][0]
+  }`)
+  is(f({}), 7)
+})
+
+// Same root cause as the test above, reached via `memory.Object()` instead of a bare
+// `{}`: the module never constructs a `{state: …}` object literal anywhere in its
+// source, so it compiles no matching schema — `memory.Object({state: [[0, 0]]})`
+// finds no schema for `{state}` and silently falls back to the same host-reference
+// (External) marshaling (`mem.Object`'s `else if (mem._extMap) return
+// mem.External(obj)` branch in interop.js), NOT a "wasm-native fixed-shape object" as
+// the call site suggests. A write via one property read (`params.state[0] = [7,
+// 9]`) is invisible to a subsequent, separate re-read (`params.state[0][0]` → `0`,
+// stale) — each `.state` access re-marshals its own disconnected copy (see the test
+// above). Fetching the property ONCE into a local and using only that alias (`let
+// state = params.state; state[0] = …; state[0][0]`) reads back correctly, and so
+// does an equivalent object that DOES get a compiled schema (a genuine, non-External
+// `{state: …}` literal built in jz source aliases nested writes correctly — this is
+// External-specific, not a general aliasing bug). This is the load-bearing idiom of
+// the audiojs digital-filter/audio-filter ecosystem — `params.state` / `params.coefs`
+// biquad state lazily allocated once and reused across `filter(buffer, params)`
+// calls — so output silently degrades to stale/NaN from the second call on. Flip
+// `test.todo` → `test` when fixed.
+test.todo('memory.Object() property reads alias nested container writes', () => {
+  const { exports: { f }, memory } = jz(`export let f = (params) => {
+    params.state[0] = [7, 9]
+    return params.state[0][0]
+  }`)
+  const params = memory.Object({ state: [[0, 0]] })
+  is(f(params), 7)
+})
+
+// === monomorphic schema-slot devirtualization (dyn-prop chain lever) =======
+// A dot-read whose receiver's static type is fully unknown (vt == null — an
+// exported function's own parameter, or the subscript/self-host dispatch-
+// descriptor pattern of a hot inner function reading `.op`/`.l`/`.word` off a
+// parameter the analysis never pins to VAL.OBJECT) devirtualizes to a runtime
+// tag+schemaId guard + direct payload-slot load when `prop` names a field on
+// exactly ONE registered schema program-wide (ctx.schema.guardedSlotOf,
+// module/schema.js) — see test/optimizer.js for the WAT-shape pin (aux-guard
+// + f64.load, no call). These pin the runtime SEMANTICS: the guard must
+// reject every receiver it doesn't precisely match — wrong schema, no
+// schema, not even an object — falling back to the exact same dynamic
+// dispatch, and — the one genuine soundness question — a dynamic write to a
+// schema-named key must stay visible through the fast-path read
+// (collection.js's __dyn_set schema arm, buildObjectSchemaSetArm, mirrors
+// such a write into the payload slot, so the slot is never stale/shadowed).
+
+test('devirt schema-slot: dynamic write to a schema-named key stays visible through the fast path', () => {
+  const r = run(`
+    const mk = () => ({ a: 1, b: 2, c: 3 })
+    export const build = () => mk()
+    export const getA = (o) => o.a
+    export const setDyn = (o, k, v) => { o[k] = v; return o }
+  `)
+  const obj = r.build()
+  is(r.getA(obj), 1)
+  r.setDyn(obj, 'a', 999)
+  is(r.getA(obj), 999)  // slot must be authoritative, never stale behind the guard
+})
+
+test('devirt schema-slot: receiver of an unrelated registered schema reads undefined, not a foreign slot', () => {
+  const r = run(`
+    const mk = () => ({ a: 1, b: 2, c: 3 })
+    const other = () => ({ x: 10, y: 20 })
+    export const build = () => mk()
+    export const buildOther = () => other()
+    export const getA = (o) => o.a
+  `)
+  is(r.getA(r.buildOther()), undefined)  // NOT other()'s slot-0 value (x = 10)
+})
+
+test('devirt schema-slot: non-object receivers fall back correctly (number, undefined, null)', () => {
+  const r = run(`
+    const mk = () => ({ a: 1, b: 2, c: 3 })
+    export const build = () => mk()
+    export const getA = (o) => o.a
+  `)
+  is(r.getA(42), undefined)
+  is(r.getA(undefined), undefined)
+  is(r.getA(null), undefined)
+})
+
+test('devirt schema-slot: two schemas sharing a field name at different slots never devirtualize, both still resolve', () => {
+  const r = run(`
+    const mkA = () => ({ a: 1, b: 2 })
+    const mkB = () => ({ z: 0, a: 99 })
+    export const buildA = () => mkA()
+    export const buildB = () => mkB()
+    export const getA = (o) => o.a
+  `)
+  is(r.getA(r.buildA()), 1)
+  is(r.getA(r.buildB()), 99)
+})
