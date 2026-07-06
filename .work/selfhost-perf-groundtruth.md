@@ -1282,3 +1282,13 @@ caught it independently of the "packData-on residual" entry above) —
 this session's own code changes; superseded mid-session by the real 5.1.1
 publish (this doc's entry above), final state uses the published dependency,
 not the link.
+
+## VERDICT (2026-07-05, era-vs-era bisection): fresh 1.05x→1.385x is WATR 5.0.0→5.1.1
+Single-variable watr swap on fixed jz source reproduces the gap (1.373x vs today's
+1.32-1.35x; true era rebuild ~1.08x). 5.1.1 eliminates FEWER dyn-chain calls
+(dyn_get_t_h 131k→156k, +53% pool) and typed/length fast-path calls (typed_idx
+47k→99k, +80%), MORE str_eq/alloc — net loss on property/array-heavy code.
+preEval: SHA-identical kernels (and self.js never ran it in-kernel). subscript:
+not cleanly separable but dyn-chain growth tracks watr, not subscript.
+Actionable upstream: diff watr optimize.js/compile.js 5.0.0→5.1.1 heuristics for
+the two named pools; pin kernel-helper-elimination as a watr perf regression test.
