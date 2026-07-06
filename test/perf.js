@@ -1538,7 +1538,16 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // the 6-char pack paths and the dyn_get/dyn_set schema-key compares inline a
 // one-SSO⇒ne bit test before the __str_eq fallback, so SSO-keyed miss steps
 // skip the call entirely. Size cost buys the bare-i64.eq string-compare class.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9146)
+// 9146→9710 (measured 9250→9710, +460): the durable-receiver dyn-props policy
+// (module/collection.js heapResetWat + module/core.js/object.js/json.js's
+// durable-vs-ephemeral dual-check) — __dyn_get_t_h/__dyn_set/__dyn_del each
+// gain a header-arm split (ephemeral: off-16 sidecar as before; durable: check
+// the global __dyn_props table first, then the sidecar for untouched init-time
+// keys) so a receiver's dyn-prop lifetime matches its storage lifetime across
+// `_clear()` instead of dangling a round-arena sidecar off a surviving durable
+// header. Correctness fix (test/selfhost.js 'warm-instance reuse'); pure size
+// cost here since this program's receivers are all ephemeral.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9710)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js

@@ -48,6 +48,20 @@ export const dynPropsFilterMissIR = (offExpr) =>
 // template-EXPANSION time (thunked callers only — see durableFwdLogIR/heapResetWat
 // consumers), so it observes the FINAL declaration state, not whatever was true when
 // collection.js's own module body first ran.
+//
+// DURABLE-RECEIVER POLICY (dyn-props twin of the above): a receiver allocated
+// at/below __heap_reset outlives `_clear()`, but a sidecar installed for it at
+// RUNTIME lives in the round's arena — the surviving header slot then dangles
+// across `_clear()` and the next round corrupts reused memory. So runtime
+// dyn-prop writes on a durable receiver (off < __heap_reset) route to the
+// GLOBAL __dyn_props table instead — __clear resets it, so prop lifetime
+// matches storage lifetime. Init-time writes still land in durable sidecars
+// (__heap_reset is seeded to data-end until __start's tail captures the
+// post-init top, so off >= __heap_reset holds throughout init). Every read/
+// write/delete/enumerate site that consults a header sidecar gates on this —
+// see module/object.js's emitEnumerateObject and module/json.js's __json_obj
+// for the array-IR / WAT-string twins that merge in the global table for
+// durable receivers.
 export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(global.get $__heap_reset)' : '(i32.const 0)'
 
 // A growable ARRAY/HASH/SET/MAP relocates by leaving a forwarding header behind
@@ -635,7 +649,7 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: ['__map_hash', '__alloc_hdr_n', '__mkptr'],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish'],
+    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
@@ -1195,6 +1209,25 @@ export default (ctx) => {
   // content-match (≤6-ASCII⇒SSO invariant, module/string.js), so the call —
   // the hottest __str_eq producer in the self-host — is skipped for every
   // SSO-keyed miss step; only heap-vs-heap candidates still pay it.
+  // Types allocated via __alloc_hdr/__alloc_hdr_n (see core.js) reserve a 16-byte
+  // header with a propsPtr slot at off-16: ARRAY, OBJECT, TYPED, SET, MAP. HASH is
+  // its own storage (no sidecar — handled by its own dedicated arm). Every OTHER
+  // type (STRING, CLOSURE, ATOM, BUFFER, REGEX, DATE, EXTERNAL, …) has NO such
+  // slot — reading off-16 for one of them walks into whatever memory precedes it
+  // (for a static/interned STRING literal, unrelated PRECEDING STATIC DATA) and
+  // misreads it as a props pointer, occasionally matching the HASH tag by chance
+  // and handing a garbage pointer to __hash_get_local_h → OOB trap. The ORIGINAL
+  // (pre-durable-policy) code never had this gap: each header-type arm below
+  // individually gated on its OWN type tag before ever touching off-16. The
+  // durable-receiver policy's sidecar-check (__dyn_get_t_h, __dyn_del) must gate
+  // on this SAME explicit set, not the broader "not HASH" the global-table probe
+  // uses (that probe is a safe opaque off-keyed hash lookup for any type).
+  const hasPropsSidecarWat = (typeExpr) =>
+    `(i32.or (i32.eq ${typeExpr} (i32.const ${PTR.ARRAY}))
+       (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.OBJECT}))
+         (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.TYPED}))
+           (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.SET}))
+                   (i32.eq ${typeExpr} (i32.const ${PTR.MAP}))))))`
   const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
     ? `(if (result i32) (i64.eq ${storedKey} ${userKey})
         (then (i32.const 1))
@@ -1269,7 +1302,7 @@ export default (ctx) => {
     (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
 
   ctx.core.stdlib['__dyn_get_t_h'] = () => `(func $__dyn_get_t_h (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
-    (local $props i64) (local $off i32)
+    (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
     ;; Real-number receiver (f===f — pointers are NaN-boxed) has no props: bail before
@@ -1292,14 +1325,66 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
+    ;; DURABLE-RECEIVER POLICY: a receiver allocated at/below the post-init
+    ;; high-water mark (__heap_reset) outlives _clear, but a sidecar CREATED
+    ;; FOR IT AT RUNTIME lives in the round's arena — the receiver's header
+    ;; slot survives _clear while the sidecar behind it doesn't, so __dyn_set
+    ;; routes runtime (post-init) writes on a durable receiver to the GLOBAL
+    ;; __dyn_props table instead (which __clear resets — prop lifetime
+    ;; matches storage). BUT a durable receiver's off-16 sidecar can ALSO
+    ;; hold real data: __heap_reset is only seeded to its final value at the
+    ;; TAIL of __start, so a prop written *during* init (e.g. a module-level
+    ;; IIFE mutating an init-built table — jz's own compile.js population of
+    ;; watr's opcode dict) sees off >= __heap_reset (still low) at write time
+    ;; and lands in the sidecar — which is itself durable (allocated before
+    ;; the same tail-capture), so nothing dangles. The same receiver can thus
+    ;; carry keys in BOTH places: untouched init-time keys in the sidecar,
+    ;; keys added or reassigned at runtime in the global table. Check global
+    ;; first (a key present in both was necessarily reassigned at runtime,
+    ;; so the newer global entry wins), then the sidecar. HASH is exempted —
+    ;; it is its own storage, no sidecar/global split applies to it.
+    (if (i32.and (i32.ne (local.get $type) (i32.const ${PTR.HASH}))
+                 (i32.lt_u (local.get $off) ${heapResetWat()}))
+      (then
+        (if (i32.eqz ${dynPropsFilterMissIR('(local.get $off)')})
+          (then
+            (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
+              (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+            (if (i32.eqz (call $__is_nullish (local.get $props)))
+              (then
+                (local.set $val (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))
+                (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))
+        (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
+          (then
+            (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (if (i32.eq
+                  (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+                  (i32.const ${PTR.HASH}))
+              (then (return (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))))))
+        ;; Miss on both global and sidecar: an OBJECT still needs the
+        ;; schema-slot arm before giving up — a schema-poisoned variable
+        ;; (one variable bound to two different object shapes) resolves its
+        ;; field via the runtime schemaId lookup, not via any dyn-props
+        ;; path. A durable such object has no dyn props at all, so both
+        ;; checks above always miss for it and this must still run before
+        ;; concluding UNDEF. Self-contained here (not a fallthrough into the
+        ;; block below) so this arm's control flow never depends on the
+        ;; ephemeral-only header arms or their shared global-fallback code.
+        ${buildObjectSchemaArm()}
+        (return (i64.const ${UNDEF_NAN}))))
     (block $dynDone
       (block $haveProps
+        ;; Ephemeral-only from here down (durable receivers already
+        ;; returned above) — the off >= __heap_reset conjuncts below are
+        ;; therefore always true, kept for defensive clarity and a single
+        ;; source of truth with __dyn_set/__dyn_del's mirrored gates.
         ;; ARRAY: header propsPtr at $off-16 is valid only when shift hasn't
         ;; rewritten the slot with forwarding bytes. Validate via HASH tag —
         ;; rejects 0 (no props) and forwarding garbage. Misses fall through to
         ;; the global hash, where __arr_shift migrates props on first .shift().
         (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
-                     (i32.ge_u (local.get $off) (i32.const 16)))
+                     (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+                       (i32.ge_u (local.get $off) ${heapResetWat()})))
           (then
             (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
             (br_if $haveProps (i32.eq
@@ -1312,11 +1397,13 @@ export default (ctx) => {
             (br_if $dynDone (i64.eqz (local.get $props)))
             (local.set $props (i64.const 0))))
         ;; OBJECT: heap-allocated (off >= __heap_start) carries propsPtr at
-        ;; off-16 from __alloc_hdr. The slot is either 0 (no dyn props yet) or
+        ;; off-16 from __alloc_hdr — but only when also ephemeral (durable-
+        ;; receiver policy above). The slot is either 0 (no dyn props yet) or
         ;; a HASH — no forwarding-garbage case like ARRAY, so a bit-zero test
-        ;; is enough. Static-segment objects fall through to the global hash.
+        ;; is enough. Static-segment and durable-heap objects fall through to
+        ;; the global hash.
         (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-                     (i32.ge_u (local.get $off) (global.get $__heap_start)))
+                     (i32.ge_u (local.get $off) ${heapResetWat()}))
           (then
             (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
             (br_if $dynDone (i64.eqz (local.get $props)))
@@ -1327,14 +1414,17 @@ export default (ctx) => {
         ;; __hash_get; this path serves receivers whose HASH type is only known at
         ;; runtime — e.g. a value read back through a function return, as in
         ;; derive(emitter)[op]. Without it, dyn-get reads the (absent) sidecar and
-        ;; reports every key missing.
+        ;; reports every key missing. HASH is its own storage (no sidecar, no
+        ;; global split) — durability is irrelevant here.
         (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
           (then
             (local.set $props (local.get $obj))
             (br $haveProps)))
         ;; Other header types (TYPED/SET/MAP) carry propsPtr at off-16
-        ;; directly, bypassing the global __dyn_props hash.
-        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+        ;; directly, bypassing the global __dyn_props hash — again only when
+        ;; ephemeral.
+        (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+                (i32.ge_u (local.get $off) ${heapResetWat()}))
               (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
                 (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                         (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
@@ -1518,10 +1608,14 @@ export default (ctx) => {
     ;; skip the global __dyn_props hash entirely. ARRAY also uses this slot, but
     ;; only when shift hasn't overwritten it with forwarding bytes (HASH-tagged
     ;; check rejects 0 + forwarding garbage). Shifted ARRAYs fall back to the
-    ;; global __dyn_props where __arr_shift has migrated their props.
+    ;; global __dyn_props where __arr_shift has migrated their props. DURABLE-
+    ;; RECEIVER POLICY (see heapResetWat): a durable receiver (off < the
+    ;; post-init high-water mark) always falls through to the global table too,
+    ;; regardless of shift state — this mirrors __dyn_get_t_h's ARRAY arm.
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
-        (if (i32.ge_u (local.get $off) (i32.const 16))
+        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+              (i32.ge_u (local.get $off) ${heapResetWat()}))
           (then
             (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
             (if (i32.or
@@ -1538,11 +1632,12 @@ export default (ctx) => {
                 (if (i64.ne (local.get $props) (local.get $oldProps))
                   (then (i64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $props))))
                 (return (local.get $val))))))))
-    ;; OBJECT: heap-allocated (off >= __heap_start) writes propsPtr directly at
-    ;; off-16. The slot is 0 (init) or HASH — no forwarding-garbage like ARRAY.
-    ;; Static-segment OBJECTs fall through to the global __dyn_props.
+    ;; OBJECT: heap-allocated AND ephemeral (durable-receiver policy) writes
+    ;; propsPtr directly at off-16. The slot is 0 (init) or HASH — no
+    ;; forwarding-garbage like ARRAY. Static-segment and durable-heap OBJECTs
+    ;; fall through to the global __dyn_props.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-                 (i32.ge_u (local.get $off) (global.get $__heap_start)))
+                 (i32.ge_u (local.get $off) ${heapResetWat()}))
       (then
         (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
         (local.set $props
@@ -1561,7 +1656,8 @@ export default (ctx) => {
       (then
         (drop (call $__hash_set_local (local.get $obj) (local.get $key) (local.get $val)))
         (return (local.get $val))))
-    (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+    ;; TYPED/SET/MAP header sidecar — ephemeral only (durable-receiver policy).
+    (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16)) (i32.ge_u (local.get $off) ${heapResetWat()}))
           (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                     (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
@@ -1657,24 +1753,54 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
-    ;; ARRAY landed propsPtr (HASH-tagged means real sidecar; else fall through to global).
+    ;; DURABLE-RECEIVER POLICY (see __dyn_get_t_h's declaration comment for the
+    ;; full rationale): a durable receiver's key can live in EITHER the global
+    ;; table (runtime-written) or its off-16 sidecar (init-time-written) — try
+    ;; BOTH and OR the hit bits, not just the first that resolves. This is the
+    ;; delete-specific twist: a key set at init then reassigned at runtime
+    ;; exists in BOTH places (global shadows it for reads), so deleting only
+    ;; the global copy would leave the stale sidecar entry to resurface on the
+    ;; next get once the (now correctly empty) global lookup falls through to
+    ;; it. HASH is exempted — it is its own storage.
+    (if (i32.and (i32.ne (local.get $type) (i32.const ${PTR.HASH}))
+                 (i32.lt_u (local.get $off) ${heapResetWat()}))
+      (then
+        (if (i32.eqz ${dynPropsFilterMissIR('(local.get $off)')})
+          (then
+            (local.set $root (i64.reinterpret_f64 (global.get $__dyn_props)))
+            (if (i64.ne (local.get $root) (i64.const 0))
+              (then
+                (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                (if (i32.eqz (call $__is_nullish (local.get $props)))
+                  (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))))))))
+        (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
+          (then
+            (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (if (i32.eq
+                  (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+                  (i32.const ${PTR.HASH}))
+              (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))))
+        (return (local.get $hit))))
+    ;; ARRAY landed propsPtr (HASH-tagged means real sidecar; else fall through
+    ;; to global). Ephemeral only — durable receivers already returned above.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
-                 (i32.ge_u (local.get $off) (i32.const 16)))
+                 (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+                   (i32.ge_u (local.get $off) ${heapResetWat()})))
       (then
         (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
           (then (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))))
-    ;; OBJECT heap: propsPtr directly at off-16.
+    ;; OBJECT heap: propsPtr directly at off-16 — ephemeral only.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-                 (i32.ge_u (local.get $off) (global.get $__heap_start)))
+                 (i32.ge_u (local.get $off) ${heapResetWat()}))
       (then
         (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
         (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
         (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
-    ;; Other header types (TYPED/HASH/SET/MAP).
-    (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+    ;; Other header types (TYPED/HASH/SET/MAP) — ephemeral only.
+    (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16)) (i32.ge_u (local.get $off) ${heapResetWat()}))
           (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
               (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))

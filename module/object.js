@@ -48,6 +48,13 @@ const storedValue = (node) => {
   return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
 }
 
+// Array-IR twin of collection.js's heapResetWat (WAT-string form) — both MUST
+// gate identically. True when `off` is ephemeral (>= the post-init high-water
+// mark): only then does a receiver's off-16 header sidecar hold the live
+// dyn-prop truth. See collection.js's heapResetWat for the full durable-
+// receiver policy rationale.
+const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get', '$__heap_reset'] : ['i32.const', 0]
+
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
 
@@ -1107,14 +1114,69 @@ function emitRuntimeEntries(obj) {
 // reference what it needs without knowing the scaffold's layout.
 function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
   inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  // Durable-receiver global-table merge (see below) only when collection.js's
+  // dyn-props machinery is actually part of this build — a program that never
+  // writes a dynamic prop anywhere never loads collection.js, so __dyn_props/
+  // __ihash_get_local wouldn't exist to reference.
+  const hasDynProps = ctx.scope.globals.has('__dyn_props')
+  if (hasDynProps) inc('__ihash_get_local', '__is_nullish')
   const sid = tempI32('oes'), src = tempI32('oesrc'), sn = tempI32('oen')
-  const base = tempI32('oebase'), props = tempI64('oepr'), poff = tempI32('oepo')
-  const pcap = tempI32('oepc'), dn = tempI32('oedn'), total = tempI32('oetot')
+  const base = tempI32('oebase'), props = tempI64('oepr')
+  // TWO dyn-prop sources for a DURABLE receiver: the off-16 sidecar (populated
+  // if this receiver got dyn props DURING init, while __heap_reset was still
+  // low) and the global __dyn_props table (populated by RUNTIME/post-init
+  // writes — see collection.js's heapResetWat). Either, both, or neither may
+  // be non-empty; enumerate whichever exist, deduping across schema ∪ global
+  // ∪ sidecar (in that priority — global shadows a sidecar entry with the
+  // same key, matching __dyn_get_t_h's read priority). An EPHEMERAL receiver
+  // only ever uses the sidecar slot (poffG stays 0 for it).
+  const poffG = tempI32('oepoG'), pcapG = tempI32('oepcG'), dnG = tempI32('oednG'), ordG = tempI32('oeordG')
+  const poffS = tempI32('oepoS'), pcapS = tempI32('oepcS'), dnS = tempI32('oednS'), ordS = tempI32('oeordS')
+  const total = tempI32('oetot')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
-  const slot = tempI32('oesl'), ord = tempI32('oeord')
+  const slot = tempI32('oesl')
   const j = tempI32('oej2'), skip = tempI32('oesk'), pair = tempI32('oep')
   const id = ctx.func.uniq++
   const env = { out, o, src, base, i, slot, pair }
+  // Dedup-and-store one dyn source's dn live slots (at poff/pcap, ord already
+  // computed) against the schema (0..sn @ src) and, when `against` is given,
+  // a second dyn source's already-walked ord array (0..dn2 @ ord2).
+  const walkDyn = (label, dn, ord, against) => ['if', ['i32.ne', ['local.get', `$${dn}`], ['i32.const', 0]],
+    ['then',
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$${label}brk${id}`, ['loop', `$${label}loop${id}`,
+        ['br_if', `$${label}brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
+        ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
+          ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
+        ['local.set', `$${skip}`, ['i32.const', 0]],
+        ['local.set', `$${j}`, ['i32.const', 0]],
+        ['block', `$${label}skbrk${id}`, ['loop', `$${label}skloop${id}`,
+          ['br_if', `$${label}skbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
+          ['if', ['i64.eq',
+              ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
+              ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
+            ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$${label}skbrk${id}`]]],
+          ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
+          ['br', `$${label}skloop${id}`]]],
+        ...(against ? [
+          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
+            ['then',
+              ['local.set', `$${j}`, ['i32.const', 0]],
+              ['block', `$${label}gdbrk${id}`, ['loop', `$${label}gdloop${id}`,
+                ['br_if', `$${label}gdbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${against.dn}`]]],
+                ['if', ['i64.eq',
+                    ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
+                    ['i64.load', ['i32.add', ['i32.load', ['i32.add', ['local.get', `$${against.ord}`],
+                      ['i32.shl', ['local.get', `$${j}`], ['i32.const', 2]]]], ['i32.const', 8]]]],
+                  ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$${label}gdbrk${id}`]]],
+                ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
+                ['br', `$${label}gdloop${id}`]]]]]] : []),
+        ['if', ['i32.eqz', ['local.get', `$${skip}`]],
+          ['then',
+            ...emitDynStore(env),
+            ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$${label}loop${id}`]]]]]
   return ['block', ['result', 'f64'],
     // Static schema row: sid (AUX bits) → __schema_tbl[sid] → src offset; n@src-8.
     // __schema_tbl is omitted when every program schema is empty (dyn-only dicts);
@@ -1131,13 +1193,20 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
           ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
           ['i64.const', LAYOUT.OFFSET_MASK]]]],
         ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]],
-    // Dyn-props: heap OBJECTs (base >= __heap_start) carry a HASH propsPtr at
-    // base-16 (0 when none). Static-segment objects have no header, so they
-    // contribute no dyn keys (poff stays 0).
+    // Dyn-props: heap OBJECTs carry a HASH propsPtr either at base-16
+    // (populated by an init-time write, or by any write at all on an
+    // EPHEMERAL receiver — one allocated after the post-init high-water
+    // mark, per the durable-receiver policy) or in the global __dyn_props
+    // table keyed by offset (populated by a RUNTIME/post-init write on a
+    // DURABLE receiver; see collection.js's heapResetWat). Static-segment
+    // objects (base < __heap_start) have no header at all and predate any
+    // warm-reuse machinery, so they contribute no dyn keys either way.
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${dn}`, ['i32.const', 0]],
-    ['local.set', `$${poff}`, ['i32.const', 0]],
-    ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
+    ['local.set', `$${dnG}`, ['i32.const', 0]],
+    ['local.set', `$${poffG}`, ['i32.const', 0]],
+    ['local.set', `$${dnS}`, ['i32.const', 0]],
+    ['local.set', `$${poffS}`, ['i32.const', 0]],
+    ['if', ['i32.ge_u', ['local.get', `$${base}`], heapResetIR()],
       ['then',
         ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
         ['if', ['i32.eq',
@@ -1146,12 +1215,41 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
           ['then',
             // Resolve forward chain — HASH may have forwarded on grow; the raw
             // propsPtr offset would point at the forward record, not live slots.
-            ['local.set', `$${poff}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
-            ['local.set', `$${pcap}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 4]]]],
-            ['local.set', `$${dn}`, ['i32.load', ['i32.sub', ['local.get', `$${poff}`], ['i32.const', 8]]]]]]]],
-    // Over-allocate sn+dn; patch length to actual `o` post-dedup so removed
-    // shadow-mirror slots never expose garbage tails.
-    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['local.get', `$${dn}`]]],
+            ['local.set', `$${poffS}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcapS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 4]]]],
+            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]]],
+      ...(hasDynProps ? [['else',
+        // Durable AND genuinely heap-allocated (base >= __heap_start —
+        // static-segment objects have no header at all, so both dyn sources
+        // stay 0 for them, same as before this durable branch existed).
+        ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
+          ['then',
+        // Sidecar (init-time keys, if any — same header read as above).
+        ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
+        ['if', ['i32.eq',
+            ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
+            ['i32.const', PTR.HASH]],
+          ['then',
+            ['local.set', `$${poffS}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+            ['local.set', `$${pcapS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 4]]]],
+            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]],
+        // Global (runtime-written keys, if any) — same base >= __heap_start
+        // guard as the sidecar read above, already established by the
+        // wrapping `if` this block sits inside.
+        ['if', ['f64.ne', ['global.get', '$__dyn_props'], ['f64.const', 0]],
+          ['then',
+            ['local.set', `$${props}`, ['call', '$__ihash_get_local',
+              ['i64.reinterpret_f64', ['global.get', '$__dyn_props']],
+              ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${base}`]]]]],
+            ['if', ['i32.eqz', ['call', '$__is_nullish', ['local.get', `$${props}`]]],
+              ['then',
+                ['local.set', `$${poffG}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
+                ['local.set', `$${pcapG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 4]]]],
+                ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]]]]] : [])],
+    // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
+    // removed shadow-mirror/cross-source-duplicate slots never expose
+    // garbage tails.
+    ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
     ['local.set', `$${o}`, ['i32.const', 0]],
     // Static schema slots — no skip, schema keys are unique by construction.
@@ -1162,36 +1260,21 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
       ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$sloop${id}`]]],
-    // Dyn-prop slots in insertion order (__coll_order sorts the dn live 24-byte
+    // Dyn-prop slots in insertion order (__coll_order sorts the live 24-byte
     // slots by packed seq; hash@+0, key@+8, value@+16). Skip entries whose key
     // is already in the schema — when an object literal has shadow=true (per
     // needsDynShadow), each schema key is mirrored into propsPtr at construction
     // so dyn-key reads hit the hash fast path; the mirror is not an enumeration
-    // entity, so we must not emit it twice.
-    ['if', ['i32.ne', ['local.get', `$${poff}`], ['i32.const', 0]],
-      ['then',
-        ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${poff}`], ['local.get', `$${pcap}`], ['i32.const', 24]]],
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$dbrk${id}`, ['loop', `$dloop${id}`,
-          ['br_if', `$dbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
-          ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
-            ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
-          ['local.set', `$${skip}`, ['i32.const', 0]],
-          ['local.set', `$${j}`, ['i32.const', 0]],
-          ['block', `$skbrk${id}`, ['loop', `$skloop${id}`,
-            ['br_if', `$skbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
-            ['if', ['i64.eq',
-                ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
-                ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
-              ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$skbrk${id}`]]],
-            ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
-            ['br', `$skloop${id}`]]],
-          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
-            ['then',
-              ...emitDynStore(env),
-              ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$dloop${id}`]]]]],
+    // entity, so we must not emit it twice. Global walks first (schema-dedup
+    // only); sidecar walks second (schema-dedup AND global-dedup, so a key
+    // present in both — reassigned at runtime after being set at init — is
+    // emitted once, from the authoritative global copy).
+    ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
+      ['then', ['local.set', `$${ordG}`, ['call', '$__coll_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]]]],
+    ['if', ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
+      ['then', ['local.set', `$${ordS}`, ['call', '$__coll_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]]]],
+    walkDyn('oeg', dnG, ordG, null),
+    walkDyn('oes', dnS, ordS, { dn: dnG, ord: ordG }),
     ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }

@@ -20,7 +20,7 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral } from './collection.js'
+import { strHashLiteral, heapResetWat } from './collection.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -41,7 +41,12 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
     __coll_order: ['__alloc'],
-    __obj_clone: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr'],
+    // Durable-receiver global-table merge (see __obj_clone's body) pulls in
+    // __ihash_get_local/__is_nullish only when collection.js's dyn-props
+    // machinery is actually part of this build (mirrors json.js's __json_obj
+    // and array.js's needsArrayDynMove-gated deps thunks).
+    __obj_clone: () => ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr',
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
   })
@@ -648,7 +653,10 @@ export default (ctx) => {
   //  - HASH: copy header + every probe slot wholesale (entries hold immutable
   //    string keys + scalar/pointer values — a byte copy is an independent dict).
   //  - anything else (primitive): nothing to clone, return as-is.
-  ctx.core.stdlib['__obj_clone'] = `(func $__obj_clone (param $v f64) (result f64)
+  // Thunked (not a plain template string) so heapResetWat()/the __dyn_props
+  // presence check below read the FINAL declaration state — see collection.js's
+  // heapResetWat comment for why.
+  ctx.core.stdlib['__obj_clone'] = () => `(func $__obj_clone (param $v f64) (result f64)
     (local $bits i64) (local $t i32) (local $sid i32) (local $n i32) (local $cap i32)
     (local $src i32) (local $dst i32) (local $props i64)
     (local.set $bits (i64.reinterpret_f64 (local.get $v)))
@@ -664,12 +672,36 @@ export default (ctx) => {
         (local.set $cap (i32.add (local.get $n) (i32.eqz (local.get $n))))
         (local.set $dst (call $__alloc_hdr (i32.const 0) (local.get $cap)))
         (memory.copy (local.get $dst) (local.get $src) (i32.shl (local.get $n) (i32.const 3)))
-        (if (i32.ge_u (local.get $src) (global.get $__heap_start))
-          (then
-            (local.set $props (i64.load (i32.sub (local.get $src) (i32.const 16))))
-            (if (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH}))
-              (then (i64.store (i32.sub (local.get $dst) (i32.const 16))
-                (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props)))))))))
+        ;; Dyn-props (off-schema keys added by o[k]=v): heap-allocated sources
+        ;; (src >= __heap_start) carry them at src-16 as a HASH sidecar
+        ;; (populated by an init-time write, or by any write at all on an
+        ;; EPHEMERAL source) and/or in the global __dyn_props table (populated
+        ;; by a RUNTIME/post-init write on a DURABLE source — see
+        ;; collection.js's heapResetWat for the full policy). Static-segment
+        ;; sources (src < __heap_start) have no header — both checks below
+        ;; are gated on src >= __heap_start so neither reads neighbor static
+        ;; data. Prefers the sidecar when present (authoritative for a
+        ;; DURABLE source's untouched init-time keys, and the only source for
+        ;; an ephemeral one); falls back to the global entry otherwise. A
+        ;; source with keys split across BOTH (some at init, more added at
+        ;; runtime) clones only the sidecar's — a known narrow gap versus
+        ;; Object.keys/JSON.stringify's full merge, accepted here because a
+        ;; spread of such a genuinely mixed durable dict is materially rarer.
+        (local.set $props (i64.load (i32.sub (local.get $src) (i32.const 16))))
+        (if (i32.and (i32.ge_u (local.get $src) (global.get $__heap_start))
+                     (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH})))
+          (then (i64.store (i32.sub (local.get $dst) (i32.const 16))
+            (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props))))))${ctx.scope.globals.has('__dyn_props') ? `
+          (else
+            (if (i32.and (i32.ge_u (local.get $src) (global.get $__heap_start))
+                         (i32.lt_u (local.get $src) ${heapResetWat()}))
+              (then
+                (if (f64.ne (global.get $__dyn_props) (f64.const 0))
+                  (then
+                    (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $src)))))
+                    (if (i32.eqz (call $__is_nullish (local.get $props)))
+                      (then (i64.store (i32.sub (local.get $dst) (i32.const 16))
+                        (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props)))))))))))` : ''}))
         (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $dst)))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
       (then

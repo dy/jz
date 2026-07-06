@@ -14,7 +14,7 @@ import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
-import { strHashLiteral } from './collection.js'
+import { strHashLiteral, heapResetWat } from './collection.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -142,7 +142,13 @@ export default (ctx) => {
     __jindent: ['__jput'],
     __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
     __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order'],
-    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order'],
+    // Durable-receiver global-table merge (see __json_obj's body) pulls in
+    // __ihash_get_local/__is_nullish only when collection.js's dyn-props
+    // machinery is actually part of this build (mirrors array.js's
+    // needsArrayDynMove-gated deps thunks) — a program that never writes a
+    // dynamic prop anywhere never loads collection.js.
+    __json_obj: () => ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order',
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -475,11 +481,20 @@ export default (ctx) => {
   // Schema name table: global $__schema_tbl → array of f64 pointers.
   //   schema_tbl[schemaId * 8] = f64 pointer to jz Array of key name strings.
   // Object props are sequential f64 at ptr_offset, indexed same as schema.
-  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val i64)
+  // Thunked (not a plain template string) so heapResetWat()/the __dyn_props
+  // presence check below read the FINAL declaration state — see collection.js's
+  // heapResetWat comment for why (module load order isn't otherwise settled
+  // at the time this string would eagerly evaluate).
+  ctx.core.stdlib['__json_obj'] = () => `(func $__json_obj (param $val i64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
-    (local $props i64) (local $poff i32) (local $pcap i32) (local $dn i32) (local $slot i32) (local $ord i32)
-    (local $j i32) (local $skip i32)
+    (local $props i64) (local $slot i32) (local $j i32) (local $skip i32)
+    ;; Two dyn-prop sources for a DURABLE receiver — see collection.js's
+    ;; heapResetWat and module/object.js's emitEnumerateObject for the full
+    ;; rationale: G(lobal) holds runtime/post-init keys, S(idecar) holds
+    ;; init-time keys. An EPHEMERAL receiver only ever populates S.
+    (local $poffG i32) (local $pcapG i32) (local $dnG i32) (local $ordG i32)
+    (local $poffS i32) (local $pcapS i32) (local $dnS i32) (local $ordS i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $sid (call $__ptr_aux (local.get $val)))
     ;; Schema keys: schema_tbl + sid*8. Dyn-only programs (empty {} + computed
@@ -513,41 +528,68 @@ export default (ctx) => {
           (call $__json_val (local.get $pv))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
-    ;; Dynamic (off-schema) properties: heap OBJECTs carry a HASH propsPtr at
-    ;; off-16 (set by __dyn_set). Walk it in insertion order via __coll_order —
-    ;; schema-only enumeration would drop computed props (e.g. {} then o.a=1).
-    ;; Skip propsPtr entries whose key already appears in the schema: object
-    ;; literals with needsDynShadow(target)=true shadow-write each schema key
-    ;; into propsPtr so dyn-key reads can resolve via hash lookup. That mirror
-    ;; is a runtime acceleration, not an enumeration entity — without dedup,
-    ;; JSON output emits each schema key twice. Schema-key interns equal the
-    ;; keys we shadow-write (same compile-time string literal), so i64.eq matches.
+    ;; Dynamic (off-schema) properties: heap OBJECTs carry a HASH propsPtr
+    ;; either at off-16 (populated by an init-time write, or by any write at
+    ;; all on an EPHEMERAL receiver — one allocated after the post-init
+    ;; high-water mark, per the durable-receiver policy) or in the global
+    ;; __dyn_props table keyed by offset (populated by a RUNTIME/post-init
+    ;; write on a DURABLE receiver; see collection.js's heapResetWat for the
+    ;; full policy). A durable receiver can carry BOTH — gather each into its
+    ;; own (poff/pcap/dn) pair; G(lobal) and S(idecar) below. Static-segment
+    ;; objects (off < __heap_start) have no header at all — guard both reads
+    ;; on off >= __heap_start so neither ever reads neighbor static data.
     (if (i32.ge_u (local.get $off) (global.get $__heap_start))
       (then
-        (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
-        (if (i32.eq
-              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-              (i32.const ${PTR.HASH}))
+    (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+          (i32.const ${PTR.HASH}))
+      (then
+        (local.set $poffS (call $__ptr_offset (local.get $props)))
+        (local.set $pcapS (i32.load (i32.sub (local.get $poffS) (i32.const 4))))
+        (local.set $dnS (i32.load (i32.sub (local.get $poffS) (i32.const 8))))))${ctx.scope.globals.has('__dyn_props') ? `
+    (if (i32.lt_u (local.get $off) ${heapResetWat()})
+      (then
+        (if (f64.ne (global.get $__dyn_props) (f64.const 0))
           (then
-            (local.set $poff (call $__ptr_offset (local.get $props)))
-            (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
-            (local.set $dn (i32.load (i32.sub (local.get $poff) (i32.const 8))))
-            (local.set $ord (call $__coll_order (local.get $poff) (local.get $pcap) (i32.const 24)))
+            (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+            (if (i32.eqz (call $__is_nullish (local.get $props)))
+              (then
+                (local.set $poffG (call $__ptr_offset (local.get $props)))
+                (local.set $pcapG (i32.load (i32.sub (local.get $poffG) (i32.const 4))))
+                (local.set $dnG (i32.load (i32.sub (local.get $poffG) (i32.const 8))))))))))))` : ''}
+    ;; Walk in insertion order via __coll_order — schema-only enumeration
+    ;; would drop computed props (e.g. {} then o.a=1). Skip entries whose key
+    ;; already appears in the schema: object literals with
+    ;; needsDynShadow(target)=true shadow-write each schema key into propsPtr
+    ;; so dyn-key reads can resolve via hash lookup. That mirror is a runtime
+    ;; acceleration, not an enumeration entity — without dedup, JSON output
+    ;; emits each schema key twice. Schema-key interns equal the keys we
+    ;; shadow-write (same compile-time string literal), so i64.eq matches.
+    ;; G walks first (schema-dedup only); S walks second (schema-dedup AND
+    ;; G-dedup, so a key present in both — reassigned at runtime after being
+    ;; set at init — emits once, from the authoritative G copy).
+    (if (i32.ne (local.get $poffG) (i32.const 0))
+      (then (local.set $ordG (call $__coll_order (local.get $poffG) (local.get $pcapG) (i32.const 24)))))
+    (if (i32.ne (local.get $poffS) (i32.const 0))
+      (then (local.set $ordS (call $__coll_order (local.get $poffS) (local.get $pcapS) (i32.const 24)))))
+    (if (i32.ne (local.get $dnG) (i32.const 0))
+      (then
             (local.set $i (i32.const 0))
-            (block $dd (loop $dl
-              (br_if $dd (i32.ge_s (local.get $i) (local.get $dn)))
-              (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+            (block $gd (loop $gl
+              (br_if $gd (i32.ge_s (local.get $i) (local.get $dnG)))
+              (local.set $slot (i32.load (i32.add (local.get $ordG) (i32.shl (local.get $i) (i32.const 2)))))
               (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
               (local.set $skip (i32.const 0))
               (local.set $j (i32.const 0))
-              (block $sd (loop $sl
-                (br_if $sd (i32.ge_s (local.get $j) (local.get $nkeys)))
+              (block $gsd (loop $gsl
+                (br_if $gsd (i32.ge_s (local.get $j) (local.get $nkeys)))
                 (if (i64.eq
                       (i64.load (i32.add (local.get $slot) (i32.const 8)))
                       (i64.load (i32.add (local.get $koff) (i32.shl (local.get $j) (i32.const 3)))))
-                  (then (local.set $skip (i32.const 1)) (br $sd)))
+                  (then (local.set $skip (i32.const 1)) (br $gsd)))
                 (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                (br $sl)))
+                (br $gsl)))
               (if (i32.and (i32.eqz (local.get $skip)) (i32.eqz (call $__json_omit (local.get $pv))))
                 (then
                   (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
@@ -560,7 +602,48 @@ export default (ctx) => {
                   (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
                   (call $__json_val (local.get $pv))))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $dl)))))))
+              (br $gl)))))
+    (if (i32.ne (local.get $dnS) (i32.const 0))
+      (then
+            (local.set $i (i32.const 0))
+            (block $sd (loop $sl
+              (br_if $sd (i32.ge_s (local.get $i) (local.get $dnS)))
+              (local.set $slot (i32.load (i32.add (local.get $ordS) (i32.shl (local.get $i) (i32.const 2)))))
+              (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
+              (local.set $skip (i32.const 0))
+              (local.set $j (i32.const 0))
+              (block $ssd (loop $ssl
+                (br_if $ssd (i32.ge_s (local.get $j) (local.get $nkeys)))
+                (if (i64.eq
+                      (i64.load (i32.add (local.get $slot) (i32.const 8)))
+                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $j) (i32.const 3)))))
+                  (then (local.set $skip (i32.const 1)) (br $ssd)))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (br $ssl)))
+              (if (i32.eqz (local.get $skip))
+                (then
+                  (local.set $j (i32.const 0))
+                  (block $sgd (loop $sgl
+                    (br_if $sgd (i32.ge_s (local.get $j) (local.get $dnG)))
+                    (if (i64.eq
+                          (i64.load (i32.add (local.get $slot) (i32.const 8)))
+                          (i64.load (i32.add (i32.load (i32.add (local.get $ordG) (i32.shl (local.get $j) (i32.const 2)))) (i32.const 8))))
+                      (then (local.set $skip (i32.const 1)) (br $sgd)))
+                    (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                    (br $sgl)))))
+              (if (i32.and (i32.eqz (local.get $skip)) (i32.eqz (call $__json_omit (local.get $pv))))
+                (then
+                  (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
+                  (local.set $first (i32.const 0))
+                  (call $__jindent)
+                  (call $__jput (i32.const 34))
+                  (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
+                  (call $__jput (i32.const 34))
+                  (call $__jput (i32.const 58))
+                  (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+                  (call $__json_val (local.get $pv))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $sl)))))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
     (if (i32.eqz (local.get $first)) (then (call $__jindent)))
     (call $__jput (i32.const 125))
