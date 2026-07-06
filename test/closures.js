@@ -1039,3 +1039,39 @@ test('identifiers named like Object methods resolve as plain variables (proto-le
   is(run('export let main = () => { let toString = 3; { let x = toString + 1; return x } }').main(), 4, 'nested-scope toString')
   is(run('export let main = () => { let o = {valueOf: 5, x: 2}; return o.valueOf + o.x }').main(), 7, 'object property valueOf unaffected')
 })
+
+// A write to a captured variable FROM INSIDE the closure body does not join the
+// shared cell's type. If every outer-visible value is integer (`let env = 0`),
+// the cell stays i32 and closure-side f64 stores truncate silently: `env = 1.5`
+// reads back 1; a one-pole accumulator `env = c*env + (1-c)*x` collapses to 0
+// forever. Outer-side float writes DO widen (`let n = 0; fn; n = 0.5` is fine) —
+// only closure-body writes are missing from the join. Initializing with a
+// non-integer literal (0.5) or an f64 param sidesteps it, which is why the shape
+// hides in real code until state starts at 0. Live instance: dynamics-processor
+// envelope.js (`let env = 0; return (x) => { env = c*env + (1-c)*mag; … }`) —
+// every envelope-based processor (compressor, limiter, deesser, ducker, compand)
+// compiled clean and ran as a silent passthrough. Flip test.todo → test when fixed.
+test.todo('closure: f64 write from closure body widens an int-initialized captured cell', () => {
+  const { f } = run(`export let f = () => {
+    let env = 0
+    let set = () => { env = 1.5 }
+    set()
+    return env
+  }`)
+  is(f(), 1.5)
+})
+
+test.todo('closure: one-pole accumulator in returned closure (envelope follower)', () => {
+  const { f } = run(`
+    let follower = (c) => {
+      let env = 0
+      return (x) => env = c * env + (1 - c) * x
+    }
+    export let f = () => {
+      let g = follower(0.9)
+      let last = 0
+      for (let i = 0; i < 100; i++) last = g(0.5)
+      return last
+    }`)
+  ok(Math.abs(f() - 0.49998671930055616) < 1e-12, `expected ≈0.5, got ${f()}`)
+})
