@@ -54,12 +54,6 @@ import {
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
 
-// Ops the expression parser binds LOOSER than relational `in`/`of` — in a for-in/of
-// head they strand around the `in` node and must re-associate into the iteration
-// source (see the 'for' handler). Assignments, sequence, ternary, logical, equality,
-// bitwise; everything tighter already lives inside the `in` node's operands.
-const FORIN_WRAPPERS = new Set([...ASSIGN_OPS, ',', '?', '&&', '||', '??', '==', '!=', '===', '!==', '&', '^', '|'])
-
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
 // at the top of `prepare()` (line ~368) — any throw inside prepare is cleared
@@ -2332,27 +2326,11 @@ const handlers = {
   // For loop
   'for'(head, body) {
     pushScope()
-    // For-in/of head re-association. In `for (k in o = expr)` / `for (k in a, obj)` the grammar
-    // makes EVERYTHING right of the keyword the iteration source, but the expression parser binds
-    // relational `in`/`of` tighter than assignment/comma/ternary/logical/equality/bitwise, so those
-    // wrappers strand AROUND the whole head: `(k in o) = expr`. That reading is invalid JS (a
-    // relational result is no assignment target; a single-expression for head with a top-level `in`
-    // IS a for-in), so the only legal reading splices the wrapper chain back into the source:
-    // descend the leftmost spine to the `in`/`of` node, replace it with its own right operand,
-    // and iterate over the re-associated expression. (subscript 10.5.0's comment.js
-    // `for (s in cm = parse.comment)` is the shape that surfaced this.)
-    if (Array.isArray(head) && FORIN_WRAPPERS.has(head[0])) {
-      let spine = head, parent = null
-      while (Array.isArray(spine) && FORIN_WRAPPERS.has(spine[0])) { parent = spine; spine = spine[1] }
-      if (Array.isArray(spine) && (spine[0] === 'in' || spine[0] === 'of')) {
-        parent[1] = spine[2]
-        head = [spine[0], spine[1], head]
-      }
-    }
     // A comma/sequence Expression in a for-IN head RHS — `for (x in a, b)` — is valid (the RHS is
     // an Expression): evaluate left-to-right for side effects, value as the last element. (for-OF's
-    // RHS is an AssignmentExpression — no comma — so it is left alone.) The re-association above
-    // lands it as a bare `,` node in the source slot. Don't wrap it in `()`: Object.keys((a, obj))
+    // RHS is an AssignmentExpression — no comma — so it is left alone.) subscript ≥10.5.1 parses
+    // the head re-associated, landing a bare `,` node in the source slot. Don't wrap it in `()`:
+    // Object.keys((a, obj))
     // hides `obj` behind the sequence and loses its static schema (a non-escaping literal
     // scalarizes → 0 keys). Instead take the LAST element as the (direct) iteration source and run
     // the earlier elements once first.
