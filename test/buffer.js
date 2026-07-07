@@ -757,3 +757,18 @@ test('typed-array property getters resolve statically (self-host parity)', () =>
   is(viewWord(), 1073217536)   // high word of f64 1.5 — the view reads real bytes
   is(size(), 2)                // collection .size getter
 })
+
+// === Constructor copy semantics: TypedArray(typedArray) copies, (buffer) views ===
+test('new TypedArray(typedArray) COPIES — mutations do not alias (spec %TypedArray%(typedArray))', () => {
+  const { sameType, converted, hostSrc, bufferView } = jz(`
+    export let sameType = () => { let a = new Float64Array(2); a[0] = 1; let c = new Float64Array(a); a[0] = 999; return c[0] }
+    export let converted = () => { let i = new Int32Array(2); i[0] = 7; let f = new Float64Array(i); i[0] = 999; return f[0] }
+    export let hostSrc = (data) => { let copy = new Float64Array(data); data[0] = 999; return copy[0] }
+    export let bufferView = () => { let b = new ArrayBuffer(16); let v = new Float64Array(b); let w = new Float64Array(b); v[0] = 5; return w[0] }
+  `).exports
+  is(sameType(), 1, 'same-elemType source: fresh storage')
+  is(converted(), 7, 'converting source: Int32 → Float64 element copy')
+  is(bufferView(), 5, 'ArrayBuffer source stays a live view — two views share bytes')
+  const r = jz(`export default function f (data) { let copy = new Float64Array(data); data[0] = 999; return copy[0] }`)
+  is(Number(r.exports.default(r.memory.Float64Array([1, 2]))), 1, 'host-marshaled source (runtime dispatch): copies')
+})

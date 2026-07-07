@@ -1055,3 +1055,15 @@ test.todo('set: into typed-array field added dynamically to an empty object', ()
   }`)
   is(f(), 1004)
 })
+
+test('map: named constructor-fn callback reboxes (ptrKind through the inline wrapper)', () => {
+  // `.map(s => mk(s))` with mk a NAMED fn returning an object: mk compiles with a
+  // narrowed raw-pointer return; the callback inliner's block wrapper must carry the
+  // ptrKind metadata or asF64 numeric-converts the raw offset — map returned
+  // [1104,1128] instead of objects (digital-filter core/matched-z.js).
+  const r = jz(`function mk(s) { return { v: s } }
+export function f(arr) { return arr.map(s => mk(s)) }
+export function g() { let a = [10, 20]; return a.map(s => mk(s)) }`)
+  is(r.memory.read(r.exports.g()), [{ v: 10 }, { v: 20 }], 'local source')
+  is(r.memory.read(r.exports.f(r.memory.Array([10, 20]))), [{ v: 10 }, { v: 20 }], 'host-marshaled source')
+})

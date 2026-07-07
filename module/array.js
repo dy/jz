@@ -152,7 +152,13 @@ function makeCallback(fn, argReps) {
           const result = emit(subst)
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
-          return typed(['block', ['result', ty], ...stmts, result], ty)
+          const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)
+          // An i32 result carrying ptrKind is an UNBOXED POINTER (a narrowed-return
+          // callee: the caller must rebox via this metadata) — the block wrapper must
+          // carry it through or downstream asF64 numeric-converts the raw offset
+          // (map stored [1104,1128] instead of the objects a named ctor fn returned).
+          if (result.ptrKind != null) { wrapped.ptrKind = result.ptrKind; wrapped.ptrAux = result.ptrAux }
+          return wrapped
         },
       }
     }

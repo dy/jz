@@ -947,6 +947,33 @@ export const scalarizeFunctionArrayLiterals = () => {
 // re-dispatch via emit.js:2211's `.typed:<m>` lookup (VAL.TYPED ⇒ typed
 // emitter). Methods missing here (.join, .sort, .reverse, .subarray, .fill,
 // .toString, .copyWithin, …) lack a typed emitter — disqualify the candidate.
+// Does an inline arrow callback provably yield a NUMBER for every element?
+// Conservative: only shapes whose result is structurally numeric qualify —
+// arithmetic/bitwise/compare ops, numeric literals, the element param itself,
+// Math.* calls. A call to a user fn, an object/array/string literal, or any
+// unknown shape returns false (the caller then keeps the plain-array rep).
+const _NUM_OPS = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>',
+  '<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', '~', 'u+', 'u-'])
+const _numericCallbackBody = (fn) => {
+  if (!Array.isArray(fn) || fn[0] !== '=>') return false
+  const params = new Set()
+  const raw = fn[1]
+  for (const p of Array.isArray(raw) && raw[0] === ',' ? raw.slice(1) : raw != null ? [raw] : [])
+    if (typeof p === 'string') params.add(p)
+  const numeric = (n) => {
+    if (typeof n === 'number') return true
+    if (typeof n === 'string') return params.has(n)   // element/index param — numeric under a promoted receiver
+    if (!Array.isArray(n)) return false
+    if (n[0] === null) return typeof n[1] === 'number' // parenthesized/number node
+    if (_NUM_OPS.has(n[0])) return n.slice(1).every(a => a == null || numeric(a))
+    if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('Math.')) return true
+    if (n[0] === '?' && n.length === 4) return numeric(n[2]) && numeric(n[3])
+    return false
+  }
+  // expression body only; block bodies ({…return…}) stay conservative
+  return numeric(fn[2])
+}
+
 const _TYPED_SAFE_METHODS = new Set([
   'set',
   'map', 'filter', 'slice',
@@ -1059,6 +1086,13 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
     if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') &&
         typeof callee[1] === 'string' && candidates.has(callee[1])) {
       if (!_TYPED_SAFE_METHODS.has(callee[2])) disqualified.add(callee[1])
+      // `.map` is the one whitelisted method that writes CALLBACK RESULTS into the
+      // typed output: `.typed:map` ToNumber-coerces them (spec for a REAL typed
+      // receiver), but a plain array's map must return the callback's values
+      // verbatim — `[10,20].map(s => mk(s))` yields objects. Promote across map
+      // only when the callback provably yields numbers; anything else (object/
+      // string/unknown call results) keeps the plain-array representation.
+      else if (callee[2] === 'map' && !_numericCallbackBody(node[2])) disqualified.add(callee[1])
       // Walk method args (skip the receiver — already validated above).
       for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
       return

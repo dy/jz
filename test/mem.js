@@ -166,18 +166,32 @@ test('mem.Object: ambiguous schemas throws', async () => {
   is(r.instance.exports.f(), 4)  // a.x=1 + b.y=3
   const ptrA = m.Object({ x: 10, y: 20 })
   is(m.read(ptrA).x, 10)
-  // Ambiguous key set (both [x,y] and [y,x] exist) — must pass in schema order
-  let threw = false
-  try { m.Object({ a: 1, b: 2 }) } catch { threw = true }
-  ok(threw, 'unknown schema throws')
+  // Unknown key set (neither schema matches) — marshals as a first-class HASH
+  // (identity-preserving dyn object) instead of throwing / External reflection.
+  const h = m.Object({ a: 1, b: 2 })
+  is(m.read(h), { a: 1, b: 2 }, 'unknown schema marshals as hash, round-trips')
 })
 
-test('mem.Object: unknown schema throws', async () => {
-  const r = await run(`export let f = () => { let o = {x: 1}; return o.x }`)
-  const m = jz.memory(r)
-  let threw = false
-  try { m.Object({ z: 1, w: 2 }) } catch (e) { threw = true }
-  ok(threw)
+test('mem.Object: unknown schema marshals as first-class hash', async () => {
+  // Schema-less plain objects become real jz HASHes: wasm-side dyn reads, NEW-prop
+  // writes, and nested-container mutation all keep identity. (The old External
+  // fallback decode/re-marshaled per access, so `params.P[i][i] = v` landed on a
+  // marshaling copy and vanished — the digital-filter rls.js covariance repro.)
+  const r = jz(`export default function f (params) {
+    let N = params.order
+    params.P = new Array(N)
+    for (let i = 0; i < N; i++) {
+      params.P[i] = new Float64Array(N)
+      params.P[i][i] = params.delta
+    }
+    let P = params.P
+    let sum = 0
+    for (let i = 0; i < N; i++) sum += P[i][i]
+    return sum
+  }`)
+  is(Number(r.exports.default(r.memory.Object({ order: 4, delta: 100 }))), 400, 'nested rows on a marshaled params bag')
+  const h = r.memory.Object({ z: 1, w: 2 })
+  is(r.memory.read(h), { z: 1, w: 2 }, 'round-trips through mem.read')
 })
 
 // === Null through mem bridge ===

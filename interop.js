@@ -355,6 +355,53 @@ export const memory = (src) => {
     return ptr(11, 0, id)
   }
 
+  // First-class jz HASH from a plain JS object — the schema-less marshal. Builds the
+  // kernel's exact open-addressed table ([seq<<32|hash:i64][key:f64][val:f64] × cap,
+  // home slot = hash & (cap-1), linear probe, len/cap header at -8/-4) so every
+  // wasm-side dyn op — reads, writes, NEW props, growth, delete, iteration — runs
+  // natively with stable identity. The External reflection path decodes/re-marshals
+  // per access, so nested container mutation (`params.P[i][j] = …`) lands on
+  // marshaling copies and silently vanishes — a params-bag must be a real hash.
+  // Hash twins of module/collection.js (clampHash / ssoMix / byteFnv) — MUST agree
+  // with __str_hash or wasm probes start at the wrong home slot and miss.
+  const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
+  const jzStrHash = (box) => {
+    const b = bits(box)
+    if ((b >> 32n) & BigInt(LAYOUT.SSO_BIT)) {   // SSO: fixed-cost mix over payload
+      const lo = Number(b & 0xFFFFFFFFn) | 0
+      const hi = Number((b >> 32n) & 0x1FFFn) | 0
+      let h = Math.imul(hi ^ 0x9E3779B9, 0x85EBCA6B)
+      h = Math.imul(lo ^ h, 0xC2B2AE35)
+      h = (h ^ (h >>> 15)) | 0
+      return clampHash(h) >>> 0
+    }
+    const off = Number(b & 0xFFFFFFFFn), m = dv()
+    const len = m.getInt32(off - 4, true)
+    let h = 0x811c9dc5 | 0
+    for (let i = 0; i < len; i++) h = Math.imul(h ^ m.getUint8(off + i), 0x01000193) | 0
+    return clampHash(h) >>> 0
+  }
+  mem.Hash = function(obj) {
+    const entries = Object.entries(obj)
+    let cap = 8
+    while (entries.length * 4 >= cap * 3) cap <<= 1   // stay under the 75% grow trigger
+    const off = hdr(entries.length, cap, cap * 24)
+    // Stage every slot as i64 bits (empty = 0) — same NaN-canonicalization dodge as mem.Array.
+    const staged = new BigInt64Array(cap * 3)
+    entries.forEach(([k, v], seq) => {
+      const keyBox = mem.String(k)
+      const h = jzStrHash(keyBox)
+      let idx = h & (cap - 1)
+      while (staged[idx * 3] !== 0n) idx = (idx + 1) & (cap - 1)
+      staged[idx * 3] = (BigInt(seq) << 32n) | BigInt(h >>> 0)
+      staged[idx * 3 + 1] = bits(keyBox)
+      staged[idx * 3 + 2] = bits(mem.wrapVal(v))
+    })
+    const dst = new BigInt64Array(mem.buffer, off, cap * 3)
+    dst.set(staged)
+    return ptr(7, 0, off)
+  }
+
   mem.Object = function(obj) {
     const objKeys = Object.keys(obj)
     const key = objKeys.join(',')
@@ -365,8 +412,7 @@ export const memory = (src) => {
         (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
       if (matches.length === 1) sid = matches[0]
       else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
-      else if (mem._extMap) return mem.External(obj)
-      else throw Error(`No schema for {${key}}`)
+      else return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
     }
     const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
     // Stage as i64 bits so V8 can't canonicalize NaN-payload pointers across
@@ -710,7 +756,21 @@ const prepareInterop = (opts) => {
     return (state.mem.read(propBig) in state.extMap[offset(objBig)]) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    state.extMap[offset(objBig)][state.mem.read(propBig)] = state.mem.read(valBig)
+    let v = state.mem.read(valBig)
+    // A TYPED value decodes to a LIVE VIEW into wasm's own linear memory
+    // (mem.read's t===3 branch: `new Ctor(mem.buffer, off, len)`) — sound for
+    // a value read-and-immediately-consumed inside one host call, but a host
+    // OBJECT PROPERTY is real, persistent JS state: any later Memory.grow()
+    // (the bump allocator never frees, so any sufficiently long-running
+    // program eventually grows) detaches/reallocates `mem.buffer`, silently
+    // invalidating every such view still held on the host side — the next
+    // access throws "detached ArrayBuffer" (or, for a stale non-typed read,
+    // would silently read zeros). A host object is host-owned persistent
+    // state: store an independent copy. `.slice()` is TypedArray's native
+    // same-ctor copy — exactly `new Ctor(view)` with no manual size/offset
+    // bookkeeping — and a no-op for every other decoded value shape.
+    if (ArrayBuffer.isView(v)) v = v.slice()
+    state.extMap[offset(objBig)][state.mem.read(propBig)] = v
     return 1
   }
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {

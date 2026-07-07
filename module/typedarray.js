@@ -364,20 +364,51 @@ export default (ctx) => {
             ['local.get', `$${parentOff}`]],
           mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])], 'f64')
       }
+      // TypedArray(typedArray) COPIES into fresh storage with element conversion —
+      // spec: only (buffer[, off, len]) constructs a view. Element reads go through
+      // __typed_idx (the source's elemType lives in its aux at runtime), stores
+      // convert to THIS view's elemType — `new Float64Array(int32Arr)` converts.
+      const copyFromTyped = (srcTemp) => {
+        inc('__typed_idx', '__len')
+        const cl = tempI32('tcl'), ci = tempI32('tci')
+        const out = allocPtr({ type: PTR.TYPED, aux,
+          len: ['i32.mul', ['local.get', `$${cl}`], ['i32.const', stride]], stride: 1, tag: 'tc' })
+        const conv = FROM_F64[elemType]
+        const srcElem = ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]], ['local.get', `$${ci}`]]
+        const cid = ctx.func.uniq++
+        return ['block', ['result', 'f64'],
+          ['local.set', `$${cl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]]]],
+          out.init,
+          ['local.set', `$${ci}`, ['i32.const', 0]],
+          ['block', `$tcb${cid}`, ['loop', `$tclp${cid}`,
+            ['br_if', `$tcb${cid}`, ['i32.ge_s', ['local.get', `$${ci}`], ['local.get', `$${cl}`]]],
+            [STORE[elemType],
+              ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]],
+              conv ? [conv, srcElem] : srcElem],
+            ['local.set', `$${ci}`, ['i32.add', ['local.get', `$${ci}`], ['i32.const', 1]]],
+            ['br', `$tclp${cid}`]]],
+          out.ptr]
+      }
       // Single arg array-like source: copy elements instead of treating the pointer as a length.
       if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
         return ctx.core.emit[`${name}.from`](lenExpr)
-      // Reinterpret on a buffer or another typed array: zero-copy view.
-      // TYPED retagged at the same offset — the byteLen header is shared with the parent.
-      // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
-      if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
+      if (srcType === VAL.TYPED) {
+        const src = temp('ts')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${src}`, asF64(emit(lenExpr))],
+          copyFromTyped(src)], 'f64')
+      }
+      // Reinterpret on a buffer: zero-copy view. TYPED retagged at the same offset —
+      // the byteLen header is shared with the parent. __len(view) = byteLen >> shift
+      // computes elemCount for this view's elemType.
+      if (srcType === VAL.BUFFER) {
         ctx.features.typedView = true  // zero-copy reinterpret aliases the source — SLP must not pack across it
         return mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
-        ctx.features.typedView = true  // unknown arg: runtime may take the buffer/typed zero-copy-view branch
+        ctx.features.typedView = true  // unknown arg: runtime may take the buffer zero-copy-view branch
 
-        // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
+        // Runtime dispatch: number → allocate; array/typed → copy elements; buffer → zero-copy view.
         const src = temp('ts')
         const len = tempI32('tl')
         const shift = SHIFT[elemType]
@@ -392,12 +423,15 @@ export default (ctx) => {
               ['local.set', `$${len}`, ['i32.trunc_sat_f64_s', ['local.get', `$${src}`]]],
               numAlloc.init,
               numAlloc.ptr]],
-            // Pointer: array → copy elements; buffer/typed → zero-copy view on same offset
+            // Pointer: array → boxed-slot copy; typed → converted element copy; buffer → zero-copy view
             ['else', ['if', ['result', 'f64'],
               ptrTypeEq(['local.get', `$${src}`], PTR.ARRAY),
               ['then', ctx.core.emit[`${name}.from`](src)],
-              ['else', mkPtrIR(PTR.TYPED, aux,
-                ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]], 'f64')
+              ['else', ['if', ['result', 'f64'],
+                ptrTypeEq(['local.get', `$${src}`], PTR.TYPED),
+                ['then', copyFromTyped(src)],
+                ['else', mkPtrIR(PTR.TYPED, aux,
+                  ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
