@@ -465,7 +465,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // The 2-site non-tiny-leaf cap would otherwise outline a hot helper like noise's `grad`
     // (~30 nodes, called 4× from perlin) and freeze the call overhead per pixel.
     const isSmallLeaf = !hasLoop && nodeSize(func.body) <= 48
-    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
+    // Leaf site cap scales with body size — the cost of inlining N sites is
+    // N·size nodes, not N: a 30-node pure leaf hammered from 9 sites (colorpq's
+    // spow) is 270 spliced nodes, cheaper than 9 call frames per pixel, while a
+    // 48-node body keeps the old 8-site bound (360/48 → 8). Full inlining also
+    // restores shape identity for downstream CSE — a PARTIAL split (some sites
+    // inlined, some calls) makes duplicate pure subtrees structurally unequal.
+    const leafSiteCap = (isTinyLeaf || isSmallLeaf) ? Math.max(8, Math.floor(360 / Math.max(1, nodeSize(func.body)))) : 8
+    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.

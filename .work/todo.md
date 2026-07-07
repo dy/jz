@@ -131,6 +131,36 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 
+## Bench-vs-V8 campaign (2026-07-07 sweep: 7 losers, all else wins)
+Measured full corpus: jessie 5.0x, wordcount 3.8x, shapes 3.6x, immutable 3.2x,
+colorpq 2.0x, dispatch 1.17x, strbuild 1.008x. WASM_TODO in test/bench.js carries
+the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
+- **colorpq** — root-caused: pow-DOMINATED (V8 57ns/px = exactly 9 intrinsic pows;
+  jz pow ~1.3x/call in-context). Duplicate-spow CSE (watr 6e659de, effect-clean
+  call candidates) + full spow inlining (leaf site cap now size-scaled) both landed
+  and measured ~0 — calls/dups were not the cost. THE lever: **f64x2 pow pairs**
+  (PL/PM/PS share exponents nv then p — vectorize pow 2-wide via paired
+  exp2(e*log2 x); V8 cannot). Needs a $math.pow_2 SIMD kernel + vectorizer pairing.
+  Note: watr cse can't dedupe across INLINED copies (per-splice temp names differ) —
+  plan-level pure-call dedupe or rename-aware GVN is the general answer.
+- **dispatch/strbuild** — near-line; strbuild levers already mapped (itoa-into-arena,
+  small-concat fusion). dispatch = call_indirect table overhead, try devirt widening.
+- **wordcount** (STR_INTERN_BIT interning), **shapes** (shape-set devirt: bounded
+  schema union -> tag-switch direct loads), **immutable** (SROA for same-schema
+  replace-stores), **jessie** (kernel parse) — design campaigns, in WASM_TODO.
+
+## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
+Real and pending, ranked: (1) watr: split binary-size revert guard off the default
+inlineOnce path (guard costs ~16-50x an encode, only load-bearing for opt-in
+duplicating inline); (2) pre-optimized stdlib cache keyed by includes-set (crc32:
+2 user funcs, 22 compiled — 20 stdlib re-optimized every compile); (3) watr encoder
+local-decl grouping (sort-by-type, ~1% size, zero risk); (4) build-time-compiled
+stdlib — THE 2x bundle lever (~533KB WAT text in module/ = 44% of dist/jz.js) +
+kills per-compile pullStdlib parse/clone + enables (2). bench-compile.mjs
+watOptimize key bug FIXED (c22af3a). csePureExprLoop/cseScalarLoad stay — they are
+the prototypes for the watr CSE port (pure-call CSE landed upstream 6e659de; deep
+local-alloc/local-cse gap vs wasm-opt still open).
+
 ## Compiler backlog — deferred-on-no-workload (YAGNI: build when a real bench surfaces the shape)
 All ranked-ROI optimizer items shipped (Archive); since then extending-add (`f5213cb`),
 scalarization cap 32→64 (`087dc56`), and the dead-code/interop hygiene tail also landed —
