@@ -731,7 +731,7 @@ test('cross-module: default-imported factory-produced closure', () => {
 // computes wrong cross-module only (returns 1, want 0.4849…; the same fn-attached
 // memo idiom works single-module) — a distinct dyn-props-on-closure-receiver or
 // default-export-self-name bug. Re-diagnose from here.
-test.todo('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
+test('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
   const util = `
     export let PI = Math.PI
     export let PI2 = 2 * Math.PI

@@ -75,12 +75,12 @@ const runOnce = (id) => {
   const compileTotal = t.compile || 0
   return {
     total: (t.parse || 0) + (t.jzify || 0) + (t.prepare || 0) + compileTotal +
-      (t.watrOptimize || 0) + (t.watrReopt || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
+      (t.watOptimize || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
     parse: t.parse || 0,
     prepare: t.prepare || 0,
     plan,
     emit: Math.max(0, compileTotal - plan),
-    watr: (t.watrOptimize || 0) + (t.watrReopt || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
+    watr: (t.watOptimize || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
     bytes: wasm.byteLength ?? Buffer.byteLength(wasm),
   }
 }

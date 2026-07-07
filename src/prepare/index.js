@@ -1166,6 +1166,13 @@ function namespaceMemberAssigns(pattern, rhsRaw) {
  *  (`let g = sin` elsewhere) still finds closure support wired up. */
 function registerBuiltinAlias(name, key) {
   if (ctx.func.exports[name]) {
+    // A CONSTANT member (Math.PI — an arity-0 value emitter) exported by name
+    // needs real storage, not a wrapper function: `Math.max(1, …)` used to
+    // synthesize `(a) => math.PI(a)` here, so importers doing arithmetic on PI
+    // got a closure — NaN (the window-function taylor memo died on A = …/PI).
+    // Return false: the caller falls through to an ordinary global declaration
+    // whose init emits the constant.
+    if ((emitArity(ctx.core.emit[key]) || 0) === 0) return false
     // An alias carries no runtime storage, but an EXPORT needs some — synthesize
     // the wrapping function the old error told users to write by hand
     // (`export let { sin, cos } = Math` — window-function's util.js — must just
@@ -1175,7 +1182,7 @@ function registerBuiltinAlias(name, key) {
     const params = Array.from({ length: arity }, (_, i) => `${T}ba${i}`)
     const paramsNode = params.length === 1 ? params[0] : [',', ...params]
     const wrapped = prep(['=>', paramsNode, ['()', key, params.length === 1 ? params[0] : [',', ...params]]])
-    if (defFunc(name, wrapped)) return
+    if (defFunc(name, wrapped)) return true
     err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
   }
   if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
@@ -1186,6 +1193,7 @@ function registerBuiltinAlias(name, key) {
     if (fnNames) fnNames.add(name)
     if (scopes.length > 0) scopes[scopes.length - 1].set(name, key)
   }
+  return true
 }
 
 /** True (returning the key) iff bare identifier `name` currently resolves — via
@@ -1318,7 +1326,7 @@ function prepDecl(op, ...inits) {
     // would box the builtin as a first-class value on every reference.
     if (!isDestructPattern(name) && typeof name === 'string') {
       const memberKey = builtinMemberKey(normed)
-      if (memberKey) { registerBuiltinAlias(name, memberKey); continue }
+      if (memberKey && registerBuiltinAlias(name, memberKey)) continue
       // `const M = Math` at module top level — a bare reference to a whole
       // builtin namespace (no member, no dot). Same reasoning as above: there's
       // no runtime namespace object to box, so alias `name` straight to the
@@ -1356,7 +1364,20 @@ function prepDecl(op, ...inits) {
       if (typeof normed === 'string' && hasModule(normed)) {
         const aliases = namespaceMemberAliases(name, normed)
         if (aliases) {
-          for (const [target, key] of aliases) registerBuiltinAlias(target, key)
+          for (const [target, key] of aliases) {
+            if (registerBuiltinAlias(target, key)) continue
+            // Exported CONSTANT member (export let { PI } = Math): real storage,
+            // mirroring the normal decl path's depth-0 prefix/chain wiring; the
+            // init assignment rides `rest` into module init like any destructure.
+            declareGlobal(target)
+            let declName = target
+            if (depth === 0 && ctx.module.currentPrefix) {
+              declName = `${ctx.module.currentPrefix}$${target}`
+              ctx.scope.chain[target] = declName
+            }
+            rest.push(['=', declName, key])
+            recordGlobalRep(declName, key)
+          }
           continue
         }
       }

@@ -461,6 +461,23 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
     }
   }
+  // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
+  // site omits its position (narrow's missing rule poisons r.val) or when callers
+  // are unknown (exported / value-used — no fact at all). A later body write
+  // (`nbar = 4` inside `if (nbar == null)`) sets val=NUMBER, which used to
+  // constant-fold the very null-check guarding it — under-arity callers then read
+  // the raw UNDEF box as NaN (window-function's taylor manual-default idiom).
+  // `nullable` only suppresses the nullish-compare FOLD; arithmetic typing keeps.
+  {
+    const restIdx = func.rest ? sig.params.length - 1 : -1
+    for (let k = 0; k < sig.params.length; k++) {
+      if (k === restIdx) continue                       // rest arrays are never undefined
+      const pname = sig.params[k].name
+      if (func.defaults?.[pname] != null) continue      // default fires on the UNDEF pad
+      const r = _reps?.get(k)
+      if (!r || r.val == null) updateRep(pname, { nullable: true })
+    }
+  }
   // Trust numeric export params. An exported f64 param used only in numeric
   // positions is marked VAL.NUMBER so its uses skip the `__to_num` coercion
   // entirely (not just hoist it). External callers reach jz through interop's
