@@ -36,10 +36,10 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 const wasm = compile(g.code, {
   modules: g.modules,
   memory: 8192,
-  // watr profile:'speed' — outline/tailmerge/rettail off (measured on the 22-case
-  // corpus: geomean 1.433→1.316, 22/22; +19% kernel bytes, irrelevant for the
-  // compiler artifact). See watr test/jz-kernel-perf.mjs + docs.md Profiles.
-  optimize: selfOptLevel === false ? false : { level: selfOptLevel, watr: { profile: 'speed' } },
+  // Speed-tier presets carry watr profile:'speed' by default now (outline/tailmerge/
+  // rettail off — measured on the 22-case corpus: geomean 1.433→1.316, 22/22; +19%
+  // kernel bytes, irrelevant for the compiler artifact). No special config needed.
+  optimize: selfOptLevel,
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })

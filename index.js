@@ -623,6 +623,12 @@ const jzCompileInner = (code, opts = {}) => {
   // never matches it), so jz always enables it explicitly.
   if (watrOpts === true) watrOpts = { guardRefine: true }
   else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
+  // jz's promise is runtime speed, but watr's OWN profile default leans size — outline/
+  // tailmerge/rettail fold repeated sequences into out-of-line calls (measured 1.433→1.316
+  // on the self-host kernel with them off, watr ≥5.2.0). Every speed-tier preset carries
+  // watrProfile:'speed' (src/optimize/index.js LEVEL_PRESETS); the 'size' preset keeps
+  // watr's size-leaning default. An explicit user profile always wins.
+  if (watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
   // Pin jz's scalar transcendentals (the PPC_CALL2 keys the auto-vectorizer rewrites to f64x2
   // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
   // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
