@@ -25,6 +25,27 @@ export const loopCount = (tree, pred) => { let c = 0; walk(tree, (n, inL) => { i
 
 // ── predicates ────────────────────────────────────────────────────────────────
 export const head = (re) => (n) => typeof n[0] === 'string' && re.test(n[0])
+// Count `call $name` nodes (name ∈ `names`) across module funcs, skipping funcs
+// whose $name matches `skip`. The standing use: `new TypedArray(x)` with a
+// boundary-unknown x (an exported init's param) MUST carry a TYPED-source copy
+// arm — a __typed_idx dispatch loop that is cold, semantically required, and
+// irrelevant to hot-loop no-dispatch pins. Callers assert over PRE-watr trees
+// (watr's inliner erases helper names, making post-watr counts vacuous).
+export const callsOutside = (tree, names, skip) => {
+  const set = names instanceof Set ? names : new Set(names)
+  let c = 0
+  const countCalls = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'call' && set.has(n[1])) c++
+    for (let i = 1; i < n.length; i++) countCalls(n[i])
+  }
+  for (const n of tree) {
+    if (!Array.isArray(n) || n[0] !== 'func') continue
+    if (skip && skip.test(String(n[1]))) continue
+    countCalls(n)
+  }
+  return c
+}
 export const call = (re) => (n) => n[0] === 'call' && typeof n[1] === 'string' && re.test(n[1])
 // f64 arithmetic OR an int↔f64 round-trip. SOUND only over ToInt32-disciplined
 // code (every product via Math.imul, every result `|0`): there, any loop-body f64

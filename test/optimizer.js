@@ -18,12 +18,17 @@ import { compile } from '../index.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
-import { parse, loopCount } from '../scripts/wat-probe.mjs'
+import { parse, loopCount, walk } from '../scripts/wat-probe.mjs'
 
 // Count `call $NAME` nodes that survive INSIDE a loop within the user function $f
 // only (scoped past module builtins, which carry their own loops).
 const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isArray(n) || f) return; if (n[0] === 'func' && n[1] === name) { f = n; return } for (const c of n) w(c) }; w(tree); return f }
-const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, opt), '$f'), n => n[0] === 'call' && n[1] === name)
+// PRE-watr (watr:false): these pins assert JZ's OWN passes (hoistInvariantLoop,
+// rotateLoops). watr's later inlining splices small helpers' bodies into callers —
+// the named `call` disappears while the computation (rightly) stays, so a post-watr
+// call count is vacuous-0 for hoist pins and false-0 for keep pins.
+const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
+const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
 test('LICM pure calls: invariant transcendental / substr search hoist out of the loop', () => {
   // V8's wasm tier treats every call as opaque and recomputes it each iteration; jz proves
@@ -175,11 +180,20 @@ test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-ed
   // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`
   // back-edge is the do-while shape LLVM gives rust/zig (1.34× on lz's match scan);
   // V8 lowers it to one hardware loop branch vs the top-test's exit-branch + back-jump.
+  // PRE-watr + scoped to $firstGt: rotation is jz's pass; watr's inliner splices
+  // stdlib loops (their labels/back-edges) into the module, so a module-wide
+  // label-regex sweep reads THEIR shapes, not the user loop's.
   const src = `export const firstGt = (a, n, t) => { let i = 0; while (i < n && a[i] <= t) i++; return i }`
-  const rot = jz.compile(src, { wat: true, optimize: { level: 'speed' } })
-  const ctl = jz.compile(src, { wat: true, optimize: { level: 'speed', rotateLoops: false } })
-  ok(/br_if \$loop\d+/.test(rot) && !/\(br \$loop\d+/.test(rot), 'rotated: fused br_if back-edge, no unconditional br $loop')
-  ok(!/br_if \$loop\d+/.test(ctl) && /\(br \$loop\d+/.test(ctl), 'control (rotateLoops off): top-test keeps unconditional br back-edge')
+  const backEdges = (opt) => {
+    const f = findFunc(parse(src, { ...opt, watr: false }), '$firstGt')
+    const labels = new Set(); walk(f, n => { if (n[0] === 'loop' && typeof n[1] === 'string') labels.add(n[1]) })
+    let fused = 0, plain = 0
+    walk(f, n => { if (n[0] === 'br_if' && labels.has(n[1])) fused++; if (n[0] === 'br' && labels.has(n[1])) plain++ })
+    return { fused, plain }
+  }
+  const rot = backEdges({ level: 'speed' }), ctl = backEdges({ level: 'speed', rotateLoops: false })
+  ok(rot.fused >= 1 && rot.plain === 0, 'rotated: fused br_if back-edge, no unconditional br $loop')
+  ok(ctl.fused === 0 && ctl.plain >= 1, 'control (rotateLoops off): top-test keeps unconditional br back-edge')
 })
 
 test('rotateLoops: semantics preserved across continue / break / nested / match-scan', () => {
@@ -2896,15 +2910,20 @@ test('int narrowing: bounded typed-array element products use i32.mul (faithful)
     for (let i = 0; i < 64; i++) { a[i] = (i % 13) - 6; b[i] = (i % 7) - 3 }
     let s = 0; for (let i = 0; i < n; i++) s = s + a[i & 63] * b[i & 63]; return s
   }`
-  ok(/i32\.mul/.test(jz.compile(i8sum, { optimize: 'speed', wat: true })), 'i8×i8 product narrows to i32.mul')
+  // Scoped to $f's loop: a module-wide /i32\.mul/ match was vacuous (it matched
+  // __alloc_hdr_n's cap*stride until watr's param specialization removed it, which
+  // is how this pin went red while the user loop had SILENTLY never narrowed —
+  // `.typed:[]` hands `*` pre-converted operands; the emit gate now peels them).
+  ok(loopCount(findFunc(parse(i8sum, 'speed'), '$f'), n => n[0] === 'i32.mul') >= 1, 'i8×i8 product narrows to i32.mul')
 
   // u16×u16 stays f64 (the exact product can exceed signed i32 → i32.mul would be unfaithful).
   const u16sq = `export let f = (n) => {
     const a = new Uint16Array(8); for (let i = 0; i < 8; i++) a[i] = 60000 + i
     let s = 0; for (let i = 0; i < n; i++) s = s + a[i & 7] * a[(i + 1) & 7]; return s
   }`
-  const u16wat = jz.compile(u16sq, { optimize: 'speed', wat: true })
-  ok(/f64\.mul/.test(u16wat), 'u16×u16 product stays f64.mul (faithfulness-excluded)')
+  const u16f = findFunc(parse(u16sq, 'speed'), '$f')
+  ok(loopCount(u16f, n => n[0] === 'f64.mul') >= 1, 'u16×u16 product stays f64.mul (faithfulness-excluded)')
+  ok(loopCount(u16f, n => n[0] === 'i32.mul') === 0, 'u16×u16 never rides i32.mul')
 
   // Bit-exact vs JS across contexts: i8 reduction (f64 value), i16×u16 (boundary), u16×u16 (excluded).
   const cases = [

@@ -28,6 +28,7 @@ import { is, ok } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
+import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 
 const count = (wat, re) => (wat.match(re) || []).length
 
@@ -147,7 +148,9 @@ test('boundary: bare property READ does not narrow param → primitive stays und
   if (!onWasi()) is(ex.f({ foo: 7 }), 7, 'object arg reads its property')
   is(ex.f(42), undefined, 'number arg has no .foo → undefined (polymorphism is load-bearing)')
   is(ex.f('hi'), undefined, 'string arg has no .foo → undefined')
-  const wat = jz.compile(`export function f(o) { return o.foo }`, { wat: true })
+  // Pre-watr: watr's inliner splices the dispatch helper's body into $f — the
+  // NAME disappears while the polymorphic dispatch (rightly) stays.
+  const wat = jz.compile(`export function f(o) { return o.foo }`, { wat: true, optimize: { level: 2, watr: false } })
   // Polymorphic read keeps a runtime tag-dispatch helper. The name is host-coupled:
   // the JS host emits the `__dyn_get_any_*` variant, the WASI boundary lowers the same
   // poly read through the `__dyn_get_cache_*` path. An OBJECT-narrowed param would
@@ -352,7 +355,12 @@ test('inferTypedCtor: typed-array GLOBAL arg types the callee param (direct load
     export let run = () => advect(g, g0)
   `, { wat: true })
   // samp inlines into advect; the taps must be direct loads, not dynamic dispatch.
-  is(count(wat, /\$__typed_idx\b/g), 0, 'global typed-array arg → no runtime typed-idx dispatch')
+  is(forkOutsideInit(`
+    let g, g0
+    let samp = (f, i) => f[i] + f[i + 1]
+    let advect = (s, s0) => { let t = 0, i = 0; while (i < 50) { t = t + samp(s0, i); s[i] = t; i = i + 1 } return t }
+    export let setup = (n) => { g = new Float64Array(n); g0 = new Float64Array(n); return g0 }
+    export let run = () => advect(g, g0)`), 0, 'global typed-array arg → no runtime typed-idx dispatch')
   ok(/f64\.load\b/.test(wat), 'expected direct f64.load on the global-typed buffer')
 })
 
@@ -578,13 +586,22 @@ test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () 
 // Float64Array globals, summed in a loop — dynamic dispatch shows up as forks.
 const FORK = /\$__typed_idx\b|\$__str_idx\b|\$__str_concat\b|\$__is_str_key\b/g
 const noFork = (body, msg) => is(count(body, FORK), 0, msg)
+// PRE-watr, ctor-funcs excluded: `new Float64Array(x)` with a boundary-unknown x
+// (exported init's param) must carry the TYPED-source copy arm (__typed_idx loop) —
+// a semantically-required COLD arm, not the hot-loop dispatch these pins guard.
+// Post-watr scoping is unusable both ways: watr's inliner erases helper NAMES
+// (vacuous pass) or splices whole init bodies into callers (false fail).
+const FORK_CALL = new Set(['$__typed_idx', '$__str_idx', '$__str_concat', '$__is_str_key'])
+const forkOutsideInit = (src, initRe = /^\$(init|setup)$/) =>
+  callsOutside(watTree(src, { level: 2, watr: false }), FORK_CALL, initRe)
+const noForkHot = (src, msg) => is(forkOutsideInit(src), 0, msg)
 
 test('inferModuleLetTypes: double-buffer swap keeps typed loads (waves regression)', () => {
   // `let tmp = a; a = b; b = tmp` — the canonical ping-pong swap. `a` flows from
   // `b`, `b` from a local `tmp` aliasing `a`: a 3-node cycle anchored on each
   // global's `new Float64Array` decl. A forward pass invalidated both (made waves
   // 16× slower — every a[i] forked __str_idx/__typed_idx, every + forked __str_concat).
-  const wat = jz.compile(`
+  const src = `
     let a, b
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
     export let frame = (w) => {
@@ -592,23 +609,20 @@ test('inferModuleLetTypes: double-buffer swap keeps typed loads (waves regressio
       while (i < w) { s = s + a[i] + b[i]; i++ }
       let tmp = a; a = b; b = tmp
       return s
-    }
-  `, { wat: true })
-  noFork(wat, 'swap-aliased typed globals must keep direct f64 loads, no string/typed fork')
-  ok(/f64\.load\b/.test(wat), 'expected direct f64.load over the swapped buffers')
+    }`
+  noForkHot(src, 'swap-aliased typed globals must keep direct f64 loads, no string/typed fork')
+  ok(/f64\.load\b/.test(jz.compile(src, { wat: true })), 'expected direct f64.load over the swapped buffers')
 })
 
 test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
-  const wat = jz.compile(`
+  noForkHot(`
     let a, b, c
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n); c = new Float64Array(n) }
     export let f = (w) => {
       let s = 0.0, i = 0
       while (i < w) { s = s + a[i] + b[i] + c[i]; i++ }
       let t = a; a = b; b = c; c = t; return s
-    }
-  `, { wat: true })
-  noFork(wat, 'rotated typed globals stay typed')
+    }`, 'rotated typed globals stay typed')
 })
 
 test('inferModuleLetTypes: global aliased from a typed-returning user fn', () => {
@@ -660,17 +674,16 @@ test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays t
   // let the numeric `s` poison the typed swap-temp, cascading MIXED into both
   // buffers — every a[i] fell to runtime __str_idx/__typed_idx dispatch + f64
   // indices (lbm: 3.9× slower than JS). Scope-qualified keys keep the two `s` apart.
-  const wat = jz.compile(`
+  const src = `
     let a, b
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
     export let step = (w) => {
       let i = 0; while (i < w) { b[i] = a[i] * 2.0; i++ }
       let s = a; a = b; b = s
     }
-    export let frame = (n) => { let s = 0; while (s < n) { step(8); s++ } }
-  `, { wat: true })
-  noFork(wat, 'a numeric local must not poison a same-named typed swap-temp in another function')
-  ok(/f64\.load\b/.test(wat), 'expected direct f64.load over the swapped buffers')
+    export let frame = (n) => { let s = 0; while (s < n) { step(8); s++ } }`
+  noForkHot(src, 'a numeric local must not poison a same-named typed swap-temp in another function')
+  ok(/f64\.load\b/.test(jz.compile(src, { wat: true })), 'expected direct f64.load over the swapped buffers')
 })
 
 // ─────────────────────────────────── typed-array index arithmetic stays i32

@@ -4,6 +4,7 @@ import { ok, is } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
+import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -575,8 +576,11 @@ test('codegen: ping-pong typed-array ternary select reads via direct load', () =
       return s
     }
   `
-  const wat = compile(src, { wat: true })
-  ok(!/call \$__typed_idx/.test(wat), 'ternary-selected typed buffers must read via direct load, not $__typed_idx')
+  // Pre-watr + init excluded: init's `new Float64Array(n)` on the exported
+  // boundary param rightly carries the TYPED-source copy arm (a cold
+  // __typed_idx loop); the pin guards the HOT step function only.
+  is(callsOutside(watTree(src, { level: 2, watr: false }), ['$__typed_idx'], /^\$init$/), 0,
+    'ternary-selected typed buffers must read via direct load, not $__typed_idx')
   const { exports } = jz(src)             // same source as plain JS — correctness floor
   exports.init(8)
   is(exports.step(8), 1, 'sum reads the seeded buffer through the ternary select')
@@ -876,7 +880,10 @@ test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter conve
     export let run = () => { let s = 0.0; let i = 0; while (i < N) { s += x[i]; i++; } return s; };
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/i32\.lt_s[\s\S]*global\.get \$N/.test(run.replace(/\n/g, ' ')), 'guard is i32.lt_s against the i32 global')
+  // The guard may ship as lt_s (top-test) or ge_s (exit-inverted br_if) — both are
+  // the pure-i32 compare this pin demands; the property is NO f64 widening per iter.
+  ok(/i32\.(lt|ge)_s/.test(run), 'guard is a pure-i32 compare')
+  ok(!run.includes('f64.convert_i32_s'), 'no per-iteration i32→f64 widening in run')
   ok(run.includes('(local $i i32)'), 'loop counter stays i32 against the i32 global bound')
 })
 
@@ -1547,7 +1554,11 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // `_clear()` instead of dangling a round-arena sidecar off a surviving durable
 // header. Correctness fix (test/selfhost.js 'warm-instance reuse'); pure size
 // cost here since this program's receivers are all ephemeral.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9710)
+// 9710→10652: warm-reuse durable-heal machinery (__durable_slot_log/__durable_fwd_log/
+// __is_eph_bits + the zombie-aware __hash_get_local_h split) rides along with __dyn_set —
+// collection writes on durable receivers log for _clear()-time healing. Correctness
+// machinery for warm instance reuse; pure size cost on this ephemeral-only program.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10652)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
@@ -1587,11 +1598,15 @@ golden('closure-heavy parser', `export let f = (s) => {
 // takes it as i64 (Safari NaN-canonicalization dodge) and a `jz:i64exp` custom section records
 // the carrier map for interop.js. Custom-section metadata + the i64 param signature — zero
 // runtime cost (sections aren't executed); the numeric result still rides plain f64.
+// 1111→1466: TypedArray(typedArray) COPY semantics (c8c75d2) — `new Float64Array(arr)`
+// on a boundary-unknown arg now carries the 3-way source dispatch (ARRAY→from,
+// TYPED→element-converting copy loop, else→size alloc). JS-correct construction;
+// the copy arm is the cost of not aliasing the source storage.
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1111)
+}`, 1466)
 // 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
 // a7c2eb3 with the same linked watr; timing caps green).

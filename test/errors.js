@@ -586,8 +586,11 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 test('uncatchable internal throw is a trap, not the exceptions tag (MVP-portable)', () => {
   // `Number(v)` pulls __to_num, whose non-coercible-value branch throws $__jz_err.
   // With no user try/catch nothing can catch it, so the module must stay MVP-clean.
+  // Sanity probe pre-watr: watr's inliner may splice __to_num's body into $f
+  // (the named call disappears); the trap/tag assertions run on the shipped module.
+  const pre = compile('export let f = (v) => Number(v) + 1', { wat: true, optimize: { level: 2, watr: false } })
+  ok(pre.includes('$__to_num'), 'sanity: the throwing coercion helper is pulled in')
   const wat = compile('export let f = (v) => Number(v) + 1', { wat: true })
-  ok(wat.includes('$__to_num'), 'sanity: the throwing coercion helper is pulled in')
   ok(!wat.includes('(tag $__jz_err'), 'no exceptions tag for an uncatchable internal throw')
   ok(!/\(throw /.test(wat), 'the uncatchable throw is lowered to a trap')
 })
