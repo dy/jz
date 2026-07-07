@@ -2188,6 +2188,11 @@ function tryFnPropCall(callee, obj, method, parsed) {
     if (ctx.func.names.has(fname)) {
       const func = ctx.func.map.get(fname)
       const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
+      // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
+      // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param
+      // hook), but a devirtualized direct call pushes exactly sig arity — extras
+      // would be stack leftovers (asi.js's parse.enter broke the self-host here).
+      if (emittedArgs.length > func.sig.params.length) emittedArgs.length = func.sig.params.length
       return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
     }
   }
@@ -3100,6 +3105,19 @@ export const emitter = {
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && (mulFitsI32(va, vb) || mulBoundedFaithful(va, vb))) return typed(['i32.mul', va, vb], 'i32')
+    // Typed-element reads arrive PRE-converted (`.typed:[]` returns
+    // f64.convert_i32_{s,u}(loadN)), so the faithful-product gate above never
+    // sees them. Peel the convert to expose the bounded integer source: when
+    // |a|·|b| ≤ 2^31−1 the exact product fits signed i32, so
+    // f64.mul(convert(x), convert(y)) == convert_s(i32.mul(x, y)) in every
+    // consumer context — one int op instead of two converts + f64.mul, and the
+    // i32 product chain is lane-vectorizable. Unsigned converts are safe here
+    // for the same reason: a magnitude-bounded (< 2^31) uint reads the same
+    // signed or unsigned, and the bounded product needs the signed convert.
+    const peeled = (v) => Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') && v.length === 2 ? v[1]
+      : isI32Num(v) && !widensUnsigned(v) ? v : null
+    const pa = peeled(va), pb = peeled(vb)
+    if (pa && pb && i32Mag(pa) * i32Mag(pb) <= 0x7fffffff) return typed(['i32.mul', pa, pb], 'i32')
     const i32mul = tryI32Arith('i32.mul', '*', a, b, va, vb); if (i32mul) return i32mul
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },

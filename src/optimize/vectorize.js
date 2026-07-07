@@ -5806,16 +5806,23 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled) {
 
   // A byte tap operand: convert_i32_{s,u}(i32.load8_{s,u}(addr)). Returns { load, addr, signed }.
   const matchByteLoad = (n) => {
-    if (!isArr(n) || (n[0] !== 'f64.convert_i32_s' && n[0] !== 'f64.convert_i32_u') || !isArr(n[1])) return null
-    const ld = n[1]
-    if (ld[0] !== 'i32.load8_s' && ld[0] !== 'i32.load8_u') return null
+    // Accept the f64 form (convert_i32_{s,u}(load8)) AND the bare i32 load —
+    // the emit-level convert-peel narrows int8·int8 to i32.mul(load8, load8),
+    // so the taps arrive unconverted (the better shape: no f64 detour to undo).
+    let ld = null
+    if (isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && isArr(n[1])) ld = n[1]
+    else if (isArr(n) && (n[0] === 'i32.load8_s' || n[0] === 'i32.load8_u')) ld = n
+    if (!ld || (ld[0] !== 'i32.load8_s' && ld[0] !== 'i32.load8_u')) return null
     const addr = (typeof ld[1] === 'string' && ld[1].startsWith('offset=')) ? ld[2] : ld[1]
     return { load: ld, addr, signed: ld[0] === 'i32.load8_s' }
   }
   const load64 = (ld) => (typeof ld[1] === 'string' && ld[1].startsWith('offset=')) ? ['v128.load64_zero', ld[1], ld[2]] : ['v128.load64_zero', ld[1]]
   // Lift a single product addend `inp·wt` (exactly one side gathers on ox) to an i16x8 of 8 products.
   const liftProduct = (prod) => {
-    if (!isArr(prod) || prod[0] !== 'f64.mul') return null
+    // f64.mul(cvt(load), cvt(load)) — pre-peel — or f64.convert_i32_s(i32.mul(
+    // load, load)) / bare i32.mul(load, load) — the peeled faithful product.
+    if (isArr(prod) && prod[0] === 'f64.convert_i32_s' && isArr(prod[1]) && prod[1][0] === 'i32.mul') prod = prod[1]
+    if (!isArr(prod) || (prod[0] !== 'f64.mul' && prod[0] !== 'i32.mul')) return null
     const a = matchByteLoad(prod[1]), b = matchByteLoad(prod[2])
     if (!a || !b) return null
     const ag = isGatherAddr(a.addr), bg = isGatherAddr(b.addr)

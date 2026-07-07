@@ -1701,18 +1701,24 @@ const handlers = {
         // Build the target `.` node directly from the resolved base — re-`prep`ing
         // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure
         // materialization block), which is not a valid assignment target.
-        // KNOWN GAP (red pin, test/closures.js 'func-namespace SROA: cross-module'):
-        // a cross-module lift gets DOUBLE-PREFIXED by the writing module's
-        // end-of-prep rename sweep (`__B$__A$lex$next`), so the owning module's
-        // call sites never direct-resolve and every read stays on the dyn path.
-        // Tagging the lift with the owner's _modulePrefix (so the sweep skips it)
-        // fixes the pin and all native suites, BUT enables flattenFuncNamespaces
-        // across subscript's whole hook graph in the self-host bundle, where the
-        // rewrite currently miscompiles (m5_parse$expr: 2 values left on the
-        // stack — an unhandled expression-position shape beyond the '=' drop,
-        // even with a position-aware drop rewrite). Re-land together with a
-        // stack-shape audit of flatten's rewrite over the kernel graph.
-        if (defFunc(name, prep(rhs))) return ['=', ['.', fnBase, lhs[2]], name]
+        // Cross-module lift: the lifted func belongs to the BASE function's
+        // OWNING module (fnBase's mangled prefix), not the module that textually
+        // contains the write. Untagged, the writing module's end-of-prep rename
+        // sweep double-prefixes it (`__B$__A$lex$next`) and the owner's call
+        // sites never direct-resolve — every read stays on the dyn path forever
+        // (the hot tokenizer probes test/closures.js's cross-module pin catches).
+        if (defFunc(name, prep(rhs))) {
+          const ownerEnd = fnBase.lastIndexOf('$')
+          if (ownerEnd > 0) {
+            const fn = ctx.func.list.find(f => f.name === name)
+            // _ownerPrefix exempts the lift from the writing module's NAME
+            // mangling only — its BODY is this module's text and must still get
+            // this module's reference-renaming walk (unlike _modulePrefix, which
+            // marks sub-module funcs already walked with their own rename map).
+            if (fn && !fn._ownerPrefix) fn._ownerPrefix = fnBase.slice(0, ownerEnd)
+          }
+          return ['=', ['.', fnBase, lhs[2]], name]
+        }
       }
     }
     const staticStr = staticStringExpr(rhs)
@@ -2888,6 +2894,11 @@ function prepareModule(specifier, source) {
     const func = ctx.func.list[i]
     if (func.raw || func.name.startsWith(prefix + '$')) continue
     if (func._modulePrefix && func._modulePrefix !== prefix) continue
+    // Cross-module func-prop lifts carry the OWNING module's prefix in their
+    // name already (`__A$lex$next` written from module B) — mangling again
+    // would double-prefix and break the owner's direct-call resolution. Their
+    // bodies still take THIS module's reference walk below.
+    if (func._ownerPrefix && func._ownerPrefix !== prefix) continue
     const mangled = `${prefix}$${func.name}`
     moduleExports.set(func.name, mangled)
     renameFunc(func, mangled)
