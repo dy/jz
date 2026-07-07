@@ -18,7 +18,7 @@ import { inlineArraySid } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
-import { nanPrefixHex, encodePtrHi, i64Hex } from '../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
 
@@ -454,14 +454,14 @@ export default (ctx) => {
     ctx.core.stdlib['__is_eph_bits'] = `(func $__is_eph_bits (param $b i64) (result i32)
       (local $t i32)
       ;; boxed heap pointer: quiet-NaN prefix, heap-kind tag, non-SSO, offset past the durable watermark
-      (if (i64.ne (i64.and (local.get $b) (i64.const 0xFFF8000000000000)) (i64.const 0x7FF8000000000000))
+      (if (i64.ne (i64.and (local.get $b) (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()}))
         (then (return (i32.const 0))))
       (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
       ;; heap kinds {ARRAY,BUFFER,TYPED,STRING,OBJECT,HASH,SET,MAP,CLOSURE} = bits 1-4,6-10 → 0x7DE
       (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const 0x7DE)))
         (then (return (i32.const 0))))
       (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-                   (i64.ne (i64.and (local.get $b) (i64.const ${(BigInt(LAYOUT.SSO_BIT) << 32n).toString()})) (i64.const 0)))
+                   (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
         (then (return (i32.const 0))))
       (i32.ge_u (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))) (global.get $__heap_reset)))`
     ctx.core.stdlib['__durable_slot_log'] = `(func $__durable_slot_log (param $addr i32) (param $tbl i32)

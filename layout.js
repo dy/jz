@@ -123,6 +123,12 @@ export const decodePtrAux = hi => hi & LAYOUT.AUX_MASK
 /** i64 NaN-prefix OR-mask for WAT `(i64.const …)` templates. */
 export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)
 
+/** AND-mask isolating the boxed-carrier prefix (sign + exponent + quiet bit):
+ *  `(v & nanPrefixMask) == nanPrefix` ⇔ v is a NaN-boxed carrier (any tag/aux/
+ *  payload). The mask is the prefix with the SIGN bit forced on — boxes are
+ *  emitted sign-clear, so a set sign bit must fail the carrier test. */
+export const nanPrefixMaskHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS | (1n << 63n))
+
 /** Atom sentinel as i64 hex (compiler WAT templates). */
 export const atomNanHex = atomId => i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << AUX_SHIFT))
 

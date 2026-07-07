@@ -440,11 +440,12 @@ test('slice-view: slice of a long heap string', () => {
 
 test('slice-view: concat operand keeps view (read-only use)', () => {
   // `s` is built from a param — see the comment on the previous test.
+  // pre-watr wat: this pins JZ's slice-view lowering; watr ≥5.2.2 inlines the helper.
   const wat = compile(`export let f = (p) => {
     let s = p + 'defg'
     let t = s.slice(1, 4)
     return ('X' + t) === 'Xbcd' ? 1 : 0
-  }`, { wat: true })
+  }`, { wat: true, optimize: { level: 2, watr: false } })
   ok(wat.includes('__str_slice_view'), 'a + operand is a read-only use — view stays')
   is(run(`export let f = (p) => {
     let s = p + 'defg'
@@ -503,11 +504,12 @@ test('slice-view: escaping slice copies — reassigned binding', () => {
 })
 
 test('slice-view: fires for a provably-string function parameter', () => {
+  // pre-watr wat: pins JZ's slice-view lowering; watr ≥5.2.2 inlines the helper.
   const wat = compile(`let helper = (s) => {
     let t = s.slice(1, 4)
     return t === 'bcd' ? 1 : 0
   }
-  export let f = () => helper('abcdefg')`, { wat: true })
+  export let f = () => helper('abcdefg')`, { wat: true, optimize: { level: 2, watr: false } })
   ok(wat.includes('__str_slice_view'), 'string-typed param receiver should lower to a view')
   is(run(`let helper = (s) => {
     let t = s.slice(1, 4)
@@ -1032,7 +1034,8 @@ test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () =>
   ok(!/\$__is_str_key|\$__str_eq|\$__eq\b/.test(ssoEq), 'SSO-literal === is a bare i64.eq, no helper calls')
   ok(/i64\.eq/.test(ssoEq), 'SSO-literal === compares NaN-box bits')
   // `x === "longLiteral"` (>6 chars, heap static) keeps the guarded fallback.
-  const strEq = compile(`export let f = (x) => (x === "function") | 0`, { wat: true })
+  // pre-watr wat: pins JZ's lowering; watr ≥5.2.2 inlines the helpers.
+  const strEq = compile(`export let f = (x) => (x === "function") | 0`, { wat: true, optimize: { level: 2, watr: false } })
   ok(/\$__is_str_key/.test(strEq) && /\$__str_eq/.test(strEq), 'heap-literal === uses __is_str_key + __str_eq')
   ok(!/\$__eq\b/.test(strEq), 'string === literal does NOT call the generic __eq')
   // numeric === must not be dragged into the string path.
@@ -1082,8 +1085,9 @@ test('concat: t = s + x must NOT mutate s (bump-extend gated to self-accumulatio
   is(charAppend(HEAP), HEAP.length)
 
   // a self-accumulation keeps the bump-EXTEND helper; a fresh target gets the non-mutating twin.
-  const accumW = compile(`export let f = (n) => { let b = ""; for (let i = 0; i < n; i = i + 1) b = b + "ab"; return b.length | 0 }`, { wat: true })
-  const freshW = compile(`export let f = (s) => { let t = s + "_x"; return t.length | 0 }`, { wat: true })
+  // (pre-watr wat: pins JZ's concat selection; watr ≥5.2.2 inlines the helpers.)
+  const accumW = compile(`export let f = (n) => { let b = ""; for (let i = 0; i < n; i = i + 1) b = b + "ab"; return b.length | 0 }`, { wat: true, optimize: { level: 2, watr: false } })
+  const freshW = compile(`export let f = (s) => { let t = s + "_x"; return t.length | 0 }`, { wat: true, optimize: { level: 2, watr: false } })
   ok(!/__str_concat_raw_fresh/.test(accumW), 'b = b + "ab" keeps the bump-extend concat (O(N) accumulator)')
   ok(/__str_concat_raw_fresh/.test(freshW), 't = s + "_x" uses the non-mutating fresh concat')
 })
