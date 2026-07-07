@@ -273,6 +273,21 @@ the worklet thread. This is genuinely painful today (Rust/AS + bindings). Pairs
 with the user's own `web-audio-api` project as the showcase. Primary audience,
 high trust.
 
+**Verified pain the Rust path can't fix (2026-07 VOC scan):**
+`AudioWorkletGlobalScope` forbids `fetch()` and dynamic import — getting the
+compiled `.wasm` bytes INTO the worklet is its own integration problem. A team
+building for low-end Android tried the canonical Rust→wasm rewrite, hit exactly
+this, and **reverted to hand-tuned allocation-free JS**: *"Writing fast
+JavaScript turned out to be less complex than fighting WASM loading
+restrictions"* (engineering.videocall.rs "How to make JavaScript audio not
+suck"). jz's shape is the structural answer: compile in the main thread (or at
+build time), `postMessage` the bytes, `new WebAssembly.Instance` synchronously
+in the worklet — no fetch, no async init, no second language. **This loading
+story deserves equal billing with the GC story in every audio pitch.** Also:
+Strudel/superdough has an open perf issue where worklet *loading alone* causes
+crackle on low-end hardware (tidalcycles/strudel#479, maintainer felixroos) —
+a documented-pain inbox for a working jz demo.
+
 ### 3.3 EdgeJS (done) + the wider edge/plugin runtime field
 EdgeJS (wasmerio) integration is already landed (PR + smoke tests, per todo). It's
 one point in a field jz fits natively because pure modules emit import-free WASM:
@@ -347,6 +362,51 @@ its own native backend.
 their compute cores on jz. This is the "integrations as validation" todo item and
 the most credible benchmark: the author's published libs measurably faster.
 
+### 3.8 Wasm-UDF hosts — databases & stream processors (2026-07 scan)
+A whole class of hosts runs user functions as WASM on a scalar ABI —
+i32/i64/f32/f64 in, scalar out — which is *exactly* what `alloc:false` jz emits
+with zero glue. Every one documents Rust (± C/AS) and **no plain-JS path**:
+
+| Host | ABI | JS path today | Fit | First move |
+|---|---|---|---|---|
+| **SingleStore** Code Engine | "Basic ABI": scalar wasm sig ↔ SQL types, Wasmtime | none (Rust/C only, verified docs.singlestore.com 2026-07) | **S effort / medium** | 2–3 real UDFs (haversine, EMA, hash) + `CREATE FUNCTION … AS WASM` snippet; README shows the same file passing a Node test |
+| **ScyllaDB** CQL UDFs | ABI v1/v2, wasm-native types ↔ CQL scalars | none (Rust primary, C "much more difficult", AS restricted; opensource.docs.scylladb.com) | **S / medium** | port one AS-eligible example UDF to jz, publish side-by-side |
+| **Fluvio** SmartModules | per-record map/filter transform, WASM in the SPU | Rust SDK only; polyglot "quirky", mid component-model migration | M / low | jz SmartModule template + sensor-transform example; flag SDK-in-flux |
+| **libSQL / DataFusion** UDF proposals | unsettled (tursodatabase/libsql#1, apache/datafusion#9326 — both open, Rust-assumed) | n/a yet | **watch-only** | one comment on each issue linking a minimal jz scalar-UDF example — zero build cost until the ABI lands |
+
+The wedge sentence for all of them: *"your analysts already know JS; a UDF is a
+pure function; jz makes the same file a native-speed wasm UDF that your Node
+test suite already covers."*
+
+### 3.9 Shopify Functions — the AOT-vs-interpreter contrast (narrow, honest)
+Shopify's official JS path is **Javy** (QuickJS interpreter in wasm); Shopify's
+own engineering blog states Javy output is **~3× slower than Rust-produced
+wasm** "because it interprets bytecode rather than compiling" — a public,
+first-party articulation of the exact gap jz closes. BUT: most Functions logic
+(JSON shaping, branchy business rules) is *outside* jz's subset; only the
+scoring/threshold arithmetic inside fits. Pitch as a partial-kernel
+accelerator experiment, or use the Shopify quote purely as positioning ammo.
+Effort M, adoption low — the quote is worth more than the integration.
+
+### 3.10 godot-wasm (community Godot addon)
+ashtonmeuser/godot-wasm (Wasmer) / Dheatly23/godot-wasm (Wasmtime): GDScript
+loads a wasm module, calls exports with int/float args, shares linear memory —
+jz's exact shape (noise, pathfinding cost, physics step). Open proposal
+godot-proposals#9177 asks for official support and lists JS/TS as *unmet*.
+Effort S (existing compile output against a simple ABI), adoption low but the
+gamedev audience is large and demo-friendly. First move: a jz noise kernel in a
+Godot scene, published to the Asset Library.
+
+### 3.11 WASI 0.2 components — the componentize-js interpreter gap (speculative)
+`componentize-js` authors JS components by **embedding StarlingMonkey** (an
+engine — same interpreter trade as Javy); Rust/Python/Go/C#/MoonBit are the AOT
+options (component-model.bytecodealliance.org, verified 2026-07). jz cannot
+author full components (WIT resources/strings/async are out of subset), but a
+jz-compiled numeric core function wired inside a component's hot loop is the
+"escape hatch" pattern applied to components. Effort L, adoption low — a
+proof-of-concept + honest write-up of the boundary, not a product. Defer until
+a real component workload pulls.
+
 ---
 
 ## 4. Promotion across the dev spectrum
@@ -382,11 +442,21 @@ the demo itself.
 3. **Floatbeat playground — shipped** (`floatbeat/`): the vibecoder + live-coding +
    audio proof in one artifact.
 4. **`unplugin-jz`** — still the highest-leverage *open* integration; turns jz into
-   a drop-in build speedup with zero workflow change.
+   a drop-in build speedup with zero workflow change. Doubly load-bearing now:
+   the 2026-07 VOC scan found bundler-wasm pain is a *documented, named* wound for
+   library authors (brotli-wasm#8 "affects all Vite users for all wasm-pack
+   projects"; hash-wasm base64-embeds its binary to dodge it) — the plugin is the
+   answer to a complaint they're already voicing.
 5. **Dogfood** color-space / digital-filter / web-audio-api as the trust anchor —
    still open, and (with unplugin) the move that manufactures real-adoption proof.
 6. **Unifying playground site** — thread the shipped gallery + floatbeat + REPL into
    one shareable front door (§2).
+7. **UDF surfaces (§3.8)** — SingleStore + ScyllaDB examples are S-effort standalone
+   artifacts reusing existing compile output; libSQL/DataFusion are two free
+   GitHub-issue comments. Opportunistic, after 4–5.
+
+Promotion sequencing, Dream-100 targets, and the objection→artifact map live in
+[`strategy.md`](strategy.md); personas in [`marketing.md`](marketing.md).
 
 Out of scope, explicitly: blockchain/smart-contract anything; porting AS's unit
 tests; chasing full-app frameworks (jz is for kernels, not UIs).
