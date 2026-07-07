@@ -65,7 +65,7 @@ body {
 /* ── main split: editor (left) · divider · terminal (right) ── */
 main { flex: 1; display: flex; min-height: 0; min-width: 0; }   /* min-width:0 lets the column collapse to the viewport on mobile (else the editor lines force its min-content width and the watbar overflows off-screen) */
 .pane { min-width: 0; display: flex; flex-direction: column; }
-.code { flex: 0 0 var(--lw, 320px); position: relative; overflow: hidden; }   /* editor pane — initial width 320px (the divider/localStorage overrides once dragged) */
+.code { flex: 0 0 var(--lw, 50%); position: relative; overflow: hidden; }   /* editor pane — initial 50% (matches the divider's reset; localStorage overrides once dragged) */
 .right { flex: 1 1 0; min-height: 0; position: relative; color-scheme: dark;   /* always dark — the "low-level" output side */
   /* every terminal color lives in these vars */
   --bg: #0b0b0b; --fg: #d4d4d4; --dim: #7c7c7c; --bright: #fff; --line: #242424;
