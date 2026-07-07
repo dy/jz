@@ -252,10 +252,18 @@ export const inferModuleIntGlobals = (ast) => {
   // Does `e` provably evaluate to a non-integer? Integer-coercing ops (bitwise,
   // shifts) and comparisons launder any fraction; only the *value*-bearing
   // branches of ternary/logical ops carry it.
+  // Post-prepare, `Math.PI` / `Math.sqrt(x)` arrive as FLAT math keys — the bare
+  // string 'math.PI' in value position, 'math.sqrt' as a string callee — not the
+  // raw ['.','Math','sqrt'] shape. Missing them assumed INTEGER and i32-demoted
+  // module consts like `export const TWO_PI = Math.PI * 2` in DEP modules (their
+  // inits prep before this scan), truncating 6.283… → 6 at init.
+  const FRACTIONAL_MATH_CONSTS = new Set(['PI', 'E', 'LN2', 'LN10', 'LOG2E', 'LOG10E', 'SQRT2', 'SQRT1_2'])
+  const fractionalMathKey = (k) => typeof k === 'string' && k.startsWith('math.')
+    && (FRACTIONAL_MATH.has(k.slice(5)) || FRACTIONAL_MATH_CONSTS.has(k.slice(5)))
   const producesFraction = (e) => {
     if (e == null) return false
     if (typeof e === 'number') return !Number.isInteger(e)
-    if (typeof e === 'string') return refIsFractional(e)
+    if (typeof e === 'string') return refIsFractional(e) || fractionalMathKey(e)
     if (!Array.isArray(e)) return false
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
@@ -267,6 +275,7 @@ export const inferModuleIntGlobals = (ast) => {
       const callee = e[1]
       if (Array.isArray(callee) && callee[0] === '?') return producesFraction(callee[2]) || producesFraction(callee[3])
       if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && FRACTIONAL_MATH.has(callee[2])) return true
+      if (fractionalMathKey(callee)) return true
       return false  // unknown call → assume integer
     }
     for (let i = 1; i < e.length; i++) if (producesFraction(e[i])) return true
@@ -316,6 +325,10 @@ export const inferModuleIntGlobals = (ast) => {
     for (let i = 1; i < node.length; i++) walk(node[i], scope)
   }
   walk(ast, null)
+  // DEP-module top-level inits live in ctx.module.moduleInits, NOT the entry ast —
+  // without walking them a dep's `export const TWO_PI = Math.PI * 2` records no
+  // RHS at all and the integer default i32-demotes it (init truncated 6.283 → 6).
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) walk(init, null)
   for (const f of ctx.func.list) {
     if (!f.body || f.raw) continue
     const params = new Set((f.sig?.params || []).map(p => p.name))

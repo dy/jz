@@ -686,7 +686,7 @@ test('cross-module: importer `.length = 0` between owner pushes keeps one array'
 // window-function/util.js (`export let { cos, sin, abs, … } = Math`), which blocks
 // compiling every package that windows a signal. Fix in prepare's export
 // registration, then flip `test.todo` → `test`.
-test.todo('cross-module: destructured export declaration registers bindings', () => {
+test('cross-module: destructured export declaration registers bindings', () => {
   const { exports } = jz(
     `import { a } from './dep.js'; export let f = () => a`,
     { modules: { './dep.js': 'export let { a } = { a: 1 }' } }
@@ -702,7 +702,7 @@ test.todo('cross-module: destructured export declaration registers bindings', ()
 // `export default makePitchShift(batch, stream)`; any cross-package default
 // import (shift-hybrid, root aggregators) fails on this.
 // Flip `test.todo` → `test` when fixed.
-test.todo('cross-module: default-imported factory-produced closure', () => {
+test('cross-module: default-imported factory-produced closure', () => {
   const { exports } = jz(
     `import thing from './dep.js'; export let test = (x) => thing(x)`,
     { modules: { './dep.js': `
@@ -724,6 +724,13 @@ test.todo('cross-module: default-imported factory-produced closure', () => {
 // the taylor.js below is verbatim window-function source, minimally re-based
 // onto a stub util. Live instance: window-function's taylor.js /
 // ultraspherical.js + util.js generate. Flip `test.todo` → `test` when fixed.
+// PARTIAL (2026-07-08): the titled ENCODE CRASH is FIXED — program-facts now records
+// bare func-ref RHS in let/const decls (`let c = taylor`) as a VALUE use, so
+// resolveClosureWidth sizes the uniform ABI to the fn's full arity and the boundary
+// trampoline no longer forwards undeclared $__a{k} slots. Residual: the memo VALUE
+// computes wrong cross-module only (returns 1, want 0.4849…; the same fn-attached
+// memo idiom works single-module) — a distinct dyn-props-on-closure-receiver or
+// default-export-self-name bug. Re-diagnose from here.
 test.todo('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
   const util = `
     export let PI = Math.PI
@@ -786,7 +793,7 @@ test.todo('cross-module: function-attached memo state + export-only HOF encodes 
 // Math.PI * 2` — every RBJ biquad coefficient (notch/HP/LP/peaking) is computed at a
 // truncated cutoff angle, so dehum/dewind/deesser wasm output diverges from JS
 // (~1e-2 abs after IIR feedback compounds). Flip `test.todo` → `test` when fixed.
-test.todo('cross-module: Math.*-initialized const in a dep module reads back exact', () => {
+test('cross-module: Math.*-initialized const in a dep module reads back exact', () => {
   const { exports } = jz(
     `import { TWO_PI, R2 } from './util.js'
      export let f = () => TWO_PI

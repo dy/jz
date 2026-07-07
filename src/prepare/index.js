@@ -683,8 +683,17 @@ const hasFunc = name => ctx.func.names.has(name)
 // fast-paths bail and fall through to `resolveCallee`, which already routes a
 // declared name to its local value. Mirrors the guard in
 // `foldNamespaceIntrospection`.
+// …EXCEPT a namespace alias (`const M = Math` at any depth): registerBuiltinAlias
+// maps the name to the MODULE ITSELF in the block scope — that's the namespace,
+// not a shadow of it. An ordinary local can never carry that resolution (only the
+// hasModule-gated alias branch writes module names into scope maps).
+const isNamespaceAliasScoped = name => {
+  if (!scopes.length || !isDeclared(name)) return false
+  const key = resolveScope(name)
+  return typeof key === 'string' && key !== name && (hasModule(key) || !!builtinMemberKey(key))
+}
 const shadowsBuiltin = name => typeof name === 'string' &&
-  ((scopes.length && isDeclared(name)) || hasFunc(name) || ctx.scope.userGlobals?.has?.(name))
+  ((scopes.length && isDeclared(name) && !isNamespaceAliasScoped(name)) || hasFunc(name) || ctx.scope.userGlobals?.has?.(name))
 // A local bound to a function literal in any active arrow scope (the nested-
 // closure counterpart to `hasFunc`, which only knows depth-0 lifted functions).
 const isFuncValueLocal = name => typeof name === 'string' && funcValueNames.some(s => s.has(name))
@@ -1156,7 +1165,19 @@ function namespaceMemberAssigns(pattern, rhsRaw) {
  *  '.' handler would arm it (arity > 0), so an incidental first-class use
  *  (`let g = sin` elsewhere) still finds closure support wired up. */
 function registerBuiltinAlias(name, key) {
-  if (ctx.func.exports[name]) err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
+  if (ctx.func.exports[name]) {
+    // An alias carries no runtime storage, but an EXPORT needs some — synthesize
+    // the wrapping function the old error told users to write by hand
+    // (`export let { sin, cos } = Math` — window-function's util.js — must just
+    // work). Arity from the emitter; in-module calls direct-call the wrapper,
+    // which inlines back to the builtin under watr.
+    const arity = Math.max(1, emitArity(ctx.core.emit[key]) || 1)
+    const params = Array.from({ length: arity }, (_, i) => `${T}ba${i}`)
+    const paramsNode = params.length === 1 ? params[0] : [',', ...params]
+    const wrapped = prep(['=>', paramsNode, ['()', key, params.length === 1 ? params[0] : [',', ...params]]])
+    if (defFunc(name, wrapped)) return
+    err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
+  }
   if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
   if (depth === 0) {
     ctx.scope.chain[name] = key
@@ -1306,19 +1327,23 @@ function prepDecl(op, ...inits) {
       // SAME table `Math` itself resolves through) then resolves `M.sqrt`
       // exactly like a direct `Math.sqrt` reference would, with no further
       // changes needed there.
-      // Module top-level only (`depth === 0`, where `registerBuiltinAlias`
-      // writes to `scope.chain`): at depth ≠ 0 it writes to the block-scoped
-      // `scopes` stack instead, which the '.' handler does not consult for this
-      // shape — extending it there would require distinguishing a genuine
-      // alias from an ordinary un-renamed local that merely happens to be
-      // NAMED like a module ('fn', 'json', 'date', … — these self-map to their
-      // own name), which is more risk than the shape's value justifies. A nested-
-      // function `const M = Math; M.sqrt(x)` still falls through to the
-      // pre-existing generic path (test.todo pinned in test/destruct.js).
-      // `normed !== name` guards the depth-0 case against the same identity-
-      // self-map false positive (e.g. a cross-module host-import alias that
-      // happens to be named after a module).
-      if (depth === 0 && typeof normed === 'string' && normed !== name && hasModule(normed)) {
+      // Any depth: registerBuiltinAlias scope-routes (chain at module level, the
+      // block-scoped `scopes` stack inside functions), and the consumers — the
+      // '.' handler and resolveCallee's `.`-callee branch — resolve the receiver
+      // through the function scope FIRST (namespaceModOf below). The genuine-
+      // alias-vs-ordinary-local ambiguity is settled by the discriminator here,
+      // not at the read site: only an RHS that RESOLVED to a module name
+      // registers (an ordinary local named 'json'/'fn' never does — its RHS is
+      // a value expression, and a user shadow of the namespace makes prep
+      // resolve the RHS through the shadow instead). `normed !== name` guards
+      // the identity-self-map false positive (e.g. a cross-module host-import
+      // alias that happens to be named after a module).
+      // `!shadowsBuiltin(init)`: the RHS must be the NAMESPACE ITSELF, not a
+      // declared VALUE binding that merely resolves to a module-shaped name —
+      // `let object = {…}; let alias = object` chains normed==='object'
+      // (identity self-map through the shadow path) and must stay a value copy.
+      if (typeof normed === 'string' && normed !== name && hasModule(normed)
+          && typeof init === 'string' && !shadowsBuiltin(init)) {
         registerBuiltinAlias(name, normed); continue
       }
     }
@@ -1519,6 +1544,15 @@ function foldNamespaceIntrospection(callee, args) {
 // (function table / closure) machinery.
 const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro'])
 
+// Resolve a member-receiver to a builtin module name, honoring FUNCTION-SCOPED
+// namespace aliases (`const M = Math` inside a body registers M → 'math' in the
+// block scope; resolveScope surfaces it) ahead of the module-level chain.
+function namespaceModOf(obj) {
+  if (typeof obj !== 'string') return null
+  const key = scopes.length && isDeclared(obj) ? resolveScope(obj) : ctx.scope.chain[obj]
+  return typeof key === 'string' && !key.includes('.') && hasModule(key) ? key : null
+}
+
 function resolveCallee(callee, args) {
   if (typeof callee === 'string') {
     const local = scopes.length && isDeclared(callee)
@@ -1526,6 +1560,14 @@ function resolveCallee(callee, args) {
     if (local) return resolveScope(callee)
     if (resolved?.includes('.')) return resolved
     if (resolved && hasFunc(resolved)) return resolved
+    // Chain-resolved VALUE GLOBAL — a default-imported factory product
+    // (`export default make(...)` → module global `__dep$default`;
+    // `import thing …; thing(x)` must closure-call that global, not fall
+    // through to the bare unresolvable name).
+    if (resolved && (ctx.scope.globals.has(resolved) || ctx.scope.userGlobals?.has?.(resolved))) {
+      includeForCallableValue()
+      return resolved
+    }
     if (resolved && !resolved.includes('.')) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       return callee
@@ -1556,8 +1598,8 @@ function resolveCallee(callee, args) {
     }
     if (key && includeForNamedCall(key)) return key
     if (includeForGenericMethod(prop)) return prep(callee)
-    const mod = ctx.scope.chain[obj]
-    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod))
+    const mod = namespaceModOf(obj)
+    if (mod)
       return (includeModule(mod), mod + '.' + prop)
     return prep(callee)
   }
@@ -1929,8 +1971,13 @@ const handlers = {
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
-        if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
-          ctx.func.exports[i[1]] = true
+        if (Array.isArray(i) && i[0] === '=') {
+          if (typeof i[1] === 'string') ctx.func.exports[i[1]] = true
+          // `export let { a, b: c } = …` / `export let [x, y] = …` — every
+          // BoundName of the declaration is an export (ES §16.2.3.2). Surfaced
+          // by window-function's `export let { cos, sin, abs } = Math`.
+          else if (isDestructPattern(i[1])) for (const n of bindingNames(i[1])) ctx.func.exports[n] = true
+        }
     // export name → bare-identifier re-export (shorthand for `export { name }`).
     // Register the binding and emit nothing; without this the name falls through
     // to `prep(decl)` below and compiles as a dead `global.get; drop` statement
@@ -2489,9 +2536,11 @@ const handlers = {
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
     // — read the property off the local value, not the builtin namespace table.
     if (shadowsBuiltin(obj)) { includeForProperty(prop); return ['.', prep(obj), prop] }
-    const mod = ctx.scope.chain[obj]
+    // Function-scoped namespace aliases resolve here too (namespaceModOf) — the
+    // module-level chain alone missed `const M = Math; M.sqrt` inside a body.
+    const mod = namespaceModOf(obj)
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
-    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod)) {
+    if (mod) {
       includeModule(mod)
       const key = mod + '.' + prop
       if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()

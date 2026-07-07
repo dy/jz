@@ -189,7 +189,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
               const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'
               if (isFuncLit || caller?.name !== name) acc.valueUsed.add(name)
             }
-            walkFacts(decl[2], true, inArrow, caller)
+            // A bare func-ref RHS (`let c = taylor` — the fn-attached-memo idiom)
+            // is a VALUE use: resolveClosureWidth must size the uniform ABI to the
+            // referenced function's full arity, or its boundary trampoline forwards
+            // $__a{k} slots it never declared. Mirrors the '=' handler below.
+            if (isFuncRef(decl[2], ctx.func.names)) acc.valueUsed.add(decl[2])
+            else walkFacts(decl[2], true, inArrow, caller)
           } else walkFacts(decl, true, inArrow, caller)
         }
         return

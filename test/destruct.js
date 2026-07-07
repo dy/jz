@@ -515,7 +515,7 @@ export let f = (v) => M.sqrt(v)`)
 // present) and the project's own discipline for this pass forbids touching it
 // while that's true — not just the architectural-risk call above. Flip
 // `test.todo` → `test` when fixed.
-test.todo('destruct: namespace-as-value alias inside a function body', () => {
+test('destruct: namespace-as-value alias inside a function body', () => {
   const { exports: { f } } = jz(`export let f = (v) => { const M = Math; return M.sqrt(v) }`)
   is(f(16), 4)
 })
