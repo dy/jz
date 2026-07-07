@@ -131,24 +131,38 @@ export default (ctx) => {
     // `map.get(k).n++` that no alias analysis could attribute — so a literal
     // whose schema intersects it allocates per-evaluation instead.
     const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n))
-    if (neverWritten && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
+    // `!shadow`: a computed-key write on the target (`o[k]=v`) mutates the object —
+    // a shared static instance would leak call N's writes into call N+1. The old
+    // shadow-mirror masked this by re-storing literal values through __dyn_set's
+    // schema-arm on every evaluation (an accidental reset that still leaked
+    // runtime-ADDED keys); with the mirror gone (tier 2), mutable literals must
+    // allocate fresh per evaluation — the runtime path below.
+    if (neverWritten && !shadow && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       const emitted = values.map(storedValue)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
         // Reorder into schema-slot order before laying out the static segment.
-        const ordered = emitted.map(() => null), orderedBits = emitted.map(() => null)
-        for (let i = 0; i < values.length; i++) { ordered[slotOf(i)] = emitted[i]; orderedBits[slotOf(i)] = slots[i] }
-        const off = appendStaticSlots(orderedBits)
-        const staticPtr = mkPtrIR(PTR.OBJECT, schemaId, off)
-        if (!shadow) return staticPtr
-        inc('__dyn_set')
-        const body = [['local.set', `$${ptr}`, staticPtr]]
-        for (let i = 0; i < schema.length; i++)
-          body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]],
-            asI64(emit(['str', String(schema[i])])), asI64(ordered[i])]])
-        body.push(['local.get', `$${ptr}`])
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
+        const orderedBits = emitted.map(() => null)
+        for (let i = 0; i < values.length; i++) orderedBits[slotOf(i)] = slots[i]
+        // Full 16-byte __alloc_hdr-shaped header ([props:8]=0, len=0, cap=slots):
+        // dyn machinery reads the off-16 props word — a headerless static object
+        // aliased whatever data preceded it (the durable-dangler garbage class),
+        // and a runtime dyn-set/delete on the shared instance now has a real,
+        // writable slot to install a sidecar into. No runtime shadow mirror
+        // either way (tier 2): dyn READS of schema props resolve through the
+        // schema-arm (__schema_tbl — itself static data now), so the old
+        // per-prop __dyn_set mirror was pure init cost — the block it emitted
+        // also made the literal non-const, forcing every ENCLOSING literal
+        // (`const A = [{…}, {…}]`) to build at runtime.
+        if (!ctx.runtime.data) ctx.runtime.data = ''
+        while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+        const hdrOff = ctx.runtime.data.length
+        const hdr = new Uint8Array(16); const hdv = new DataView(hdr.buffer)
+        hdv.setInt32(12, ctx.abi.object.ops.allocSlots ? ctx.abi.object.ops.allocSlots(schema.length) : schema.length, true)
+        for (let i = 0; i < 16; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
+        appendStaticSlots(orderedBits)
+        return mkPtrIR(PTR.OBJECT, schemaId, hdrOff + 16)
       }
     }
 
@@ -1042,9 +1056,13 @@ function runtimeKeysFromTemp(t, tag) {
   inc('__ptr_type')
   // Ensure the schema table global exists even in programs that never use
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
-  // and the watr resolver requires the symbol to be declared.
+  // and the watr resolver requires the symbol to be declared. Declaring is not
+  // enough: the OBJECT arm READS the table inline (no named helper to count),
+  // so mark consumption for assemble.js's needsSchemaTbl gate or the table
+  // stays 0 and enumeration silently yields zero schema keys.
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
+  ctx.runtime.schemaTblConsumed = true
   const tt = tempI32(`${tag}t`)
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: `${tag}e` })
   return ['block', ['result', 'f64'],
@@ -1062,6 +1080,7 @@ function emitRuntimeValues(obj) {
   inc('__ptr_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
+  ctx.runtime.schemaTblConsumed = true
   const t = temp('rv'), tt = tempI32('rvt')
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rve' })
   return typed(['block', ['result', 'f64'],
@@ -1080,6 +1099,7 @@ function emitRuntimeEntries(obj) {
   inc('__ptr_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
+  ctx.runtime.schemaTblConsumed = true
   const t = temp('re'), tt = tempI32('ret')
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'ree' })
   return typed(['block', ['result', 'f64'],

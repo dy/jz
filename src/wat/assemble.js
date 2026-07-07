@@ -43,7 +43,8 @@ import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
 import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
-import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from '../ir.js'
+import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64, appendStaticSlots } from '../ir.js'
+import { staticArrayPtr } from '../../module/array.js'
 import { installHelperCounters, instrumentHelperCounter } from '../helper-counters.js'
 
 // NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
@@ -227,6 +228,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // table holding only empty schemas is pure dead weight there. __json_obj has
   // no such guard — it must read the table whenever stringify is in play.
   const tblConsumed = hasStringify ||
+    // Inline readers (object.js enumeration scaffolds) — no named helper to count.
+    ctx.runtime.schemaTblConsumed ||
     ctx.core.includes.has('__obj_clone') ||
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
@@ -250,29 +253,63 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length
     const runtimeReserve = hasJpObj ? 256 : 0
-    const stbl = `${T}stbl`
-    const sarr = `${T}sarr`
-    ctx.func.locals.set(stbl, 'i32')
-    ctx.func.locals.set(sarr, 'i32')
-    inc('__alloc', '__alloc_hdr', '__mkptr')
-    schemaInit.push(
-      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', (nSchemas + runtimeReserve) * 8]]],
-      ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
-    if (runtimeReserve) {
-      schemaInit.push(['global.set', '$__schema_next', ['i32.const', nSchemas]])
+    // Pre-eval tier 2: the schema NAME TABLE is compile-time data — every key is a
+    // static string literal, every keys-array a constant, the table an array of
+    // constant boxed pointers. Lay it out in the data segment (staticArrayPtr per
+    // schema + one slot run for the table incl. a zeroed runtime reserve) and bake
+    // __schema_tbl/__schema_next as GLOBAL INITS: zero init code, and the reserve
+    // (JSON.parse-registered runtime schemas) lives in writable data the globals
+    // sweep correctly rewinds at _clear (runtime schemas are round state).
+    let staticBits = ctx.memory.shared ? null : []
+    if (staticBits) for (const keys of ctx.schema.list) {
+      const bits = keys.map(k => extractF64Bits(asF64(emit(['str', String(k)]))))
+      if (bits.some(b => b == null)) { staticBits = null; break }
+      staticBits.push(extractF64Bits(staticArrayPtr(bits)))
     }
-    for (let s = 0; s < nSchemas; s++) {
-      const keys = ctx.schema.list[s]
-      const n = keys.length
+    if (staticBits) {
+      const tblOff = appendStaticSlots([...staticBits, ...Array(runtimeReserve).fill('0x0000000000000000')])
+      // The consumers declGlobal '__schema_tbl' lazily at TEMPLATE EXPANSION
+      // (pullStdlib) — AFTER this runs. Declare it here so the static offset
+      // lands as the initializer instead of silently missing a not-yet-declared
+      // global (which then defaulted 0 and the `$__schema_tbl == 0` guards
+      // disabled the whole schema arm — for-in enumerated zero keys).
+      if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
+      const tblG = ctx.scope.globals.get('__schema_tbl')
+      if (tblG) tblG.init = tblOff
+      // Raw-i32 global init pointing into static data: stripStaticDataPrefix
+      // patches BOXED slots via staticPtrSlots, but a global's declared init
+      // needs its own shift (same as __internBase's bespoke re-declare).
+      ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_tbl')
+      if (runtimeReserve) {
+        if (!ctx.scope.globals.has('__schema_next')) declGlobal('__schema_next', 'i32')
+        const nextG = ctx.scope.globals.get('__schema_next')
+        if (nextG) nextG.init = nSchemas
+      }
+    } else {
+      const stbl = `${T}stbl`
+      const sarr = `${T}sarr`
+      ctx.func.locals.set(stbl, 'i32')
+      ctx.func.locals.set(sarr, 'i32')
+      inc('__alloc', '__alloc_hdr', '__mkptr')
       schemaInit.push(
-        ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n]]])
-      for (let k = 0; k < n; k++)
+        ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', (nSchemas + runtimeReserve) * 8]]],
+        ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
+      if (runtimeReserve) {
+        schemaInit.push(['global.set', '$__schema_next', ['i32.const', nSchemas]])
+      }
+      for (let s = 0; s < nSchemas; s++) {
+        const keys = ctx.schema.list[s]
+        const n = keys.length
         schemaInit.push(
-          ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
-            emit(['str', String(keys[k])])])
-      schemaInit.push(
-        ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
-          mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
+          ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n]]])
+        for (let k = 0; k < n; k++)
+          schemaInit.push(
+            ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
+              emit(['str', String(keys[k])])])
+        schemaInit.push(
+          ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
+            mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
+      }
     }
   }
 
@@ -344,8 +381,15 @@ export function hoistConstGlobalInits(sec) {
   }
   // Hoisting can empty `__start`. The O2 watr pass prunes a bodyless start, but at
   // O0/O1 nothing else does — drop it (func + directive) here so a const-only module
-  // carries no start at all.
-  if (findBodyStart(startFn) >= startFn.length)
+  // carries no start at all. A body reduced to ONLY the `__heap_reset` capture
+  // (injected before this hoist ran) counts as empty too: with every init store
+  // folded away, nothing allocated, so the capture would store exactly the
+  // data-end seed `__heap_reset` already declares — tier-2 static-tree modules
+  // ship with no start section at all.
+  const bs = findBodyStart(startFn)
+  const captureOnly = startFn.length - bs === 1 &&
+    Array.isArray(startFn[bs]) && startFn[bs][0] === 'global.set' && startFn[bs][1] === '$__heap_reset'
+  if (bs >= startFn.length || captureOnly)
     for (let j = sec.start.length - 1; j >= 0; j--)
       if (Array.isArray(sec.start[j]) && sec.start[j][1] === '$__start') sec.start.splice(j, 1)
 }
@@ -707,6 +751,15 @@ export function pullStdlib(sec) {
           else globalRestores.push(`(global.set $${name} (${g.type}.const ${g.init ?? 0}))`)
         }
         if (startFn) {
+          // Tier 2 payoff: when module init folded away entirely (static trees,
+          // static schema table) and no global needs a snapshot slot, the ONLY
+          // thing left to do is the __heap_reset capture — whose value is exactly
+          // the seeded data-end init. Drop __start altogether.
+          if (!snapSlots.length && findBodyStart(startFn) >= startFn.length) {
+            const dirIdx = sec.start.findIndex(n => Array.isArray(n) && n[0] === 'start')
+            sec.start.length = 0
+            if (dirIdx !== -1) { /* directive lived in sec.start — cleared above */ }
+          } else {
           const capture = ['global.set', '$__heap_reset', ['global.get', '$__heap']]
           const inject = [capture]
           if (snapSlots.length) {
@@ -720,6 +773,7 @@ export function pullStdlib(sec) {
           const tail = startFn[startFn.length - 1]
           if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, ...inject)
           else startFn.push(...inject)
+          }
         }
       }
       // __dyn_props reset: __clear rewinds the bump arena, but __dyn_props /
@@ -1016,6 +1070,12 @@ export function stripStaticDataPrefix(sec) {
     }
     ctx.runtime.internTable.base = base - prefix
     declGlobal('__internBase', 'i32', base - prefix, { mut: false })
+  }
+  // Raw-i32 globals whose INIT is a static-data offset (static schema table, …):
+  // shift the declared init by the stripped prefix, like every boxed slot above.
+  if (ctx.runtime.staticI32GlobalInits) for (const name of ctx.runtime.staticI32GlobalInits) {
+    const g = ctx.scope.globals.get(name)
+    if (g && typeof g.init === 'number' && g.init >= prefix) g.init -= prefix
   }
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
