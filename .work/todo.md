@@ -124,6 +124,10 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [ ] **jzify** — converting script for any JZ; auto-import stdlib globals (Math.* → import
   math); then make jz core require explicit stdlib imports (remove auto-import); Crockford align.
 - [ ] **Source maps** (blocked on watr upstream) — meanwhile add a WASM name section.
+- [ ] **Math-kernel precision** — sin/cos/exp ~1e-9 absolute vs libm (~30-bit); filter-design
+  math amplifies it (biquad `(1−cosω)/2` cancellation → ~1.3e-6 relative coefficient error at
+  fc=1000/fs=44100; high-Q/low-fc pole placement sensitive). Lever: compile-time rational
+  simplification (research.md) — carry `2πfc/fs` exactly, emit the cancellation-free form.
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 

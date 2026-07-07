@@ -697,8 +697,8 @@ landmine any program can hit when round-2 allocations alias it (mat4 tolerates i
 luck; the earlier lvtOverlay-garbage read and the cyclic finalizeClosureTable tree are
 both downstream corruption symptoms, not causes).
 
-**The conceptual fix (designed, implemented, REVERTED — saved as
-.work/durable-dynprops-policy.patch):** durable receivers (off < __heap_reset at
+**The conceptual fix (designed, implemented, REVERTED — patch removed; re-derive
+from this section):** durable receivers (off < __heap_reset at
 runtime) route dyn props to the GLOBAL __dyn_props table (which __clear resets) —
 prop lifetime matches storage; init-time writes still take sidecars (heap_reset is
 data-end-seeded during __start, so init sidecars land durable). Template gating via
@@ -748,8 +748,8 @@ buf, watr-side licm-before-devirt in finish() (swap), 5 pre-existing stragglers
 ## Session 8 — durable-dynprops v2: landed, exposed deeper strata, parked again
 The atomic re-land (all sites: get_t_h dual-check global→sidecar for init-time keys,
 set gate, del ORs both sources, __obj_clone merge, enumerate/json 3-way merges;
-expr/any/prehashed verified delegating — no change needed) is DESIGN-CORRECT and
-saved as .work/durable-dynprops-policy-v2.patch (772 lines). Reverted because it
+expr/any/prehashed verified delegating — no change needed) is DESIGN-CORRECT
+(patch removed; the site list above is the re-land spec). Reverted because it
 EXPOSES two pre-existing strata that net-worsen the gates (fresh pin 1.05×→OOB):
 1. Array-growth forwarding is not _clear-safe: grow writes the forwarding sentinel
    into the OLD (durable) header pointing at an EPHEMERAL target — outlives it.
