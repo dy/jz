@@ -409,7 +409,11 @@ export const flattenFuncNamespaces = (ast) => {
     typeof obj === 'string' && typeof prop === 'string' && flat.has(obj)
       ? flat.get(obj).get(prop) : undefined
   const isEmptySeq = (n) => Array.isArray(n) && n.length === 1 && n[0] === ';'
-  const rewrite = (node) => {
+  // `stmt` — node sits in statement position (a `;` sequence child). A dropped
+  // write there emits nothing; in EXPRESSION position (comma chain, init value,
+  // arrow body) `(f.p = v)` must still yield v — the lifted-closure reference —
+  // or the surrounding arity breaks (invalid wasm: values left on the stack).
+  const rewrite = (node, stmt = false) => {
     if (!Array.isArray(node)) return node
     const op = node[0]
     if (op === '.' || op === '?.') {
@@ -419,13 +423,13 @@ export const flattenFuncNamespaces = (ast) => {
     if (op === '=' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
       const d = decisionFor(node[1][1], node[1][2])
       if (d?.global) return ['=', d.global, rewrite(node[2])]
-      if (d?.drop) return [';']  // dead write — emit nothing
+      if (d?.drop) return stmt ? [';'] : rewrite(node[2])  // dead write — statement: nothing; value: the rhs
     }
     const out = [op]
     // Filter dropped writes out of statement sequences (an empty `[';']` left in
     // a body would lower to an unrenderable node).
     for (let i = 1; i < node.length; i++) {
-      const c = rewrite(node[i])
+      const c = rewrite(node[i], op === ';')
       if (op === ';' && isEmptySeq(c)) continue
       out.push(c)
     }
