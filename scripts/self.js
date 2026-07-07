@@ -54,6 +54,9 @@ function optimizeTail(module, cfg) {
   // never matches it), so jz always enables it explicitly.
   if (watrOpts === true) watrOpts = { guardRefine: true }
   else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
+  // Mirror index.js: speed-tier presets carry watrProfile:'speed' (outline/tailmerge/
+  // rettail off); the 'size' preset keeps watr's size-leaning default.
+  if (typeof watrOpts === 'object' && watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
   if (!cfg.watr) return module
   // Pin the scalar transcendentals + their f64x2 mirrors so watr's inliner keeps the calls the
   // pre-watr vectorizer emitted (mirror index.js).
