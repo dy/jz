@@ -1306,3 +1306,70 @@ deferred-group count + member names; if 0/near-0, the guilty heuristic is
 elsewhere (candidates: inlineOnce's own caps vs 5.0.0, macro-inline gate,
 export-rooted liveness keeping wrappers alive). The 47-min build scare was box
 contention (129s quiet); rounds are capped at 6 — no fixpoint pathology.
+
+## SESSION 7 (2026-07-06/07) — WARM PIN EARNED SOUNDLY: durable-slot heal
+
+**Context reset:** user published watr 5.2.0 (dedupe fix + speed profile + packData fix
+— the registry landmine is DEAD) and bumped jz to subscript ^10.5.2 / watr ^5.2.0.
+Suite verdict on arrival: only 4 unique fails, all known. Old stragglers (for-in
+dyn-keys, slice-views, Object.create OOB) fixed by the prior batches.
+
+**Landed this session (jz):**
+1. **profile-speed default** (4f44d36): LEVEL_PRESETS 2/3/'speed' carry
+   watrProfile:'speed' → decoration maps it onto watr opts; 'size' keeps watr's
+   size-leaning default; selfhost-build's bespoke config dissolved. self.js
+   optimizeTail mirrors it.
+2. **FORIN workaround removed**: subscript ≥10.5.1 re-associates for-in/of heads
+   (all six wrapper classes probe-verified); kernel-compat verified (selfhost 20/20).
+3. **ratchet re-baselined** (e8264b1): buf +3507 bisected via worktrees to 7b15b6d
+   (heal guards inlined into loop bodies by watr — cold-path, zero per-iter cost);
+   watr exonerated (14112 under both 5.1.1/5.2.0); five categories improved & locked.
+4. **Global-snapshot sweep**: _clear restores every runtime-written module global to
+   its post-__start snapshot (slab under the watermark; no-start modules restore
+   declared inits; __tof_/__hc_/protocol excluded). Kills the `let CACHE = null`
+   module-cache dangler class + scalar poisoning. Pinned in test/mem.js.
+5. **Durable-slot heal — THE warm unlock**: init-created dicts written at runtime
+   dangle across _clear (found via HOST-SIDE DANGLER CENSUS: scan [0,heap_reset) for
+   boxed heap ptrs aiming ≥ heap_reset; 34 at _clear, 5 surviving at trap; poison-fill
+   diagnostic + wasm-objdump pinned the trap to a stale section array byte-copy in
+   watr-assemble; the memo key was the UNDEF_NAN literal text). Value-only healing
+   measured INSUFFICIENT: dangling KEYS made warm round 2 FNV-hash 15.5MB of garbage
+   (vs 415KB round 1) = the whole 2.4× gap. Full mechanism: unconditional entry-log on
+   durable inserts + value-log on ephemeral overwrites → heal zombifies entries
+   (key←TOMB_NAN unforgeable sentinel, value←undefined, len--) after fwd-heal;
+   zombie-aware probes reclaim TOMB slots (remember-first, cap-bounded);
+   __coll_order + len-iteration skip zombies. Map size/enumeration semantics exact
+   ("warm = fresh"): 12-round × 6-insert stress stable, 0/0 after clear.
+
+**Landed upstream (watr, needs 5.2.1 publish):**
+- **eager NCLS** (compile.js): lazy module-level dict = warm landmine (round 2 saw the
+  stale truthy handle, mis-consumed `end` as a memidx → "Unknown memory end"); also
+  drops the rebuild branch from the per-token hot path.
+- **CSE write-clock** (optimize.js): LIVE MISCOMPILE in 5.2.0 — statement-level
+  invalidation can't see a write BETWEEN two sites of one statement; propagate-coalesced
+  locals made two f64.eq conditions identical and CSE reused the FIRST across the
+  second select's own re-tees (jz's Math.round(x)+Math.round(-x) → bump-misrouting;
+  found by jz's differential round-half gate, which is now GREEN). profile:'speed'
+  did NOT dodge it. Fix: monotone write ticks in evaluation order; repeat sites only
+  JOIN a group with unchanged stamp, else reseed. Pinned in watr test/optimize.js.
+
+**RESULTS (quiet box, 6-case pin subset):**
+- **warm-instance: 1.027× (cap 1.08) — GREEN**: mat4 1.06 fft 1.04 biquad 1.00
+  sort 1.00 crc32 1.00 mandelbrot 1.05. First SOUND warm parity — the session-6
+  0.97× partly read dangling-but-intact cache entries (the very bug class fixed here).
+- **fresh-instance: 1.143× (cap 1.22) — GREEN, best of era** (was 1.216 at session start).
+- selfhost 20/20; suite 2672 pass / 3 unique knowns (SROA red pin, devirt red pin,
+  uncatchable-throw straggler); csePureExpr ablation isolated with watr:false (watr's
+  fixed CSE now collapses the shared muls itself).
+
+**Diagnostic kit that cracked it (reusable):** (1) host-side dangler census —
+DataView scan of durable memory for NaN-boxed heap ptrs aiming past the watermark,
+zero rebuilds; (2) JZ_CLEAR_POISON memory.fill diag (removed after use) — makes the
+FIRST stale read trap at the reader; (3) names:true kernel + wasm-objdump around the
+trap offset; (4) ddmin over the failing source (mat4 → 4 lines); (5) FNV byte/call
+counters (removed after use) — turned "warm is 2× slower" into "15.5MB vs 415KB".
+
+**Next:** eco gates re-measure (heal machinery now in all compiled modules);
+watr 5.2.1 publish unblocks CI reproducibility; queue: 11 todos, 2 red pins
+(SROA owning-module prefix; watr devirt no longer matching jz's unbox chain),
+jessie 5.44×, watr.wasm 1.42×, preeval tiers 2–3, fresh ≤1.0.
