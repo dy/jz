@@ -40,12 +40,20 @@ await build({
   bundle: true,
   minify: true,
   format: 'esm',
-  platform: 'node',
+  // neutral, not node: the primary consumers are browser <script type=module> tags
+  // (landing/REPL). A node-platform bundle let an unguarded `process.env` debug line
+  // ship and break every loop compile in every browser (test/web-smoke.js pins this).
+  platform: 'neutral',
+  mainFields: ['module', 'main'],
   target: 'es2022',
   legalComments: 'none',
   outfile: jsOut,
 })
 console.log('wrote dist/jz.js  ', kb(jsOut))
+
+// --js-only: just the browser-facing bundles (used by test/web-smoke.js — the wasm
+// kernel below costs ~20s and has its own gates).
+if (process.argv.includes('--js-only')) process.exit(0)
 
 // ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
 const interopOut = resolve(OUT, 'interop.js')

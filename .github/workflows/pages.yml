@@ -37,6 +37,13 @@ jobs:
           node-version: 22
       - uses: actions/configure-pages@v5
       - run: npm ci
+      # Deploy gate: the full suite includes test/web-smoke.js — dist/jz.js compiling
+      # the REPL default sample + both landing hero grids under browser conditions
+      # (no Node globals). A commit that breaks in-browser compilation fails HERE and
+      # the last good deploy stays live (an unguarded process.env in the `for` emitter
+      # once shipped and broke every loop on every page — never again).
+      - name: gate — suite + demo/REPL web smoke
+        run: npm test
       - name: build compiler bundle + example wasm
         run: |
           npm run build                    # dist/jz.js + dist/interop.js — the repl/playground import these

@@ -1640,8 +1640,11 @@
         let text
         try { text = await (await fetch(path)).text() } catch { return }
         src = text
-        let jzEng = null, jsEng = null
-        try { jzEng = jz(src, { optimize: 3 }).exports } catch { }              // jz → wasm
+        let jzEng = null, jsEng = null, jzErr = null
+        // A compile failure here is a JZ BUG, not browser incompatibility — surface it
+        // loudly (an unguarded Node global once broke every loop compile in every
+        // browser while this silent catch mislabeled it "WASM unavailable").
+        try { jzEng = jz(src, { optimize: 3 }).exports } catch (e) { jzErr = e; console.error('jz hero compile failed:', e) }
         try {                                                                   // the SAME source as plain JS, for the toggle. Safari can reject importing a blob: module — isolate it
           const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
           try { jsEng = await import(u) } finally { URL.revokeObjectURL(u) }
@@ -1652,7 +1655,9 @@
         // When the wasm engine can't return its buffer, run the demo on plain JS and lock the toggle; else keep wasm.
         if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
           currentJz = null; setEngineUI('js'); engineEl.disabled = true
-          engineEl.style.cursor = 'default'; engineEl.title = 'WASM engine unavailable in this browser — running the live demo as plain JS'
+          engineEl.style.cursor = 'default'
+          engineEl.title = jzErr ? 'jz compile failed (bug — see console): running as plain JS'
+            : 'WASM engine unavailable in this browser — running the live demo as plain JS'
         } else if (currentJz) {
           engineEl.disabled = false; engineEl.style.cursor = ''; engineEl.removeAttribute('title')
         }

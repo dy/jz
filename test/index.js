@@ -23,6 +23,7 @@ const TESTS = [
   'json',
   'date',
   'wasi',
+  'web-smoke',
   'mem',
   'buffer',
   'regex',
@@ -90,7 +91,7 @@ const argFilters = process.argv.slice(2)
 //   - selfhost-source: a host-side scan of the self-host kernel's own source for
 //     labeled-statement misparses. Reads src via parse/jzify directly, never the
 //     compiler-under-test, so the kernel leg would only re-run it identically.
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'wat-invariants', 'loop-square', 'slp', 'cond-vectorize', 'unswitch-typed-param', 'selfhost-source', 'selfhost-includes', 'abi', 'examples'])
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'wat-invariants', 'loop-square', 'slp', 'cond-vectorize', 'unswitch-typed-param', 'selfhost-source', 'selfhost-includes', 'abi', 'examples'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length

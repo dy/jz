@@ -3498,7 +3498,6 @@ export const emitter = {
   },
 
   'for': (init, cond, step, body) => {
-    if (process.env.JZ_DUMP_FOR) console.error('EMIT-FOR init:', JSON.stringify(init), '\n  cond:', JSON.stringify(cond), '\n  step:', JSON.stringify(step))
     if (body === undefined) return err('for-in/for-of not supported')
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
