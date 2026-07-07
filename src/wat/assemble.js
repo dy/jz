@@ -651,13 +651,75 @@ export function pullStdlib(sec) {
       // GLOBALS/atom tables), not into it. Done here — where `__heap` is known to
       // survive — as the last `__start` action before any non-returning timer loop.
       // No `__start` ⇒ no init allocations ⇒ `__heap_reset`'s data-end seed is right.
+      // Module-global snapshot sweep: `__clear` rewinds the arena, so ANY mutable module
+      // global still holding a pointer into it dangles — the whole warm-reuse landmine
+      // class (a lazy `let CACHE = null` cache, json's `__jbuf` stringify buffer, watr's
+      // in-kernel NCLS dict, a memoized string…). Fixing sites one at a time is
+      // whack-a-mole (eager-NCLS peeled "Unknown memory end" only to expose the next
+      // dangler behind it); the class fix is a CONTRACT: `_clear` restores every
+      // runtime-written module global to its post-`__start` value — warm behaves as
+      // fresh, minus the init cost. Blanket restore beats an is-ephemeral-pointer test:
+      // it also heals SCALAR poisoning (a cached length/hash derived from round-1 arena
+      // content is stale garbage even though it's no pointer). Mechanics: reserve one
+      // durable slab slot per candidate (allocated at `__start` tail — BEFORE the
+      // `__heap_reset` capture, so the slab sits under the watermark), store each
+      // global's post-init value there, and re-load it in `__clear`. Only globals the
+      // write-scan sees mutated OUTSIDE `__start` participate (read-only globals cannot
+      // dangle, and rooting them here would defeat watr's dead-global pruning); with no
+      // `__start` a global's post-init value IS its declared init — restore the constant
+      // directly, no slot. Excluded: the runtime-protocol globals (each has its own
+      // reset right here in `__clear` — resetting `__heap_reset` itself would be
+      // self-defeating), `__tof_*` coercion scratch (written-before-read within one
+      // expression, can never carry state across a round) and `__hc_*` helper counters
+      // (diagnostics must observe rounds, not be reset by them).
+      const globalRestores = []
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+        const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__dyn_props', '__dyn_props_filter',
+          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__gsnap_base'])
+        const runtimeWritten = new Set()
+        const scanSet = (node) => {
+          if (!Array.isArray(node)) return
+          if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))
+          for (const c of node) scanSet(c)
+        }
+        for (const fn of sec.funcs) scanSet(fn)
+        // stdlib bodies are still WAT text here (parseTemplate runs later) — scan textually.
+        // Helpers write registry globals too: collection's __seq, json's __jbuf/__jstack….
+        // Thunked templates expand ONCE by contract (expansion-time ctx reads) — memoize
+        // the expansion back into the registry so the later parseTemplate pass reuses this
+        // exact string instead of expanding a second time.
+        for (const name of ctx.core.includes) {
+          let src = ctx.core.stdlib[name]
+          if (typeof src === 'function') ctx.core.stdlib[name] = src = src()
+          if (typeof src !== 'string') continue
+          for (const m of src.matchAll(/\(global\.set \$([A-Za-z0-9_.$]+)/g)) runtimeWritten.add(m[1])
+        }
+        const SNAP_TYPES = { i32: 8, i64: 8, f32: 8, f64: 8, v128: 16 }
+        const snapSlots = []   // [name, type, slabOffset]
+        let slabBytes = 0
+        for (const name of runtimeWritten) {
+          const g = ctx.scope.globals.get(name)
+          if (!g || !g.mut || !SNAP_TYPES[g.type]) continue
+          if (SNAP_PROTOCOL.has(name) || name.startsWith('__tof_') || name.startsWith('__hc_')) continue
+          if (startFn) { snapSlots.push([name, g.type, slabBytes]); slabBytes += SNAP_TYPES[g.type] }
+          // no __start ⇒ post-init value = declared init: restore the constant, no slot
+          else globalRestores.push(`(global.set $${name} (${g.type}.const ${g.init ?? 0}))`)
+        }
         if (startFn) {
           const capture = ['global.set', '$__heap_reset', ['global.get', '$__heap']]
+          const inject = [capture]
+          if (snapSlots.length) {
+            declGlobal('__gsnap_base', 'i32')
+            inject.unshift(['global.set', '$__gsnap_base', ['call', '$__alloc', ['i32.const', String(slabBytes)]]],
+              ...snapSlots.map(([name, type, off]) =>
+                [`${type}.store`, `offset=${off}`, ['global.get', '$__gsnap_base'], ['global.get', `$${name}`]]))
+            for (const [name, type, off] of snapSlots)
+              globalRestores.push(`(global.set $${name} (${type}.load offset=${off} (global.get $__gsnap_base)))`)
+          }
           const tail = startFn[startFn.length - 1]
-          if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, capture)
-          else startFn.push(capture)
+          if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, ...inject)
+          else startFn.push(...inject)
         }
       }
       // __dyn_props reset: __clear rewinds the bump arena, but __dyn_props /
@@ -711,9 +773,12 @@ export function pullStdlib(sec) {
         inc('__durable_fwd_heal')
         resets.push(`(call $__durable_fwd_heal)`)
       }
-      if (resets.length) ctx.core.stdlib['__clear'] = `(func $__clear
+      // Global-snapshot restores (see the sweep above) join the same rebuilt body.
+      // Order is free — restores touch only globals + the durable slab, which the
+      // rewind never moves — but bookkeeping-then-rewind-then-restore reads naturally.
+      if (resets.length || globalRestores.length) ctx.core.stdlib['__clear'] = `(func $__clear
           (global.set $__heap (global.get $__heap_reset))
-          ${resets.join('\n          ')})`
+          ${[...resets, ...globalRestores].join('\n          ')})`
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not
     // just the default 1 — otherwise a module whose constants exceed 64 KiB emits a data

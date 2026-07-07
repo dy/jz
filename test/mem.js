@@ -520,3 +520,26 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
   exports._clear(); exports.probe(256); exports._clear()
   is(exports.probe(256), 60, 'table survives repeated _clear + alloc cycles')
 })
+
+test('_clear() restores runtime-written module globals to their post-init snapshot', () => {
+  // The warm-reuse landmine class: a module-level lazy cache holds an ARENA pointer;
+  // `_clear` rewinds the arena; the next round's `if (!CACHE)` sees a stale truthy
+  // handle and dereferences whatever now lives at that offset (watr's in-kernel NCLS
+  // dict, json's __jbuf — every one was this shape). The contract that kills the whole
+  // class: _clear restores every runtime-written module global to its post-__start
+  // value — warm behaves as fresh, minus the init cost. `churn` reuses the freed arena
+  // between rounds so a dangling read is REAL garbage, not accidentally-intact bytes.
+  const { exports } = jz(`
+    let CACHE = null
+    let hits = 0
+    const get = () => { if (!CACHE) { CACHE = [7,8,9]; hits = hits + 1 }; return CACHE[1] }
+    export let churn = (n) => { let a = [n + 0.5, n * 2, n * 3]; return a[0] }
+    export let main = () => get()
+    export let hitCount = () => hits`, { optimize: false })
+  is(exports.main(), 8, 'round 1 builds the cache')
+  is(exports.hitCount(), 1)
+  exports._clear()
+  exports.churn(999)   // overwrite the arena the stale CACHE pointed into
+  is(exports.main(), 8, 'round 2 rebuilds — no dangling read through the stale handle')
+  is(exports.hitCount(), 1, 'scalar warm state restores too (fresh-instance semantics: hits back to 0, then 1)')
+})
