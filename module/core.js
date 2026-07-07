@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr } from '../src/ir.js'
 import { emit, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -49,6 +49,9 @@ export default (ctx) => {
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
+    __durable_slot_log: ['__alloc'],
+    __durable_slot_heal: [],
+    __is_eph_bits: [],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -432,6 +435,72 @@ export default (ctx) => {
         (br $l)))
       (global.set $__durable_fwd_n (i32.const 0))
       (global.set $__durable_fwd_buf (i32.const 0)))`
+
+    // Durable SLOT log — the value-write sibling of the relocation log above. A
+    // collection whose storage is DURABLE (init-created dict, off < __heap_reset)
+    // can receive an EPHEMERAL boxed value at runtime (a memo caching this round's
+    // parsed node, a registry entry) — the slot then dangles across \`_clear\` and
+    // the next round reads reused-arena garbage through it (the corpus-wide warm
+    // trap: a durable literal-text→node dict handing round-1 node arrays into
+    // round-2's tree). Writers call \`__durable_slot_log(addr)\` when storing an
+    // ephemeral value into a durable slot (see collection.js durableSlotLogIR);
+    // \`__durable_slot_heal\` (wired into \`__clear\` post-hoc, like the fwd heal)
+    // overwrites every logged slot with \`undefined\` — the pointed-at data dies
+    // with the arena, so entry-death is the only sound semantics. Same lazy-buffer
+    // + trap-ceiling design as the fwd log; slots are 4 bytes each so one page
+    // covers 1024 writes (durable-receiver writes are rare by construction).
+    declGlobal('__durable_slot_buf', 'i32')
+    declGlobal('__durable_slot_n', 'i32')
+    ctx.core.stdlib['__is_eph_bits'] = `(func $__is_eph_bits (param $b i64) (result i32)
+      (local $t i32)
+      ;; boxed heap pointer: quiet-NaN prefix, heap-kind tag, non-SSO, offset past the durable watermark
+      (if (i64.ne (i64.and (local.get $b) (i64.const 0xFFF8000000000000)) (i64.const 0x7FF8000000000000))
+        (then (return (i32.const 0))))
+      (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+      ;; heap kinds {ARRAY,BUFFER,TYPED,STRING,OBJECT,HASH,SET,MAP,CLOSURE} = bits 1-4,6-10 → 0x7DE
+      (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const 0x7DE)))
+        (then (return (i32.const 0))))
+      (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+                   (i64.ne (i64.and (local.get $b) (i64.const ${(BigInt(LAYOUT.SSO_BIT) << 32n).toString()})) (i64.const 0)))
+        (then (return (i32.const 0))))
+      (i32.ge_u (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))) (global.get $__heap_reset)))`
+    ctx.core.stdlib['__durable_slot_log'] = `(func $__durable_slot_log (param $addr i32) (param $tbl i32)
+      (local $n i32) (local $base i32)
+      (if (i32.eqz (global.get $__durable_slot_buf))
+        (then (global.set $__durable_slot_buf (call $__alloc (i32.const 8192)))))
+      (local.set $n (global.get $__durable_slot_n))
+      (if (i32.ge_s (local.get $n) (i32.const 1024)) (then (unreachable)))
+      (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $n) (i32.const 3))))
+      (i32.store (local.get $base) (local.get $addr))
+      (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $tbl))
+      (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))`
+    ctx.core.stdlib['__durable_slot_heal'] = `(func $__durable_slot_heal
+      (local $i i32) (local $n i32) (local $a i32) (local $base i32) (local $tbl i32)
+      (local.set $n (global.get $__durable_slot_n))
+      (block $done (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
+        (local.set $a (i32.load (local.get $base)))
+        (local.set $tbl (i32.load (i32.add (local.get $base) (i32.const 4))))
+        (if (i32.and (local.get $a) (i32.const 1))
+          ;; bit0: ENTRY heal — this round INSERTED the entry into durable storage; a
+          ;; fresh instance would not have it. Zombie it (key TOMB, value undefined —
+          ;; probes pass over, __coll_order skips) and decrement the table len so
+          ;; len-sized iteration and .size agree. Runs AFTER __durable_fwd_heal, so a
+          ;; grown-then-healed table's len is already its restored pre-grow value.
+          (then
+            (local.set $a (i32.and (local.get $a) (i32.const -2)))
+            (i64.store (i32.add (local.get $a) (i32.const 8)) (i64.const ${TOMB_NAN}))
+            (i64.store (i32.add (local.get $a) (i32.const 16)) (i64.const ${UNDEF_NAN}))
+            (i32.store (i32.sub (local.get $tbl) (i32.const 8))
+              (i32.sub (i32.load (i32.sub (local.get $tbl) (i32.const 8))) (i32.const 1))))
+          ;; plain: VALUE heal — the entry pre-existed durably; its old value is
+          ;; unrecoverable, undefined is the honest read.
+          (else (i64.store (local.get $a) (i64.const ${UNDEF_NAN}))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+      (global.set $__durable_slot_n (i32.const 0))
+      (global.set $__durable_slot_buf (i32.const 0)))`
   }
 
   // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH
@@ -455,7 +524,10 @@ export default (ctx) => {
     (block $gd (loop $gl
       (br_if $gd (i32.ge_s (local.get $i) (local.get $cap)))
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
-      (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+      (if (i32.and
+            (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+            ;; skip healed zombie entries (durable-slot heal: key = TOMB sentinel)
+            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
         (then
           (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $slot))
           (local.set $n (i32.add (local.get $n) (i32.const 1)))))

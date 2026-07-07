@@ -338,6 +338,13 @@ export const fromI64 = n => {
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = atomNanHex(1)
 export const UNDEF_NAN = atomNanHex(2)
+/** Zombie-entry key sentinel for the durable-slot heal (__durable_slot_heal,
+ *  module/core.js): written over a healed durable dict entry's KEY so probes and
+ *  enumeration skip it. Unforgeable: ATOM tag with a saturated aux+offset no
+ *  boxing path ever produces (real atom ids are tiny). Every equality family is
+ *  deref-free on it: i64.eq mismatches, __str_eq bails on the non-STRING tag,
+ *  __same_value_zero's atom arm is bit-equality. */
+export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'
 /** Boxed-boolean carrier. `false`/`true` are reserved atoms — materialized only
  *  where boolean identity is observed (typeof/String/JSON/host boundary); in
  *  branch/arithmetic position booleans stay raw i32/f64 0/1. The atomId encodes

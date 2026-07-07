@@ -103,9 +103,12 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
 test('ablation: csePureExpr collapses a pure subexpression shared by the loop test and body', () => {
   // mandelbrot: `zx*zx` and `zy*zy` appear in BOTH the escape test and the body —
   // one snap each, not recomputed per use. (4 muls/iter without, 2 with + the cross term.)
+  // watr OFF on both sides: since watr's CSE evaluation-order fix (write clock) it
+  // collapses the shared muls itself, equalizing the counts — the ablation must
+  // isolate jz's OWN pass, not measure the downstream optimizer's overlap.
   const src = `export let f = (cx, cy, m) => { let zx = 0.0, zy = 0.0, i = 0; while (i < m && zx*zx + zy*zy <= 4.0) { let t = zx*zx - zy*zy + cx; zy = 2.0*zx*zy + cy; zx = t; i = i + 1 | 0 } return i | 0 }`
   const mul = head(/^f64\.mul$/)
-  ok(loopCount(parse(src, { csePureExpr: false }), mul) > loopCount(parse(src, 2), mul), 'INVARIANT: fewer f64.mul in loop with pass ON (shared zx*zx / zy*zy collapsed)')
+  ok(loopCount(parse(src, { csePureExpr: false, watr: false }), mul) > loopCount(parse(src, { level: 2, watr: false }), mul), 'INVARIANT: fewer f64.mul in loop with pass ON (shared zx*zx / zy*zy collapsed)')
 })
 
 // ════════════════════════════════════════════════════════════════════════════

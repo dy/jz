@@ -543,3 +543,31 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
   is(exports.main(), 8, 'round 2 rebuilds — no dangling read through the stale handle')
   is(exports.hitCount(), 1, 'scalar warm state restores too (fresh-instance semantics: hits back to 0, then 1)')
 })
+
+test('_clear() heals ephemeral values written into DURABLE collection slots', () => {
+  // The durable-interior sibling of the global sweep above: the dict itself is
+  // init-created (const binding — the sweep rightly skips it), but a round-1
+  // memo write stores a round-arena array INTO its durable slot. Without the
+  // slot heal (__durable_slot_log/__durable_slot_heal), round 2's cache hit
+  // returns the stale handle and reads churned garbage — the corpus-wide warm
+  // trap (a durable literal-text→node dict handing round-1 arrays into round-2's
+  // tree). With it, the entry reads `undefined` after _clear and the memo
+  // rebuilds.
+  const { exports } = jz(`
+    const CACHE = new Map()
+    let builds = 0
+    const memo = (k) => {
+      let v = CACHE.get(k)
+      if (v === undefined) { v = [k.length, 7]; CACHE.set(k, v); builds = builds + 1 }
+      return v[1]
+    }
+    export let churn = (n) => { let a = [n + 0.5, n * 2, n * 3, n * 4]; return a[0] }
+    export let main = () => memo('nan:0x7FF8000200000000')
+    export let buildCount = () => builds`, { optimize: false })
+  is(exports.main(), 7, 'round 1 builds and caches')
+  is(exports.main(), 7, 'same-round cache hit')
+  is(exports.buildCount(), 1)
+  exports._clear()
+  exports.churn(999); exports.churn(123)   // reuse the arena the stale entry pointed into
+  is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
+})

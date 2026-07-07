@@ -773,6 +773,17 @@ export function pullStdlib(sec) {
         inc('__durable_fwd_heal')
         resets.push(`(call $__durable_fwd_heal)`)
       }
+      // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
+      // entry/value sibling of the relocation heal above): every logged durable
+      // collection slot written this round is healed (inserted entries zombied +
+      // len decremented, overwritten values read undefined) before the arena
+      // rewinds. Ordered AFTER the fwd heal: a grown-then-healed table's len must
+      // already be its restored pre-grow value when the zombie decrements land.
+      // Same explicit-include pattern (its ONLY call site is this injected text).
+      if (ctx.core.includes.has('__durable_slot_log')) {
+        inc('__durable_slot_heal')
+        resets.push(`(call $__durable_slot_heal)`)
+      }
       // Global-snapshot restores (see the sweep above) join the same rebuilt body.
       // Order is free — restores touch only globals + the durable slab, which the
       // rewind never moves — but bookkeeping-then-rewind-then-restore reads naturally.
