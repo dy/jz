@@ -43,6 +43,7 @@
 
 import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
+import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
 import watOptimize from "watr/optimize";
 import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
@@ -665,6 +666,14 @@ const jzCompileInner = (code, opts = {}) => {
   // reassigned-param `local.tee` write and corrupted the divergent-escape SIMD frame (mandelbrot).
   // The f64x2 stdlib mirrors the pre-watr vectorizer injects are appended in the emit phase
   // (optimizeModule's appendLateStdlib); nothing post-watr needs to touch the module.
+  // Pre-eval tier 3 — module-init snapshotting (src/snapshot.js): run __start once
+  // NOW, bake the post-init heap image + global values into the artifact, delete
+  // __start. Opt-in (optimize.snapshotInit); declined cleanly (dynamically-proven
+  // hermeticity) when init touches the host, loops forever, or memory is shared.
+  if (cfg.snapshotInit) {
+    const took = time('snapshotInit', () => snapshotInit(optimized, watrCompile))
+    if (!took && opts.warnings) ctx.warnings?.push?.({ code: 'snapshot-declined', message: 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it' })
+  }
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))

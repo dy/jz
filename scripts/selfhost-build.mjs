@@ -39,7 +39,11 @@ const wasm = compile(g.code, {
   // Speed-tier presets carry watr profile:'speed' by default now (outline/tailmerge/
   // rettail off — measured on the 22-case corpus: geomean 1.433→1.316, 22/22; +19%
   // kernel bytes, irrelevant for the compiler artifact). No special config needed.
-  optimize: selfOptLevel,
+  // Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
+  // watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
+  // time and ships as pure data; __start is deleted. JZ_SELFHOST_SNAPSHOT=0 opts out.
+  optimize: selfOptLevel === false ? false
+    : { level: selfOptLevel, snapshotInit: !/^(0|false|no)$/i.test(process.env.JZ_SELFHOST_SNAPSHOT || '1') },
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
