@@ -1373,3 +1373,52 @@ counters (removed after use) — turned "warm is 2× slower" into "15.5MB vs 415
 watr 5.2.1 publish unblocks CI reproducibility; queue: 11 todos, 2 red pins
 (SROA owning-module prefix; watr devirt no longer matching jz's unbox chain),
 jessie 5.44×, watr.wasm 1.42×, preeval tiers 2–3, fresh ≤1.0.
+
+## SESSION 8 (2026-07-08) — watr 5.2.2, digital-filter sweep, demo pin, PREEVAL TIER 3
+
+**Watr 5.2.2 adopted** (registry): devirt hoisted-index resolution + index-equality
+guards + param candidate collection (jz-side pin green; watr suite 590/590). The
+devirt fixes ACCELERATED the kernel itself: fresh hit 1.061× / warm 1.033×
+(crc32 fresh 0.99, sort/crc32/mandelbrot warm ≤1.00) in the day's best run.
+
+**Digital-filter sweep (user repros, .work/repros-digital-filter/): 4/4 fixed.**
+1. TypedArray(typedArray) now COPIES with element conversion (was zero-copy alias);
+   buffer sources keep the view. Pinned in buffer.js.
+2. map(s => mk(s)) named-ctor callback: makeCallback's block wrapper now carries
+   ptrKind/ptrAux (the rebox-metadata-loss class) — raw offsets no longer leak.
+3. Int-array-literal → Int32Array promotion now requires a provably-NUMERIC map
+   callback (typed map ToNumber-coerces results per typed spec; an object-returning
+   callback on a promoted PLAIN literal trunc-trapped at O1+).
+4. mem.Object without a matching schema marshals as a first-class jz HASH
+   (mem.Hash: kernel-exact table layout, ssoMix/byteFnv twins) — identity-preserving;
+   the old External fallback decode/re-marshaled per access so nested mutation
+   (params.P[i][i] = v) vanished. External remains for functions/class instances.
+
+**Demo/REPL breakage (live site)**: one unguarded `process.env.JZ_DUMP_FOR` in the
+'for' emitter broke EVERY loop compile in EVERY browser (while/do delegate there);
+the hero's bare catch mislabeled it "WASM unavailable". Fixed + three guards:
+test/web-smoke.js (dist/jz.js under deleted process/Buffer compiles the REPL
+sample parsed from repl/index.html + both hero grids; in the suite → prepublish),
+pages.yml deploy gate (npm test before artifact — broken commits can't reach the
+live site), dist bundle platform:'neutral'. NOTE: origin/main is ~30 commits
+behind local; the live fix deploys on the next push.
+
+**PREEVAL TIER 3 SHIPPED — the campaign's acceptance metric met.**
+src/snapshot.js (optimize.snapshotInit; selfhost-build default ON): __start runs
+once at compile time; post-init heap image → data segment, 3208 globals' post-init
+values → baked initializers, __start deleted. Hermeticity proven dynamically
+(throwing env stubs decline host-touching inits); NaN-boxed globals captured
+bit-exact via synthesized i64.reinterpret getter funcs (JS-API Global.value
+canonicalizes NaN payloads — measured, not theoretical). Kernel: NO start section,
+watr's OPCODE/IMM + atoms + GLOBALS fully static data (1.16MB image, zero-run-split
+to 1832 segments, 5.45→6.50MB), instantiate 25.0→22.5ms, virgin-instance first
+compile correct. All five pins green on it (warm 1.045×, fresh 1.186×).
+Tier-2 note: init-BUILT static trees are subsumed by tier 3; the residual
+tier-2 case (compile-time folding of static trees without running init, usable
+IN-kernel) remains open.
+
+**Also**: layout.nanPrefixMaskHex (hygiene pin); 4 strings WAT pins inspect
+pre-watr wat (watr ≥5.2.2 inlines the helpers they grepped); SROA re-land still
+parked with map (flatten stack-shape audit needed — the tag fix works natively,
+closures 89/0, but miscompiles m5_parse$expr in the kernel bundle);
+6 test.todos verified still-red by one-at-a-time auto-flip.
