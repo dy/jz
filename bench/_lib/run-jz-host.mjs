@@ -28,7 +28,12 @@ const memBytes = () => {
 const _dec = new TextDecoder()
 
 // Decode a jz value carried as i64 NaN-box bits to a JS string (for host
-// parseInt/parseFloat). Numbers stringify; non-strings come back as ''.
+// parseInt/parseFloat — legacy artifacts only; current builds parse natively).
+// Numbers stringify; non-strings come back as ''. Handles all three string
+// encodings: SSO (7-bit char lanes across the 45-bit payload, length at
+// payload bits 42-44), slice views (SLICE_BIT, length in aux[12:0], offset
+// into the parent's bytes), and own-heap ([len u32][bytes] at offset-4).
+const SLICE_BIT = 0x2000, SLICE_LEN_MASK = 0x1FFF
 const jzStr = (val) => {
   if (!Number.isNaN(i64ToNum(val))) return String(i64ToNum(val))
   const type = Number((val >> TAG_SHIFT) & TAG_MASK)
@@ -36,12 +41,13 @@ const jzStr = (val) => {
   const aux = Number((val >> AUX_SHIFT) & AUX_MASK)
   const offset = Number(val & OFFSET_MASK)
   if (aux & Number(SSO_BIT)) {
-    const len = aux & 7, chars = []
-    for (let i = 0; i < len; i++) chars.push(String.fromCharCode((offset >>> (i * 8)) & 0xFF))
+    const len = Number((val >> 42n) & 7n), chars = []
+    for (let i = 0; i < len; i++) chars.push(String.fromCharCode(Number((val >> BigInt(i * 7)) & 0x7Fn)))
     return chars.join('')
   }
-  if (offset <= 4) return ''
   const mem = memBytes()
+  if (aux & SLICE_BIT) return _dec.decode(mem.subarray(offset, offset + (aux & SLICE_LEN_MASK)))
+  if (offset <= 4) return ''
   const len = mem[offset - 4] | (mem[offset - 3] << 8) | (mem[offset - 2] << 16) | (mem[offset - 1] << 24)
   return _dec.decode(mem.subarray(offset, offset + len))
 }

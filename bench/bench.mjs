@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSyn
 import { cpus, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { renderBenchSvg } from '../scripts/bench-svg.mjs'
@@ -298,15 +299,69 @@ if (typeof __benchGlobal.console === 'undefined' && typeof print === 'function')
 // (JSC, SpiderMonkey). Else the engine's own performance.now, else dateNow / Date.now.
 if (typeof preciseTime === 'function') __benchGlobal.performance = { now: () => preciseTime() * 1000 }
 else if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance = { now: typeof dateNow === 'function' ? dateNow : () => Date.now() }
+// Shell engines (jsc) ship no Web encoding APIs; the compiler-class cases
+// (jz/watr) encode strings to UTF-8 bytes. Full UTF-8, not ASCII-only.
+if (typeof __benchGlobal.TextEncoder === 'undefined') {
+  __benchGlobal.TextEncoder = class {
+    encode(s) {
+      const b = []
+      for (let i = 0; i < s.length; i++) {
+        let c = s.codePointAt(i)
+        if (c > 0xFFFF) i++
+        if (c < 0x80) b.push(c)
+        else if (c < 0x800) b.push(0xC0 | c >> 6, 0x80 | c & 63)
+        else if (c < 0x10000) b.push(0xE0 | c >> 12, 0x80 | c >> 6 & 63, 0x80 | c & 63)
+        else b.push(0xF0 | c >> 18, 0x80 | c >> 12 & 63, 0x80 | c >> 6 & 63, 0x80 | c & 63)
+      }
+      return new Uint8Array(b)
+    }
+  }
+  __benchGlobal.TextDecoder = class {
+    decode(u) {
+      u = u instanceof Uint8Array ? u : new Uint8Array(u.buffer || u, u.byteOffset || 0, u.byteLength ?? undefined)
+      let s = '', i = 0
+      while (i < u.length) {
+        const b0 = u[i++]
+        const c = b0 < 0x80 ? b0
+          : b0 < 0xE0 ? (b0 & 31) << 6 | u[i++] & 63
+          : b0 < 0xF0 ? (b0 & 15) << 12 | (u[i++] & 63) << 6 | u[i++] & 63
+          : ((b0 & 7) << 18 | (u[i++] & 63) << 12 | (u[i++] & 63) << 6 | u[i++] & 63)
+        s += String.fromCodePoint(c)
+      }
+      return s
+    }
+  }
+}
 `
   let src = readFileSync(c.js, 'utf8')
   if (src.includes('../_lib/benchlib.js')) {
     out += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
     src = src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
   }
+  if (/^\s*import\b/m.test(src)) {
+    // Real module graph (jessie → subscript, watr → watr, jz → the compiler):
+    // shell engines (jsc/SpiderMonkey) have no loader, so bundle to a single
+    // IIFE with esbuild — a virtual entry imports the case's main and calls it.
+    const { buildSync } = esbuildSync()
+    const r = buildSync({
+      stdin: {
+        contents: `import { main } from ${JSON.stringify(c.js)}\nmain()\n`,
+        resolveDir: dirname(c.js), loader: 'js',
+      },
+      bundle: true, format: 'iife', write: false, platform: 'neutral',
+      mainFields: ['module', 'main'], conditions: ['import'],
+      logLevel: 'silent',
+    })
+    writeFileSync(flatPath(c), out + r.outputFiles[0].text)
+    return
+  }
   out += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   writeFileSync(flatPath(c), out)
 }
+// esbuild is a devDependency used only by the flat-file writer for module-graph
+// cases — loaded lazily so plain corpus runs never touch it.
+let _esbuild
+const esbuildSync = () => _esbuild ||= createRequire(import.meta.url)('esbuild')
 
 const w2cHost = (c, hFile) => {
   const mod = cIdent(c.id)

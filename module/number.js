@@ -11,7 +11,7 @@
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
-import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
+import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -1345,28 +1345,21 @@ export default (ctx) => {
   // (string already, number/object ToPrimitive) stay out of scope per the runner.
   const strInputI64 = (x) => valTypeOf(x) === VAL.BOOL ? asI64(bool(x)) : asI64(emit(x))
 
+  // Native for EVERY host (formerly host-imported off-wasi): the wasm-side
+  // parsers are exact (u64 round-once accumulation / Eisel-Lemire), while a
+  // host round-trip re-decodes the string box in the embedder — the bench
+  // runner's decoder mishandled SSO lanes and slice views, silently corrupting
+  // watr's parseInt(hex) calls. Self-contained also means browsers/shells
+  // need no env.parseInt/parseFloat import at all.
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
-    if (ctx.transform.host === 'wasi') {
-      inc('__parseInt')
-      const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
-      return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
-    }
-    needParseInt()
+    inc('__parseInt')
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
     return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
-  const needParseFloat = () => hostImport('env', 'parseFloat',
-    ['func', '$__parseFloat', ['param', 'i64'], ['result', 'f64']])
-  const needParseInt = () => hostImport('env', 'parseInt',
-    ['func', '$__parseInt', ['param', 'i64'], ['param', 'i32'], ['result', 'f64']])
 
   ctx.core.emit['Number.parseFloat'] = (x) => {
-    if (ctx.transform.host === 'wasi') {
-      inc('__parseFloat')
-      return typed(['call', '$__parseFloat', strInputI64(x)], 'f64')
-    }
-    needParseFloat()
+    inc('__parseFloat')
     return typed(['call', '$__parseFloat', strInputI64(x)], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
