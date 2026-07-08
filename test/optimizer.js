@@ -190,6 +190,57 @@ test('devirtSchemaReads: megamorphic property read switches on schemaId to direc
   is(f(9), ref, 'devirted reads bit-match the generic path')
 })
 
+test('devirtSchemaReads: stable receiver hoists one sid; discriminant field collapses to a bare load', () => {
+  // Receiver-stable refinement (shapes bench residual): a never-written
+  // receiver's schemaId is constant (aux bits; jz OBJECT shape never changes),
+  // so a multi-read function computes `sid | -1` ONCE (entry-hoisted select)
+  // and every read drops its per-read __ptr_type guard + aux extract. A prop
+  // that EVERY schema carries at the SAME slot (`.t` first key of every
+  // variant — the discriminant pattern) needs no dispatch at all:
+  // `(u32)sid < count ? load : generic` (u32 also routes runtime-minted sids
+  // to the generic arm).
+  // Receiver flows through a mixed array (rows[i] — the shapes-bench shape), so
+  // emit can't specialize and the reads reach the pass tagged. `x` sits at
+  // DIFFERENT slots across schemas (slot 1 vs slot 2), forcing a real br_table;
+  // `t` is first everywhere → collapse.
+  const src = `const mkRows = () => {
+    const rows = []
+    for (let i = 0; i < 9; i++) {
+      const k = i % 3
+      if (k === 0) rows.push({ t: k, x: i + 1, y: i + 2 })
+      else if (k === 1) rows.push({ t: k, r: i + 1, x: i + 2 })
+      else rows.push({ t: k, w: i + 1, h: i + 2 })
+    }
+    return rows
+  }
+  const geo = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? o.r * 3 + o.x : o.w * o.h }
+  export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const gAt = w.indexOf('(func $geo')
+  ok(gAt >= 0, 'geo compiles as its own function pre-watr')
+  const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
+  ok(/\$__dsrs\d+/.test(geoWat), 'multi-read receiver gets an entry-hoisted sid local')
+  ok(/select/.test(geoWat), 'sid computed branch-free (select over tag test)')
+  ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
+  ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
+  ok(/i32\.lt_u/.test(geoWat), 'discriminant read collapses to a coverage compare')
+  const mkRowsJs = () => {
+    const rows = []
+    for (let i = 0; i < 9; i++) {
+      const k = i % 3
+      if (k === 0) rows.push({ t: k, x: i + 1, y: i + 2 })
+      else if (k === 1) rows.push({ t: k, r: i + 1, x: i + 2 })
+      else rows.push({ t: k, w: i + 1, h: i + 2 })
+    }
+    return rows
+  }
+  const geoJs = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? o.r * 3 + o.x : o.w * o.h }
+  const rowsJs = mkRowsJs(); let ref = 0
+  for (let i = 0; i < rowsJs.length; i++) ref += geoJs(rowsJs[i])
+  const { f } = run(src, { optimize: 'speed' })
+  is(f(), ref, 'refined reads bit-match the generic path')
+})
+
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
   // The dispatch-bench shape: a module-const array of capture-free operators,
   // one data-indexed call site. The generic call_indirect (bounds + sig check

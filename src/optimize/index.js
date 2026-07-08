@@ -4470,6 +4470,62 @@ export function devirtSchemaReads(fn) {
   if (!ctx.core.includes.has('__ptr_type')) return
   let uid = null
   const newDecls = []
+  // Receiver-stable sid cache: a devirt read whose receiver is a bare local that
+  // is NEVER written in this function (param or single-init const — this pass
+  // runs before watr inlining, so `measure(o)`-style helpers still have their
+  // own frame) has a CONSTANT schemaId for the whole body: the sid lives in the
+  // box's aux bits and a jz OBJECT's shape never changes (dyn writes go to the
+  // sidecar, not the aux). Compute `sid | -1(non-OBJECT)` ONCE at body start;
+  // every read on that receiver drops its per-read __ptr_type guard + aux
+  // extract and br_tables on the cached local (-1 wraps u32-huge → default arm).
+  const assigned = new Set()
+  const scanAssigns = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigned.add(n[1])
+    for (let k = 1; k < n.length; k++) scanAssigns(n[k])
+  }
+  scanAssigns(fn)
+  // receiver expr → { name, bits } for a bare never-written local (f64 local
+  // wrapped in reinterpret, or an already-i64 local), else null (keep the
+  // per-read spill+guard path)
+  const stableRecv = (r) => {
+    if (Array.isArray(r) && r[0] === 'i64.reinterpret_f64' &&
+      Array.isArray(r[1]) && r[1][0] === 'local.get' && typeof r[1][1] === 'string' &&
+      !assigned.has(r[1][1])) return { name: r[1][1], bits: r }
+    if (Array.isArray(r) && r[0] === 'local.get' && typeof r[1] === 'string' &&
+      !assigned.has(r[1])) return { name: r[1], bits: r }
+    return null
+  }
+  const sidCache = new Map()  // receiver local name → sid i32 local
+  const sidInit = []
+  const recvReads = new Map()  // receiver local name → tagged-read count (pre-scan)
+  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
+  // select(aux, -1, tag==OBJECT) — both operands pure, no branch
+  const sidExprFor = (bits) => ['select',
+    ['i32.wrap_i64', ['i64.and',
+      ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
+      ['i64.const', LAYOUT.AUX_MASK]]],
+    ['i32.const', -1],
+    ['i32.eq',
+      ['i32.wrap_i64', ['i64.and',
+        ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
+        ['i64.const', LAYOUT.TAG_MASK]]],
+      ['i32.const', PTR.OBJECT]]]
+  // ≥2 reads on the receiver: amortize into an entry-hoisted local. A single
+  // read inlines the select at its site instead — an eager entry compute would
+  // tax every call of a function whose lone read sits on a cold path (the
+  // self-host kernel's shape; measured 0.9% compile-time regression).
+  const sidRead = (stable) => {
+    if ((recvReads.get(stable.name) || 0) < 2) return sidExprFor(stable.bits)
+    let sidT = sidCache.get(stable.name)
+    if (!sidT) {
+      sidT = `$__dsrs${uid++}`
+      newDecls.push(['local', sidT, 'i32'])
+      sidInit.push(['local.set', sidT, sidExprFor(stable.bits)])
+      sidCache.set(stable.name, sidT)
+    }
+    return ['local.get', sidT]
+  }
   const rewrite = (parent, i) => {
     const node = parent[i]
     const prop = node.dvProp
@@ -4486,49 +4542,110 @@ export function devirtSchemaReads(fn) {
     // (the tag operand for an unknown-kind receiver) is a pure bit extract.
     const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i64',
       'i64.and', 'i64.or', 'i64.xor', 'i64.shr_u', 'i64.shl', 'i64.eq', 'i64.ne', 'i64.eqz',
-      'i64.extend_i32_u', 'i64.extend_i32_s'])
+      'i64.extend_i32_u', 'i64.extend_i32_s',
+      'i32.const', 'i32.wrap_i64', 'i32.and', 'i32.or', 'i32.xor', 'i32.shr_u', 'i32.shl',
+      'i32.add', 'i32.sub', 'i32.eq', 'i32.ne', 'i32.eqz'])
     const pureOp = (n) => !Array.isArray(n) ? true
       : n[0] === 'call' && n[1] === '$__ptr_type' ? n.slice(2).every(pureOp)
       : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
       : isPureIR(n)
-    for (let k = 2; k < node.length; k++) if (!pureOp(node[k])) return
+    // `local.tee` operands (foldSetToTee / csePureExprLoop fold shared tag/CSE
+    // locals into the FIRST read's call, possibly nested) are hoisted to
+    // standalone sets before the dispatch, innermost first — the original call
+    // evaluated them unconditionally, so unconditional sets are observationally
+    // identical, later readers of those locals still see them, and the arms
+    // (which skip the default call) stay sound.
+    const teeHoists = []
+    const extractTees = (n) => {
+      if (!Array.isArray(n)) return n
+      if (n[0] === 'local.tee' && typeof n[1] === 'string') {
+        teeHoists.push(['local.set', n[1], extractTees(n[2])])
+        return ['local.get', n[1]]
+      }
+      return n.map((c, k) => k === 0 ? c : extractTees(c))
+    }
+    const operands = node.slice(2).map(extractTees)
+    for (const op of operands) if (!pureOp(op)) { if (process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
+    for (const h of teeHoists) if (!pureOp(h[2])) { if (process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
+    // the dispatch's generic arm — the original call over the tee-free operands
+    const genericCall = [node[0], node[1], ...operands]
     if (uid === null) uid = nextLocalId(fn, '$__dsr')
+    const stable = stableRecv(genericCall[2])
     const id = uid++
-    const rT = `$__dsr${id}r`
-    newDecls.push(['local', rT, 'i64'])
+    const rT = stable ? null : `$__dsr${id}r`
+    if (rT) newDecls.push(['local', rT, 'i64'])
+    // receiver bits for arms/default: the stable local read inline (fresh clone
+    // per use — IR nodes must not alias), or the spill
+    const recvBits = () => stable ? clone(stable.bits) : ['local.get', rT]
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
     const lo = withProp[0][0], hi = withProp[withProp.length - 1][0]
     const bySid = new Map(withProp)
+    // Discriminant-field collapse: when EVERY compile-time schema has the prop
+    // at the SAME slot (the canonical tag-field pattern — `.k`/`.type`/`.kind`
+    // as first key of every variant literal), a known-schema OBJECT resolves to
+    // that slot with no dispatch at all: `(u32)sid < count ? load : generic`.
+    // The unsigned compare routes BOTH the -1 non-OBJECT sentinel and any
+    // runtime-registered alien sid (__jp_obj / host-marshaled shapes mint sids
+    // past the compile-time list) to the generic arm.
+    if (stable && withProp.length === schemas.length &&
+      withProp.every(([, slot]) => slot === withProp[0][1])) {
+      const slot = withProp[0][1]
+      const dispatch = ['if', ['result', 'i64'],
+        ['i32.lt_u', sidRead(stable), ['i32.const', schemas.length]],
+        ['then', ['i64.load',
+          ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]],
+        ['else', genericCall]]
+      parent[i] = teeHoists.length
+        ? ['block', out, ['result', 'i64'], ...teeHoists, dispatch]
+        : dispatch
+      return
+    }
     const labels = Array.from({ length: hi - lo + 1 }, (_, k) => bySid.has(lo + k) ? `$__dsr${id}_${lo + k}` : dflt)
-    // arms in sid order: each closes its block, loads its slot, brs out;
-    // the innermost block (first arm's label) carries the tag guard + br_table
+    // arms in sid order: each closes its block, loads its slot, brs out; the
+    // innermost block (first arm's label) carries the br_table — selecting on
+    // the hoisted sid cache when the receiver is stable (its -1 non-OBJECT
+    // sentinel wraps u32-huge → default arm, so no separate tag guard), else
+    // on a per-read aux extract behind a per-read tag guard.
     const armSids = withProp.map(([sid]) => sid)
     let inner = ['br_table', ...labels, dflt,
       ['i32.sub',
-        ['i32.wrap_i64', ['i64.and',
-          ['i64.shr_u', ['local.get', rT], ['i64.const', LAYOUT.AUX_SHIFT]],
-          ['i64.const', LAYOUT.AUX_MASK]]],
+        stable ? sidRead(stable)
+          : ['i32.wrap_i64', ['i64.and',
+            ['i64.shr_u', ['local.get', rT], ['i64.const', LAYOUT.AUX_SHIFT]],
+            ['i64.const', LAYOUT.AUX_MASK]]],
         ['i32.const', lo]]]
     inner = ['block', `$__dsr${id}_${armSids[0]}`,
-      ['br_if', dflt, ['i32.ne',
+      ...(stable ? [] : [['br_if', dflt, ['i32.ne',
         ['call', '$__ptr_type', ['local.get', rT]],
-        ['i32.const', PTR.OBJECT]]],
+        ['i32.const', PTR.OBJECT]]]]),
       inner]
     for (let k = 0; k < armSids.length; k++) {
       const sid = armSids[k], slot = bySid.get(sid)
       const arm = ['br', out, ['i64.load',
-        ['i32.add', ['i32.wrap_i64', ['local.get', rT]], ['i32.const', slot * 8]]]]
+        ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]]
       const nextLabel = k + 1 < armSids.length ? `$__dsr${id}_${armSids[k + 1]}` : dflt
       inner = ['block', nextLabel, inner, arm]
     }
-    const dfltCall = [...node]
-    dfltCall[2] = ['local.get', rT]
+    const dfltCall = [...genericCall]
+    if (!stable) dfltCall[2] = ['local.get', rT]
     parent[i] = ['block', out, ['result', 'i64'],
-      ['local.set', rT, node[2]],
+      ...teeHoists,
+      ...(stable ? [] : [['local.set', rT, genericCall[2]]]),
       inner,
       dfltCall]
   }
   let seen = 0
+  // pre-scan: count tagged reads per stable receiver so sidRead can choose
+  // entry-hoist (>=2 reads) vs inline-at-site (1 read)
+  const countScan = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'call' && n.dvProp) {
+      const st = stableRecv(n[2])
+      if (st) recvReads.set(st.name, (recvReads.get(st.name) || 0) + 1)
+    }
+    for (let i = 1; i < n.length; i++) countScan(n[i])
+  }
+  countScan(fn)
   const walkDSR = (n) => {
     if (!Array.isArray(n)) return
     for (let i = 1; i < n.length; i++) {
@@ -4544,7 +4661,10 @@ export function devirtSchemaReads(fn) {
     let at = typeof fn[1] === 'string' ? 2 : 1
     while (at < fn.length && Array.isArray(fn[at]) &&
       (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
-    fn.splice(at, 0, ...newDecls)
+    // sid-cache computations go right after the decls, before the first body
+    // statement — stable receivers are never-written names (params), so their
+    // value at body start equals their value at every read
+    fn.splice(at, 0, ...newDecls, ...sidInit)
   }
 }
 
