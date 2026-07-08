@@ -131,10 +131,19 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 
-## Bench-vs-V8 campaign (2026-07-07 sweep: 7 losers, all else wins)
-Measured full corpus: jessie 5.0x, wordcount 3.8x, shapes 3.6x, immutable 3.2x,
-colorpq 2.0x, dispatch 1.17x, strbuild 1.008x. WASM_TODO in test/bench.js carries
-the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
+## Bench-vs-V8 campaign (2026-07-08 state — from 7 losers to 2 modest + 1 hard)
+Cool-machine sweep 2026-07-08: shapes 1.11x, immutable 1.69x, wordcount 1.77x,
+strbuild 1.07x, dispatch 0.89x WIN, dict 0.85x WIN, json 0.60x WIN,
+jessie 5.3x (the hard tail: helper-internal probe bodies). colorpq's parity
+column is NOT a regression signal — its checksum hashes raw f64 bits of
+Math.pow outputs, jz's own pow polynomial can never bit-match V8's
+transcendentals (no gate assertion exists for it; perf ~1.18x).
+Landed this leg: 5c2de02 (lazy per-string hash cache: wordcount 1.91->1.7x,
+kernel A/B 0.986), d35bba1 (devirt sid-cache + discriminant collapse + tee
+hoist: shapes 3.9->1.11x, immutable rode along), 2365e36 (in-place
+replace-stores via whole-program alias sweep: immutable 3.2->1.7x).
+WASM_TODO in test/bench.js carries the per-case lever notes (vs wasm rivals);
+this list is the V8-specific gate.
 - **colorpq — CLOSED to 1.20x** (f9caa74): fractional const-global reads now fold
   to literals at readVar (only ints were cached), so emitPow's constant-exponent
   arm fires (pow → inline exp(c·log x)) and the PPC vectorizer pairs into TRUE
@@ -165,11 +174,13 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
      NAME (readVar picks the local; `|0` ToInt32 of UNDEF box -> 0, semantics
      preserved), store result to slot, yield it. Expect ~2x -> ratio ~1.9.
   Then: heap-string hash memo (words recur 6.8M times over 512 objects).
-- **wordcount — CLOSED to 1.91x** (b013782): dictionary-mode {} (computed-only
-  binding -> real HASH, V8's own heuristic) + fused RMW `o[k]=f(o[k])` via
-  __hash_slot/__slot_write (one probe instead of get+set). Remaining vs V8:
-  str_hash + str_eq per op — the heap-string hash-memo lever (words recur 6.8M
-  times over 512 objects; SSO covers <=6 chars, 7-8 char words re-hash bytes).
+- **wordcount — CLOSED to 1.77x** (b013782 then 5c2de02): dictionary-mode {} +
+  fused RMW `o[k]=f(o[k])`, then the lazy per-string hash cache
+  (STR_HCACHE_BIT: concat/append/slice-materialized strings allocate
+  [hash=0][len][bytes], __str_hash fills the cell on first hash — 2.19M cache
+  hits / 183 cold fills per run; bump-extend mutators zero the cell).
+  jessie counter-verified INDIFFERENT (hit=0 — all its non-SSO hashing is
+  interned statics). Residual vs V8: probe-loop + str_eq constant factors.
 - **shapes 3.6x — DESIGNED**: schema-set devirt at property reads. New
   program-facts lattice: per-param/binding CANDIDATE SCHEMA SET (monotone union,
   bounded <=16, poison on overflow — extends the existing single-sid
@@ -181,16 +192,54 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
   ~6 ops/read vs the ~50-op megamorphic __dyn_get_any_t_h probe; 23 sites in the
   bench. Bench guards reads by `o.k`, so arms are dead-branch-prunable later
   (flow refinement), but the flat switch alone should close most of 3.6x.
-- **shapes — 3.9x -> 2.35x** (2159fa6): schemaId br_table devirt at megamorphic
-  reads; kernel A/B 0.985 (its own dyn reads ride it). Residual: per-read
-  __ptr_type guard + o.k discriminant read — flow refinement (k===0 arm implies
-  schema0) prunes both; watr guardRefine may fold repeated tag probes already.
-- **immutable 3.2x** — diagnosis: per-step `ps[i] = {x,y,vx,vy}` bump-allocates
-  fresh memory forever; V8 recycles young-gen (cache-warm). In-place overwrite
-  or freelist reuse are UNSOUND without escape analysis (an alias to the old
-  object must keep its values). The honest fix: element-value escape analysis
-  (values stored in ps never escape the array in the bench) -> in-place field
-  stores when old sid == new sid. Real campaign, not a pass tweak.
+- **shapes — CLOSED to 1.11x** (2159fa6 then d35bba1): schemaId br_table devirt,
+  then receiver-stable sid cache (a never-written receiver's sid is constant —
+  compute `sid|-1` once, entry-hoisted select for ≥2 reads / inline for 1;
+  -1 wraps u32-huge into br_table's default so the tag guard is free) +
+  discriminant-field collapse (prop at the SAME slot in every schema →
+  `(u32)sid < count ? load : generic`, no dispatch — o.k was a full
+  megamorphic probe 37.7M times/run, THE dominant cost) + pure-tee hoisting
+  (foldSetToTee/cse tees in call operands extracted to standalone sets so the
+  hottest read no longer bails the purity check). kernel A/B 0.997.
+- **immutable — CLOSED to 1.69x** (2365e36): in-place replace-stores landed
+  exactly per the spec below; residual is the guarded load + V8's young-gen
+  cache warmth. Sweep + emit as designed, plus two spec deltas discovered
+  in the field: (a) node identity AND enclosing-function name don't survive
+  plan→emit (body transforms + emit-time inlining splice frames), so sites
+  are content-keyed `receiver|flat-literal` with a program-wide meet;
+  (b) exported functions have no paramReps — elem facts derive from internal
+  call sites (zero internal callers ⇒ host-only ⇒ marshaled copies can't
+  alias). Pinned in test/inplace-store.js (fires+bit-match, alias-after-store
+  rejected, leaked-element rejected, runtime-alien falls back).
+  ORIGINAL SPEC (implemented): in-place replace-store
+  `arr[i] = {lit}` overwrites the old element's slots instead of allocating,
+  when a whole-program sweep proves no alias can observe it. Design:
+  (1) SWEEP (new src/compile/inplace-store.js, called post-narrow from
+  compile/index.js when facts are final): walk every function; for each
+  element-read site R on an array whose elem could be a schema object (skip
+  NUMBER/typed-elem arrays via arrayElemValType/typedCtor facts): classify R
+  as (a) immediate `.prop` receiver (atomic, safe), (b) init RHS of a
+  single-decl binding whose uses are ALL MEMBER_R (field reads — record
+  (fn, sid) alias), (c) anything else = LEAK -> poison sid (unknown sid ->
+  poison all). Candidate stores: statement `arr[i] = {staticLit}` where
+  repOf(arr).arrayElemSchema == sid(lit) and all lit values NUMBER (durability:
+  no eph pointers stored into durable receivers). Candidate valid iff sid
+  unpoisoned, every recorded alias (fn', sid) has fn' == candidate's fn
+  (a cross-function alias could live across the call into the store's fn), and
+  within fn every alias binding's LAST use precedes the store statement
+  (positional walk; aliases are per-iteration block-scoped so next-iteration
+  reuse is fresh). Emit `ctx.schema.inplaceStores = WeakSet<literalNode>`.
+  (2) EMIT (emit-assign.js, new arm before arm 7): spill lit field values to
+  f64 temps IN SOURCE ORDER (they may read the old element: swap case); spill
+  eT = emit(arr[idx]) box; guard `(bits(eT) & HI_MASK) == OBJ|sid prefix`
+  (OBJECT_SCHEMA_HI_MASK pattern, emitSchemaSlotGuarded, module/core.js):
+  fast arm -> f64.store old slots from temps, result eT (same box IS the new
+  object — array store elided, identity preserved); else arm -> __alloc_hdr +
+  slot stores + mkPtrIR(OBJECT,sid) from the SAME temps + existing
+  storeArrayPayload (OOB/UNDEF/alien-schema elements all land here ->
+  bit-exact generic semantics). Wins: kills 131k allocs/pass (6.3MB heap
+  churn -> 0, cache-warm 4096 objects); identity change unobservable because
+  the sweep proved no live alias.
 - **jessie 5.0x — PROFILED** (per run: 8.1M ptr_offset, 4.1M dyn_get_t_h chain
   + 3.9M str_hash, 2.1M ihash_get, 1.1M alloc each ENTERING __memgrow). Chain-
   frame flattening (skip __dyn_get/__dyn_get_t for proven-string keys) measured
