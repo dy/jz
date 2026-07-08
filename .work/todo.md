@@ -264,17 +264,31 @@ this list is the V8-specific gate.
   so this lever belongs to wordcount's 7-8 char words more than jessie.
 
 
-## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
-Real and pending, ranked: (1) watr: split binary-size revert guard off the default
-inlineOnce path (guard costs ~16-50x an encode, only load-bearing for opt-in
-duplicating inline); (2) pre-optimized stdlib cache keyed by includes-set (crc32:
-2 user funcs, 22 compiled — 20 stdlib re-optimized every compile); (3) watr encoder
-local-decl grouping (sort-by-type, ~1% size, zero risk); (4) build-time-compiled
-stdlib — THE 2x bundle lever (~533KB WAT text in module/ = 44% of dist/jz.js) +
-kills per-compile pullStdlib parse/clone + enables (2). bench-compile.mjs
-watOptimize key bug FIXED (c22af3a). csePureExprLoop/cseScalarLoad stay — they are
-the prototypes for the watr CSE port (pure-call CSE landed upstream 6e659de; deep
-local-alloc/local-cse gap vs wasm-opt still open).
+## Arch analysis triage (compile time / size 2x — RE-RANKED on 2026-07-08 evidence)
+MEASURED (crc32 @speed, warm, 9-run median): full compile 95.3ms; with
+optimize:{watr:false} 23.1ms — **watr's optimizer is 72ms = 76% of compile**,
+running over a module that is ~90% stdlib bodies identical across compiles.
+jz-side optMod:optimizeFuncs is 14ms (secondary), pullStdlib parse 1.3ms,
+everything else ≤3ms. Consequences:
+(1) **build-time-compiled stdlib is THE lever for BOTH goals** — it removes
+    stdlib from per-compile jz-optimize AND watr-optimize (compile ~4x) and
+    drops the ~533KB WAT template text from dist/jz.js (bundle ~2x). Design
+    constraint: stdlib bodies are templated on ctx (sso/shared/external/
+    heapReset/hashSmallInitCap/schema-arm thunks) — precompile the default-
+    config variant matrix for the hot subset, keep runtime templating as the
+    fallback for exotic configs. The '(2) stdlib re-opt cache keyed by
+    includes-set' item is SUBSUMED — a jz-side cache would recover ≤10% while
+    this recovers the 76%.
+(2) watr upstream: split the binary-size revert guard off the default
+    inlineOnce path (verified still open; benefits the residual watr cost on
+    USER funcs after (1)).
+(3) watr encoder local-decl grouping — DONE jz-side (sortLocalsByUse).
+Note: hoistGlobalPtrOffset/specializeMkptr/sortStrPool mutate stdlib bodies
+per-module BEFORE optimizeFuncs — any precompiled-stdlib path must either
+re-apply those as post-splice fixups or accept their loss on the precompiled
+subset (measure which of them earn their keep on stdlib bodies).
+csePureExprLoop/cseScalarLoad stay — prototypes for the watr CSE port
+(pure-call CSE landed upstream 6e659de; local-alloc gap vs wasm-opt open).
 
 ## Compiler backlog — deferred-on-no-workload (YAGNI: build when a real bench surfaces the shape)
 All ranked-ROI optimizer items shipped (Archive); since then extending-add (`f5213cb`),
