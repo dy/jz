@@ -175,6 +175,21 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('devirtSchemaReads: megamorphic property read switches on schemaId to direct slot loads', () => {
+  // The shapes-bench class: one access site seeing several record variants —
+  // the ~50-op __dyn_get_any_t_h hash probe becomes a br_table on the box's aux
+  // schemaId into direct slot loads, original call as the always-sound default.
+  const src = `const mk = (k, a, b) => k === 0 ? { t: k, x: a, y: b } : k === 1 ? { t: k, r: a } : { t: k, w: a, h: b }
+  const geo = (o, sel) => sel === 0 ? o.x + o.y : sel === 1 ? o.r * 3 : o.w * o.h
+  export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += geo(mk(i % 3, i + 1, i + 2), i % 3); return s }`
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const { f } = run(src, { optimize: 'speed' })
+  const mk = (k, a, b) => k === 0 ? { t: k, x: a, y: b } : k === 1 ? { t: k, r: a } : { t: k, w: a, h: b }
+  const geoJs = (o, sel) => sel === 0 ? o.x + o.y : sel === 1 ? o.r * 3 : o.w * o.h
+  let ref = 0; for (let i = 0; i < 9; i++) ref += geoJs(mk(i % 3, i + 1, i + 2), i % 3)
+  is(f(9), ref, 'devirted reads bit-match the generic path')
+})
+
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
   // The dispatch-bench shape: a module-const array of capture-free operators,
   // one data-indexed call site. The generic call_indirect (bounds + sig check

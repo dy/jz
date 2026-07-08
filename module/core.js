@@ -949,7 +949,14 @@ export default (ctx) => {
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
     if (typeof prop === 'string') {
       inc('__dyn_get_any_t_h')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]], 'f64')
+      const call = ['call', '$__dyn_get_any_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
+      // Schema-set devirt marker: the optimizer (devirtSchemaReads) rewrites this
+      // megamorphic probe into a br_table over the module's registered schemas —
+      // direct slot loads per schema, this call as the always-sound default arm.
+      // Tagged here (not built) because schema.list is still growing while
+      // function bodies emit; the pass runs after module init completes.
+      if (ctx.transform.optimize) call.dvProp = prop
+      return typed(['f64.reinterpret_i64', call], 'f64')
     }
     inc('__dyn_get_any_t')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')

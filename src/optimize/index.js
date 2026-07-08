@@ -3703,6 +3703,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // emits, AFTER function bodies) — rewrite to a br_table of direct calls with
   // the original call_indirect as the always-sound default arm.
   if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn)
+  if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
   // Loop rotation — the LAST shape pass. Runs in the pre phase (the only phase now); the
   // vectorizer above has already formed the v128 loops it skips. Speed-tier: it duplicates the
   // loop condition for a fused conditional back-edge (1.35× on the lz/qoi scalar scans). watr's
@@ -4451,6 +4452,102 @@ export function treeshake(funcSections, allModuleNodes, opts) {
  * Only the decl order changes; refs by name are unchanged and re-resolved by watr.
  * Params are fixed (their slot defines the call ABI) — only `(local …)` nodes move.
  */
+/** `o.x` on a statically-unknown receiver — the megamorphic property read
+ *  (shapes bench: 8 record variants at one site, every field load a ~50-op
+ *  __dyn_get_any_t_h hash probe). The module's registered schema list is known
+ *  and bounded once emission completes: switch on the box's aux schemaId via
+ *  br_table into direct slot loads for every schema CARRYING the field — the
+ *  static mirror of a polymorphic inline cache. Non-OBJECT tags, alien sids and
+ *  schemas lacking the field all take the original call (default arm): a
+ *  schema slot is authoritative for its own fields (dyn writes to schema keys
+ *  mirror into the slot — buildObjectSchemaSetArm), so the direct load is
+ *  bit-identical where it fires. Emit tagged the call (.dvProp) because
+ *  schema.list is still growing while function bodies emit. */
+export function devirtSchemaReads(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const schemas = ctx.schema?.list
+  if (!schemas || !schemas.length || schemas.length > 24) return
+  if (!ctx.core.includes.has('__ptr_type')) return
+  let uid = null
+  const newDecls = []
+  const rewrite = (parent, i) => {
+    const node = parent[i]
+    const prop = node.dvProp
+    const withProp = []
+    for (let sid = 0; sid < schemas.length; sid++) {
+      const slot = schemas[sid].indexOf(prop)
+      if (slot >= 0) withProp.push([sid, slot])
+    }
+    if (!withProp.length) return
+    // Evaluation-order safety: the arms evaluate ONLY the receiver; the original
+    // call also evaluates key/tag/hash operands. All four must be pure for the
+    // two paths to be observationally identical (they are in practice: local
+    // reads + constants — the emitDynGetAnyTyped shape). `call $__ptr_type`
+    // (the tag operand for an unknown-kind receiver) is a pure bit extract.
+    const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i64',
+      'i64.and', 'i64.or', 'i64.xor', 'i64.shr_u', 'i64.shl', 'i64.eq', 'i64.ne', 'i64.eqz',
+      'i64.extend_i32_u', 'i64.extend_i32_s'])
+    const pureOp = (n) => !Array.isArray(n) ? true
+      : n[0] === 'call' && n[1] === '$__ptr_type' ? n.slice(2).every(pureOp)
+      : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
+      : isPureIR(n)
+    for (let k = 2; k < node.length; k++) if (!pureOp(node[k])) return
+    if (uid === null) uid = nextLocalId(fn, '$__dsr')
+    const id = uid++
+    const rT = `$__dsr${id}r`
+    newDecls.push(['local', rT, 'i64'])
+    const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
+    const lo = withProp[0][0], hi = withProp[withProp.length - 1][0]
+    const bySid = new Map(withProp)
+    const labels = Array.from({ length: hi - lo + 1 }, (_, k) => bySid.has(lo + k) ? `$__dsr${id}_${lo + k}` : dflt)
+    // arms in sid order: each closes its block, loads its slot, brs out;
+    // the innermost block (first arm's label) carries the tag guard + br_table
+    const armSids = withProp.map(([sid]) => sid)
+    let inner = ['br_table', ...labels, dflt,
+      ['i32.sub',
+        ['i32.wrap_i64', ['i64.and',
+          ['i64.shr_u', ['local.get', rT], ['i64.const', LAYOUT.AUX_SHIFT]],
+          ['i64.const', LAYOUT.AUX_MASK]]],
+        ['i32.const', lo]]]
+    inner = ['block', `$__dsr${id}_${armSids[0]}`,
+      ['br_if', dflt, ['i32.ne',
+        ['call', '$__ptr_type', ['local.get', rT]],
+        ['i32.const', PTR.OBJECT]]],
+      inner]
+    for (let k = 0; k < armSids.length; k++) {
+      const sid = armSids[k], slot = bySid.get(sid)
+      const arm = ['br', out, ['i64.load',
+        ['i32.add', ['i32.wrap_i64', ['local.get', rT]], ['i32.const', slot * 8]]]]
+      const nextLabel = k + 1 < armSids.length ? `$__dsr${id}_${armSids[k + 1]}` : dflt
+      inner = ['block', nextLabel, inner, arm]
+    }
+    const dfltCall = [...node]
+    dfltCall[2] = ['local.get', rT]
+    parent[i] = ['block', out, ['result', 'i64'],
+      ['local.set', rT, node[2]],
+      inner,
+      dfltCall]
+  }
+  let seen = 0
+  const walkDSR = (n) => {
+    if (!Array.isArray(n)) return
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (!Array.isArray(c)) continue
+      walkDSR(c)
+      if (c[0] === 'call' && c.dvProp) { seen++; rewrite(n, i) }
+    }
+  }
+  walkDSR(fn)
+  if (process.env.JZ_DBG_DSR && String(fn[1]).includes('measure')) console.error('[dsr]', fn[1], 'schemas:', schemas.length, 'tagged seen:', seen)
+  if (newDecls.length) {
+    let at = typeof fn[1] === 'string' ? 2 : 1
+    while (at < fn.length && Array.isArray(fn[at]) &&
+      (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
+    fn.splice(at, 0, ...newDecls)
+  }
+}
+
 /** `constOps[idx](args)` — data-driven dispatch through a module-const array of
  *  capture-free arrows (operator tables, strategy maps, bytecode handlers). The
  *  generic lowering pays call_indirect's bounds + signature checks per call and
