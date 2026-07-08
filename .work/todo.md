@@ -149,6 +149,27 @@ the 3-frame chain + durable double-probe) — needs cross-module type flow on
 the table bindings; (b) shrink dyn_get_t_h's durable path (the
 dynPropsFilterMissIR bloom already gates it — the 2.1M ihash hits mean the
 filter passes; investigate why); (c) helper-internal fwd-free extracts.
+WATR guardRefine BUG — FIXED UPSTREAM (watr 52b8c2c, needs publish):
+restore() aliased the snapshot's inner neFact Sets into the live map;
+an arm's addFacts mutated the snapshot; the second restore resurrected
+the arm-local fact past the join → sibling tag compares folded on
+one-arm facts (the vo valueOf miscompile). Fix: restore hands out fresh
+Set copies. Regression test pins the leak shape. Cost of correctness:
+kernel A/B 1.0097, jessie +2-4% (the bogus folds were deleting reachable
+code). jz's AND-mask guard spelling (280e8f5) can revert to ptrTypeEq
+after the watr publish if desired — both are correct now.
+FALLBACK-ARM PROBE — REFUTED as a lever (probe-doubling on quiet machine:
+±2% wash): the 473k fallback probes cost ~nothing; closure-props flat
+table NOT worth building. cpu-prof leaf self-time confirmed misleading
+for ihash (29ms 'self' vs ~0 causal marginal cost).
+FRESH PROFILE (quiet machine, 4.3ms median, 3.12x V8 = V8 1.38/jz 4.30):
+remaining time is GENUINE dispatch — closure8 19ms + trampolines 16ms
+(~25% = jz's closure calling convention on the Pratt operator chain:
+`(fn = lookup[c]) && fn(a, p)` indirect calls), __ptr_offset 8ms
+distributed. NEXT CAMPAIGN: closure-call convention (devirt the
+lookup-table dispatch: monomorphic-ish per charcode → inline cache or
+direct-index call table; trampoline elision for arity-exact calls).
+That is deep-structure work — start fresh with the harness+profile here.
 JESSIE CAMPAIGN STATE (end of 2026-07-08 leg): 5.4x -> 2.88x V8
 (same-thermal-window pairs; V8 2.09ms, jz 6.01ms). Landed, all generic:
 array-index element semantics (7c42b30), string-primitive props semantics +
