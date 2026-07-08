@@ -170,6 +170,21 @@ distributed. NEXT CAMPAIGN: closure-call convention (devirt the
 lookup-table dispatch: monomorphic-ish per charcode → inline cache or
 direct-index call table; trampoline elision for arity-exact calls).
 That is deep-structure work — start fresh with the harness+profile here.
+TRAMPOLINE TAIL-CALL — probed, WASH (3/3 interleaved ±1%): return_call on
+the plain-f64 forwarders doesn't move jessie because the HOT trampolines
+(tramp_parse$space$5 12ms) are the i32-RESULT case — they rebox
+(f64.convert_i32_s (call ...)) and cannot tail-call. THE REAL FIX doubles
+as the architecture simplification the trampoline deserves: compile
+function-as-value TABLE ENTRIES natively against the uniform ftN ABI
+(one compilation with the ftN head: read params from slots, rebox result
+inline in the body's return) instead of tramp-forwarding — deletes the
+60-line trampoline string-builder in emit.js (~3832-3896), removes the
+extra frame for ALL result types, and unifies closures + fn-as-value
+under one table-entry convention. Direct-call sites keep the exact-sig
+entry; whichever is unused treeshakes. Substantial emit restructure —
+own session. closure8's 19ms self is genuine descriptor-walk work
+(subscript dispatch()) — only leaf-op cost reduction helps there.
+
 JESSIE CAMPAIGN STATE (end of 2026-07-08 leg): 5.4x -> 2.88x V8
 (same-thermal-window pairs; V8 2.09ms, jz 6.01ms). Landed, all generic:
 array-index element semantics (7c42b30), string-primitive props semantics +
