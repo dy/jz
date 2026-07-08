@@ -1128,6 +1128,11 @@ export function readVar(name) {
     // — an f64 consumer widens the i32.const via convert, which folds back to f64.const.
     const ci = ctx.scope.constInts?.get?.(name)
     if (ci != null && isI32(ci)) return typed(['i32.const', ci], 'i32')
+    // Fractional pre-folded const (`const nv = 2610/16384`): same immutability
+    // argument as the integer arm — substitute the literal so downstream
+    // compile-time folds (constant-exponent pow, ranges) see the value.
+    const cn = ctx.scope.constNums?.get?.(name)
+    if (cn != null) { const node = typed(['f64.const', cn], 'f64'); node.valKind = VAL.NUMBER; return node }
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
     const node = typed(['global.get', dollar(name)], gt)
     const grep = repOfGlobal(name)

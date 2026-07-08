@@ -1715,6 +1715,13 @@ export default function compile(ast, profiler) {
           // Cache integer values for cross-call const-arg propagation: `f(N)` where
           // `const N = 8` should observe the param as intConst=8.
           if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
+          // Cache EVERY folded value (fractional too) so readVar substitutes the
+          // literal at each read site — compile-time paths (emitPow's constant
+          // non-integer exponent → exp(c·log x), narrowing, the vectorizer) see
+          // through the global where V8 would only fold it at runtime. colorpq's
+          // PQ exponents (nv = 2610/16384, p = 1.7·2523/32) rode global.get into
+          // the generic runtime-exponent $math.pow because of exactly this gap.
+          ;(ctx.scope.constNums ||= new Map()).set(name, v)
         }
       }
     }
