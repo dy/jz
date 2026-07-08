@@ -149,6 +149,17 @@ the 3-frame chain + durable double-probe) — needs cross-module type flow on
 the table bindings; (b) shrink dyn_get_t_h's durable path (the
 dynPropsFilterMissIR bloom already gates it — the 2.1M ihash hits mean the
 filter passes; investigate why); (c) helper-internal fwd-free extracts.
+LEVER-(a) SCOPING (2026-07-08 probe, scratchpad/dict-micro.mjs): a LOCAL
+module-level `let d = {}` with only-dynamic uses ALREADY lowers to
+__hash_get_local_h/__hash_set_local — the dict inference exists for simple
+bindings. So the 3.7M dyn_get_t receivers are NOT the prec/operators dicts
+in the simple case; they're either (i) the EXPORTED table bindings
+(subscript `export let prec = {}` — export/cross-module refs may defeat the
+inference; verify with the real jessie module graph), or (ii) schema'd
+objects taking dynamic reads through the durable __dyn_props global. NEXT
+STEP is attribution, not new inference: compile the jessie bench with
+helperCallsites:'dyn_get_t' (or helperCounters + per-fn callsite filter)
+and read WHICH functions/receivers drive the 3.7M — then pick (a) vs (b).
 
 ## Bench-vs-V8 campaign (2026-07-08 state — from 7 losers to 2 modest + 1 hard)
 Cool-machine sweep 2026-07-08: shapes 1.11x, immutable 1.69x, wordcount 1.77x,
