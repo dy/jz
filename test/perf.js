@@ -1561,7 +1561,13 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // 10652→9738: the dictionary-mode/RMW work slimmed the pulled dyn-helper set
 // for this shape (the p.b static write keeps p an OBJECT; the p[k] write now
 // routes dynSetCall directly instead of the runtime key-kind dispatch chain).
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9738)
+// 9738→10665: array-index element semantics on the generic dyn path —
+// __dyn_get/expr/set/del gained ARRAY integer-key element arms + the
+// __str_arr_idx canonical-index parser (a[i]/a['1'] on an unproven receiver
+// address ELEMENTS, not the props sidecar, matching JS and the proven path).
+// Rides along with every dyn read/write pull; pure size on this object-only
+// program, correctness (arr['1'], dyn-write/static-read unification) corpus-wide.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10665)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js

@@ -811,23 +811,24 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h'],
+    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
-    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str'],
+    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_t: () => ctx.features.external
-      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str']
-      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str'],
+      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset']
+      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset'],
     __dyn_get_any_t_h: () => ctx.features.external
       ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
       : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq', '__is_str_key', '__to_str'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
-    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str'],
+    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx'],
+    __str_arr_idx: ['__str_byteLen', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset'],
   })
 
@@ -1472,6 +1473,33 @@ export default (ctx) => {
           (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
           (br $schemaSetLoop)))))` : ''
 
+  // Canonical array-index parse of a string key: '0' | [1-9][0-9]{0,9} within
+  // i32 range → the index, else -1. JS property semantics: a canonical numeric
+  // string on an ARRAY receiver addresses the ELEMENT ('1' ≡ 1), so every
+  // string-keyed dyn entry must classify before probing the props sidecar.
+  // __char_at returns the true byte (0 only past the REAL length, which
+  // $__str_byteLen bounds first), so embedded-NUL keys can't false-match.
+  ctx.core.stdlib['__str_arr_idx'] = `(func $__str_arr_idx (param $key i64) (result i32)
+    (local $len i32) (local $i i32) (local $c i32) (local $n i64)
+    (local.set $len (call $__str_byteLen (local.get $key)))
+    (if (i32.or (i32.eqz (local.get $len)) (i32.gt_u (local.get $len) (i32.const 10)))
+      (then (return (i32.const -1))))
+    (if (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 48))
+                 (i32.gt_u (local.get $len) (i32.const 1)))
+      (then (return (i32.const -1))))
+    (block $bad
+      (loop $l
+        (if (i32.ge_u (local.get $i) (local.get $len))
+          (then
+            (if (i64.gt_u (local.get $n) (i64.const 2147483646)) (then (return (i32.const -1))))
+            (return (i32.wrap_i64 (local.get $n)))))
+        (local.set $c (i32.sub (call $__char_at (local.get $key) (local.get $i)) (i32.const 48)))
+        (br_if $bad (i32.gt_u (local.get $c) (i32.const 9)))
+        (local.set $n (i64.add (i64.mul (local.get $n) (i64.const 10)) (i64.extend_i32_u (local.get $c))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const -1))`
+
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
@@ -1509,7 +1537,25 @@ export default (ctx) => {
             (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))))
+            (br $follow)))
+        ;; Canonical-index string key ('1' ≡ 1, JS array-index semantics) →
+        ;; ELEMENT, not sidecar. This is the single string-keyed net covering
+        ;; every read entry (dot, expr slow path, any, prehashed const keys):
+        ;; __dyn_set routes such keys to elements, so the sidecar can never
+        ;; hold them and an in-range miss is definitively undefined.
+        ;; Inline first-char digit reject: identifier keys ('loc', 'length' —
+        ;; the kernel-hot shape on array AST nodes) skip the parse call.
+        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+              (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
+              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10)))
+          (then
+            (local.set $idx (call $__str_arr_idx (local.get $key)))
+            (if (i32.ge_s (local.get $idx) (i32.const 0))
+              (then
+                (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $off) (i32.const 8))))
+                  (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
+                (return (i64.const ${UNDEF_NAN}))))))))
     ;; DURABLE-RECEIVER POLICY: a receiver allocated at/below the post-init
     ;; high-water mark (__heap_reset) outlives _clear, but a sidecar CREATED
     ;; FOR IT AT RUNTIME lives in the round's arena — the receiver's header
@@ -1665,38 +1711,52 @@ export default (ctx) => {
     (call $__dyn_get_expr_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
   ctx.core.stdlib['__dyn_get_expr_t'] = `(func $__dyn_get_expr_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
-    (local $val i64)
+    (local $f f64) (local $idx i32) (local $base i32)
     ;; Real-number receiver → no props; its garbage tag could match HASH and hit the
-    ;; __hash_get_local fallback below (heap read at a bogus offset → OOB).
+    ;; __hash_get_local arm below (heap read at a bogus offset → OOB).
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
+    ;; ARRAY + raw integer key → ELEMENT read (JS array-index semantics), BEFORE
+    ;; ToPropertyKey. This is the generic \`a[i]\` fallback: the former
+    ;; stringify+str_hash+durable-double-probe chain taxed every numeric read
+    ;; on an unproven array (jessie's charcode tables: 3.7M reads/run). An
+    ;; in-range integer key can only live in the elements (__dyn_set routes it
+    ;; there), so OOB is definitively undefined. Fractional/negative/huge keys
+    ;; fall through to the string path (they are sidecar keys, '1.5'/'-1').
+    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (then
+        (local.set $f (f64.reinterpret_i64 (local.get $key)))
+        (if (f64.eq (local.get $f) (local.get $f))
+          (then
+            (local.set $idx (i32.trunc_sat_f64_s (local.get $f)))
+            (if (i32.and (f64.eq (f64.convert_i32_s (local.get $idx)) (local.get $f))
+                         (i32.ge_s (local.get $idx) (i32.const 0)))
+              (then
+                (local.set $base (call $__ptr_offset (local.get $obj)))
+                (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
+                  (then (return (i64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))
+                (return (i64.const ${UNDEF_NAN}))))))))
     ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
-    (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
-    (if (result i64)
-      (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-      (then (local.get $val))
-      (else
-        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-          (then (call $__hash_get_local (local.get $obj) (local.get $key)))
-          (else (i64.const ${UNDEF_NAN}))))))`
+    ;; HASH receivers FIRST: hashes never carry dyn_props (those attach to
+    ;; OBJECT/ARRAY only — the invariant __dyn_get_any already exploits), so
+    ;; the former dyn_get_t-then-fallback order paid the full str_hash +
+    ;; durable double-probe chain per read just to miss.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then (return (call $__hash_get_local (local.get $obj) (local.get $key)))))
+    (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))`
 
   // Prehashed variant of __dyn_get_expr_t for constant string keys: the FNV hash
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
   ctx.core.stdlib['__dyn_get_expr_t_h'] = `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
-    (local $val i64)
-    ;; Real-number receiver → no props; guard the HASH fallback OOB (see __dyn_get_expr_t).
+    ;; Real-number receiver → no props; guard the HASH arm OOB (see __dyn_get_expr_t).
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
-    (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
-    (if (result i64)
-      (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-      (then (local.get $val))
-      (else
-        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-          (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
-          (else (i64.const ${UNDEF_NAN}))))))`
+    ;; HASH receivers first — same wasted-chain argument as __dyn_get_expr_t.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then (return (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))))
+    (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))`
 
   // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.
   // Used at call sites where receiver type is statically unknown.
@@ -1717,7 +1777,26 @@ export default (ctx) => {
             (else (i64.const ${UNDEF_NAN})))`
       : `(i64.const ${UNDEF_NAN})`
     return `(func $__dyn_get_any_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
-    (local $val i64)
+    (local $val i64) (local $f f64) (local $idx i32) (local $base i32)
+    ;; Real-number receiver → no props, and its garbage tag could match ARRAY
+    ;; below (bogus base → OOB). Same guard the expression tail repeats.
+    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+      (then (return (i64.const ${UNDEF_NAN}))))
+    ;; ARRAY + raw integer key → element read, before ToPropertyKey — the same
+    ;; generic array-index arm as __dyn_get_expr_t (see there for the analysis).
+    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (then
+        (local.set $f (f64.reinterpret_i64 (local.get $key)))
+        (if (f64.eq (local.get $f) (local.get $f))
+          (then
+            (local.set $idx (i32.trunc_sat_f64_s (local.get $f)))
+            (if (i32.and (f64.eq (f64.convert_i32_s (local.get $idx)) (local.get $f))
+                         (i32.ge_s (local.get $idx) (i32.const 0)))
+              (then
+                (local.set $base (call $__ptr_offset (local.get $obj)))
+                (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
+                  (then (return (i64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))
+                (return (i64.const ${UNDEF_NAN}))))))))
     ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
@@ -1769,12 +1848,47 @@ export default (ctx) => {
   // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
   ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
-    (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
+    (local $off i32) (local $type i32) (local $kf f64) (local $kidx i32) ${buildObjectSchemaSetLocals()}
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; ARRAY + integer key → ELEMENT store (grow + hole-fill via the same
+    ;; helper the statically-proven \`a[i]=v\` path uses), matching JS index
+    ;; semantics and the element arms in the dyn read entries. Guard real-
+    ;; number receivers first — their garbage tag could match ARRAY and the
+    ;; store would land OOB. Raw numeric arm before ToPropertyKey (hot);
+    ;; canonical numeric STRING arm after it ('1' ≡ 1). __arr_set_idx_ptr
+    ;; leaves a forwarding header on grow, which every dyn/static reader
+    ;; already follows — binding-unaware callers stay correct.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+                 (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
+      (then
+        (local.set $kf (f64.reinterpret_i64 (local.get $key)))
+        (if (f64.eq (local.get $kf) (local.get $kf))
+          (then
+            (local.set $kidx (i32.trunc_sat_f64_s (local.get $kf)))
+            (if (i32.and (f64.eq (f64.convert_i32_s (local.get $kidx)) (local.get $kf))
+                         (i32.ge_s (local.get $kidx) (i32.const 0)))
+              (then
+                (drop (call $__arr_set_idx_ptr (local.get $obj) (local.get $kidx) (f64.reinterpret_i64 (local.get $val))))
+                (return (local.get $val)))))
+          (else
+            ;; key is non-number here (NaN-boxed) — a bare tag test IS the
+            ;; string test, no __is_str_key call (its NaN guard is redundant).
+            (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+              (then
+                ;; first-char digit reject — see __dyn_get_t_h's net
+                (if (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
+              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
+                  (then
+                    (local.set $kidx (call $__str_arr_idx (local.get $key)))
+                    (if (i32.ge_s (local.get $kidx) (i32.const 0))
+                      (then
+                        (drop (call $__arr_set_idx_ptr (local.get $obj) (local.get $kidx) (f64.reinterpret_i64 (local.get $val))))
+                        (return (local.get $val))))))))))))
     ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ;; CLOSURE with no env (offset 0): key __dyn_props on the function table index — see __dyn_get_t.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
       (then (local.set $off (i32.sub (i32.const -1)
@@ -1917,7 +2031,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
     (local $root i64) (local $props i64) (local $oldProps i64)
-    (local $off i32) (local $type i32) (local $hit i32) ${buildObjectSchemaSetLocals()}
+    (local $off i32) (local $type i32) (local $hit i32) (local $delidx i32) ${buildObjectSchemaSetLocals()}
     ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
@@ -1937,7 +2051,22 @@ export default (ctx) => {
             (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))))
+            (br $follow)))
+        ;; Canonical-index key → element home (mirrors __dyn_set/__dyn_get):
+        ;; delete arr[i] leaves a hole (undefined), length unchanged — JS
+        ;; semantics. OOB delete is a no-op that still reports success.
+        (if (i32.ge_u (local.get $off) (i32.const 16))
+          (then
+            (local.set $delidx (i32.const -1))
+            (if (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
+              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
+              (then (local.set $delidx (call $__str_arr_idx (local.get $key)))))
+            (if (i32.ge_s (local.get $delidx) (i32.const 0))
+              (then
+                (if (i32.lt_u (local.get $delidx) (i32.load (i32.sub (local.get $off) (i32.const 8))))
+                  (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $delidx) (i32.const 3))) (i64.const ${UNDEF_NAN}))))
+                (return (i32.const 1))))))))
     ;; DURABLE-RECEIVER POLICY (see __dyn_get_t_h's declaration comment for the
     ;; full rationale): a durable receiver's key can live in EITHER the global
     ;; table (runtime-written) or its off-16 sidecar (init-time-written) — try
