@@ -131,6 +131,25 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 
+## Bench-vs-V8+JSC matrix (2026-07-08 full-corpus sweep, all checksums identical)
+vs V8 — trailing: jessie 5.4x (hard tail), immutable 1.83x, wordcount 1.63x,
+shapes 1.08x (borderline). EVERY other case wins (40+ corpus).
+vs JSC (new axis — jsc runs the whole corpus incl. compiler-class cases after
+a43f8c0): trailing: jessie 6.9x, dispatch 3.1x (JSC's call_indirect tier is
+far ahead — the br_table IC that beat V8 doesn't beat JSC), json 1.43x,
+dict 1.34x, crc32 1.30x (JSC's int-loop wasm tier beats V8's AND jz's),
+immutable 1.28x, strbuild 1.20x, synth 1.09x, qoi 1.02x.
+jessie profile re-verified post-all-levers (counters): 3.7M dyn_get_t =
+STRING-keyed dynamic reads (subscript tables keyed by token/op strings;
+devirt can't fire — receivers are dict/unproven, not schema objects), each
+paying dyn_get→dyn_get_t(str_hash 3.9M)→dyn_get_t_h(durable global-probe
+ihash 2.1M + sidecar probe) + 8.1M ptr_offset inside those bodies. Levers:
+(a) prove subscript's tables VAL.HASH at emit (direct __hash_get_local, kills
+the 3-frame chain + durable double-probe) — needs cross-module type flow on
+the table bindings; (b) shrink dyn_get_t_h's durable path (the
+dynPropsFilterMissIR bloom already gates it — the 2.1M ihash hits mean the
+filter passes; investigate why); (c) helper-internal fwd-free extracts.
+
 ## Bench-vs-V8 campaign (2026-07-08 state — from 7 losers to 2 modest + 1 hard)
 Cool-machine sweep 2026-07-08: shapes 1.11x, immutable 1.69x, wordcount 1.77x,
 strbuild 1.07x, dispatch 0.89x WIN, dict 0.85x WIN, json 0.60x WIN,
