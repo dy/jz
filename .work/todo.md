@@ -168,6 +168,30 @@ cache at _h const-key call sites (monomorphic in this workload). Expected:
 the full 94ms ihash + part of dyn_get_t_h 24ms ≈ ~40% of jessie runtime.
 Note: .loc writes (115k/run) allocate a per-node __hash_new_small — the
 allocation churn is the secondary sink to check after closure props.
+RECEIVER IDENTITY SOLVED (offset histogram, self-learning slots): the
+durable-arm receivers are STATIC-DATA objects at offsets 33..126 (the
+preeval'd subscript tables — NOT closures, NOT strings) plus a long tail:
+first-8 slots each saw count=1 with 1.96M in "other" ⇒ hot-set cardinality
+≫ 8 (why the 4-way shared cache lost). A STRING+'length' short-circuit in
+__dyn_get_t_h (landed below in this tree? NO — measured a wash, keys are
+NOT 'length'; kept anyway? see commit) did not reduce the 1.07M probes.
+THE DESIGN THAT FITS ALL FACTS — per-receiver "runtime-shadowed" bit:
+reads on durable receivers must probe the GLOBAL table first only because
+a runtime write may shadow the init-time sidecar. Mark shadowing AT THE
+RECEIVER: __dyn_set's durable-global route ORs bit0 into the receiver's
+off-16 props word (HASH ptr offsets are 8-aligned ≥16 — bit0 is free; a
+0 slot becomes 0x1 = shadowed-no-sidecar). The read path loads off-16
+ONCE (it needs it for the sidecar anyway): bit0 clear → sidecar only,
+ZERO global probes (the 1.07M reads are exactly this class); bit0 set →
+global probe (guard __dyn_props root ≠ 0 first — after _clear the root
+is 0 and a stale marker must not probe a null root) then sidecar. _clear:
+markers go stale (global wiped) — harmless with the root≠0 guard (one
+wasted branch until re-shadowed); no healing needed. Exact, per-receiver,
+no aliasing, no shared-cache eviction, O(1). Also verify whether the
+1.07M probes are HITS or MISSES first (one counter): if mostly HITS the
+runtime writes genuinely live in the global table and the win is smaller —
+then attack the WRITE side instead (why do subscript's tables take runtime
+writes? parse.js:86 \`prec[op] = ...\` placement decides).
 CAUSAL CONFIRMATION (probe-doubling, 3/3 interleaved): duplicating the
 durable-arm __ihash_get_local call costs +2.7-3.0ms median (+30%) — the
 1.07M probes really are ~31% of jessie runtime; the cpu-prof self-time was

@@ -14,10 +14,13 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
-import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex } from '../layout.js'
+import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
+// NaN-box bits of the SSO string 'length' — computed once; see the STRING
+// arm in __dyn_get_t_h. ssoEncode('length') never returns null (6 ASCII).
+const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -811,7 +814,7 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx'],
+    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
@@ -1522,6 +1525,16 @@ export default (ctx) => {
     ;; treating its bits as a heap offset (\`(5).foo\`/\`(5)[k]\` → undefined, not OOB).
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
+    ;; STRING receiver + 'length' key → aux/byte length directly. Strings are
+    ;; primitives — they can never carry dyn props, yet an SSO string's packed
+    ;; chars LOOK like a tiny durable heap offset, so \`op.length\` in a parser
+    ;; loop (jessie: 1.96M reads/run, ~30% of runtime, causally measured by
+    ;; probe-doubling) took the durable global-probe arm for nothing. One i64
+    ;; compare: a runtime 'length' key is ALWAYS SSO (≤6 ASCII invariant), so
+    ;; constant-vs-key bit equality is exact. Other keys fall through unchanged.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+                 (i64.eq (local.get $key) (i64.const ${LENGTH_SSO_I64})))
+      (then (return (i64.reinterpret_f64 (f64.convert_i32_s (call $__str_byteLen (local.get $obj)))))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
