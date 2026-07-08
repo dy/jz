@@ -148,9 +148,26 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
   DATA SEGMENT (const fn-array = baked closure boxes) → br_table over 8 direct
   calls (bounds+sig checks gone; tiny bodies then inline). Seed machinery: the
   5.2.2 hoisted-index devirt. Same class as `shapes` tag-switch.
-- **wordcount** (STR_INTERN_BIT interning), **shapes** (shape-set devirt: bounded
-  schema union -> tag-switch direct loads), **immutable** (SROA for same-schema
-  replace-stores), **jessie** (kernel parse) — design campaigns, in WASM_TODO.
+- **dispatch — CLOSED to 0.925x** (d9418b7): const-fn-array indexed calls lower
+  to br_table of direct calls (AOT polymorphic IC), call_indirect default arm.
+- **wordcount 3.8x — DESIGNED, ready to build**: helper-counter profile shows the
+  RMW `counts[w] = (counts[w]|0)+1` pays EVERYTHING twice (str_hash 14.0M = 2/op,
+  dyn_get 6.8M + dyn_set 6.8M, str_eq 6.6M). Fix the CLASS: fuse `o[k] = f(o[k])`
+  (hash-typed receiver, pure o/k, rhs reads same key) into ONE probe:
+  1. kernel: `__hash_slot(coll i64, key i64) -> i32` — genUpsert's exact machinery
+     (grow + zombie probe + insert-on-miss, value seeded UNDEF) returning the VALUE
+     SLOT ADDRESS. Sound because the BOX never changes across growth (forwarding
+     header; __ptr_offset_fwd resolves) — genUpsert already returns coll unchanged.
+     Return 0 on type-guard fail -> caller falls back to generic dyn_set.
+  2. emit-assign arm: detect `['=', ['[]', o, k], rhs]` with rhs containing
+     structurally-equal PURE `['[]', o, k]`; emit kT/oT once, slotT = __hash_slot,
+     bind old = f64.load(slot) to a temp, substitute the rhs reads with the temp
+     NAME (readVar picks the local; `|0` ToInt32 of UNDEF box -> 0, semantics
+     preserved), store result to slot, yield it. Expect ~2x -> ratio ~1.9.
+  Then: heap-string hash memo (words recur 6.8M times over 512 objects).
+- **shapes** (tag-switch over bounded schema union — same lowering toolkit as the
+  dispatch devirt), **immutable** (SROA for same-schema replace-stores),
+  **jessie** (kernel parse) — design campaigns, in WASM_TODO.
 
 ## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
 Real and pending, ranked: (1) watr: split binary-size revert guard off the default
