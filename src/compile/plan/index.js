@@ -34,6 +34,7 @@ import narrowSignatures, {
 
 import { optimizing } from './common.js'
 import { adviseProgram } from './advise.js'
+import { scanInplaceStores } from '../inplace-store.js'
 import {
   inferModuleLetTypes, unboxConstTypedGlobals, inferModuleIntGlobals,
   flattenFuncNamespaces, devirtGlobalCalls,
@@ -116,6 +117,10 @@ export default function plan(ast, profiler) {
   // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
   // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
   if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
+  // Whole-program alias sweep for in-place replace-stores (`arr[i] = {lit}` →
+  // overwrite the old element's slots) — needs the settled arrayElemSchema
+  // facts, so it runs after the signature fixpoint.
+  if (optimizing()) t('scanInplaceStores', () => scanInplaceStores(programFacts))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
   t('refineDynKeys', () => refineDynKeys(programFacts))
   strictBoundaryTypeCheck(programFacts)

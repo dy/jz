@@ -4565,8 +4565,8 @@ export function devirtSchemaReads(fn) {
       return n.map((c, k) => k === 0 ? c : extractTees(c))
     }
     const operands = node.slice(2).map(extractTees)
-    for (const op of operands) if (!pureOp(op)) { if (process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
-    for (const h of teeHoists) if (!pureOp(h[2])) { if (process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
+    for (const op of operands) if (!pureOp(op)) { if (typeof process !== 'undefined' && process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
+    for (const h of teeHoists) if (!pureOp(h[2])) { if (typeof process !== 'undefined' && process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
     // the dispatch's generic arm — the original call over the tee-free operands
     const genericCall = [node[0], node[1], ...operands]
     if (uid === null) uid = nextLocalId(fn, '$__dsr')

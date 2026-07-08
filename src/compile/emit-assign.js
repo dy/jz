@@ -12,13 +12,15 @@
 
 import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
 import { T } from '../ast.js'
-import { staticPropertyKey, staticIndexKey } from '../static.js'
+import { staticPropertyKey, staticIndexKey, staticObjectProps } from '../static.js'
+import { i64Hex, encodePtrHi } from '../../layout.js'
+import { inplaceKey } from './inplace-store.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, boolBoxIR,
+  usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR,
 } from '../ir.js'
 import { emit } from '../bridge.js'
 
@@ -252,6 +254,59 @@ function tryHashRmwFusion(arr, idx, val) {
         ['local.get', `$${resT}`]], 'f64')]]], 'f64')
 }
 
+/** In-place replace-store: `arr[i] = {lit}` at a site the whole-program alias
+ *  sweep proved safe (src/compile/inplace-store.js) overwrites the OLD
+ *  element's payload slots instead of allocating a fresh object — the
+ *  immutable-update idiom's per-step allocation churn goes to zero. Runtime
+ *  guard: the old element's box must carry OBJECT tag + this literal's
+ *  schemaId (one masked i64 compare — the emitSchemaSlotGuarded pattern);
+ *  anything else (UNDEF from an out-of-bounds read, an alien schema, a
+ *  non-object) takes the generic fresh-alloc arm, so semantics stay bit-exact.
+ *  Literal values spill to temps FIRST — they may read the old element
+ *  (`arr[i] = { x: p.y, y: p.x }` swaps). Fast-arm result is the old box:
+ *  in place, the old object IS the new object (the array store is elided). */
+function tryInplaceReplaceStore(arr, idx, val) {
+  if (!Array.isArray(val) || val[0] !== '{}' || typeof arr !== 'string') return null
+  // content key — see scanInplaceStores: node identity doesn't survive the
+  // per-function body transforms between the sweep and emit
+  const key = inplaceKey(arr, val)
+  if (!ctx.schema.inplaceStores?.has(key)) return null
+  if (valTypeOf(arr) !== VAL.ARRAY) return null
+  const idxNumeric = (typeof idx === 'string' &&
+    (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)) || valTypeOf(idx) === VAL.NUMBER
+  if (!idxNumeric) return null
+  const parsed = staticObjectProps(val.slice(1))
+  if (!parsed || !parsed.values.every(v => valTypeOf(v) === VAL.NUMBER)) return null
+  const sid = ctx.schema.register(parsed.names)
+  const schema = ctx.schema.list?.[sid]
+  const ops = ctx.abi.object?.ops
+  if (!schema || !ops) return null
+  inc('__arr_idx', '__alloc_hdr')
+  const kT = tempI32('ipk'), eT = temp('ipe'), oT = tempI32('ipo'), hT = tempI32('iph')
+  const vTs = parsed.values.map(() => temp('ipv'))
+  const slots = parsed.names.map(nm => schema.indexOf(nm))
+  const bitsE = () => ['i64.reinterpret_f64', ['local.get', `$${eT}`]]
+  const fast = ['block', ['result', 'f64'],
+    ['local.set', `$${oT}`, ['i32.wrap_i64', bitsE()]],
+    ...slots.map((slot, i) => ops.store(['local.get', `$${oT}`], slot, ['local.get', `$${vTs[i]}`])),
+    ['local.get', `$${eT}`]]
+  const slow = ['block', ['result', 'f64'],
+    ['local.set', `$${hT}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ops.allocSlots(schema.length)]]],
+    ...slots.map((slot, i) => ops.store(['local.get', `$${hT}`], slot, ['local.get', `$${vTs[i]}`])),
+    storeArrayPayload(asF64(emit(arr)), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
+      mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${hT}`]), persistBinding(arr))]
+  return typed(['block', ['result', 'f64'],
+    ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
+    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ['local.set', `$${eT}`, ['call', '$__arr_idx', asI64(emit(arr)), ['local.get', `$${kT}`]]],
+    ['if', ['result', 'f64'],
+      ['i64.eq',
+        ['i64.and', bitsE(), ['i64.const', '0xFFFFFFFF00000000']],
+        ['i64.const', i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)]],
+      ['then', fast],
+      ['else', slow]]], 'f64')
+}
+
 export function emitElementAssign(arr, idx, val) {
   // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
   // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
@@ -296,6 +351,8 @@ export function emitElementAssign(arr, idx, val) {
   }
   const rmw = ctx.transform.optimize ? tryHashRmwFusion(arr, idx, val) : null
   if (rmw) return rmw
+  const inplace = ctx.transform.optimize ? tryInplaceReplaceStore(arr, idx, val) : null
+  if (inplace) return inplace
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = ctx.func._expect === 'void'
