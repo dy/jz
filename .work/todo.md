@@ -202,6 +202,17 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
   for heap keys + prehash literals at parse-table BUILD time; (3) __memgrow
   call-per-alloc — move the grow check inline into __alloc's fast path.
   Each is kernel-wide (helps jz.wasm compile times too, not just the bench).
+  LEVER 3 DONE (a633659): __heap_end byte watermark — jessie 8765->8500us,
+  kernel A/B 0.976. Lever 1 refined: the 8.1M ptr_offset calls live INSIDE
+  helper bodies (dyn_get_t_h's receiver+sidecar resolves) — jz-site hoisting
+  can't reach them; needs either a generation-stamped receiver cache in the
+  helpers (extend __dyn_get_cache_*) or fwd-free inline extracts for the
+  never-forwarded kinds (OBJECT, string keys) with the follow only for HASH.
+  Lever 2 refined: __str_hash already caches interned heap strings (off-8) and
+  fast-mixes SSO; the gap is runtime-BUILT heap strings never get interned —
+  intern-on-first-hash (insert into the intern table when STR heap key first
+  hashes) gives every later hash the cached read. jessie keys are mostly SSO,
+  so this lever belongs to wordcount's 7-8 char words more than jessie.
 
 
 ## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
