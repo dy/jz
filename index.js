@@ -630,6 +630,12 @@ const jzCompileInner = (code, opts = {}) => {
   // watrProfile:'speed' (src/optimize/index.js LEVEL_PRESETS); the 'size' preset keeps
   // watr's size-leaning default. An explicit user profile always wins.
   if (watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
+  // Speed tier waives watr's size-revert guard (two full binary encodes per
+  // optimize — its costliest fixed overhead): inlining growth is the shape this
+  // tier asks for, and jz's own perf/size gates own the size budget. Level 2
+  // (default) and 'size' keep the guard — watr's never-inflate contract stands
+  // where the user didn't opt into speed-for-size.
+  if (watrOpts.guard === undefined && cfg.watrGuard === false) watrOpts.guard = false
   // Pin jz's scalar transcendentals (the PPC_CALL2 keys the auto-vectorizer rewrites to f64x2
   // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
   // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).

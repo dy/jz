@@ -283,29 +283,54 @@ this list is the V8-specific gate.
   so this lever belongs to wordcount's 7-8 char words more than jessie.
 
 
-## Arch analysis triage (compile time / size 2x — RE-RANKED on 2026-07-08 evidence)
+## Arch analysis triage (compile time / size 2x — RE-RE-RANKED on 2026-07-08 frozen-sim evidence)
 MEASURED (crc32 @speed, warm, 9-run median): full compile 95.3ms; with
-optimize:{watr:false} 23.1ms — **watr's optimizer is 72ms = 76% of compile**,
-running over a module that is ~90% stdlib bodies identical across compiles.
+optimize:{watr:false} 23.1ms — **watr's optimizer is 72ms = 76% of compile**.
 jz-side optMod:optimizeFuncs is 14ms (secondary), pullStdlib parse 1.3ms,
-everything else ≤3ms. Consequences:
-(1) **build-time-compiled stdlib is THE lever for BOTH goals** — it removes
-    stdlib from per-compile jz-optimize AND watr-optimize (compile ~4x) and
-    drops the ~533KB WAT template text from dist/jz.js (bundle ~2x). Design
-    constraint: stdlib bodies are templated on ctx (sso/shared/external/
-    heapReset/hashSmallInitCap/schema-arm thunks) — precompile the default-
-    config variant matrix for the hot subset, keep runtime templating as the
-    fallback for exotic configs. The '(2) stdlib re-opt cache keyed by
-    includes-set' item is SUBSUMED — a jz-side cache would recover ≤10% while
-    this recovers the 76%.
-(2) watr upstream: split the binary-size revert guard off the default
-    inlineOnce path (verified still open; benefits the residual watr cost on
-    USER funcs after (1)).
+watrCompile encode 2.9ms, everything else ≤3ms.
+(1) **build-time-compiled stdlib — REFUTED by direct simulation.** Two probes
+    (scratchpad sim-bake.mjs / JZ_SIM_FROZEN crude-frozen hack): (a) splicing
+    stdlib bodies pre-optimized to watr's function-local fixpoint changed
+    watOptimize 72.1→67.2ms (1.07x) with near-byte-identical output; (b) a
+    full "frozen" sim (dirty-seeded rounds + module/finish passes skipping
+    std funcs) saved only ~4-9ms on crc32 AND json. Root cause: the cost is
+    WALK+user-work, not std-work — inlineOnce dissolves stdlib bodies INTO
+    user funcs, so their nodes get optimized under user labels regardless
+    (json frozen profile: r1-r3 propagate:USER = 28ms). Identical input
+    bodies ≠ skippable work; the work product is program-specific. Compile
+    ÷4 does not exist here; ceiling ≈1.2x for heavy bake+frozen machinery.
+    (Bundle ÷2 via template replacement is a separate, weaker, still-open
+    size idea.) Foundation facts kept for the record: pre-watr stdlib bodies
+    ARE 34/36 cross-program byte-identical (116KB); post-watr only 22/26.
+(2) **watr optimizer engine is the re-ranked lever** (frozen-sim profiles,
+    instrumentation patch: scratchpad/watr-prof-instrumentation.patch):
+    - [x] propagate walk fusion — LANDED watr bbcb318: substGets logs writes
+      during its own recursion, killing the 4 extra full-subtree walks per
+      statement (clone+equal, sibling staleness, known-map staleness,
+      writesMemory). Output byte-identical corpus-wide + kernel.
+    - [x] size-guard encodes — LANDED watr bbcb318 (`guard: false` opt) + jz
+      speed presets (`watrGuard: false` → watrOpts.guard). L2/size keep the
+      never-inflate guard. Byte-identical on the corpus (guard never unwound).
+    - Combined measured: watOptimize crc32 78→58ms, json 110→97, raytrace
+      74→61, wordcount 114→96; END-TO-END compile crc32 99→85ms (1.17x),
+      json 158→140 (1.13x), raytrace 130→112 (1.16x), wordcount 163→136
+      (1.20x). Kernel A/B 0.9949 (kernel embeds watr → compiles faster too).
+      Activates when watr >5.2.3 publishes (option is a no-op on 5.2.3).
+    Remaining (updated post-fusion CPU profile, per-module @speed):
+    - cse collect/processScope ≈26ms on big modules (finish, once).
+    - coalesceLocals in rounds ≈24ms — REFUTED removing it from rounds
+      (crc32 −4.5ms but json/wordcount +6ms, size wobbles ±20B): it earns
+      its keep mid-rounds. Win must come from making it cheaper, not rarer.
+    - finish:inline scan 7-11ms even when simdOnly finds few candidates —
+      prefilter by callee-name set before the full candidate scan.
+    - hashConverge full-module hashFunc every round (~1.6ms × 5) + dedupe
+      re-hashing every func every round — needs module passes to report
+      touched funcs (or a shared hash memo) to shrink soundly.
+    - inlineOnce candidate scan 7-9ms.
+    - propagate residual: walk/walkPost visitor overhead is now the floor
+      (~700ms self across 20 module-optimizes) — specialization territory.
+    These are generic engine fixes (help every watr user + every jz tier).
 (3) watr encoder local-decl grouping — DONE jz-side (sortLocalsByUse).
-Note: hoistGlobalPtrOffset/specializeMkptr/sortStrPool mutate stdlib bodies
-per-module BEFORE optimizeFuncs — any precompiled-stdlib path must either
-re-apply those as post-splice fixups or accept their loss on the precompiled
-subset (measure which of them earn their keep on stdlib bodies).
 csePureExprLoop/cseScalarLoad stay — prototypes for the watr CSE port
 (pure-call CSE landed upstream 6e659de; local-alloc gap vs wasm-opt open).
 
