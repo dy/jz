@@ -158,12 +158,22 @@ ihash 39ms (428k legit shadowed probes + 473k fallback-arm closure-prop
 reads -> closure-props flat table keyed by fn index), .loc sidecar alloc
 churn (115k __hash_new_small/run -> slot-in-header), closure8/trampoline
 dispatch (22ms self, genuine Pratt work -> devirt/inline-cache territory).
-SUSPECTED WATR BUG (recorded for upstream): inlineOnce+guardRefine+peephole
-composition deletes a probe branch guarded by ptrTypeEq+f64.eq/f64.ne
-self-compare (repro: /tmp/vo-micro.mjs shape at optimize level 2; bisect
-via jz optimize:{level:2,watr:{PASS:false}} -> peephole|inlineOnce|
-guardRefine each individually rescue). The AND-mask tag-compare shape is
-the safe spelling until root-caused.
+WATR BUG ROOT-CAUSED TO MECHANISM (2026-07-08 late leg, upstream-pending):
+guardRefine ALONE miscompiles (not a composition — {guardRefine:true} on
+defaults flips the vo repro to tag=1). Mechanism: its tagAlias/neFact maps
+mis-associate across REUSED/COALESCED locals — bisected to fold #7
+(i32.eq($..._type,ARRAY) -> 0) whose neFact was derived from cond
+i32.eq($__inl19_arr0, 1) where arr0 is a coalesced slot holding a TAG at
+that point but tagAlias bound it to a source local ($__inl18_a) that was
+REASSIGNED in between; the fact then applied to the new occupant. Suspect
+surface: restore(pre)/killLocal(writes) discipline around if-arms vs
+walk-order of coalesced defs. Artifacts: scratchpad/vo.prewatr.wat
+(deterministic 176KB repro: optimize({guardRefine:true}) -> exports.f()
+tag 1 instead of 4), scratchpad/vo-run.mjs (tag checker + minus-one-pass
+bisector), scratchpad/pre-gr.wat (pre-guardRefine stage, fold site at
+line ~5077). Instrumentation recipe: cap folds via WATR_GR_MAX + log via
+WATR_DBG_GRN/WATR_DBG_FACT (patch shapes in the session transcript).
+jz-side: the AND-mask tag-compare spelling (280e8f5) avoids the trigger.
 TIME PROFILE (2026-07-08, --cpu-prof on names:true jessie wasm — the call
 COUNTS above were misleading; counts ≠ time): __ihash_get_local self=94ms
 of ~270ms total wasm self-time (35%!), __dyn_get_t_h 24ms, __str_hash 14ms.
