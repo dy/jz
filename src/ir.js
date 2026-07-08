@@ -711,10 +711,25 @@ export function ptrTypeEq(f64Expr, ptr) {
 export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
   const o = temp('vo'), p = temp('vp')
   inc('__dyn_get_expr', '__ptr_type')
+  // Primitive receivers can never carry an own property that shadows a
+  // builtin (numbers: no props at all; strings: property writes drop —
+  // module/collection.js STRING arms), so the override probe is statically
+  // futile for them. One inline number test + tag test skips the 3-frame
+  // __dyn_get_expr chain — parser loops calling s.charCodeAt through an
+  // unproven receiver were paying it per character (jessie: 1.19M/run at
+  // one site). The or's second operand reads garbage tag bits when the
+  // first is true (real number) — harmless, the or is already decided.
   return block64(
     ['local.set', `$${o}`, asF64(objIR)],
-    ['local.set', `$${p}`, ['f64.reinterpret_i64',
-      ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
+    ['local.set', `$${p}`, ['if', ['result', 'f64'],
+      ['i32.and',
+        ['f64.ne', ['local.get', `$${o}`], ['local.get', `$${o}`]],
+        ['i64.ne',
+          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
+          ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+      ['then', ['f64.reinterpret_i64',
+        ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
+      ['else', undefExpr()]]],
     ['if', ['result', 'f64'],
       ptrTypeEq(['local.get', `$${p}`], PTR.CLOSURE),
       ['then', onOverride(p, o)],

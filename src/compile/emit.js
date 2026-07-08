@@ -27,6 +27,7 @@ import {
   ASSIGN_OPS,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
+import { i64Hex } from '../../layout.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
@@ -2395,7 +2396,15 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
     const propTmp = temp('mprop')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
-    const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
+    // Primitive receivers skip the override probe — see sidecarOverride (ir.js).
+    const propRead = typed(['if', ['result', 'f64'],
+      ['i32.and',
+        ['f64.ne', ['local.get', `$${objTmp}`], ['local.get', `$${objTmp}`]],
+        ['i64.ne',
+          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
+          ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
+      ['else', undefExpr()]], 'f64')
     const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
     inc('__dyn_get_expr', '__ptr_type')
     if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
