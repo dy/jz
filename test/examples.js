@@ -437,7 +437,11 @@ test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
         'Predestined Fate': 9, 'Please Exist': 0, 'Sunrise on Mars': 4,
         'Random melody with array': 0, 'Virtual Insanity': 0, 'Bitrot': 0,
         'Ambient Waves': 0, 'Sierpinski Chords': 0, 'Sine Rider': 0,
-        'Digital Rain': 6, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
+        // Digital Rain 6→12: watr's inlineWrappers (speed tier) dissolves the
+        // closure-ABI trampoline by DUPLICATING the beat body into it — the
+        // standalone stays for direct calls, so static __to_num sites double
+        // while per-sample boxing is unchanged (each call runs one copy).
+        'Digital Rain': 12, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
     };
     for (const fb of FLOATBEATS) {
         const wat = jz.compile(moduleSrc(fb.body), { optimize: 3, wat: true });

@@ -614,6 +614,15 @@ const jzCompileInner = (code, opts = {}) => {
     if (watrOpts === true) watrOpts = { inline: 'simd' }
     else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
   }
+  // Wrapper elision (speed tier): dissolve adapter frames — closure-ABI
+  // trampolines for functions-as-values, thin dispatch heads like
+  // __dyn_get_expr — into their target at the wrapper site. The recorded
+  // "table entries native against ftN" restructure, done mechanically in the
+  // optimizer instead of per-case emit surgery (one wrapper = one duplicated
+  // target; treeshake collects whichever copy ends up unreferenced).
+  if (cfg.inlineFns) {
+    if (typeof watrOpts === 'object' && watrOpts.inlineWrappers === undefined) watrOpts.inlineWrappers = true
+  }
   // watr LICM (speed tier): hoist loop-invariant pure arithmetic AFTER watr's inlining exposes it
   // (the raytrace per-iteration NaN/Inf guard pairs). Mechanical — lives in watr, jz just enables it.
   if (cfg.watrLicm) {
