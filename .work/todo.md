@@ -170,6 +170,20 @@ distributed. NEXT CAMPAIGN: closure-call convention (devirt the
 lookup-table dispatch: monomorphic-ish per charcode → inline cache or
 direct-index call table; trampoline elision for arity-exact calls).
 That is deep-structure work — start fresh with the harness+profile here.
+RESTRUCTURE DONE (watr cd4f576 + jz f559b00): the table-entry-native-ftN
+design landed as OPTIMIZER POLICY — watr `inlineWrappers` dissolves
+adapter frames (closure-ABI trampolines, thin dispatch heads) by inlining
+the target at the wrapper site; rides cfg.inlineFns at L3/speed. dispatch
++1-2% (3/3), jessie WASH, size +2%. KEY FINDING (3rd sampler correction):
+trampoline 'self time' = irreducible f64<->i32 ABI CONVERSIONS + real
+work, not frame cost. jessie's residual dispatch tax therefore lives in
+the CLOSURE ABI ITSELF (uniform f64 slots force trunc/convert per arg per
+call) — the next deep lever is typed closure ABIs (per-arity/per-type ftN
+variants or i32-typed slots proven by the emitter), plus closure8's
+genuine descriptor-walk work. The emit.js trampoline string-builder
+(~3832-3896) stays as the fn-as-value ENTRY generator (still needed to
+mint table entries; elision happens downstream) — its deletion is no
+longer load-bearing for perf, only for taste.
 TRAMPOLINE TAIL-CALL — probed, WASH (3/3 interleaved ±1%): return_call on
 the plain-f64 forwarders doesn't move jessie because the HOT trampolines
 (tramp_parse$space$5 12ms) are the i32-RESULT case — they rebox
