@@ -1558,7 +1558,10 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // __is_eph_bits + the zombie-aware __hash_get_local_h split) rides along with __dyn_set —
 // collection writes on durable receivers log for _clear()-time healing. Correctness
 // machinery for warm instance reuse; pure size cost on this ephemeral-only program.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10652)
+// 10652→9738: the dictionary-mode/RMW work slimmed the pulled dyn-helper set
+// for this shape (the p.b static write keeps p an OBJECT; the p[k] write now
+// routes dynSetCall directly instead of the runtime key-kind dispatch chain).
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 9738)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js

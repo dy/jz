@@ -72,6 +72,20 @@ export default (ctx) => {
       // schema-slot writes to offsets >= 8 land out-of-bounds.
       const target = takeLiteralTarget()
       const merged = target ? ctx.schema.resolve(target) : null
+      // Dictionary mode: a `{}` whose binding takes ONLY computed-key access (no
+      // static prop ever — merged schema empty) is a string-keyed dictionary, not
+      // a fixed-shape record. Represent it as a real HASH so every get/set is one
+      // strict probe instead of the OBJECT dyn-sidecar detour, and the RMW fusion
+      // (`o[k] = f(o[k])`, emit-assign.js) can hold a slot address. The same
+      // heuristic V8 uses to send such objects to dictionary mode. Sound: all dyn
+      // paths dispatch on the runtime tag, and mem.Hash marshals it as a plain
+      // object at the boundary.
+      if (target && !merged?.length && ctx.types.dynWriteVars?.has(target)) {
+        ctx.module.include('collection')
+        inc('__hash_new_small')
+        updateRep(target, { val: VAL.HASH })
+        return typed(['call', '$__hash_new_small'], 'f64')
+      }
       // Register the empty schema so schemaId always indexes a real schema.list
       // entry — __json_obj and dyn-get load keys via $__schema_tbl[sid] and would
       // crash on an unregistered id 0 (table left uninitialized when list empty).

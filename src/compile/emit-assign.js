@@ -175,6 +175,83 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist,
  *  schema; typed-array element write before generic f64.store. */
 export { persistBindingPtr }
 
+// `o[k] = f(o[k])` on a (possibly-)HASH receiver — the dictionary-counting idiom
+// (histogram, wordcount, group-by). The generic lowering pays the string hash,
+// probe, equality and dispatch TWICE per statement (a full dyn get plus a full
+// dyn set). Fuse: __hash_slot probes ONCE (inserting `undefined` on miss — what
+// the read of a missing key yields), the rhs computes against the loaded slot
+// value, __slot_write stores back with the durable-heal protocol. Sound across
+// growth (the receiver box never changes — forwarding header) and across memory
+// growth (linear memory never moves). A non-HASH receiver at runtime returns
+// slot 0 and takes the untouched generic path.
+const _rmwStructEq = (a, b) => a === b ||
+  (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => _rmwStructEq(x, b[i])))
+// rhs allowlist: value ops only — a call could insert into the receiver (growing
+// the table under the held slot address), an assignment or closure likewise.
+const _rmwSafe = (n, readNode) => {
+  if (!Array.isArray(n)) return true
+  if (_rmwStructEq(n, readNode)) return true
+  const op = n[0]
+  if (op == null || op === 'str') return true
+  if (op === '()' || op === '=>' || op === 'new' || typeof op !== 'string') return false
+  if (op === '=' || op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=') return false
+  if (op === '++' || op === '--') return false
+  for (let i = 1; i < n.length; i++) if (!_rmwSafe(n[i], readNode)) return false
+  return true
+}
+function tryHashRmwFusion(arr, idx, val) {
+  if (typeof arr !== 'string') return null
+  const at = valTypeOf(arr)
+  if (at !== VAL.HASH && at != null) return null
+  // A proven-string key probes directly; an unknown-typed name key takes the same
+  // __is_str_key routing __dyn_set uses (numeric keys → slot 0 → generic path).
+  const keyStr = (typeof idx === 'string' && valTypeOf(idx) === VAL.STRING) || isLiteralStr(idx)
+  const keyUnknown = typeof idx === 'string' && valTypeOf(idx) == null
+  if (!keyStr && !keyUnknown) return null
+  const readNode = ['[]', arr, idx]
+  let reads = 0
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '[]' && _rmwStructEq(n, readNode)) { reads++; return }
+    for (let i = 1; i < n.length; i++) scan(n[i])
+  }
+  scan(val)
+  if (!reads || !_rmwSafe(val, readNode)) return null
+  const subst = (n) => !Array.isArray(n) ? n
+    : (n[0] === '[]' && _rmwStructEq(n, readNode)) ? oldT
+    : n.map((c, i) => i === 0 ? c : subst(c))
+  const oT = temp('rmo'), kT = temp('rmk'), oldT = temp('rmold'), resT = temp('rmres')
+  const slotT = tempI32('rms')
+  inc('__hash_slot', '__slot_write', '__dyn_set')
+  if (!keyStr) inc('__is_str_key')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${oT}`, asF64(emit(arr))],
+    ['local.set', `$${kT}`, asF64(emit(idx))],
+    ['local.set', `$${slotT}`, keyStr
+      ? ['call', '$__hash_slot',
+        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
+        ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]
+      : ['if', ['result', 'i32'],
+        ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]],
+        ['then', ['call', '$__hash_slot',
+          ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
+          ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]],
+        ['else', ['i32.const', 0]]]],
+    ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${slotT}`]],
+      // non-HASH receiver: the generic dynamic write of the ORIGINAL rhs (its
+      // reads re-emit as ordinary dyn gets on the same pure receiver/key)
+      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set',
+        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
+        ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
+        asI64(emit(val))]]],
+      ['else', typed(['block', ['result', 'f64'],
+        ['local.set', `$${oldT}`, ['f64.load', ['local.get', `$${slotT}`]]],
+        ['local.set', `$${resT}`, asF64(emit(subst(val)))],
+        ['call', '$__slot_write', ['local.get', `$${slotT}`],
+          ['i64.reinterpret_f64', ['local.get', `$${resT}`]]],
+        ['local.get', `$${resT}`]], 'f64')]]], 'f64')
+}
+
 export function emitElementAssign(arr, idx, val) {
   // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
   // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
@@ -217,6 +294,8 @@ export function emitElementAssign(arr, idx, val) {
         ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
       ['local.get', `$${resultTmp}`])
   }
+  const rmw = ctx.transform.optimize ? tryHashRmwFusion(arr, idx, val) : null
+  if (rmw) return rmw
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = ctx.func._expect === 'void'
@@ -313,7 +392,10 @@ export function emitElementAssign(arr, idx, val) {
   //     large i. Route to __dyn_set (the per-OBJECT propsPtr hash sidecar), mirroring
   //     emitPropertyAssign's OBJECT dot-write path; __dyn_get reads it back. This closes
   //     the `o.prop=v` vs `o[expr]=v` asymmetry that faulted the self-host.
-  if (knownArrVT === VAL.OBJECT) return dynSetCall(arr, keyExpr, valueExpr)
+  //     A known-HASH receiver (dictionary-mode `{}`) is the same class: a raw
+  //     indexed store would scribble into probe-table slots — ToPropertyKey says
+  //     o[97] addresses the '97' string slot. __dyn_set stringifies and probes.
+  if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH) return dynSetCall(arr, keyExpr, valueExpr)
 
   // A receiver "may be an OBJECT/HASH at runtime" unless the analyzer has proven it
   // is an indexable array/typed candidate (`rep.notString`, set by infer.js for

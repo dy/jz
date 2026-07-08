@@ -574,6 +574,85 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (local.get $obj))`
 }
 
+/** RMW slot upsert — genUpsertGrow's exact machinery (grow + forward-mark +
+ *  zombie-aware probe) returning the entry's VALUE SLOT ADDRESS instead of
+ *  storing a value: `o[k] = f(o[k])` fusion (emit-assign.js) hashes and probes
+ *  ONCE for the read-modify-write instead of a full get + set pair. On insert
+ *  the value seeds `undefined` (what a plain read of a missing key yields) and
+ *  the entry-log runs, so the caller's later __slot_write is an ordinary value
+ *  update. Sound across growth because the caller's BOX never changes: the old
+ *  header forward-marks and the returned address points into the new table.
+ *  Returns 0 unless the receiver is a live HASH — caller falls back to the
+ *  generic dyn read/write pair. */
+function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
+  return `(func $${name} (param $obj i64) (param $key i64) (result i32)
+    (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
+    (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
+    (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
+    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
+      (then (return (i32.const 0))))
+    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
+      (then
+        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
+        (local.set $i (i32.const 0))
+        (block $rd (loop $rl
+          (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
+          (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
+          (if (i64.ne (i64.load (local.get $oldslot)) (i64.const 0))
+            (then
+              (local.set $h (call ${hashFn} (i64.load (i32.add (local.get $oldslot) (i32.const 8)))))
+              (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
+              (block $ins (loop $probe2
+                (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (i32.const ${entrySize}))))
+                (br_if $ins (i64.eqz (i64.load (local.get $newslot))))
+                (local.set $newidx (i32.and (i32.add (local.get $newidx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
+                (br $probe2)))
+              (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
+              (i64.store (i32.add (local.get $newslot) (i32.const 8)) (i64.load (i32.add (local.get $oldslot) (i32.const 8))))
+              (i64.store (i32.add (local.get $newslot) (i32.const 16)) (i64.load (i32.add (local.get $oldslot) (i32.const 16))))
+              (i32.store (i32.sub (local.get $newptr) (i32.const 8))
+                (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $rl)))
+        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        (local.set $off (local.get $newptr))
+        (local.set $cap (local.get $newcap))))
+    (local.set $h (call ${hashFn} (local.get $key)))
+    ${probeStart(entrySize)}
+    (block $done (loop $probe
+      (if (i64.eqz (i64.load (local.get $slot)))
+        (then
+          (if (local.get $zb) (then (local.set $slot (local.get $zb))))
+          ${seqStore}
+          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
+          (i64.store (i32.add (local.get $slot) (i32.const 16)) (i64.const ${UNDEF_NAN}))
+          (i32.store (i32.sub (local.get $off) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+          (br $done)))
+      (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
+        (then (if (i32.eqz (local.get $zb)) (then (local.set $zb (local.get $slot)))))
+        (else (if ${eqExpr} (then (br $done)))))
+      ${probeNext(entrySize)}
+      (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
+      (if (i32.ge_s (local.get $ztr) (local.get $cap))
+        (then
+          (local.set $slot (local.get $zb))
+          ${seqStore}
+          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
+          (i64.store (i32.add (local.get $slot) (i32.const 16)) (i64.const ${UNDEF_NAN}))
+          (i32.store (i32.sub (local.get $off) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+          (br $done)))
+      (br $probe)))
+    (i32.add (local.get $slot) (i32.const 16)))`
+}
+
 function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing = UNDEF_NAN) {
   return `(func $${name} (param $coll i64) (param $key i64) (result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
@@ -727,6 +806,8 @@ export default (ctx) => {
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: () => ['__str_eq', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
@@ -1247,6 +1328,16 @@ export default (ctx) => {
   // comment; module load order isn't otherwise settled at the time this string
   // would eagerly evaluate (same reasoning as module/core.js's __obj_clone).
   ctx.core.stdlib['__hash_set_local'] = () => genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
+  ctx.core.stdlib['__hash_slot'] = () => genSlotUpsert('__hash_slot', MAP_ENTRY, '$__str_hash', strEqG)
+  // The RMW fusion's value update — the store plus the durable-heal protocol
+  // (mirrors durableSlotLogIR exactly; kept in the kernel so heal logic has one home).
+  ctx.core.stdlib['__slot_write'] = () => ctx.scope.globals.has('__heap_reset')
+    ? `(func $__slot_write (param $a i32) (param $v i64)
+    (i64.store (local.get $a) (local.get $v))
+    (if (i32.and (i32.lt_u (local.get $a) ${heapResetWat()}) (call $__is_eph_bits (local.get $v)))
+      (then (call $__durable_slot_log (local.get $a) (i32.const 0)))))`
+    : `(func $__slot_write (param $a i32) (param $v i64)
+    (i64.store (local.get $a) (local.get $v)))`
   // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
   // Used as the bucket-level primitive for __dyn_del.
   ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
