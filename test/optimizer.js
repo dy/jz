@@ -175,6 +175,25 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
+  // The dispatch-bench shape: a module-const array of capture-free operators,
+  // one data-indexed call site. The generic call_indirect (bounds + sig check
+  // per call) becomes a br_table over direct uniform-ABI calls, keeping the
+  // original call_indirect as the always-sound default arm (alias writes,
+  // out-of-range index → UNDEF box both land there).
+  const src = `const ops = [
+    (x, k) => (x + k) | 0,
+    (x, k) => x ^ k,
+    (x, k) => (k - x) | 0,
+  ]
+  export let f = (sel, x, k) => ops[sel & 3](x, k)`
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  ok(/br_table/.test(w), 'indexed const-fn-array call dispatches via br_table')
+  ok(/call_indirect/.test(w), 'the generic call_indirect stays as the default arm')
+  const { f } = run(src, { optimize: 'speed' })
+  is(f(0, 5, 3), 8); is(f(1, 5, 3), 6); is(f(2, 5, 3), -2)
+})
+
 test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-edge', () => {
   // The lz/qoi class of hot scalar loop. Top-test `loop { br_if exit ¬C; body; br loop }`
   // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`

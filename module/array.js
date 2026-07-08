@@ -621,8 +621,19 @@ export default (ctx) => {
       // so `const x = [1, 2, 3]` is a data segment, not an alloc.
       if (ctx.func.atModuleScope && len >= 1 && !ctx.memory.shared) {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
-        const slots = elems.map(e => extractF64Bits(asF64(emit(e))))
-        if (slots.every(b => b !== null)) return staticArrayPtr(slots)
+        const vals = elems.map(e => asF64(emit(e)))
+        const slots = vals.map(v => extractF64Bits(v))
+        if (slots.every(b => b !== null)) {
+          const ptr = staticArrayPtr(slots)
+          // Every element a capture-free closure → tag the candidate set (funcIdx +
+          // uniform-ABI body name) so a `const ops = [...arrows]` indexed CALL can
+          // lower to a br_table of direct calls (emit.js tryConstFnArrayDispatch) —
+          // the AOT form of a polymorphic inline cache, with the generic
+          // call_indirect as the always-sound default arm.
+          if (vals.length && vals.every(v => v.closureBodyName != null && v.closureFuncIdx != null))
+            ptr.fnElements = vals.map(v => ({ idx: v.closureFuncIdx, name: v.closureBodyName }))
+          return ptr
+        }
       }
       // L3/'speed' bumps the cap floor (default 4) to skip more growth cycles.
       const minCap = Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)

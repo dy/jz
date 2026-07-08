@@ -3698,6 +3698,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     splitLoopPrivateScratch(fn)
     for (let k = 0; k < 4; k++) hoistInvariantLoop(fn)
   }
+  // Const-fn-array dispatch devirt: emit tagged the call_indirect of
+  // `constOps[idx](args)` (the decl's candidate set only fills when module init
+  // emits, AFTER function bodies) — rewrite to a br_table of direct calls with
+  // the original call_indirect as the always-sound default arm.
+  if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn)
   // Loop rotation — the LAST shape pass. Runs in the pre phase (the only phase now); the
   // vectorizer above has already formed the v128 loops it skips. Speed-tier: it duplicates the
   // loop condition for a fused conditional back-edge (1.35× on the lz/qoi scalar scans). watr's
@@ -4446,6 +4451,88 @@ export function treeshake(funcSections, allModuleNodes, opts) {
  * Only the decl order changes; refs by name are unchanged and re-resolved by watr.
  * Params are fixed (their slot defines the call ABI) — only `(local …)` nodes move.
  */
+/** `constOps[idx](args)` — data-driven dispatch through a module-const array of
+ *  capture-free arrows (operator tables, strategy maps, bytecode handlers). The
+ *  generic lowering pays call_indirect's bounds + signature checks per call and
+ *  blocks V8 from inlining the tiny bodies. Emit tagged the call_indirect
+ *  (`.dvArr` = receiver name); this pass switches on the closure box's OWN
+ *  funcIdx (aux bits) via br_table into direct uniform-ABI calls — an AOT
+ *  polymorphic inline cache. The untouched original call_indirect is the
+ *  default arm, so any runtime divergence (an element overwritten through an
+ *  alias, an out-of-range index yielding the UNDEF box) takes the generic path:
+ *  semantics are bit-identical regardless of the candidate set. */
+export function devirtConstFnArrayCalls(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const cfa = ctx.scope.constFnArrays
+  if (!cfa || !cfa.size) return
+  let uid = null
+  const newDecls = []
+  const rewrite = (parent, i) => {
+    const node = parent[i]
+    const cands = cfa.get(node.dvArr)
+    if (!cands) return
+    // shape (module/function.js closure.call inline path):
+    // [call_indirect, [type,$ftN], envExpr, [i32.const,n], ...W slots, idxExtract]
+    if (!Array.isArray(node[1]) || node[1][0] !== 'type') return
+    const env = node[2], argc = node[3]
+    if (!Array.isArray(argc) || argc[0] !== 'i32.const') return
+    const idxExtract = node[node.length - 1]
+    const slots = node.slice(4, node.length - 1)
+    const lo = Math.min(...cands.map(c => c.idx)), hi = Math.max(...cands.map(c => c.idx))
+    if (hi - lo > 32) return
+    if (uid === null) uid = nextLocalId(fn, '$__dv')
+    // Spill env + every non-constant slot once; both the arms and the default read the spills.
+    const spills = []
+    const spill = (expr, tag) => {
+      if (Array.isArray(expr) && (expr[0] === 'f64.const' || expr[0] === 'local.get')) return expr
+      const name = `$__dv${uid++}${tag}`
+      newDecls.push(['local', name, 'f64'])
+      spills.push(['local.set', name, expr])
+      return ['local.get', name]
+    }
+    const envG = spill(env, 'e')
+    const slotGs = slots.map((sl, k) => spill(sl, 'a' + k))
+    const out = `$__dvo${uid}`, dflt = `$__dvd${uid}`
+    const byOff = new Map(cands.map(c => [c.idx - lo, c]))
+    const labels = Array.from({ length: hi - lo + 1 }, (_, k) => byOff.has(k) ? `$__dv${uid}_${k}` : dflt)
+    // idxExtract reads the env box — after spilling, re-point its env reference:
+    // the extraction shape is wrap(and(shr(reinterpret(ENV))...)); rebuild it on the spill.
+    const extract = ['i32.sub',
+      ['i32.wrap_i64', ['i64.and',
+        ['i64.shr_u', ['i64.reinterpret_f64', envG], ['i64.const', LAYOUT.AUX_SHIFT]],
+        ['i64.const', LAYOUT.AUX_MASK]]],
+      ['i32.const', lo]]
+    let inner = ['br_table', ...labels, dflt, extract]
+    const armOffsets = [...byOff.keys()].sort((a, b) => a - b)
+    inner = ['block', labels[armOffsets[0]], inner]
+    for (let k = 0; k < armOffsets.length; k++) {
+      const cand = byOff.get(armOffsets[k])
+      const arm = ['br', out, ['call', `$${cand.name}`, envG, argc, ...slotGs]]
+      const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
+      inner = ['block', nextLabel, inner, arm]
+    }
+    // default: the original call_indirect on the spilled operands
+    const generic = ['call_indirect', node[1], envG, argc, ...slotGs, node[node.length - 1]]
+    parent[i] = ['block', out, ['result', 'f64'], ...spills, inner, generic]
+  }
+  const walkDV = (n) => {
+    if (!Array.isArray(n)) return
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'call_indirect' && c.dvArr) { walkDV(c); rewrite(n, i); continue }
+      walkDV(c)
+    }
+  }
+  walkDV(fn)
+  if (newDecls.length) {
+    let at = typeof fn[1] === 'string' ? 2 : 1
+    while (at < fn.length && Array.isArray(fn[at]) &&
+      (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
+    fn.splice(at, 0, ...newDecls)
+  }
+}
+
 export function sortLocalsByUse(fn, precomputedCounts) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const localIdxs = []

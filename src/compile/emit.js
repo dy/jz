@@ -26,7 +26,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
@@ -1125,6 +1125,11 @@ export function emitDecl(...inits) {
       continue
     }
     if (isGlobal(name)) {
+      // Module-const array of capture-free closures: record the candidate set for
+      // indexed-call devirt (tryConstFnArrayDispatch). Const-only — a reassignable
+      // binding could point at a different array whose elements we never saw.
+      if (val.fnElements && ctx.scope.consts?.has(name))
+        (ctx.scope.constFnArrays ||= new Map()).set(name, val.fnElements)
       // Unboxed pointer const globals carry the raw i32 offset; init coerces via asPtrOffset.
       // Only an i32-STORED global is a raw pointer carrier — an f64 global holds a
       // NaN-boxed value, so coercing its init to an i32 offset (asPtrOffset → i32.wrap)
@@ -2631,16 +2636,37 @@ function tryDirectClosureCall(callee, parsed) {
     ...slots], 'f64')
 }
 
+/** Tag the generic call_indirect of `constFnArr[idx](args)` for the optimizer's
+ *  devirtConstFnArrayCalls pass (optimize/index.js). The candidate set — a
+ *  module-const array of capture-free arrows — is recorded when the DECL emits,
+ *  which happens in buildStartFn AFTER function bodies emit; so emit only marks
+ *  the site (receiver name), and the rewrite runs in optimizeFunc where the
+ *  facts are complete. */
+const tagFnArrayDispatch = (ir, arrName) => {
+  const findCI = (n) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'call_indirect') return n
+    for (let i = 1; i < n.length; i++) { const f = findCI(n[i]); if (f) return f }
+    return null
+  }
+  const ci = findCI(ir)
+  if (ci) ci.dvArr = arrName
+  return ir
+}
+
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed) {
+  const dvName = ctx.transform.optimize && !parsed.hasSpread &&
+    Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string' ? callee[1] : null
   if (parsed.hasSpread) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
     // Pass pre-built array as single already-emitted arg
     return ctx.closure.call(emit(callee), [arrayIR], true)
   }
-  return ctx.closure.call(emit(callee), parsed.normal)
+  const ir = ctx.closure.call(emit(callee), parsed.normal)
+  return dvName ? tagFnArrayDispatch(ir, dvName) : ir
 }
 
 /** Last-resort fallback: assume `(call $callee args)` against an import / unknown
