@@ -165,9 +165,24 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
      NAME (readVar picks the local; `|0` ToInt32 of UNDEF box -> 0, semantics
      preserved), store result to slot, yield it. Expect ~2x -> ratio ~1.9.
   Then: heap-string hash memo (words recur 6.8M times over 512 objects).
-- **shapes** (tag-switch over bounded schema union — same lowering toolkit as the
-  dispatch devirt), **immutable** (SROA for same-schema replace-stores),
-  **jessie** (kernel parse) — design campaigns, in WASM_TODO.
+- **wordcount — CLOSED to 1.91x** (b013782): dictionary-mode {} (computed-only
+  binding -> real HASH, V8's own heuristic) + fused RMW `o[k]=f(o[k])` via
+  __hash_slot/__slot_write (one probe instead of get+set). Remaining vs V8:
+  str_hash + str_eq per op — the heap-string hash-memo lever (words recur 6.8M
+  times over 512 objects; SSO covers <=6 chars, 7-8 char words re-hash bytes).
+- **shapes 3.6x — DESIGNED**: schema-set devirt at property reads. New
+  program-facts lattice: per-param/binding CANDIDATE SCHEMA SET (monotone union,
+  bounded <=16, poison on overflow — extends the existing single-sid
+  inferSchemaId/arrayElemSchema facts). Emit `o.x` with a schemaSet fact as:
+  sid = aux bits of the box -> br_table over candidate sids -> arm = direct
+  f64.load(off + slotOf(schema_k,'x')*8) or UNDEF when schema_k lacks x ->
+  default arm = generic __dyn_get (alien schema, always sound). Same toolkit as
+  the dispatch devirt (d9418b7): bounded candidates + br_table + generic default.
+  ~6 ops/read vs the ~50-op megamorphic __dyn_get_any_t_h probe; 23 sites in the
+  bench. Bench guards reads by `o.k`, so arms are dead-branch-prunable later
+  (flow refinement), but the flat switch alone should close most of 3.6x.
+- **immutable** (SROA for same-schema replace-stores), **jessie** (kernel parse)
+  — design campaigns, in WASM_TODO.
 
 ## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
 Real and pending, ranked: (1) watr: split binary-size revert guard off the default
