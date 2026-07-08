@@ -306,6 +306,13 @@ export default (ctx) => {
   // OBJECT slots (offsets < heap base) don't misread arbitrary memory at off-16.
   // Updated by optimizeModule() when data segment exceeds HEAP.START bytes.
   declGlobal('__heap_start', 'i32', HEAP.START)
+  // Current memory limit in BYTES — __alloc's inline fast-path check
+  // (`next > __heap_end` → slow __memgrow call) replaces a per-alloc call whose
+  // page math always concluded "no grow" (jessie: 1.1M entries/run). __memgrow
+  // updates it after any growth; stale-LOW is safe (one extra slow call) and
+  // wasm memory never shrinks. 65536-page (4 GiB) memories wrap the shl to 0 —
+  // every alloc slow-paths there, still correct. Seeded 0: first alloc pays once.
+  declGlobal('__heap_end', 'i32', 0)
 
   // Shared memory keeps the heap pointer in linear memory (memory[HEAP.PTR_ADDR]):
   // wasm globals are per-instance, so threads sharing one memory must share one
@@ -336,7 +343,8 @@ export default (ctx) => {
           (then (local.set $cur (i32.sub (i32.const 65536) (memory.size)))))  ;; cap at wasm32 max
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
-            (then (unreachable))))))))`
+            (then (unreachable)))))))
+    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16))))`
 
   if (ctx.memory.shared) {
     // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at
@@ -345,7 +353,8 @@ export default (ctx) => {
       (local $ptr i32) (local $next i32)
       (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (call $__memgrow (local.get $next))
+      (if (i32.gt_u (local.get $next) (global.get $__heap_end))
+        (then (call $__memgrow (local.get $next))))
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
       (local.get $ptr))`
     // NOTE: shared memory rewinds to the raw HEAP.START, NOT a post-init high-water
@@ -375,7 +384,8 @@ export default (ctx) => {
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (call $__memgrow (local.get $next))
+      (if (i32.gt_u (local.get $next) (global.get $__heap_end))
+        (then (call $__memgrow (local.get $next))))
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
     // __clear rewinds the bump arena, but __dyn_props/__dyn_get_cache_* (declared
