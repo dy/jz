@@ -168,6 +168,17 @@ cache at _h const-key call sites (monomorphic in this workload). Expected:
 the full 94ms ihash + part of dyn_get_t_h 24ms ≈ ~40% of jessie runtime.
 Note: .loc writes (115k/run) allocate a per-node __hash_new_small — the
 allocation churn is the secondary sink to check after closure props.
+4-WAY RECEIVER CACHE — REFUTED (built + interleaved-measured): extending
+the 1-slot dyn_get cache to 4 slots (both arms, rotate-evict, dyn_set
+matching-slot update, _clear resets) made jessie +8-11% SLOWER, 3/3
+interleaved pairs. The 1-slot cache already serves the hot closure receiver
+in one compare; the durable-arm __ihash probes are evidently far cheaper
+than the cpu-prof self-time suggested. CAVEAT for the whole 94ms reading:
+V8 sampling attribution for tiny hot leaf wasm functions is suspect —
+re-verify with a counted-cycles harness (helperCounters + wall-time deltas
+from selectively nulling arms) BEFORE the next dyn-path surgery. Exact
+ihash call split (jessie-attrib3): 1.07M durable-arm + 473k fallback-arm
+cache-miss + 398k direct (space_5 Map op) + 127k dyn_set.
 LEVER-(a) SCOPING (2026-07-08 probe, scratchpad/dict-micro.mjs): a LOCAL
 module-level `let d = {}` with only-dynamic uses ALREADY lowers to
 __hash_get_local_h/__hash_set_local — the dict inference exists for simple
