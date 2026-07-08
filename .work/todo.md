@@ -149,6 +149,25 @@ the 3-frame chain + durable double-probe) — needs cross-module type flow on
 the table bindings; (b) shrink dyn_get_t_h's durable path (the
 dynPropsFilterMissIR bloom already gates it — the 2.1M ihash hits mean the
 filter passes; investigate why); (c) helper-internal fwd-free extracts.
+TIME PROFILE (2026-07-08, --cpu-prof on names:true jessie wasm — the call
+COUNTS above were misleading; counts ≠ time): __ihash_get_local self=94ms
+of ~270ms total wasm self-time (35%!), __dyn_get_t_h 24ms, __str_hash 14ms.
+The dyn_get_t key chain was eliminated (array-index element arms, 7c42b30 —
+attribution shows ZERO chain calls) and jessie wall time did NOT move: the
+chain was calls, not time. THE REAL SINK: subscript stores parse.space/
+step/enter/exit/id AS PROPERTIES ON THE PARSE FUNCTION (a CLOSURE), and
+closures have no off-16 header sidecar — every parse.step/space read
+(1.6M+/run, const-key _h path) probes the global __dyn_props int-hash
+(CLOSURE → global-table arm in __dyn_get_t_h; the 1-slot dyn_get cache
+thrashes between parse's ~6 hot props receivers/keys). NEXT LEVER (the
+generic-baseline fix): give closure receivers a header props slot (allocate
+env with an off-16 sidecar like OBJECT/ARRAY, or a dedicated props cell in
+the closure env) so closure-prop reads take the header-sidecar path — kills
+the global probe + its cache pressure. Alternatively a receiver+key inline
+cache at _h const-key call sites (monomorphic in this workload). Expected:
+the full 94ms ihash + part of dyn_get_t_h 24ms ≈ ~40% of jessie runtime.
+Note: .loc writes (115k/run) allocate a per-node __hash_new_small — the
+allocation churn is the secondary sink to check after closure props.
 LEVER-(a) SCOPING (2026-07-08 probe, scratchpad/dict-micro.mjs): a LOCAL
 module-level `let d = {}` with only-dynamic uses ALREADY lowers to
 __hash_get_local_h/__hash_set_local — the dict inference exists for simple
