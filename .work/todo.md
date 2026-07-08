@@ -168,6 +168,20 @@ cache at _h const-key call sites (monomorphic in this workload). Expected:
 the full 94ms ihash + part of dyn_get_t_h 24ms ≈ ~40% of jessie runtime.
 Note: .loc writes (115k/run) allocate a per-node __hash_new_small — the
 allocation churn is the secondary sink to check after closure props.
+CAUSAL CONFIRMATION (probe-doubling, 3/3 interleaved): duplicating the
+durable-arm __ihash_get_local call costs +2.7-3.0ms median (+30%) — the
+1.07M probes really are ~31% of jessie runtime; the cpu-prof self-time was
+RIGHT and the 4-way cache loss (below) is a mechanism failure, not a
+mis-attribution. Open puzzle for the next design: why did a 4-entry cache
+lose while the probes cost 2.8ms? First measure receiver CARDINALITY
+(histogram $off in the durable arm) — if the hot set is >4 (e.g. many
+durable receivers with NO global props each caching a 0-sentinel and
+evicting each other), the cache needs to be receiver-SIDE instead: cache
+the global-table resolution in the durable receiver's own off-16 header
+slot at first runtime read (headers are durable; the cached ptr is
+ephemeral → needs _clear healing via the existing __durable_slot_log
+machinery). That converts the probe to one header load, per receiver, no
+shared-cache eviction at all.
 4-WAY RECEIVER CACHE — REFUTED (built + interleaved-measured): extending
 the 1-slot dyn_get cache to 4 slots (both arms, rotate-evict, dyn_set
 matching-slot update, _clear resets) made jessie +8-11% SLOWER, 3/3
