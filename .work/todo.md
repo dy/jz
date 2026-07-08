@@ -316,19 +316,28 @@ watrCompile encode 2.9ms, everything else ≤3ms.
       json 158→140 (1.13x), raytrace 130→112 (1.16x), wordcount 163→136
       (1.20x). Kernel A/B 0.9949 (kernel embeds watr → compiles faster too).
       Activates when watr >5.2.3 publishes (option is a no-op on 5.2.3).
-    Remaining (updated post-fusion CPU profile, per-module @speed):
-    - cse collect/processScope ≈26ms on big modules (finish, once).
-    - coalesceLocals in rounds ≈24ms — REFUTED removing it from rounds
-      (crc32 −4.5ms but json/wordcount +6ms, size wobbles ±20B): it earns
+    - [x] cse memoized bottom-up facts — LANDED watr da24c0e. O(n·depth)→O(n)
+      collection; byte-identical; kernel-module optimize ~1%, medium neutral.
+    - [x] inline simdOnly prefilter — LANDED watr b06ff0c (2-5ms/module).
+    - [x] SELFHOST BUILD: watrGuard:false in scripts/selfhost-build.mjs —
+      kernel watOptimize is 70s of the 83s build; the guard's two encodes of
+      the 6.6MB kernel = ~12s (CPU profile: instrSize 7.4s + localidx 2.2s +
+      codeItemSize 1.0s + idx helpers). Build 83.4s→69.6s. Kernel +3.7KB
+      (+0.06%, the inflation the guard used to revert); kernel A/B 1.0055 =
+      sub-noise; selfhost 20/20, pins/goldens green.
+    Remaining (kernel profile, self-time — the honest column; totals for
+    recursive fns are analyzer-inflated):
+    - walk/walkPost visitor overhead 17s/70s kernel — the structural floor;
+      specialization territory (per-pass fused walkers).
+    - hashFunc 4.4s kernel — convergence + dedupe re-hash every func every
+      round; needs module passes to report touched funcs or a shared memo.
+    - tallyLocals (countLocalUses) 2.9s kernel — per-func recount each
+      propagate entry per round; CNT is maintained cross-round in-pass but
+      re-derived per round.
+    - coalesceLocals in rounds ≈24ms/module — REFUTED removing it from
+      rounds (crc32 −4.5ms but json/wordcount +6ms, size wobbles): it earns
       its keep mid-rounds. Win must come from making it cheaper, not rarer.
-    - finish:inline scan 7-11ms even when simdOnly finds few candidates —
-      prefilter by callee-name set before the full candidate scan.
-    - hashConverge full-module hashFunc every round (~1.6ms × 5) + dedupe
-      re-hashing every func every round — needs module passes to report
-      touched funcs (or a shared hash memo) to shrink soundly.
-    - inlineOnce candidate scan 7-9ms.
-    - propagate residual: walk/walkPost visitor overhead is now the floor
-      (~700ms self across 20 module-optimizes) — specialization territory.
+    - inlineOnce candidate scan 7-9ms/module.
     These are generic engine fixes (help every watr user + every jz tier).
 (3) watr encoder local-decl grouping — DONE jz-side (sortLocalsByUse).
 csePureExprLoop/cseScalarLoad stay — prototypes for the watr CSE port

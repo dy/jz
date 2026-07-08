@@ -42,8 +42,13 @@ const wasm = compile(g.code, {
   // Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
   // watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
   // time and ships as pure data; __start is deleted. JZ_SELFHOST_SNAPSHOT=0 opts out.
+  // watrGuard:false — skip watr's size-revert guard (two full encodes of the
+  // 6.6MB kernel ≈ 12s of the build, measured by CPU profile: instrSize/
+  // localidx/codeItemSize self-time). The kernel is a controlled artifact
+  // whose size test/perf pins track; the guard's never-inflate policing is
+  // redundant here. No-op until watr >5.2.3 lands the option.
   optimize: selfOptLevel === false ? false
-    : { level: selfOptLevel, snapshotInit: !/^(0|false|no)$/i.test(process.env.JZ_SELFHOST_SNAPSHOT || '1') },
+    : { level: selfOptLevel, watrGuard: false, snapshotInit: !/^(0|false|no)$/i.test(process.env.JZ_SELFHOST_SNAPSHOT || '1') },
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
