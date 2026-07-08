@@ -6,10 +6,14 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
+<!-- p/cluster-count readout: top-center, chladni/hydrogen-style halo label -->
+<div id="stat" style="position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:40;font:600 16px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.04em;color:#fff;text-shadow:0 0 4px rgba(0,0,0,.95),0 0 1px rgba(0,0,0,.95),0 1px 2px rgba(0,0,0,.8);pointer-events:none"></div>
+
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 let baseP = 0.593, userSet = false
+const statEl = document.getElementById("stat")
 const demo = runDemo({
   name: "percolation",
   hint: "Site percolation — drag ↕ to set p (phase transition near pc≈0.593)",
@@ -19,6 +23,8 @@ const demo = runDemo({
     if (ptr.down) { p = 1.0 - ptr.y; if (p < 0) p = 0; if (p > 1) p = 1; baseP = p; userSet = true }
     else p = userSet ? baseP : 0.5 + 0.18 * Math.sin(t * 0.15)
     e.frame(t, p)
+    const clusters = e.clusterCount()
+    statEl.innerHTML = `p <b style="font-weight:700">${p.toFixed(3)}</b> &nbsp; clusters <b style="font-weight:700">${clusters}</b>`
   },
 })
 const ptr = trackPointer(demo.cv)

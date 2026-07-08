@@ -15,7 +15,7 @@ const demo = runDemo({
   size: { dpr: 1.5, budget: 600000 },
   bg: "#f3f1ec",
   cursor: "grab",
-  frame: (e) => e.frame(0),
+  frame: (e, t) => e.frame(t),
 })
 
 const sx = () => demo.W / demo.cv.clientWidth, sy = () => demo.H / demo.cv.clientHeight

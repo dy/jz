@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+// Cornell box constants mirrored from pathtracer.js (kernel is the source of truth; these just
+// let the driver clamp the dragged light to the same safe inset before handing it to setLight).
+// The room widens past XH_BASE on a wider-than-tall canvas (see pathtracer.js's `widen`/`roomHW`
+// — same formula here) so the light's drag range and speed stay proportional to the room the
+// user is actually looking at, not the aspect-1 default.
+const XH_BASE = 1.0, ZB = 2.0, LIGHT_HW_BASE = 0.24, LIGHT_HZ = 0.20, MARGIN = 0.05
+const widenOf = () => { const a = demo.W / demo.H; return a > 1 ? a : 1 }
+const homeLight = { x: 0.0, z: 1.0 }
+let lx = homeLight.x, lz = homeLight.z
+let dragging = false, lastX = 0, lastY = 0
+
+const clampLight = () => {
+  const w = widenOf(), roomHW = XH_BASE * w, lightHW = LIGHT_HW_BASE * w
+  const xlim = roomHW - lightHW - MARGIN, zlo = LIGHT_HZ + MARGIN, zhi = ZB - LIGHT_HZ - MARGIN
+  if (lx < -xlim) lx = -xlim
+  if (lx > xlim) lx = xlim
+  if (lz < zlo) lz = zlo
+  if (lz > zhi) lz = zhi
+}
+
+const demo = runDemo({
+  name: "pathtracer",
+  hint: "progressive Monte Carlo path tracing — Cornell box, a mirror sphere and a glass sphere · drag to move the light",
+  size: { budget: 150000 },
+  cursor: "grab",
+  load: (e) => { lx = homeLight.x; lz = homeLight.z; e.init() },
+  frame: (e) => { e.frame() },
+})
+
+demo.cv.addEventListener("pointerdown", (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY
+  demo.cv.style.cursor = "grabbing"
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+})
+demo.cv.addEventListener("pointermove", (e) => {
+  if (!dragging || !demo.engine) return
+  const r = demo.cv.getBoundingClientRect()
+  const dx = e.clientX - lastX, dy = e.clientY - lastY
+  lastX = e.clientX; lastY = e.clientY
+  // a full-width drag sweeps the light across the whole ceiling; up/down steers it front/back
+  lx += (dx / r.width) * XH_BASE * widenOf() * 2.4
+  lz -= (dy / r.height) * ZB * 1.8
+  clampLight()
+  demo.engine.setLight(lx, lz)
+  demo.engine.reset()
+})
+const endDrag = () => { dragging = false; demo.cv.style.cursor = "grab" }
+demo.cv.addEventListener("pointerup", (e) => { endDrag(); try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", endDrag)
+</script>
+</body>
+</html>

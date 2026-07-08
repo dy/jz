@@ -28,7 +28,7 @@ const cnv = document.getElementsByTagName("canvas")[0];
 const ctx = cnv.getContext("2d");
 // Build the masthead + bottom bar first so the canvas-fit framing is applied before we
 // measure — the backing then matches the framed box (fills edge-to-edge, no letterbox).
-const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
+const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom — perturbation theory carries it past 10³⁰×, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
 // Viewport size — the framed canvas box at CSS-pixel res (every frame recomputes the whole
 // set, so we don't multiply by DPR: retina would 4× the per-frame cost).
@@ -50,12 +50,54 @@ let dirty = true;   // recompute only when the view changed — a static set nee
 // moment after you stop, re-render once at full depth for crisp detail.
 let interacting = false, idleT = 0;
 const touch = () => { interacting = true; dirty = true; clearTimeout(idleT); idleT = setTimeout(() => { interacting = false; dirty = true; }, 180); };
+
+// ── Deep zoom: perturbation theory past float64's ~1e14× wall ──────────────────────────────
+// jz's kernel subset forbids BigInt, so the high-precision view centre lives HERE — plain JS,
+// never compiled. Below DEEP_ZOOM the kernel's own computeLine (unchanged, plain float64) is fast
+// and exact; past it, (cx,cy) as ordinary doubles can no longer distinguish a pixel from its
+// neighbour (computeLine's translateX = width*0.5 − cx/scale catastrophic-cancels), so instead we
+// track the centre as a fixed-point BigInt and hand the kernel a REFERENCE ORBIT — z=z²+C iterated
+// at that centre to arbitrary precision, stored to double precision per step (a reference value's
+// own magnitude stays small — double holds it fine once computed). Each pixel then iterates only
+// its tiny offset from the reference via computeLineDeep — see mandelbrot.js for the delta math.
+const PREC = 256n;                // fractional bits of the fixed-point centre
+const PREC_SCALE = 2 ** 256;      // floor resolution 2^-256 ≈ 8.6e-78 — vast headroom past 1e-30×
+const toFix = (x) => BigInt(Math.round(x * PREC_SCALE));    // double → fixed-point (exact: ×2^k never rounds)
+const toDouble = (b) => Number(b) / PREC_SCALE;             // fixed-point → best double approximation
+const DEEP_ZOOM = 1e-9;           // switch once a pixel spans under this many complex-plane units —
+                                  // ~1e5–1e7× the home view, comfortably inside float64's actual
+                                  // ~1e13–1e14× failure point, so both paths are clean at the crossing.
+let deep = false, cxBI = 0n, cyBI = 0n;
+let refReView = null, refImView = null, maxRef = 20000;
+
+// Recompute the reference orbit at the CURRENT high-precision centre, to `limit` steps (capped at
+// the kernel's capacity). refReView/refImView are LIVE Float64Array views straight into the
+// kernel's own memory (mandelbrot.js's getRefRe/getRefIm) — plain JS index writes cross the
+// JS⇄wasm boundary with no per-element call. Re-derived every dirty frame while deep: a few
+// thousand BigInt steps cost low-single-digit ms, negligible next to the per-pixel work it unlocks.
+const computeReferenceOrbit = (limit) => {
+  let zRe = 0n, zIm = 0n, n = 0;
+  while (n < limit && n < maxRef) {
+    const zReD = toDouble(zRe), zImD = toDouble(zIm);
+    refReView[n] = zReD; refImView[n] = zImD;
+    n++;
+    if (zReD * zReD + zImD * zImD > 256.0) break;   // BAILOUT — must match mandelbrot.js's constant
+    const rawRe = zRe * zRe - zIm * zIm;
+    const rawIm = 2n * zRe * zIm;
+    zRe = (rawRe >> PREC) + cxBI;
+    zIm = (rawIm >> PREC) + cyBI;
+  }
+  engine.setRefLen(n);
+};
+
 const resetView = () => {
   const s = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);
   view.cx = (width * 0.5 - width * (1.0 / 1.6)) * s;
   view.cy = 0;
   view.zoom = s;
   homeZoom = s;
+  deep = false;
+  cxBI = 0n; cyBI = 0n;
   dirty = true;
   if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
 };
@@ -64,6 +106,9 @@ async function start(kind) {
   const my = ++gen;
   engine = await loadEngine(kind, urls);
   mem = engine.resize(width, height); // Uint16Array: JS buffer or wasm view
+  refReView = engine.getRefRe();
+  refImView = engine.getRefIm();
+  maxRef = engine.getMaxRef();
   resetView();
 
   (function render() {
@@ -78,11 +123,24 @@ async function start(kind) {
     // One-directional quality: a stable base iteration count, raised with zoom DEPTH so deeper views
     // resolve the boundary crisply instead of going blocky. No breathing oscillation — that flickered
     // detail in and out ("reverse animation") and never helped. +48 iterations per 2× zoom, capped.
+    // Deep zoom gets a much higher ceiling than shallow: perturbation makes the extra iterations
+    // affordable — the cost that would explode at depth is high-precision PER-PIXEL arithmetic,
+    // which this avoids entirely (only the shared reference orbit ever needs the extra precision).
     const depth = homeZoom > 0 ? Math.max(0, Math.log2(homeZoom / view.zoom)) : 0;
-    const full = Math.min(1500, 80 + Math.round(depth * 48));
-    const limit = interacting ? Math.min(full, 240) : full;   // cheap while moving, crisp once settled
+    const full = Math.min(deep ? 12000 : 1500, 80 + Math.round(depth * 48));
+    // Deep's per-iteration cost runs ~5× shallow's (no SIMD — rebasing branches per pixel — plus
+    // heavier delta arithmetic), so the SAME interacting cap that keeps shallow's drag/zoom fluid
+    // would stall deep's. Lower the cap only there; the mechanism (cheap while moving, crisp once
+    // settled) is unchanged.
+    const interactCap = deep ? 60 : 240;
+    const limit = interacting ? Math.min(full, interactCap) : full;
     const t0 = performance.now();
-    for (let y = 0; y < height; ++y) engine.computeLine(y, width, height, limit);
+    if (deep) {
+      computeReferenceOrbit(limit);
+      for (let y = 0; y < height; ++y) engine.computeLineDeep(y, width, height, limit);
+    } else {
+      for (let y = 0; y < height; ++y) engine.computeLine(y, width, height, limit);
+    }
     const work = performance.now() - t0;
     for (let i = 0, n = width * height; i < n; ++i) argb[i] = colors[mem[i]];
     h.paint(argb, argb);
@@ -103,8 +161,10 @@ cnv.addEventListener('pointermove', e => {
   if (!dragging) return;
   const dx = e.clientX - lastX, dy = e.clientY - lastY;
   lastX = e.clientX; lastY = e.clientY;
-  view.cx -= dx * view.zoom;
-  view.cy -= dy * view.zoom;
+  // Deep: pan updates the high-precision centre from the screen delta (BigInt, unbounded);
+  // shallow: unchanged plain-double math.
+  if (deep) { cxBI -= toFix(dx * view.zoom); cyBI -= toFix(dy * view.zoom); }
+  else { view.cx -= dx * view.zoom; view.cy -= dy * view.zoom; }
   touch();
   if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
 });
@@ -115,11 +175,25 @@ cnv.addEventListener('wheel', e => {
   const rect = cnv.getBoundingClientRect();
   const pxX = e.clientX - rect.left, pxY = e.clientY - rect.top;
   const k = Math.exp(e.deltaY * 0.001);   // scroll up → zoom IN (consistent with julia / ship / buddhabrot)
-  const preX = view.cx + (pxX - width * 0.5) * view.zoom;
-  const preY = view.cy + (pxY - height * 0.5) * view.zoom;
-  view.zoom *= k;
-  view.cx = preX - (pxX - width * 0.5) * view.zoom;
-  view.cy = preY - (pxY - height * 0.5) * view.zoom;
+  if (deep) {
+    // Same cursor-anchored zoom as below, carried in the BigInt centre — unbounded, so zoom never
+    // has to stop the way it did at float64's wall.
+    const preRe = cxBI + toFix((pxX - width * 0.5) * view.zoom);
+    const preIm = cyBI + toFix((pxY - height * 0.5) * view.zoom);
+    view.zoom *= k;
+    cxBI = preRe - toFix((pxX - width * 0.5) * view.zoom);
+    cyBI = preIm - toFix((pxY - height * 0.5) * view.zoom);
+  } else {
+    const preX = view.cx + (pxX - width * 0.5) * view.zoom;
+    const preY = view.cy + (pxY - height * 0.5) * view.zoom;
+    view.zoom *= k;
+    view.cx = preX - (pxX - width * 0.5) * view.zoom;
+    view.cy = preY - (pxY - height * 0.5) * view.zoom;
+  }
+  // Cross the threshold right here, in whichever direction — this is the one moment both
+  // representations are simultaneously valid, so the conversion never loses precision.
+  if (!deep && view.zoom < DEEP_ZOOM) { cxBI = toFix(view.cx); cyBI = toFix(view.cy); deep = true; }
+  else if (deep && view.zoom >= DEEP_ZOOM) { view.cx = toDouble(cxBI); view.cy = toDouble(cyBI); deep = false; }
   touch();
   if (engine?.setView) engine.setView(view.cx, view.cy, view.zoom);
 }, { passive: false });

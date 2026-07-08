@@ -15,7 +15,7 @@ const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
 
 const demo = runDemo({
   name: "lbm",
-  hint: "lattice-Boltzmann flow — a von Kármán vortex street · hold to draw an obstacle",
+  hint: "lattice-Boltzmann flow — a dye filament threads the von Kármán vortex street · hold to draw an obstacle",
   size: { budget: 170000 },
   frame: (e, t, d) => {
     if (drawing && e.addObstacle) { e.addObstacle(dx, dy, dr); dr = Math.min(dr + 0.8, (d.W < d.H ? d.W : d.H) * 0.25) }

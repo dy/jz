@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+// Tessendorf FFT ocean: a Phillips-spectrum wave field, inverse-FFT synthesized every frame
+// (256×256, radix-2, in-kernel), rendered as a moonlit night sea — a tilted horizon camera,
+// the glitter path running from the horizon to the viewer. Dragging steers the wind (direction
+// & speed) — the kernel reshapes the SAME random field, so the sea morphs smoothly instead of
+// flickering. Idle, it just keeps rolling.
+const dragTo = (cx, cy) => {
+  if (!demo.engine) return
+  const bx = cx * demo.W / demo.cv.clientWidth, by = cy * demo.H / demo.cv.clientHeight
+  demo.engine.setWind(bx - demo.W * 0.5, by - demo.H * 0.5)
+}
+
+let dragging = false
+
+const demo = runDemo({
+  name: "ocean",
+  hint: "tessendorf FFT ocean — a Phillips-spectrum wave field, inverse-FFT synthesized every frame, under a moon's glitter path · drag to steer the wind",
+  size: { budget: 300000 },
+  bg: "#000",
+  frame: (e, t) => { e.frame(t) },
+  randomize: (e) => e.reseed((Math.random() * 1e9) | 0),
+})
+
+demo.cv.addEventListener("pointerdown", (e) => {
+  dragging = true
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+  dragTo(e.offsetX, e.offsetY)
+})
+demo.cv.addEventListener("pointermove", (e) => { if (dragging) dragTo(e.offsetX, e.offsetY) })
+demo.cv.addEventListener("pointerup", (e) => { dragging = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { dragging = false })
+</script>
+</body>
+</html>

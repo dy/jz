@@ -6,11 +6,18 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
+<!-- k/N readout: bottom, chladni-style halo label -->
+<div id="stat" style="position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;font:600 16px 'Helvetica Neue',Helvetica,Arial,sans-serif;letter-spacing:.04em;color:#fff;text-shadow:0 0 4px rgba(0,0,0,.95),0 0 1px rgba(0,0,0,.95),0 1px 2px rgba(0,0,0,.8);pointer-events:none"></div>
+
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// k auto-drifts upward (cardioid → nephroid → …); drag scrubs k directly, vertical sets N.
-let k = 2.0, n = 280, userSet = false
+// Idle tour: k ping-pongs smoothly between 2 (cardioid) and 60 (a dense high-order epicycloid)
+// and back, forever — cosine easing so it slows into each end and reverses with no jarring wrap
+// (a linear drift + snap-back would jump; a plain triangle wave would still corner sharply).
+const LO = 2.0, HI = 60.0
+let k = LO, n = 280, userSet = false
+const statEl = document.getElementById("stat")
 const demo = runDemo({
   name: "times-table",
   hint: "multiplication tables mod N — drag ↔ to scrub the multiplier, ↕ for the point count",
@@ -21,9 +28,10 @@ const demo = runDemo({
       n = Math.round(60 + (1 - ptr.y) * 360)
       userSet = true
     } else if (!userSet) {
-      k = 2.0 + t * 0.05
+      k = LO + (HI - LO) * (0.5 - 0.5 * Math.cos(t * 0.026))
     }
     e.frame(t, k, n)
+    statEl.innerHTML = `k <b style="font-weight:700">${k.toFixed(2)}</b> &nbsp; N <b style="font-weight:700">${n}</b>`
   },
   // re-roll: jump to a random multiplier and point count, and hold there (drag or re-roll to move on)
   randomize: () => { k = 1.0 + Math.random() * 47.0; n = Math.round(60 + Math.random() * 360); userSet = true },

@@ -19,9 +19,13 @@ let manual = false, manualAt = -10, nowT = 0, curN = 3, curM = 5
 
 const demo = runDemo({
   name: "chladni",
-  hint: "Chladni plate — drag: horizontal sets the across-wave n, vertical the down-wave m",
-  size: { dpr: 2, budget: null },
+  hint: "Chladni plate — sand finds the nodal lines; drag: horizontal sets n, vertical sets m",
+  // budget (unlike the old uncapped field-only render): the grain pass adds real per-pixel cost, so
+  // an uncapped retina backing (e.g. true 4K on a 2x display) no longer holds 60fps — 2M px keeps
+  // dpr:2's crispness on typical viewports while bounding the worst case.
+  size: { dpr: 2, budget: 2000000 },
   cursor: "move",
+  load: (e) => e.init(),
   frame: (e, t) => {
     nowT = t
     if (manual && t - manualAt > 6) manual = false

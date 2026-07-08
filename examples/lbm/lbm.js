@@ -1,13 +1,17 @@
 // Lattice-Boltzmann fluid (D2Q9) — wind blows past a cylinder and sheds a von Kármán
 // vortex street. Each cell holds 9 distribution functions that relax toward local
 // equilibrium (collide) and shift to neighbours (stream), with bounce-back on the cylinder
-// and channel walls. It's a dense, fully-parallel stencil over 9 fields — a heavy, cache-
-// bound number cruncher, exactly where jz earns its keep. The curl of the flow is drawn as
-// a grayscale field. resize(w,h) → Uint32Array; frame() advances; reseed() reinitializes.
+// and channel walls. A passive dye field rides on top: semi-Lagrangian backtrace (one
+// bilinear gather) along the macroscopic velocity, fed by a thin filament injected upstream
+// of the obstacle every frame — the dye threads downstream and wraps into the shed
+// vortices, the classic smoke-wire picture. It's a dense, fully-parallel stencil over 9
+// fields — a heavy, cache-bound number cruncher, exactly where jz earns its keep. Rendered
+// as the dye (bright, primary) over a dim vorticity field; solids dark.
+// resize(w,h) → Uint32Array; frame() advances; reseed() reinitializes.
 
 let W = 0, H = 0, px
 let f, ft             // distributions: 9 fields packed as k*n + c
-let ux, uy            // macroscopic velocity (for rendering vorticity)
+let ux, uy            // macroscopic velocity (for rendering vorticity + advecting the dye)
 let solid             // obstacle mask
 let ex, ey, wt, opp   // D2Q9 lattice
 let bcx = new Float64Array(8), bcy = new Float64Array(8), bcr = new Float64Array(8), nb = 0  // blob circles
@@ -15,6 +19,11 @@ let n = 0
 let U0 = 0.09         // inflow speed
 let TAU = 0.62        // relaxation time (>0.5 for stability)
 let SUB = 4           // LBM steps per rendered frame
+
+let dye, dye0         // passive dye tracer + its pre-advect snapshot
+let DYE_FADE = 0.9993 // slow fade (~16s half-life) — the ribbon persists long enough to wrap the street
+let DYE_SRC = 1.0     // filament source strength
+let injX = 0, injY0 = 0, injY1 = 0   // thin filament source, upstream of the obstacle cluster
 
 export let resize = (w, h) => {
   W = w; H = h; n = w * h
@@ -27,6 +36,9 @@ export let resize = (w, h) => {
   wt[0] = 0.4444444; wt[1] = 0.1111111; wt[2] = 0.1111111; wt[3] = 0.1111111; wt[4] = 0.1111111
   wt[5] = 0.0277778; wt[6] = 0.0277778; wt[7] = 0.0277778; wt[8] = 0.0277778
   opp[0] = 0; opp[1] = 3; opp[2] = 4; opp[3] = 1; opp[4] = 2; opp[5] = 7; opp[6] = 8; opp[7] = 5; opp[8] = 6
+  dye = new Float64Array(n); dye0 = new Float64Array(n)
+  injX = (W * 0.08) | 0; if (injX < 2) injX = 2
+  injY0 = (H * 0.5 - H * 0.05) | 0; injY1 = (H * 0.5 + H * 0.05) | 0
   reseed()
   return px = new Uint32Array(n)
 }
@@ -54,6 +66,7 @@ export let reseed = () => {
         while (k < nb) { let dx = x - bcx[k], dy = y - bcy[k]; if (dx * dx + dy * dy < bcr[k] * bcr[k]) { s = 1; k = nb } else k++ }
       }
       solid[c] = s
+      dye[c] = 0.0
       let k2 = 0
       while (k2 < 9) {
         let eu = ex[k2] * U0
@@ -79,6 +92,17 @@ export let addObstacle = (cx, cy, r) => {
     while (x <= x1) { let dx = x - cx; if (dx * dx + dy * dy <= r2) solid[row + x] = 1; x++ }
     y++
   }
+}
+
+// bilinear sample of grid arr (dims W×H), clamped to the interior
+let samp = (arr, x, y) => {
+  if (x < 0.5) x = 0.5; else if (x > W - 1.5) x = W - 1.5
+  if (y < 0.5) y = 0.5; else if (y > H - 1.5) y = H - 1.5
+  let i0 = x | 0, j0 = y | 0
+  let sx = x - i0, sy = y - j0
+  let b = j0 * W + i0
+  let a = arr[b], c = arr[b + 1], d = arr[b + W], e = arr[b + W + 1]
+  return a * (1.0 - sx) * (1.0 - sy) + c * sx * (1.0 - sy) + d * (1.0 - sx) * sy + e * sx * sy
 }
 
 let collideStream = () => {
@@ -139,11 +163,35 @@ let collideStream = () => {
   }
 }
 
+// carry the dye along the macroscopic flow: semi-Lagrangian backtrace, one bilinear
+// gather per cell. ux/uy are per-LBM-step velocities and SUB steps elapse per rendered
+// frame, so the backtrace distance is scaled by SUB (one gather stands in for the frame).
+let advectDye = () => {
+  let i = 0
+  while (i < n) { dye0[i] = dye[i]; i++ }
+  let y = 1
+  while (y < H - 1) {
+    let x = 1
+    while (x < W - 1) {
+      let c = y * W + x
+      if (solid[c] === 0) dye[c] = samp(dye0, x - ux[c] * SUB, y - uy[c] * SUB) * DYE_FADE
+      x++
+    }
+    y++
+  }
+}
+
 export let frame = (t) => {
   let s = 0
   while (s < SUB) { collideStream(); s++ }
 
-  // render vorticity (∂uy/∂x − ∂ux/∂y) → grayscale; solids dark
+  advectDye()
+
+  // continuous thin dye filament, injected upstream of the obstacle every frame
+  let yy = injY0
+  while (yy <= injY1) { dye[yy * W + injX] = DYE_SRC; yy++ }
+
+  // render: the dye as a bright primary layer over a dim vorticity field; solids dark
   let y = 1
   while (y < H - 1) {
     let x = 1
@@ -152,8 +200,15 @@ export let frame = (t) => {
       let g = 30
       if (solid[c] === 0) {
         let curl = (uy[c + 1] - uy[c - 1]) - (ux[c + W] - ux[c - W])
-        let v = 128.0 + curl * 2400.0
-        if (v < 0.0) v = 0.0
+        let dim = 45.0 + curl * 1800.0
+        if (dim < 4.0) dim = 4.0
+        if (dim > 150.0) dim = 150.0
+        // display-only lift (x^0.25 via two sqrts — cheap): a single semi-Lagrangian gather
+        // is diffusive, so the filament arrives diluted after wrapping a few turns; this
+        // keeps it visible without a second (correcting) gather pass
+        let bright = Math.sqrt(Math.sqrt(dye[c])) * 255.0
+        if (bright > 255.0) bright = 255.0
+        let v = dim + bright
         if (v > 255.0) v = 255.0
         g = v | 0
       }

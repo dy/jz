@@ -9,28 +9,48 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Drag to place the two wave sources; they stay where you leave them and the field
-// keeps rippling (double-click to resume the orbiting sources).
+// N coherent point sources along a line (a Huygens slit/grating): drag horizontal morphs the
+// source COUNT (2 → 32 — a plain double-slit sharpening into a fine grating), vertical sets the
+// line's SPAN (the slit separation). Idle, both drift on their own; a drag holds them for a few
+// seconds before the idle sweep resumes (same convention as examples/chladni).
 const step = 0.012
 let tick = 0.0
+const CMIN = 2, CMAX = 32
+let manual = false, manualAt = -10, nowT = 0, curCount = 2, curSpan = 0
+
 const demo = runDemo({
   name: "interference",
-  hint: "two-source wave interference · drag the sources, double-click to resume",
-  size: { dpr: 1, budget: null },
-  frame: (e) => {
-    if (ptr.down && e.setSources) {
-      const x1 = ptr.x * demo.W, y1 = ptr.y * demo.H
-      const x2 = (1 - ptr.x) * demo.W, y2 = (1 - ptr.y) * demo.H
-      e.setSources(x1, y1, x2, y2)
+  hint: "Huygens diffraction grating — drag: horizontal sets the slit count, vertical the separation",
+  // budget: the per-pixel cost now scales with source count (up to 32× the old 2-source kernel), so
+  // the old uncapped budget no longer holds 60fps at the high end — 120k px keeps 32 sources at
+  // ~60fps (measured) while still reading crisp at typical viewport sizes.
+  size: { dpr: 1, budget: 120000 },
+  frame: (e, t) => {
+    nowT = t
+    if (manual && t - manualAt > 6) manual = false
+    let minDim = Math.min(demo.W, demo.H)
+    if (!manual) {
+      curCount = CMIN + Math.round((CMAX - CMIN) * (0.5 - 0.5 * Math.cos(t * 0.045)))
+      curSpan = minDim * (0.08 + 0.72 * (0.5 - 0.5 * Math.cos(t * 0.033 + 1.7)))
     }
-    e.update(tick += step)
+    e.frame(tick += step, curCount, curSpan)
   },
-  // re-roll: drop the two sources at fresh random spots
-  randomize: (e, d) => e.setSources?.(Math.random() * d.W, Math.random() * d.H, Math.random() * d.W, Math.random() * d.H),
+  // re-roll: jump to a fresh random count/separation, held like a drag
+  randomize: (e, d) => {
+    curCount = CMIN + Math.floor(Math.random() * (CMAX - CMIN + 1))
+    curSpan = Math.min(d.W, d.H) * (0.08 + Math.random() * 0.72)
+    manual = true; manualAt = nowT
+  },
 })
 
 const ptr = trackPointer(demo.cv)
-demo.cv.addEventListener("dblclick", () => demo.engine?.resume?.())
+const dial = () => {
+  manual = true; manualAt = nowT
+  curCount = CMIN + Math.round((CMAX - CMIN) * ptr.x)
+  curSpan = Math.min(demo.W, demo.H) * (0.08 + 0.72 * ptr.y)
+}
+demo.cv.addEventListener("pointerdown", dial)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) dial() })
 </script>
 </body>
 </html>

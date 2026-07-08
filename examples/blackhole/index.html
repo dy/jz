@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+// Camera: drag to orbit (inclination + azimuth); it otherwise stays put — the disk's own
+// rotation (turbulence advection + Doppler asymmetry) is what keeps the view alive at idle.
+const DEG = Math.PI / 180
+let incl = 80 * DEG, azim = 0.5, dragging = false, lastX = 0, lastY = 0
+
+const demo = runDemo({
+  name: "blackhole",
+  hint: "a Schwarzschild black hole — gravitational lensing arcs the disk's far side above and below its shadow · drag to orbit",
+  size: { budget: 70000 },
+  cursor: "grab",
+  frame: (e, t) => { e.frame(t, incl, azim) },
+  randomize: (e) => {
+    e.randomize?.()
+    incl = (55 + Math.random() * 40) * DEG
+    azim = Math.random() * 6.283185307179586
+  },
+})
+
+demo.cv.addEventListener('pointerdown', e => {
+  dragging = true
+  lastX = e.clientX; lastY = e.clientY
+  demo.cv.style.cursor = 'grabbing'
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+})
+demo.cv.addEventListener('pointermove', e => {
+  if (!dragging) return
+  azim += (e.clientX - lastX) * 0.01
+  incl -= (e.clientY - lastY) * 0.01
+  if (incl < 0.15) incl = 0.15
+  if (incl > Math.PI - 0.15) incl = Math.PI - 0.15
+  lastX = e.clientX; lastY = e.clientY
+})
+const endDrag = () => { dragging = false; demo.cv.style.cursor = 'grab' }
+demo.cv.addEventListener('pointerup', e => { endDrag(); try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener('pointerleave', endDrag)
+</script>
+</body>
+</html>

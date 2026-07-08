@@ -13,7 +13,11 @@ let az = 0, el = 0.3, dist = 2.9, camActive = false, lastPX = 0, lastPY = 0
 const demo = runDemo({
   name: "raytrace",
   hint: "ray-traced spheres on a checkerboard",
-  size: { budget: 900000 },
+  // 900000 -> 250000: soft shadows (4 samples => 4x the occlusion tests), the glass sphere
+  // (two extra recursive rayColor traces on every ray that hits it) and 2 more scene objects
+  // measured ~2.8-3x more ms/frame at the same resolution; this restores a 60fps+ margin on
+  // the default (jz) engine (verified ~65fps at 250000 vs ~19fps if left at 900000).
+  size: { budget: 250000 },
   cursor: "grab",
   load: (e) => e.init(),
   frame: (e) => {

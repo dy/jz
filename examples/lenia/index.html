@@ -9,15 +9,17 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Drag to paint living "soup" that blooms into Lenia creatures; double-click to reseed.
-// Stamps are interpolated along the drag so a fast stroke seeds a continuous trail.
+// Drag paints prey (species A, white); shift-drag or right-drag paints predator (species B,
+// cool tint). Double-click reseeds a fresh soup of both. Stamps are interpolated along the
+// drag so a fast stroke seeds a continuous trail.
 const BR = 11
-let painting = false, lx = 0, ly = 0
+let painting = false, lx = 0, ly = 0, paintB = false
 
 const demo = runDemo({
   name: "lenia",
-  hint: "Lenia — a continuous-kernel cellular automaton · double-click to reseed",
-  size: { cap: 340 },              // long side capped (aspect kept) — the ring convolution is heavy
+  hint: "Lenia — predator & prey · drag paints prey, shift/right-drag paints predator · double-click to reseed",
+  size: { cap: 256 },              // long side capped (aspect kept) — two-species convolution costs ~1.8x
+                                    // one ring pass (down from 340 so the doubled per-pixel work still holds 60fps)
   bg: "#07070c",
   load: (e) => e.seed(),
   frame: (e) => e.frame(0.1),
@@ -25,14 +27,19 @@ const demo = runDemo({
 
 const cv = demo.cv
 const ptr = trackPointer(cv)
-const stamp = (px_, py_) => { if (demo.engine) demo.engine.seedBrush(px_ * demo.W, py_ * demo.H, BR) }
+const stamp = (px_, py_) => {
+  if (!demo.engine) return
+  if (paintB) demo.engine.seedBrushB(px_ * demo.W, py_ * demo.H, BR)
+  else demo.engine.seedBrush(px_ * demo.W, py_ * demo.H, BR)
+}
 const strokeTo = (x, y) => {
   const dx = x - lx, dy = y - ly
   const n = Math.max(1, Math.ceil(Math.hypot(dx * demo.W, dy * demo.H) / (BR * 0.5)))
   for (let i = 1; i <= n; i++) stamp(lx + dx * i / n, ly + dy * i / n)
   lx = x; ly = y
 }
-cv.addEventListener("pointerdown", (e) => { painting = true; lx = ptr.x; ly = ptr.y; try { cv.setPointerCapture(e.pointerId) } catch {}; stamp(ptr.x, ptr.y) })
+cv.addEventListener("contextmenu", (e) => e.preventDefault())   // allow right-drag without a context menu
+cv.addEventListener("pointerdown", (e) => { painting = true; paintB = e.button === 2 || e.shiftKey; lx = ptr.x; ly = ptr.y; try { cv.setPointerCapture(e.pointerId) } catch {}; stamp(ptr.x, ptr.y) })
 cv.addEventListener("pointermove", () => { if (painting) strokeTo(ptr.x, ptr.y) })
 cv.addEventListener("pointerup", (e) => { painting = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
 cv.addEventListener("pointerleave", () => { painting = false })

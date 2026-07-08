@@ -2,7 +2,9 @@
 // at (0,0,−3.5) orbiting slowly), march up to 64 steps: p = ro + rd·tt; d = sdf(p);
 // tt += d; stop when d<0.001 or tt>20. Scene: domain-repeated spheres
 // (mod(p+2,4)−2) plus a ground plane. Normal by central differences, shaded by
-// a single directional light + fog from step count.
+// a single directional light + fog from step count, a sphere-traced soft shadow
+// and a short normal-probe ambient occlusion so contact points actually read as
+// contact (see softShadow / calcAO below).
 //
 // The march is a per-pixel recurrence (tt accumulates), so jz will roughly TIE
 // V8 — this is the expected result for marched SDFs. No per-step divides.
@@ -108,6 +110,55 @@ let march = (ox, oy, oz, dx, dy, dz) => {
   return -1.0             // miss — step budget exhausted
 }
 
+// ---- Soft shadow + ambient occlusion (both are read-only probes off the same sdf) ----------
+
+// Sphere-traced soft shadow (Quilez): march toward the light, tracking the tightest
+// grazing angle seen (min of k·h/t) instead of a hard occluded/lit boolean — a near-miss
+// narrows the penumbra continuously. Capped at 32 steps and a short max distance (the
+// lattice period is 3–4 world units, so a couple of periods is plenty of reach). res only
+// ever shrinks from 1.0 (never negative — h is ≥0.001 whenever we reach the k·h/t line,
+// since a smaller h returns 0 immediately), so no clamp is needed on the way out.
+let SHADOW_K = 12.0
+let SHADOW_STEPS = 32
+let SHADOW_MAXT = 6.0
+let SHADOW_HIT_MAXDIST = 9.0
+
+let softShadow = (ox, oy, oz, dx, dy, dz) => {
+  let res = 1.0
+  let t = 0.02
+  let i = 0
+  while (i < SHADOW_STEPS && t < SHADOW_MAXT) {
+    let d = sdf(ox + dx * t, oy + dy * t, oz + dz * t)
+    if (d < 0.001) return 0.0
+    let v = SHADOW_K * d / t
+    if (v < res) res = v
+    t = t + d
+    i++
+  }
+  return res
+}
+
+// Cheap ambient occlusion: 4 short probes stepping out along the normal, comparing the
+// sdf's actual reading at each probe to the probe's nominal distance — reading closer than
+// that means nearby geometry is crowding the surface (a crevice: sphere/floor seams, two
+// lattice cells' near sides). 4 sdf() calls, same cost class as one more central-difference tap.
+let calcAO = (px2, py, pz, nx, ny, nz) => {
+  let occ = 0.0
+  let sca = 1.0
+  let i = 0
+  while (i < 4) {
+    let h = 0.02 + 0.06 * i
+    let d = sdf(px2 + nx * h, py + ny * h, pz + nz * h)
+    occ = occ + (h - d) * sca
+    sca = sca * 0.6
+    i++
+  }
+  let ao = 1.0 - 2.5 * occ
+  if (ao < 0.0) ao = 0.0
+  if (ao > 1.0) ao = 1.0
+  return ao
+}
+
 // Eye passed as f64 args (a setter global gets narrowed to i32 in jz, freezing the
 // camera); all-zero falls back to the built-in t-orbit.
 export let frame = (t, eyeX, eyeY, eyeZ) => {
@@ -185,6 +236,19 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
         let diff = nx * lx + ny * ly + nz * lz
         if (diff < 0.0) diff = 0.0
 
+        // Soft shadow toward the light — skip the march when the surface already
+        // self-shadows (diff===0, so it would multiply to 0 regardless) or the hit is
+        // far enough that fog hides it anyway (SHADOW_HIT_MAXDIST); halves the added
+        // cost for free without changing a single output pixel.
+        let shadow = 1.0
+        if (diff > 0.0 && tt < SHADOW_HIT_MAXDIST) {
+          shadow = softShadow(hx + nx * 0.01, hy + ny * 0.01, hz + nz * 0.01, lx, ly, lz)
+        }
+        let direct = diff * shadow
+
+        // Ambient occlusion — darkens creases (sphere/floor seams, near-touching lattice cells).
+        let ao = calcAO(hx, hy, hz, nx, ny, nz)
+
         // Fog by step count — distant surfaces fade toward the black sky
         let fog = 1.0 - steps * 0.01563   // 1/64 ≈ 0.015625
         if (fog < 0.0) fog = 0.0
@@ -194,12 +258,15 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
         let dSph = sdRepSpheres(hx, hy, hz)
         let val = 0.0
         if (dPlane < dSph) {
-          // PLANE → white floor, fading to black toward the horizon
-          val = fog
+          // PLANE → ambient·AO + shadowed diffuse, fading to black toward the horizon
+          val = 0.08 * ao + direct * 0.85
+          if (val > 1.0) val = 1.0
+          val = val * fog
         } else {
           // BALL → reflective gray: base gray + a mirror reflection of the white
           // floor (reflected ray pointing down) vs the black sky (up), plus a tight
-          // specular glint toward the light.
+          // specular glint toward the light — both the diffuse term and the specular
+          // glint go dark together in shadow (env is indirect light, so it doesn't).
           let rdotn = rdX * nx + rdY * ny + rdZ * nz
           let reflX = rdX - 2.0 * rdotn * nx
           let reflY = rdY - 2.0 * rdotn * ny
@@ -210,7 +277,8 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
           if (spec < 0.0) spec = 0.0
           spec = spec * spec
           spec = spec * spec
-          val = 0.15 + diff * 0.18 + env * 0.6 + spec * 0.7
+          spec = spec * shadow
+          val = 0.10 * ao + direct * 0.20 + env * 0.55 + spec * 0.7
           if (val > 1.0) val = 1.0
           val = val * fog
         }

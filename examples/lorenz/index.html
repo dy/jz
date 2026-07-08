@@ -13,7 +13,7 @@ import { runDemo, trackPointer } from "../lib/jzdemo.js"
 let phase = 0.0   // rotation offset so the spin CONTINUES from wherever a drag leaves it
 const demo = runDemo({
   name: "lorenz",
-  hint: "Lorenz attractor — the butterfly that launched chaos theory · drag to spin it",
+  hint: "Lorenz attractor — the butterfly that launched chaos theory · watch its twin drift away · drag to spin it",
   size: { dpr: 2, budget: 1300000 },     // crisp + dense, but light enough to stay at 60fps
   load: (e) => e.init(),
   frame: (e, t) => {

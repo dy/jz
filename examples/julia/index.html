@@ -10,9 +10,14 @@
 import { runDemo, panZoom } from "../lib/jzdemo.js"
 
 // c morphs ON ITS OWN, tracing the classic radius-0.7885 circle through the c-plane — the set
-// flows through dendrites, spirals and disconnected dust without any input. That frees DRAG for
-// panning (and scroll for zoom), like every other brot: panning takes priority, the animation
-// supplies the morph. A tiny radius wobble keeps successive loops from repeating exactly.
+// flows through dendrites, spirals and disconnected dust without any input. A CLICK (a tap, not a
+// drag) instead PICKS c directly: the clicked point is mapped through the CURRENT view to the
+// complex plane and becomes c — clicking a point IS picking it as c, the most direct way to feel
+// out z²+c. Picking pauses the auto-morph (else it would instantly overwrite your choice); it
+// resumes on its own ~10s after the last interaction, re-entering the circle at the SAME ANGLE you
+// left it (only the radius snaps back onto 0.7885 — unavoidable, that circle is the only path the
+// morph ever traces) so the handoff never jumps. Double-click resets the view AND resumes the morph
+// immediately. Drag still pans, scroll still zooms — both unchanged, coexisting with the pick.
 const home = { cx: 0, cy: 0, scale: 1.5 }
 const view = { ...home }
 // The morph runs off its own accumulator (not raw t) so its rate can track zoom. Rate = min(1,
@@ -20,21 +25,50 @@ const view = { ...home }
 // at full lively pace; below scale 1 the square tapers it down fast — almost frozen deep in, where
 // you're inspecting a filament and don't want it sliding around.
 let phase = 0, lastT = 0
+let cre = 0.7885, cim = 0.0     // the live constant fed to the kernel — auto-morphed or manually picked
+let manualC = false             // true while a picked c holds — the auto-morph is paused
+let lastTouch = -1e9            // clock time of the last pick/pan/zoom; the resume timer rides off it
+const RESUME_AFTER = 10.0       // seconds of no interaction before the morph reclaims c
+
+// Resume smoothly: re-anchor the phase accumulator to the picked c's OWN angle, so the morph
+// re-enters the circle exactly where you left it angularly — only the radius snaps to 0.7885.
+const resumeMorph = () => { if (!manualC) return; phase = Math.atan2(cim, cre) / 0.075; manualC = false }
+
 const demo = runDemo({
   name: "julia",
-  hint: "the Julia set — c morphs on its own · drag to pan · scroll to zoom",
+  hint: "the Julia set — click to set c · drag to pan · scroll to zoom · double-click resets",
   frame: (e, t) => {
     const dt = t - lastT; lastT = t
-    const zoomRate = Math.min(1, view.scale * view.scale)
-    phase += dt * zoomRate
-    const th = phase * 0.075
-    const r = 0.7885 + 0.02 * Math.sin(phase * 0.31)
-    const cre = r * Math.cos(th)
-    const cim = r * Math.sin(th)
+    if (manualC && t - lastTouch > RESUME_AFTER) resumeMorph()
+    if (!manualC) {
+      const zoomRate = Math.min(1, view.scale * view.scale)
+      phase += dt * zoomRate
+      const th = phase * 0.075
+      const r = 0.7885 + 0.02 * Math.sin(phase * 0.31)
+      cre = r * Math.cos(th)
+      cim = r * Math.sin(th)
+    }
     e.frame(t, cre, cim, view.cx, view.cy, view.scale)
   },
 })
-panZoom(demo.cv, view, home, () => {})   // drag → pan, scroll → zoom, double-click → reset
+panZoom(demo.cv, view, home, () => { lastTouch = lastT })   // drag → pan, scroll → zoom, double-click → reset view
+
+// A tap (pointer down→up with negligible movement) picks c; a drag past the threshold is a pan and
+// leaves c alone. panZoom's own listeners already own the drag half — these just add tap detection
+// alongside, on the same canvas.
+let downX = 0, downY = 0, dragged = false
+demo.cv.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY; dragged = false })
+demo.cv.addEventListener('pointermove', (e) => {
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) dragged = true
+})
+demo.cv.addEventListener('pointerup', (e) => {
+  if (dragged) return
+  const r = demo.cv.getBoundingClientRect(), aspect = r.width / r.height
+  cre = view.cx + ((e.clientX - r.left) / r.width - 0.5) * 2 * view.scale * aspect
+  cim = view.cy + ((e.clientY - r.top) / r.height - 0.5) * 2 * view.scale
+  manualC = true; lastTouch = lastT
+})
+demo.cv.addEventListener('dblclick', () => resumeMorph())   // alongside panZoom's own view-reset
 </script>
 </body>
 </html>

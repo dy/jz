@@ -40,19 +40,21 @@ test('example: escape-time fractals take the break-on-first FAST path (beats V8)
 // two adjacent pixels at once, transcendentals via the bit-exact $math.*2 mirrors, the pack scalar
 // per lane. chladni hits 2.28× V8 (the two per-row + per-pixel Math.cos → $math.cos2). interference's
 // sRGB `a**γ` (constant γ) lowers at emit-time to exp(γ·log a) (module/math.js emitPow), so the pixel
-// is sin+sqrt+log+exp — all TRUE 2-wide ($math.sin2 / f64x2.sqrt / $math.log_v / $math.exp_v), not the
-// per-lane-scalar $math.pow2 mirror it used before. Pin the deterministic cause — each must take the
-// path ($__ppc tail) and emit its f64x2 mirror; the bit-exactness gate lives in test/simd.js.
-test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/sqrt/pow)', () => {
+// is sin+sqrt — TRUE 2-wide ($math.sin2 / f64x2.sqrt), not a per-lane-scalar mirror. Pin the
+// deterministic cause — chladni takes the per-pixel-color path ($__ppc tail); interference's
+// N-source grating has an inner per-source reduction, which per-pixel-color declines by design,
+// so it must take the OUTER-STRIP path ($__os) and lift the reduction to f64x2 there. The
+// bit-exactness gate lives in test/simd.js.
+test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/sqrt)', () => {
     const w = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
     const ch = w('chladni');
     ok(/\$__ppc\d+/.test(ch), 'chladni must take the per-pixel-color path');
     ok(/call \$math\.cos2/.test(ch), 'chladni per-pixel Math.cos → f64x2 $math.cos2');
     const it = w('interference');
-    ok(/\$__ppc\d+/.test(it), 'interference must take the per-pixel-color path');
-    ok(/call \$math\.sin2/.test(it) && /call \$math\.log_v/.test(it) && /call \$math\.exp_v/.test(it),
-      'interference: sin → $math.sin2, a**γ → exp_v∘log_v (constant-γ pow inlined as exp·log, then 2-wide)');
-    ok(!/call \$math\.pow2/.test(it), 'interference no longer needs the per-lane-scalar $math.pow2 mirror');
+    ok(/\$__os\d+/.test(it), 'interference (N-source grating) must take the outer-strip path');
+    ok(/call \$math\.sin2/.test(it) && /f64x2\.sqrt/.test(it),
+      'interference: per-source reduction lifts to f64x2 — sin → $math.sin2, sqrt → native f64x2.sqrt');
+    ok(!/call \$math\.pow2/.test(it), 'interference never needs the per-lane-scalar $math.pow2 mirror');
 });
 
 // Stencil vectorizer (experimental): watercolor's curl / vorticity-confinement / divergence /

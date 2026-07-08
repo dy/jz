@@ -5,6 +5,12 @@
 // emits wasm SIMD and beats warm V8 scalar (no auto-SIMD for this divergent loop). The
 // camera basis is scalar (once per frame). Bare f32x4.* are native in jz; under plain V8
 // the harness installs examples/lib/simd.js. Output is grayscale (r=g=b=v).
+//
+// Soft shadow (softShadow) and ambient occlusion (calcAO) mirror raymarcher.js's algorithm
+// exactly (same constants), just lane-wise: the shadow march reuses the primary march's
+// active/hit masked-lockstep idiom (a per-lane early exit on hit or on passing SHADOW_MAXT),
+// the AO probe is a fixed 4-tap unrolled loop (no divergence, so no masking needed). f32
+// lanes vs f64 scalar means a few ULPs of difference, never a visible one.
 let W = 0, H = 0, px;
 let invW = 0, invH = 0, aspect = 0;
 
@@ -111,10 +117,54 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
       let ninv = f32x4.div(one, f32x4.sqrt(f32x4.add(f32x4.add(f32x4.mul(nx, nx), f32x4.mul(ny, ny)), f32x4.mul(nz, nz))));
       nx = f32x4.mul(nx, ninv); ny = f32x4.mul(ny, ninv); nz = f32x4.mul(nz, ninv);
       let diff = f32x4.max(zero, f32x4.add(f32x4.add(f32x4.mul(nx, lxv), f32x4.mul(ny, lyv)), f32x4.mul(nz, lzv)));
+
+      // soft shadow, inlined (a v128 helper with internal control flow can't cross a jz
+      // function boundary — only simple single-expression v128 functions can, like sdf/
+      // sdRep above; so this mirrors the primary march's own masked-lockstep shape, just
+      // toward the light instead of along the view ray). shadowActive gates entry per lane
+      // (diff>0 & hit close enough) — mirrors raymarcher.js's `if (diff>0.0 && tt<9.0)`
+      // early-out, a free win when a whole group of 4 fails the gate together. Constants
+      // (k=12, 32 steps, maxT=6, bias=0.01) match raymarcher.js exactly.
+      let shadowActive = v128.and(f32x4.gt(diff, zero), f32x4.lt(res, f32x4.splat(9.0)));
+      let nb = f32x4.splat(0.01);
+      let sox = f32x4.add(hx, f32x4.mul(nx, nb)), soy = f32x4.add(hy, f32x4.mul(ny, nb)), soz = f32x4.add(hz, f32x4.mul(nz, nb));
+      let shadow = f32x4.splat(1.0), st = f32x4.splat(0.02), sact = shadowActive;
+      let si = 0;
+      while (si < 32) {
+        if (v128.anyTrue(sact)) {
+          let sd = sdf(f32x4.add(sox, f32x4.mul(lxv, st)), f32x4.add(soy, f32x4.mul(lyv, st)), f32x4.add(soz, f32x4.mul(lzv, st)));
+          let shit = v128.and(sact, f32x4.lt(sd, f32x4.splat(0.001)));
+          shadow = v128.bitselect(zero, shadow, shit);
+          sact = v128.and(sact, v128.not(shit));
+          let sv = f32x4.div(f32x4.mul(f32x4.splat(12.0), sd), st);
+          shadow = v128.bitselect(f32x4.min(shadow, sv), shadow, sact);
+          st = v128.bitselect(f32x4.add(st, sd), st, sact);
+          let spast = v128.and(sact, f32x4.ge(st, f32x4.splat(6.0)));
+          sact = v128.and(sact, v128.not(spast));
+          si++;
+        } else { si = 32; }
+      }
+      let direct = f32x4.mul(diff, shadow);
+
+      // ambient occlusion, inlined — fixed 4-tap unrolled probe, no early exit so no
+      // masking needed (every lane always takes all 4 taps, matching the always-shade-
+      // then-blend style the rest of this file already uses for miss lanes).
+      let aocc = f32x4.splat(0.0), asca = f32x4.splat(1.0);
+      let ai = 0;
+      while (ai < 4) {
+        let ah = f32x4.splat(0.02 + 0.06 * ai);
+        let ad = sdf(f32x4.add(hx, f32x4.mul(nx, ah)), f32x4.add(hy, f32x4.mul(ny, ah)), f32x4.add(hz, f32x4.mul(nz, ah)));
+        aocc = f32x4.add(aocc, f32x4.mul(f32x4.sub(ah, ad), asca));
+        asca = f32x4.mul(asca, f32x4.splat(0.6));
+        ai++;
+      }
+      let ao = f32x4.min(one, f32x4.max(zero, f32x4.sub(one, f32x4.mul(f32x4.splat(2.5), aocc))));
+
       let fog = f32x4.max(zero, f32x4.sub(one, f32x4.mul(f32x4.convertI32(steps), f32x4.splat(0.01563))));
       // plane vs sphere = argmin of the scene SDF at the hit
       let isPlane = f32x4.lt(f32x4.add(hy, f32x4.splat(1.4)), sdRep(hx, hy, hz));
-      // ball: reflection env + specular
+      // ball: reflection env + specular (both diffuse and specular go dark together in
+      // shadow — env is indirect light off the floor/sky, so it doesn't)
       let rdotn = f32x4.add(f32x4.add(f32x4.mul(rdX, nx), f32x4.mul(rdY, ny)), f32x4.mul(rdZ, nz));
       let rflX = f32x4.sub(rdX, f32x4.mul(f32x4.mul(two, rdotn), nx));
       let rflY = f32x4.sub(rdY, f32x4.mul(f32x4.mul(two, rdotn), ny));
@@ -122,8 +172,10 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
       let env = f32x4.max(zero, f32x4.neg(rflY));
       let spec = f32x4.max(zero, f32x4.add(f32x4.add(f32x4.mul(rflX, lxv), f32x4.mul(rflY, lyv)), f32x4.mul(rflZ, lzv)));
       spec = f32x4.mul(spec, spec); spec = f32x4.mul(spec, spec);
-      let ballVal = f32x4.mul(f32x4.min(one, f32x4.add(f32x4.add(f32x4.add(f32x4.splat(0.15), f32x4.mul(diff, f32x4.splat(0.18))), f32x4.mul(env, f32x4.splat(0.6))), f32x4.mul(spec, f32x4.splat(0.7)))), fog);
-      let val = v128.bitselect(fog, ballVal, isPlane);
+      spec = f32x4.mul(spec, shadow);
+      let planeVal = f32x4.mul(f32x4.min(one, f32x4.add(f32x4.mul(f32x4.splat(0.08), ao), f32x4.mul(direct, f32x4.splat(0.85)))), fog);
+      let ballVal = f32x4.mul(f32x4.min(one, f32x4.add(f32x4.add(f32x4.add(f32x4.mul(f32x4.splat(0.10), ao), f32x4.mul(direct, f32x4.splat(0.20))), f32x4.mul(env, f32x4.splat(0.55))), f32x4.mul(spec, f32x4.splat(0.7)))), fog);
+      let val = v128.bitselect(planeVal, ballVal, isPlane);
       // grayscale 0..255, then black out the misses (res < 0)
       let v = f32x4.min(f32x4.splat(255.0), f32x4.max(zero, f32x4.mul(val, f32x4.splat(255.0))));
       v = v128.bitselect(v, zero, f32x4.ge(res, zero));

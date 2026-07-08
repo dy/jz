@@ -10,27 +10,88 @@
 import { runDemo } from "../lib/jzdemo.js"
 
 let panX = 0, panY = 0, zoom = 1, lastX = 0, lastY = 0, dragging = false
+
+// ── Idle LFO: tours the Gaussian-prime lattice when left alone (see examples/ulam) ──
+// Stops name a world lattice point to center + a zoom: the origin's 8-fold symmetric
+// rings, an off-centre constellation at mid zoom, the lattice zoomed far out into pure
+// density texture, another constellation, then back home.
+// panX/panY are SCREEN px (kernel: screenX = W/2 + panX + a·6·zoom), so centering lattice
+// point (a,b) at a given zoom means panX = -a·6·zoom, panY = -b·6·zoom.
+const toStop = (a, b, zoom) => ({ panX: -a * 6 * zoom, panY: -b * 6 * zoom, zoom })
+const STOPS = [
+  toStop(  0,   0, 2.2),    // origin — the 8-fold symmetric core rings
+  toStop( 26,  16, 4.5),    // upper-right constellation, mid zoom
+  toStop(  0,   0, 0.35),   // zoomed far out — the lattice as a density texture
+  toStop(-34,  22, 3.2),    // upper-left constellation, mid zoom
+  toStop( 18, -30, 3.8),    // lower-right constellation, mid zoom
+  toStop(  0,   0, 2.2),    // back to the origin rings
+]
+const DWELL = 5.0, TRAVEL = 3.5
+
+const ease   = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2
+const lerp   = (a, b, t) => a + (b - a) * t
+const lerpV  = (va, vb, t) => ({
+  panX: lerp(va.panX, vb.panX, t),
+  panY: lerp(va.panY, vb.panY, t),
+  zoom: lerp(va.zoom, vb.zoom, t),
+})
+
+const lfoView = (elapsed) => {
+  const cycle = DWELL + TRAVEL
+  const total = STOPS.length * cycle
+  const looped = elapsed % total
+  const idx = Math.floor(looped / cycle)
+  const phase = looped - idx * cycle
+  const next = (idx + 1) % STOPS.length
+  if (phase < DWELL) return { ...STOPS[idx] }
+  return lerpV(STOPS[idx], STOPS[next], ease((phase - DWELL) / TRAVEL))
+}
+
+let simT = 0   // elapsed demo time, mirrored from frame()'s own t — the pointer/wheel
+               // handlers fire outside frame() and need a clock to stamp interactions
+let userInteracted = false
+let lastInteract = -30
+let lfoStart = 0
+let lfoBase = { panX: 0, panY: 0, zoom: 1 }
+
 const demo = runDemo({
   name: "gauss-primes",
-  hint: "Gaussian primes — primes in ℤ[i]; drag to pan, scroll to zoom. 8-fold symmetry from the units ±1, ±i",
+  hint: "Gaussian primes — primes in ℤ[i]; drag to pan, scroll to zoom · idle tours the lattice. 8-fold symmetry from the units ±1, ±i",
   frame: (e, t) => {
+    simT = t
+    const idleFor = t - lastInteract
+    if (!userInteracted || idleFor > 5.0) {
+      if (userInteracted && idleFor > 5.0 && idleFor < 5.1) {
+        lfoStart = t
+        lfoBase = { panX, panY, zoom }
+        userInteracted = false
+      }
+      if (!userInteracted) {
+        const blendT = Math.min(1.0, (t - lfoStart) / 2.0)
+        const blended = lerpV(lfoBase, lfoView(t - lfoStart), ease(blendT))
+        panX = blended.panX; panY = blended.panY; zoom = blended.zoom
+      }
+    }
     e.frame(t, panX, panY, zoom)
   },
 })
 
 demo.cv.addEventListener("pointerdown", e => {
   lastX = e.clientX; lastY = e.clientY; dragging = true
+  userInteracted = true; lastInteract = simT
 })
 demo.cv.addEventListener("pointermove", e => {
   if (!dragging) return
   panX += (e.clientX - lastX) * (demo.W / innerWidth)
   panY += (e.clientY - lastY) * (demo.H / innerHeight)
   lastX = e.clientX; lastY = e.clientY
+  userInteracted = true; lastInteract = simT
 })
 demo.cv.addEventListener("pointerup", () => { dragging = false })
 // scroll to zoom, anchored on the cursor (the lattice point under it stays put)
 demo.cv.addEventListener("wheel", e => {
   e.preventDefault()
+  userInteracted = true; lastInteract = simT
   const sx = demo.W / demo.cv.clientWidth, sy = demo.H / demo.cv.clientHeight
   const mx = e.offsetX * sx, my = e.offsetY * sy
   const stepOld = 6 * zoom

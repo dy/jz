@@ -663,7 +663,10 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
     || document.body.insertBefore(document.createElement('canvas'), document.body.firstChild)
   const g = cv.getContext('2d')
   let W = 0, H = 0, img, out32, px, engine = null, gen = 0, t = 0
-  const demo = { cv, get engine() { return engine }, get W() { return W }, get H() { return H } }
+  // `t` is the sim clock the loop advances — exposed because idle-tour drivers (ulam,
+  // bifurcation, epicycles, gauss-primes) timestamp interactions against it; without it
+  // `demo.t` read undefined and a tour never resumed after the first interaction.
+  const demo = { cv, get engine() { return engine }, get W() { return W }, get H() { return H }, get t() { return t } }
 
   const sizeTo = () => {
     // Size the backing to the canvas's actual box (the gap framed between masthead + bar) so

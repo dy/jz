@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+const demo = runDemo({
+  name: "sandpile",
+  hint: "the abelian sandpile — grains topple in avalanches into a fractal mandala · click = new source, drag = pour",
+  size: { budget: 1048576 },
+  load: (e) => e.seed(),
+  frame: (e, t) => e.frame(t),
+})
+
+// click = a new permanent source (colliding mandalas where two fronts meet);
+// drag = pour a trail of grains along the path (a one-off deposit, not a new emitter).
+const POUR = 60
+let painting = false, lastX = 0, lastY = 0
+const toCanvas = (x, y) => [x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight]
+const strokeTo = (x, y) => {
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 4))
+  for (let i = 1; i <= n; i++) {
+    const [cx, cy] = toCanvas(lastX + dx * i / n, lastY + dy * i / n)
+    demo.engine.pour(cx, cy, POUR)
+  }
+  lastX = x; lastY = y
+}
+demo.cv.addEventListener("pointerdown", (e) => {
+  painting = true; lastX = e.offsetX; lastY = e.offsetY
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+  const [cx, cy] = toCanvas(e.offsetX, e.offsetY)
+  demo.engine.addSource(cx, cy)
+})
+demo.cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
+demo.cv.addEventListener("pointerup", (e) => { painting = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { painting = false })
+</script>
+</body>
+</html>

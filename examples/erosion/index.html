@@ -9,15 +9,17 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
+const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
+
 const demo = runDemo({
   name: "erosion",
-  hint: "hydraulic erosion carving a fractal terrain · click to regenerate",
+  hint: "hydraulic erosion — rain carves a fractal terrain, flux pools into a river network · click for a rain burst",
   size: { budget: 300000 },
   bg: "#888",
   cursor: "pointer",
   frame: (e) => e.frame(0),
 })
-demo.cv.addEventListener("pointerdown", () => demo.engine.reseed())
+demo.cv.addEventListener("pointerdown", (e) => demo.engine?.rain(e.offsetX * sx(demo), e.offsetY * sy(demo)))
 </script>
 </body>
 </html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
+
+// Kuramoto synchronization: every firefly is a phase oscillator coupled only to its NEIGHBOURS —
+// out of that local coupling, waves of synchrony sweep the meadow until it (nearly) flashes as one.
+// A tap is a lantern flash — it seeds a wave. A drag is a desync brush — it scatters phases back
+// into chaos. Left alone, the story plays itself: chaos → traveling sync waves → a near-global
+// flash lock — and every so often an unseen hand brushes a patch of the meadow back into noise, so
+// it never sits still.
+const MINDIST = 10                              // px between emitted scatter samples along a drag
+let painting = false, lastX = 0, lastY = 0
+let nextPerturbMs = 0
+
+// canvas-CSS coords → kernel backing-pixel coords (the canvas box may be CSS-scaled from its
+// native backing resolution — same conversion waves.js uses for its drop points).
+const toBacking = (x, y) => [x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight]
+
+const strokeTo = (x, y) => {
+  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MINDIST))
+  for (let i = 1; i <= n; i++) {
+    const [bx, by] = toBacking(lastX + dx * i / n, lastY + dy * i / n)
+    demo.engine?.scatter(bx, by)
+  }
+  lastX = x; lastY = y
+}
+
+const demo = runDemo({
+  name: "fireflies",
+  hint: "Kuramoto synchronization — phase oscillators coupled to neighbours alone · click: a lantern flash seeds a wave · drag: a desync brush",
+  size: { budget: 400000 },
+  load: (e) => { e.init(); nextPerturbMs = 0 },
+  frame: (e, t) => {
+    // idle auto-perturb: once the natural lock has had time to build (and be enjoyed), scatter a
+    // random patch so the field never goes fully static — skipped while the visitor is interacting.
+    const now = performance.now()
+    if (nextPerturbMs === 0) nextPerturbMs = now + 38000
+    if (now > nextPerturbMs && !ptr.down) {
+      const [bx, by] = toBacking(demo.cv.clientWidth * (0.15 + Math.random() * 0.7), demo.cv.clientHeight * (0.15 + Math.random() * 0.7))
+      e.scatter(bx, by)
+      nextPerturbMs = now + 26000 + Math.random() * 14000
+    }
+    e.frame(t)
+  },
+  randomize: (e) => { e.randomize(); nextPerturbMs = 0 },
+})
+
+const ptr = trackPointer(demo.cv)
+demo.cv.addEventListener("pointerdown", (e) => {
+  painting = true; lastX = e.offsetX; lastY = e.offsetY
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+  const [bx, by] = toBacking(e.offsetX, e.offsetY)
+  demo.engine?.flash(bx, by)                    // every press ignites the lantern at that point…
+})
+demo.cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })  // …dragging then brushes desync along the way
+demo.cv.addEventListener("pointerup", (e) => { painting = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { painting = false })
+</script>
+</body>
+</html>

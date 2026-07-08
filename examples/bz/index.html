@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+// The spiral's seed config (orientation + split fractions) is fractional, resolution-independent
+// state the HOST remembers — same idea as diffusion's normalised seed rects: a plain resize
+// (window resize, fullscreen/screensaver toggle, JS⇄jz engine swap) must replay the SAME spiral,
+// not silently roll a fresh random one and discard whatever the field currently shows.
+let cfg = { horiz: 0, s1: 0.5, s2: 0.5 }, seeded = false
+const applyCfg = (engine) => engine.seed(cfg.horiz, cfg.s1, cfg.s2)
+const freshCfg = (engine) => {
+  cfg = { horiz: Math.random() < 0.5 ? 1 : 0, s1: 0.42 + Math.random() * 0.16, s2: 0.42 + Math.random() * 0.16 }
+  applyCfg(engine)
+}
+
+const demo = runDemo({
+  name: "bz",
+  hint: "Belousov–Zhabotinsky excitable medium — a spiral meanders and rotates; click for a target wave, drag to cut fronts into new spirals",
+  size: { budget: 360000 },
+  frame: (e) => e.frame(),
+  load: (e) => { if (!seeded) { seeded = true; freshCfg(e) } else applyCfg(e) },
+  randomize: (e) => freshCfg(e),
+})
+
+// Pointer interaction: a plain click stimulates a target wave; a drag erases a scar through
+// whatever it crosses, cutting live fronts into fresh free ends that curl into a spiral pair.
+// The two only differ by whether the pointer MOVED past a small threshold before release —
+// exactly like a native click vs. a drag.
+const R = 9                 // erase-brush radius, canvas px
+const DRAG_PX = 6           // movement past this turns a press into a drag (no stim on release)
+let down = false, dragging = false, downX = 0, downY = 0, lastX = 0, lastY = 0
+
+const toCanvas = (px, py) => [px * demo.W / demo.cv.clientWidth, py * demo.H / demo.cv.clientHeight]
+const eraseAt = (px, py) => { if (demo.engine) { const [cx, cy] = toCanvas(px, py); demo.engine.erase(cx, cy, R) } }
+const stimAt = (px, py) => { if (demo.engine) { const [cx, cy] = toCanvas(px, py); demo.engine.stim(cx, cy) } }
+const strokeTo = (px, py) => {
+  const dx = px - lastX, dy = py - lastY
+  const dist = Math.hypot(dx, dy)
+  const step = Math.max(1, R * 0.4)             // overlap stamps so a fast drag cuts a solid line
+  const n = Math.max(1, Math.ceil(dist / step))
+  for (let i = 1; i <= n; i++) eraseAt(lastX + dx * i / n, lastY + dy * i / n)
+  lastX = px; lastY = py
+}
+
+demo.cv.addEventListener("pointerdown", (e) => {
+  down = true; dragging = false
+  downX = lastX = e.offsetX; downY = lastY = e.offsetY
+  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
+})
+demo.cv.addEventListener("pointermove", (e) => {
+  if (!down) return
+  if (!dragging && Math.hypot(e.offsetX - downX, e.offsetY - downY) > DRAG_PX) dragging = true
+  if (dragging) strokeTo(e.offsetX, e.offsetY)
+})
+demo.cv.addEventListener("pointerup", (e) => {
+  if (down && !dragging) stimAt(e.offsetX, e.offsetY)   // released without dragging = a click
+  down = false; dragging = false
+  try { demo.cv.releasePointerCapture(e.pointerId) } catch {}
+})
+demo.cv.addEventListener("pointerleave", () => { down = false; dragging = false })
+</script>
+</body>
+</html>

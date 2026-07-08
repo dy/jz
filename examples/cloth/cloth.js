@@ -1,16 +1,20 @@
 // Spring-mass cloth — a grid of point masses linked by distance constraints, integrated
-// with Verlet (position-only) and relaxed by several constraint passes per frame. The top
-// row is pinned; gravity pulls the rest into a hanging sheet you can grab and swing. The
-// constraint relaxation is pointer-chasing over the node grid — a memory-layout stress for
-// jz, unlike the flat pixel kernels. Drawn as a wire mesh, light on black.
-// resize(w,h) → Uint32Array; frame() steps; grab/drag/release to interact.
+// with Verlet (position-only) and relaxed by several constraint passes per frame. Structural
+// links (right + down) hold shape; a softer diagonal shear brace (both diagonals of each
+// cell) stops the lattice from collapsing into slivers when twisted, without stiffening the
+// drape. The top row is pinned; gravity pulls the rest into a hanging sheet, and a gentle
+// sin-based wind ripples through it even at rest, so it billows alive when idle — grab and
+// swing it too. The constraint relaxation is pointer-chasing over the node grid — a
+// memory-layout stress for jz, unlike the flat pixel kernels. Drawn as a wire mesh, light on black.
+// resize(w,h) → Uint32Array; frame(t) steps; grab/drag/release to interact.
 
 let W = 0, H = 0, px
 let GX = 120, GY = 48      // grid resolution — recomputed responsively from the screen in resize()
 let N = GX * GY
 let nx, ny, ox, oy         // node pos + previous pos (Verlet)
 let pin                    // 1 = pinned
-let L = 1.0                // rest length (px)
+let L = 1.0                // rest length (px) — structural (axis) links
+let LD = 1.0               // rest length (px) — diagonal (shear) links = L·√2
 let R = 0                  // grab pick radius (px) — set from screen, not grid
 let grabbed = -1
 let ITER = 4
@@ -23,6 +27,7 @@ export let resize = (w, h) => {
   // of the height — long, but not off the bottom. Cells kept coarse (min/74) so the node count
   // stays light (a few thousand) even with the longer drape, and it runs smooth.
   L = (w < h ? w : h) / 74
+  LD = L * 1.4142135623730951   // √2 — diagonal of a square L×L cell
   GX = (Math.round(w * 0.88 / L) + 1) | 0
   GY = (Math.round(h * 0.52 / L) + 1) | 0
   if (GX > 240) GX = 240
@@ -71,10 +76,10 @@ export let grab = (gx, gy) => {
 export let drag = (gx, gy) => { if (grabbed >= 0) { nx[grabbed] = gx; ny[grabbed] = gy; ox[grabbed] = gx; oy[grabbed] = gy } }
 export let release = () => { grabbed = -1 }
 
-let relax = (a, b) => {
+let relax = (a, b, rest, stiff) => {
   let dx = nx[b] - nx[a], dy = ny[b] - ny[a]
   let d = Math.sqrt(dx * dx + dy * dy) + 0.0001
-  let diff = (d - L) / d * 0.5
+  let diff = (d - rest) / d * stiff
   let mx = dx * diff, my = dy * diff
   let pa = pin[a] | (a === grabbed ? 1 : 0)
   let pb = pin[b] | (b === grabbed ? 1 : 0)
@@ -99,17 +104,23 @@ let line = (x0, y0, x1, y1, col) => {
 }
 
 export let frame = (t) => {
-  // Verlet integrate
+  // Verlet integrate — gravity + a smooth wind: a slow envelope (waxes/wanes over ~1min)
+  // gates a faster sideways gust whose phase drifts down the rows (ny), so it ripples through
+  // the sheet like a moving gust rather than shoving it all one way.
+  let gust = 0.5 + 0.5 * Math.sin(t * 0.11)
   let i = 0
   while (i < N) {
     if (pin[i] === 0 && i !== grabbed) {
       let vx = (nx[i] - ox[i]) * 0.99, vy = (ny[i] - oy[i]) * 0.99
+      let wind = Math.sin(t * 0.8 + ny[i] * 0.05) * 0.6 * gust
       ox[i] = nx[i]; oy[i] = ny[i]
-      nx[i] += vx; ny[i] += vy + 0.5            // gravity
+      nx[i] += vx + wind; ny[i] += vy + 0.5            // wind + gravity
     }
     i++
   }
-  // satisfy structural constraints (right + down links)
+  // satisfy structural constraints (right + down links, full stiffness) plus a softer
+  // diagonal shear brace (both diagonals of each cell) — keeps the lattice from collapsing
+  // into slivers under a twist, without stiffening the drape.
   let k = 0
   while (k < ITER) {
     let j = 0
@@ -117,8 +128,12 @@ export let frame = (t) => {
       let ii = 0
       while (ii < GX) {
         let a = j * GX + ii
-        if (ii < GX - 1) relax(a, a + 1)
-        if (j < GY - 1) relax(a, a + GX)
+        if (ii < GX - 1) relax(a, a + 1, L, 0.5)
+        if (j < GY - 1) relax(a, a + GX, L, 0.5)
+        if (ii < GX - 1 && j < GY - 1) {
+          relax(a, a + GX + 1, LD, 0.2)          // "\" diagonal
+          relax(a + 1, a + GX, LD, 0.2)          // "/" diagonal
+        }
         ii++
       }
       j++
