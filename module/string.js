@@ -26,10 +26,11 @@ import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
-import { ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, STR_INTERN_BIT } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
+const HCACHE_BIT_I64 = hcacheBitI64Hex()
 // (SSO_BIT | SLICE_BIT) << AUX_SHIFT as i64 hex — BigInt-free (self-host runs this)
 const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + '00000000'
 
@@ -561,9 +562,10 @@ export default (ctx) => {
     (local.set $nlen (i32.sub (local.get $end) (local.get $start)))
     ${sliceSsoPackWat()}
     ${internProbeWat('(i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ' + LAYOUT.OFFSET_MASK + '))) (local.get $start))', '(i32.eqz (local.get $isSso))')}
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $nlen))))
-    (i32.store (local.get $off) (local.get $nlen))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $nlen))))
+    (i32.store (local.get $off) (i32.const 0))
+    (i32.store offset=4 (local.get $off) (local.get $nlen))
+    (local.set $off (i32.add (local.get $off) (i32.const 8)))
     (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $isSso (i32.wrap_i64 (i64.shr_u
       (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64}))
@@ -580,7 +582,7 @@ export default (ctx) => {
           (br $loop))))
       (else
         (memory.copy (local.get $off) (i32.add (local.get $srcOff) (local.get $start)) (local.get $nlen))))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // No-copy slice: returns a VIEW into the receiver's buffer instead of copying
   // bytes. Only emitted when escape analysis proves the result never outlives the
@@ -1188,6 +1190,9 @@ export default (ctx) => {
           (i32.add (local.get $aoff) (local.get $alen))
           (local.get $blen))
         (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (local.get $total))
+        ;; bytes changed in place — drop the cached hash (cell exists iff HCACHE bit)
+        (if (i64.ne (i64.and (local.get $a) (i64.const ${HCACHE_BIT_I64})) (i64.const 0))
+          (then (i32.store (i32.sub (local.get $aoff) (i32.const 8)) (i32.const 0))))
         (global.set $__heap (local.get $newHeap))
         (return (f64.reinterpret_i64 (local.get $a)))))` : ''
 
@@ -1195,13 +1200,16 @@ export default (ctx) => {
   // bump-extend concats (reached when `a` is NOT heap-top) and the `_fresh` variants
   // (which never bump-extend at all — emit routes a NON-self-accumulating `t = s + x`
   // here so it can't mutate the live `s` the way the heap-top extend would).
+  // [hash=0 u32][len u32][bytes] + STR_HCACHE_BIT: __str_hash fills the hash cell on
+  // first hash so repeated keying of a built string skips the byte-FNV walk.
   const allocCopyTail = `
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
-    (i32.store (local.get $off) (local.get $total))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $total))))
+    (i32.store (local.get $off) (i32.const 0))
+    (i32.store offset=4 (local.get $off) (local.get $total))
+    (local.set $off (i32.add (local.get $off) (i32.const 8)))
     (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
     (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`
 
   // Fused single-byte append: `buf += str[i]` lowers to this when both sides are
   // VAL.STRING and the rhs is a string-index. Skips __str_idx's 1-char SSO
@@ -1232,6 +1240,9 @@ export default (ctx) => {
             (call $__memgrow (local.get $newHeap))
             (i32.store8 (i32.add (local.get $aoff) (local.get $alen)) (local.get $byte))
             (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (i32.add (local.get $alen) (i32.const 1)))
+            ;; bytes changed in place — drop the cached hash (cell exists iff HCACHE bit)
+            (if (i64.ne (i64.and (local.get $a) (i64.const ${HCACHE_BIT_I64})) (i64.const 0))
+              (then (i32.store (i32.sub (local.get $aoff) (i32.const 8)) (i32.const 0))))
             (global.set $__heap (local.get $newHeap))
             (return (f64.reinterpret_i64 (local.get $a)))))))` : ''}
     ;; SSO (STRING with SSO bit) with len < ${MAX_SSO} and ASCII byte: pack into SSO without allocation.
@@ -1260,12 +1271,13 @@ export default (ctx) => {
     ;; Slow path: allocate new heap STRING with original bytes + 1 new byte
     (local.set $alen (call $__str_byteLen (local.get $a)))
     (local.set $total (i32.add (local.get $alen) (i32.const 1)))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
-    (i32.store (local.get $off) (local.get $total))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $total))))
+    (i32.store (local.get $off) (i32.const 0))
+    (i32.store offset=4 (local.get $off) (local.get $total))
+    (local.set $off (i32.add (local.get $off) (i32.const 8)))
     (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
     (i32.store8 (i32.add (local.get $off) (local.get $alen)) (local.get $byte))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // __str_concat / __str_concat_raw bump-EXTEND `a` in place when it is the heap-top own string
   // (the O(N) accumulator path). Emit calls these ONLY when the source is a self-accumulation

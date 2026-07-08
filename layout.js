@@ -142,11 +142,26 @@ export const atomNanHex = atomId => i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atom
  *  heap consumers read the len header at -4 regardless of aux. */
 export const STR_INTERN_BIT = 0x1
 
+/** STRING aux bit 1 on a PLAIN-HEAP string (SSO and SLICE clear): the string was
+ *  allocated with an [hash u32][len u32][bytes] header where the hash cell is a
+ *  LAZY cache — seeded 0 (byte-FNV clamps to ≥2, so 0 is unambiguous "uncomputed"),
+ *  filled by __str_hash on first hash. Sound because heap strings never relocate
+ *  and die with their arena; the two in-place mutators (concat/append bump-extend
+ *  of a heap-top accumulator) zero the cell when they change the bytes. Unlike
+ *  STR_INTERN_BIT it carries NO canonicality claim — two hcache strings with equal
+ *  content are ordinary bit-unequal pointers. Inert for slices (their aux[12:0]
+ *  is a length, only read under SLICE_BIT) and every len/byte reader (-4 header
+ *  unchanged). Producers opt in one by one; an unmarked string just re-hashes. */
+export const STR_HCACHE_BIT = 0x2
+
 /** Pre-shifted STRING SSO aux bit as i64 hex. */
 export const ssoBitI64Hex = () => i64Hex(BigInt(LAYOUT.SSO_BIT) << AUX_SHIFT)
 
 /** Pre-shifted STRING slice/view aux bit as i64 hex. */
 export const sliceBitI64Hex = () => i64Hex(BigInt(LAYOUT.SLICE_BIT) << AUX_SHIFT)
+
+/** Pre-shifted STRING hash-cache aux bit as i64 hex. */
+export const hcacheBitI64Hex = () => i64Hex(BigInt(STR_HCACHE_BIT) << AUX_SHIFT)
 
 /** Full i64 NaN-box hex for `(i64.const …)` — ptr type + aux, offset OR'd separately. */
 export const ptrNanHex = (ptrType, aux = 0) => i64Hex(ptrBits(ptrType, aux))

@@ -14,7 +14,7 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
-import { STR_INTERN_BIT, ssoBitI64Hex } from '../layout.js'
+import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -1263,7 +1263,7 @@ export default (ctx) => {
   // ~95M calls in watr self-host; SSO is the overwhelming majority post-invariant
   // (ec6a229: any ≤6-byte ASCII string IS SSO).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s i64) (result i32)
-    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32) (local $hi i32)
+    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32) (local $hi i32) (local $cs i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $s) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
@@ -1281,6 +1281,16 @@ export default (ctx) => {
               (i32.and (i32.ge_u (local.get $off) (i32.const 8))
                 (i32.eq (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))))
           (then (return (i32.load (i32.sub (local.get $off) (i32.const 8))))))
+        ;; runtime-built heap string with a lazy hash cell at -8 (STR_HCACHE_BIT,
+        ;; layout.js): 0 = uncomputed — fall through to the FNV walk and fill it
+        ;; below. Mask excludes SLICE (its aux[12:0] is a length, bit 1 incidental).
+        (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+              (i32.eq (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+          (then
+            (local.set $cs (i32.sub (local.get $off) (i32.const 8)))
+            (local.set $h (i32.load (local.get $cs)))
+            (if (local.get $h) (then (return (local.get $h))))
+            (local.set $h (i32.const 0x811c9dc5))))
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
           (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
         ;; 4-byte unrolled FNV-1a: each iter loads i32, mixes 4 bytes (little-endian) sequentially.
@@ -1303,8 +1313,11 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lh)))))
     ;; Ensure >= 2 (0=empty, 1=tombstone)
-    (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
-      (then (i32.add (local.get $h) (i32.const 2))) (else (local.get $h))))`
+    (if (i32.le_s (local.get $h) (i32.const 1))
+      (then (local.set $h (i32.add (local.get $h) (i32.const 2)))))
+    ;; fill the lazy hash cell (post-clamp, so 0 stays unambiguous "uncomputed")
+    (if (local.get $cs) (then (i32.store (local.get $cs) (local.get $h))))
+    (local.get $h))`
 
   ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
