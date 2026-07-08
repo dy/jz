@@ -149,6 +149,21 @@ the 3-frame chain + durable double-probe) — needs cross-module type flow on
 the table bindings; (b) shrink dyn_get_t_h's durable path (the
 dynPropsFilterMissIR bloom already gates it — the 2.1M ihash hits mean the
 filter passes; investigate why); (c) helper-internal fwd-free extracts.
+JESSIE CAMPAIGN STATE (end of 2026-07-08 leg): 5.4x -> 2.88x V8
+(same-thermal-window pairs; V8 2.09ms, jz 6.01ms). Landed, all generic:
+array-index element semantics (7c42b30), string-primitive props semantics +
+durable runtime-shadowed bit (70585fd), primitive-receiver method-override
+probe skip (280e8f5, -13.5%). Next levers by current profile: residual
+ihash 39ms (428k legit shadowed probes + 473k fallback-arm closure-prop
+reads -> closure-props flat table keyed by fn index), .loc sidecar alloc
+churn (115k __hash_new_small/run -> slot-in-header), closure8/trampoline
+dispatch (22ms self, genuine Pratt work -> devirt/inline-cache territory).
+SUSPECTED WATR BUG (recorded for upstream): inlineOnce+guardRefine+peephole
+composition deletes a probe branch guarded by ptrTypeEq+f64.eq/f64.ne
+self-compare (repro: /tmp/vo-micro.mjs shape at optimize level 2; bisect
+via jz optimize:{level:2,watr:{PASS:false}} -> peephole|inlineOnce|
+guardRefine each individually rescue). The AND-mask tag-compare shape is
+the safe spelling until root-caused.
 TIME PROFILE (2026-07-08, --cpu-prof on names:true jessie wasm — the call
 COUNTS above were misleading; counts ≠ time): __ihash_get_local self=94ms
 of ~270ms total wasm self-time (35%!), __dyn_get_t_h 24ms, __str_hash 14ms.
