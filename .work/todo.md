@@ -135,16 +135,19 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 Measured full corpus: jessie 5.0x, wordcount 3.8x, shapes 3.6x, immutable 3.2x,
 colorpq 2.0x, dispatch 1.17x, strbuild 1.008x. WASM_TODO in test/bench.js carries
 the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
-- **colorpq** — root-caused: pow-DOMINATED (V8 57ns/px = exactly 9 intrinsic pows;
-  jz pow ~1.3x/call in-context). Duplicate-spow CSE (watr 6e659de, effect-clean
-  call candidates) + full spow inlining (leaf site cap now size-scaled) both landed
-  and measured ~0 — calls/dups were not the cost. THE lever: **f64x2 pow pairs**
-  (PL/PM/PS share exponents nv then p — vectorize pow 2-wide via paired
-  exp2(e*log2 x); V8 cannot). Needs a $math.pow_2 SIMD kernel + vectorizer pairing.
-  Note: watr cse can't dedupe across INLINED copies (per-splice temp names differ) —
-  plan-level pure-call dedupe or rename-aware GVN is the general answer.
-- **dispatch/strbuild** — near-line; strbuild levers already mapped (itoa-into-arena,
-  small-concat fusion). dispatch = call_indirect table overhead, try devirt widening.
+- **colorpq — CLOSED to 1.20x** (f9caa74): fractional const-global reads now fold
+  to literals at readVar (only ints were cached), so emitPow's constant-exponent
+  arm fires (pow → inline exp(c·log x)) and the PPC vectorizer pairs into TRUE
+  2-lane log_v/exp_v. 38 runtime-pow calls → 0; 113.6→69.9ms, checksum unchanged.
+  Residual 20%: scalar tail + sign-select; possible fused exp2_v(y·log2_v x)
+  kernel saves the ×ln2 round-trips. Note: watr cse can't dedupe across INLINED
+  copies (per-splice temp names differ) — rename-aware GVN is the general answer.
+- **strbuild — flipped to 0.978x** (rode the const-fold).
+- **dispatch 1.17x** — one call_indirect over a CONST 8-arrow table, data index.
+  The AOT answer: watr devirt resolving f64.load(static_addr + idx*8) against the
+  DATA SEGMENT (const fn-array = baked closure boxes) → br_table over 8 direct
+  calls (bounds+sig checks gone; tiny bodies then inline). Seed machinery: the
+  5.2.2 hoisted-index devirt. Same class as `shapes` tag-switch.
 - **wordcount** (STR_INTERN_BIT interning), **shapes** (shape-set devirt: bounded
   schema union -> tag-switch direct loads), **immutable** (SROA for same-schema
   replace-stores), **jessie** (kernel parse) — design campaigns, in WASM_TODO.
