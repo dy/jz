@@ -181,8 +181,19 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
   ~6 ops/read vs the ~50-op megamorphic __dyn_get_any_t_h probe; 23 sites in the
   bench. Bench guards reads by `o.k`, so arms are dead-branch-prunable later
   (flow refinement), but the flat switch alone should close most of 3.6x.
-- **immutable** (SROA for same-schema replace-stores), **jessie** (kernel parse)
-  — design campaigns, in WASM_TODO.
+- **shapes — 3.9x -> 2.35x** (2159fa6): schemaId br_table devirt at megamorphic
+  reads; kernel A/B 0.985 (its own dyn reads ride it). Residual: per-read
+  __ptr_type guard + o.k discriminant read — flow refinement (k===0 arm implies
+  schema0) prunes both; watr guardRefine may fold repeated tag probes already.
+- **immutable 3.2x** — diagnosis: per-step `ps[i] = {x,y,vx,vy}` bump-allocates
+  fresh memory forever; V8 recycles young-gen (cache-warm). In-place overwrite
+  or freelist reuse are UNSOUND without escape analysis (an alias to the old
+  object must keep its values). The honest fix: element-value escape analysis
+  (values stored in ps never escape the array in the bench) -> in-place field
+  stores when old sid == new sid. Real campaign, not a pass tweak.
+- **jessie** (kernel parse, 5.0x) — the last undesigned campaign; profile with
+  helper counters first (same method that cracked wordcount).
+
 
 ## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
 Real and pending, ranked: (1) watr: split binary-size revert guard off the default
