@@ -191,8 +191,17 @@ the per-case lever notes (vs wasm rivals); this list is the V8-specific gate.
   object must keep its values). The honest fix: element-value escape analysis
   (values stored in ps never escape the array in the bench) -> in-place field
   stores when old sid == new sid. Real campaign, not a pass tweak.
-- **jessie** (kernel parse, 5.0x) — the last undesigned campaign; profile with
-  helper counters first (same method that cracked wordcount).
+- **jessie 5.0x — PROFILED** (per run: 8.1M ptr_offset, 4.1M dyn_get_t_h chain
+  + 3.9M str_hash, 2.1M ihash_get, 1.1M alloc each ENTERING __memgrow). Chain-
+  frame flattening (skip __dyn_get/__dyn_get_t for proven-string keys) measured
+  ZERO — V8 wasm calls are cheap; the cost is INSIDE: probe+eq bodies, per-read
+  str_hash, and __ptr_offset's forwarding-follow branch 8.1M times. Real levers,
+  in order: (1) receiver-stable offset caching — subscript's dispatch tables
+  never move; hoist __ptr_offset out of read sites per receiver (the existing
+  hoistGlobalPtrOffset class, extended to locals/params); (2) string hash memo
+  for heap keys + prehash literals at parse-table BUILD time; (3) __memgrow
+  call-per-alloc — move the grow check inline into __alloc's fast path.
+  Each is kernel-wide (helps jz.wasm compile times too, not just the bench).
 
 
 ## Arch analysis triage (compile time / size 2x — verified 2026-07-07)
