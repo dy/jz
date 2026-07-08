@@ -4458,7 +4458,19 @@ export function sortLocalsByUse(fn, precomputedCounts) {
     if (c[0] === 'local') { localIdxs.push(i); totalDecls++; continue }
     break
   }
-  if (localIdxs.length < 2 || totalDecls <= 128) return
+  if (localIdxs.length < 2) return
+  if (totalDecls <= 128) {
+    // Every index fits 1-byte LEB, so ordering is free for the body — group
+    // same-type runs so the binary locals vector squashes to one (n, type)
+    // entry per type instead of a run per interleaving (wasm-opt emits two
+    // groups here; watr's encoder merges only CONSECUTIVE same-type runs).
+    // Stable within a type: original declaration order.
+    const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
+    const keyed = localIdxs.map((i, k) => [fn[i], k])
+    keyed.sort((a, b) => ((TYPE_ORDER[a[0][a[0].length - 1]] ?? 9) - (TYPE_ORDER[b[0][b[0].length - 1]] ?? 9)) || (a[1] - b[1]))
+    localIdxs.forEach((i, k) => { fn[i] = keyed[k][0] })
+    return
+  }
   let counts = precomputedCounts
   if (!counts) {
     counts = new Map()
@@ -4471,7 +4483,11 @@ export function sortLocalsByUse(fn, precomputedCounts) {
     for (let i = totalDecls + 2; i < fn.length; i++) visit(fn[i])
   }
   const locals = localIdxs.map(i => fn[i])
-  locals.sort((a, b) => (counts.get(b[1]) || 0) - (counts.get(a[1]) || 0))
+  const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
+  // Hot-first for 1-byte LEB coverage; equal counts tie-break by type so the
+  // locals vector still squashes into runs where frequency permits.
+  locals.sort((a, b) => ((counts.get(b[1]) || 0) - (counts.get(a[1]) || 0)) ||
+    ((TYPE_ORDER[a[a.length - 1]] ?? 9) - (TYPE_ORDER[b[b.length - 1]] ?? 9)))
   localIdxs.forEach((i, k) => { fn[i] = locals[k] })
 }
 
