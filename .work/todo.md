@@ -325,15 +325,25 @@ watrCompile encode 2.9ms, everything else ≤3ms.
       codeItemSize 1.0s + idx helpers). Build 83.4s→69.6s. Kernel +3.7KB
       (+0.06%, the inflation the guard used to revert); kernel A/B 1.0055 =
       sub-noise; selfhost 20/20, pins/goldens green.
+    - [x] convergence hash — LANDED watr 7c5a093: hashNode (53-bit rolling
+      structural hash, zero allocation) replaces hashFunc's full serialized
+      string in runRounds; token stream replicates hashFunc exactly (export
+      skip, L-canonicalization) and was differentially verified (zero verdict
+      mismatches, kernel + corpus). +2-5% medium modules.
+    - dedupe per-round key memo — REFUTED: WeakMap(contentHash→canonKey)
+      memo was neutral-to-worse on kernel AND medium modules; funcs churn
+      every round (propagate/coalesce rename), so the memo misses and pays
+      hashNode on top. Same churn argument likely kills the tallyLocals
+      memo idea. NOTE: kernel byte drift across watr edits is EXPECTED —
+      the kernel embeds watr's optimize.js as module m122; only behavior
+      divergence matters (differential harness pattern in scratchpad).
     Remaining (kernel profile, self-time — the honest column; totals for
     recursive fns are analyzer-inflated):
     - walk/walkPost visitor overhead 17s/70s kernel — the structural floor;
-      specialization territory (per-pass fused walkers).
-    - hashFunc 4.4s kernel — convergence + dedupe re-hash every func every
-      round; needs module passes to report touched funcs or a shared memo.
+      specialization territory (per-pass fused walkers). Diminishing-returns
+      territory: remaining kernel cost is genuine work on ~6k churning funcs.
     - tallyLocals (countLocalUses) 2.9s kernel — per-func recount each
-      propagate entry per round; CNT is maintained cross-round in-pass but
-      re-derived per round.
+      propagate entry per round; see churn caveat above.
     - coalesceLocals in rounds ≈24ms/module — REFUTED removing it from
       rounds (crc32 −4.5ms but json/wordcount +6ms, size wobbles): it earns
       its keep mid-rounds. Win must come from making it cheaper, not rarer.
