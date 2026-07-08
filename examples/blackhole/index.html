@@ -17,7 +17,7 @@ let incl = 80 * DEG, azim = 0.5, dragging = false, lastX = 0, lastY = 0
 const demo = runDemo({
   name: "blackhole",
   hint: "a Schwarzschild black hole — gravitational lensing arcs the disk's far side above and below its shadow · drag to orbit",
-  size: { budget: 70000 },
+  size: { budget: 90000 },
   cursor: "grab",
   frame: (e, t) => { e.frame(t, incl, azim) },
   randomize: (e) => {
@@ -35,7 +35,7 @@ demo.cv.addEventListener('pointerdown', e => {
 })
 demo.cv.addEventListener('pointermove', e => {
   if (!dragging) return
-  azim += (e.clientX - lastX) * 0.01
+  azim -= (e.clientX - lastX) * 0.01   // drag right → orbit the way the view slides (natural grab)
   incl -= (e.clientY - lastY) * 0.01
   if (incl < 0.15) incl = 0.15
   if (incl > Math.PI - 0.15) incl = Math.PI - 0.15

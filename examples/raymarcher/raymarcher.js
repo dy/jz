@@ -114,14 +114,28 @@ let march = (ox, oy, oz, dx, dy, dz) => {
 
 // Sphere-traced soft shadow (Quilez): march toward the light, tracking the tightest
 // grazing angle seen (min of k·h/t) instead of a hard occluded/lit boolean — a near-miss
-// narrows the penumbra continuously. Capped at 32 steps and a short max distance (the
-// lattice period is 3–4 world units, so a couple of periods is plenty of reach). res only
-// ever shrinks from 1.0 (never negative — h is ≥0.001 whenever we reach the k·h/t line,
-// since a smaller h returns 0 immediately), so no clamp is needed on the way out.
+// narrows the penumbra continuously. Capped at 32 steps. res only ever shrinks from 1.0
+// (never negative — h is ≥0.001 whenever we reach the k·h/t line, since a smaller h
+// returns 0 immediately), so no clamp is needed on the way out.
+//
+// MAXT is deliberately ONE lattice period, not "a couple" (the previous 6.0 reached far
+// enough to graze the NEXT repeated sphere layer — period 3 in y, and this light's climb
+// rate is 0.577 — 3/0.577 ≈ 5.2 — producing thin hard-edged grazing streaks across the
+// floor that read as scratches). The contact ellipses under each sphere are cast by
+// same-layer neighbours and fully saturate by t≈3.5, so 4.0 keeps every real shadow and
+// drops only the false next-layer contamination.
 let SHADOW_K = 12.0
 let SHADOW_STEPS = 32
-let SHADOW_MAXT = 6.0
-let SHADOW_HIT_MAXDIST = 9.0
+let SHADOW_MAXT = 4.0
+let SHADOW_FADE_START = 6.0     // camera-distance beyond which shadow eases back to 1.0
+let SHADOW_HIT_MAXDIST = 9.0    // …and fully off (skip the march) — was a hard on/off
+                                 // switch (a visible cliff: measured shadow jumping e.g.
+                                 // 0.85→1.0 between adjacent pixels straddling this line,
+                                 // not "without changing a single output pixel" as claimed).
+                                 // Now the last SHADOW_FADE_START…HIT_MAXDIST stretch
+                                 // smoothsteps the computed value back to 1.0, so it lands
+                                 // exactly on the skipped region's constant with no seam —
+                                 // same pixels do the march either way, so no cost added.
 
 let softShadow = (ox, oy, oz, dx, dy, dz) => {
   let res = 1.0
@@ -237,12 +251,18 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
         if (diff < 0.0) diff = 0.0
 
         // Soft shadow toward the light — skip the march when the surface already
-        // self-shadows (diff===0, so it would multiply to 0 regardless) or the hit is
-        // far enough that fog hides it anyway (SHADOW_HIT_MAXDIST); halves the added
-        // cost for free without changing a single output pixel.
+        // self-shadows (diff===0, so it would multiply to 0 regardless) or the hit is far
+        // enough that fog mostly hides it anyway (SHADOW_HIT_MAXDIST) — same pixels run the
+        // march either way, so this costs nothing extra. The last stretch before the cutoff
+        // smoothsteps the result back to 1.0 so it meets the skipped region with no seam.
         let shadow = 1.0
         if (diff > 0.0 && tt < SHADOW_HIT_MAXDIST) {
           shadow = softShadow(hx + nx * 0.01, hy + ny * 0.01, hz + nz * 0.01, lx, ly, lz)
+          if (tt > SHADOW_FADE_START) {
+            let ft = (tt - SHADOW_FADE_START) / (SHADOW_HIT_MAXDIST - SHADOW_FADE_START)
+            ft = ft * ft * (3.0 - 2.0 * ft)   // smoothstep — C1 continuous at both ends
+            shadow = shadow + (1.0 - shadow) * ft
+          }
         }
         let direct = diff * shadow
 

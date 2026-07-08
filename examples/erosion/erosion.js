@@ -3,9 +3,10 @@
 // (steep/fast/full of water) and deposits sediment when it slows or climbs — so valleys,
 // ridges and deltas emerge. Every droplet also deposits water-flux along its path into a
 // field that decays slowly frame to frame; where droplets keep converging (valleys) it
-// accumulates, and rendering brightness ∝ log(flux) turns that into a luminous, faintly
-// cool river network laid over the grayscale hill-shaded relief — a dendritic drainage
-// pattern emerges on its own over a few seconds. Click for a local rain burst. Lots of
+// accumulates, and rendering brightness ∝ log(flux) — gated to roughly the top tenth of
+// cells, so it stays a thin accent — turns that into a faintly cool river network over the
+// grayscale hill-shaded relief — a dendritic drainage pattern emerges on its own over a few
+// seconds. Click for a local rain burst. Lots of
 // gradient sampling + scattered read-modify-write over the grid: a memory + branch
 // workout for jz. resize(w,h) → Uint32Array; frame() rains; reseed() makes new terrain.
 
@@ -16,10 +17,18 @@ let fluxRef            // Float64Array[1] — running peak flux, so the river cu
                         // regardless of canvas resolution (DROPS is a fixed count spread over W×H cells)
 let DROPS = 700, STEPS = 34
 let FLUX_DECAY = 0.992                        // slow per-frame decay — trails outlive any single frame
-let FLUX_BASE_FRAC = 0.2                      // fraction of peak below which flux is ambient scatter,
-                                               // not a channel (700 drops/frame brush nearly every cell)
-let FLUX_GAIN = 3.0, FLUX_SCALE = 0.65        // log(excess above the floor) → 0..1 river intensity
-let RIVER_R = 15.0, RIVER_G = 130.0, RIVER_B = 255.0   // luminous wash, faintly cool (water-tinted)
+// fraction of peak below which flux is ambient scatter, not a channel. At steady state the
+// per-cell flux distribution is broad, not a sharp channel/background split: the MEDIAN cell
+// already sits at ~0.16 of peak and the top quartile clears ~0.25 — so the old 0.2 floor let
+// over a third of every frame's cells tint blue, reading as a pale wash instead of a network
+// (measured: 28–37% of cells lit, mean intensity ~0.15). 0.3 keeps roughly the top tenth.
+let FLUX_BASE_FRAC = 0.36
+let FLUX_GAIN = 3.0, FLUX_SCALE = 0.55        // log(excess above the floor) → 0..1 river intensity
+                                               // (SCALE trimmed 0.65→0.55: even a fully-qualifying
+                                               // cell now blends toward the river colour rather
+                                               // than replacing it outright, so relief still reads
+                                               // through the strongest channels)
+let RIVER_R = 15.0, RIVER_G = 130.0, RIVER_B = 255.0   // thin tint, faintly cool (water-tinted)
 let RAIN_DROPS = 140, RAIN_R = 3.0            // a click's local burst: droplets clustered near the cursor
 
 export let resize = (w, h) => {
@@ -116,8 +125,8 @@ export let frame = (t) => {
     d++
   }
 
-  // render: grayscale hill-shading (light from upper-left) + a luminous river overlay,
-  // brightness ∝ log(flux); the flux field decays here too, once per frame
+  // render: grayscale hill-shading (light from upper-left) + a thin river tint on the
+  // strongest-flux cells only, brightness ∝ log(flux); the flux field decays here too, once per frame
   let lx = -0.5, ly = -0.6, lz = 0.62
   let ref = fluxRef[0]; if (ref < 1.0) ref = 1.0     // last frame's peak — this frame's normalizer
   let peak = 0.0
@@ -127,12 +136,15 @@ export let frame = (t) => {
     while (x < W) {
       let c = row + x
       let yn = y > 0 ? c - W : c, ys = y < H - 1 ? c + W : c
-      let nx = (hmap[c - (x > 0 ? 1 : 0)] - hmap[c + (x < W - 1 ? 1 : 0)]) * 8.0
-      let ny = (hmap[yn] - hmap[ys]) * 8.0
+      // Strong relief: a big slope scale + a shading-dominated ramp on a dark base so the carved
+      // ridges and valleys read as real topography (the old 8×/40+70·h+150·sh washed the eroded,
+      // near-flat terrain to a flat light gray — the relief barely showed).
+      let nx = (hmap[c - (x > 0 ? 1 : 0)] - hmap[c + (x < W - 1 ? 1 : 0)]) * 20.0
+      let ny = (hmap[yn] - hmap[ys]) * 20.0
       let inv = 1.0 / Math.sqrt(nx * nx + ny * ny + 1.0)
       let sh = (nx * lx + ny * ly + lz) * inv
       if (sh < 0.0) sh = 0.0
-      let g = 40.0 + hmap[c] * 70.0 + sh * 150.0
+      let g = 18.0 + hmap[c] * 40.0 + sh * 210.0
       if (g > 255.0) g = 255.0
       if (g < 0.0) g = 0.0
 

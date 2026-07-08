@@ -1,16 +1,16 @@
 let BGR_ALIVE = 0;
 let BGR_DEAD = 0;
-let BIT_ROT = 0;
 
 let width = 0, height = 0, offset = 0;
 let mem;
 
 export let dataOffset = () => mem;
 
+// rot_val is a vestigial arg (the old afterglow fade rate) the driver still passes — unused now
+// that Life renders as a clean binary field.
 export let init = (w, h, alive, dead, rot_val) => {
     BGR_ALIVE = alive;
     BGR_DEAD = dead;
-    BIT_ROT = rot_val;
     width = w;
     height = h;
     offset = w * h;
@@ -24,11 +24,6 @@ export let init = (w, h, alive, dead, rot_val) => {
         }
     }
     return mem;
-};
-
-let rot = (x, y, v) => {
-    let alpha = Math.max((v >>> 24) - BIT_ROT, 0);
-    mem[offset + (y * width + x)] = ((alpha << 24) | (v & 0x00ffffff)) >>> 0;
 };
 
 export let step = () => {
@@ -47,24 +42,15 @@ export let step = () => {
                 (mem[y   * w + xm1] & 1)                          + (mem[y   * w + xp1] & 1) +
                 (mem[yp1 * w + xm1] & 1) + (mem[yp1 * w + x] & 1) + (mem[yp1 * w + xp1] & 1);
 
-            // NB: the AS original rots SURVIVORS and snaps the dying to an opaque dead
-            // color — its dead color is a visible magenta, so that reads as trails. On
-            // this gallery's black theme that fades still-lifes to invisible; inverted
-            // here: the living hold full brightness, the dying carry the fading afterglow.
+            // Clean binary Life: a cell is alive (full-bright ink) or dead (background), no
+            // afterglow trail. Survive = 2 or 3 live neighbours; birth = exactly 3.
             let self = mem[y * w + x];
-            if (self & 1) {
-                if ((aliveNeighbors & 0b1110) == 0b0010) {
-                    mem[offset + (y * width + x)] = (self | 0xff000000) >>> 0;
-                } else {
-                    rot(x, y, self & ~1);   // dies: alive bit off, brightness starts its fade-out
-                }
-            } else {
-                if (aliveNeighbors == 3) {
-                    mem[offset + (y * width + x)] = (BGR_ALIVE | 0xff000000) >>> 0;
-                } else {
-                    rot(x, y, self);
-                }
-            }
+            let live = (self & 1)
+                ? ((aliveNeighbors & 0b1110) == 0b0010)   // alive: survive on 2 or 3
+                : (aliveNeighbors == 3);                  // dead: born on exactly 3
+            mem[offset + (y * width + x)] = live
+                ? (BGR_ALIVE | 0xff000000) >>> 0
+                : (BGR_DEAD | 0xff000000) >>> 0;
         }
     }
 };

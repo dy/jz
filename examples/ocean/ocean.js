@@ -12,8 +12,9 @@
 // Hermitian — every IFFT below comes out exactly real, no residual imaginary part to discard
 // (up to float rounding). The Gaussian field ξ is drawn once per reseed() via an in-kernel
 // seeded PRNG (Box–Muller over a mulberry32 stream — never Math.random, so JS and jz stay
-// bit-exact); dragging (setWind) only reshapes P(k) over the SAME ξ, so the sea morphs smoothly
-// as the wind turns instead of flickering to a new texture every drag frame.
+// bit-exact); wind (direction & speed) is redrawn from the SAME stream, but only on reseed()
+// (re-roll) — dragging never touches ξ, h̃₀ or wind, it only pans the camera (see setPan), so
+// the sea slides smoothly under it instead of flickering to a new field every drag frame.
 //
 // Grid N=256, iterative radix-2 Cooley–Tukey (rows then columns, precomputed twiddle table, no
 // runtime trig in the butterfly), 3 fields (h, ∂h/∂x, ∂h/∂y) × 2 passes = 6 FFT passes/frame.
@@ -28,8 +29,9 @@
 // forward direction is locked to the light's azimuth, so its glint concentrates into the classic
 // glitter path running from the horizon to the viewer — the one feature that reads as "water" at
 // a glance. A faint sky glow above the horizon (fading to black) matches a haze the sea fades
-// into near the horizon line. Grayscale ink-on-black throughout. Drag sets wind direction &
-// speed; re-roll reseeds ξ and the moon's position.
+// into near the horizon line. Grayscale ink-on-black throughout. Drag pans the camera across
+// the same periodic sea (strafe + dolly, see setPan); re-roll reseeds ξ, the wind, and the
+// moon's position.
 
 // ── grid / physical constants ──────────────────────────────────────────────────────────────
 const N = 256                       // FFT resolution (power of two)
@@ -57,6 +59,7 @@ const FOV_H = 0.5             // horizontal half-angle (rad, ~28.6°) — latera
 const TAN_FOV_H = Math.tan(FOV_H)
 const CAM_H = 230.0           // camera height above the water (world units) — sets the depth scale:
                                // ≈0.16×LPATCH at the bottom row, ≈4.4×LPATCH at the horizon row
+const DBOTTOM = CAM_H / Math.tan(FOV_DOWN_MAX)   // ground distance sampled at the bottom (nearest) row — setPan's calibration point
 const SKY_GLOW = 0.085         // brightness at the horizon (shared by the sky glow and the sea's haze)
 const SKY_FALLOFF = 4.0       // sky glow → black by the top of the frame at this rate
 const SKY_WIDTH = 2.2         // lateral falloff of the glow around the sun's azimuth (screen-centered)
@@ -118,6 +121,11 @@ let sun = new Float64Array(3)   // [Lx, Ly, Lz] unit sun direction — low eleva
 // one feature that makes any rendered water read as water at a glance.
 let camFwd = new Float64Array(2)   // [cos(az), sin(az)]
 let camRight = new Float64Array(2) // perpendicular to camFwd — the screen's lateral axis
+
+// Drag pans the camera through the world instead of touching the spectrum: [panRight, panFwd],
+// world-space offsets along camRight/camFwd (see setPan). Persistent fractional cells; untouched
+// by reseed/setWind — the view a user sets up survives a re-roll of the sea underneath it.
+let pan = new Float64Array(2)
 
 let rngState = 1                 // mulberry32 state — pure integer, safe as a bare i32 global
 
@@ -299,6 +307,7 @@ let render = () => {
   let w = W, h = H
   let Lx = sun[0], Ly = sun[1], Lz = sun[2]
   let fx = camFwd[0], fy = camFwd[1], rx = camRight[0], ry = camRight[1]
+  let panR = pan[0], panF = pan[1]
   let horizonRow = (HORIZON_FRAC * h) | 0
   if (horizonRow < 1) horizonRow = 1
   if (horizonRow > h - 2) horizonRow = h - 2
@@ -328,13 +337,14 @@ let render = () => {
     let t = (sy - horizonRow) * seaRowsInv                 // 0 at the horizon, 1 at the bottom (near)
     let theta = FOV_DOWN_MIN + t * (FOV_DOWN_MAX - FOV_DOWN_MIN)
     let ct = Math.cos(theta), st = Math.sin(theta)
-    let d = CAM_H * ct / st                                // ground distance this row samples
-    let latHalf = d * TAN_FOV_H
+    let d0 = CAM_H * ct / st                               // ground distance this row samples (unpanned)
+    let latHalf = d0 * TAN_FOV_H                            // FOV spread stays tied to the row's true distance
+    let d = d0 + panF                                       // pan dollies the sampled distance along the view ray
     let fog = Math.exp(-t * FOG_RATE); if (fog > 1.0) fog = 1.0
     let rowbase = sy * w
     let sx = 0
     while (sx < w) {
-      let lat = ((sx / (w - 1)) * 2.0 - 1.0) * latHalf
+      let lat = ((sx / (w - 1)) * 2.0 - 1.0) * latHalf + panR   // pan strafes along the camera's right axis
       let wx = rx * lat + fx * d, wy = ry * lat + fy * d
       let gv = ((wy / LPATCH) * N) % N; if (gv < 0.0) gv += N
       let v0 = gv | 0, fv = gv - v0
@@ -393,8 +403,9 @@ let render = () => {
 
 // ── exports ─────────────────────────────────────────────────────────────────────────────────
 
-// Fresh sea: redraw the Gaussian field ξ and pick a new low-sun azimuth/elevation, both from
-// the SAME deterministic stream (never Math.random — keeps JS and jz bit-exact).
+// Fresh sea: redraw the Gaussian field ξ, pick a new low-sun azimuth/elevation AND a new wind
+// (direction + speed), all from the SAME deterministic stream (never Math.random — keeps JS
+// and jz bit-exact). Wind changes ONLY happen here — dragging pans the camera instead (setPan).
 export let reseed = (seed) => {
   rngState = seed | 0; if (rngState === 0) rngState = 1
   seedXi()
@@ -405,11 +416,15 @@ export let reseed = (seed) => {
   sun[2] = Math.sin(el)
   camFwd[0] = caz; camFwd[1] = saz
   camRight[0] = -saz; camRight[1] = caz
+  let windAz = rnd() * TWO_PI, windSpeed = MINV + rnd() * (MAXV - MINV)
+  wind[0] = Math.cos(windAz); wind[1] = Math.sin(windAz)
+  wind[2] = windSpeed * windSpeed / G
   buildH0()
 }
 
-// Wind from a canvas-space vector (drag position relative to center): the kernel owns the unit
-// conversion (drag-to-edge ⇒ full MINV..MAXV range) so the driver just forwards raw pixels.
+// Wind from a canvas-space vector (e.g. an offset from center): the kernel owns the unit
+// conversion (distance-to-edge ⇒ full MINV..MAXV range). No longer wired to drag — that pans
+// the view now (see setPan) — kept as a direct API and used by gen-thumb for a chosen thumbnail wind.
 export let setWind = (vx, vy) => {
   let mag = Math.sqrt(vx * vx + vy * vy)
   let half = (W < H ? W : H) * 0.5; if (half < 1.0) half = 1.0
@@ -418,6 +433,21 @@ export let setWind = (vx, vy) => {
   if (mag > 1e-6) { wind[0] = vx / mag; wind[1] = vy / mag }   // else: keep the last direction
   wind[2] = speed * speed / G
   buildH0()
+}
+
+// Pan the camera through the world: dx/dy are raw backing-pixel drag deltas — the driver just
+// forwards pointer movement, the kernel owns the pixel→world conversion (same convention as
+// setWind). panRight strafes along the camera's right axis (drag left/right slides the sea the
+// same way); panFwd dollies along its forward axis (drag up/down). Scale is calibrated at the
+// nearest (bottom) row, where the pan reads closest to 1:1; farther rows drift less per pixel —
+// real motion parallax, not a bug. Both wrap at one LPATCH period so a long drag session never
+// loses float precision. Never touches ξ/h̃₀/wind — the SAME sea slides under the camera.
+export let setPan = (dx, dy) => {
+  let ww = W; if (ww < 1.0) ww = 1.0
+  let scale = (2.0 * DBOTTOM * TAN_FOV_H) / ww              // world units per backing pixel, at the bottom row
+  let pr = pan[0] - dx * scale, pf = pan[1] + dy * scale
+  pan[0] = pr - Math.floor(pr / LPATCH) * LPATCH
+  pan[1] = pf - Math.floor(pf / LPATCH) * LPATCH
 }
 
 export let resize = (w, h) => {
@@ -435,8 +465,7 @@ export let resize = (w, h) => {
     twC = new Float64Array(N >> 1); twS = new Float64Array(N >> 1)
     rowRe = new Float64Array(N); rowIm = new Float64Array(N)
     buildK(); buildTwiddle(); buildOmega()
-    wind[0] = Math.cos(0.35); wind[1] = Math.sin(0.35); wind[2] = 9.0 * 9.0 / G   // default breeze
-    reseed(DEFAULT_SEED)
+    reseed(DEFAULT_SEED)   // seeds ξ + picks the initial wind and moon (see reseed)
   }
   return px
 }

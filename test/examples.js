@@ -455,7 +455,6 @@ test('example: game-of-life output natively matches WASM', () => {
     let nativeExports = (() => {
         let BGR_ALIVE = 0;
         let BGR_DEAD = 0;
-        let BIT_ROT = 0;
 
         let width = 0, height = 0, offset = 0;
         let mem;
@@ -463,7 +462,6 @@ test('example: game-of-life output natively matches WASM', () => {
         let init = (w, h, alive, dead, rot_val) => {
             BGR_ALIVE = alive;
             BGR_DEAD = dead;
-            BIT_ROT = rot_val;
             width = w;
             height = h;
             offset = w * h;
@@ -477,11 +475,6 @@ test('example: game-of-life output natively matches WASM', () => {
                 }
             }
             return mem;
-        };
-
-        let rot = (x, y, v) => {
-            let alpha = Math.max((v >>> 24) - BIT_ROT, 0);
-            mem[offset + (y * width + x)] = ((alpha << 24) | (v & 0x00ffffff)) >>> 0;
         };
 
         let step = () => {
@@ -500,16 +493,10 @@ test('example: game-of-life output natively matches WASM', () => {
                         (mem[y   * w + xm1] & 1)                          + (mem[y   * w + xp1] & 1) +
                         (mem[yp1 * w + xm1] & 1) + (mem[yp1 * w + x] & 1) + (mem[yp1 * w + xp1] & 1);
 
-                    // mirrors the kernel's black-theme inversion: survivors hold full
-                    // brightness, the dying carry the fading afterglow (alive bit off)
+                    // clean binary Life: alive (2-3 neighbours) → full-bright, else → background
                     let self = mem[y * w + x];
-                    if (self & 1) {
-                        if ((aliveNeighbors & 0b1110) == 0b0010) mem[offset + (y * width + x)] = (self | 0xff000000) >>> 0;
-                        else rot(x, y, self & ~1);
-                    } else {
-                        if (aliveNeighbors == 3) mem[offset + (y * width + x)] = (BGR_ALIVE | 0xff000000) >>> 0;
-                        else rot(x, y, self);
-                    }
+                    let live = (self & 1) ? ((aliveNeighbors & 0b1110) == 0b0010) : (aliveNeighbors == 3);
+                    mem[offset + (y * width + x)] = live ? (BGR_ALIVE | 0xff000000) >>> 0 : (BGR_DEAD | 0xff000000) >>> 0;
                 }
             }
         };

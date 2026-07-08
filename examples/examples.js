@@ -11,7 +11,7 @@
 // the landing hero rotates through.
 
 export const examples = [
-  { name: 'blackhole',    title: 'Black Hole',        blurb: 'Schwarzschild geodesics, ray-traced — the far disk arcs over the shadow, Doppler-bright on the approaching side' },
+  { name: 'blackhole',    title: 'Black Hole',        blurb: 'Schwarzschild geodesics, ray-traced — the far disk arcs over the shadow, brighter on the approaching limb' },
   { name: 'nbody',        title: 'N-body',            blurb: '1024-body gravity — pairwise attraction', show: true },
   { name: 'boids',        title: 'Boids',             blurb: 'Reynolds flocking — cohesion, alignment, separation; the cursor is a hawk', show: true },
   { name: 'fireflies',    title: 'Fireflies',         blurb: 'Kuramoto oscillators — neighbour-coupled fireflies lock into traveling waves of synchrony' },
@@ -39,7 +39,7 @@ export const examples = [
   { name: 'hydrogen',     title: 'Hydrogen Orbitals', blurb: 'the electron clouds of the hydrogen atom — |ψₙₗₘ|² in phase color, morphing s→p→d→f' },
   { name: 'erosion',      title: 'Erosion',           blurb: 'hydraulic erosion — rain carves the terrain; flux pools into a river network' },
   { name: 'plasma',       title: 'Plasma',            blurb: 'FBM domain-warp — the classic flowing plasma', show: true },
-  { name: 'lorenz',       title: 'Lorenz',            blurb: 'the butterfly that launched chaos theory — a 1e-5 nudge tears its twin away', show: true },
+  { name: 'lorenz',       title: 'Lorenz',            blurb: 'the butterfly that launched chaos theory — a strange attractor in 3D', show: true },
   { name: 'attractors',   title: 'Attractors',        blurb: 'de Jong map — millions of iters into luminous curves' },
   { name: 'raymarcher',   title: 'Raymarcher',        blurb: 'a soft-shadowed SDF sphere field — Shadertoy on the CPU', kernels: ['raymarcher.simd'], show: true },
   { name: 'metaballs',    title: 'Metaballs',         blurb: 'organic blobs — 2D implicit surface marching', show: true },
@@ -66,7 +66,7 @@ export const examples = [
   { name: 'slime',        title: 'Slime Mold',        blurb: 'Physarum — two rival colonies contest territory with competing transport networks' },
   { name: 'dla',          title: 'DLA',               blurb: 'diffusion-limited aggregation — click to race competing crystals for the walker supply' },
   { name: 'maze',         title: 'Maze',              blurb: 'recursive-backtracker maze, then BFS solve' },
-  { name: 'wireworld',    title: 'Wireworld',         blurb: 'a 4-state CA that races electrons along wires' },
+  { name: 'wireworld',    title: 'Wireworld',         blurb: 'a 4-state CA streaming current through a tiled microchip — bus banks, fan-out trees, clock farms' },
   { name: 'rule30',       title: 'Rule 30',           blurb: "Wolfram's elementary CA — one rule, endless aperiodic complexity" },
   { name: 'ising',        title: 'Ising Model',       blurb: 'Metropolis spin flips — domains order & melt through Tc, M(t) charted live' },
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — the spanning cluster snaps in at p_c, P∞(p) charted live' },

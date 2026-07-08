@@ -22,14 +22,15 @@ let ITER = 4
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  // Responsive grid: a wide drape that hangs to ~half the height. Square cells sized to the
-  // screen; column/row counts follow the screen so the sheet spans ~88% of the width and ~52%
-  // of the height — long, but not off the bottom. Cells kept coarse (min/74) so the node count
-  // stays light (a few thousand) even with the longer drape, and it runs smooth.
+  // Responsive grid: a wide drape that hangs down most of the height. Square cells sized to
+  // the screen; column/row counts follow the screen so the sheet spans ~88% of the width and
+  // ~80% of the height — long, reaching well down the frame without running off the bottom.
+  // Cells kept coarse (min/74) so the node count stays light (a few thousand) even with the
+  // longer drape, and it runs smooth.
   L = (w < h ? w : h) / 74
   LD = L * 1.4142135623730951   // √2 — diagonal of a square L×L cell
   GX = (Math.round(w * 0.88 / L) + 1) | 0
-  GY = (Math.round(h * 0.52 / L) + 1) | 0
+  GY = (Math.round(h * 0.80 / L) + 1) | 0
   if (GX > 240) GX = 240
   if (GX < 12) GX = 12
   if (GY > 100) GY = 100
@@ -118,9 +119,12 @@ export let frame = (t) => {
     }
     i++
   }
-  // satisfy structural constraints (right + down links, full stiffness) plus a softer
-  // diagonal shear brace (both diagonals of each cell) — keeps the lattice from collapsing
-  // into slivers under a twist, without stiffening the drape.
+  // satisfy structural constraints (right + down links, soft) plus a much softer diagonal
+  // shear brace (both diagonals of each cell) — just enough to keep the lattice from
+  // collapsing into slivers under a twist, without fighting the drape. Low stiffness (rather
+  // than fewer iterations) is the softening knob: it lets fabric stretch and sway under its
+  // own weight/wind instead of snapping back rigidly, while staying unconditionally stable
+  // (each pass only partially corrects, never overshoots).
   let k = 0
   while (k < ITER) {
     let j = 0
@@ -128,11 +132,11 @@ export let frame = (t) => {
       let ii = 0
       while (ii < GX) {
         let a = j * GX + ii
-        if (ii < GX - 1) relax(a, a + 1, L, 0.5)
-        if (j < GY - 1) relax(a, a + GX, L, 0.5)
+        if (ii < GX - 1) relax(a, a + 1, L, 0.35)
+        if (j < GY - 1) relax(a, a + GX, L, 0.35)
         if (ii < GX - 1 && j < GY - 1) {
-          relax(a, a + GX + 1, LD, 0.2)          // "\" diagonal
-          relax(a + 1, a + GX, LD, 0.2)          // "/" diagonal
+          relax(a, a + GX + 1, LD, 0.08)          // "\" diagonal
+          relax(a + 1, a + GX, LD, 0.08)          // "/" diagonal
         }
         ii++
       }

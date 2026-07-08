@@ -14,7 +14,7 @@ const { exports } = await instantiate(wasm)
 
 // Most examples render at the standard thumb size; a few want a coarser grid so their cells
 // stay chunky/legible at thumbnail scale (the gallery upscales the webp).
-const SIZE = { wireworld: [264, 162] }[name]
+const SIZE = { wireworld: [760, 468] }[name]   // full size — packs enough macro-cell blocks that the tiled microchip die reads
 const W = SIZE ? SIZE[0] : 760, H = SIZE ? SIZE[1] : 468
 let px = exports.resize(W, H)
 if (exports.init) exports.init()
@@ -110,11 +110,11 @@ const FRAME_ARGS = {
 
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
-                 dla: 600, wireworld: 200, waves: 50, cloth: 130, maze: 200, sph: 500,
+                 dla: 600, wireworld: 500, waves: 50, cloth: 130, maze: 200, sph: 500,
                  erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
-                 buddhabrot: 120, lorenz: 320, pendulum: 175, fern: 150, ising: 140, dwa: 95,
+                 buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,
-                 sandpile: 1000, fireflies: 1016, bz: 260, magnet: 180, pathtracer: 450, ocean: 90 }[name] ?? 1
+                 sandpile: 1000, fireflies: 1016, bz: 260, magnet: 250, pathtracer: 450, ocean: 90 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the
 // trio fills the frame. Roll many initial conditions and keep the most balanced triangle with

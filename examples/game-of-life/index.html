@@ -52,7 +52,6 @@ const loop = () => {
   requestAnimationFrame(() => { if (engine) loop() })
   const sz = size()
   mem.copyWithin(0, sz, 2 * sz)
-  if (drawing) spray(curX, curY, erasing)
   const t0 = performance.now()
   engine.step()
   const ms = performance.now() - t0
@@ -100,6 +99,13 @@ const posFromEvent = (e) => {
     y: ((e.clientY - rect.top) * H / rect.height) | 0,
   }
 }
+// paint the whole segment from the last cursor position to the new one, so a fast drag lays a
+// continuous stroke of cells instead of dotted gaps at frame samples
+const strokeTo = (x, y, erase) => {
+  const dx = x - curX, dy = y - curY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / brushR))
+  for (let i = 1; i <= n; i++) spray((curX + dx * i / n) | 0, (curY + dy * i / n) | 0, erase)
+  curX = x; curY = y
+}
 cv.addEventListener('pointerdown', e => {
   drawing = true; erasing = e.button === 2
   try { cv.setPointerCapture(e.pointerId) } catch {}
@@ -107,8 +113,9 @@ cv.addEventListener('pointerdown', e => {
   spray(curX, curY, erasing)
 })
 cv.addEventListener('pointermove', e => {
-  const p = posFromEvent(e); curX = p.x; curY = p.y
-  if (drawing) e.preventDefault()
+  const p = posFromEvent(e)
+  if (drawing) { e.preventDefault(); strokeTo(p.x, p.y, erasing) }
+  else { curX = p.x; curY = p.y }
 })
 cv.addEventListener('pointerup', e => { drawing = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
 cv.addEventListener('pointerleave', () => { drawing = false })

@@ -18,7 +18,7 @@ const scheduleIdle = (now) => { nextIdleMs = now + 4000 + Math.random() * 3000 }
 const demo = runDemo({
   name: "magnet",
   hint: "drag a magnet to reshape the basins · click anywhere to drop a bob and watch it hunt",
-  size: { budget: 180000 },
+  size: { budget: 110000 },
   frame: (e, t) => {
     const now = performance.now()
     if (nextIdleMs === 0) { lastInteractMs = now; scheduleIdle(now) }

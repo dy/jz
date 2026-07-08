@@ -11,34 +11,36 @@ import { runDemo } from "../lib/jzdemo.js"
 
 // Tessendorf FFT ocean: a Phillips-spectrum wave field, inverse-FFT synthesized every frame
 // (256×256, radix-2, in-kernel), rendered as a moonlit night sea — a tilted horizon camera,
-// the glitter path running from the horizon to the viewer. Dragging steers the wind (direction
-// & speed) — the kernel reshapes the SAME random field, so the sea morphs smoothly instead of
-// flickering. Idle, it just keeps rolling.
-const dragTo = (cx, cy) => {
-  if (!demo.engine) return
-  const bx = cx * demo.W / demo.cv.clientWidth, by = cy * demo.H / demo.cv.clientHeight
-  demo.engine.setWind(bx - demo.W * 0.5, by - demo.H * 0.5)
-}
-
-let dragging = false
+// the glitter path running from the horizon to the viewer. Dragging pans the camera across the
+// SAME wave field — the kernel never rebuilds the spectrum mid-drag, so the sea slides instead
+// of jumping. Re-roll draws a fresh field, wind and moon. Idle, it just keeps rolling.
+let dragging = false, lastX = 0, lastY = 0
+const toBacking = (cx, cy) => [cx * demo.W / demo.cv.clientWidth, cy * demo.H / demo.cv.clientHeight]
 
 const demo = runDemo({
   name: "ocean",
-  hint: "tessendorf FFT ocean — a Phillips-spectrum wave field, inverse-FFT synthesized every frame, under a moon's glitter path · drag to steer the wind",
+  hint: "tessendorf FFT ocean — a Phillips-spectrum wave field, inverse-FFT synthesized every frame, under a moon's glitter path · drag to pan the view",
   size: { budget: 300000 },
   bg: "#000",
+  cursor: "grab",
   frame: (e, t) => { e.frame(t) },
   randomize: (e) => e.reseed((Math.random() * 1e9) | 0),
 })
 
 demo.cv.addEventListener("pointerdown", (e) => {
-  dragging = true
+  if (!demo.engine) return
+  dragging = true; demo.cv.style.cursor = "grabbing"
   try { demo.cv.setPointerCapture(e.pointerId) } catch {}
-  dragTo(e.offsetX, e.offsetY)
+  ;[lastX, lastY] = toBacking(e.offsetX, e.offsetY)
 })
-demo.cv.addEventListener("pointermove", (e) => { if (dragging) dragTo(e.offsetX, e.offsetY) })
-demo.cv.addEventListener("pointerup", (e) => { dragging = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
-demo.cv.addEventListener("pointerleave", () => { dragging = false })
+demo.cv.addEventListener("pointermove", (e) => {
+  if (!dragging || !demo.engine) return
+  const [bx, by] = toBacking(e.offsetX, e.offsetY)
+  demo.engine.setPan(bx - lastX, by - lastY)
+  lastX = bx; lastY = by
+})
+demo.cv.addEventListener("pointerup", (e) => { dragging = false; demo.cv.style.cursor = "grab"; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { dragging = false; demo.cv.style.cursor = "grab" })
 </script>
 </body>
 </html>

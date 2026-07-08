@@ -38,12 +38,12 @@ const R_OUT = 11.0        // disk outer edge
 const R_ESCAPE = 22.0     // beyond this the remaining deflection is negligible — "sky" (margin over DIST matters: must clear the camera by enough that a grazing ray can't trivially "escape" on step 1)
 const DIST = 14.0         // camera distance from the hole
 const FOVSCALE = 0.80     // narrows the pixel span to a tighter, telephoto frame
-const DPHI = 0.27         // Binet-equation step, radians of orbital-plane angle — coarse, but the
+const DPHI = 0.22         // Binet-equation step, radians of orbital-plane angle — coarse, but the
                           // ODE is smooth away from the photon sphere, so this costs nothing visible
                           // (checked side-by-side against 4x finer) while cutting the dominant cost:
                           // most on-screen rays graze the disk region for several radians of φ, not
                           // a quick in-and-out, so per-step cost × pixel count dominates the budget.
-const MAXSTEPS = 22       // integration cap/pixel (~5.9 rad ≈ 0.94 turn — covers the primary image +
+const MAXSTEPS = 27       // integration cap/pixel (~5.9 rad ≈ 0.94 turn — covers the primary image +
                           // the over/under lensed arc); tuned for <10ms/frame at the driver's ~70k-px budget
 const BRIGHT = 15.0       // overall disk exposure
 const ORBIT_RATE = 6.0    // disk-texture time scale (artistic — real Ω would read as frozen)
@@ -258,13 +258,10 @@ export let frame = (t, incl, azim) => {
 
       if (val < 0.0) val = 0.0
       val = val / (val + 0.5)   // soft (Reinhard-style) compression — keeps texture/gradient in the hot disk instead of crushing to flat white
-      let tc2 = tint * 0.5
-      if (tc2 > 0.35) tc2 = 0.35; else if (tc2 < -0.35) tc2 = -0.35
-      let rC = val - tc2, gC = val, bC = val + tc2   // dopp>1 (approaching, boosted) → bluer; <1 (receding) → redder
-      if (rC > 1.0) rC = 1.0; else if (rC < 0.0) rC = 0.0
-      if (bC > 1.0) bC = 1.0; else if (bC < 0.0) bC = 0.0
-      let ri = (rC * 255.0) | 0, gi = (gC * 255.0) | 0, bi = (bC * 255.0) | 0
-      px[j] = (255 << 24) | (bi << 16) | (gi << 8) | ri
+      // Grayscale: the Doppler asymmetry already lives in `val` (the δ³ beaming brightens the
+      // approaching limb), so the disk stays physically lopsided in luminance without any hue.
+      let gi = (val * 255.0) | 0
+      px[j] = (255 << 24) | (gi << 16) | (gi << 8) | gi
       j++; qx++
     }
     py++

@@ -262,22 +262,18 @@ export let frame = (dt) => {
     py++
   }
 
-  // Render: A → neutral/white ink, B → dim cool-tinted ink; overlap composites brighter with
-  // a slight hue shift, so the two species and their meeting zones read distinctly.
+  // Render: monochrome — species A is bright white, species B a distinct mid-gray, so the prey
+  // and predator fields (and their meeting zones) read apart without any colour.
   py = 0
   while (py < hh) {
     let qx = 0
     while (qx < ww) {
       let idx = py * ww + qx
       let va = dstA[idx], vb = dstB[idx]
-      let r = va * 255.0 + vb * 120.0
-      let g = va * 255.0 + vb * 170.0
-      let b = va * 255.0 + vb * 215.0
-      if (r > 255.0) r = 255.0
-      if (g > 255.0) g = 255.0
-      if (b > 255.0) b = 255.0
-      let ri = r | 0, gi = g | 0, bi = b | 0
-      px[idx] = (255 << 24) | (bi << 16) | (gi << 8) | ri
+      let v = va * 255.0 + vb * 150.0
+      if (v > 255.0) v = 255.0
+      let vi = v | 0
+      px[idx] = (255 << 24) | (vi << 16) | (vi << 8) | vi
       qx++
     }
     py++

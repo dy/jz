@@ -64,8 +64,13 @@ const SPRING = 1.0
 const HGT = 0.32, H2 = HGT * HGT
 const CAPTURE_R = 0.20, CAPTURE_R2 = CAPTURE_R * CAPTURE_R
 const CAPTURE_V = 0.18, CAPTURE_V2 = CAPTURE_V * CAPTURE_V
-const MAX_STEPS = 1800
-const DT = 0.02
+// dt raised 3× from the original 0.02/1800 with MAX_STEPS cut to match (same ~36 time-unit
+// budget, a third of the steps): capture is decided by physical settle time, not step count,
+// so the basin map is empirically unchanged (never-settle fraction moves <0.1pt at the default
+// damping, and only a few points on it even at randomize()'s lowest/slowest-decaying damping)
+// while every integrate() call costs a third as much.
+const MAX_STEPS = 600
+const DT = 0.06
 
 // ax,ay share every magnet's dx/dy/d2/inv — one accel call per RK4 stage instead of two,
 // half the sqrt/div work. Two-number "return" via the `acc` scratch cell (same trick as `st`).
@@ -296,7 +301,7 @@ export let randomize = () => {
   trailHead = 0; trailCount = 0
 }
 
-const PASSES = 170     // ~170 frames to fully resolve the map (pendulum.js's row-batch pattern)
+const PASSES = 280     // >= a typical H, so batchSize lands at 1 row/frame (pendulum.js's row-batch pattern)
 export let frame = (t) => {
   let batchSize = ((H + PASSES - 1) / PASSES) | 0
   if (batchSize < 1) batchSize = 1

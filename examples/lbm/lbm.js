@@ -2,8 +2,8 @@
 // vortex street. Each cell holds 9 distribution functions that relax toward local
 // equilibrium (collide) and shift to neighbours (stream), with bounce-back on the cylinder
 // and channel walls. A passive dye field rides on top: semi-Lagrangian backtrace (one
-// bilinear gather) along the macroscopic velocity, fed by a thin filament injected upstream
-// of the obstacle every frame — the dye threads downstream and wraps into the shed
+// bilinear gather) along the macroscopic velocity, fed by a thin filament injected at the
+// left edge every frame — the dye threads downstream and wraps into the shed
 // vortices, the classic smoke-wire picture. It's a dense, fully-parallel stencil over 9
 // fields — a heavy, cache-bound number cruncher, exactly where jz earns its keep. Rendered
 // as the dye (bright, primary) over a dim vorticity field; solids dark.
@@ -23,7 +23,7 @@ let SUB = 4           // LBM steps per rendered frame
 let dye, dye0         // passive dye tracer + its pre-advect snapshot
 let DYE_FADE = 0.9993 // slow fade (~16s half-life) — the ribbon persists long enough to wrap the street
 let DYE_SRC = 1.0     // filament source strength
-let injX = 0, injY0 = 0, injY1 = 0   // thin filament source, upstream of the obstacle cluster
+let injX = 0, injY0 = 0, injY1 = 0   // thin filament source, at the left edge (upstream of the obstacle cluster)
 
 export let resize = (w, h) => {
   W = w; H = h; n = w * h
@@ -37,7 +37,9 @@ export let resize = (w, h) => {
   wt[5] = 0.0277778; wt[6] = 0.0277778; wt[7] = 0.0277778; wt[8] = 0.0277778
   opp[0] = 0; opp[1] = 3; opp[2] = 4; opp[3] = 1; opp[4] = 2; opp[5] = 7; opp[6] = 8; opp[7] = 5; opp[8] = 6
   dye = new Float64Array(n); dye0 = new Float64Array(n)
-  injX = (W * 0.08) | 0; if (injX < 2) injX = 2
+  injX = 1   // the leftmost column the render/advect loops touch (x=0 is a 1px stencil border,
+             // never drawn) — inject right at that edge so the dye fills from the true left edge,
+             // no dead gap before the visible streak begins
   injY0 = (H * 0.5 - H * 0.05) | 0; injY1 = (H * 0.5 + H * 0.05) | 0
   reseed()
   return px = new Uint32Array(n)
@@ -187,7 +189,8 @@ export let frame = (t) => {
 
   advectDye()
 
-  // continuous thin dye filament, injected upstream of the obstacle every frame
+  // continuous thin dye filament, injected at the left edge every frame — flow fills from
+  // the edge, no gap before the visible streak begins
   let yy = injY0
   while (yy <= injY1) { dye[yy * W + injX] = DYE_SRC; yy++ }
 

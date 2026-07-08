@@ -108,28 +108,29 @@ export let frame = (t) => {
     s++
   }
 
-  // render: each crystal its own gray band (dark→light age gradient within it), faint
-  // walkers overlaid as a dim dust
+  // render: a bright crystal with the newest tips glowing near-white (age → brightness), so the
+  // growing frontier reads like the classic DLA aggregate; a small per-crystal offset shifts each
+  // competitor's ramp so rival crystals stay distinguishable without dulling the whole thing to gray
   let n = W * H, i = 0
   while (i < n) {
     let v = grid[i]
     let g = 0
     if (v !== 0) {
       let owner = v >>> 24, age = v & 0xffffff
-      let base = 60 + ((owner - 1) % BANDS) * 30
-      g = base + ((age * 20 / (gen + 1)) | 0)
+      let f = age / (gen + 1)                       // 0 = oldest core … ~1 = newest tips
+      g = (70 + ((owner - 1) % BANDS) * 12 + f * 185.0) | 0   // wide ramp reaching white at the tips
       if (g > 255) g = 255
     }
     px[i] = (255 << 24) | (g << 16) | (g << 8) | g
     i++
   }
-  // overlay walkers faintly so the "diffusion" is visible
+  // overlay walkers as a dim dust so the "diffusion" reading is visible
   i = 0
   while (i < NW) {
     let xi = wx[i] | 0, yi = wy[i] | 0
     if (xi >= 0 && xi < W && yi >= 0 && yi < H) {
       let c = yi * W + xi
-      if (grid[c] === 0) px[c] = (255 << 24) | (40 << 16) | (40 << 8) | 40
+      if (grid[c] === 0) px[c] = (255 << 24) | (55 << 16) | (55 << 8) | 55
     }
     i++
   }

@@ -124,7 +124,10 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
       // toward the light instead of along the view ray). shadowActive gates entry per lane
       // (diff>0 & hit close enough) — mirrors raymarcher.js's `if (diff>0.0 && tt<9.0)`
       // early-out, a free win when a whole group of 4 fails the gate together. Constants
-      // (k=12, 32 steps, maxT=6, bias=0.01) match raymarcher.js exactly.
+      // (k=12, 32 steps, bias=0.01) match raymarcher.js exactly. maxT=4 (not 6): 6 reached
+      // far enough to graze the NEXT repeated sphere layer (period 3 in y, light climb
+      // 0.577 → 3/0.577≈5.2), painting thin hard-edged grazing streaks across the floor;
+      // the real contact ellipses are cast by same-layer neighbours and saturate by t≈3.5.
       let shadowActive = v128.and(f32x4.gt(diff, zero), f32x4.lt(res, f32x4.splat(9.0)));
       let nb = f32x4.splat(0.01);
       let sox = f32x4.add(hx, f32x4.mul(nx, nb)), soy = f32x4.add(hy, f32x4.mul(ny, nb)), soz = f32x4.add(hz, f32x4.mul(nz, nb));
@@ -139,11 +142,18 @@ export let frame = (t, eyeX, eyeY, eyeZ) => {
           let sv = f32x4.div(f32x4.mul(f32x4.splat(12.0), sd), st);
           shadow = v128.bitselect(f32x4.min(shadow, sv), shadow, sact);
           st = v128.bitselect(f32x4.add(st, sd), st, sact);
-          let spast = v128.and(sact, f32x4.ge(st, f32x4.splat(6.0)));
+          let spast = v128.and(sact, f32x4.ge(st, f32x4.splat(4.0)));
           sact = v128.and(sact, v128.not(spast));
           si++;
         } else { si = 32; }
       }
+      // Fade the last stretch (6..9 world units of camera distance) back to 1.0 instead of
+      // hard-cutting at res<9 above — that gate used to jump straight from a real shadow
+      // value to 1.0 (a visible seam); this smoothsteps onto the skipped region's constant
+      // with no seam, at no extra cost (same lanes already computed `shadow` above).
+      let fadeT = f32x4.max(zero, f32x4.min(one, f32x4.div(f32x4.sub(res, f32x4.splat(6.0)), f32x4.splat(3.0))));
+      let fadeS = f32x4.mul(f32x4.mul(fadeT, fadeT), f32x4.sub(f32x4.splat(3.0), f32x4.mul(two, fadeT)));
+      shadow = f32x4.add(shadow, f32x4.mul(f32x4.sub(one, shadow), fadeS));
       let direct = f32x4.mul(diff, shadow);
 
       // ambient occlusion, inlined — fixed 4-tap unrolled probe, no early exit so no

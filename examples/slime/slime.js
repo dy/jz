@@ -158,8 +158,9 @@ export let frame = (t) => {
   blurDecay(srcB, dstB)
   flip = 1 - flip
 
-  // ---- render: colony A bright/white, colony B dimmer/cool-tinted; contested zones (both
-  // present) get an extra glow so borders read as a distinct shimmering seam ----
+  // ---- render: monochrome — colony A is bright white, colony B a distinct mid-gray, so the two
+  // networks stay legible without any colour; contested zones (both present) glow a touch brighter
+  // so the writhing borders read as a seam ----
   let n = W * H, i = 0
   while (i < n) {
     let va = dstA[i] * 1.6
@@ -167,13 +168,10 @@ export let frame = (t) => {
     let vb = dstB[i] * 1.6
     if (vb > 1.0) vb = 1.0
     let ov = va < vb ? va : vb
-    let r = va * 255.0 + vb * 110.0 + ov * 70.0
-    let g = va * 255.0 + vb * 165.0 + ov * 70.0
-    let b = va * 255.0 + vb * 220.0 + ov * 100.0
-    if (r > 255.0) r = 255.0
-    if (g > 255.0) g = 255.0
-    if (b > 255.0) b = 255.0
-    px[i] = (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0)
+    let v = va * 255.0 + vb * 135.0 + ov * 55.0
+    if (v > 255.0) v = 255.0
+    let vi = v | 0
+    px[i] = (255 << 24) | (vi << 16) | (vi << 8) | vi
     i++
   }
 }

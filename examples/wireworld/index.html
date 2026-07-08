@@ -19,9 +19,9 @@ const sx = (d) => d.W / d.cv.clientWidth, sy = (d) => d.H / d.cv.clientHeight
 const demo = runDemo({
   name: "wireworld",
   hint: "Wireworld — pencil conductor wires; right-click to spark an electron · double-click to reseed",
-  size: { budget: 30000 },
+  size: { budget: 750000 },
   load: (e) => { e.seed(); e.frame(0) },
-  frame: (e, t) => { if (t - lastStep >= 1 / 14) { lastStep = t; e.frame(0) } },
+  frame: (e, t) => { if (t - lastStep >= 1 / 22) { lastStep = t; e.frame(0) } },
 })
 
 const cv = demo.cv
