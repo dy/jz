@@ -475,10 +475,15 @@ test('Regression: dynamic property access on string returns undefined', () => {
 })
 
 test('Regression: dynamic property assignment on string fails gracefully', () => {
+  // JS semantics (ES2023 §13.15.2, non-strict PutValue on a primitive base):
+  // the write is silently DISCARDED — `s.prop` reads back undefined. The old
+  // pin asserted 42 (jz used to store string expandos in the global dyn-props
+  // table), diverging from every engine; strings are primitives and now end
+  // the dyn read/write paths immediately (module/collection.js STRING arms).
   const { test } = runHost(`
     export let test = () => { let s = "foo"; s.prop = 42; return s.prop }
   `)
-  is(test(), 42, 'assigning property to string fails gracefully')
+  is(test(), undefined, 'property write on a string primitive is dropped (JS semantics)')
 })
 
 test('Regression: external method returning typed array spreads into array', () => {

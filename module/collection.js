@@ -1532,9 +1532,23 @@ export default (ctx) => {
     ;; probe-doubling) took the durable global-probe arm for nothing. One i64
     ;; compare: a runtime 'length' key is ALWAYS SSO (≤6 ASCII invariant), so
     ;; constant-vs-key bit equality is exact. Other keys fall through unchanged.
+    ;; Form-proof: the const key at _h call sites may be DATA-INTERNED rather
+    ;; than SSO, so bit-equality alone goes dead — gate on the prehashed key
+    ;; hash (compile-time constant, zero cost) and confirm content via
+    ;; __str_eq (SSO/heap-form agnostic).
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                 (i64.eq (local.get $key) (i64.const ${LENGTH_SSO_I64})))
-      (then (return (i64.reinterpret_f64 (f64.convert_i32_s (call $__str_byteLen (local.get $obj)))))))
+                 (i32.eq (local.get $h) (i32.const ${strHashLiteral('length')})))
+      (then
+        (if (call $__str_eq (local.get $key) (i64.const ${LENGTH_SSO_I64}))
+          (then (return (i64.reinterpret_f64 (f64.convert_i32_s (call $__str_byteLen (local.get $obj)))))))))
+    ;; STRING receivers END here: strings are primitives — no dyn props, no
+    ;; sidecar, no global-table entries (writes below drop, JS semantics), so
+    ;; the probe chain can never produce a value. Method-name lookups on
+    ;; unproven string receivers (cur.charCodeAt in a parser loop — jessie:
+    ;; 1.38M reads/run, every one a guaranteed miss) made this the largest
+    ;; single dyn sink after the array-index fix.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+      (then (return (i64.const ${UNDEF_NAN}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
@@ -1590,21 +1604,53 @@ export default (ctx) => {
     (if (i32.and (i32.ne (local.get $type) (i32.const ${PTR.HASH}))
                  (i32.lt_u (local.get $off) ${heapResetWat()}))
       (then
-        (if (i32.eqz ${dynPropsFilterMissIR('(local.get $off)')})
-          (then
-            (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
-              (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
-            (if (i32.eqz (call $__is_nullish (local.get $props)))
-              (then
-                (local.set $val (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))
-                (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))
+        ;; Header-carrying durable receiver: read its off-16 word ONCE. bit0 =
+        ;; RUNTIME-SHADOWED (set by __dyn_set's global route): only then can a
+        ;; global-table entry exist, so unmarked receivers skip the probe
+        ;; entirely — 60% of jessie's 1.07M durable probes were such
+        ;; always-miss reads (causally measured via probe-doubling, ~18% of
+        ;; runtime). Root≠0 guards the post-_clear stale-marker case (the
+        ;; wiped table must not be probed through a null root). Receivers
+        ;; without a header slot keep the unconditional bloom+probe path.
         (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
             (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            ;; a shifted ARRAY's word holds forwarding bytes (not 0, not
+            ;; HASH-tagged): __arr_shift migrated its props to the global
+            ;; table and CANNOT mark — such receivers keep the unconditional
+            ;; probe (jump to the no-header path below via $probe).
+            (if (i32.eqz (i32.or (i64.eqz (local.get $props))
+                  (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH}))))
+              (then (local.set $props (i64.const 0)) (local.set $tries (i32.const -1))))
+            (if (i32.and (i32.eq (local.get $tries) (i32.const 0))
+                  (i32.and (i32.and (i32.wrap_i64 (local.get $props)) (i32.const 1))
+                           (f64.ne (global.get $__dyn_props) (f64.const 0))))
+              (then
+                (if (i32.eqz ${dynPropsFilterMissIR('(local.get $off)')})
+                  (then
+                    (local.set $val (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
+                      (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                    (if (i32.eqz (call $__is_nullish (local.get $val)))
+                      (then
+                        (local.set $val (call $__hash_get_local_h (local.get $val) (local.get $key) (local.get $h)))
+                        (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))))
+            (local.set $props (i64.and (local.get $props) (i64.const -2)))
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
-              (then (return (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))))))
+              (then (return (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h))))))
+          (else (local.set $tries (i32.const -1))))
+        (if (i32.eq (local.get $tries) (i32.const -1))
+          (then
+            (local.set $tries (i32.const 0))
+            (if (i32.eqz ${dynPropsFilterMissIR('(local.get $off)')})
+              (then
+                (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
+                  (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                (if (i32.eqz (call $__is_nullish (local.get $props)))
+                  (then
+                    (local.set $val (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))
+                    (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))))
         ;; Miss on both global and sidecar: an OBJECT still needs the
         ;; schema-slot arm before giving up — a schema-poisoned variable
         ;; (one variable bound to two different object shapes) resolves its
@@ -1630,7 +1676,7 @@ export default (ctx) => {
                      (i32.and (i32.ge_u (local.get $off) (i32.const 16))
                        (i32.ge_u (local.get $off) ${heapResetWat()})))
           (then
-            (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (br_if $haveProps (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH})))
@@ -1649,7 +1695,7 @@ export default (ctx) => {
         (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                      (i32.ge_u (local.get $off) ${heapResetWat()}))
           (then
-            (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (br_if $dynDone (i64.eqz (local.get $props)))
             (br $haveProps)))
         ;; HASH: a plain dict whose string keys ARE its own bucket entries — the
@@ -1673,7 +1719,7 @@ export default (ctx) => {
                 (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                         (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
           (then
-            (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (br_if $dynDone (i64.eqz (local.get $props)))
             (br $haveProps)))
         ;; Fall back to the global __dyn_props hash (CLOSURE, shifted ARRAY,
@@ -1864,6 +1910,13 @@ export default (ctx) => {
     (local $off i32) (local $type i32) (local $kf f64) (local $kidx i32) ${buildObjectSchemaSetLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; STRING receiver: primitives drop property writes (JS non-strict
+    ;; semantics) — the read path above guarantees UNDEF for them, so
+    ;; storing would only create unreadable entries. NaN guard: a real
+    ;; number's garbage tag may alias STRING; those keep today's path.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+                 (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
+      (then (return (local.get $val))))
     ;; ARRAY + integer key → ELEMENT store (grow + hole-fill via the same
     ;; helper the statically-proven \`a[i]=v\` path uses), matching JS index
     ;; semantics and the element arms in the dyn read entries. Guard real-
@@ -1929,7 +1982,7 @@ export default (ctx) => {
         (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
               (i32.ge_u (local.get $off) ${heapResetWat()}))
           (then
-            (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (if (i32.or
                   (i64.eqz (local.get $oldProps))
                   (i32.eq
@@ -1951,7 +2004,7 @@ export default (ctx) => {
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ge_u (local.get $off) ${heapResetWat()}))
       (then
-        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (local.set $props
           (if (result i64) (i64.eqz (local.get $oldProps))
             (then (i64.reinterpret_f64 (call $__hash_new_small)))
@@ -1974,7 +2027,7 @@ export default (ctx) => {
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                     (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
       (then
-        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (local.set $props
           (if (result i64) (i64.eqz (local.get $oldProps))
             (then (i64.reinterpret_f64 (call $__hash_new_small)))
@@ -2008,6 +2061,25 @@ export default (ctx) => {
         ${dynPropsFilterSetIR('(local.get $off)')}
         (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
           (then (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props)))))))
+    ;; RUNTIME-SHADOWED MARKER: this durable receiver now has (at least one)
+    ;; runtime-written prop living in the global table — set bit0 of its own
+    ;; off-16 props word so the read path probes the global table ONLY for
+    ;; shadowed receivers (unshadowed durable reads skip straight to the
+    ;; init-time sidecar; measured: 60% of jessie's 1.07M probes are such
+    ;; always-miss reads). Only header-carrying receivers whose word is 0 or
+    ;; a real HASH ptr are marked — a shifted ARRAY's forwarding bytes (tag
+    ;; 0xF) must never be touched, and CLOSURE pseudo-offsets have no header.
+    ;; HASH ptr offsets are 8-aligned, so bit0 is free; every consumer of a
+    ;; DURABLE off-16 word masks it back out (i64.and -2).
+    (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+                          (i32.lt_u (local.get $off) ${heapResetWat()}))
+                 ${hasPropsSidecarWat('(local.get $type)')})
+      (then
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+        (if (i32.or (i64.eqz (local.get $oldProps))
+                    (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH})))
+          (then (i64.store (i32.sub (local.get $off) (i32.const 16))
+                           (i64.or (local.get $oldProps) (i64.const 1)))))))
     (local.get $val))`
 
   // Tag-dispatched delete (mirrors __dyn_set's dispatch). Returns 1 if a slot was
@@ -2102,7 +2174,7 @@ export default (ctx) => {
                   (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))))))))
         (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
-            (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
@@ -2114,7 +2186,7 @@ export default (ctx) => {
                  (i32.and (i32.ge_u (local.get $off) (i32.const 16))
                    (i32.ge_u (local.get $off) ${heapResetWat()})))
       (then
-        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
@@ -2123,7 +2195,7 @@ export default (ctx) => {
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ge_u (local.get $off) ${heapResetWat()}))
       (then
-        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
         (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
     ;; Other header types (TYPED/HASH/SET/MAP) — ephemeral only.
@@ -2133,7 +2205,7 @@ export default (ctx) => {
               (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                       (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
       (then
-        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
         (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
     ;; Fallback: global __dyn_props keyed by offset.

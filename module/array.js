@@ -255,6 +255,10 @@ const maybeDynMoveIR = () => needsArrayDynMove()
 // the signal; maybeDynMoveIR marks it again on every subsequent grow/rekey.
 const headerPropsCopyIR = () => needsArrayDynMove() ? `
     (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+    ;; strip the runtime-shadowed marker (collection.js bit0) — the relocated
+    ;; header is ephemeral, where markers are meaningless and an odd props
+    ;; offset would corrupt the sidecar probe
+    (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${PTR.HASH}))
@@ -264,6 +268,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
     (if (i32.ge_u (local.get $off) (i32.const 16))
       (then
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
