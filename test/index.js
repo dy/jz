@@ -39,6 +39,7 @@ const TESTS = [
   'preeval',
   'inference',
   'provenance-inference',
+  'speculate',
   'unsigned',
   'perf',
   'timers',

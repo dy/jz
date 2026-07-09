@@ -47,6 +47,7 @@ import { ctx } from '../ctx.js'
 import { collectParamNames, ASSIGN_OPS } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
+import { isNullishLit } from '../ir.js'
 import { typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
@@ -341,6 +342,14 @@ export const inferLocals = (body, candidates) => {
 // confirmed prepare's depth-0 catch is a strict superset.
 export function recordGlobalRep(name, expr) {
   if (typeof name !== 'string') return
+  // A nullish decl init makes the binding NULLABLE program-wide — any later
+  // val-kind claim (typed promote, pointer-ABI assignment) must keep an
+  // `x === null` compare honest. This is THE plan-cache memo idiom
+  // (`let lastPlan = null` + `if (lastPlan === null) lastPlan = make()`):
+  // without the flag, strictSentinel folds the guard to a constant and the
+  // memo never fills (silently wrong values, not a trap).
+  if (isNullishLit(expr) || expr === 'null' || expr === 'undefined')
+    updateGlobalRep(name, { nullable: true })
   const vt = valTypeOf(expr)
   if (vt) {
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)

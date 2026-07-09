@@ -32,6 +32,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
+const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
 import { T, isLeaf, stableKey } from '../ast.js'
 import { vectorizeLaneLocal, inlinePureCallExpr } from './vectorize.js'
 import { recursionUnroll } from './recurse.js'
@@ -2916,6 +2917,8 @@ export function foldStrDispatchF64(fn) {
  */
 export function unswitchTypedParamLoop(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
+  // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering this pass (DBG_DSR-style).
+  if (DBG_UNSWITCH && String(fn[1]).includes(DBG_UNSWITCH)) console.error(JSON.stringify(fn))
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const f64Params = new Set()

@@ -380,9 +380,14 @@ test('inferTypedCtor: a caller LOCAL shadowing a typed global is not mistyped', 
 })
 
 test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch', () => {
-  // Float64Array + plain array → typedCtor sticky-null → no SIMD, runtime
-  // dispatch on every element access.
-  const wat = jz.compile(`
+  // Float64Array + plain array → typedCtor sticky-null: the ORIGINAL function
+  // must keep runtime dispatch (no unsound direct loads). Since the guarded
+  // speculation pass (speculateTypedParams), the typed caller's evidence may
+  // additionally produce a $spec clone — that's fine (its dispatch is a
+  // runtime tag guard; the plain-array call falls back) — but the original
+  // body itself must stay polymorphic, and both callers must compute exact
+  // values through their respective paths.
+  const src = `
     const sumArr = (a) => {
       let s = 0
       for (let i = 0; i < a.length; i++) s = s + a[i]
@@ -390,8 +395,13 @@ test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch',
     }
     export const m1 = () => sumArr(new Float64Array([1, 2, 3, 4])) | 0
     export const m2 = () => sumArr([1, 2, 3]) | 0
-  `, { wat: true })
-  ok(!/v128\.load\b/.test(wat), 'disagreement should block SIMD')
+  `
+  const wat = jz.compile(src, { wat: true })
+  const orig = wat.split(/\(func /).find(c => /^\$sumArr\b(?!\$)/.test(c)) || wat
+  ok(!/v128\.load\b/.test(orig), 'original body stays scalar/polymorphic under disagreement')
+  const { exports } = jz(src)
+  is(exports.m1(), 10, 'typed caller exact (guarded fast path allowed)')
+  is(exports.m2(), 6, 'plain-array caller exact through the original')
 })
 
 test('paramAllUsesNumeric: relational use proves a TypedArray-length param numeric', () => {

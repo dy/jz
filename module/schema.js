@@ -163,6 +163,24 @@ export function initSchema(ctx) {
     return ctx.schema.slotTypedCtors.get(id)?.[idx] ?? null
   }
 
+  /** Program-wide census ctor for a bare `.prop` read with NO receiver evidence
+   *  — the SPECULATIVE sibling of slotTypedCtorBySid (guardedSlotOf's contract):
+   *  every schema that declares `prop` must census the same typed ctor, and the
+   *  consumer MUST runtime-guard the value (it could legitimately be anything).
+   *  Feeds narrow's speculateTypedParams, never an unguarded load. */
+  ctx.schema.slotTypedCtorByProp = (prop) => {
+    if (!ctx.types.writtenProps || ctx.types.writtenProps.has(prop)) return null
+    const bucket = byProp.get(prop)
+    if (!bucket?.length) return null
+    let ctor = null
+    for (const b of bucket) {
+      const c = ctx.schema.slotTypedCtors.get(b.id)?.[b.slot] ?? null
+      if (!c || (ctor && c !== ctor)) return null
+      ctor = c
+    }
+    return ctor
+  }
+
   /** Resolve per-slot intCertain: returns true iff every observed write to
    *  `varName.prop` is integer-shaped. Precise path only — requires `varName`
    *  to have a bound `schemaId`. Consumers (Math.floor elision, toNumF64 skip,

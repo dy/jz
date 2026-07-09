@@ -28,7 +28,7 @@ import { ctx } from '../../ctx.js'
 import { invalidateLocalsCache } from '../analyze.js'
 import { collectProgramFacts, refreshProgramFacts } from '../program-facts.js'
 import narrowSignatures, {
-  specializeBimorphicTyped, refineDynKeys,
+  specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
   strictBoundaryTypeCheck,
 } from '../narrow.js'
@@ -127,6 +127,7 @@ export default function plan(ast, profiler) {
   // facts, so it runs after the signature fixpoint.
   if (optimizing()) t('scanInplaceStores', () => scanInplaceStores(programFacts))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
+  if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
   t('refineDynKeys', () => refineDynKeys(programFacts))
   // Late: return sids (narrowSignatures) + the slot/write censuses are complete —
   // bind module consts' schemas from returned objects, then re-run the module-let

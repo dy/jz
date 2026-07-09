@@ -27,7 +27,7 @@ import {
   ASSIGN_OPS,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
-import { i64Hex } from '../../layout.js'
+import { i64Hex, encodePtrHi } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
@@ -920,6 +920,51 @@ function padArgs(args, params) {
  *  coercion then arity padding. Used at every direct-call site. */
 function emitCallArgs(argNodes, params) {
   return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k])), params)
+}
+
+/** Guarded dispatch to a speculative typed clone (narrow's speculateTypedParams).
+ *  Args evaluate once, in order, into temps; a single masked NaN-box compare per
+ *  speculated position proves tag==TYPED && aux==elem-kind (owned — a view or any
+ *  other value falls to the original call unchanged, bit-exact). TYPED headers
+ *  never relocate (FORWARDING_MASK), so the proven offset is a bare mask — the
+ *  same inlining emitSchemaSlotGuarded does for OBJECT. */
+const TYPED_HI_MASK = '0xFFFFFFFF00000000'
+function emitSpeculativeCall(callee, spec, argNodes, func) {
+  const params = func.sig.params
+  const specAt = new Map(spec.guards.map(g => [g.k, g.aux]))
+  const rt = func.sig.results[0] || 'f64'
+  const seq = [], slots = []
+  for (let k = 0; k < params.length; k++) {
+    if (k < argNodes.length) {
+      const ir = coerceArg(emit(argNodes[k]), params[k])
+      // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
+      // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
+      const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'
+      const t = pt === 'i32' ? tempI32('sa') : temp('sa')
+      seq.push(['local.set', `$${t}`, ir])
+      slots.push({ local: t, type: pt })
+    } else {
+      slots.push(null)  // arity pad — fresh per use below
+    }
+  }
+  const get = (k) => slots[k]
+    ? typed(['local.get', `$${slots[k].local}`], slots[k].type)
+    : params[k].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr()
+  let cond = null
+  for (const [k, aux] of specAt) {
+    const c = ['i64.eq',
+      ['i64.and', ['i64.reinterpret_f64', get(k)], ['i64.const', TYPED_HI_MASK]],
+      ['i64.const', i64Hex(BigInt(encodePtrHi(PTR.TYPED, aux)) << 32n)]]
+    cond = cond ? ['i32.and', cond, c] : c
+  }
+  const thenArgs = params.map((p, k) => specAt.has(k)
+    ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', get(k)], ['i64.const', LAYOUT.OFFSET_MASK]]]
+    : get(k))
+  const elseArgs = params.map((p, k) => get(k))
+  const ifIR = ['if', ['result', rt], cond,
+    ['then', ['call', `$${spec.clone}`, ...thenArgs]],
+    ['else', ['call', `$${callee}`, ...elseArgs]]]
+  return attachSigMeta(typed(['block', ['result', rt], ...seq, ifIR], rt), func.sig)
 }
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.
@@ -2640,6 +2685,14 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
 
   // Regular function call without rest params
   if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
+  // Speculative typed dispatch (narrow's speculateTypedParams): route the call
+  // through a per-arg tag guard to the typed clone; a miss takes the original
+  // call unchanged. Guard positions must be covered by real args — a site
+  // relying on arity-padding at a speculated position would guard `undefined`
+  // every call, pure loss.
+  const spec = func && ctx.types.specFns?.get(callee)
+  if (spec && func.sig.results.length === 1 && spec.guards.every(g => g.k < parsed.normal.length))
+    return emitSpeculativeCall(callee, spec, parsed.normal, func)
   // Pad missing args with `undefined` so default-param init triggers per spec
   // (only undefined, not null, should trigger defaults). Drop extras to match
   // JS calling convention — emitting them anyway produces an invalid call

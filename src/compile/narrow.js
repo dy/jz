@@ -8,7 +8,7 @@
  */
 
 import { ctx, warn, err } from '../ctx.js'
-import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, ASSIGN_OPS } from '../ast.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
   analyzeBody, findMutations, invalidateLocalsCache,
@@ -1601,6 +1601,268 @@ export function specializeBimorphicTyped(programFacts) {
       const clone = cloneByKey.get(siteCombos[i].join('|'))
       sites[i].node[1] = clone.name
     }
+  }
+}
+
+/**
+ * Speculative typed-param specialization — the GUARDED sibling of
+ * specializeBimorphicTyped, for params whose args can never be statically
+ * PROVEN typed: plan objects through Map caches, nullable module-let memos,
+ * returned-object fields — the fftplan/provenance shape-class, where the
+ * receiver's schema is unknowable but every value that ever reaches the call
+ * is, in practice, the same typed array.
+ *
+ * When every static call site's arg at a position carries the SAME ctor as
+ * evidence — a proven inferTypedCtor, or the program-wide write-gated slot
+ * census for a bare field read (ctx.schema.slotTypedCtorByProp, the
+ * guardedSlotOf contract) — clone the callee with those params typed
+ * (identical machinery to the bimorphic clones) and record it in
+ * ctx.types.specFns. Emit rewrites every static direct call into
+ *
+ *   tags-all-match? call $f$spec(raw offsets…) : call $f(boxes…)
+ *
+ * (emitSpeculativeCall) — one masked NaN-box compare per speculated arg per
+ * CALL, amortized over the callee's loops. A nullish / other-kind / view
+ * value simply falls to the original call unchanged, so speculation can only
+ * ever be as fast, never wrong; the original function stays for indirect and
+ * boundary callers. Gate on a loop in the body: the win is per-ELEMENT
+ * access, so guarding loop-free leaf calls only spends the compare.
+ *
+ * Evidence is a recursive WEAK lattice (soundness never depends on it — the
+ * runtime guard does; evidence only decides where speculating is worth it):
+ *   - proven inferTypedCtor at the site (strong)
+ *   - `x.prop` → program-wide write-gated slot census (slotTypedCtorByProp)
+ *   - a name → its single `=` binding's init, chased recursively
+ *   - a name that is an ENCLOSING ARROW's param → meet over the arrow's own
+ *     call sites at that position (the `edge(wre, wim)` harness shape: the
+ *     kernel call sits inside a local arrow whose args carry the evidence)
+ *   - `f(...)` → f's return census: every return a `new K`, a local bound to
+ *     one, a censused field read, or another censused call; nullish returns
+ *     are SKIPPED (they fail the guard at runtime, by design — this is what
+ *     lets Map-cache/memo getters like getPlan(n) census through)
+ */
+export function speculateTypedParams(programFacts, ast) {
+  const { callSites, paramReps } = programFacts
+  if (!ctx.schema.slotTypedCtorByProp) return
+
+  const sitesByCallee = new Map()
+  for (const cs of callSites) {
+    const list = sitesByCallee.get(cs.callee)
+    if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+  }
+  const callerTypedCtx = buildCallerTypedCtx()
+  const callerTypedParamsCtx = new Map()
+  for (const func of ctx.func.list) {
+    const m = paramFactsOf(paramReps, func, 'typedCtor') || null
+    let acc = m
+    if (func.sig?.params) for (const p of func.sig.params) {
+      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
+        acc ||= new Map()
+        if (!acc.has(p.name)) acc.set(p.name, ctorFromElemAux(p.ptrAux))
+      }
+    }
+    if (acc) callerTypedParamsCtx.set(func, acc)
+  }
+
+  const hasLoop = (n) => Array.isArray(n)
+    && (n[0] === 'for' || n[0] === 'while' || n[0] === 'do' || n.some((c, i) => i > 0 && hasLoop(c)))
+
+  // ---- weak evidence engine (see doc above) ----
+  const DBG2 = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC
+  const isNullish = (r) => r == null || r === 'null' || r === 'undefined'
+    || (Array.isArray(r) && (r[0] === 'null' || r[0] === 'undefined'))
+  const retMemo = new Map()
+  const MAX_DEPTH = 6
+  const bodyOf = (callerFunc) => callerFunc ? callerFunc.body : ast
+
+  // Return census of a named function: the single ctor every non-nullish
+  // return resolves to, or null.
+  function retCensus(fname, depth) {
+    if (retMemo.has(fname)) return retMemo.get(fname)
+    retMemo.set(fname, null)                       // cycle guard
+    const func = ctx.func.map.get(fname)
+    if (!func?.body || func.raw || depth > MAX_DEPTH) return null
+    const te = analyzeBody(func.body).typedElems
+    let ctor = null
+    for (const r of returnExprs(func.body)) {
+      if (isNullish(r)) continue
+      const c = typedElemCtor(r)
+        || (typeof r === 'string' ? te?.get(r) : null)
+        || (Array.isArray(r) && r[0] === '.' && typeof r[2] === 'string' ? ctx.schema.slotTypedCtorByProp(r[2]) : null)
+        || (Array.isArray(r) && r[0] === '()' && typeof r[1] === 'string' ? retCensus(r[1], depth + 1) : null)
+      if (!c || (ctor && c !== ctor)) return null
+      ctor = c
+    }
+    retMemo.set(fname, ctor)
+    return ctor
+  }
+
+  // Chain of arrow nodes enclosing `target` inside `root` (outermost first).
+  function arrowPathTo(root, target) {
+    const path = []
+    const walk = (n) => {
+      if (!Array.isArray(n)) return false
+      if (n === target) return true
+      const isArrow = n[0] === '=>'
+      if (isArrow) path.push(n)
+      for (let i = 1; i < n.length; i++) if (walk(n[i])) return true
+      if (isArrow) path.pop()
+      return false
+    }
+    return walk(root) ? path : null
+  }
+
+  function evidenceOfArg(arg, callerFunc, siteNode, depth, seen) {
+    const r = evidenceOfArgInner(arg, callerFunc, siteNode, depth, seen)
+    if (DBG2) console.error('[evid=]', JSON.stringify(arg)?.slice(0, 50), '→', r)
+    return r
+  }
+  function evidenceOfArgInner(arg, callerFunc, siteNode, depth, seen) {
+    if (arg == null || depth > MAX_DEPTH) return null
+    const proven = inferTypedCtor(arg, callerTypedCtx.get(callerFunc), callerTypedParamsCtx.get(callerFunc))
+    if (proven) return proven
+    if (Array.isArray(arg)) {
+      if (arg[0] === '.' && typeof arg[2] === 'string') return ctx.schema.slotTypedCtorByProp(arg[2])
+      if (arg[0] === '()' && typeof arg[1] === 'string' && ctx.func.map.has(arg[1])) return retCensus(arg[1], depth)
+      return typedElemCtor(arg)
+    }
+    if (typeof arg !== 'string') return null
+    // Cycle guard is PATH-local: the key backtracks on exit (a name legitimately
+    // recurs across sibling meet branches — e.g. duplicated call sites after
+    // lambda inlining — and must resolve fresh in each).
+    const key = (callerFunc?.name || '') + '|' + arg
+    if (seen.has(key)) return null
+    seen.add(key)
+    try {
+      return resolveName()
+    } finally { seen.delete(key) }
+
+    function resolveName() {
+    const body = bodyOf(callerFunc)
+    if (!body) return null
+    // Enclosing-arrow param? Meet the arrow's own call sites at that position.
+    const arrows = siteNode ? arrowPathTo(body, siteNode) : null
+    if (arrows) for (let a = arrows.length - 1; a >= 0; a--) {
+      const names = extractParams(arrows[a][1]).map(p => classifyParam(p)).filter(c => c.kind === 'plain').map(c => c.name)
+      const j = names.indexOf(arg)
+      if (j < 0) continue
+      // The binding name of this arrow (`const edge = (…) => …`), then its calls.
+      let bindName = null
+      const findBind = (n) => {
+        if (!Array.isArray(n)) return
+        if (n[0] === '=' && typeof n[1] === 'string' && n[2] === arrows[a]) bindName = n[1]
+        for (let i = 1; i < n.length && !bindName; i++) findBind(n[i])
+      }
+      findBind(body)
+      if (!bindName) return null
+      const calls = []
+      const findCalls = (n) => {
+        if (!Array.isArray(n)) return
+        if (n[0] === '()' && n[1] === bindName) calls.push(n)
+        for (let i = 1; i < n.length; i++) findCalls(n[i])
+      }
+      findCalls(body)
+      if (!calls.length) return null
+      let ctor = null
+      for (const cn of calls) {
+        const list = cn[2] == null ? [] : (Array.isArray(cn[2]) && cn[2][0] === ',') ? cn[2].slice(1) : [cn[2]]
+        const c = evidenceOfArg(list[j], callerFunc, cn, depth + 1, seen)
+        if (!c || (ctor && c !== ctor)) return null
+        ctor = c
+      }
+      return ctor
+    }
+    // Single-`=` local binding: chase its init. More than one write → too
+    // murky to be worth the guard.
+    let decl = null, writes = 0
+    const findDecl = (n) => {
+      if (!Array.isArray(n)) return
+      if (typeof n[1] === 'string' && n[1] === arg) {
+        if (n[0] === '=') { decl = n; writes++ }
+        else if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') writes++
+      }
+      for (let i = 1; i < n.length; i++) findDecl(n[i])
+    }
+    findDecl(body)
+    if (!decl || writes !== 1) return null
+    return evidenceOfArg(decl[2], callerFunc, decl, depth + 1, seen)
+    }
+  }
+
+  const DBG = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC
+  const originals = ctx.func.list.slice()
+  for (const func of originals) {
+    if (func.raw || func.rest || !func.body) continue
+    if (func.sig?.results?.length !== 1) continue
+    const sites = sitesByCallee.get(func.name)
+    if (!sites?.length) { if (DBG) console.error('[spec]', func.name, 'no sites'); continue }
+    if (!hasLoop(func.body)) continue
+
+    // Candidate positions: still a dyn f64 box after F-phase/bimorphic (no
+    // pointer ABI, not numeric-narrowed), no default (undefined must reach it).
+    const reps = paramReps.get(func.name)
+    const candidates = []
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const p = func.sig.params[k]
+      if (p.type !== 'f64' || p.ptrKind != null) continue
+      if (func.defaults?.[p.name] != null) continue
+      const r = reps?.get(k)
+      if (r && (r.val != null && r.val !== VAL.TYPED)) continue
+      candidates.push(k)
+    }
+    if (!candidates.length) continue
+
+    // Evidence meet across sites per position. A site WITHOUT evidence is
+    // NEUTRAL — its calls just miss the guard at runtime and take the
+    // original (a plain-array or debug caller must not veto the hot sites'
+    // win). Only CONFLICTING evidence (two different ctors) kills the
+    // position — a guard can only test one kind.
+    const specs = []
+    for (const k of candidates) {
+      let ctor = null, dead = false
+      for (const site of sites) {
+        const arg = site.argList[k]
+        if (arg == null) continue
+        const proven = inferTypedCtor(arg, callerTypedCtx.get(site.callerFunc), callerTypedParamsCtx.get(site.callerFunc))
+        const c = proven ?? evidenceOfArg(arg, site.callerFunc, site.node, 0, new Set())
+        if (DBG) console.error('[spec]', func.name, 'k=' + k, JSON.stringify(arg)?.slice(0, 60), 'proven=' + proven, 'c=' + c)
+        if (c == null) continue
+        if (ctor && c !== ctor) { dead = true; break }
+        ctor = c
+      }
+      if (dead || !ctor) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      specs.push({ k, ctor, aux })
+    }
+    if (!specs.length) continue
+
+    let cloneName = `${func.name}$spec`
+    while (ctx.func.names.has(cloneName)) cloneName += '$'
+    const specAt = new Map(specs.map(s => [s.k, s]))
+    const cloneSig = {
+      params: func.sig.params.map((p, idx) => {
+        const s = specAt.get(idx)
+        return s ? { name: p.name, type: 'i32', ptrKind: VAL.TYPED, ptrAux: s.aux } : { ...p }
+      }),
+      results: [...func.sig.results],
+    }
+    const clone = { ...func, name: cloneName, sig: cloneSig, exported: false }
+    ctx.func.list.push(clone)
+    ctx.func.map.set(cloneName, clone)
+    ctx.func.names.add(cloneName)
+
+    const cloneReps = new Map()
+    if (reps) for (const [k, r] of reps) cloneReps.set(k, { ...r })
+    for (const s of specs) {
+      const r = cloneReps.get(s.k) || {}
+      r.typedCtor = s.ctor
+      r.val = VAL.TYPED
+      cloneReps.set(s.k, r)
+    }
+    paramReps.set(cloneName, cloneReps)
+
+    ;(ctx.types.specFns ||= new Map()).set(func.name, { clone: cloneName, guards: specs.map(s => ({ k: s.k, aux: s.aux })) })
   }
 }
 
