@@ -158,6 +158,18 @@
     call LICM once stores can't relocate (raw in-place store enables it —
     hoistInvariantPtrOffset doesn't recognize it yet), plus watr
     foldImmutableGlobals (immutable const global.get → const inline).
+  * wordcount profiled (1.43x v8): per-token path is __is_str_key +
+    __str_hash (hcache HITS — the lazy hash cell works) + __hash_get_local
+    + __dyn_get_expr + __hash_set_local + TWO __durable_slot_log barriers.
+    Get and set are SEPARATE probes: tryHashRmwFusion never fires because
+    `const counts = {}` registers an (empty) schema → valTypeOf = OBJECT,
+    and the gate wants HASH/unknown; the object then does keyed access via
+    its dyn-prop SIDECAR hash anyway — worst of both. LEVERS (next leg):
+    (a) dyn-keyed-only empty-literal objects (dynKeyVars census exists)
+    should LOWER TO HASH outright — dictionary-mode objects, the engines'
+    own move; then RMW fusion fires and halves the probes; (b) audit the
+    per-store __durable_*_log write barriers (two per token); (c) dedupe
+    the doubled __is_str_key per access. strbuild/shapes/json unprofiled.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
