@@ -79,12 +79,14 @@ let hash01 = (x, y) => {
 
 // Sparse lensed starfield: hash a fine (θ,φ) grid over the escape DIRECTION. Most cells are
 // empty; a lit one gets a hashed magnitude. Keyed on the final BENT direction, so the Einstein
-// ring and repeated star images fall out for free — no separate sky-lensing pass.
+// ring and repeated star images fall out for free — no separate sky-lensing pass. The grid is
+// offset by the seed so re-roll gives a genuinely different sky (not just a new disk).
 let starField = (dx, dy, dz) => {
   let theta = Math.acos(dy)
   let phi = Math.atan2(dz, dx)
-  let gx = Math.floor(phi * 130.0) | 0
-  let gy = Math.floor(theta * 130.0) | 0
+  let sx = (texSeed[0] * 97.0) | 0, sy = (texSeed[2] * 89.0) | 0   // seed offsets → a fresh sky per re-roll
+  let gx = (Math.floor(phi * 130.0) | 0) + sx
+  let gy = (Math.floor(theta * 130.0) | 0) + sy
   let h = hash01(gx, gy)
   if (h > 0.0035) return 0.0
   let b = hash01(gx * 7 + 3, gy * 13 + 11)

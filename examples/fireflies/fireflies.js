@@ -22,9 +22,8 @@
 // like a real bioluminescent flash), floored at an EMBER so no firefly ever goes fully dark. Each
 // firefly splats a small cubic core + a softer quadratic halo (no per-pixel transcendentals — same
 // divide-free-falloff spirit as chladni's ridge). Colour is grayscale except right at the flash peak,
-// where it warms a hair (firefly-motivated, not literal bioluminescence green). The order parameter
-// r(t) = |Σe^{iθ}|/N is plotted live as a framed sparkline strip along the bottom edge, in-kernel —
-// you watch synchrony rise from noise to (nearly) 1.
+// where it warms a hair (firefly-motivated, not literal bioluminescence green). You watch synchrony
+// rise from scattered noise to travelling waves of collective flashing across the whole meadow.
 //
 // Interaction: click = a lantern flash — pulls nearby phases toward the flash instant, seeding a
 // wave. Drag = a desync brush — scatters nearby phases toward fresh random targets. Both taper
@@ -40,8 +39,8 @@
 let W = 0, H = 0, px
 let glow                                // Float32Array W*H — per-pixel brightness, rebuilt every frame
 
-const MAXN = 2000
-let count = 1600                        // current N (randomize varies it in [1200,2000))
+const MAXN = 3200
+let count = 2600                        // current N (randomize varies it in [2200,3200))
 let fx = new Float64Array(MAXN), fy = new Float64Array(MAXN)      // current position
 let hx = new Float64Array(MAXN), hy = new Float64Array(MAXN)      // wander home
 let theta = new Float64Array(MAXN)                                // phase θ_i, kept in [0, 2π)
@@ -61,13 +60,6 @@ let ST = new Float64Array(9)
 
 let SEED = 0                            // custom LCG seed (i32) — never Math.random, see header
 
-// order-parameter r(t) history — a shifting strip of samples, newest at the end; drawn as a
-// bottom-edge sparkline. Sized well above any realistic strip width (see resize()).
-const HISTCAP = 2048
-let rhist = new Float64Array(HISTCAP)
-
-// bottom-edge strip layout, in backing pixels (all integer → plain `let` is fine)
-let stripX0 = 0, stripX1 = 0, stripY0 = 0, stripH = 0, stripInnerW = 0
 
 const TWO_PI = 6.283185307179586
 const PI = 3.141592653589793
@@ -129,27 +121,11 @@ let recalcGeometry = () => {
   ghead = new Int32Array(gridCols * gridRows)
 }
 
-let computeStripLayout = () => {
-  let s = W < H ? W : H
-  let sh = (s * 0.05) | 0
-  if (sh < 20) sh = 20
-  if (sh > 42) sh = 42
-  let m = (s * 0.02) | 0
-  if (m < 8) m = 8
-  stripH = sh
-  stripX0 = m; stripX1 = W - m
-  stripY0 = H - m - sh
-  let iw = (stripX1 - stripX0 - 2) | 0
-  if (iw > HISTCAP - 4) iw = HISTCAP - 4
-  if (iw < 1) iw = 1
-  stripInnerW = iw
-}
-
 // Jittered-grid scatter across the whole field: a natural-looking meadow, not a rigid lattice.
 // Draws a fresh N∈[1200,2000), positions, phases, Gaussian frequencies, wander params and the
 // coupling gain K — everything randomize()/init() touch, in one coherent re-seed.
 let scatterField = () => {
-  count = 1200 + ((rnd() * 800) | 0)
+  count = 2200 + ((rnd() * 1000) | 0)
   let cols = Math.round(Math.sqrt((count * W) / H)) | 0
   if (cols < 1) cols = 1
   let rows = Math.ceil(count / cols) | 0
@@ -257,19 +233,6 @@ let integrate = () => {
   }
 }
 
-// Kuramoto order parameter r = |Σe^{iθ}|/N ∈ [0,1] — 0 is noise, 1 is perfect lock.
-let orderParam = () => {
-  let sc = 0.0, ss = 0.0, i = 0
-  while (i < count) { sc += Math.cos(theta[i]); ss += Math.sin(theta[i]); i++ }
-  return Math.sqrt(sc * sc + ss * ss) / count
-}
-
-let pushHistory = (r) => {
-  let k = 0
-  while (k < HISTCAP - 1) { rhist[k] = rhist[k + 1]; k++ }
-  rhist[HISTCAP - 1] = r
-}
-
 // Two-sided Gaussian pulse in phase, peaking at θ=0 (fast attack, slower decay), floored at EMBER
 // so a resting firefly still shows a faint mark. Only ~N calls/frame — Math.exp here is fine; the
 // per-PIXEL splat below avoids transcendentals entirely (that's the hot O(N·pixels) loop).
@@ -325,47 +288,10 @@ let composite = () => {
   }
 }
 
-// Framed sparkline strip along the bottom edge: the order parameter's recent history as a filled
-// area + bright cap, newest sample at the right edge — drawn in-kernel, overwriting those rows last.
-let drawStrip = () => {
-  let x0 = stripX0, x1 = stripX1, y0 = stripY0, y1 = stripY0 + stripH
-  let bg = (255 << 24) | (10 << 16) | (10 << 8) | 9
-  let edge = (255 << 24) | (60 << 16) | (66 << 8) | 70
-  let py = y0
-  while (py < y1) {
-    let row = py * W, pxk = x0
-    while (pxk < x1) { px[row + pxk] = bg; pxk++ }
-    py++
-  }
-  let pxk2 = x0
-  while (pxk2 < x1) { px[y0 * W + pxk2] = edge; px[(y1 - 1) * W + pxk2] = edge; pxk2++ }
-  let py2 = y0
-  while (py2 < y1) { px[py2 * W + x0] = edge; px[py2 * W + (x1 - 1)] = edge; py2++ }
-
-  let fill = (255 << 24) | (60 << 16) | (74 << 8) | 54
-  let line = (255 << 24) | (180 << 16) | (225 << 8) | 235
-  let ix0 = x0 + 1, iy0 = y0 + 1, iy1 = y1 - 2
-  let innerH = iy1 - iy0
-  let iw = stripInnerW, start = HISTCAP - iw
-  let c = 0
-  while (c < iw) {
-    let v = rhist[start + c]
-    if (v < 0.0) v = 0.0; else if (v > 1.0) v = 1.0
-    let hgt = (v * innerH) | 0
-    let colX = ix0 + c
-    let yline = iy1 - hgt
-    let py3 = yline
-    while (py3 <= iy1) { px[py3 * W + colX] = fill; py3++ }
-    px[yline * W + colX] = line
-    c++
-  }
-}
-
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
   glow = new Float32Array(w * h)
-  computeStripLayout()
   recalcGeometry()
   return px
 }
@@ -426,13 +352,10 @@ export let frame = (t) => {
   rebuildGrid()
   let s = 0
   while (s < SUBSTEPS) { integrate(); s++ }
-  let r = orderParam()
-  pushHistory(r)
 
   let n = W * H, i = 0
   while (i < n) { glow[i] = 0.0; i++ }
   i = 0
   while (i < count) { splat(fx[i], fy[i], brightness(theta[i])); i++ }
   composite()
-  drawStrip()
 }

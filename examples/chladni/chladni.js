@@ -40,10 +40,16 @@ const NG = 45000                               // grain count
 let gx = new Float64Array(NG), gy = new Float64Array(NG)
 let acc = new Float64Array(1)                  // decaying per-pixel grain-brightness trail
 
-const KICK = 0.015      // random-kick gain: kick_px ≈ KICK · |F| · min(W,H)
-const GRAD = 0.15       // gradient-descent gain, relative to KICK — small, secondary bias
+const KICK = 0.013      // random-kick gain: kick_px ≈ KICK · √|F| · min(W,H) (sqrt: see updateGrains)
+const GRAD = 0.22       // gradient-descent gain, relative to KICK — small, secondary bias
 const DECAY = 0.86      // per-frame trail decay — a stale figure clears in a few frames
 const BOOST = 1.0 - DECAY   // per-grain-visit deposit; a steadily-revisited pixel saturates to white
+const ACC_MAX = 1.5     // trail-deposit ceiling: several nodal lines can cross at one pixel (the
+                        // plate centre, for odd n,m) and keep depositing long past white — capped,
+                        // that spot decays on the same clock as everywhere else once grains move on,
+                        // instead of leaving a stale bright ghost through the next mode change
+const AXIS_KICK = 0.6       // fixed kick_px/kickS near the centre row/column — see updateGrains
+const AXIS_BAND_CELLS = 2.0 // width of that "near", in coarse cells either side of the axis
 
 const LCG_MUL = 1664525, LCG_ADD = 1013904223   // Numerical-Recipes LCG constants
 let seed = 0x2545f491 | 0                       // Math.imul LCG state — never Math.random (bit-exact JS⇆jz)
@@ -111,7 +117,20 @@ let decayAcc = () => {
 
 // Kicked by an amount ∝ the LOCAL |F| under each grain (the actual Chladni mechanism — an antinode
 // throws its grains, a node barely nudges them) plus a small bias down the |F| gradient.
-let updateGrains = () => {
+let updateGrains = (nP, mP) => {
+  // Whenever n AND m are BOTH odd, cos(nπ·0.5) and cos(mπ·0.5) are both ~0 — a symmetry of this
+  // particular F, not a discretization fluke — so F(x, 0.5) and F(0.5, y) come out ~0 for EVERY x
+  // / every y: the plate's centre ROW and COLUMN are nodal along their ENTIRE length, unlike an
+  // ordinary nodal curve, which is zero only at an isolated (x,y). A grain anywhere near either
+  // axis then reads a coarse aC that's near-zero no matter WHERE along the axis it is, so its kick
+  // collapses and it freezes at whatever x (or y) it drifted in with — given enough frames that
+  // fills the full width/height solid: a hard, perfectly straight bright cross no real (curved,
+  // localized) nodal line produces.
+  let cN = Math.cos(nP * 0.5); cN = cN < 0.0 ? -cN : cN
+  let cM = Math.cos(mP * 0.5); cM = cM < 0.0 ? -cM : cM
+  let bothOdd = cN < 0.15 && cM < 0.15
+  let band = FSTEP * AXIS_BAND_CELLS
+
   let S = W < H ? W : H
   let kickS = KICK * S
   let gradS = kickS * GRAD
@@ -135,7 +154,19 @@ let updateGrains = () => {
     // piling into a soft blob instead of the sharp crossing a real plate shows. sqrt boosts the kick
     // right where it's smallest, enough to sweep that patch clean without disturbing the crisp settle
     // on an ordinary (single-line) stretch, where |F| — and so the correction — is already tiny.
-    let kick = Math.sqrt(aC) * kickS
+    //
+    // Near the degenerate axis, DON'T feed that sqrt from aC at all: aC there is a coincidental
+    // near-zero (cos() evaluated at a multiple of π/2), and jz's polynomial cos vs V8's native cos
+    // agree only to ~1e-7 that close to a zero — not the ~1e-16 they otherwise track to (see the
+    // Math.round note in frame()) — a gap sqrt() would blow up into a real, engine-dependent
+    // position split that compounds every frame after. A FIXED kick sidesteps the read entirely:
+    // bothOdd/dRow/dCol/band are plain arithmetic on n, m, FSTEP, cx, cy, never a value that came
+    // out of a near-zero cos — so which grains get it, and by how much, is bit-identical between
+    // engines even though aC itself isn't.
+    let dRow = y - cy; dRow = dRow < 0.0 ? -dRow : dRow
+    let dCol = x - cx; dCol = dCol < 0.0 ? -dCol : dCol
+    let nearAxis = bothOdd && (dRow < band || dCol < band)
+    let kick = nearAxis ? kickS * AXIS_KICK : Math.sqrt(aC) * kickS
     let nx = x + rnd() * kick - (aR - aL) * gradS
     let ny = y + rnd() * kick - (aD - aU) * gradS
 
@@ -146,8 +177,11 @@ let updateGrains = () => {
     if (ny < 0.0) ny = 0.0; else if (ny > H - 1) ny = H - 1
     gx[i] = nx; gy[i] = ny
 
+    // capped (ACC_MAX): several nodal lines crossing at one pixel would otherwise deposit past
+    // white every frame and take many extra frames to decay back down once the grains move on.
     let idx = (ny | 0) * W + (nx | 0)
-    acc[idx] = acc[idx] + BOOST
+    let deposit = acc[idx] + BOOST
+    acc[idx] = deposit > ACC_MAX ? ACC_MAX : deposit
     i++
   }
 }
@@ -160,7 +194,7 @@ export let frame = (n, m) => {
 
   computeField(nP, mP)
   decayAcc()
-  updateGrains()
+  updateGrains(nP, mP)
 
   // ---- composite: faint field wash + accumulated grain brightness. UNCHANGED shape from the
   // original per-pixel ridge (two cos/row hoisted + two cos/pixel, one store) — this is what takes
@@ -192,7 +226,7 @@ export let frame = (n, m) => {
       let glow = qg > 0.0 ? Math.round(qg * 34.0) | 0 : 0
       let bg = core + ((glow * 90) >> 8)
 
-      let a = acc[j]                              // this pixel's grain-trail brightness, 0.. (unclamped)
+      let a = acc[j]                              // this pixel's grain-trail brightness, 0..ACC_MAX
       let g = bg + ((255 - bg) * a) | 0            // lerp bg → white as grain density rises
       if (g > 255) g = 255
       px[j] = (255 << 24) | (g << 16) | (g << 8) | g     // white on black

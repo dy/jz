@@ -22,19 +22,19 @@ let ITER = 4
 export let resize = (w, h) => {
   W = w; H = h
   px = new Uint32Array(w * h)
-  // Responsive grid: a wide drape that hangs down most of the height. Square cells sized to
-  // the screen; column/row counts follow the screen so the sheet spans ~88% of the width and
-  // ~80% of the height — long, reaching well down the frame without running off the bottom.
-  // Cells kept coarse (min/74) so the node count stays light (a few thousand) even with the
-  // longer drape, and it runs smooth.
-  L = (w < h ? w : h) / 74
+  // A compact square banner hanging from the top. The rest patch is a bit WIDER than tall
+  // (~0.62×0.48 of the shorter screen dimension) because gravity then stretches the vertical
+  // links so the SETTLED sheet reads square — shorter than the old full-width drape, ending
+  // around mid-frame. Cells coarse (min/74) so the node count stays light and smooth.
+  let m = w < h ? w : h
+  L = m / 74
   LD = L * 1.4142135623730951   // √2 — diagonal of a square L×L cell
-  GX = (Math.round(w * 0.88 / L) + 1) | 0
-  GY = (Math.round(h * 0.80 / L) + 1) | 0
-  if (GX > 240) GX = 240
+  GX = (Math.round(m * 0.62 / L) + 1) | 0
+  GY = (Math.round(m * 0.52 / L) + 1) | 0
+  if (GX > 160) GX = 160
   if (GX < 12) GX = 12
-  if (GY > 100) GY = 100
-  if (GY < 8) GY = 8
+  if (GY > 130) GY = 130
+  if (GY < 9) GY = 9
   N = GX * GY
   nx = new Float64Array(N); ny = new Float64Array(N)
   ox = new Float64Array(N); oy = new Float64Array(N)
@@ -132,8 +132,8 @@ export let frame = (t) => {
       let ii = 0
       while (ii < GX) {
         let a = j * GX + ii
-        if (ii < GX - 1) relax(a, a + 1, L, 0.35)
-        if (j < GY - 1) relax(a, a + GX, L, 0.35)
+        if (ii < GX - 1) relax(a, a + 1, L, 0.55)
+        if (j < GY - 1) relax(a, a + GX, L, 0.55)
         if (ii < GX - 1 && j < GY - 1) {
           relax(a, a + GX + 1, LD, 0.08)          // "\" diagonal
           relax(a + 1, a + GX, LD, 0.08)          // "/" diagonal

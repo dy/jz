@@ -4,27 +4,48 @@
 //   states: 0 empty · 1 head · 2 tail · 3 conductor
 //
 // The seed lays out an IC-DIE FLOORPLAN: a grid of tiled macro-cell BLOCKS separated by empty
-// routing gutters, each block randomly one of four canonical machines —
+// routing gutters, each one of 11 canonical machines, picked so no tile repeats the kind of its
+// LEFT or ABOVE neighbour (a reroll-on-collision pick), and each tile's occupied rect is jittered
+// a little smaller than its grid cell so the die doesn't read as a rigid uniform matrix —
 //   busBank      a bank of parallel wires, each one-way gated by a DIODE (the canonical
 //                Wireworld valve: a 3-cell cap + offset stub; verified both directions ×4
 //                cardinal orientations — see diode()).
 //   combTree     a bus that fans out into many teeth (drips a copy of every passing electron
 //                down each tooth — the fan-out / clock-distribution primitive).
-//   clockFarm    a packed grid of small conductor LOOPS, each circulating 1-3 electrons
-//                forever — a bank of free-running ring-oscillator clocks.
+//   clockFarm    a packed grid of small conductor LOOPS, each circulating electrons forever —
+//                a bank of free-running ring-oscillator clocks.
 //   serpentineMesh  parallel folded delay lines (shift registers) threading one electron
 //                each through a maze of turns.
-// Block size/position/kind are all randomized (Math.random) so the die differs every reload,
+//   bigRing      ONE large loop filling most of the block — the slow, bold size-contrast
+//                partner to clockFarm's many small fast loops (same primitive, different scale).
+//   diagMesh     a hatch of parallel 45° wires — the die's one non-orthogonal texture.
+//   spiralCoil   a single wire wound into a square spiral, gun-fed at the outer end, dead-ending
+//                at the centre.
+//   hTree        a clock-distribution H-tree: one trunk, 2-3 branch levels, each level tapped
+//                straight off the last through a shared conductor cell (see "Gates" below).
+//   busTaps      a bus ribbed with short alternating up/down stubs — denser and more regular
+//                than combTree's longer one-sided teeth.
+//   radialStar   a small clock loop with 4 cardinal spokes reading its passing pulses.
+//   checkerboardOsc  clockFarm's small loops on a checkerboard skip (half the cells left empty)
+//                — the sparse counterpart to clockFarm's fully-packed grid.
+// Block kind/size/position are all randomized (Math.random) so the die differs every reload,
 // but tiles densely across however big the grid is — a phone-sized preview gets a couple of
-// blocks, the full desktop canvas gets dozens, reading as one dense, routed microchip.
+// blocks, the full desktop canvas gets dozens, reading as one dense, routed, varied microchip.
 //
-// Gates are NOT tapped mid-wire or mid-loop: an in-world tap backfires (a branch off a
-// continuous wire/loop can retrigger the cell it just left, since a Wireworld head only takes
-// 2 ticks to cycle back to fresh conductor — verified empirically). So every electron is
-// injected only at true wire DEAD ENDS via the kernel-side "gun" in frame(), and clock loops
-// stay purely self-contained oscillators, never bridged into a bus.
+// Gates: taps are NOT spliced mid-LOOP (a loop is a closed, self-contained oscillator — see
+// placeLoop). Mid-WIRE taps, though, are fine in two verified shapes: an OFFSET stub one row off
+// the through-wire (comb's teeth: the tap cell is Moore-adjacent to the bus, not shared with it)
+// and a plain SHARED-CELL junction (a T or + crossing, the through-wire and the tap sharing one
+// conductor cell). Both were empirically re-verified while building this file's new blocks —
+// single pulses, chained taps-of-taps (hTree), and independently-clocked crossings all settle
+// into a bounded, echo-free rhythm over thousands of ticks; the one shape that DOES backfire is a
+// loop tapped at a CORNER (a cell that already carries two arms of the loop; a third breaks the
+// neighbour count and kills the whole oscillator) — radialStar's spokes stay off the loop's
+// corners, touching only its edge midpoints. Every electron is injected only at true wire DEAD
+// ENDS via the kernel-side "gun" in frame(), and clock loops stay purely self-contained
+// oscillators, never bridged into a bus.
 //
-// resize(w,h) → Uint32Array; frame() steps; seed() rebuilds; paint()/drawRect() to edit.
+// resize(w,h) → Uint32Array; frame() steps; seed() rebuilds; paint() to edit.
 
 let W = 0, H = 0, px
 let a, b                 // ping-pong state grids
@@ -33,13 +54,15 @@ let srcPeriod, srcPhase  // each source's OWN cadence — a chip full of clock d
                          // synchronized strobe (set once, when the source is placed)
 let srcN = 0             // number of sources
 let tick = 0             // free-running step counter, drives every source's schedule
-let MAXSRC = 2048        // generous cap for a dense tiled die (old fixed layout needed 64)
+let MAXSRC = 4096        // generous cap for a dense tiled die across 11 block kinds
+let prevKind             // previous ROW's block kind per column (≤8 cols) — the no-repeat rule's memory
 
 export let resize = (w, h) => {
   W = w; H = h
   a = new Int32Array(w * h); b = new Int32Array(w * h)
   srcX = new Int32Array(MAXSRC); srcY = new Int32Array(MAXSRC)
   srcPeriod = new Int32Array(MAXSRC); srcPhase = new Int32Array(MAXSRC)
+  prevKind = new Int32Array(8)
   px = new Uint32Array(w * h)
   return px
 }
@@ -101,6 +124,16 @@ let placeLoop = (x0, y0, x1, y1, k) => {
 
 let hwire = (x0, x1, y) => { let x = x0; while (x <= x1) { a[y * W + x] = 3; x++ } }
 let vwire = (x, y0, y1) => { let y = y0; while (y <= y1) { a[y * W + x] = 3; y++ } }
+
+// a 45°-only wire (|dx|=|dy| per step) — same two-neighbours-per-cell topology as a straight
+// hwire/vwire, just rotated: a single pulse travels it cleanly end to end, no self-interference
+// (verified). The die's one non-axis-aligned primitive, used by diagMesh.
+let diagWire = (x0, y0, x1, y1) => {
+  let dx = x1 > x0 ? 1 : -1, dy = y1 > y0 ? 1 : -1
+  let x = x0, y = y0
+  while (x !== x1) { a[y * W + x] = 3; x = x + dx; y = y + dy }
+  a[y * W + x] = 3
+}
 
 let addSrc = (x, y, period, phase) => {
   if (srcN < MAXSRC) { srcX[srcN] = x; srcY[srcN] = y; srcPeriod[srcN] = period; srcPhase[srcN] = phase; srcN = srcN + 1 }
@@ -251,11 +284,145 @@ let serpentineMesh = (x0, y0, x1, y1) => {
   }
 }
 
-// A fresh RANDOM die each load: a grid of macro-cell BLOCKS (bus banks, fan-out trees, clock
-// farms, delay-line meshes) tiled across whatever the canvas resolves to, separated by empty
-// routing gutters. Block size is roughly constant in CELLS, so a bigger/denser grid gets MORE
-// blocks (a richer die), not just bigger ones — same generator reads right at a small preview
-// and fills a huge canvas with dozens of machines.
+// bigRing: ONE large loop filling most of the block — the size-contrast partner to clockFarm's
+// many small loops. Same placeLoop primitive, just handed almost the whole tile: a slow, bold
+// single ring (long perimeter ⇒ long rotational period) instead of a frantic packed grid.
+let bigRing = (x0, y0, x1, y1) => {
+  let mx = ((x1 - x0) * 0.08) | 0, my = ((y1 - y0) * 0.08) | 0
+  placeLoop(x0 + mx, y0 + my, x1 - mx, y1 - my, rndi(1, 3))
+}
+
+// diagMesh: a hatch of parallel 45° wires, all the same direction (chosen per block), each its
+// own gun-fed dead-end line spaced well past the 2-cell safe gap. Reads as a woven/hatched
+// texture against the die's otherwise all-orthogonal grid.
+let diagMesh = (x0, y0, x1, y1) => {
+  let bw = x1 - x0, bh = y1 - y0
+  if (bw < 24 || bh < 20) return
+  let len = bh - 6; if (len > bw - 6) len = bw - 6
+  if (len < 8) return
+  let pitch = rndi(4, 3)                // 4..6 apart
+  let backslash = Math.random() < 0.5   // "\" vs "/"
+  let sx = backslash ? x0 + 3 : x1 - 3
+  while (backslash ? sx + len <= x1 - 3 : sx - len >= x0 + 3) {
+    let ex = backslash ? sx + len : sx - len
+    diagWire(sx, y0 + 3, ex, y0 + 3 + len)
+    addSrc(sx, y0 + 3, rndi(9, 14), rndi(0, 24))
+    sx = backslash ? sx + pitch : sx - pitch
+  }
+}
+
+// spiralCoil: a single wire wound into a square spiral — outer gun feeds inward to a dead-end
+// centre. A bold, singular coil shape against the die's rows-of-many blocks. Each ring sits
+// `pitch` (≥2) cells inside the last, well past any cross-ring adjacency; verified over 2500+
+// ticks — the long single track queues many simultaneous pulses and settles into a bounded,
+// never-dying rhythm (the same saturating-conveyor behaviour any long enough wire/loop settles
+// into in this CA).
+let spiralCoil = (x0, y0, x1, y1) => {
+  let pitch = rndi(3, 2)                // 3..4
+  let ax = x0 + 2, ay = y0 + 2, bx = x1 - 2, by = y1 - 2
+  if (bx - ax < 4 * pitch || by - ay < 4 * pitch) return
+  let tipX = ax, tipY = ay
+  while (bx - ax >= 2 * pitch && by - ay >= 2 * pitch) {
+    hwire(ax, bx, ay); vwire(bx, ay, by); hwire(ax + pitch, bx, by); vwire(ax + pitch, ay + pitch, by)
+    ax = ax + pitch; ay = ay + pitch; bx = bx - pitch; by = by - pitch
+  }
+  addSrc(tipX, tipY, rndi(9, 14), rndi(0, 24))
+}
+
+// hTree: a clock-distribution H-tree. One gun-fed vertical trunk; 2-3 horizontal branch levels
+// tap straight off it through a SHARED conductor cell (a plain T junction — verified: splits a
+// pulse into every connected arm cleanly, no backfire into the trunk; comb's offset-stub tooth
+// isn't the only safe tap shape). Each branch is further tapped by short vertical sub-branches —
+// a genuine 2-level fan-out, every tip a plain dead end.
+let hTree = (x0, y0, x1, y1) => {
+  let cx = (x0 + x1) >> 1
+  let top = y0 + 3, bot = y1 - 3
+  let armMax = ((x1 - x0) >> 1) - 4
+  if (bot - top < 20 || armMax < 8) return
+  vwire(cx, top, bot)
+  addSrc(cx, bot, rndi(9, 14), rndi(0, 24))
+  let levels = rndi(2, 2), i = 1        // 2-3 branch levels
+  while (i <= levels) {
+    let ty = top + (((bot - top) * i / (levels + 1)) | 0)
+    let armLen = rndi(armMax - 3, 4)
+    let rx = cx + armLen, lx = cx - armLen
+    hwire(cx, rx, ty)
+    hwire(lx, cx, ty)
+    let subLen = 5, subR = cx + (armLen >> 1), subL = cx - (armLen >> 1)
+    if (ty + subLen <= bot) { vwire(subR, ty, ty + subLen); vwire(rx, ty, ty + subLen) }
+    if (ty - subLen >= top) { vwire(subL, ty - subLen, ty); vwire(lx, ty - subLen, ty) }
+    i++
+  }
+}
+
+// busTaps: a bus ribbed with short stubs alternating above/below at regular intervals, stacked
+// in rows — denser and more regular than combTree's longer, one-sided, variable-length teeth.
+let busTaps = (x0, y0, x1, y1) => {
+  let wx0 = x0 + 2, wx1 = x1 - 2
+  if (wx1 - wx0 < 24) return
+  let ribLen = rndi(3, 4), spacing = rndi(6, 5), rowGap = ribLen + rndi(5, 3)
+  let y = y0 + ribLen + 2
+  while (y + ribLen + 2 <= y1) {
+    hwire(wx0, wx1, y)
+    addSrc(wx0, y, rndi(9, 14), rndi(0, 24))
+    let x = wx0 + spacing, up = true
+    while (x < wx1 - 2) {
+      if (up) vwire(x, y - ribLen, y); else vwire(x, y, y + ribLen)
+      x = x + spacing
+      up = !up
+    }
+    y = y + rowGap
+  }
+}
+
+// radialStar: a small clock loop with 4 cardinal spokes touching its perimeter — a plain wire
+// picking up the loop's passing pulses by adjacency (same mechanism as a comb tooth). Diagonal /
+// corner-touching spokes were tried and KILL the loop (a corner cell already carries two arms of
+// the loop; a third breaks its neighbour count) — so spokes touch only the edge MIDPOINTS.
+let radialStar = (x0, y0, x1, y1) => {
+  let cx = (x0 + x1) >> 1, cy = (y0 + y1) >> 1
+  let r = ((Math.min(x1 - x0, y1 - y0)) * 0.24) | 0; if (r < 4) r = 4
+  if (x1 - x0 < r * 2 + 10 || y1 - y0 < r * 2 + 10) return
+  placeLoop(cx - r, cy - r, cx + r, cy + r, rndi(1, 3))
+  if (cx + r + 4 <= x1 - 2) hwire(cx + r, x1 - 2, cy)
+  if (cx - r - 4 >= x0 + 2) hwire(x0 + 2, cx - r, cy)
+  if (cy + r + 4 <= y1 - 2) vwire(cx, cy + r, y1 - 2)
+  if (cy - r - 4 >= y0 + 2) vwire(cx, y0 + 2, cy - r)
+}
+
+// checkerboardOsc: clockFarm's small loops, but on a checkerboard skip (half the cells left
+// empty) — the die's sparse, light-density counterpart to clockFarm's fully-packed grid.
+let checkerboardOsc = (x0, y0, x1, y1) => {
+  let cw = x1 - x0, ch = y1 - y0
+  if (cw < 20 || ch < 16) return
+  let cols = (cw / 14) | 0; if (cols < 2) cols = 2
+  let rows = (ch / 14) | 0; if (rows < 2) rows = 2
+  let cellW = (cw / cols) | 0, cellH = (ch / rows) | 0
+  let r = 0
+  while (r < rows) {
+    let c = 0
+    while (c < cols) {
+      if ((r + c) % 2 === 0) {
+        let lx0 = x0 + c * cellW + 2, ly0 = y0 + r * cellH + 2
+        let lw = cellW - 5; if (lw < 5) lw = 5
+        let lh = cellH - 5; if (lh < 5) lh = 5
+        placeLoop(lx0, ly0, lx0 + lw, ly0 + lh, rndi(1, 2))
+      }
+      c++
+    }
+    r++
+  }
+}
+
+// A fresh RANDOM die each load: a grid of macro-cell BLOCKS (11 kinds — bus banks, fan-out trees,
+// clock farms, delay-line meshes, big rings, diagonal hatches, spiral coils, H-trees, ribbed
+// buses, radial stars, checkerboard oscillators) tiled across whatever the canvas resolves to,
+// separated by empty routing gutters. Each tile's kind is rerolled until it differs from both its
+// LEFT and ABOVE neighbour, and its occupied rect is jittered a little smaller than its grid cell
+// — so the die reads as varied and non-repeating, never a rigid uniform matrix. Block size is
+// roughly constant in CELLS, so a bigger/denser grid gets MORE blocks (a richer die), not just
+// bigger ones — same generator reads right at a small preview and fills a huge canvas with dozens
+// of varied machines.
 export let seed = () => {
   clear()
   srcN = 0; tick = 0
@@ -271,20 +438,38 @@ export let seed = () => {
   let bw = ((usableW - gutter * (cols - 1)) / cols) | 0
   let bh = ((usableH - gutter * (rows - 1)) / rows) | 0
 
+  let K = 11                                     // total block kinds
+  let ci = 0; while (ci < cols) { prevKind[ci] = -1; ci++ }   // no ABOVE neighbour for row 0
+
   let r = 0
   while (r < rows) {
-    let c = 0
+    let c = 0, leftKind = -1                     // no LEFT neighbour at the start of a row
     while (c < cols) {
       let bx0 = left + c * (bw + gutter), by0 = top + r * (bh + gutter)
       let bx1 = bx0 + bw, by1 = by0 + bh
       if (bw >= 26 && bh >= 20) {
-        let kind = rndi(0, 6)
-        if (kind === 0) busBank(bx0, by0, bx1, by1)
-        else if (kind === 1) combTree(bx0, by0, bx1, by1)
-        else if (kind === 2) clockFarm(bx0, by0, bx1, by1)
-        else if (kind === 3) serpentineMesh(bx0, by0, bx1, by1)
-        else if (kind === 4) busBank(bx0, by0, bx1, by1)
-        else combTree(bx0, by0, bx1, by1)
+        // jitter the occupied rect a little within the cell (up to ~12% per side) so neighbouring
+        // tiles' actual footprints vary, not just their contents
+        let jw = (bw * 0.12) | 0, jh = (bh * 0.12) | 0
+        let jx0 = bx0 + rndi(0, jw + 1), jy0 = by0 + rndi(0, jh + 1)
+        let jx1 = bx1 - rndi(0, jw + 1), jy1 = by1 - rndi(0, jh + 1)
+
+        let kind = rndi(0, K)
+        while (kind === leftKind || kind === prevKind[c]) kind = rndi(0, K)
+
+        if (kind === 0) busBank(jx0, jy0, jx1, jy1)
+        else if (kind === 1) combTree(jx0, jy0, jx1, jy1)
+        else if (kind === 2) clockFarm(jx0, jy0, jx1, jy1)
+        else if (kind === 3) serpentineMesh(jx0, jy0, jx1, jy1)
+        else if (kind === 4) bigRing(jx0, jy0, jx1, jy1)
+        else if (kind === 5) diagMesh(jx0, jy0, jx1, jy1)
+        else if (kind === 6) spiralCoil(jx0, jy0, jx1, jy1)
+        else if (kind === 7) hTree(jx0, jy0, jx1, jy1)
+        else if (kind === 8) busTaps(jx0, jy0, jx1, jy1)
+        else if (kind === 9) radialStar(jx0, jy0, jx1, jy1)
+        else checkerboardOsc(jx0, jy0, jx1, jy1)
+
+        leftKind = kind; prevKind[c] = kind
       }
       c++
     }

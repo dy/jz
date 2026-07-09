@@ -9,17 +9,22 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Camera: drag to orbit (inclination + azimuth); it otherwise stays put — the disk's own
-// rotation (turbulence advection + Doppler asymmetry) is what keeps the view alive at idle.
+// Camera: a slow idle orbit keeps the black hole turning; drag to steer (inclination + azimuth)
+// and it resumes drifting a moment after you let go. The disk itself also flows (turbulence
+// advection + Doppler asymmetry), so both the camera and the accretion disk are always moving.
 const DEG = Math.PI / 180
-let incl = 80 * DEG, azim = 0.5, dragging = false, lastX = 0, lastY = 0
+let incl = 80 * DEG, azim = 0.5, dragging = false, lastX = 0, lastY = 0, idleAt = 0, nowT = 0
 
 const demo = runDemo({
   name: "blackhole",
   hint: "a Schwarzschild black hole — gravitational lensing arcs the disk's far side above and below its shadow · drag to orbit",
   size: { budget: 90000 },
   cursor: "grab",
-  frame: (e, t) => { e.frame(t, incl, azim) },
+  frame: (e, t) => {
+    nowT = t
+    if (!dragging && t > idleAt) azim += 0.004   // idle auto-orbit — the hole slowly turns
+    e.frame(t, incl, azim)
+  },
   randomize: (e) => {
     e.randomize?.()
     incl = (55 + Math.random() * 40) * DEG
@@ -41,7 +46,7 @@ demo.cv.addEventListener('pointermove', e => {
   if (incl > Math.PI - 0.15) incl = Math.PI - 0.15
   lastX = e.clientX; lastY = e.clientY
 })
-const endDrag = () => { dragging = false; demo.cv.style.cursor = 'grab' }
+const endDrag = () => { dragging = false; idleAt = nowT + 2.5; demo.cv.style.cursor = 'grab' }   // resume idle orbit ~2.5s after release
 demo.cv.addEventListener('pointerup', e => { endDrag(); try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
 demo.cv.addEventListener('pointerleave', endDrag)
 </script>

@@ -344,7 +344,8 @@ let render = () => {
     let rowbase = sy * w
     let sx = 0
     while (sx < w) {
-      let lat = ((sx / (w - 1)) * 2.0 - 1.0) * latHalf + panR   // pan strafes along the camera's right axis
+      let latLocal = ((sx / (w - 1)) * 2.0 - 1.0) * latHalf   // camera-relative lateral offset — screen geometry only, no pan
+      let lat = latLocal + panR                                // pan strafes the SAMPLED position along the camera's right axis
       let wx = rx * lat + fx * d, wy = ry * lat + fy * d
       let gv = ((wy / LPATCH) * N) % N; if (gv < 0.0) gv += N
       let v0 = gv | 0, fv = gv - v0
@@ -370,8 +371,14 @@ let render = () => {
       // is what carves the moon-road: off-path columns' half-vectors swing away from the
       // light's azimuth and the ^384 glint dies, leaving a bright wedge under the moon that
       // widens toward the viewer. A per-row (lat=0) approximation smears the glint uniformly
-      // across the width.
-      let vpx = -wx, vpy = -wy, vpz = CAM_H
+      // across the width. Built from the CAMERA-RELATIVE ray (latLocal, d0) — never panR/panF
+      // or wx/wy: the camera itself never moves (pan only re-indexes which part of the periodic
+      // sea those same fixed rays sample, above), so the view vector — and with it the glint's
+      // screen geometry — must stay fixed to the camera too; only the slope SAMPLED at (nx,ny)
+      // varies with pan. Using the panned wx/wy here instead leaks the pan offset into the
+      // geometry itself: the glitter path swims with every drag pixel and jumps a full LPATCH
+      // at the pan wrap.
+      let vpx = -(rx * latLocal + fx * d0), vpy = -(ry * latLocal + fy * d0), vpz = CAM_H
       let vinv = 1.0 / Math.sqrt(vpx * vpx + vpy * vpy + vpz * vpz)
       let hxv = Lx + vpx * vinv, hyv = Ly + vpy * vinv, hzv = Lz + vpz * vinv
       let hinv = 1.0 / Math.sqrt(hxv * hxv + hyv * hyv + hzv * hzv)

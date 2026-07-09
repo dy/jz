@@ -12,29 +12,45 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Seven 1-bit dithers of the same shaded sphere — cycle automatically every few seconds, or drag
-// left↔right to pick. The pixelated backing keeps the dot pattern crisp at any window size.
-// Threshold (pure 50% B&W) excluded — it carries no dither texture. Host mode m → kernel mode m+1.
+// Eight 1-bit dithers of four recognizable shaded subjects — a pyramid, a profile bust, a cube,
+// a torus — cycling automatically (algorithm every ~6s, subject once per full algorithm lap), or
+// drag left↔right to pick the algorithm / hit the dice for a new subject. The pixelated backing
+// keeps the dot pattern crisp at any window size. Threshold (pure 50% B&W) is excluded from the
+// algorithm cycle — it carries no dither texture. Host mode m → kernel mode m+1.
 const NAMES = ["Random", "Ordered · Bayer 4×4", "Ordered · Bayer 8×8", "Clustered-dot halftone", "Floyd–Steinberg", "Jarvis–Judice–Ninke", "Atkinson"]
 const N = NAMES.length
-const NSHAPES = 4
-let mode = 0, manual = false, manualAt = -10, nowT = 0, lightPhase = Math.random() * 6.28, shape = Math.random() * NSHAPES | 0
+const SHAPES = ["Pyramid", "Bust", "Cube", "Torus"]
+const NSHAPES = SHAPES.length
+const LAP = N * 6   // one full algorithm cycle, in seconds — the subject advances once per lap
+
+let mode = 0, manual = false, manualAt = -10
+let shapePhase = Math.random() * LAP * NSHAPES, shape = Math.floor(shapePhase / LAP) % NSHAPES
+let shapeManual = false, shapeManualAt = -999
+let nowT = 0, lightPhase = Math.random() * 6.28
 const algoEl = document.getElementById("algo")
-const setMode = (m) => { m = m < 0 ? 0 : m > N - 1 ? N - 1 : m; if (m !== mode) { mode = m; algoEl.innerHTML = `<b style="font-weight:700">${NAMES[mode]}</b> &nbsp; <span style="font-weight:500;opacity:.5">${mode + 1}/${N}</span>` } }
-setMode(0)
+const setLabel = () => { algoEl.innerHTML = `<b style="font-weight:700">${SHAPES[shape]} · ${NAMES[mode]}</b> &nbsp; <span style="font-weight:500;opacity:.5">${mode + 1}/${N}</span>` }
+const setMode = (m) => { m = m < 0 ? 0 : m > N - 1 ? N - 1 : m; if (m !== mode) { mode = m; setLabel() } }
+const setShape = (s) => { s = ((s % NSHAPES) + NSHAPES) % NSHAPES; if (s !== shape) { shape = s; setLabel() } }
+setLabel()
 
 const demo = runDemo({
   name: "dithering",
-  hint: "Dithering — 1-bit renderings of a smooth image · drag ↔ to pick the algorithm",
+  hint: "Dithering — 1-bit renderings of a smooth image · drag ↔ to pick the algorithm · dice for a new subject",
   size: { budget: 420000 },          // a touch coarse so the dither dots read clearly
   frame: (e, t) => {
     nowT = t
-    if (manual && t - manualAt > 8) manual = false        // hand control back after 8s idle
-    if (!manual) setMode(Math.floor(t / 6) % N)           // auto-cycle: hold each method ~6s
-    e.frame(t + lightPhase, mode + 1, shape)              // +1 skips the kernel's excluded Threshold(0)
+    if (manual && t - manualAt > 8) manual = false                     // hand mode control back after 8s idle
+    if (!manual) setMode(Math.floor(t / 6) % N)                       // auto-cycle: hold each algorithm ~6s
+    if (shapeManual && t - shapeManualAt > LAP) shapeManual = false    // hand subject control back after one lap
+    if (!shapeManual) setShape(Math.floor((t + shapePhase) / LAP) % NSHAPES)   // auto-cycle: a new subject each lap
+    e.frame(t + lightPhase, mode + 1, shape)                           // +1 skips the kernel's excluded Threshold(0)
   },
-  // re-roll: a different subject to dither (the algorithms keep cycling on their own)
-  randomize: () => { shape = (shape + 1 + Math.floor(Math.random() * (NSHAPES - 1))) % NSHAPES; lightPhase = Math.random() * 6.28 },
+  // re-roll: jump straight to a different subject (the algorithm keeps cycling on its own)
+  randomize: () => {
+    shapeManual = true; shapeManualAt = nowT
+    setShape(shape + 1 + Math.floor(Math.random() * (NSHAPES - 1)))
+    lightPhase = Math.random() * 6.28
+  },
 })
 
 const ptr = trackPointer(demo.cv)

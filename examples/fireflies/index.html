@@ -35,7 +35,7 @@ const strokeTo = (x, y) => {
 const demo = runDemo({
   name: "fireflies",
   hint: "Kuramoto synchronization — phase oscillators coupled to neighbours alone · click: a lantern flash seeds a wave · drag: a desync brush",
-  size: { budget: 400000 },
+  size: { budget: 750000 },
   load: (e) => { e.init(); nextPerturbMs = 0 },
   frame: (e, t) => {
     // idle auto-perturb: once the natural lock has had time to build (and be enjoyed), scatter a
