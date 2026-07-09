@@ -540,14 +540,19 @@ export default (ctx) => {
     ;; on off >= __heap_start so neither ever reads neighbor static data.
     (if (i32.ge_u (local.get $off) (global.get $__heap_start))
       (then
-    (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
+    ;; mask bit0 — durable words may carry the runtime-shadowed marker
+    ;; (collection.js __dyn_set); unmasked, the resolved sidecar off is odd.
+    (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${PTR.HASH}))
       (then
         (local.set $poffS (call $__ptr_offset (local.get $props)))
         (local.set $pcapS (i32.load (i32.sub (local.get $poffS) (i32.const 4))))
-        (local.set $dnS (i32.load (i32.sub (local.get $poffS) (i32.const 8))))))${ctx.scope.globals.has('__dyn_props') ? `
+        (local.set $dnS (i32.load (i32.sub (local.get $poffS) (i32.const 8))))))))${ctx.scope.globals.has('__dyn_props') ? `
+    ;; Global (runtime keys on a durable receiver) — independent of the sidecar
+    ;; gate above: STATIC-SEGMENT receivers (off < __heap_start, no header) also
+    ;; store their dyn writes here, and the probe is keyed by offset alone.
     (if (i32.lt_u (local.get $off) ${heapResetWat()})
       (then
         (if (f64.ne (global.get $__dyn_props) (f64.const 0))
@@ -557,7 +562,7 @@ export default (ctx) => {
               (then
                 (local.set $poffG (call $__ptr_offset (local.get $props)))
                 (local.set $pcapG (i32.load (i32.sub (local.get $poffG) (i32.const 4))))
-                (local.set $dnG (i32.load (i32.sub (local.get $poffG) (i32.const 8))))))))))))` : ''}
+                (local.set $dnG (i32.load (i32.sub (local.get $poffG) (i32.const 8))))))))))` : ''}
     ;; Walk in insertion order via __coll_order — schema-only enumeration
     ;; would drop computed props (e.g. {} then o.a=1). Skip entries whose key
     ;; already appears in the schema: object literals with

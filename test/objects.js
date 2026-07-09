@@ -418,17 +418,19 @@ test('Object.keys: JSON.parse OBJECT does not return absent keys', () => {
   is(f(), -1)
 })
 
-// Mutation via __dyn_set writes into the OBJECT's propsPtr sidecar; the
-// fixed schema view from Object.keys does not grow — same rule as for
-// object literals (`let o = {a:1}; o.b = 2; Object.keys(o).length === 1`).
-test('Object.keys: JSON.parse OBJECT mutation does not grow schema view', () => {
+// Mutation via __dyn_set writes into the OBJECT's propsPtr sidecar — and
+// enumeration MERGES it (JS semantics: added keys are enumerable). This pinned
+// length 1 while jz dropped dyn-added keys from the schema view; the
+// literalWriteKeys deopt (program-facts.js) + runtime sidecar/global merge now
+// match JS exactly (`let o = {a:1}; o.b = 2; Object.keys(o).length === 2`).
+test('Object.keys: JSON.parse OBJECT mutation grows the enumeration (JS-exact)', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":1}')
     o.b = 2
     o.c = 3
     return Object.keys(o).length
   }`)
-  is(f(), 1)
+  is(f(), 3)
 })
 
 test('Object.keys: nested JSON.parse OBJECT', () => {

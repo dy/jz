@@ -732,6 +732,10 @@ function unrollForIn(init, cond, step, body) {
   if (lookupValType(src) !== VAL.OBJECT) return null
   const keys = ctx.schema.resolve(src)
   if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
+  // A literal-key write OUTSIDE the schema also adds an enumerable key (it
+  // lands in the dyn sidecar) — same proof obligation as computed writes.
+  const lw = ctx.types.literalWriteKeys?.get(src)
+  if (lw) for (const k of lw) if (!keys.includes(k)) return null
 
   const rest = body.slice(2)
   const realBody = rest.length === 1 ? rest[0] : [';', ...rest]

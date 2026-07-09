@@ -21,8 +21,28 @@ export function observeNodeFacts(node, f) {
   if (!Array.isArray(node)) return
   const [op, ...args] = node
   if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) &&
-      (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string')
+      (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string') {
     f.writtenProps.add(args[0][2])
+    // Per-receiver literal-key writes: a key OUTSIDE the receiver's schema lands
+    // in the dyn-props sidecar (locals get no propMap/autoBox schema merge), so
+    // static enumeration (for-in pool/unroll, Object.keys/values/entries schema
+    // fold) must deopt to the runtime merge for such receivers or the added key
+    // is invisible. Bare-var receivers only — expression receivers already take
+    // the runtime path (aliasing keeps dynWriteVars' per-name precision).
+    if (typeof args[0][1] === 'string') {
+      let s = f.literalWriteKeys.get(args[0][1])
+      if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
+      s.add(args[0][2])
+    }
+  }
+  // Bracket form of the same: `o['zz'] = v` (isLiteralStr keeps it out of
+  // dynWriteVars, so it must be recorded here or it's invisible to every gate).
+  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]' &&
+      isLiteralStr(args[0][2]) && typeof args[0][1] === 'string') {
+    let s = f.literalWriteKeys.get(args[0][1])
+    if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
+    s.add(args[0][2][1])
+  }
   // Computed-key WRITES (`o[k]=v`, `o[k]+=v`, `o[k]++`) are the ONLY operations
   // that add ENUMERABLE keys beyond the static schema — computed reads and dot-adds
   // (`o.b=2`) do not enumerate in jz. Tracked separately from `dynVars` (which also
@@ -99,7 +119,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
-    writtenProps: new Set(),
+    writtenProps: new Set(), literalWriteKeys: new Map(),
   }
 }
 
@@ -113,6 +133,10 @@ function mergeWalkFacts(into, from) {
   if (from.hasRest) into.hasRest = true
   if (from.hasSpread) into.hasSpread = true
   for (const p of from.writtenProps) into.writtenProps.add(p)
+  for (const [obj, keys] of from.literalWriteKeys) {
+    if (!into.literalWriteKeys.has(obj)) into.literalWriteKeys.set(obj, new Set())
+    for (const k of keys) into.literalWriteKeys.get(obj).add(k)
+  }
   for (const [obj, props] of from.propMap) {
     if (!into.propMap.has(obj)) into.propMap.set(obj, new Set())
     for (const p of props) into.propMap.get(obj).add(p)
@@ -238,6 +262,10 @@ export function collectProgramFacts(ast) {
       for (const v of initFacts.dynVars) f.dynVars.add(v)
     }
     if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
+    if (initFacts.literalWriteKeys) for (const [obj, keys] of initFacts.literalWriteKeys) {
+      if (!f.literalWriteKeys.has(obj)) f.literalWriteKeys.set(obj, new Set())
+      for (const k of keys) f.literalWriteKeys.get(obj).add(k)
+    }
     if (doArity) {
       if (initFacts.maxDef > f.maxDef) f.maxDef = initFacts.maxDef
       if (initFacts.maxCall > f.maxCall) f.maxCall = initFacts.maxCall
@@ -271,6 +299,7 @@ export function collectProgramFacts(ast) {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, writtenProps: f.writtenProps,
+    literalWriteKeys: f.literalWriteKeys,
   }
 }
 

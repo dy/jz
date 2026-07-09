@@ -298,6 +298,7 @@ export function reset(proto, globals, bridge) {
     dynKeyVars: null,
     dynWriteVars: null,
     anyDynKey: false,
+    literalWriteKeys: null, // Map<var, Set<key>> — literal-key prop writes per bare-var receiver (plan/index.js)
   }
 
   ctx.schema = {

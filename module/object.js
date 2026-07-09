@@ -290,7 +290,7 @@ export default (ctx) => {
     // computed writes (`o[k]=v`) also carries props in its per-object dyn HASH
     // that the schema omits. Enumerate those live (schema ∪ dyn props) — the gap
     // that blocked metacircularity (the compiler grows dicts then enumerates).
-    if (schema && !mayHaveDynProps(obj)) return emitStringArray(schema)
+    if (schema && !mayHaveDynProps(obj) && !hasOutOfSchemaWrites(obj, schema)) return emitStringArray(schema)
     // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
     // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
     return emitRuntimeKeys(obj, ro)
@@ -309,13 +309,15 @@ export default (ctx) => {
   // Object.keys (evaluates the receiver, full runtime enumeration).
   ctx.core.emit['__keys_ro'] = (obj) => {
     // Pool only when the receiver's enumerable key set is provably the static
-    // schema: a bare var with NO computed-key writes (`o[k]=v`) — those are the
-    // only writes that add enumerable keys (computed reads / dot-adds don't).
+    // schema: a bare var with NO computed-key writes (`o[k]=v`) and no literal
+    // writes outside the schema — either kind adds enumerable keys the pool
+    // would drop (computed writes via dynWriteVars; out-of-schema literal
+    // writes land in the dyn sidecar — see hasOutOfSchemaWrites).
     // `mayHaveDynProps` is too coarse here — it also flags computed-READ receivers,
     // and for-in's own `o[k]` read would otherwise veto its own pooling.
     if (typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = resolveSchema(obj)
-      if (schema) {
+      if (schema && !hasOutOfSchemaWrites(obj, schema)) {
         const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
@@ -413,7 +415,7 @@ export default (ctx) => {
     if (arrayValType(obj)) { inc('__arr_from'); return typed(['call', '$__arr_from', asI64(emit(obj))], 'f64') }
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
-    if (!schema || mayHaveDynProps(obj)) return emitRuntimeValues(obj)
+    if (!schema || mayHaveDynProps(obj) || hasOutOfSchemaWrites(obj, schema)) return emitRuntimeValues(obj)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('ov'), base = tempI32('vb')
@@ -476,7 +478,7 @@ export default (ctx) => {
     }
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
-    if (!schema || mayHaveDynProps(obj)) return emitRuntimeEntries(obj)
+    if (!schema || mayHaveDynProps(obj) || hasOutOfSchemaWrites(obj, schema)) return emitRuntimeEntries(obj)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
@@ -788,6 +790,19 @@ function emitObjectAssignDynamic(target, sources) {
 // can hold props beyond its static schema, so schema-only enumeration would drop
 // them; callers route it through the runtime schema∪dyn-props merge instead.
 const mayHaveDynProps = (obj) => typeof obj === 'string' && !!ctx.types.dynKeyVars?.has(obj)
+
+// A literal-key write of a key OUTSIDE the receiver's schema lands in the
+// dyn-props sidecar (locals get no propMap/autoBox merge) — the static schema
+// fold would silently drop it from enumeration, so such receivers must take
+// the runtime merge path. Bare-var receivers only, mirroring dynWriteVars'
+// per-name precision (expression receivers are runtime-dispatched anyway).
+const hasOutOfSchemaWrites = (obj, schema) => {
+  if (typeof obj !== 'string') return false
+  const w = ctx.types.literalWriteKeys?.get(obj)
+  if (!w) return false
+  for (const k of w) if (!schema.includes(k)) return true
+  return false
+}
 
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
@@ -1306,14 +1321,14 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
             ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]],
         ...roHit],
       ...(hasDynProps ? [['else',
-        // Durable AND genuinely heap-allocated (base >= __heap_start —
-        // static-segment objects have no header at all, so both dyn sources
-        // stay 0 for them, same as before this durable branch existed).
+        // Sidecar (init-time keys, if any) — only for genuinely heap-allocated
+        // receivers (base >= __heap_start): static-segment objects have no
+        // header at all, so the off-16 read would hit neighboring static data.
+        // Durable words may carry the runtime-shadowed bit0 marker
+        // (collection.js __dyn_set) — mask it out or the resolved sidecar off
+        // is misaligned.
         ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
           ['then',
-        // Sidecar (init-time keys, if any — same header read as above). Durable
-        // words may carry the runtime-shadowed bit0 marker (collection.js
-        // __dyn_set) — mask it out or the resolved sidecar off is misaligned.
         ['local.set', `$${props}`, ['i64.and',
           ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]], ['i64.const', -2]]],
         ['if', ['i32.eq',
@@ -1322,11 +1337,13 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
           ['then',
             ['local.set', `$${poffS}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
             ['local.set', `$${pcapS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 4]]]],
-            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]],
+            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]]]],
         ...roHit,
-        // Global (runtime-written keys, if any) — same base >= __heap_start
-        // guard as the sidecar read above, already established by the
-        // wrapping `if` this block sits inside.
+        // Global (runtime-written keys, if any) — NO heap_start gate: __dyn_set
+        // routes writes on STATIC-SEGMENT receivers here too (they have no
+        // header, so the global table is their only storage), and the probe is
+        // keyed by offset, needing no header. Gating it on heap_start silently
+        // dropped `o.zz = 3` on a data-segment literal from enumeration.
         ['if', ['f64.ne', ['global.get', '$__dyn_props'], ['f64.const', 0]],
           ['then',
             ['local.set', `$${props}`, ['call', '$__ihash_get_local',
@@ -1336,7 +1353,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
               ['then',
                 ['local.set', `$${poffG}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
                 ['local.set', `$${pcapG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 4]]]],
-                ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]]]]] : [])],
+                ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]]] : [])],
     // for-in with no dyn sources at all: the enumeration IS the schema key
     // array, and __schema_tbl[sid] already holds it as a static jz array —
     // return it boxed directly. Read-only by for-in's contract, static by

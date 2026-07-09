@@ -98,6 +98,7 @@ export default function plan(ast, profiler) {
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
+  ctx.types.literalWriteKeys = programFacts.literalWriteKeys
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))

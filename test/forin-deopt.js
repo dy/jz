@@ -147,8 +147,6 @@ test('for-in enum cache: shadow-mirrored schema object (computed reads) stays co
   }`, 20)
   // runtime COMPUTED write of a NEW key on the shadowed object between
   // enumerations — the cache must refresh (sidecar len changed → natural miss).
-  // (A late LITERAL-key write, `o['zz']=3`, is a distinct pre-existing
-  // enumeration gap — invisible to for-in on HEAD too, unrelated to the cache.)
   diff(`export let run=(z)=>{
     let o={x:1,y:2}
     let ks=['x','zz'], s=o[ks[0]]
@@ -157,6 +155,23 @@ test('for-in enum cache: shadow-mirrored schema object (computed reads) stays co
     for(let k in o) r+='|'+k
     return r+s
   }`)
+})
+
+test('late literal-key write is enumerable (for-in / keys / values / entries / JSON)', () => {
+  // `o.zz = 3` / `o['zz'] = 3` with zz OUTSIDE the literal's schema lands in
+  // the dyn sidecar (locals get no schema merge) or — for a data-segment
+  // literal — in the global dyn-props table. Every static enumeration fold
+  // must deopt to the runtime merge for such receivers (literalWriteKeys,
+  // program-facts.js), and the runtime merge must probe the global table for
+  // static-segment receivers too (no heap_start gate on the keyed probe).
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; let r=''; for(let k in o) r+=k+';'; return r}`)
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o['zz']=3; let r=''; for(let k in o) r+=k+';'; return r}`)
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; return Object.keys(o).join()}`)
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; return Object.values(o).join()}`)
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; return JSON.stringify(Object.entries(o))}`)
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; return JSON.stringify(o)}`)
+  // in-schema late write keeps the fast folds (no deopt) and correct values
+  diff(`export let run=(z)=>{let o={x:1,y:2}; o.x=9; return Object.values(o).join()+'|'+JSON.stringify(o)}`)
 })
 
 test('for-in enum cache: nested for-in over the same dict', () => {
