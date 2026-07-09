@@ -53,6 +53,7 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`dotprod`](dotprod/dotprod.js) | multiply-accumulate reduction; JZ reassociates to 4 SIMD accumulators, beating strict-fp serial native |
 | [`bytebeat`](bytebeat/bytebeat.js) | classic integer "bytebeat" one-line-song synthesis to 8-bit PCM; pure i32, bit-exact everywhere |
 | [`fft`](fft/fft.js) | radix-2 Cooley–Tukey FFT over a transcendental-free twiddle table; the canonical numeric/audio kernel |
+| [`fftplan`](fftplan/fftplan.js) | the same butterflies through a Map-cached plan object — how every JS DSP lib ships FFT; exposes typed-array kind loss through return values / object fields / params (dynamic element access in the hot loop) |
 | [`synth`](synth/synth.js) | minisynth audio pipeline — polynomial oscillator + ADSR + biquad per sample; loop-carried f64 |
 | [`blur`](blur/blur.js) | separable box blur on an RGBA8 image; integer stencil with edge clamp, the canonical image pipeline |
 | [`conv2d`](conv2d/conv2d.js) | int8 quantized conv layer (Cin→Cout, 3×3, i32 MAC + ReLU requant); the spatial-convolution counterpart to dense `matmul`, the edge-ML inference kernel |
