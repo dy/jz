@@ -14,7 +14,7 @@ const { exports } = await instantiate(wasm)
 
 // Most examples render at the standard thumb size; a few want a coarser grid so their cells
 // stay chunky/legible at thumbnail scale (the gallery upscales the webp).
-const SIZE = { wireworld: [760, 468] }[name]   // full size — packs enough macro-cell blocks that the tiled microchip die reads
+const SIZE = { wireworld: [1010, 700] }[name]   // larger die so the ~3×3 grid of distinct macro-cell blocks reads (bigger blocks now → fewer per unit area)
 const W = SIZE ? SIZE[0] : 760, H = SIZE ? SIZE[1] : 468
 let px = exports.resize(W, H)
 if (exports.init) exports.init()
@@ -88,7 +88,7 @@ const FRAME_ARGS = {
   'domain-color': () => [0, 0.3, 0.2, 0, 0, 2.5],
   chladni:       () => [4, 5],          // (n,m) — an even mode: crisp flowing nodal figure, no both-odd centre cross
   hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
-  dithering:     () => [1.0, 5, 0],     // Floyd–Steinberg of the lit sphere
+  dithering:     () => [1.0, 5, 0],     // Floyd–Steinberg of the equilateral pyramid
   phyllotaxis:   () => [0, GOLDEN, 3600, 1.0],
   harmonograph:  () => [0, 0.06, 0.5, 0, 0, 1, 0.3],
   truchet:       () => [0, 30],
@@ -114,8 +114,7 @@ const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,
-                 sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90,
-                 chladni: 300 }[name] ?? 1
+                 sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the
 // trio fills the frame. Roll many initial conditions and keep the most balanced triangle with

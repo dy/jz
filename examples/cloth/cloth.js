@@ -17,7 +17,9 @@ let L = 1.0                // rest length (px) — structural (axis) links
 let LD = 1.0               // rest length (px) — diagonal (shear) links = L·√2
 let R = 0                  // grab pick radius (px) — set from screen, not grid
 let grabbed = -1
-let ITER = 4
+let ITER = 12          // many relaxation passes → cells stay near rest size, so the sheet reads as
+                        // smooth even fabric rather than a jagged spring lattice (softening comes from
+                        // the per-link stiffness below, not from starving the solver of iterations)
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -45,7 +47,7 @@ export let resize = (w, h) => {
 
 export let init = () => {
   R = (W < H ? W : H) * 0.1                                       // grab radius in px so finer grids stay grabbable
-  let pinStep = Math.round(GX / 8.7)                              // ~9 pin anchors across the top, however wide the grid
+  let pinStep = Math.round(GX / 5.0)                              // ~5 anchors across the top → soft catenary scallops between them (reads as draped cloth, not a taut screen)
   if (pinStep < 1) pinStep = 1
   let x0 = (W - (GX - 1) * L) * 0.5, y0 = H * 0.10
   let j = 0
@@ -108,14 +110,16 @@ export let frame = (t) => {
   // Verlet integrate — gravity + a smooth wind: a slow envelope (waxes/wanes over ~1min)
   // gates a faster sideways gust whose phase drifts down the rows (ny), so it ripples through
   // the sheet like a moving gust rather than shoving it all one way.
-  let gust = 0.5 + 0.5 * Math.sin(t * 0.11)
+  let gust = 0.5 + 0.5 * Math.sin(t * 0.09)
   let i = 0
   while (i < N) {
     if (pin[i] === 0 && i !== grabbed) {
       let vx = (nx[i] - ox[i]) * 0.99, vy = (ny[i] - oy[i]) * 0.99
-      let wind = Math.sin(t * 0.8 + ny[i] * 0.05) * 0.6 * gust
+      // a GENTLE ripple that drifts down the rows — small enough to sway, not shove the sheet
+      // sideways into a crooked lean
+      let wind = Math.sin(t * 0.4 + ny[i] * 0.06) * 0.16 * gust
       ox[i] = nx[i]; oy[i] = ny[i]
-      nx[i] += vx + wind; ny[i] += vy + 0.5            // wind + gravity
+      nx[i] += vx + wind; ny[i] += vy + 0.42           // wind + gravity
     }
     i++
   }
@@ -132,8 +136,8 @@ export let frame = (t) => {
       let ii = 0
       while (ii < GX) {
         let a = j * GX + ii
-        if (ii < GX - 1) relax(a, a + 1, L, 0.55)
-        if (j < GY - 1) relax(a, a + GX, L, 0.55)
+        if (ii < GX - 1) relax(a, a + 1, L, 0.42)
+        if (j < GY - 1) relax(a, a + GX, L, 0.42)
         if (ii < GX - 1 && j < GY - 1) {
           relax(a, a + GX + 1, LD, 0.08)          // "\" diagonal
           relax(a + 1, a + GX, LD, 0.08)          // "/" diagonal

@@ -12,14 +12,15 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Eight 1-bit dithers of four recognizable shaded subjects — a pyramid, a profile bust, a cube,
-// a torus — cycling automatically (algorithm every ~6s, subject once per full algorithm lap), or
-// drag left↔right to pick the algorithm / hit the dice for a new subject. The pixelated backing
-// keeps the dot pattern crisp at any window size. Threshold (pure 50% B&W) is excluded from the
-// algorithm cycle — it carries no dither texture. Host mode m → kernel mode m+1.
+// Eight 1-bit dithers of five recognizable shaded subjects — an equilateral pyramid, Michelangelo's
+// David in profile, a cube, a torus, a hemisphere — cycling automatically (algorithm every ~6s,
+// subject once per full algorithm lap), or drag left↔right to pick the algorithm / hit the dice
+// for a new subject. The pixelated backing keeps the dot pattern crisp at any window size.
+// Threshold (pure 50% B&W) is excluded from the algorithm cycle — it carries no dither texture.
+// Host mode m → kernel mode m+1.
 const NAMES = ["Random", "Ordered · Bayer 4×4", "Ordered · Bayer 8×8", "Clustered-dot halftone", "Floyd–Steinberg", "Jarvis–Judice–Ninke", "Atkinson"]
 const N = NAMES.length
-const SHAPES = ["Pyramid", "Bust", "Cube", "Torus"]
+const SHAPES = ["Pyramid", "David", "Cube", "Torus", "Hemisphere"]
 const NSHAPES = SHAPES.length
 const LAP = N * 6   // one full algorithm cycle, in seconds — the subject advances once per lap
 

@@ -19,13 +19,14 @@ let manual = false, manualAt = -10, nowT = 0, curN = 3, curM = 5
 
 const demo = runDemo({
   name: "chladni",
-  hint: "Chladni plate — sand finds the nodal lines; drag: horizontal sets n, vertical sets m",
-  // budget (unlike the old uncapped field-only render): the grain pass adds real per-pixel cost, so
-  // an uncapped retina backing (e.g. true 4K on a 2x display) no longer holds 60fps — 2M px keeps
-  // dpr:2's crispness on typical viewports while bounding the worst case.
-  size: { dpr: 2, budget: 2000000 },
+  hint: "Chladni plate — nodal lines of two standing waves; drag: horizontal sets n, vertical sets m",
+  // No simulation state (see chladni.js) but the per-pixel field itself isn't free: each pixel
+  // takes 4 transcendentals (2 cos + 2 sin, for F and its analytic gradient) plus the exp() ridge —
+  // a true 4K@2x backing no longer holds 60fps, so budget bounds the worst case the same way the
+  // old grain pass did, just at a lower cap (the grain sum's fixed per-frame cost no longer offsets
+  // a cheaper field pass — this field pass alone is pricier than the old one was).
+  size: { dpr: 2, budget: 1000000 },
   cursor: "move",
-  load: (e) => e.init(),
   frame: (e, t) => {
     nowT = t
     if (manual && t - manualAt > 6) manual = false
@@ -36,6 +37,12 @@ const demo = runDemo({
     let n = curN, m = curM
     if (n === m) m = m < HI ? m + 1 : m - 1     // skip the degenerate n=m (whole plate nodal)
     e.frame(n, m)
+  },
+  // re-roll: jump to a fresh random mode pair, held like a drag (same convention as interference)
+  randomize: (e, d) => {
+    curN = LO + Math.floor(Math.random() * (HI - LO + 1))
+    curM = LO + Math.floor(Math.random() * (HI - LO + 1))
+    manual = true; manualAt = nowT
   },
 })
 

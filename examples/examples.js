@@ -17,7 +17,7 @@ export const examples = [
   { name: 'fireflies',    title: 'Fireflies',         blurb: 'Kuramoto oscillators — neighbour-coupled fireflies lock into traveling waves of synchrony' },
   { name: 'swarm',        title: 'Swarm',             blurb: 'flies that chase and circle the cursor' },
   { name: 'dwa',          title: 'Dynamic Window',    blurb: 'a robot rolls out every reachable velocity and drives the arc that races to the goal while clearing drifting obstacles — local motion planning' },
-  { name: 'chladni',      title: 'Chladni',           blurb: 'sand kicked by the local vibration migrates to the nodal lines — the real experiment', show: true },
+  { name: 'chladni',      title: 'Chladni',           blurb: 'two standing waves interfere into a plate nodal figure — drag to sweep the mode', show: true },
   { name: 'mandelbrot',   title: 'Mandelbrot',        blurb: 'escape-time fractal — perturbation theory carries the zoom past 10³⁰×' },
   { name: 'julia',        title: 'Julia',             blurb: 'z² + c — click any point to make it c, or let it morph on its own', show: true },
   { name: 'buddhabrot',   title: 'Buddhabrot',        blurb: 'density of Mandelbrot escape orbits — a luminous nebula accumulates' },
@@ -72,7 +72,7 @@ export const examples = [
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — the spanning cluster snaps in at p_c, P∞(p) charted live' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'ink on flowing water — a vortical fluid bath; drops bloom, strokes comb' },
   { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — stacked drops push into concentric stones, combs draw them to swirls' },
-  { name: 'dithering',    title: 'Dithering',         blurb: 'a pyramid, a bust, a cube, a torus — seven 1-bit dithers, ordered through Floyd–Steinberg' },
+  { name: 'dithering',    title: 'Dithering',         blurb: "a pyramid, David in profile, a cube, a torus, a hemisphere — seven 1-bit dithers, ordered through Floyd–Steinberg" },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray tracing — soft shadows, a mirror sphere, and a refractive glass ball' },
   { name: 'pathtracer',   title: 'Path Tracer',       blurb: 'path-traced Cornell box — soft shadows, glass, color bleeding; converges live from noise' },
 ]

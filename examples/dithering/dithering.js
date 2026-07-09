@@ -1,6 +1,7 @@
 // Dithering — eight ways to render a smooth grayscale image with only black & white pixels.
-// Four shaded subjects — a pyramid, a profile bust, a cube, a torus — each lit by a circling
-// light over a soft gradient backdrop, are reduced to 1-bit by `mode`:
+// Five shaded subjects — an equilateral pyramid, Michelangelo's David in profile, a cube, a torus,
+// and a hemisphere — each lit by a circling light over a soft gradient backdrop, are reduced to
+// 1-bit by `mode`:
 //   0 threshold · 1 random · 2 ordered Bayer 4×4 · 3 ordered Bayer 8×8 · 4 clustered-dot halftone
 //   5 Floyd–Steinberg · 6 Jarvis–Judice–Ninke · 7 Atkinson
 // The threshold/random/ordered/halftone passes are per-pixel; the three error-diffusion passes
@@ -13,8 +14,8 @@ let gray            // Float64Array — continuous-tone source AND the error-dif
 let bayer4          // Int32Array(16) — 4×4 ordered-dither threshold matrix (values 0..15)
 let bayer8          // Int32Array(64) — 8×8 dispersed-dot threshold matrix (values 0..63)
 let halftone        // Int32Array(64) — 8×8 clustered-dot screen (ink grows as a dot from the centre)
-let bustFrontKeys   // Float64Array — (y,r) profile keyframes: the bust's FRONT (face) curve
-let bustBackKeys    // Float64Array — (y,r) profile keyframes: the bust's BACK (skull/neck) curve
+let davidFrontKeys  // Float64Array — (y,x) vertex keyframes: David's FRONT (face) profile curve
+let davidBackKeys   // Float64Array — (y,x) vertex keyframes: David's BACK (hair/skull/neck) curve
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -49,17 +50,22 @@ export let resize = (w, h) => {
     halftone[i] = (((2.0 - v) / 4.0) * 63.0) | 0              // 0 at centre (fills first)
     i++
   }
-  // Bust profile keyframes — (y,r) control points from crown to shoulders, smoothstep-interpolated
-  // by profileR() below. FRONT carves forehead → brow/eye-socket dip → nose (the big protrusion)
-  // → mouth recess → chin; BACK carries the rounded skull, a subtle ear bump, then neck/shoulders.
-  // Both start at radius 0 at the crown so the head closes to a point instead of a flat cap.
-  bustFrontKeys = new Float64Array([
-    -0.85, 0.00,  -0.65, 0.42,  -0.35, 0.44,  -0.15, 0.32,   0.02, 0.62,
-     0.14, 0.30,   0.28, 0.40,   0.40, 0.16,   0.55, 0.19,   0.68, 0.28,   0.95, 0.56
+  // David profile — Michelangelo's David, head turned to face right, traced from real (y,x)
+  // vertex keyframes (not a parametric approximation): the actual silhouette landmarks — hairline/
+  // forehead → brow ridge → the near-straight "Grecian" nose → philtrum/lips → chin → jaw → neck →
+  // shoulders on the FRONT curve; the tousled hair crown → nape → shoulders on the BACK curve.
+  // profileR() below smoothstep-interpolates each curve into that row's actual silhouette edge —
+  // an x-coordinate directly, not a radius from a fixed centre, so the bent-cylinder shading in
+  // source() gets its radius/centre from the two edges' half-difference/half-sum. Both curves
+  // start at the same point at the crown so the head closes to a point instead of a flat cap.
+  davidFrontKeys = new Float64Array([
+    -0.90, -0.22,  -0.72, -0.08,  -0.58,  0.18,  -0.48,  0.13,  -0.30,  0.36,
+    -0.12,  0.58,   0.00,  0.38,   0.12,  0.48,   0.26,  0.30,   0.36,  0.42,
+     0.46,  0.16,   0.56,  0.02,   0.70,  0.08,   0.84,  0.28,   0.98,  0.44
   ])
-  bustBackKeys = new Float64Array([
-    -0.85, 0.00,  -0.65, 0.42,  -0.40, 0.52,  -0.15, 0.48,   0.05, 0.50,
-     0.20, 0.32,   0.34, 0.22,   0.48, 0.19,   0.58, 0.21,   0.68, 0.30,   0.95, 0.54
+  davidBackKeys = new Float64Array([
+    -0.90, -0.22,  -0.72, -0.36,  -0.55, -0.58,  -0.38, -0.50,  -0.20, -0.36,
+    -0.04, -0.29,   0.15, -0.25,   0.35, -0.29,   0.55, -0.39,   0.76, -0.51,   0.98, -0.60
   ])
   return px
 }
@@ -91,9 +97,9 @@ let bump = (d, w) => {
   return f * f * (3.0 - 2.0 * f)
 }
 
-// Smoothstep-interpolate a radius through ascending (y,r) keyframe pairs packed in `keys`
-// (n = pair count), holding the end value flat past the first/last y. Builds the bust's
-// front/back silhouette curves from a handful of hand-placed control points instead of a
+// Smoothstep-interpolate a value through ascending (y,r) keyframe pairs packed in `keys`
+// (n = pair count), holding the end value flat past the first/last y. Builds David's
+// front/back silhouette curves from a handful of hand-placed vertices instead of a
 // wall of branches.
 let profileR = (keys, n, y) => {
   if (y <= keys[0]) return keys[1]
@@ -107,11 +113,12 @@ let profileR = (keys, n, y) => {
   return r0 + (r1 - r0) * f
 }
 
-// Continuous-tone source image to be dithered — one of four shaded subjects, chosen by `shape`,
+// Continuous-tone source image to be dithered — one of five shaded subjects, chosen by `shape`,
 // each a smooth full-tonal-range field so every dither algorithm has real gradients to bite into:
-//   0 = pyramid (flat-shaded, two faces)   1 = bust (profile head + shoulders)
-//   2 = cube (flat-shaded, three faces)    3 = torus
-// All four share one rotating key light (lx,ly,lz, from `t`) and the same soft diagonal backdrop
+//   0 = pyramid (equilateral, flat-shaded, two faces)   1 = David (profile head + shoulders)
+//   2 = cube (flat-shaded, three faces)                 3 = torus
+//   4 = hemisphere (a dome — half a sphere, flat-cut at the equator)
+// All five share one rotating key light (lx,ly,lz, from `t`) and the same soft diagonal backdrop
 // gradient — only the silhouette + shading rule inside it changes.
 let source = (t, shape) => {
   let aspect = W / H
@@ -122,6 +129,16 @@ let source = (t, shape) => {
   let py = 0
   while (py < H) {
     let ny = (py / H - 0.5) * 2.0
+    // David's front/back silhouette edges depend only on the row (ny), not the column — hoisted
+    // out of the per-pixel loop below, since profileR does an O(n) keyframe search per call and
+    // redoing that search W times per row (instead of once) would be pure waste.
+    let davidR = 0.0, davidCx = 0.0
+    if (sh === 1) {
+      let f = profileR(davidFrontKeys, davidFrontKeys.length / 2 | 0, ny)
+      let b = profileR(davidBackKeys, davidBackKeys.length / 2 | 0, ny)
+      davidR = (f - b) * 0.5
+      davidCx = (f + b) * 0.5
+    }
     let qx = 0
     while (qx < W) {
       let nx = (qx / W - 0.5) * 2.0 * aspect
@@ -129,11 +146,14 @@ let source = (t, shape) => {
       // midtones to render (not a near-black field). The subject sits on top.
       let lum = 0.16 + 0.56 * (qx / W * 0.5 + (1.0 - py / H) * 0.5)
       if (sh === 0) {
-        // Pyramid — a symmetric triangle silhouette split by a central vertical ridge into two
+        // Pyramid — an EQUILATERAL triangle silhouette (base = baseHW·2, height = baseHW·√3 makes
+        // every side equal by construction, not a hand-tuned pair of numbers that merely look
+        // close), apex centred and near the top — split by a central vertical ridge into two
         // FLAT-shaded faces (a fixed normal per face, unlike every other shape's curvature) —
         // that hard flatness plus dead-straight edges reads as "geometric / man-made", not a
         // mountain. The two faces swap brighter/darker as the key light sweeps past the ridge.
-        let apexY = -0.58, baseY = 0.60, baseHW = 0.56
+        let apexY = -0.50, baseHW = 0.58
+        let baseY = apexY + baseHW * Math.sqrt(3.0)
         let h = (ny - apexY) / (baseY - apexY)
         let halfW = baseHW * h
         if (ny >= apexY && ny <= baseY && nx >= -halfW && nx <= halfW) {
@@ -152,28 +172,27 @@ let source = (t, shape) => {
           if (shd > 0.0) lum = lum * (1.0 - 0.4 * shd)
         }
       } else if (sh === 1) {
-        // Bust — a profile head + shoulders, facing right. FRONT traces forehead → brow/eye
-        // socket dip → nose (the big protrusion — the single strongest "that's a face" cue in
-        // silhouette) → mouth recess → chin; BACK carries the rounded skull, a subtle ear bump,
-        // then neck/shoulders. Shaded like a "bent cylinder": each row is a circular
-        // cross-section whose radius/centre follow the two profile curves, so the same
-        // sqrt(R²-x²) trick as a sphere gives every row a smooth round highlight/shadow.
-        let cx0 = -0.05
-        let f = profileR(bustFrontKeys, 11, ny)
-        let b = profileR(bustBackKeys, 11, ny)
-        let R = (f + b) * 0.5
-        let rowCx = cx0 + (f - b) * 0.5
-        let lo = nx - rowCx
-        if (lo > -R && lo < R) {
-          let z = Math.sqrt(Math.max(0.0, R * R - lo * lo)), inv = 1.0 / R
+        // David — Michelangelo's David, head profile facing right, traced from the real (y,x)
+        // vertices above (davidFrontKeys/davidBackKeys): hairline/forehead → brow ridge → the
+        // near-straight "Grecian" nose (the single strongest "that's a face" cue in silhouette)
+        // → philtrum/lips → chin → jaw → neck → shoulders on the FRONT curve; the tousled hair
+        // crown → nape → shoulders on the BACK curve. Shaded like a "bent cylinder": each row is
+        // a circular cross-section between the two curves' actual edges (davidR/davidCx, hoisted
+        // above), so the same sqrt(R²-x²) trick as a sphere gives every row a smooth round
+        // highlight/shadow.
+        let lo = nx - davidCx
+        if (lo > -davidR && lo < davidR) {
+          let z = Math.sqrt(Math.max(0.0, davidR * davidR - lo * lo)), inv = 1.0 / davidR
           let d = (lo * inv) * lx + (z * inv) * lz
           if (d < 0.0) d = 0.0
           let shd = 0.07 + 0.90 * pow75(d)
-          // fake self-shadowing plain Lambert can't produce: the brow overhangs the eye
-          // socket, the septum shadows just under the nose — both read on the FRONT half only.
+          // fake self-shadowing plain Lambert can't produce: the brow overhangs the eye socket,
+          // the septum shadows just under the nose — both LOCALIZED patches (row height ×
+          // how-far-toward-the-front) on the FRONT half only, not a shadow spanning the whole row.
           if (lo > 0.0) {
-            shd = shd * (1.0 - 0.32 * bump(ny + 0.15, 0.06))
-            shd = shd * (1.0 - 0.22 * bump(ny - 0.14, 0.045))
+            let eyeF = lo * inv   // 0 at the row's centre .. 1 at the front (face) edge
+            shd = shd * (1.0 - 0.35 * bump(ny + 0.48, 0.06) * bump(eyeF - 0.45, 0.38))
+            shd = shd * (1.0 - 0.24 * bump(ny + 0.09, 0.045) * bump(eyeF - 0.78, 0.32))
           }
           lum = shd
         }
@@ -205,7 +224,7 @@ let source = (t, shape) => {
           if (d < 0.0) d = 0.0
           lum = (0.10 + 0.86 * pow75(d)) * (1.0 - 0.08 * bl)
         }
-      } else {
+      } else if (sh === 3) {
         // Torus (donut) — an annulus shaded as a tube: recast the radial position as a
         // cross-section angle (a sin/cos pair, already unit length by construction) so the
         // ring reads as a rounded 3D surface — bright crest, dark inner/outer rim — not a flat washer.
@@ -219,6 +238,18 @@ let source = (t, shape) => {
           let d = (dx * ir * u) * lx + (dy * ir * u) * ly + z * lz
           if (d < 0.0) d = 0.0
           lum = 0.06 + 0.92 * pow75(d)
+        }
+      } else {
+        // Hemisphere — a dome: the top half of a Lambert-shaded sphere (same analytic normal as
+        // a full ball), flat-cut at the equator (dy <= 0, i.e. only the half above the centre) so
+        // the silhouette reads as a dome sitting on the ground, not a full ball.
+        let ccx = 0.0, ccy = 0.12, R = 0.68
+        let dx = nx - ccx, dy = ny - ccy, r2 = dx * dx + dy * dy
+        if (dy <= 0.0 && r2 < R * R) {
+          let z = Math.sqrt(R * R - r2), inv = 1.0 / R
+          let d = (dx * inv) * lx + (dy * inv) * ly + (z * inv) * lz
+          if (d < 0.0) d = 0.0
+          lum = 0.04 + 0.96 * pow75(d)
         }
       }
       gray[py * W + qx] = lum

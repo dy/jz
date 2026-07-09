@@ -4,8 +4,10 @@
 //   states: 0 empty · 1 head · 2 tail · 3 conductor
 //
 // The seed lays out an IC-DIE FLOORPLAN: a grid of tiled macro-cell BLOCKS separated by empty
-// routing gutters, each one of 11 canonical machines, picked so no tile repeats the kind of its
-// LEFT or ABOVE neighbour (a reroll-on-collision pick), and each tile's occupied rect is jittered
+// routing gutters, each one of 11 canonical machines DEALT FROM A SHUFFLE-BAG (every kind appears
+// once before any repeats) so a screenful shows each machine ~once — no "spiral twice / net twice";
+// the deal also skips a kind that would touch a matching LEFT or ABOVE neighbour. Blocks are big
+// (only ~one grid of them per die, ≈ the kind count) and each tile's occupied rect is jittered
 // a little smaller than its grid cell so the die doesn't read as a rigid uniform matrix —
 //   busBank      a bank of parallel wires, each one-way gated by a DIODE (the canonical
 //                Wireworld valve: a 3-cell cap + offset stub; verified both directions ×4
@@ -56,6 +58,9 @@ let srcN = 0             // number of sources
 let tick = 0             // free-running step counter, drives every source's schedule
 let MAXSRC = 4096        // generous cap for a dense tiled die across 11 block kinds
 let prevKind             // previous ROW's block kind per column (≤8 cols) — the no-repeat rule's memory
+let KINDS = 11           // total macro-cell kinds
+let bag = new Int32Array(11)   // shuffle-bag: every kind is dealt ONCE before any repeats, so a
+let bagPos = 11                // screenful shows each machine ~once — no "spiral twice / net twice"
 
 export let resize = (w, h) => {
   W = w; H = h
@@ -423,22 +428,45 @@ let checkerboardOsc = (x0, y0, x1, y1) => {
 // roughly constant in CELLS, so a bigger/denser grid gets MORE blocks (a richer die), not just
 // bigger ones — same generator reads right at a small preview and fills a huge canvas with dozens
 // of varied machines.
+// Fisher–Yates reshuffle of the kind bag, dealt from the front. dealKind avoids the two given
+// neighbour kinds when possible (scans the undealt remainder for a non-colliding entry and swaps
+// it to the front), so within one deal every kind appears once and adjacent tiles rarely match.
+let shuffleBag = () => {
+  let i = 0
+  while (i < KINDS) { bag[i] = i; i++ }
+  i = KINDS - 1
+  while (i > 0) { let j = (Math.random() * (i + 1)) | 0; let t = bag[i]; bag[i] = bag[j]; bag[j] = t; i-- }
+  bagPos = 0
+}
+let dealKind = (avoidA, avoidB) => {
+  if (bagPos >= KINDS) shuffleBag()
+  let j = bagPos
+  while (j < KINDS && (bag[j] === avoidA || bag[j] === avoidB)) j++
+  if (j >= KINDS) j = bagPos                       // whole remainder collides — accept the front
+  let k = bag[j]; bag[j] = bag[bagPos]; bag[bagPos] = k   // swap chosen entry to the front, deal it
+  bagPos++
+  return k
+}
+
 export let seed = () => {
   clear()
   srcN = 0; tick = 0
+  shuffleBag()
   let mx = (W * 0.015) | 0; if (mx < 2) mx = 2
   let my = (H * 0.02) | 0; if (my < 2) my = 2
   let left = mx, right = W - 1 - mx, top = my, bottom = H - 1 - my
   let usableW = right - left, usableH = bottom - top
   if (usableW < 20 || usableH < 20) return
 
-  let cols = (usableW / 190) | 0; if (cols < 1) cols = 1; if (cols > 8) cols = 8
-  let rows = (usableH / 150) | 0; if (rows < 1) rows = 1; if (rows > 7) rows = 7
+  // Fewer, BIGGER blocks (≈ the number of kinds) so one shuffle-bag deal covers the whole die and
+  // each machine shows ~once — more distinct structure per tile, less repetition across the die.
+  let cols = (usableW / 250) | 0; if (cols < 1) cols = 1; if (cols > 5) cols = 5
+  let rows = (usableH / 230) | 0; if (rows < 1) rows = 1; if (rows > 4) rows = 4
   let gutter = 10; if (gutter > usableW * 0.1) gutter = (usableW * 0.1) | 0
   let bw = ((usableW - gutter * (cols - 1)) / cols) | 0
   let bh = ((usableH - gutter * (rows - 1)) / rows) | 0
 
-  let K = 11                                     // total block kinds
+  let K = KINDS                                  // total block kinds
   let ci = 0; while (ci < cols) { prevKind[ci] = -1; ci++ }   // no ABOVE neighbour for row 0
 
   let r = 0
@@ -454,8 +482,7 @@ export let seed = () => {
         let jx0 = bx0 + rndi(0, jw + 1), jy0 = by0 + rndi(0, jh + 1)
         let jx1 = bx1 - rndi(0, jw + 1), jy1 = by1 - rndi(0, jh + 1)
 
-        let kind = rndi(0, K)
-        while (kind === leftKind || kind === prevKind[c]) kind = rndi(0, K)
+        let kind = dealKind(leftKind, prevKind[c])
 
         if (kind === 0) busBank(jx0, jy0, jx1, jy1)
         else if (kind === 1) combTree(jx0, jy0, jx1, jy1)
