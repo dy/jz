@@ -386,8 +386,6 @@ const detectOptimizeConfig = (ast, code) => {
     cfg.scalarTypedLoopUnroll = s.maxLoopDepth > 1 ? 8 : 16
     cfg.scalarTypedNestedUnroll = s.maxLoopDepth > 1 ? 32 : 128
   }
-  // String-heavy: ensure pool sorting is on (already default, but explicit).
-  if (s.stringLiteralCount > 30) cfg.sortStrPoolByFreq = true
   // Closure-heavy: ptr hoists pay off.
   if (s.closureCount > 4) {
     cfg.hoistPtrType = true

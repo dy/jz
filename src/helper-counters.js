@@ -58,7 +58,7 @@ ${[...COUNTER_BY_HELPER.values()].map(counter => `    (global.set $${counter} (i
 
 // Bump the helper's counter once on entry. NOTE the semantics: this counts FUNCTION
 // ENTRIES at runtime — a call site that jz inlined or specialized away (fusedRewrite,
-// specializeMkptr/specializePtrBase, …) never enters the function and is NOT counted. So
+// specializeMkptr, …) never enters the function and is NOT counted. So
 // the numbers are a relative ranking / lower bound for picking hot helpers, not exact
 // operation counts. Good enough to choose targets; don't read them as call totals.
 export function instrumentHelperCounter(helper, fn) {

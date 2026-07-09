@@ -41,7 +41,7 @@ export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
-import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
+import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64, appendStaticSlots } from '../ir.js'
 import { staticArrayPtr } from '../../module/array.js'
@@ -899,13 +899,9 @@ export function optimizeModule(sec, profiler) {
   const cfg = ctx.transform.optimize
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
     specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
-  if (!cfg || cfg.specializePtrBase !== false) t('specializePtrBase', () =>
-    specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
-  if (ctx.runtime.strPool && (!cfg || cfg.sortStrPoolByFreq !== false)) t('sortStrPool', () => {
-    const poolRef = { pool: ctx.runtime.strPool }
-    sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
-    ctx.runtime.strPool = poolRef.pool
-  })
+  // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
+  // both disabled across the bench + examples corpora AND the self-host kernel at
+  // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
   // (globalTypes backfill gone: declGlobal sets the type at declaration.)
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null

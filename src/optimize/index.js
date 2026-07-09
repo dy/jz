@@ -16,8 +16,6 @@
  *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
  *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
- *   specializePtrBase — `(call $F (i32.add (global.get $G) (i32.const N)))` → `$F_rel_$G (i32.const N)`
- *   sortStrPoolByFreq — reorder string pool so hottest strings get small offsets (smaller LEB128)
  *   hoistConstantPool — frequently-repeated f64.const values → mutable globals (~7 B/reuse)
  *   treeshake         — drop func decls unreachable from exports / start / elem / ref.func roots
  *
@@ -113,14 +111,11 @@ export const PASS_NAMES = [
   'csePureExpr',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'dropDeadZeroInit',
-  'deadStoreElim',
   'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
   'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',
-  'specializePtrBase',
-  'sortStrPoolByFreq',
   'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)
   'hoistConstantPool',
   'sourceInline',
@@ -2062,159 +2057,6 @@ export function dropDeadZeroInit(fn) {
   for (let i = drop.length - 1; i >= 0; i--) fn.splice(drop[i], 1)
 }
 
-/**
- * Dead-store elimination: remove `local.set` / `local.tee` and `drop` of pure
- * expressions whose values are never consumed.
- *
- * Conservative single-block analysis: tracks last-write per local within each
- * straight-line sequence. A write is dead if the same local is written again
- * before any intervening read in the same block. Control-flow boundaries
- * (block, loop, if) reset the table — we don't eliminate across branches.
- *
- * Also removes `drop` of pure expressions (e.g. leftover ptr-type calls).
- */
-export function deadStoreElim(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  const dead = []
-
-  const collectGets = (node, out) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === 'local.get' && typeof node[1] === 'string') { out.add(node[1]); return }
-    for (let i = 1; i < node.length; i++) collectGets(node[i], out)
-  }
-
-  const isPure = (node) => {
-    if (!Array.isArray(node)) return true
-    const op = node[0]
-    if (typeof op === 'string' && MEMOP.test(op)) return false
-    if (op === 'call' || op === 'call_indirect' || op === 'call_ref') return false
-    if (op === 'global.get' || op === 'global.set') return false
-    if (op === 'local.tee') return false
-    if (op === 'memory.size' || op === 'memory.grow') return false
-    for (let i = 1; i < node.length; i++) if (!isPure(node[i])) return false
-    return true
-  }
-
-  // Control flow inside a statement: a nested write under it may be conditional or
-  // loop-carried, so it can't be treated as an unconditional kill.
-  const hasControlFlow = (node) => {
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === 'block' || op === 'loop' || op === 'if' || op === 'then' || op === 'else' ||
-        op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' ||
-        op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref' ||
-        op === 'try' || op === 'try_table') return true
-    for (let i = 1; i < node.length; i++) if (hasControlFlow(node[i])) return true
-    return false
-  }
-  // Locals written (set/tee) anywhere in a statement's CHILD subtrees — the
-  // statement's own top-level set/tee is tracked separately by the caller.
-  const collectChildWrites = (node, out) => {
-    for (let i = 1; i < node.length; i++) {
-      const c = node[i]
-      if (!Array.isArray(c)) continue
-      if ((c[0] === 'local.set' || c[0] === 'local.tee') && typeof c[1] === 'string') out.add(c[1])
-      collectChildWrites(c, out)
-    }
-  }
-
-  const scanBlock = (items, start, end) => {
-    const lastWrite = new Map() // localName → { parent, idx }
-
-    for (let i = start; i < end; i++) {
-      const node = items[i]
-      if (!Array.isArray(node)) continue
-      const op = node[0]
-
-      // Reads invalidate pending dead writes. For local.tee/local.set, the RHS reads
-      // happen BEFORE the write — so a `local.get $x` inside `(local.tee $x ...)` is a
-      // real read of the OLD $x and must invalidate any pending dead-write of $x.
-      const reads = new Set()
-      collectGets(node, reads)
-      for (const name of reads) lastWrite.delete(name)
-
-      // Drop of pure expr → dead. Only `(drop EXPR)`: a bare `(drop)` consumes
-      // an implicit stack value (e.g. a `try_table` catch payload) — removing it
-      // would unbalance the stack.
-      if (op === 'drop' && node.length === 2 && isPure(node[1])) {
-        dead.push({ parent: items, node, drop: true })
-      }
-
-      // Local write tracking
-      if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
-        const prev = lastWrite.get(node[1])
-        if (prev) {
-          // The store-to-local is dead, but a `local.set` is only *removable*
-          // if its RHS is pure — `local.set $x (call f …)` where `f` mutates
-          // memory must still run. (A `local.tee` is always safe: removal demotes
-          // it to its value expression, so any side effects there are preserved.)
-          if (prev.node[0] === 'local.tee' || isPure(prev.node[2])) dead.push(prev)
-        }
-        lastWrite.set(node[1], { parent: items, node })
-      }
-
-      // A NESTED unconditional write kills a pending dead store the top-level
-      // tracking above misses: the alloc-header inliner leaves `(local.set $stride
-      // 1)` then reuses the slot via `(local.tee $stride $a1)` nested in the NEXT
-      // statement's value. In a control-flow-free statement every nested write is
-      // unconditional, and the read-invalidation above already dropped any local
-      // this statement reads — so a still-pending write of a nested-written local
-      // (other than this statement's own top-level target) is provably overwritten
-      // before any read. The nested write itself is load-bearing (its value feeds
-      // the expression), so it is not tracked as removable — just clear the slot.
-      if (op !== 'block' && op !== 'loop' && op !== 'if' && !hasControlFlow(node)) {
-        const topName = (op === 'local.set' || op === 'local.tee') ? node[1] : null
-        const nestedWrites = new Set()
-        collectChildWrites(node, nestedWrites)
-        for (const name of nestedWrites) {
-          if (name === topName) continue
-          const prev = lastWrite.get(name)
-          if (prev && (prev.node[0] === 'local.tee' || isPure(prev.node[2]))) { dead.push(prev); lastWrite.delete(name) }
-        }
-      }
-
-      // Recurse into nested blocks with fresh state
-      if (op === 'block' || op === 'loop') {
-        let j = 1
-        while (j < node.length && Array.isArray(node[j]) && node[j][0] === 'result') j++
-        scanBlock(node, j, node.length)
-      } else if (op === 'if') {
-        let j = 1
-        while (j < node.length && Array.isArray(node[j]) && node[j][0] === 'result') j++
-        const condReads = new Set()
-        collectGets(node[j], condReads)
-        for (const name of condReads) lastWrite.delete(name)
-        j++
-        for (; j < node.length; j++) {
-          const c = node[j]
-          if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) scanBlock(c, 1, c.length)
-        }
-      }
-    }
-  }
-
-  scanBlock(fn, bodyStart, fn.length)
-
-  // Removal is IDENTITY-based: entries are pushed at SUPERSEDE time, so
-  // same-parent indices are not monotonic (name A's earlier write can be
-  // superseded after name B's later one). Index-order splicing then shifts
-  // remaining entries onto innocent neighbors — the self-host L2 divergence
-  // deleted a typed-literal f64.store exactly this way. Re-locating each
-  // captured node at removal time is immune to any ordering or prior splice.
-  for (const d of dead) {
-    const at = d.parent.indexOf(d.node)
-    if (at < 0) continue  // already removed (nested duplicate) — nothing to do
-    if (!d.drop && d.node[0] === 'local.tee') {
-      // tee in statement position: replace with just the value (implicitly dropped)
-      d.parent[at] = d.node[2]
-    } else {
-      d.parent.splice(at, 1)
-    }
-  }
-}
 
 /**
  * Forward-substitute a single-def / single-use local into its sole use, eliminating the local,
@@ -2944,7 +2786,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   // 4 is the measured break-even: a specialized helper (trampoline / inline i64.const
   // template) costs ~12 B to define and saves ~2–4 B per site, so 4 sites amortize it.
   // Lower (3) net-inflates the watr self-host; 5 leaves 4-use combos on the table. The
-  // sibling specializePtrBase threshold (20) is already optimal — its combos cluster far
+  // threshold (20) is already optimal — its combos cluster far
   // above 20 (the ~2 k-site $__strBase relativization) with nothing in the 5–19 band.
   const MIN_USES = 4
 
@@ -3057,174 +2899,6 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   }
 }
 
-/**
- * Specialize `(call $F (i32.add (global.get $G) (i32.const N)))` → `(call $F_rel_$G (i32.const N))`.
- * Helper bakes `(global.get $G) + i32.add` into its body so call sites drop those 3 B.
- * Targets any single-arg call whose arg is `add(global_base, const)` — in practice: $__mkptr_X_Y_d
- * specializations against $__strBase (watr self-host: ~2193 sites × 3 B ≈ 6.5 KB).
- *
- * @param funcs    — flat list of func IR nodes
- * @param addFunc  — callback `(watString) => void` to register new helpers
- * @param parseWat — `wat → IR` parser (injected)
- */
-export function specializePtrBase(funcs, addFunc, parseWat) {
-  const MIN_USES = 20
-
-  // Pass 1: count (targetFunc, baseGlobal) pairs AND record candidate sites for direct
-  // rewrite in pass 3 (avoids a second full-AST walk).
-  const counts = new Map()  // 'F##G' → count
-  const sites = []  // { parent, idx, key }
-  const walk = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    if (parent && node[0] === 'call' && typeof node[1] === 'string' && node.length === 3) {
-      const arg = node[2]
-      if (Array.isArray(arg) && arg[0] === 'i32.add' && arg.length === 3 &&
-          Array.isArray(arg[1]) && arg[1][0] === 'global.get' && typeof arg[1][1] === 'string' &&
-          Array.isArray(arg[2]) && arg[2][0] === 'i32.const') {
-        const k = node[1] + '##' + arg[1][1]
-        counts.set(k, (counts.get(k) || 0) + 1)
-        sites.push({ parent, idx, key: k })
-      }
-    }
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
-  }
-  for (let i = 0; i < funcs.length; i++) walk(funcs[i], null, 0)
-
-  const specialized = new Set()
-  for (const [k, n] of counts) if (n >= MIN_USES) specialized.add(k)
-  if (!specialized.size) return
-
-  // Find a target func's result-type by locating its decl among `funcs`.
-  const funcByName = new Map()
-  for (let i = 0; i < funcs.length; i++) {
-    const fn = funcs[i]
-    if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') funcByName.set(fn[1], fn)
-  }
-  const resultOf = (name) => {
-    const fn = funcByName.get(name)
-    if (!fn) return 'f64'  // defensive; mkptr specializations all return f64
-    for (let i = 2; i < fn.length; i++) {
-      const c = fn[i]
-      if (Array.isArray(c) && c[0] === 'result') return c[1]
-      if (Array.isArray(c) && c[0] !== 'param') break
-    }
-    return 'f64'
-  }
-
-  const sanit = (g) => g.replace(/^\$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
-  const variantFor = (F, G) => `${F}_rel_${sanit(G)}`
-
-  // Pass 2: emit helpers.
-  for (const fullKey of specialized) {
-    const [F, G] = fullKey.split('##')
-    const rt = resultOf(F)
-    const name = variantFor(F, G)
-    addFunc(`(func ${name} (param $o i32) (result ${rt}) (call ${F} (i32.add (global.get ${G}) (local.get $o))))`)
-  }
-
-  // Pass 3: rewrite recorded sites in reverse (leaf-first since pass 1 was pre-order).
-  // Idempotency guard: shared IR subtrees can record the same (parent, idx) twice.
-  // The first visit rewrites to a 2-arg call; subsequent visits see a shape that
-  // doesn't match the original `call F (i32.add (global.get) (i32.const))` pattern.
-  for (let i = sites.length - 1; i >= 0; i--) {
-    const { parent, idx, key } = sites[i]
-    if (!specialized.has(key)) continue
-    const c = parent[idx]
-    if (!Array.isArray(c) || c[0] !== 'call' || c.length !== 3) continue
-    const arg = c[2]
-    if (!Array.isArray(arg) || arg[0] !== 'i32.add' || arg.length !== 3) continue
-    if (!Array.isArray(arg[1]) || arg[1][0] !== 'global.get') continue
-    if (!Array.isArray(arg[2]) || arg[2][0] !== 'i32.const') continue
-    const F = c[1]
-    const G = arg[1][1]
-    const konst = arg[2]
-    const newCall = ['call', variantFor(F, G), konst]
-    newCall.type = resultOf(F)
-    parent[idx] = newCall
-  }
-}
-
-/**
- * Reorder strings in `strPool` so most-referenced strings get low byte offsets.
- * Each string ref is encoded as `(i32.const off)` with ULEB128: 1 B for off<128, 2 B for off<16384, 3 B for off<2M.
- * Frequent strings migrating from 3-B to 2-B (or 2-B to 1-B) LEB128 saves ~541 B on watr self-host.
- *
- * Pool layout: `[4-byte-len][data-bytes][4-byte-len][data-bytes]...`. Offsets in refs point PAST the len prefix.
- *
- * @param funcs        — flat list of func IR nodes (scanned for refs)
- * @param strPoolRef   — `{ pool: string }` holder; pool is rewritten in place
- * @param strDedupMap  — optional `Map<string, offset>` to update (kept consistent for later queries)
- */
-export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
-  if (!strPoolRef.pool) return
-  // Match both specialized and unspecialized strBase refs.
-  const isSpecRef = (n) =>
-    Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string' && n[1].includes('_rel___strBase') &&
-    n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.const'
-  const isUnspecRef = (n) =>
-    Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string' && n[1].startsWith('$__mkptr_') &&
-    n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.add' && n[2].length === 3 &&
-    Array.isArray(n[2][1]) && n[2][1][0] === 'global.get' && n[2][1][1] === '$__strBase' &&
-    Array.isArray(n[2][2]) && n[2][2][0] === 'i32.const'
-  const getOff = (n) => isSpecRef(n) ? (n[2][1] | 0) : isUnspecRef(n) ? (n[2][2][1] | 0) : null
-  const setOff = (n, v) => { if (isSpecRef(n)) n[2][1] = v; else if (isUnspecRef(n)) n[2][2][1] = v }
-
-  // Single walk: count freq AND record each ref site for direct rewrite.
-  const freq = new Map()
-  const sites = []  // { node, oldOff } — node is the ref node, mutate offset in place
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
-    const o = getOff(n)
-    if (o !== null) { freq.set(o, (freq.get(o) || 0) + 1); sites.push({ node: n, oldOff: o }) }
-    for (let i = 0; i < n.length; i++) walk(n[i])
-  }
-  for (let i = 0; i < funcs.length; i++) walk(funcs[i])
-  if (!freq.size) return
-
-  // Parse pool structure into entries.
-  const pool = strPoolRef.pool
-  const entries = []
-  let i = 0
-  while (i < pool.length) {
-    const len = pool.charCodeAt(i) | (pool.charCodeAt(i+1) << 8) | (pool.charCodeAt(i+2) << 16) | (pool.charCodeAt(i+3) << 24)
-    const oldOff = i + 4
-    entries.push({ oldOff, len, str: pool.substring(oldOff, oldOff + len) })
-    i = oldOff + len
-  }
-
-  // Sort by freq descending; tie-break by length ascending (pack short hot strings into low-offset range).
-  entries.sort((a, b) => (freq.get(b.oldOff) || 0) - (freq.get(a.oldOff) || 0) || a.len - b.len)
-
-  // Rebuild pool; map old → new offsets. Deduplicate identical strings — keep the
-  // first (hottest) occurrence as canonical and point duplicates to it.
-  const remap = new Map()
-  const canon = new Map() // str content → new offset
-  let newPool = ''
-  for (const e of entries) {
-    const existing = canon.get(e.str)
-    if (existing !== undefined) {
-      remap.set(e.oldOff, existing)
-      continue
-    }
-    newPool += String.fromCharCode(e.len & 0xFF, (e.len >> 8) & 0xFF, (e.len >> 16) & 0xFF, (e.len >> 24) & 0xFF)
-    remap.set(e.oldOff, newPool.length)
-    canon.set(e.str, newPool.length)
-    newPool += e.str
-  }
-  strPoolRef.pool = newPool
-  if (strDedupMap)
-    for (const [str, oldOff] of strDedupMap) {
-      const newOff = remap.get(oldOff)
-      if (newOff !== undefined) strDedupMap.set(str, newOff)
-    }
-
-  // Rewrite recorded ref sites directly (no second AST walk).
-  for (let i = 0; i < sites.length; i++) {
-    const { node, oldOff } = sites[i]
-    const newO = remap.get(oldOff)
-    if (newO !== undefined) setOff(node, newO)
-  }
-}
 
 /**
  * Fold dead string-dispatch blocks when the tested operand is a proven-f64 local.
@@ -3617,7 +3291,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
       cfg.cseScalarLoad === false &&
       cfg.csePureExpr === false &&
       cfg.dropDeadZeroInit === false &&
-      cfg.deadStoreElim === false &&
       cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
@@ -3647,7 +3320,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     else csePureExpr(fn)
   }
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
-  if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr

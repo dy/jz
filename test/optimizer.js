@@ -1683,10 +1683,11 @@ test('opts.optimize: object override gates per-pass', () => {
   ok(sized.length >= shaken.length, `treeshake:false (${sized.length}) ≥ treeshake:true (${shaken.length})`)
 })
 
-test('deadStoreElim: dead `local.set` with side-effecting RHS must keep the RHS', () => {
+test('dead-store elimination (watr): side-effecting RHS of an overwritten local must run', () => {
   // A small-constant warmup loop unrolls into N consecutive `cs = side()` writes
-  // whose results are all overwritten before any read. deadStoreElim must NOT
-  // delete those `local.set`s wholesale — `side()` mutates the array each call.
+  // whose results are all overwritten before any read. Whatever pass removes the
+  // dead stores (watr's, since jz's deadStoreElim was retired as subsumed) must
+  // NOT delete those `local.set`s wholesale — `side()` mutates the array each call.
   const { main } = run(`
     const bump = (a) => { a[0] = a[0] + 1; return a[0] | 0 }
     export const main = () => {
@@ -2302,7 +2303,7 @@ test('specializeBimorphicTyped: one callee at both f64 and i32 sites stays corre
   is(ex.i(), 7)
 })
 
-test('deadStoreElim: a store whose value is read later must not be eliminated', () => {
+test('dead-store elimination (watr): a store whose value is read later must survive', () => {
   // a[0]=7 is read into x before being overwritten; eliminating it would drop x.
   is(run('export let main = () => { let a = [0, 0]; a[0] = 7; let x = a[0]; a[0] = 9; return x + a[0] }').main(), 16)
 })
