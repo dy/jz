@@ -747,6 +747,20 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
   is(run(0), 42)
 })
 
+test('builtin as first-class value: Array.isArray callback (self-host kernel shape)', () => {
+  // watr's optimizer passes the bare builtin to .filter (`kids.filter(Array.isArray)`),
+  // so the self-host kernel must compile it — builtinFunctionValue mints a
+  // uniform-ABI table entry for it (FIRST_CLASS_BUILTIN_BODY, emit.js).
+  const { run } = runHost(`
+    export let run = (z) => {
+      let xs = [[1,2], 3, [4], 's', 7]
+      let kids = xs.filter(Array.isArray)
+      return kids.length * 10 + (Array.isArray(kids) ? 1 : 0)
+    }
+  `)
+  is(run(0), 21)
+})
+
 test('closure-unbox: trivial closure-call program stays compact (post-watr fusedRewrite)', () => {
   if (belowOpt(2)) return  // size pin: the pass under test runs at optimize >= 2
   if (onWasi()) return  // wasi: size pin / wasi module larger due to extra imports

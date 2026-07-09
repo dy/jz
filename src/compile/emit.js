@@ -193,16 +193,29 @@ const FIRST_CLASS_UNARY_MATH = {
   'math.trunc': 'f64.trunc',
 }
 
+// Builtins with a hand-written uniform-ABI body (beyond the single-op math set).
+// Array.isArray: NaN-boxed AND tag==ARRAY → 1/0 — the same f64.convert_i32 form
+// an arrow returning a comparison produces, so callback semantics match
+// `xs.filter(x => Array.isArray(x))` exactly (watr's optimizer passes the bare
+// builtin to .filter; the self-host kernel must compile it).
+const FIRST_CLASS_BUILTIN_BODY = {
+  'Array.isArray': () =>
+    `(if (result f64) (i32.and (f64.ne (local.get $__a0) (local.get $__a0)) ` +
+    `(i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $__a0)) (i64.const ${LAYOUT.TAG_SHIFT}))) (i32.const ${LAYOUT.TAG_MASK})) (i32.const ${PTR.ARRAY}))) ` +
+    `(then (f64.const 1)) (else (f64.const 0)))`,
+}
+
 function builtinFunctionValue(name) {
   const op = FIRST_CLASS_UNARY_MATH[name]
-  if (!op) err(`Builtin function '${name}' cannot be used as a first-class value`)
+  const bodyGen = FIRST_CLASS_BUILTIN_BODY[name]
+  if (!op && !bodyGen) err(`Builtin function '${name}' cannot be used as a first-class value`)
   if (!ctx.closure.table) err(`Builtin function '${name}' used as value requires closure support`)
   const fn = `${T}builtin_${name.replace(/\W/g, '_')}`
   if (!ctx.core.stdlib[fn]) {
     const width = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const params = ['(param $__env f64)', '(param $__argc i32)']
     for (let i = 0; i < width; i++) params.push(`(param $__a${i} f64)`)
-    ctx.core.stdlib[fn] = `(func $${fn} ${params.join(' ')} (result f64) (${op} (local.get $__a0)))`
+    ctx.core.stdlib[fn] = `(func $${fn} ${params.join(' ')} (result f64) ${op ? `(${op} (local.get $__a0))` : bodyGen()})`
     inc(fn)
   }
   let idx = ctx.closure.table.indexOf(fn)
