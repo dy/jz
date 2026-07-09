@@ -29,8 +29,8 @@ const EXAMPLES = [
   { name: 'game-of-life', frame: 'step ×1',
     make: (e) => { e.init(512, 512, bgr(0xD392E6) | 1, bgr(0xA61B85) & ~1, 10); return () => e.step() } },
 
-  { name: 'interference', frame: 'update ×1',
-    make: (e) => { e.resize(320, 240); let tick = 0; return () => e.update(tick += 0.012) } },
+  { name: 'interference', frame: 'frame ×1',
+    make: (e) => { e.resize(320, 240); let tick = 0; return () => e.frame(tick += 0.012, 3, 160) } },
 
   // Pure-integer serial walk (no SIMD, no transcendentals): a spiral whose every step is i32
   // index + sieve-lookup + scatter. V8 runs the spiral arithmetic as f64 JS; jz keeps it native
