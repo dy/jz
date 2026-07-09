@@ -394,6 +394,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
+  ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   if (ctx.transform.optimize) {
     scanAndTagNonEscapingClosures(body)
   }
@@ -1035,6 +1036,9 @@ function emitFunc(func, funcFacts, programFacts) {
   const _reps = paramReps.get(name)
 
   enterFunc(sig, body)
+  // Only this path drains charDecomp prologues (collectParamInits below) —
+  // the shape-1b global-receiver decomposition may mint only here.
+  ctx.func.charDecompGlobals = true
   const block = funcFacts.block
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
@@ -1144,6 +1148,11 @@ function emitFunc(func, funcFacts, programFacts) {
   // in-bounds char wrongly decodes as the OOB NaN.
   const collectParamInits = () => {
     const inits = []
+    // Global-receiver decompositions (shape 1b) come first: a param default
+    // like `(c = cur.charCodeAt(0))` must see the global's prologue locals
+    // populated. Globals are readable at entry, so nothing precedes them.
+    if (ctx.func.charDecomp) for (const dec of ctx.func.charDecomp.values())
+      if (dec.global) inits.push(...emitCharDecompPrologue(dec))
     for (const p of sig.params) {
       const di = defaultInits.get(p.name)
       if (di) inits.push(di)

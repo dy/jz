@@ -132,8 +132,10 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
  *  reaching here via type error) gets `len=0` so every bounds check trips and
  *  every `charCodeAt` returns 0 — same shape as the legacy `__char_at`. */
 export function emitCharDecompPrologue(dec) {
-  const param = dec.param
-  const ptr = ['i64.reinterpret_f64', ['local.get', `$${param}`]]
+  // Receiver expression: a param's local slot (shape-1 classic) or a stable
+  // module global (dec.recv — the parser-state shape: `cur.charCodeAt(idx)`
+  // against a global assigned only outside the scanning function).
+  const ptr = ['i64.reinterpret_f64', dec.recv ? structuredClone(dec.recv) : ['local.get', `$${dec.param}`]]
   const ssoTest = ['i64.ne',
     ['i64.and', ptr, ['i64.const', ssoBitI64()]],
     ['i64.const', 0]]
@@ -165,6 +167,24 @@ export function emitCharDecompPrologue(dec) {
         // Heap: per-iter loads use the real string-data base.
         ['local.set', `$${dec.loadbase}`, off]]],
   ]
+}
+
+// True iff every call expression in `body` is a `.charCodeAt` member call and
+// no suspension point (yield/await) or `new` appears — the stability proof for
+// shape-1b global decomposition: nothing that runs during this function can
+// reassign a module global. Escaped arrows are safe to ignore beyond their
+// visible call nodes: they only run when called, and every call here is
+// charCodeAt (single-threaded).
+function bodyOnlyCharCodeAtCalls(body) {
+  if (!Array.isArray(body)) return true
+  const op = body[0]
+  if (op === 'yield' || op === 'await' || op === 'new') return false
+  if (op === '()' || op === '?.()') {
+    const callee = body[1]
+    if (!(Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && callee[2] === 'charCodeAt')) return false
+  }
+  for (let i = 1; i < body.length; i++) if (!bodyOnlyCharCodeAtCalls(body[i])) return false
+  return true
 }
 
 export const sso = {
@@ -272,6 +292,45 @@ export const sso = {
             ctx.func.locals.set(ptr64, 'i64')   // full SSO payload for 7-bit char extraction
             dec = { base, len, sso, loadbase, ptr64, param: name }
             ctx.func.charDecomp.set(name, dec)
+          }
+          return emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds)
+        }
+      }
+
+      // Shape 1b: receiver is a `global.get` of a module global that is STABLE
+      // within this function — the layered-parser hot shape (`cur.charCodeAt(idx)`
+      // in subscript's space/peek/next loops, where `cur` is module state written
+      // only by parse() entry, never by the scanning function). Same entry
+      // decomposition as the param path. Soundness gates:
+      //   - the global is never assigned in this function's body, AND
+      //   - the body's only call expressions are `.charCodeAt` member calls (so
+      //     no user call can transitively reassign the global mid-function), AND
+      //   - no yield/await (a suspension point lets foreign code write it).
+      // Gated on charDecompGlobals — only emitFunc's named-function path drains
+      // the prologue (closure bodies have no collectParamInits; an undrained
+      // decomposition would read len=0 and misreport every char as OOB).
+      if (Array.isArray(sF64) && sF64[0] === 'global.get' && ctx.func.charDecompGlobals) {
+        const raw = typeof sF64[1] === 'string' ? sF64[1] : ''
+        const name = raw.startsWith('$') ? raw.slice(1) : raw
+        if (name && ctx.func.body
+            && !isReassigned(ctx.func.body, name)
+            && bodyOnlyCharCodeAtCalls(ctx.func.body)) {
+          if (!ctx.func.charDecomp) ctx.func.charDecomp = new Map()
+          const key = `#g:${name}`
+          let dec = ctx.func.charDecomp.get(key)
+          if (!dec) {
+            const base = `${name}$ccbase`
+            const len = `${name}$cclen`
+            const sso = `${name}$ccsso`
+            const loadbase = `${name}$ccldb`
+            const ptr64 = `${name}$ccp64`
+            ctx.func.locals.set(base, 'i32')
+            ctx.func.locals.set(len, 'i32')
+            ctx.func.locals.set(sso, 'i32')
+            ctx.func.locals.set(loadbase, 'i32')
+            ctx.func.locals.set(ptr64, 'i64')
+            dec = { base, len, sso, loadbase, ptr64, param: name, recv: ['global.get', `$${name}`], global: true }
+            ctx.func.charDecomp.set(key, dec)
           }
           return emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds)
         }

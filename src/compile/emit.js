@@ -2393,9 +2393,14 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // itself, so no f===f pre-fork is needed. Gated on the string module (the probe key
     // is a string literal): a string-less program has no user string props to shadow.
     if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
+      // Fallback arm: a bare-name receiver re-references the ORIGINAL binding
+      // (variable reads are pure) instead of the probe's spilled temp — so a
+      // module-global string receiver reaches the ABI op as `global.get` and
+      // the charCodeAt shape-1b entry decomposition can fire (the layered-
+      // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
         (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-        (o) => asF64(callMethod(o, ctx.core.emit[`.${method}`])))
+        (o) => asF64(callMethod(typeof obj === 'string' ? obj : o, ctx.core.emit[`.${method}`])))
     }
     return callMethod(obj, ctx.core.emit[`.${method}`])
   }
