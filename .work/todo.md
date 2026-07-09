@@ -51,6 +51,27 @@
     f64→i32 local narrowing (watr-side generic: all defs convert(i32) → retype,
     wrap stray gets; would let x's ToInt32 guard + trunc die) and (c) branchless
     select-tree — both still needed for JSC's 2.29ms.
+  * dispatch lever 3 (2026-07-09): (b) LANDED — dispatch arms are now RAW INT
+    OPS (`get x; get k; i32.xor; br`), the entire ToInt32 guard/convert layer
+    dead. Chain: watr `narrowLocals` (f64 local written only by exact converts
+    retypes i32; PROFIT-GATED — unconditional narrowing tripped the buf/nest
+    op-count ratchets +24/+11, reads now classify by consumer with tees value-
+    transparent) + watr `intguard` (counted ToInt32-guard-select collapse) +
+    watr identity block-hoist (trailing convert out of LABEL-LESS blocks — emit
+    wrapper blocks hid convert defs from narrow) + jz devirt i32 BLOCK-NARROW
+    (facts-gated static table + every candidate body convert-topped → arms br
+    raw i32, call arms trunc_sat-wrapped, one convert re-boxes; x's def then
+    syntactic-convert). PASS ORDER LOAD-BEARING: narrow after identity, before
+    intguard/merge — merge unifies identical-valued guard temps in-round, then
+    the one-reader gate never passes (watr PASSES comment). A/B vs levers-off:
+    1.12x — UNCHANGED from guards-alive: the br_table MISPREDICT shadows all
+    arm micro-ops on unpredictable streams. ⇒ (c) branchless select-tree is
+    THE remaining dispatch lever: all arms now tiny+pure+int (the exact
+    precondition), compute all 8 + 3-level select tree ≈ 9-12 cycles vs
+    mispredict ~15-20; needs trap-free arm gate + in-range fast path; closure0
+    (impure `+` body) must inline for 8/8 — its str-concat guard survives
+    foldStrDispatchF64, investigate there first. watr commits pending publish:
+    59b0ef5, 28942bd, cbf2d72, cc22b89.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,

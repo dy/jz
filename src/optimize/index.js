@@ -4317,6 +4317,48 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     // returns null for anything it can't prove — the call stays.
     const bodies = ctx.scope.dvArmBodies
     const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, k) => a + (k > 0 ? nodeCount(c) : 0), 0)
+    // i32 block-narrow: when the receiver is a facts-qualified STATIC table (the
+    // same never-resized/never-aliased gate as foldStaticConstArrayReads — its
+    // elements are exactly the original arrows, forever) and EVERY candidate body
+    // exits through `f64.convert_i32_s` (a ToInt32'd result), the dispatch value
+    // is int-valued on every path: arms br the raw i32 (their convert stripped),
+    // call-formed arms and the generic call_indirect wrap in i32.trunc_sat_f64_s
+    // (exact on int-valued f64), and ONE convert re-boxes the block. The
+    // loop-carried receiver of `x = ops[i](x, k)` then has a syntactic-convert
+    // def — watr's narrowLocals retypes it and the x-side ToInt32 guard dies the
+    // same way the k-side did (watr intguard).
+    const convertTopped = (fnNode) => {
+      if (!Array.isArray(fnNode)) return false
+      const exits = []
+      let last = null
+      const walkR = (n) => {
+        if (!Array.isArray(n)) return
+        if (n[0] === 'return') { exits.push(n.length === 2 ? n[1] : null); return }
+        for (let k = 1; k < n.length; k++) walkR(n[k])
+      }
+      for (let k = 2; k < fnNode.length; k++) {
+        const s = fnNode[k]
+        if (!Array.isArray(s) || s[0] === 'param' || s[0] === 'result' || s[0] === 'local' || s[0] === 'export' || s[0] === 'type') continue
+        last = s
+        walkR(s)
+      }
+      if (last && last[0] !== 'return') exits.push(last)
+      return exits.length > 0 && exits.every(e => Array.isArray(e) && e[0] === 'f64.convert_i32_s')
+    }
+    const sa = ctx.scope.staticArrs?.get(node.dvArr)
+    const fns = ctx.scope.dvArmFns
+    const narrow = !!(sa && fns && ctx.types.arrResized && ctx.types.nameEscapes &&
+      !ctx.types.arrResized.has(node.dvArr) && !ctx.types.nameEscapes.has(node.dvArr) &&
+      cands.every(c => convertTopped(fns.get(`$${c.name}`))))
+    const intOf = (v) => {
+      if (Array.isArray(v) && v[0] === 'f64.convert_i32_s') return v[1]
+      if (Array.isArray(v) && v[0] === 'block' && Array.isArray(v[1]) && v[1][0] === 'result' && v[1][1] === 'f64') {
+        const vl = v[v.length - 1]
+        if (Array.isArray(vl) && vl[0] === 'f64.convert_i32_s')
+          return ['block', ['result', 'i32'], ...v.slice(2, -1), vl[1]]
+      }
+      return ['i32.trunc_sat_f64_s', v]
+    }
     let inlRef = null
     for (let k = 0; k < armOffsets.length; k++) {
       const cand = byOff.get(armOffsets[k])
@@ -4327,13 +4369,16 @@ export function devirtConstFnArrayCalls(fn, cfg) {
         inlRef ??= { next: 0 }
         armVal = inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', `$__dvi${uid}_`)
       }
-      const arm = ['br', out, armVal ?? call]
+      const armExpr = armVal ?? call
+      const arm = ['br', out, narrow ? intOf(armExpr) : armExpr]
       const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
       inner = ['block', nextLabel, inner, arm]
     }
     // default: the original call_indirect on the spilled operands
     const generic = ['call_indirect', node[1], envG, argc, ...slotGs, node[node.length - 1]]
-    parent[i] = ['block', out, ['result', 'f64'], ...spills, inner, generic]
+    parent[i] = narrow
+      ? ['f64.convert_i32_s', ['block', out, ['result', 'i32'], ...spills, inner, ['i32.trunc_sat_f64_s', generic]]]
+      : ['block', out, ['result', 'f64'], ...spills, inner, generic]
   }
   const walkDV = (n) => {
     if (!Array.isArray(n)) return
