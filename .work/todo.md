@@ -242,6 +242,21 @@ a look) and a receiver+key->value 1-slot read cache would kill the rest;
 (2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
 slot-in-header idea); (3) closure8 descriptor walk (genuine work —
 leaf-op costs only).
+LEVER (1) SOLVED AT THE ROOT (next leg, same night): not a cache — the
+existing fn-namespace SROA (flattenFuncNamespaces) was promoting ONLY
+multiProp slots (prepare's registry = top-level `f.prop = arrow`
+re-lifts). parse.comment (single ??= dict write), parse.newline/semi
+(reassigned only INSIDE arrows — invisible to prepare) therefore stayed
+on the __dyn_get/__dyn_set probe chain per token. The `any` variant for
+a literal key was a red herring — _h IS the prehashed literal-key entry.
+FIX (scope.js decision loop): every prop of a non-disqualified namespace
+dissolves into a module global EXCEPT the single-top-level-lifted-arrow
+shape (kept as-is: its calls lower to direct `call $f$prop`, a global
+would demote them to call_indirect; never-value-read ones still drop).
+RESULT: jessie 3700 -> 2210us (-40%, 3/3 interleaved; checksum equal).
+SESSION TOTAL with enum cache: 4430 -> 2210us (-50%); at the recorded
+quiet-machine V8 1.38ms this is ~1.6x V8 (was 3.12x). The asi/comment
+wrapper state (newline/semi/comment) is now plain global get/set.
 TRAMPOLINE TAIL-CALL — probed, WASH (3/3 interleaved ±1%): return_call on
 the plain-f64 forwarders doesn't move jessie because the HOT trampolines
 (tramp_parse$space$5 12ms) are the i32-RESULT case — they rebox
