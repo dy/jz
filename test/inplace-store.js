@@ -54,8 +54,14 @@ const jsEval = (src) => {
 
 test('inplace-store: fires on the immutable-update kernel and bit-matches JS', () => {
   const wat = jz.compile(KERNEL, { wat: true, optimize: 'speed' })
-  // the masked OBJECT|sid guard is the transform's runtime signature
-  ok(/0xFFFFFFFF00000000|i64.const -4294967296/.test(wat), 'schema-guarded in-place fast path emitted')
+  // The transform's signature, either strength: the masked OBJECT|sid runtime
+  // guard, or — when the tracked alias is ptr-narrowed to this schema — the
+  // statically-discharged raw form, whose tell is the step loop allocating
+  // NOTHING (`__alloc_hdr` appears only in init's push, never in `step`).
+  const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
+  ok(/0xFFFFFFFF00000000|i64.const -4294967296/.test(wat) || (stepBody && !/__alloc_hdr/.test(stepBody)),
+    'in-place fast path emitted (guarded or statically discharged)')
+  ok(stepBody === '' || !/__alloc_hdr/.test(stepBody), 'step loop allocates nothing')
   const { main } = run(KERNEL, { optimize: 'speed' })
   is(main(), jsEval(KERNEL).main(), 'stepped sums bit-match plain JS')
 })

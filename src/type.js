@@ -598,7 +598,7 @@ function collectIntDefs(body, capturedNames) {
   return defs
 }
 
-function makeIsIntExpr(intCertain) {
+function makeIsIntExpr(intCertain, slotIntOf) {
   return function isIntExpr(expr) {
     if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
     if (typeof expr === 'boolean') return true
@@ -614,8 +614,16 @@ function makeIsIntExpr(intCertain) {
       return false
     }
     if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return true
-    if (op === '.')
+    if (op === '.') {
+      // Slot-census resolver (analyzeSchemaSlotIntCertain's optimistic
+      // fixpoint): a censused slot answers definitively — including FALSE
+      // (a known non-int write beats the val-kind fallback below).
+      if (slotIntOf && typeof args[0] === 'string') {
+        const r = slotIntOf(args[0], args[1])
+        if (r != null) return r
+      }
       return typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER
+    }
     if (INT_CLOSED_OPS.has(op)) {
       const a = isIntExpr(args[0])
       const b = args[1] != null ? isIntExpr(args[1]) : a
@@ -646,7 +654,7 @@ function makeIsIntExpr(intCertain) {
  *  inside nested arrow bodies — see collectIntDefs. Only src/compile/index.js's
  *  boxed-cell narrowing passes this; every other caller keeps the default
  *  own-scope-only behavior unchanged. */
-export function intCertainMap(body, capturedNames) {
+export function intCertainMap(body, capturedNames, slotIntOf) {
   const defs = collectIntDefs(body, capturedNames)
   if (defs.size === 0) return new Map()
   const intCertain = new Map()
@@ -663,7 +671,7 @@ export function intCertainMap(body, capturedNames) {
   // forgo an optimization, never miscompile.
   for (const p of ctx.func.current?.params || [])
     if (p.type !== 'i32' && intCertain.has(p.name)) intCertain.set(p.name, false)
-  const isIntExpr = makeIsIntExpr(intCertain)
+  const isIntExpr = makeIsIntExpr(intCertain, slotIntOf)
   let changed = true
   while (changed) {
     changed = false
@@ -676,6 +684,6 @@ export function intCertainMap(body, capturedNames) {
 }
 
 /** Returns `expr => boolean` — integer-shaped expressions in `body`. */
-export function intExprChecker(body) {
-  return makeIsIntExpr(intCertainMap(body))
+export function intExprChecker(body, slotIntOf) {
+  return makeIsIntExpr(intCertainMap(body, undefined, slotIntOf), slotIntOf)
 }

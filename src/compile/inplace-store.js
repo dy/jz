@@ -200,7 +200,7 @@ export function scanInplaceStores(programFacts) {
             // tracked alias: whole-RHS element read into a single binding
             const { sid, mayBeObject } = elemInfo(rhs[1])
             if (mayBeObject) {
-              if (sid != null) aliases.push({ fn, sid, name: lhs, block: stmts, declIdx: stmtIdx })
+              if (sid != null) aliases.push({ fn, sid, name: lhs, block: stmts, declIdx: stmtIdx, arr: rhs[1], idx: typeof rhs[2] === 'string' ? rhs[2] : null })
               else { poisonAll = true; if (DBG) console.error('[inplace-poisonAll] alias unknown-sid', lhs, 'of', rhs[1], 'in', fn.name) }
             }
             if (rhs[2] != null) walkVal(rhs[2], stmts, stmtIdx)
@@ -216,7 +216,7 @@ export function scanInplaceStores(programFacts) {
         if (Array.isArray(rhs) && rhs[0] === '{}') {
           const { sid, mayBeObject } = elemInfo(lhs[1])
           const s = mayBeObject ? litSid(rhs) : null
-          if (s != null && s === sid) candidates.push({ fn, sid: s, lit: rhs, block: stmts, stmtIdx, arrName: lhs[1] })
+          if (s != null && s === sid) candidates.push({ fn, sid: s, lit: rhs, block: stmts, stmtIdx, arrName: lhs[1], idxName: typeof lhs[2] === 'string' ? lhs[2] : null })
           // literal is a fresh value — walk only its slot values
           for (let i = 1; i < rhs.length; i++) walkSlotValues(rhs[i], stmts, stmtIdx)
         } else walkVal(rhs, stmts, stmtIdx)
@@ -271,7 +271,27 @@ export function scanInplaceStores(programFacts) {
   // EVERY same-content candidate program-wide validates — group and meet.
   // (An inliner that RENAMES the receiver makes the key miss → no transform —
   // safe in the conservative direction.)
-  const verdict = new Map()  // key → all-instances-valid
+  // Target-binding reuse: when THE tracked alias of a store site reads the
+  // SAME array at the SAME plain-name index, and every statement between its
+  // decl and the store is a pure local decl (no calls, no writes to the array
+  // or the index — nothing that could rebind arr[i]), the emit can overwrite
+  // through the alias binding directly instead of re-reading the element
+  // (`__arr_idx` + forwarding + bounds, per iteration). Field writes to the
+  // alias itself between are fine — the store overwrites every slot anyway.
+  const impureBetween = (n, idxName, arrName) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '()' || op === 'new' || op === 'await' || op === 'yield') return true
+    if (op === '=' || op === '++' || op === '--' || (typeof op === 'string' && op.length > 1 && op.endsWith('=') && !op.endsWith('==') && op !== '>=' && op !== '<=')) {
+      const t = n[1]
+      if (t === idxName || t === arrName) return true
+      if (Array.isArray(t) && t[0] === '[]' && t[1] === arrName) return true
+    }
+    for (let i = op === 'str' ? n.length : 1; i < n.length; i++) if (impureBetween(n[i], idxName, arrName)) return true
+    return false
+  }
+
+  const verdict = new Map()  // key → false | { alias, idx } | { alias: null }
   for (const c of candidates) {
     const key = inplaceKey(c.arrName, c.lit)
     let ok = !poisonAll && !poisoned.has(c.sid)
@@ -285,11 +305,24 @@ export function scanInplaceStores(programFacts) {
       for (let i = c.stmtIdx + 1; i < c.block.length && ok; i++)
         if (containsName(c.block[i], a.name)) ok = false
     }
-    verdict.set(key, (verdict.get(key) ?? true) && ok)
-    if (ok && DBG) console.error('[inplace-ok]', c.fn.name, c.arrName, 'sid', c.sid)
+    let reuse = null
+    if (ok && c.idxName) for (const a of aliases) {
+      if (a.fn !== c.fn || a.block !== c.block || a.sid !== c.sid) continue
+      if (a.declIdx >= c.stmtIdx || a.arr !== c.arrName || a.idx !== c.idxName) continue
+      let pure = true
+      for (let i = a.declIdx + 1; i < c.stmtIdx && pure; i++)
+        pure = !impureBetween(c.block[i], c.idxName, c.arrName)
+      if (pure) { reuse = { alias: a.name, idx: a.idx }; break }
+    }
+    // meet across same-content sites: validity ANDs; reuse must agree exactly
+    const prev = verdict.get(key)
+    if (!ok || prev === false) verdict.set(key, false)
+    else if (prev === undefined) verdict.set(key, reuse ?? { alias: null })
+    else if (prev.alias !== (reuse?.alias ?? null) || (prev.alias && prev.idx !== reuse.idx)) verdict.set(key, { alias: null })
+    if (ok && DBG) console.error('[inplace-ok]', c.fn.name, c.arrName, 'sid', c.sid, reuse ? 'reuse ' + reuse.alias : '')
   }
-  const out = new Set()
-  for (const [key, ok] of verdict) if (ok) out.add(key)
+  const out = new Map()
+  for (const [key, v] of verdict) if (v) out.set(key, v)
   ctx.schema.inplaceStores = out
   if (DBG) console.error('[inplace]', 'candidates:', candidates.length, 'aliases:', aliases.length, 'poisoned:', [...poisoned], 'poisonAll:', poisonAll, 'eligible:', candidates.filter(c => out.has(c.lit)).length)
   return out

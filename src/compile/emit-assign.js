@@ -270,7 +270,8 @@ function tryInplaceReplaceStore(arr, idx, val) {
   // content key — see scanInplaceStores: node identity doesn't survive the
   // per-function body transforms between the sweep and emit
   const key = inplaceKey(arr, val)
-  if (!ctx.schema.inplaceStores?.has(key)) return null
+  const entry = ctx.schema.inplaceStores?.get(key)
+  if (!entry) return null
   if (valTypeOf(arr) !== VAL.ARRAY) return null
   const idxNumeric = (typeof idx === 'string' &&
     (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)) || valTypeOf(idx) === VAL.NUMBER
@@ -281,10 +282,29 @@ function tryInplaceReplaceStore(arr, idx, val) {
   const schema = ctx.schema.list?.[sid]
   const ops = ctx.abi.object?.ops
   if (!schema || !ops) return null
-  inc('__arr_idx', '__alloc_hdr')
-  const kT = tempI32('ipk'), eT = temp('ipe'), oT = tempI32('ipo'), hT = tempI32('iph')
+  // Target-binding reuse (sweep-proven): the tracked alias `const p = arr[i]`
+  // IS the current element — skip the `__arr_idx` re-read (forwarding follow +
+  // bounds check per store) and guard/overwrite through the binding directly.
+  const aliasOk = entry.alias && typeof idx === 'string' && idx === entry.idx
+    && !ctx.func.boxed?.has(entry.alias)
+  const aliasType = aliasOk ? ctx.func.locals.get(entry.alias) : null
   const vTs = parsed.values.map(() => temp('ipv'))
   const slots = parsed.names.map(nm => schema.indexOf(nm))
+  // Strongest form: unboxablePtrs already narrowed the alias to a raw OBJECT
+  // pointer of THIS schema — the runtime guard is statically discharged, the
+  // whole store is bare slot overwrites (the immutable-update idiom's floor:
+  // spill values, N stores, done).
+  if (aliasType === 'i32' && repOf(entry.alias)?.ptrKind === VAL.OBJECT
+      && (ctx.schema.vars.get(entry.alias) ?? repOf(entry.alias)?.schemaId) === sid) {
+    return typed(['block', ['result', 'f64'],
+      ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
+      ...slots.map((slot, i) => ops.store(['local.get', `$${entry.alias}`], slot, ['local.get', `$${vTs[i]}`])),
+      mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${entry.alias}`])], 'f64')
+  }
+  const reuse = aliasOk && aliasType === 'f64' ? ['local.get', `$${entry.alias}`] : null
+  inc('__alloc_hdr')
+  if (!reuse) inc('__arr_idx')
+  const kT = tempI32('ipk'), eT = temp('ipe'), oT = tempI32('ipo'), hT = tempI32('iph')
   const bitsE = () => ['i64.reinterpret_f64', ['local.get', `$${eT}`]]
   const fast = ['block', ['result', 'f64'],
     ['local.set', `$${oT}`, ['i32.wrap_i64', bitsE()]],
@@ -298,7 +318,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   return typed(['block', ['result', 'f64'],
     ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
     ['local.set', `$${kT}`, asI32(emit(idx))],
-    ['local.set', `$${eT}`, ['call', '$__arr_idx', asI64(emit(arr)), ['local.get', `$${kT}`]]],
+    ['local.set', `$${eT}`, reuse ?? ['call', '$__arr_idx', asI64(emit(arr)), ['local.get', `$${kT}`]]],
     ['if', ['result', 'f64'],
       ['i64.eq',
         ['i64.and', bitsE(), ['i64.const', '0xFFFFFFFF00000000']],

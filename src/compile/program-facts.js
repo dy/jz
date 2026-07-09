@@ -503,10 +503,12 @@ export function observeProgramSlots(ast) {
 export function analyzeSchemaSlotIntCertain(ast) {
   if (!ctx.schema?.register) return
   const slotIntCertain = ctx.schema.slotIntCertain
+  let flipped = false
   const poisonSlot = (sid, idx) => {
     let arr = slotIntCertain.get(sid)
     if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
     while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] !== false) flipped = true
     arr[idx] = false
   }
   const observeSlot = (sid, idx, isInt) => {
@@ -514,16 +516,38 @@ export function analyzeSchemaSlotIntCertain(ast) {
     if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
     while (arr.length <= idx) arr.push(undefined)
     if (arr[idx] === false) return
-    if (!isInt) { arr[idx] = false; return }
+    if (!isInt) { arr[idx] = false; flipped = true; return }
     if (arr[idx] === undefined) arr[idx] = true
   }
 
-  const bodyIntCertainOf = (body) => {
+  // OPTIMISTIC slot-read resolver — the self-referential immutable-update
+  // idiom (`ps[i] = { x: hitX ? p.x : nx, … }`) rebuilds a slot FROM a read
+  // of the same slot, so a single pessimistic pass poisons every such field.
+  // Greatest fixpoint instead: a censused slot read counts int until some
+  // write proves otherwise; each round re-derives every observation and any
+  // true→false flip triggers another round (monotone-down, so it terminates
+  // in ≤ slots+1 rounds and re-runs can only widen poisoning, never unpoison
+  // — the documented re-entrancy contract holds). Same precise-path receiver
+  // resolution as the write side; a censused FALSE answers definitively.
+  const slotIntOf = (obj, prop) => {
+    const sid = ctx.schema.poisoned?.has(obj) ? undefined
+      : repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+    if (sid == null) return null
+    const idx = ctx.schema.list[sid]?.indexOf(prop)
+    if (idx == null || idx < 0) return null
+    return slotIntCertain.get(sid)?.[idx] !== false
+  }
+
+  // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
+  // later poisoning flows through); after any flip the LOCAL binding fixpoints
+  // baked into those checkers may be stale-optimistic, so rebuild fresh.
+  const bodyIntCertainOf = (body, fresh) => {
+    if (fresh) return intExprChecker(body, slotIntOf)
     if (body != null && typeof body === 'object') {
       const hit = _bodyIntCertainCache.get(body)
       if (hit?.gen === _programFactsGen) return hit.isInt
     }
-    const isInt = intExprChecker(body)
+    const isInt = intExprChecker(body, slotIntOf)
     if (body != null && typeof body === 'object')
       _bodyIntCertainCache.set(body, { gen: _programFactsGen, isInt })
     return isInt
@@ -560,13 +584,25 @@ export function analyzeSchemaSlotIntCertain(ast) {
     for (let i = 1; i < node.length; i++) visit(node[i], isInt)
   }
 
-  if (ast) visit(ast, bodyIntCertainOf(ast))
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    visit(func.body, bodyIntCertainOf(func.body))
+  const sweep = (fresh) => {
+    if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
+    for (const func of ctx.func.list) {
+      if (!func.body || func.raw) continue
+      visit(func.body, bodyIntCertainOf(func.body, fresh))
+    }
+    if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
+      for (const mi of ctx.module.moduleInits) visit(mi, bodyIntCertainOf(mi, fresh))
+    }
   }
-  if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
-    for (const mi of ctx.module.moduleInits) visit(mi, bodyIntCertainOf(mi))
+  sweep(false)
+  // Any flip invalidates the LOCAL binding fixpoints baked into round-1
+  // checkers (both the rounds below and any same-gen cache reuse later), so
+  // drop the cache and re-derive until the census is stable.
+  let rounds = 0
+  while (flipped && ++rounds <= 32) {
+    _bodyIntCertainCache = new WeakMap()
+    flipped = false
+    sweep(true)
   }
 }
 
