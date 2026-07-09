@@ -154,6 +154,15 @@ const makeTypedTracker = (get, set, del) => {
       }
       return
     }
+    // Field provenance: `const tw = plan.twRe` where the receiver's schema slot
+    // holds one typed-array kind program-wide and the prop is never written
+    // (gate inside slotTypedCtorAt) — the binding keeps the concrete kind, so
+    // hot-loop reads stay on the typed path (bench: provenance, fftplan).
+    if (Array.isArray(rhs) && (rhs[0] === '.' || rhs[0] === '?.') &&
+        typeof rhs[1] === 'string' && typeof rhs[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
+      const fc = ctx.schema.slotTypedCtorAt(rhs[1], rhs[2])
+      if (fc) return setOrInvalidate(fc)
+    }
     // Heterogeneous ternary (`n===16 ? new Uint8Array(16) : new Uint16Array(8)`):
     // ctors that don't unify must invalidate so a sibling-scope decl can't lock in
     // the wrong store width.

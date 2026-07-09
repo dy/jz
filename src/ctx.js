@@ -322,6 +322,16 @@ export function reset(proto, globals, bridge) {
                            // returns the slot's kind for `.prop` AST nodes, letting
                            // `+`/`===`/method dispatch elide `__is_str_key` checks
                            // on numeric properties of known shapes.
+    slotTypedCtors: new Map(),  // schemaId → Array<ctor-string | null | undefined>
+                                //   undefined: no observation, null: ≥2 distinct
+                                //   ctors, string: every observed value of the slot
+                                //   is that typed-array kind. The elem-width sibling
+                                //   of slotTypes' VAL.TYPED — populated by
+                                //   observeProgramSlots on object literals; read by
+                                //   ctx.schema.slotTypedCtorAt (gated on the prop
+                                //   never being WRITTEN program-wide) so `plan.twRe`
+                                //   keeps its concrete Float64Array kind through
+                                //   field provenance (bench: provenance, fftplan).
     slotIntCertain: new Map(),  // schemaId → Array<boolean | undefined>
                                 //   undefined: no write observed, true: all observed
                                 //   writes are integer-shaped, false: poisoned by at

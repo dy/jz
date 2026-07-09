@@ -503,7 +503,7 @@ export function inferArrElemValType(expr, callerArrElemVals, callerArrValParams)
 /** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
  *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
-export function inferTypedCtor(expr, callerTypedElems, callerTypedParams) {
+export function inferTypedCtor(expr, callerTypedElems, callerTypedParams, callerSids) {
   if (typeof expr === 'string') {
     if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
     if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
@@ -514,6 +514,17 @@ export function inferTypedCtor(expr, callerTypedElems, callerTypedParams) {
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
     const f = ctx.func.map?.get(expr[1])
     if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
+  }
+  // Field provenance: `plan.twRe` where the receiver's schema slot holds one
+  // typed-array kind program-wide (observeProgramSlots) and the prop is never
+  // written — the write gate lives inside slotTypedCtorBySid. The receiver's
+  // schema comes from the caller's per-body localSids when provided (narrow's
+  // arg lattice — live reps aren't trustworthy there), else the idOf chain.
+  if (Array.isArray(expr) && (expr[0] === '.' || expr[0] === '?.') &&
+      typeof expr[1] === 'string' && typeof expr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
+    const sid = callerSids?.get(expr[1])
+    if (sid != null) return ctx.schema.slotTypedCtorBySid(sid, expr[2])
+    return ctx.schema.slotTypedCtorAt(expr[1], expr[2])
   }
   return null
 }

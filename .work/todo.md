@@ -96,6 +96,30 @@
     edge therefore is NOT (only) branchlessness — next probe: total op-count
     per iteration + JSC's actual codegen. watr commits pending publish:
     59b0ef5, 28942bd, cbf2d72, cc22b89, ea09930.
+  * provenance leg 1 (2026-07-09): the NEW audio cases (fftplan 10.9x behind
+    JSC / 6.8x V8 — worst in corpus; provenance 8.9x) name the structural gap:
+    typed-array KIND LOSS through non-local provenance (inference was
+    RHS-syntactic only). LANDED (test/provenance-inference.js, 8 pins): (1)
+    ctx.schema.slotTypedCtors — the elem-ctor sibling of slotTypes, censused in
+    observeProgramSlots; (2) slotTypedCtorAt/BySid readers, gated on the prop
+    NEVER being written program-wide (writtenProps, fail-closed); (3) field
+    evidence in the module-let ctor fixpoint + a LATE re-run (after
+    narrowSignatures — return sids + censuses only exist then) + body-cache
+    invalidation; (4) refineFieldProvenance binds module-const sids from
+    ABI-backed return schemas; (5) narrow's typedCtor arg lattice gets
+    per-caller sid maps (module-const seeds, locals shadow, assignments
+    poison) so `sum(P.wre, n)` types the callee param. Edges now TYPED:
+    ret, field (bound + inline), paramViaField. TRIED-AND-REVERTED: value-
+    level "kind or nullish" return facts (fnReturnTypedElem/Sid) + @map:
+    Map-value nodes + {}-literal sid evidence — an unguarded typed unbox on a
+    nullish/dyn-undefined value reads GARBAGE MEMORY (composite-route OOB at
+    O0, control returns undefined; regression in degree). Revival needs a
+    GUARDED unbox (tag-checked pointer materialization, hoistable out of hot
+    loops) or non-null flow proofs — THE design item for memo/map edges and
+    the fftplan composite (its plan flows through memo global + Map cache +
+    a local closure param — closure-param kind flow is the other missing
+    link). fftplan/provenance rows unchanged until those land; machine was
+    load-13 all leg, quiet-machine numbers owed.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,

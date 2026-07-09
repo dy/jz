@@ -8,7 +8,7 @@
  */
 
 import { ctx, warn, err } from '../ctx.js'
-import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs } from '../ast.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, ASSIGN_OPS } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
   analyzeBody, findMutations, invalidateLocalsCache,
@@ -920,8 +920,8 @@ export default function narrowSignatures(programFacts, ast) {
   // Fix: iterate a *soft* merge — propagate known ctors, treat "can't tell yet"
   // as skip (no poison) — to a fixpoint, then one *hard* validating sweep that
   // poisons params whose call sites still can't be proven (genuinely-untyped args).
-  const runArrElemFixpoint = (field, inferFn, elemsCtxMap) => {
-    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field))
+  const runArrElemFixpoint = (field, inferFn, elemsCtxMap, sidsCtxMap) => {
+    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field), sidsCtxMap?.get(state.callerFunc))
     let changed
     const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = true }
     const soft = {
@@ -1026,11 +1026,65 @@ export default function narrowSignatures(programFacts, ast) {
   // (before E3 ran) are stale (mkInput's ptrKind was unset then).
   phase.invalidateBodyFacts()
   const callerTypedCtx = phase.callerTyped()
+  // Per-caller receiver schemas for field-provenance args (`transform(plan.tw…)`):
+  // a small decl scan per body — collision-free and live-rep-independent (the
+  // rep/schema.vars chains aren't trustworthy mid-lattice). inferSchemaId covers
+  // literals and calls (valResult/ptrAux — E-complete by this phase); chained
+  // decls resolve through the accumulating map. Module-const sids (`const P =
+  // mk(n)` at top level) seed every caller's map; a local decl SHADOWS the seed
+  // (unresolvable → masks it), and any reassignment drops the name (the second
+  // write could carry a different schema).
+  const moduleSids = new Map()
+  {
+    const visitDecl = (node) => {
+      if (!Array.isArray(node)) return
+      if (node[0] === 'let' || node[0] === 'const') {
+        for (const d of node.slice(1)) {
+          if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+          if (!ctx.scope.consts?.has(d[1])) continue
+          const sid = inferSchemaId(d[2], moduleSids)
+          if (sid != null && !moduleSids.has(d[1])) moduleSids.set(d[1], sid)
+        }
+        return
+      }
+      if (node[0] === ';' || node[0] === 'export') for (let i = 1; i < node.length; i++) visitDecl(node[i])
+    }
+    if (Array.isArray(ast)) {
+      if (ast[0] === ';') for (let i = 1; i < ast.length; i++) visitDecl(ast[i])
+      else visitDecl(ast)
+    }
+  }
+  const callerSidsCtx = new Map()
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const sids = new Map(moduleSids), poisoned = new Set()
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') return
+      if (n[0] === 'let' || n[0] === 'const') {
+        for (const d of n.slice(1)) {
+          if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+            const sid = inferSchemaId(d[2], sids)
+            sids.delete(d[1])          // a local decl shadows any module seed
+            if (sid != null && !poisoned.has(d[1])) sids.set(d[1], sid)
+            scan(d[2])
+          } else scan(d)
+        }
+        return
+      }
+      if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') { poisoned.add(n[1]); sids.delete(n[1]) }
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    // params shadow module seeds too — an arg-bound `P` is not the module const
+    for (const p of func.sig?.params || []) sids.delete(p.name)
+    scan(func.body)
+    callerSidsCtx.set(func, sids)
+  }
   // Two-pass fixpoint: lets a caller's params, once typed, propagate further to
   // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
   // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
   // (same shape — field/inferFn/elemsCtxMap parameterization).
-  const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx)
+  const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx, callerSidsCtx)
   runTypedFixpoint()
   runTypedFixpoint()
 

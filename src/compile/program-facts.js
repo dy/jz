@@ -8,7 +8,8 @@ import { VAL, lookupValType, repOf } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { extractParams, classifyParam } from '../ast.js'
 import { staticObjectProps } from '../static.js'
-import { intExprChecker } from '../type.js'
+import { intExprChecker, typedElemCtor } from '../type.js'
+import { ctorFromElemAux } from '../../layout.js'
 import { analyzeBody } from './analyze.js'
 
 // Assignment-shaped ops whose first arg, when a `.`/`?.` member node, is a
@@ -388,6 +389,7 @@ export const refreshProgramFacts = (ast, _prev) => collectProgramFacts(ast)
 export function observeProgramSlots(ast) {
   if (!ctx.schema?.register) return
   const slotTypes = ctx.schema.slotTypes
+  const slotCtors = ctx.schema.slotTypedCtors
   const observeSlot = (sid, idx, vt) => {
     if (!vt) return
     let arr = slotTypes.get(sid)
@@ -396,6 +398,31 @@ export function observeProgramSlots(ast) {
     if (arr[idx] === null) return
     if (arr[idx] === undefined) arr[idx] = vt
     else if (arr[idx] !== vt) arr[idx] = null
+  }
+  // Elem-ctor sibling of observeSlot — same first-wins-then-clash lattice. A
+  // slot whose every observed value is one typed-array kind keeps that kind for
+  // `plan.tw[i]`-style reads (consumption additionally gates on the prop never
+  // being written program-wide — see schema.slotTypedCtorAt).
+  const observeCtor = (sid, idx, ctor) => {
+    if (!ctor) return
+    let arr = slotCtors.get(sid)
+    if (!arr) { arr = []; slotCtors.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = ctor
+    else if (arr[idx] !== ctor) arr[idx] = null
+  }
+  let teOverlay = null
+  const ctorOfValue = (expr) => {
+    if (typeof expr === 'string')
+      return teOverlay?.get(expr) ?? ctx.scope.globalTypedElem?.get(expr) ?? null
+    const c = typedElemCtor(expr)
+    if (c) return c
+    if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+      const f = ctx.func.map?.get(expr[1])
+      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
+    }
+    return null
   }
   const visit = (node) => {
     if (!Array.isArray(node)) return
@@ -407,28 +434,36 @@ export function observeProgramSlots(ast) {
         const sid = ctx.schema.register(parsed.names)
         for (let i = 0; i < parsed.values.length; i++) {
           observeSlot(sid, i, valTypeOf(parsed.values[i]))
+          observeCtor(sid, i, ctorOfValue(parsed.values[i]))
         }
       }
     }
     for (let i = 1; i < node.length; i++) visit(node[i])
   }
   const prevOverlay = ctx.func.localValTypesOverlay
-  if (ast) { ctx.func.localValTypesOverlay = null; visit(ast) }
+  if (ast) { ctx.func.localValTypesOverlay = null; teOverlay = null; visit(ast) }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
-    ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
+    const facts = analyzeBody(func.body)
+    ctx.func.localValTypesOverlay = facts.valTypes
+    teOverlay = facts.typedElems
     visit(func.body)
   }
+  teOverlay = null
   if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
     ctx.func.localValTypesOverlay = null
     for (const mi of ctx.module.moduleInits) {
       const hit = _moduleInitSlotCache.get(mi)
       if (hit?.gen === _programFactsGen) {
-        for (const [sid, idx, vt] of hit.obs) observeSlot(sid, idx, vt)
+        for (const [sid, idx, vt, ctor] of hit.obs) { observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor) }
         continue
       }
       const obs = []
-      const record = (sid, idx, vt) => { if (vt) obs.push([sid, idx, vt]); observeSlot(sid, idx, vt) }
+      const record = (sid, idx, vt, ctor) => {
+        if (vt || ctor) obs.push([sid, idx, vt, ctor])
+        observeSlot(sid, idx, vt)
+        observeCtor(sid, idx, ctor)
+      }
       const visitInit = (node) => {
         if (!Array.isArray(node)) return
         const op = node[0]
@@ -437,11 +472,13 @@ export function observeProgramSlots(ast) {
           const parsed = staticObjectProps(node.slice(1))
           if (parsed) {
             const sid = ctx.schema.register(parsed.names)
-            for (let i = 0; i < parsed.values.length; i++) record(sid, i, valTypeOf(parsed.values[i]))
+            for (let i = 0; i < parsed.values.length; i++)
+              record(sid, i, valTypeOf(parsed.values[i]), ctorOfValue(parsed.values[i]))
           }
         }
         for (let i = 1; i < node.length; i++) visitInit(node[i])
       }
+      teOverlay = null
       visitInit(mi)
       if (mi != null && typeof mi === 'object') _moduleInitSlotCache.set(mi, { gen: _programFactsGen, obs })
     }

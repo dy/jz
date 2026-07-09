@@ -25,6 +25,7 @@
  */
 
 import { ctx } from '../../ctx.js'
+import { invalidateLocalsCache } from '../analyze.js'
 import { collectProgramFacts, refreshProgramFacts } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, refineDynKeys,
@@ -36,7 +37,7 @@ import { optimizing } from './common.js'
 import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import {
-  inferModuleLetTypes, unboxConstTypedGlobals, inferModuleIntGlobals,
+  inferModuleLetTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
   flattenFuncNamespaces, devirtGlobalCalls,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
@@ -99,6 +100,7 @@ export default function plan(ast, profiler) {
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
   ctx.types.literalWriteKeys = programFacts.literalWriteKeys
+  ctx.types.writtenProps = programFacts.writtenProps
   ctx.types.arrResized = programFacts.arrResized
   ctx.types.nameEscapes = programFacts.nameEscapes
 
@@ -126,6 +128,15 @@ export default function plan(ast, profiler) {
   if (optimizing()) t('scanInplaceStores', () => scanInplaceStores(programFacts))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
   t('refineDynKeys', () => refineDynKeys(programFacts))
+  // Late: return sids (narrowSignatures) + the slot/write censuses are complete —
+  // bind module consts' schemas from returned objects, then re-run the module-let
+  // ctor fixpoint whose FIELD evidence (slotTypedCtorAt, write-gated) resolves
+  // only now. Upgrade-only: strictly more evidence than the early run.
+  t('refineFieldProvenance', () => refineFieldProvenance(ast))
+  t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
+  // The late upgrades land through analyzeBody's trackers — drop the cached
+  // walks so emit-time re-analysis sees the new field kinds.
+  for (const f of ctx.func.list) if (f.body && !f.raw) invalidateLocalsCache(f.body)
   strictBoundaryTypeCheck(programFacts)
 
   adviseProgram(programFacts)

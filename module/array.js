@@ -687,6 +687,14 @@ export default (ctx) => {
       // Emit-time rep seed on fresh hoist-temp `h` so the recursive emit
       // below (`ctx.core.emit['[]'](h, idx)`) takes the typed-arr fast path.
       if (vtArr) updateRep(h, { val: vtArr })
+      // Inline field-read receiver (`plan.tw[i]`): carry the schema slot's
+      // program-wide typed kind onto the temp — VAL.TYPED alone has no element
+      // width, so without the ctor the read decays to the dynamic path.
+      if (vtArr === VAL.TYPED && Array.isArray(arr) && (arr[0] === '.' || arr[0] === '?.') &&
+          typeof arr[1] === 'string' && typeof arr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
+        const fc = ctx.schema.slotTypedCtorAt(arr[1], arr[2])
+        if (fc) (ctx.types.typedElem ||= new Map()).set(h, fc)
+      }
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
       return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')

@@ -38,6 +38,7 @@ const TESTS = [
   'optimizer',
   'preeval',
   'inference',
+  'provenance-inference',
   'unsigned',
   'perf',
   'timers',

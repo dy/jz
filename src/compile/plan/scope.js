@@ -23,6 +23,7 @@ import { ctx, warn, declGlobal } from '../../ctx.js'
 import { ASSIGN_OPS, T, refsAny } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS } from '../../type.js'
+import { inferSchemaId } from '../infer.js'
 import { typedElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
@@ -102,6 +103,16 @@ export const inferModuleLetTypes = (ast) => {
     if (ctor === MIXED) { d.bad = true; return }
     if (ctor) { d.ctors.add(ctor); return }
     if (typeof rhs === 'string') { d.refs.add(key(rhs, sid)); return }
+    // Field provenance: a schema slot holding ONE typed kind program-wide (and a
+    // prop never written — both gates inside slotTypedCtorAt, which also fails
+    // closed before the slot census exists) contributes that kind as evidence.
+    if (Array.isArray(rhs) && (rhs[0] === '.' || rhs[0] === '?.') &&
+        typeof rhs[1] === 'string' && typeof rhs[2] === 'string') {
+      const fc = ctx.schema?.slotTypedCtorAt?.(rhs[1], rhs[2])
+      if (fc) { d.ctors.add(fc); return }
+      d.bad = true
+      return
+    }
     if (Array.isArray(rhs) && rhs[0] === '()') {
       const callee = rhs[1]
       // `recv.subarray(...)` / `recv.slice(...)` / `recv.map(...)` → inherit recv's ctor.
@@ -179,6 +190,38 @@ export const inferModuleLetTypes = (ast) => {
     if (ctx.scope.globalValTypes?.get(name) === VAL.TYPED) continue
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.TYPED)
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+  }
+}
+
+/** LATE field-provenance refinement — after narrow's return inference, module
+ *  consts bound to returned objects resolve their SCHEMA: `const P = mk(n)`
+ *  binds P's sid through mk's inferred return sid (`valResult`/`ptrAux`). A
+ *  const's single init is its value on every read, so the binding is exactly as
+ *  trustworthy as the return inference itself. The ctor side (a following
+ *  `const T = P.wre`, memo globals, Map-cached plans) is the late
+ *  inferModuleLetTypes re-run, whose field/`@map:` evidence needs these sids
+ *  bound first (bench: provenance, fftplan). */
+export const refineFieldProvenance = (ast) => {
+  if (!ctx.scope.userGlobals || !ctx.schema?.vars) return
+  const visitDecl = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'let' || node[0] === 'const') {
+      for (const d of node.slice(1)) {
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const name = d[1], rhs = d[2]
+        if (!ctx.scope.userGlobals.has(name) || !ctx.scope.consts?.has(name)) continue
+        if (!ctx.schema.vars.has(name) && !ctx.schema.poisoned?.has(name)) {
+          const sid = inferSchemaId(rhs, null)
+          if (sid != null) ctx.schema.vars.set(name, sid)
+        }
+      }
+      return
+    }
+    if (node[0] === ';' || node[0] === 'export') for (let i = 1; i < node.length; i++) visitDecl(node[i])
+  }
+  if (Array.isArray(ast)) {
+    if (ast[0] === ';') for (let i = 1; i < ast.length; i++) visitDecl(ast[i])
+    else visitDecl(ast)
   }
 }
 

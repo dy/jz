@@ -143,6 +143,26 @@ export function initSchema(ctx) {
     return idx >= 0 ? (ctx.schema.slotTypes.get(id)?.[idx] ?? null) : null
   }
 
+  /** Resolve the monomorphic typed-array ctor for `varName.prop`, or null.
+   *  Same precise-path discipline as slotVT. Additionally gated on the prop
+   *  never appearing as a WRITE target anywhere in the program
+   *  (ctx.types.writtenProps): the ctor drives raw typed loads/stores, so a
+   *  single `o.twRe = somethingElse` anywhere must keep the dynamic path —
+   *  object-literal initial values are not writes and don't poison. */
+  ctx.schema.slotTypedCtorAt = (varName, prop) =>
+    ctx.schema.slotTypedCtorBySid(ctx.schema.idOf(varName), prop)
+
+  /** Raw by-sid form for callers that resolve the receiver's schema themselves
+   *  (narrow's per-caller localSids — live reps aren't trustworthy there). */
+  ctx.schema.slotTypedCtorBySid = (id, prop) => {
+    // fail CLOSED: without the program-wide write census the ctor can't be trusted
+    if (!ctx.types.writtenProps || ctx.types.writtenProps.has(prop)) return null
+    if (id == null) return null
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    if (idx == null || idx < 0) return null
+    return ctx.schema.slotTypedCtors.get(id)?.[idx] ?? null
+  }
+
   /** Resolve per-slot intCertain: returns true iff every observed write to
    *  `varName.prop` is integer-shaped. Precise path only — requires `varName`
    *  to have a bound `schemaId`. Consumers (Math.floor elision, toNumF64 skip,
