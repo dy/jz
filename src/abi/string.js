@@ -133,9 +133,11 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
  *  every `charCodeAt` returns 0 — same shape as the legacy `__char_at`. */
 export function emitCharDecompPrologue(dec) {
   // Receiver expression: a param's local slot (shape-1 classic) or a stable
-  // module global (dec.recv — the parser-state shape: `cur.charCodeAt(idx)`
-  // against a global assigned only outside the scanning function).
-  const ptr = ['i64.reinterpret_f64', dec.recv ? structuredClone(dec.recv) : ['local.get', `$${dec.param}`]]
+  // module global (dec.recvGlobal — the parser-state shape: `cur.charCodeAt(idx)`
+  // against a global assigned only outside the scanning function). Built fresh
+  // (IR nodes must not be structurally shared; also the self-host kernel
+  // compiles this file — stick to constructs jz itself supports).
+  const ptr = ['i64.reinterpret_f64', dec.recvGlobal ? ['global.get', dec.recvGlobal] : ['local.get', `$${dec.param}`]]
   const ssoTest = ['i64.ne',
     ['i64.and', ptr, ['i64.const', ssoBitI64()]],
     ['i64.const', 0]]
@@ -329,7 +331,7 @@ export const sso = {
             ctx.func.locals.set(sso, 'i32')
             ctx.func.locals.set(loadbase, 'i32')
             ctx.func.locals.set(ptr64, 'i64')
-            dec = { base, len, sso, loadbase, ptr64, param: name, recv: ['global.get', `$${name}`], global: true }
+            dec = { base, len, sso, loadbase, ptr64, param: name, recvGlobal: `$${name}`, global: true }
             ctx.func.charDecomp.set(key, dec)
           }
           return emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds)
