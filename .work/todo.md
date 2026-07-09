@@ -184,6 +184,64 @@ genuine descriptor-walk work. The emit.js trampoline string-builder
 (~3832-3896) stays as the fn-as-value ENTRY generator (still needed to
 mint table entries; elision happens downstream) — its deletion is no
 longer load-bearing for perf, only for taste.
+TYPED CLOSURE ABI — REFUTED by measurement (4th sampler correction,
+2026-07-08 night leg) BEFORE building it. Static: across ALL 85
+call_indirect sites in jessie only 3 param-truncs + 2 call-site converts
+are ABI-induced (the 140 trunc_sats are string/array INDEX conversions,
+inherent to f64 numbers). Dynamic: 2.03M dispatches per bench run = 78k
+per parse (arity histo: 0-arg 413k / 1-arg 900k / 2-arg 293k / 3-arg 93k
+/ 4-arg 336k; W=8 => ~6.5 UNDEF pads per dispatch). Calibrated micro
+(this machine, V8): monomorphic 10-arg call_indirect == 2-arg direct
+(padding 0.013ns, indirection 0.008ns/call); POLYmorphic 8-target:
+wide-indirect 2.24ns vs narrow-indirect 2.33ns vs br_table+direct
+2.06ns. ANY per-dispatch mechanic saving is bounded +-0.2ns => 78k *
+0.2ns = 0.02ms/parse; zeroing ALL dispatch = 0.17ms of the 2.9ms gap.
+closure8/trampoline 'self time' is the work INSIDE (descriptor walks,
+char loops), not call mechanics. V8 wasm call_indirect is ~2ns even
+mispredicted. Do NOT build per-arity/typed-slot ftN variants for perf.
+COMMENT-WRAPPER DISCOVERY (same leg): nulling subscript's comment.js
+space wrapper (measurement-only arm-null, corpus has no comments) took
+jessie 4462us -> 2451us: the wrapper was 45% OF TOTAL RUNTIME. Cause:
+`for (s in parse.comment)` per space() call (15.3k/parse) — jz rebuilt
+the key enumeration EVERY loop entry: receiver is a shadow-mirrored
+schema OBJECT (cm[s] computed reads mirror schema into sidecar), so
+emitEnumerateObject ran ihash global-probe + __coll_order(alloc+scan+
+sort) + out-array alloc_hdr + dedup walk per token.
+FOR-IN ENUM CACHE — LANDED (V8 EnumCache analog, all generic):
+(a) core.js __hash_keys_ro: for-in over runtime HASH serves a 1-slot
+cached boxed key array keyed (table off, live len); (b) object.js
+emitEnumerateObject ro-mode: tier-1 returns the STATIC schema key array
+(mkptr of __schema_tbl[sid] row) when both dyn sources are empty — zero
+alloc, zero state; tier-2 caches the merged walk keyed (sidecar off,
+sidecar len), checked BEFORE the ihash probe so a hit skips it too.
+Invalidation (all cold sites): inserts miss naturally via len; HASH
+genDelete clears unconditionally; __dyn_set global-arm insert +
+__dyn_move + array headerPropsToGlobal clear; __clear resets (assemble
+injection, gated includes.has). ro (for-in __keys_ro) ONLY — its result
+is read-only by lowering contract; Object.keys keeps fresh arrays.
+Shared memory: ro forced off (per-instance globals + no reset injection).
+RESULT: jessie -16.5% (4471 -> 3750us, 5/5 interleaved under load-14);
+counters: coll_order 15.5k/parse -> 0, alloc_hdr:space 15.3k -> 0,
+ihash probes 36.9k -> 24.9k/parse. Suite 2712/0 (+5 enum-cache tests
+incl. delete-then-insert stale-hole, 1-slot thrash, alloc-free pin);
+opt0/opt3/wasi failure sets byte-identical to HEAD; _clear ABA test
+(ephemeral dict at reused offsets across rounds) clean.
+BONUS FIX riding along: emitEnumerateObject's durable-arm off-16 read
+was UNMASKED (bit0 runtime-shadowed marker => misaligned sidecar reads
+when enumerating a durable receiver with runtime props) — masked now,
+matching collection.js's i64.and -2 protocol everywhere else.
+PRE-EXISTING GAP FOUND (not mine, on HEAD too, noted for later): a LATE
+literal-key write (`o['zz']=3` after construction) on a schema object is
+INVISIBLE to for-in — the write lands somewhere enumeration doesn't
+read. Repro in test/forin-deopt.js comment.
+JESSIE NEXT LEVERS (by residual profile): (1) `parse.comment` read
+itself — 15.3k/parse __dyn_get_any_t_h(parse-closure, 'comment' heap-str
+key) through the t_h chain w/ 16.4k ihash probes (~0.3-0.6ms); note the
+emitter picked the ANY variant for a LITERAL key (entry-point gap worth
+a look) and a receiver+key->value 1-slot read cache would kill the rest;
+(2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
+slot-in-header idea); (3) closure8 descriptor walk (genuine work —
+leaf-op costs only).
 TRAMPOLINE TAIL-CALL — probed, WASH (3/3 interleaved ±1%): return_call on
 the plain-f64 forwarders doesn't move jessie because the HOT trampolines
 (tramp_parse$space$5 12ms) are the i32-RESULT case — they rebox
