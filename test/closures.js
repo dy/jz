@@ -1158,3 +1158,28 @@ let A = T
 export let f = () => { A[0] = 9; return T[0] }`)
   is(alias.f(), 9, 'alias write visible (no baked base)')
 })
+
+test('const fn-table: element-as-value alias and arity variance stay exact', () => {
+  // `ops[1]` read as a VALUE flows to a call site the devirt'd dispatch never sees —
+  // the alias route must agree with the table route. (A dispatch-site arg lattice
+  // that trusted table bodies with the sites' numeric rows was built and REVERTED
+  // here: prepare pre-evals `ops[1]` to the closure ref before program facts see
+  // the read, so no gate could prove the tagged sites are the only callers. NOTE
+  // pre-existing, control-verified gap: a STRING arg through this alias skips the
+  // ToNumber parse — pick("3",1) gives 1, not JS's 2 — same family as the untyped
+  // generic-call coercion gaps; not pinned here.)
+  const { f } = run(`const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
+let pick = ops[1]
+export let f = (n) => {
+  let h = 0
+  for (let i = 0; i < n; i++) h = ops[i & 1](h, i)
+  return h * 10 + pick(3, 1)
+}`)
+  // loop: 0 → 0^1=1 → (1+2)|0=3 → 3^3=0; pick(3,1) = 3^1 = 2
+  is(f(4), 2)
+  // arity variance across sites of one table: an omitted trailing arg is undefined
+  const { g } = run(`const t = [(x, k) => (x + k) | 0]
+export let g = () => t[0](5) + t[0](1, 2)`)
+  // t[0](5): k omitted → undefined → (5 + undefined)|0 = 0; t[0](1,2) = 3
+  is(g(), 3)
+})

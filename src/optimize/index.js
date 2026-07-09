@@ -4274,9 +4274,19 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     if (hi - lo > 32) return
     if (uid === null) uid = nextLocalId(fn, '$__dv')
     // Spill env + every non-constant slot once; both the arms and the default read the spills.
+    // An arg that is itself `f64.convert_i32_s(E)` spills the i32 E and re-materializes the
+    // convert at each use — the convert then sits SYNTACTICALLY at every consumer, so the
+    // inlined arms' `trunc∘convert` round-trips and `ne(convert, impossible-const)` guards
+    // fold away (watr identities). Behind an f64 spill local the value-flow is invisible.
     const spills = []
     const spill = (expr, tag) => {
       if (Array.isArray(expr) && (expr[0] === 'f64.const' || expr[0] === 'local.get')) return expr
+      if (Array.isArray(expr) && expr[0] === 'f64.convert_i32_s' && Array.isArray(expr[1])) {
+        const name = `$__dv${uid++}${tag}`
+        newDecls.push(['local', name, 'i32'])
+        spills.push(['local.set', name, expr[1]])
+        return ['f64.convert_i32_s', ['local.get', name]]
+      }
       const name = `$__dv${uid++}${tag}`
       newDecls.push(['local', name, 'f64'])
       spills.push(['local.set', name, expr])

@@ -1148,6 +1148,16 @@ export function emitDecl(...inits) {
       // Module-const array of capture-free closures: record the candidate set for
       // indexed-call devirt (tryConstFnArrayDispatch). Const-only — a reassignable
       // binding could point at a different array whose elements we never saw.
+      // NOTE: a dispatch-site arg lattice (argc/numeric row merged into the element
+      // bodies' paramTypes/minArgc, killing their boxed-arg guards) was BUILT and
+      // REVERTED here: prepare-time folds erase element reads (`let p = ops[1]`
+      // pre-evals to the closure ref before program facts see the '[]' shape), so
+      // no AST-level gate can prove the tagged sites are the only callers — the
+      // trusted body then truncates raw box bits on a string arg through the alias
+      // (see test/closures.js "element-as-value alias and arity variance stay
+      // exact", which records the pre-existing string-coercion gap). Bodies keep
+      // their guards; the arm-inline + watr trunc∘convert identities still
+      // collapse the provably-int side.
       if (val.fnElements && ctx.scope.consts?.has(name))
         (ctx.scope.constFnArrays ||= new Map()).set(name, val.fnElements)
       // Const binding of a STATIC array literal: record base/len (+ the box bits as

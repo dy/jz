@@ -2507,6 +2507,10 @@ export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink 
   // descending, so a rename can never touch a caller node. A tee/set of a name
   // bindOnce already substituted means reads and writes diverged — bail (broken).
   let broken = false
+  // Caller-origin subtrees injected by substitution, tracked by node IDENTITY: the
+  // leak backstop must skip them — a caller local legitimately named like a callee
+  // local (`x`/`k` args into an `(x,k)=>…` arrow) is not a leak.
+  const injected = new Set()
   const renames = localSink ? new Map() : null
   const renameOf = (name) => {
     let r = renames.get(name)
@@ -2520,7 +2524,7 @@ export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink 
   const sub = (n) => {
     if (!isArr(n)) return n
     if (n[0] === 'local.get' && typeof n[1] === 'string') {
-      if (subst.has(n[1])) return subst.get(n[1])
+      if (subst.has(n[1])) { const v = subst.get(n[1]); injected.add(v); return v }
       if (renames && localType.has(n[1])) return ['local.get', renameOf(n[1])]
     }
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
@@ -2531,8 +2535,12 @@ export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink 
   }
   // A constant / bare local read is free to duplicate — substitute it directly (no binding),
   // which also keeps a constant exponent literal at the `pow` node so it can lower to 2-wide exp∘log.
+  // convert-of-local too: one op over a register read, and keeping the convert SYNTACTIC at
+  // every use is what lets the trunc∘convert / guard-vs-impossible-const identities fire
+  // (the devirt arm-inline spills i32 args in that exact shape).
   const isTrivial = (n) => isArr(n) && (n[0] === 'f64.const' || n[0] === 'i32.const' ||
-    (n[0] === 'local.get' && typeof n[1] === 'string') || (n[0] === 'global.get' && typeof n[1] === 'string'))
+    (n[0] === 'local.get' && typeof n[1] === 'string') || (n[0] === 'global.get' && typeof n[1] === 'string') ||
+    (n[0] === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get'))
   const pre = []
   const bindOnce = (name, valueExpr, declType, alreadySubbed) => {
     const v = alreadySubbed ? valueExpr : sub(valueExpr)
@@ -2562,7 +2570,8 @@ export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink 
   // the expression in its lane context, where a tee'd callee local becomes a lane
   // local — bailing there would stop pure helpers with a CSE'd tee (spow's `av`)
   // from vectorizing.
-  const leaks = (n) => isArr(n) && (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) || n.some((c, i) => i > 0 && leaks(c)))
+  const leaks = (n) => isArr(n) && !injected.has(n) &&
+    (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) || n.some((c, i) => i > 0 && leaks(c)))
   const wrap = (val) => {
     const r = pre.length ? ['block', ['result', resultType], ...pre, val] : val
     return (localSink && (broken || leaks(r))) ? null : r

@@ -34,6 +34,23 @@
     the x-arm chain; (c) branchless select-tree lowering when ALL arms inline
     int-pure and tiny — what JSC does (2.29ms ≈ beats native C's fn-ptr
     dispatch 4.94; jz 7.91, V8 8.54 — we beat V8, JSC needs (a)+(b)+(c)).
+  * dispatch lever 2 (2026-07-09): (a) LANDED as watr identities (28942bd):
+    trunc∘convert exact round-trips + f64 eq/ne of convert_i32 vs impossible
+    const; jz devirt spills i32 args as i32 and re-materializes the convert at
+    each use (syntactic → identities fire); inliner false-positive leak fixed
+    (caller arg named like a callee local — injected-identity set). Interleaved
+    A/B +12.8% over levers-off. TRIED-AND-REVERTED: dispatch-site arg lattice
+    merged into element bodies' paramTypes/minArgc (kills their guards) — prep
+    pre-evals `ops[1]` to the closure ref before program facts see the read, so
+    no AST gate proves the tagged sites are the only callers; the trusted body
+    truncated raw box bits on a string through the alias. Any revival needs a
+    PREP-time escape record at the fold site, not AST counters. Discovered
+    pre-existing gap (control-verified): string arg through an element-value
+    alias skips ToNumber (pick("3",1) → 1 not 2) — untyped generic-call
+    coercion family, noted in test/closures.js. Remaining (b) loop-carried
+    f64→i32 local narrowing (watr-side generic: all defs convert(i32) → retype,
+    wrap stray gets; would let x's ToInt32 guard + trunc die) and (c) branchless
+    select-tree — both still needed for JSC's 2.29ms.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
