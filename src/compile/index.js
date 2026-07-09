@@ -27,6 +27,7 @@
 
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.js'
+import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs } from '../ast.js'
 import { valTypeOf } from '../kind.js'
 import { intLiteralValue } from '../static.js'
@@ -51,7 +52,7 @@ const freshCseName = () => `${T}cse${__cseCtr++}`
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
-  typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
+  typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64, ptrTypeEq,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
   MAX_CLOSURE_ARITY,
   mkPtrIR,
@@ -395,6 +396,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.localProps = null
   ctx.func.charDecomp = null
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
+  ctx.func.probeHoist = null
   if (ctx.transform.optimize) {
     scanAndTagNonEscapingClosures(body)
   }
@@ -1153,6 +1155,23 @@ function emitFunc(func, funcFacts, programFacts) {
     // populated. Globals are readable at entry, so nothing precedes them.
     if (ctx.func.charDecomp) for (const dec of ctx.func.charDecomp.values())
       if (dec.global) inits.push(...emitCharDecompPrologue(dec))
+    // Hoisted method-override probes (emit.js tryGenericEmitter): the probe's
+    // answer is loop-invariant for a stable-global receiver — resolve it once.
+    // Mirrors sidecarOverride's arm: primitives (real numbers, strings) can
+    // never carry an own override, so only NaN-boxed non-STRING receivers probe.
+    if (ctx.func.probeHoist) for (const ph of ctx.func.probeHoist.values()) {
+      const g = () => ['i64.reinterpret_f64', ph.recvIR()]
+      inits.push(
+        ['local.set', `$${ph.ovr}`, ['if', ['result', 'f64'],
+          ['i32.and',
+            ['f64.ne', ph.recvIR(), ph.recvIR()],
+            ['i64.ne',
+              ['i64.and', g(), ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
+              ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+          ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', g(), ph.keyIR()]]],
+          ['else', undefExpr()]]],
+        ['local.set', `$${ph.is}`, ptrTypeEq(['local.get', `$${ph.ovr}`], PTR.CLOSURE)])
+    }
     for (const p of sig.params) {
       const di = defaultInits.get(p.name)
       if (di) inits.push(di)

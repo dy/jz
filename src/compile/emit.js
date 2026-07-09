@@ -28,6 +28,7 @@ import {
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
+import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
@@ -2393,6 +2394,30 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // itself, so no f===f pre-fork is needed. Gated on the string module (the probe key
     // is a string literal): a string-less program has no user string props to shadow.
     if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
+      // HOISTED override probe: for a stable module-global receiver (the same
+      // proof as charCodeAt shape-1b — never assigned in this function, and the
+      // body's only calls are .charCodeAt, so nothing that runs here can change
+      // the receiver or its props), the probe's answer is loop-invariant.
+      // Register a per-(receiver, method) entry-prologue probe (drained by
+      // collectParamInits) and reduce the per-site cost to one predictable
+      // branch on the cached i32 + the lean builtin arm. jessie's space paid
+      // the full 3-frame probe per CHARACTER without this.
+      if (typeof obj === 'string' && ctx.func.charDecompGlobals && isGlobal(obj)
+          && ctx.func.body && !isReassigned(ctx.func.body, obj) && bodyOnlyCharCodeAtCalls(ctx.func.body)) {
+        const key = `${obj}#${method}`
+        let ph = (ctx.func.probeHoist ??= new Map()).get(key)
+        if (!ph) {
+          const ovr = `${obj}$ovr$${method}`, is = `${obj}$ovrIs$${method}`
+          ctx.func.locals.set(ovr, 'f64')
+          ctx.func.locals.set(is, 'i32')
+          inc('__dyn_get_expr', '__ptr_type')
+          ph = { ovr, is, recvIR: () => asF64(emit(obj)), keyIR: () => asI64(emit(['str', method])) }
+          ctx.func.probeHoist.set(key, ph)
+        }
+        return typed(['if', ['result', 'f64'], ['local.get', `$${ph.is}`],
+          ['then', ctx.closure.call(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed.normal)],
+          ['else', asF64(callMethod(obj, ctx.core.emit[`.${method}`]))]], 'f64')
+      }
       // Fallback arm: a bare-name receiver re-references the ORIGINAL binding
       // (variable reads are pure) instead of the probe's spilled temp — so a
       // module-global string receiver reaches the ABI op as `global.get` and

@@ -177,7 +177,7 @@ export function emitCharDecompPrologue(dec) {
 // reassign a module global. Escaped arrows are safe to ignore beyond their
 // visible call nodes: they only run when called, and every call here is
 // charCodeAt (single-threaded).
-function bodyOnlyCharCodeAtCalls(body) {
+export function bodyOnlyCharCodeAtCalls(body) {
   if (!Array.isArray(body)) return true
   const op = body[0]
   if (op === 'yield' || op === 'await' || op === 'new') return false
