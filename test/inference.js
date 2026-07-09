@@ -772,12 +772,13 @@ test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () =>
 test('extractRefinements: instanceof Map → __map_has dispatch (not default __set_has)', () => {
   // Without refinement the .has fallback picks __set_has by default. With B1's
   // VAL.MAP refinement the post-condition scope dispatches to .map:has.
+  // Pre-watr: the dispatch CHOICE is what's pinned; watr may inline the helper.
   const wat = jz.compile(`
     export const probe = (x, k) => {
       if (x instanceof Map) return x.has(k) ? 1 : 0
       return -1
     }
-  `, { wat: true, jzify: true })
+  `, { wat: true, jzify: true, optimize: { watr: false } })
   const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
   if (!onKernel()) ok(/\$__map_has\b/.test(probe), 'expected __map_has dispatch under instanceof Map refinement')  // self-host kernel codegen differs; in-process leg owns the shape check
   if (!onKernel()) ok(!/\$__set_has\b/.test(probe), 'should not fall back to default __set_has')
@@ -789,7 +790,7 @@ test('extractRefinements: instanceof Set → __set_has dispatch (no Map path)', 
       if (x instanceof Set) return x.has(v) ? 1 : 0
       return -1
     }
-  `, { wat: true, jzify: true })
+  `, { wat: true, jzify: true, optimize: { watr: false } })
   const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
   ok(/\$__set_has\b/.test(probe), 'expected __set_has under instanceof Set refinement')
   if (!onKernel()) ok(!/\$__map_has\b/.test(probe), 'should not also pull __map_has path')  // self-host dispatch differs; in-process leg owns the shape check

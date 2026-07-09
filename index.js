@@ -637,7 +637,7 @@ const jzCompileInner = (code, opts = {}) => {
   // (for the outline/tailmerge shape), which would enable ifset via the
   // profile — the explicit flag here overrides it in both directions.
   if (typeof watrOpts === 'object' && watrOpts.ifset === undefined)
-    watrOpts.ifset = cfg.boolConvertToSelect === true
+    watrOpts.ifset = cfg.boolConvertToSelect === true || cfg.watrIfset === true
   // jz's promise is runtime speed, but watr's OWN profile default leans size — outline/
   // tailmerge/rettail fold repeated sequences into out-of-line calls (measured 1.433→1.316
   // on the self-host kernel with them off, watr ≥5.2.0). Every speed-tier preset carries

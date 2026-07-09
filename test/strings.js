@@ -373,11 +373,14 @@ test('slice-view: fires for non-escaping local-string slice', () => {
   // is still the one being exercised.
   // The slice must be >6 bytes: ≤6-ASCII results SSO-pack instead of becoming a
   // view (the ≤6-ASCII⇒SSO invariant — a short VIEW would break bit-equality).
+  // Pinned PRE-watr: the view lowering is jz's emit decision; watr's inliner
+  // may legitimately dissolve the single-caller helper afterwards (zeroinit
+  // shrank it under inlineOnce's threshold), erasing the name from final WAT.
   const wat = compile(`export let f = (p) => {
     let s = p + ' big world'
     let t = s.slice(0, 9)
     return t === 'hello big' ? 1 : 0
-  }`, { wat: true })
+  }`, { wat: true, optimize: { watr: false } })
   ok(wat.includes('__str_slice_view'), 'non-escaping slice should lower to a view')
   is(run(`export let f = (p) => {
     let s = p + ' big world'

@@ -171,6 +171,7 @@ const LEVEL_PRESETS = Object.freeze({
     promoteGlobals: false,    // snapshots a multi-read global into an entry local — pure speed (V8 can't CSE a mutable global); the snapshot is dead size weight at -Os
     hoistInvariantLoop: false,// LICM: hoists loop-invariants to entry temps — a speed/latency trade whose entry cost outweighs the per-iter saving in bytes
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
+    watrIfset: true,          // one-armed if→select IS a size win (~2 B/site — the block framing); wasm-opt -Oz does it too. Speed keeps it via boolConvertToSelect.
   }),
   // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
   // reduceUnroll: vectorize reductions with N independent accumulators (ILP/latency
