@@ -29,13 +29,16 @@
       tallyLocals specialized upstream (watr e83c858); dead-pass deletions bought
       ~5-8%/corpus. Next: specialize writesOf/cseFactsOf/hashFunc callbacks or
       arrays-only walker variants (half of nodes are leaves).
-  * [ ] How to shave off the size of produced wasms? Attain level better than wasm-opt for produced wasms? We have three options - own post-watr wat optimize pass, watr/optimize or wasm-opt, but ideally we'd internalize the optimizer so that's more efficient than wasm-opt, as well as fast.
-    * measured 2026-07-09: jz size-tier = 1.026x of wasm-opt -Oz applied on top
-      (97.4% of binaryen's ceiling, 8-case geomean). Residual fully decomposed
-      (crc32 disassembly): ~60 if→select conversions + ~87 stack-threaded locals.
-      Two watr passes (ifToSelect: pure+cheap+non-trapping arms; cross-block
-      set/get threading) close it — then jz BEATS wasm-opt and the optimizer is
-      internal. No wasm-opt in the pipeline today; watr is the sole optimizer.
+  * [x] How to shave off the size of produced wasms? Attain level better than wasm-opt for produced wasms? We have three options - own post-watr wat optimize pass, watr/optimize or wasm-opt, but ideally we'd internalize the optimizer so that's more efficient than wasm-opt, as well as fast.
+    * DONE 2026-07-09: watr-as-optimizer vs binaryen-as-optimizer on IDENTICAL
+      pre-opt input = 0.998 geomean (8 cases; beats on crc32/json/dict/
+      tokenizer/mandelbrot, json 0.991). Landed: watr `ifset` (one-armed
+      if→select, speed profile + jz size tier; nqueens -6% as a speed bonus)
+      and watr `zeroinit` (drop set-of-spec-zero; float -0 excluded — a real
+      sign-flip bug caught by the sort pin during development). The optimizer
+      is fully internal (no wasm-opt anywhere in the pipeline). Remaining
+      binaryen edge if we ever want more margin: ~40 extra tiny-helper inlines
+      + br/br_if forms (recorded, optional).
 * [ ] jz.wasm beats v8
   * I need your expertize to make jz.wasm faster than v8. I suspect there's too many string ops, or strings are too complex and could be done simpler OR not versatile enough, or there's some internal structure missing or redundant, or some internal optimizations possible, to reach the level of jz.wasm performing faster than jz.js. Now it's seemingly slower and we need to beat V8 and JSC. The point is not optimizing the source, but making current structures more efficient, so that generally any compiled WASM is faster than V8.
   * STATE 2026-07-09: warm self-host compile = 1.004x jz.js GEOMEAN (sort 0.97,
