@@ -120,6 +120,25 @@
     a local closure param — closure-param kind flow is the other missing
     link). fftplan/provenance rows unchanged until those land; machine was
     load-13 all leg, quiet-machine numbers owed.
+  * provenance leg 2 (2026-07-09, b788388): the guarded design LANDED as
+    speculative typed-param specialization — the engines' own move (guard
+    tags at the call, specialize the callee) rather than per-read unbox.
+    speculateTypedParams (narrow) + emitSpeculativeCall (emit) +
+    slotTypedCtorByProp (schema census, guardedSlotOf contract). Weak
+    recursive evidence lattice: proven | field census | single-binding init
+    | enclosing-arrow param met over the arrow's own call sites | return
+    census with nullish SKIPPED (Map/memo getters census through — the
+    guard eats the nulls at runtime). Evidence-less sites NEUTRAL;
+    conflicts kill; cycle guard path-local (backtracks — inlined-duplicate
+    sites re-resolve). RESULT: fftplan 28.2→2.44ms LEADS JSC 2.72/V8 3.97;
+    provenance 19.5→2.00ms LEADS JSC 2.13/V8 3.20; checksums exact; suite
+    2730/2730, selfhost 20/20+5/5 fresh kernel. BONUS root fix: nullish
+    module-let decl init now records nullable on the global rep — the memo
+    idiom (`let last = null; if (last === null) last = make()`) was folding
+    its guard to a constant at EVERY optimize level and silently never
+    memoizing (strictSentinel non-nullable fold). TRIED-AND-REVERTED: jz-IR
+    read-only loop unswitch (doubled every unknown-source ctor-copy loop,
+    +92B golden, no bench win). Numbers still load-13-machine; quiet owed.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
