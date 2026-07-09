@@ -4259,6 +4259,10 @@ export function devirtConstFnArrayCalls(fn, cfg) {
   const armInline = !cfg || cfg.inlineDevirtArms !== false
   let uid = null
   const newDecls = []
+  // ONE inline-temp counter for the whole function: two dispatch SITES can share
+  // a `uid` (a const-folded receiver spills nothing, leaving uid untouched), so a
+  // per-site counter would mint the same `$__dvi{uid}_0` twice — duplicate local.
+  const inlRef = { next: 0 }
   const rewrite = (parent, i) => {
     const node = parent[i]
     const cands = cfa.get(node.dvArr)
@@ -4307,15 +4311,16 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     let inner = ['br_table', ...labels, dflt, extract]
     const armOffsets = [...byOff.keys()].sort((a, b) => a - b)
     inner = ['block', labels[armOffsets[0]], inner]
-    // Tiny pure body → inline it straight into the arm: the uniform-ABI call
-    // (env + argc + W padded f64 slots) vanishes and the arm becomes the
-    // operator body itself — the AOT equivalent of the switch a JIT
-    // synthesizes for a hot polymorphic table. Bodies come from
-    // buildPureFuncMap over the candidate names (assemble.js optimizeModule);
-    // inlinePureCallExpr enforces straight-line shape, binds the spilled args
-    // (all trivial local.gets/consts → direct substitution, no temps), and
-    // returns null for anything it can't prove — the call stays.
-    const bodies = ctx.scope.dvArmBodies
+    // Tiny straight-line body → inline it straight into the arm: the uniform-ABI
+    // call (env + argc + W padded f64 slots) vanishes and the arm becomes the
+    // operator body itself — the AOT equivalent of the switch a JIT synthesizes
+    // for a hot polymorphic table. The UNFILTERED candidate map: an arm executes
+    // exactly when the original call did, so a straight-line body with a side
+    // effect (closure0's cold string-concat branch inside a polymorphic `+`) is
+    // safe to substitute verbatim — inlinePureCallExpr itself enforces the
+    // straight-line shape and read-only params, and returns null for anything it
+    // can't prove (the call stays). Purity mattered only for value-motion uses.
+    const bodies = ctx.scope.dvArmFns
     const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, k) => a + (k > 0 ? nodeCount(c) : 0), 0)
     // i32 block-narrow: when the receiver is a facts-qualified STATIC table (the
     // same never-resized/never-aliased gate as foldStaticConstArrayReads — its
@@ -4359,16 +4364,13 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       }
       return ['i32.trunc_sat_f64_s', v]
     }
-    let inlRef = null
     for (let k = 0; k < armOffsets.length; k++) {
       const cand = byOff.get(armOffsets[k])
       const call = ['call', `$${cand.name}`, envG, argc, ...slotGs]
       let armVal = null
       const bodyFn = armInline ? bodies?.get(`$${cand.name}`) : null
-      if (bodyFn && nodeCount(bodyFn) <= 96) {
-        inlRef ??= { next: 0 }
-        armVal = inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', `$__dvi${uid}_`)
-      }
+      if (bodyFn && nodeCount(bodyFn) <= 96)
+        armVal = inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', '$__dvi')
       const armExpr = armVal ?? call
       const arm = ['br', out, narrow ? intOf(armExpr) : armExpr]
       const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
