@@ -70,8 +70,32 @@
     precondition), compute all 8 + 3-level select tree ≈ 9-12 cycles vs
     mispredict ~15-20; needs trap-free arm gate + in-range fast path; closure0
     (impure `+` body) must inline for 8/8 — its str-concat guard survives
-    foldStrDispatchF64, investigate there first. watr commits pending publish:
-    59b0ef5, 28942bd, cbf2d72, cc22b89.
+    foldStrDispatchF64, investigate there first.
+  * dispatch lever 4 (2026-07-09): (c) BUILT AND LANDED, verdict humbling.
+    watr `seltree` (dense 4-8-arm br_table ladder of speculable arms → select
+    tree behind ONE in-range branch; arm gates: pure never-trapping whitelist,
+    arm-local tee/set writes only, ≤96 tokens; the index keeps its exact
+    unconditional evaluation). Enablers: devirt inlines from the UNFILTERED
+    candidate map (arm position preserves execution conditions — closure0's
+    impure `+` body inlines; ONE fn-wide inline-temp counter — a per-site
+    counter minted duplicate locals when a const-folded receiver spilled
+    nothing, pinned in closures); guardRefine `foldStrProbes` folds the whole
+    `if (is_str(a)||is_str(b)) concat else add` dispatch to the numeric arm
+    under provably-int args (matched whole-if PRE-order — per-probe folding
+    leaves or/if shapes nothing const-folds through; operand tees kept as
+    drops). PASS ORDER extended: narrow → guardRefine → intguard so the
+    dispatch resolves fully in ROUND 1 (coalesce at round end shares temp
+    slots across arms; counted locality gates die on round-2 shapes).
+    RESULT: br_table fully eliminated on dispatch, checksum exact, all suites
+    green — but interleaved A/B = 0.993 (NEUTRAL): the fixed 16K-entry stream
+    repeats, and the CPU's indirect-branch predictor LEARNS it — the
+    mispredict the tree buys back wasn't being paid. seltree ships DEFAULT-OFF
+    (a predictable stream makes br_table ~free while the tree pays every arm),
+    speed-profile opt-in; QUIET-MACHINE verdict + a genuinely-unpredictable
+    stream variant still owed before declaring it dead or alive. JSC's 2.29ms
+    edge therefore is NOT (only) branchlessness — next probe: total op-count
+    per iteration + JSC's actual codegen. watr commits pending publish:
+    59b0ef5, 28942bd, cbf2d72, cc22b89, ea09930.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
