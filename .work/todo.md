@@ -274,6 +274,38 @@ a look) and a receiver+key->value 1-slot read cache would kill the rest;
 (2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
 slot-in-header idea); (3) closure8 descriptor walk (genuine work —
 leaf-op costs only).
+IFSET + PROBE-HOIST LEG (2026-07-09, third night):
+WATR IFSET (watr 1f9b22c, jz 7fae21c): one-armed conditional update
+(if C (then (set X V))) -> set X (select V (get X) C) — THE dominant
+if-shape wasm-opt still converted in watr output. Speed-profile pass
+(default off; jz maps it to boolConvertToSelect tiering — NOTE jz's
+DEFAULT tier passes watrProfile:'speed' for outline/tailmerge, so the
+explicit per-pass flag is load-bearing in both directions). nqueens -6%
+(3/3). Gates: pure/trap-free/mem-free/typed-numeric V, ≤12 TOKENS
+(count() counts tokens — a 2-op expr is ~8; the two-arm form's cap 6
+was why it never fired on real arms), impure-cond clash check.
+HEAD-TO-HEAD RE-MEASURE (the honest V1 metric): watr-as-optimizer vs
+binaryen-as-optimizer on the SAME pre-opt input = 1.008 geomean (8
+cases; watr BEATS wasm-opt on json 0.999). Chasing "wasm-opt finds
+nothing on jz output" is a treadmill (smaller output gives binaryen
+better input — measured 1.025->1.027 while jz shrank). Remaining
+binaryen edge decomposed on crc32: ~90 stack-threaded local.sets
+(SimplifyLocals-class dataflow) + ~40 extra inlined tiny-helper calls +
+br/br_if forms. Those are the two named watr projects to flip <1.0.
+PROBE-HOIST (jz 1da7b20): sidecar override probe hoisted to the entry
+prologue for stable-global receivers (same proof as shape-1b); per-site
+cost = one predictable i32 branch. jessie: 6 sites qualify (base
+space/peek/linebreak scanners — the per-CHAR 3-frame probe is gone
+there); asi/comment WRAPPER scans call baseSpace() so the conservative
+only-charCodeAt-calls gate excludes them — EXTENSION: call-graph
+"callee never writes global G" facts available at emit time (
+collectReachableGlobalWrites has them but post-emit; needs a plan-phase
+equivalent). jessie -2% directional (load-noisy); checksum exact.
+PRE-EXISTING GAP FOUND (control tree too): `let cur = 0; cur = s;
+cur.charCodeAt(i)` — a number-typed-by-init var later holding a string
+mis-dispatches (vt=NUMBER wins over runtime NaN-box dispatch) →
+charCodeAt yields undefined. Type-lattice unsoundness class; repro in
+this note.
 COMPACTION LEG (2026-07-09, second night): PASS-ABLATION METHOD — for
 each optimizer pass, compile 50 benches + 66 examples + self-host kernel
 with it disabled at speed/size/2 tiers; byte-identical output = dead.
