@@ -84,8 +84,7 @@ const FALSE_BITS = atomNanHex(4)
  * optimizeModule), then watOptimize is the sole and final optimizer. There is no
  * post-watr re-run — re-running jz's leaf passes on watr's output both violated the
  * "watr is the only optimizer, once, fixpoint" architecture and miscompiled (dropped a
- * reassigned-param tee, corrupted SIMD frames). The `phase` param is vestigial: no
- * caller passes 'post'. See .work/research.md → "Vectorizer → lowering (pre-watr)".
+ * reassigned-param tee, corrupted SIMD frames).
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -1666,12 +1665,12 @@ export function cseScalarLoad(fn) {
  *     the surrounding `local.set/tee` handles that)
  *   - `br/br_if/br_table/return/unreachable` → NO clear (pure values still valid)
  */
-// Commutative WASM binops — shared by csePureExpr + csePureExprLoop for canonical
+// Commutative WASM binops — csePureExpr uses these for canonical
 // operand-key ordering (a*b and b*a hash to one entry). OP_TYPE tables stay local:
 // the two passes cover deliberately different op sets.
 const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
 
-// Presence of one of these arms csePureExprLoop (it CSEs redundant pure f64/i32
+// Presence of one of these arms the loop-aware CSE variant (it CSEs redundant pure f64/i32
 // arithmetic within the loop; the gate is just "is this loop expensive enough to
 // be worth the pass"). The whole class of transcendental helpers qualifies — each
 // is a multi-instruction polynomial approximation, so a loop built around exp/log/
@@ -1780,7 +1779,7 @@ export function csePureExpr(fn) {
             // `a - trunc(a/b)*b` reusing ONE `a` node object, so the anchor and the
             // local.get replacement land on the SAME physical slot and the local.get
             // clobbers the tee — orphaning $__pe (reads 0). Skip when the anchor's
-            // parent is shared; watr's DAG-aware CSE still dedupes. Mirrors csePureExprLoop.
+            // parent is shared; watr's DAG-aware CSE still dedupes.
             if (((refcount ??= buildRefcount(fn)).get(entry.anchorParent) || 0) > 1) return
             const snapName = `$__pe${snapId++}`
             entry.snapName = snapName
@@ -1809,187 +1808,6 @@ export function csePureExpr(fn) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
-/**
- * Post-watr nested CSE for hot fill loops (loop + trig). Reuses `$__pe` locals from
- * the pre-watr leaf pass. Deferred to the `phase === 'post'` run so watr's typed-array
- * inlining is not confused by pre-watr IR rewrites (test/mem.js).
- */
-export function csePureExprLoop(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  let hasLoop = false
-  let hasExpensiveCall = false
-  const scanShape = (n) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === 'loop') hasLoop = true
-    if (n[0] === 'call' && LOOP_CSE_EXPENSIVE.has(n[1])) hasExpensiveCall = true
-    for (let i = 1; i < n.length; i++) scanShape(n[i])
-  }
-  for (let i = bodyStart; i < fn.length; i++) scanShape(fn[i])
-  if (!hasLoop || !hasExpensiveCall) return
-
-  let snapId = nextLocalId(fn, 'pe')
-  const newLocals = []
-
-  const refcount = buildRefcount(fn)
-  const canMutateSite = (parent, node) =>
-    (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1
-
-  const PURE_F64_BIN = new Set(['f64.mul', 'f64.add', 'f64.sub', 'f64.div'])
-  const PURE_F64_UNARY = new Set(['f64.neg', 'f64.abs', 'f64.convert_i32_s', 'f64.convert_i32_u'])
-  const PURE_I32_BIN = new Set(['i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor'])
-  const PURE_I32_UNARY = new Set(['i32.eqz', 'i32.clz', 'i32.ctz', 'i32.popcnt'])
-  const OP_TYPE = {
-    'f64.mul': 'f64', 'f64.add': 'f64', 'f64.sub': 'f64', 'f64.div': 'f64', 'f64.neg': 'f64', 'f64.abs': 'f64',
-    'f64.convert_i32_s': 'f64', 'f64.convert_i32_u': 'f64',
-    'i32.mul': 'i32', 'i32.add': 'i32', 'i32.sub': 'i32', 'i32.shl': 'i32', 'i32.shr_u': 'i32', 'i32.shr_s': 'i32',
-    'i32.and': 'i32', 'i32.or': 'i32', 'i32.xor': 'i32', 'i32.eqz': 'i32',
-  }
-
-  const table = new Map()
-  const keyLocals = new Set()
-  const keyGlobals = new Set()
-
-  const invalidateLocal = (X) => {
-    for (const [key, entry] of table) {
-      if (entry.locals.has(X)) table.delete(key)
-    }
-  }
-
-  const invalidateGlobal = (G) => {
-    for (const [key, entry] of table) {
-      if (entry.globals.has(G)) table.delete(key)
-    }
-  }
-
-  const pureKeyI32 = (n) => {
-    if (!Array.isArray(n)) return null
-    const op = n[0]
-    if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
-    if (op === 'global.get' && typeof n[1] === 'string') { keyGlobals.add(n[1]); return `G:${n[1]}` }
-    if (op === 'i32.const' || op === 'i64.const') return `C:${op}:${n[1]}`
-    if (PURE_I32_UNARY.has(op) && n.length === 2) {
-      const k = pureKeyI32(n[1]); return k ? `${op}|${k}` : null
-    }
-    if (PURE_I32_BIN.has(op) && n.length === 3) {
-      const ka = pureKeyI32(n[1]), kb = pureKeyI32(n[2])
-      if (!ka || !kb) return null
-      return COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
-    }
-    if (op === 'i32.wrap_i64' && n.length === 2) {
-      const k = pureKeyI32(n[1]); return k ? `wrap|${k}` : null
-    }
-    return null
-  }
-
-  const pureKeyF64 = (n) => {
-    if (!Array.isArray(n)) return null
-    const op = n[0]
-    if (op === 'local.get' && typeof n[1] === 'string') { keyLocals.add(n[1]); return `L:${n[1]}` }
-    if (op === 'global.get' && typeof n[1] === 'string') { keyGlobals.add(n[1]); return `G:${n[1]}` }
-    if (op === 'f64.const' || op === 'f32.const') return `C:${op}:${n[1]}`
-    if (PURE_F64_UNARY.has(op) && n.length === 2) {
-      if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') {
-        const k = pureKeyI32(n[1]); return k ? `${op}|${k}` : null
-      }
-      const k = pureKeyF64(n[1]); return k ? `${op}|${k}` : null
-    }
-    if (PURE_F64_BIN.has(op) && n.length === 3) {
-      const ka = pureKeyF64(n[1]), kb = pureKeyF64(n[2])
-      if (!ka || !kb) return null
-      return COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
-    }
-    if (op === 'call' && n[1] === '$__to_num' && n.length === 3) {
-      const a = n[2]
-      if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) {
-        const k = pureKeyF64(a[1]); return k ? `tonum|${k}` : null
-      }
-    }
-    return null
-  }
-
-  const tryCse = (node, parent, idx) => {
-    const op = node[0]
-    if (op === 'local.get' || op === 'global.get' || op === 'f64.const' || op === 'f32.const') return
-    if (!canMutateSite(parent, node)) return
-    keyLocals.clear()
-    keyGlobals.clear()
-    const key = pureKeyF64(node)
-    if (!key) return
-    const locals = new Set(keyLocals)
-    const globals = new Set(keyGlobals)
-    const entry = table.get(key)
-    if (entry) {
-      if (!entry.snapName) {
-        if ((refcount.get(entry.anchorParent) || 0) > 1) return
-        const snapName = `$__pe${snapId++}`
-        entry.snapName = snapName
-        newLocals.push(['local', snapName, OP_TYPE[node[0]] || 'f64'])
-        const orig = entry.anchorParent[entry.anchorIdx]
-        entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
-      }
-      parent[idx] = ['local.get', entry.snapName]
-    } else {
-      table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals, globals })
-    }
-  }
-
-  const walk = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-
-    if (op === 'loop') {
-      table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      table.clear()
-      return
-    }
-
-    if (op === 'if') {
-      table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      table.clear()
-      return
-    }
-
-    if (op === 'then' || op === 'else') {
-      table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      table.clear()
-      return
-    }
-
-    if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      return
-    }
-
-    if (op === 'local.set' || op === 'local.tee') {
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      const X = node[1]
-      if (typeof X === 'string') invalidateLocal(X)
-      return
-    }
-
-    if (op === 'global.set') {
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      const G = node[1]
-      if (typeof G === 'string') invalidateGlobal(G)
-      return
-    }
-
-    for (let i = 1; i < node.length; i++) {
-      if (Array.isArray(node[i])) walk(node[i], node, i)
-    }
-    tryCse(node, parent, idx)
-  }
-
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
-
-  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
-}
 
 /**
  * Drop redundant zero-initialisation of fresh function-scope locals.
@@ -3274,14 +3092,11 @@ export function unswitchTypedParamLoop(fn) {
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  * @param globalTypes optional global name → wasm type map (for promoteGlobals)
  * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
- * @param phase always 'pre' now — jz's optimizer runs once, before watr (there is no
- *        post-watr re-run; the block was deleted). The `phase === 'post'` gates below are
- *        INERT: they fence passes (csePureExprLoop, splitLoopPrivateScratch+LICM, rotateLoops)
- *        that only paid off after watr's inlining — the LICM/rotation whose loss regressed
- *        raytrace/lz. Kept as the reference to MIGRATE INTO watr (phase 2, see .work/research.md),
- *        not live code. `phase` is otherwise vestigial.
+ * (The former 'post' phase and its csePureExprLoop arm are deleted — jz's
+ * optimizer runs exactly once, before watr. splitLoopPrivateScratch remains as
+ * the flag-gated migration seed; see the splitScratch gate below.)
  */
-export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre', reachableWrites) {
+export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWrites) {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantLoop === false &&
@@ -3299,7 +3114,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   // nodes (watr's inliner hasn't reshaped them) and the freshly-inlined body then
   // rides every pass below (LICM, fold, sort). Speed-tier only; 'pre' only (so the
   // post-watr re-optimize doesn't unroll a second time).
-  if (cfg && cfg.recursionUnroll === true && phase === 'pre') recursionUnroll(fn)
+  if (cfg && cfg.recursionUnroll === true) recursionUnroll(fn)
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
   // Before LICM: the snapped i32 bound is itself a hoistable hard-op subtree, so
@@ -3315,23 +3130,19 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
-  if (!cfg || cfg.csePureExpr !== false) {
-    if (cfg && (cfg.watr === true || typeof cfg.watr === 'object') && phase === 'post') csePureExprLoop(fn)
-    else csePureExpr(fn)
-  }
+  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
     // re-optimize). watr is the sole optimizer that runs after, and it preserves the
     // v128 the lift produces. `phase === 'post'` is now vestigial (no post caller).
-    const runVectorizer = phase !== 'post'
     // Phase 1: fold dead string-dispatch blocks on proven-f64 locals BEFORE
     // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
     // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
-    if (runVectorizer && (!cfg || cfg.unswitchTypedParamLoop !== false)) unswitchTypedParamLoop(fn)
-    if (runVectorizer) foldStrDispatchF64(fn)
-    if (runVectorizer && vectorizeLaneLocal(fn, {
+    if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn)
+    foldStrDispatchF64(fn)
+    if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
       relaxedFma: cfg.relaxedSimd === true,
       blurMP: cfg.blurMultiPixel !== false,
@@ -3347,7 +3158,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, phase = 'pre
     // fusedRewrite's memarg fold already ran (above, before vectorize), so fold the
     // freshly-created v128 memargs now — one fewer i32.add per accumulator per
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
-    if (runVectorizer) foldV128Memargs(fn)
+    foldV128Memargs(fn)
   }
   // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
   // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
