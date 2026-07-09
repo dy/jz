@@ -139,6 +139,25 @@
     memoizing (strictSentinel non-nullable fold). TRIED-AND-REVERTED: jz-IR
     read-only loop unswitch (doubled every unknown-source ctor-copy loop,
     +92B golden, no bench win). Numbers still load-13-machine; quiet owed.
+  * violations leg (2026-07-09, a87baee): re-measured queue — immutable
+    1.85x v8 (worst), wordcount 1.43x v8, shapes 1.24x v8, json 1.24x jsc,
+    strbuild 1.17x jsc. immutable profiled to three costs: (1) second dyn
+    element read at the in-place store — FIXED (sweep records the tracked
+    alias; ptr-narrowed alias discharges the guard statically: store = bare
+    slot overwrites, -0.5kB); (2) ToInt32-NaN-guards per field read — the
+    slot-int census self-poisons on the rebuild-from-own-read idiom; made
+    it a greatest fixpoint (optimistic slot reads, flip→re-derive) but the
+    kernel's `p = ps[i]` receiver is unresolvable at census time (elem-sid
+    knowledge is narrow/emit-late) so immutable itself didn't move —
+    NEXT INCREMENT: late census re-run with body-local elem-sid resolution
+    (facts.arrElemSchemas + paramReps route, as inplace-sweep's elemInfo),
+    needs a FRESH rebuild (not monotone re-run) after narrowSignatures;
+    (3) STRUCTURAL residual: fields stored as f64 boxes vs V8's SMIs — the
+    named lever is i32 SLOT STORAGE for intCertain slots (schema-slot
+    representation change, the big one); plus per-iteration __ptr_offset
+    call LICM once stores can't relocate (raw in-place store enables it —
+    hoistInvariantPtrOffset doesn't recognize it yet), plus watr
+    foldImmutableGlobals (immutable const global.get → const inline).
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
