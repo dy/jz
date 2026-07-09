@@ -31,8 +31,9 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
+const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 import { T, isLeaf, stableKey } from '../ast.js'
-import { vectorizeLaneLocal } from './vectorize.js'
+import { vectorizeLaneLocal, inlinePureCallExpr } from './vectorize.js'
 import { recursionUnroll } from './recurse.js'
 export { SIMD_PINNED, inlinePureFnsInFn } from './vectorize.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT, ptrBits, i64Hex, PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
@@ -3111,6 +3112,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
+  // Static-const-array base/len fold runs FIRST: it matches the exact emit shape
+  // via node tags (.saArr/.saBits), and any later pass that rebuilds a subtree
+  // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
+  // only survives untouched nodes.
+  if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
   // Recursion-unrolling runs first in 'pre': self-calls are still clean `call`
   // nodes (watr's inliner hasn't reshaped them) and the freshly-inlined body then
   // rides every pass below (LICM, fold, sort). Speed-tier only; 'pre' only (so the
@@ -3186,7 +3192,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // `constOps[idx](args)` (the decl's candidate set only fills when module init
   // emits, AFTER function bodies) — rewrite to a br_table of direct calls with
   // the original call_indirect as the always-sound default arm.
-  if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn)
+  if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, cfg)
   if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
   // Loop rotation — the LAST shape pass. Runs in the pre phase (the only phase now); the
   // vectorizer above has already formed the v128 loops it skips. Speed-tier: it duplicates the
@@ -4049,8 +4055,8 @@ export function devirtSchemaReads(fn) {
       return n.map((c, k) => k === 0 ? c : extractTees(c))
     }
     const operands = node.slice(2).map(extractTees)
-    for (const op of operands) if (!pureOp(op)) { if (typeof process !== 'undefined' && process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
-    for (const h of teeHoists) if (!pureOp(h[2])) { if (typeof process !== 'undefined' && process.env.JZ_DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
+    for (const op of operands) if (!pureOp(op)) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
+    for (const h of teeHoists) if (!pureOp(h[2])) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
     // the dispatch's generic arm — the original call over the tee-free operands
     const genericCall = [node[0], node[1], ...operands]
     if (uid === null) uid = nextLocalId(fn, '$__dsr')
@@ -4140,7 +4146,7 @@ export function devirtSchemaReads(fn) {
     }
   }
   walkDSR(fn)
-  if (process.env.JZ_DBG_DSR && String(fn[1]).includes('measure')) console.error('[dsr]', fn[1], 'schemas:', schemas.length, 'tagged seen:', seen)
+  if (DBG_DSR && String(fn[1]).includes('measure')) console.error('[dsr]', fn[1], 'schemas:', schemas.length, 'tagged seen:', seen)
   if (newDecls.length) {
     let at = typeof fn[1] === 'string' ? 2 : 1
     while (at < fn.length && Array.isArray(fn[at]) &&
@@ -4150,6 +4156,90 @@ export function devirtSchemaReads(fn) {
     // value at body start equals their value at every read
     fn.splice(at, 0, ...newDecls, ...sidInit)
   }
+}
+
+/** Fold the base/len ceremony of `constArr[i]` element reads whose receiver is a
+ *  STATIC array literal bound to a const global (module/array.js tags `.saArr` /
+ *  `.saBits` on the read IR; the decl registers ctx.scope.staticArrs). The
+ *  data-segment offset and length are compile-time constants, so the per-read
+ *  `__ptr_offset` call + header len load collapse to literals — decisive in
+ *  loops containing calls, where a callee may write memory and watr's LICM must
+ *  keep the loads in place (the devirt'd operator-table dispatch loop is the
+ *  canonical victim). Facts gate: any indexed write, resizing method call, or
+ *  bare value use of the name anywhere in the program (ctx.types.arrResized /
+ *  nameEscapes, collectProgramFacts) keeps the generic form — an alias or a
+ *  grow could relocate the payload (header forwarding) or change len, and a
+ *  folded base would read stale memory. */
+export function foldStaticConstArrayReads(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const sa = ctx.scope.staticArrs
+  if (!sa || !sa.size) return
+  // Facts must EXIST to fold — an absent fact set means the program was never
+  // walked for resize/escape, not that the name is safe.
+  const resized = ctx.types.arrResized, escapes = ctx.types.nameEscapes
+  if (!resized || !escapes) return
+  const rewrite = (node) => {
+    const st = sa.get(node.saArr)
+    if (!st) return
+    // A bits-form tag (receiver folded to a const box at emit) must match the decl's
+    // recorded bits; a name-form tag (receiver read `global.get $name` directly) IS
+    // the identity — global names are unique.
+    if (node.saBits != null && st.bits !== node.saBits) return
+    if (resized.has(node.saArr) || escapes.has(node.saArr)) return
+    // The base derives from the GLOBAL, not a baked constant: assemble's
+    // static-prefix-strip rebases every static pointer AFTER this pass runs, so a
+    // baked absolute offset goes stale (caught by the module-const table tests).
+    // `global.get` is the strip-safe anchor — the global's init is rebased in
+    // place, jz never folds immutable global reads, and watr (which runs after
+    // the strip) propagates the rebased init into a final constant memarg. The
+    // win stands regardless: the `__ptr_offset` CALL (whose forwarding follow the
+    // never-resized proof makes dead) and the len header load both drop.
+    const baseIR = () => ['i32.wrap_i64', ['i64.reinterpret_f64', ['global.get', `$${node.saArr}`]]]
+    const isBaseIR = (n) => Array.isArray(n) && n[0] === 'i32.wrap_i64' &&
+      Array.isArray(n[1]) && n[1][0] === 'i64.reinterpret_f64' &&
+      Array.isArray(n[1][1]) && n[1][1][0] === 'global.get' && n[1][1][1] === `$${node.saArr}`
+    // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR
+    let baseLocal = null
+    const subBase = (n) => {
+      if (!Array.isArray(n)) return
+      for (let i = 1; i < n.length; i++) {
+        const c = n[i]
+        if (!Array.isArray(c)) continue
+        if (c[0] === 'local.tee' && Array.isArray(c[2]) && c[2][0] === 'call' && c[2][1] === '$__ptr_offset') {
+          baseLocal = c[1]
+          n[i] = baseIR()
+          continue
+        }
+        subBase(c)
+      }
+    }
+    subBase(node)
+    if (!baseLocal) return
+    // 2) len header load over the folded base → literal len (position-independent);
+    //    remaining base reads → box-derived base
+    const subLen = (n) => {
+      if (!Array.isArray(n)) return
+      for (let i = 1; i < n.length; i++) {
+        const c = n[i]
+        if (!Array.isArray(c)) continue
+        if (c[0] === 'i32.load' && Array.isArray(c[1]) && c[1][0] === 'i32.sub' &&
+            isBaseIR(c[1][1]) &&
+            Array.isArray(c[1][2]) && c[1][2][0] === 'i32.const' && +c[1][2][1] === 8) {
+          n[i] = ['i32.const', st.len]
+          continue
+        }
+        if (c[0] === 'local.get' && c[1] === baseLocal) { n[i] = baseIR(); continue }
+        subLen(c)
+      }
+    }
+    subLen(node)
+  }
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    if (n.saArr != null) rewrite(n)
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(fn)
 }
 
 /** `constOps[idx](args)` — data-driven dispatch through a module-const array of
@@ -4162,10 +4252,11 @@ export function devirtSchemaReads(fn) {
  *  default arm, so any runtime divergence (an element overwritten through an
  *  alias, an out-of-range index yielding the UNDEF box) takes the generic path:
  *  semantics are bit-identical regardless of the candidate set. */
-export function devirtConstFnArrayCalls(fn) {
+export function devirtConstFnArrayCalls(fn, cfg) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const cfa = ctx.scope.constFnArrays
   if (!cfa || !cfa.size) return
+  const armInline = !cfg || cfg.inlineDevirtArms !== false
   let uid = null
   const newDecls = []
   const rewrite = (parent, i) => {
@@ -4206,9 +4297,27 @@ export function devirtConstFnArrayCalls(fn) {
     let inner = ['br_table', ...labels, dflt, extract]
     const armOffsets = [...byOff.keys()].sort((a, b) => a - b)
     inner = ['block', labels[armOffsets[0]], inner]
+    // Tiny pure body → inline it straight into the arm: the uniform-ABI call
+    // (env + argc + W padded f64 slots) vanishes and the arm becomes the
+    // operator body itself — the AOT equivalent of the switch a JIT
+    // synthesizes for a hot polymorphic table. Bodies come from
+    // buildPureFuncMap over the candidate names (assemble.js optimizeModule);
+    // inlinePureCallExpr enforces straight-line shape, binds the spilled args
+    // (all trivial local.gets/consts → direct substitution, no temps), and
+    // returns null for anything it can't prove — the call stays.
+    const bodies = ctx.scope.dvArmBodies
+    const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, k) => a + (k > 0 ? nodeCount(c) : 0), 0)
+    let inlRef = null
     for (let k = 0; k < armOffsets.length; k++) {
       const cand = byOff.get(armOffsets[k])
-      const arm = ['br', out, ['call', `$${cand.name}`, envG, argc, ...slotGs]]
+      const call = ['call', `$${cand.name}`, envG, argc, ...slotGs]
+      let armVal = null
+      const bodyFn = armInline ? bodies?.get(`$${cand.name}`) : null
+      if (bodyFn && nodeCount(bodyFn) <= 96) {
+        inlRef ??= { next: 0 }
+        armVal = inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', `$__dvi${uid}_`)
+      }
+      const arm = ['br', out, armVal ?? call]
       const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
       inner = ['block', nextLabel, inner, arm]
     }

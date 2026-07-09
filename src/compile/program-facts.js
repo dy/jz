@@ -17,9 +17,71 @@ import { analyzeBody } from './analyze.js'
 const PROP_WRITE_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=',
   '&=', '|=', '^=', '<<=', '>>=', '>>>=', '&&=', '||=', '??=', '++', '--'])
 
+// Array methods that can change length or relocate the payload (grow copies to a
+// new arena block and forwards the header). sort/reverse/fill/copyWithin mutate
+// elements IN PLACE — base and len stay put — so they are deliberately absent.
+const ARR_RESIZE_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'splice'])
+
+// Per-op arg slots where a bare string is a NAME BINDING or receiver — not a value
+// read. Everything else marks nameEscapes (see below). `true` = skip all slots.
+// Missing a binding-shaped op here only over-marks (a lost fold), never unsound.
+const ESCAPE_SKIP = {
+  '.': true, '?.': true,          // receiver never escapes via the read itself; slot2 is a prop NAME
+  'str': true,                    // payload
+  '[]': new Set([0]),             // receiver safe; a bare INDEX name still marks (keys coerce so it's over-marking, but harmless)
+  '=>': new Set([0]),             // params are bindings; a bare-name BODY is a returned value → marks
+  'let': true, 'const': true, 'var': true,  // decl heads; initializers are '='-nodes pre-registered below
+  'import': true, 'export': true, // module wiring: exported arrays are host/importer-reachable — see explicit mark below
+}
+
 export function observeNodeFacts(node, f) {
   if (!Array.isArray(node)) return
   const [op, ...args] = node
+  // ---- const-array stability lattice (module/array.js static base/len fold) ----
+  // arrResized: names whose array may change length or relocate — any indexed write
+  // (an out-of-range write grows), `.length =`, or a resizing method call.
+  // nameEscapes: bare names read in a VALUE position — the reference may alias, so
+  // mutations through the alias are invisible to per-name facts. Sound direction:
+  // over-marking loses a fold; the SAFE (unmarked) positions are only the receiver
+  // slots of '[]'/'.'/'?.' and binding slots.
+  if (op === '()' && Array.isArray(args[0]) && (args[0][0] === '.' || args[0][0] === '?.') &&
+      typeof args[0][1] === 'string' && ARR_RESIZE_METHODS.has(args[0][2]))
+    f.arrResized.add(args[0][1])
+  if (op === 'let' || op === 'const' || op === 'var') {
+    // Pre-register decl '=' children: their slot-0 is a BINDING, not a reassignment,
+    // so the '=' marking below must not flag the declared name as escaped.
+    for (const d of args) if (Array.isArray(d) && d[0] === '=') (f._declEq ??= new WeakSet()).add(d)
+  }
+  if (op === 'export') {
+    // An exported binding is reachable by importers and the host — writes through
+    // that path are outside this walk, so exported names count as escaped.
+    for (const d of args) {
+      if (typeof d === 'string') f.nameEscapes.add(d)
+      else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') f.nameEscapes.add(d[1])
+      else if (Array.isArray(d) && (d[0] === 'let' || d[0] === 'const' || d[0] === 'var'))
+        for (const dd of d.slice(1)) { if (Array.isArray(dd) && dd[0] === '=' && typeof dd[1] === 'string') f.nameEscapes.add(dd[1]) }
+    }
+  }
+  {
+    const skip = ESCAPE_SKIP[op]
+    if (skip !== true && op != null) {
+      const declEq = op === '=' && f._declEq?.has(node)
+      for (let i = 0; i < args.length; i++) {
+        if (typeof args[i] !== 'string') continue
+        if (skip instanceof Set && skip.has(i)) continue
+        if (declEq && i === 0) continue
+        f.nameEscapes.add(args[i])
+      }
+    }
+  }
+  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0])) {
+    if (args[0][0] === '[]') {
+      let root = args[0][1]
+      while (Array.isArray(root) && root[0] === '[]') root = root[1]
+      if (typeof root === 'string') f.arrResized.add(root)
+    } else if ((args[0][0] === '.' || args[0][0] === '?.') && args[0][2] === 'length' && typeof args[0][1] === 'string')
+      f.arrResized.add(args[0][1])
+  }
   if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) &&
       (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string') {
     f.writtenProps.add(args[0][2])
@@ -120,6 +182,7 @@ function emptyWalkFacts() {
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
+    arrResized: new Set(), nameEscapes: new Set(),
   }
 }
 
@@ -133,6 +196,8 @@ function mergeWalkFacts(into, from) {
   if (from.hasRest) into.hasRest = true
   if (from.hasSpread) into.hasSpread = true
   for (const p of from.writtenProps) into.writtenProps.add(p)
+  for (const v of from.arrResized) into.arrResized.add(v)
+  for (const v of from.nameEscapes) into.nameEscapes.add(v)
   for (const [obj, keys] of from.literalWriteKeys) {
     if (!into.literalWriteKeys.has(obj)) into.literalWriteKeys.set(obj, new Set())
     for (const k of keys) into.literalWriteKeys.get(obj).add(k)
@@ -262,6 +327,8 @@ export function collectProgramFacts(ast) {
       for (const v of initFacts.dynVars) f.dynVars.add(v)
     }
     if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
+    if (initFacts.arrResized) for (const v of initFacts.arrResized) f.arrResized.add(v)
+    if (initFacts.nameEscapes) for (const v of initFacts.nameEscapes) f.nameEscapes.add(v)
     if (initFacts.literalWriteKeys) for (const [obj, keys] of initFacts.literalWriteKeys) {
       if (!f.literalWriteKeys.has(obj)) f.literalWriteKeys.set(obj, new Set())
       for (const k of keys) f.literalWriteKeys.get(obj).add(k)
@@ -300,6 +367,7 @@ export function collectProgramFacts(ast) {
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
+    arrResized: f.arrResized, nameEscapes: f.nameEscapes,
   }
 }
 

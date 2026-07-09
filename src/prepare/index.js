@@ -428,6 +428,7 @@ function recordModuleInitFacts(root) {
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(), literalWriteKeys: new Map(),
+    arrResized: new Set(), nameEscapes: new Set(),
   }
   const visitFuncValue = (node) => {
     if (facts.hasFuncValue || !Array.isArray(node)) return
@@ -769,6 +770,25 @@ function resolveTypeof(node) {
     if (code != null) return [op, ['typeof', b[1]], [, code]]
   }
   return node
+}
+
+// Always-truthy / always-falsy over PREPPED IR: literals plus the short-circuit
+// lattice — `a || b` is always-truthy when either arm always is, `a && b` when
+// both are; duals for falsy. Powers dead-arm elimination in the '||'/'&&'
+// handlers: resolveTypeof folds a guard arm to a literal mid-chain
+// (`x || typeof g === 'undefined' || g.member`) and left-associativity buries
+// it one level deep, where emit's literal-LHS fold never looks. Dropping the
+// dead tail at prep keeps its host-global reads out of the import section.
+const litTruth = n => Array.isArray(n) && n.length === 2 && n[0] == null ? !!n[1]
+  : Array.isArray(n) && n[0] === 'str' && typeof n[1] === 'string' ? !!n[1] : null
+const alwaysTruthy = (n) => litTruth(n) ?? (Array.isArray(n) &&
+  (n[0] === '||' ? alwaysTruthy(n[1]) || alwaysTruthy(n[2])
+    : n[0] === '&&' && alwaysTruthy(n[1]) && alwaysTruthy(n[2])))
+const alwaysFalsy = (n) => {
+  const l = litTruth(n)
+  return l != null ? !l : Array.isArray(n) &&
+    (n[0] === '&&' ? alwaysFalsy(n[1]) || alwaysFalsy(n[2])
+      : n[0] === '||' && alwaysFalsy(n[1]) && alwaysFalsy(n[2]))
 }
 
 // Prepare a strict `===`/`!==`. resolveTypeof may fold `typeof x === 'type'` to a
@@ -1962,6 +1982,13 @@ const handlers = {
   // to emit instead of re-dispatching this handler forever.
   '==='(a, b) { return prepStrictEq('===', a, b) },
   '!=='(a, b) { return prepStrictEq('!==', a, b) },
+
+  // Short-circuit dead-arm elimination, value-exact: `A || B` with A never-falsy
+  // IS A — B is unreachable; dual for `&&`. Both operands are prepped first so
+  // policy checks still fire (same discipline as emit's literal-LHS fold, which
+  // preps-then-skips); only the dead subtree is dropped from the program.
+  '||'(a, b) { const pa = prep(a), pb = prep(b); return alwaysTruthy(pa) ? pa : ['||', pa, pb] },
+  '&&'(a, b) { const pa = prep(a), pb = prep(b); return alwaysFalsy(pa) ? pa : ['&&', pa, pb] },
 
   // Statements
   ';': (...stmts) => {

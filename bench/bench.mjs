@@ -105,6 +105,19 @@ const graphSources = (c) => {
 // 64 pages (4 MB) initial; the allocator's geometric memory.grow covers the
 // compile arena from there at no measurable cost (browser-friendly floor).
 const caseMemory = (c) => c.id === 'jz' ? { memory: 64 } : {}
+// Cases whose source uses try/catch — jz lowers it to standardized wasm EH
+// (try_table + a tag section). V8/JSC run it; wasmtime 25's loader rejects the
+// tag section and wabt's wasm2c parses it but has no try_table codegen
+// ("unimplemented"). Gate those targets to a skip: a missing toolchain
+// capability, not a case failure. Probe wasmtime's feature list (`-W help`)
+// so a future wasmtime upgrade re-enables the row by itself. (The jz case
+// additionally needs a graph-flattened entry for CLI shell-outs — cli.js does
+// no node_modules resolution — so revisit that path when the gate lifts.)
+const NEEDS_EH = new Set(['jessie', 'jz'])
+const wasmtimeHasEH = (() => {
+  let v
+  return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
+})()
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const versionText = cmd => {
@@ -629,13 +642,13 @@ const targets = {
   },
   'jz-wasmtime': {
     name: 'jz → wasmtime',
-    available: () => has('wasmtime'),
+    available: c => has('wasmtime') && (!NEEDS_EH.has(c.id) || wasmtimeHasEH()),
     bin: wasmPath,
     run: c => tryRun('jz-wasmtime', c, () => compileJz(c), ['wasmtime', '--invoke', 'main', wasmPath(c)]),
   },
   'jz-w2c': {
     name: 'jz → wasm2c → clang -O3',
-    available: () => has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
+    available: c => !NEEDS_EH.has(c.id) && has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
     bin: w2cBinPath,
     run: c => tryRun('jz-w2c', c, () => {
       compileJz(c)

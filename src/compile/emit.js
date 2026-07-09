@@ -56,6 +56,7 @@ import {
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
+  extractF64Bits,
 } from '../ir.js'
 import { isBoundName } from '../ir.js'
 import { extractRefinements, withRefinements } from './flow-types.js'
@@ -1149,6 +1150,11 @@ export function emitDecl(...inits) {
       // binding could point at a different array whose elements we never saw.
       if (val.fnElements && ctx.scope.consts?.has(name))
         (ctx.scope.constFnArrays ||= new Map()).set(name, val.fnElements)
+      // Const binding of a STATIC array literal: record base/len (+ the box bits as
+      // identity) for optimize's foldStaticConstArrayReads. Same const-only logic.
+      if (val.staticOff != null && ctx.scope.consts?.has(name))
+        (ctx.scope.staticArrs ||= new Map()).set(name,
+          { off: val.staticOff, len: val.staticLen, bits: extractF64Bits(val) })
       // Unboxed pointer const globals carry the raw i32 offset; init coerces via asPtrOffset.
       // Only an i32-STORED global is a raw pointer carrier — an f64 global holds a
       // NaN-boxed value, so coercing its init to an i32 offset (asPtrOffset → i32.wrap)

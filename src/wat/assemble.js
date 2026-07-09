@@ -950,6 +950,14 @@ export function optimizeModule(sec, profiler) {
       })
     }
   }
+  // Candidate bodies for devirt arm inlining (devirtConstFnArrayCalls): a pure-map
+  // restricted to the const-fn-array element bodies. Built here — the pass runs
+  // per-function inside optimizeFunc and can't see sibling functions.
+  if (ctx.scope.constFnArrays?.size) {
+    const candNames = new Set()
+    for (const list of ctx.scope.constFnArrays.values()) for (const c of list) candNames.add(`$${c.name}`)
+    ctx.scope.dvArmBodies = buildPureFuncMap(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])))
+  }
   t('optimizeFuncs', () => { for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, reachableWrites) })
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror

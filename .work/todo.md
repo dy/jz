@@ -4,13 +4,36 @@
 
 * [ ] Beat all bench cases, all examples - pinned
   * [x] 10 more bench cases - each area covered
-  * STATE 2026-07-09: examples geomean 1.71x, jz faster 13/14. Bench gate at the
-    standing 4: fastest-wasm tokenizer/qoi/crc32 (1.06-1.15x vs c/as — CI-jitter
-    band, scalar codegen race) + Sierpinski floatbeat. jessie 2.2ms vs V8 1.38
-    (~1.6x, was 5.4x; residual = per-char override PROBE in space — hoist it
-    (loop-invariant under the shape-1b stability proof), .loc sidecar churn,
-    closure8 descriptor walk). vs-JSC set unmeasured this leg (rerun bench.mjs
-    with JSC on a quiet machine).
+  * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
+    GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
+    slower than jz. Headline-corpus violations (engine beats jz): dispatch 0.29
+    (JSC only — its call-IC crushes our call_indirect fan-out; V8 1.07 beaten),
+    immutable 0.51 (V8/bun; JSC 1.08 ok), wordcount 0.63 (all), strbuild 0.74
+    (all), crc32/dict/colorconv 0.76 (JSC-only; V8 beaten), shapes 0.89
+    (V8-only; JSC 2.6x beaten), json 0.96 (JSC, borderline). Lab probes (out of
+    geomean): jessie 0.42-0.60 standing worst (residual: .loc sidecar churn,
+    closure8 descriptor walk); colorpq 0.84 vs V8. jz self-host lab case was
+    DNF (env.globalThis import — dead-guard-arm reads; fixed via prep dead-arm
+    fold + watr cntOracle guard) — now RUNS and BEATS every engine ~2x on the
+    full-pipeline compile workload (jz.wasm 21.98ms vs jsc 39.9 / bun 44.0 /
+    v8 46.7). Fastest-wasm race (tokenizer/qoi/crc32 vs c/as, CI-jitter band)
+    + Sierpinski floatbeat unchanged. Evidence: /tmp/bench-table.txt.
+  * dispatch lever 1 (2026-07-09): devirt arms now INLINE tiny pure bodies
+    (inlinePureCallExpr grew callee-local renaming — a caller/callee name
+    collision self-assigned tees, pinned in test/closures.js) + static const
+    arrays fold base/len to literals under new never-resized/never-aliased
+    program facts (arrResized/nameEscapes; base derives from global.get — the
+    static-prefix-strip rebases AFTER the fold, a baked offset trapped OOB,
+    pinned in minimal-output + closures). Interleaved A/B: +4.5% only —
+    residual is the br_table mispredict + the f64↔i32 serial chain through
+    loop-carried x (arms are int-pure; guards+converts survive because closure
+    ABI args are untyped). Next levers, in order: (a) peepholes
+    `trunc_sat(convert_i32(X))→extend(X)` and `f64.ne(convert_i32(X), NaN/inf
+    -const)→1` — kills the k-arm chain outright; (b) loop-carried f64→i32
+    local narrowing when all defs are convert(i32) and all uses trunc — kills
+    the x-arm chain; (c) branchless select-tree lowering when ALL arms inline
+    int-pure and tiny — what JSC does (2.29ms ≈ beats native C's fn-ptr
+    dispatch 4.94; jz 7.91, V8 8.54 — we beat V8, JSC needs (a)+(b)+(c)).
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
@@ -45,6 +68,24 @@
     mandelbrot 0.98, crc32 1.00 BEAT it; mat4 1.06 lags), fresh-instance 1.097x.
     The item reduces to: mat4-shape warm gap + fresh-instance init cost. Not a
     strings problem — the string-ops suspicion was refuted by the parity data.
+  * BENCH EVIDENCE (JSC leg): the bench jz lab case (full pipeline, process-per
+    -run = cold-start methodology) has jz.wasm at 23.1ms vs jz.js on jsc 32.5 /
+    bun 35.1 / node 39.2 / deno 43.4 — jz.wasm beats V8 AND JSC 1.4-1.9x cold,
+    at warm parity (1.004x). Coherent: wasm needs no JIT warmup; engines pay
+    parse+tier-up of 2.4MB compiler JS every fresh process.
+  * OPEN (fidelity, not correctness): kernel output is behavior-equal but NOT
+    byte-equal to host output (bench jz row parity column shows DIFF; kernel cs
+    4208029189 vs engines 2693214886, each side internally deterministic).
+    Narrowed 2026-07-09: divergence is PRE-watr, in assemble.js's global-
+    snapshot sweep — host emits `(global.set $__heap_end (i32.const 0))` in
+    __clear, kernel omits it (then watr inline decisions drift downstream:
+    host inlines __memgrow, kernel keeps it → +1 type, ±bytes). Harmless:
+    stale __heap_end is a monotonic memory-size cache, still valid after
+    _clear. NOT a regex bug (matchAll char-class probe equal host/kernel).
+    Suspect: kernel-side behavior of the sweep's Set-iteration + dynamic
+    stdlib[name] bracket reads + globals.get(...).mut chain. Repro:
+    scratchpad/self-parity.mjs (3 probes: bytes DIFF, behavior EQUAL).
+    Goal when picked up: byte-exact self-host → bench parity column 'ok'.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat

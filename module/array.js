@@ -42,7 +42,14 @@ export function staticArrayPtr(slots) {
   dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
   for (let i = 0; i < 16; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
   appendStaticSlots(slots)
-  return mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
+  const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
+  // Compile-time identity for the static base/len read fold (see the saArr tag in
+  // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound
+  // to this literal reads elements with literal base/len instead of the
+  // __ptr_offset call + header load.
+  ptr.staticOff = headerOff + 16
+  ptr.staticLen = len
+  return ptr
 }
 
 function hoistArrayValue(arr) {
@@ -862,14 +869,33 @@ export default (ctx) => {
       const idxProvenInBounds = keyIsNum
         && typeof arr === 'string' && typeof idx === 'string'
         && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+      // Tag reads whose receiver folded to a compile-time constant box: when the
+      // decl registers the same bits as a STATIC array (ctx.scope.staticArrs) and
+      // the program never resizes/aliases the name, optimize's
+      // foldStaticConstArrayReads collapses base+len to literals (the decl's
+      // data-segment offset isn't known until module init emits, so emit can
+      // only tag — same phasing as the constFnArrays devirt).
+      const saTag = (node) => {
+        if (typeof arr !== 'string') return node
+        // Identity proof, either form: the receiver resolved to a DIRECT read of the
+        // module global `arr` (global names are unique — same name the decl registers),
+        // or it already folded to a constant box whose bits the decl records. A local
+        // shadowing `arr` emits a local.get receiver — neither form matches, no tag.
+        if (Array.isArray(ptrExpr) && ptrExpr[0] === 'global.get' && ptrExpr[1] === `$${arr}`) node.saArr = arr
+        else {
+          const bits = extractF64Bits(ptrExpr)
+          if (bits !== null) { node.saArr = arr; node.saBits = bits }
+        }
+        return node
+      }
       if (idxProvenInBounds) {
         // base local must be i32. Flat tee form so downstream peepholes can fold
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        return typed(ctx.abi.array.ops.load(
+        return typed(saTag(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi), 'f64')
+          vi)), 'f64')
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
       // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
@@ -878,14 +904,14 @@ export default (ctx) => {
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
       if (keyIsNum) {
         const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
-        return typed(['if', ['result', 'f64'],
+        return typed(saTag(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             ['i32.load', ['i32.sub',
               ['local.tee', `$${baseI32}`, arrBase()],
               ['i32.const', 8]]]],
           ['then', ctx.abi.array.ops.load(['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
-          ['else', undefExpr()]], 'f64')
+          ['else', undefExpr()]]), 'f64')
       }
       const baseTmp = temp()
       // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;

@@ -448,6 +448,24 @@ test('host override: string return value', () => {
   is(exports.f(), 'ok!')
 })
 
+test('host global behind a dead guard arm never imports', () => {
+  // Guard chains with a leading dynamic operand: `x || typeof g === 'undefined' || g.member`.
+  // resolveTypeof folds the middle arm to `true`; prep's dead-arm fold must then drop the
+  // g.member read even though the literal sits nested one level deep (left-associativity) —
+  // so typeof-guarded debug hooks compile with a clean import section and self-host builds
+  // (whose runner provides no env.globalThis / env.process) still instantiate.
+  const wasm = compile(
+    'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)')
+  const names = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map(i => `${i.module}.${i.name}`)
+  ok(!names.includes('env.globalThis'), 'no env.globalThis import')
+  const pw = compile(
+    'const D = typeof process !== "undefined" && !!process.env; let h = (c) => { if (c && typeof process !== "undefined" && process.env.X) return 1; return 0 }; export let g = () => h(1) + (D ? 10 : 0)')
+  const names2 = WebAssembly.Module.imports(new WebAssembly.Module(pw)).map(i => `${i.module}.${i.name}`)
+  ok(!names2.includes('env.process'), 'no env.process import')
+  // value-exactness of the fold: `A || B` with A never-falsy IS A, not a coerced boolean
+  is(run('export let v = () => { let a = 5; return (a || 9) || 3 }').v(), 5)
+})
+
 test('host import return type elides numeric coercion helper', () => {
   const wat = compile('export let f = () => performance.now() + 1', {
     wat: true,

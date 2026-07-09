@@ -2483,7 +2483,7 @@ function nodeWasmType(n) {
 // `localSink` array is passed, the fresh `$__ia` binding temps are declared into it (`['local', n, T]`)
 // so a general caller can hoist them into the enclosing function; the vectorizer omits it (its lane
 // lift re-types the block). Params must be read-only (else the substitution model breaks).
-function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink = null, resultType = 'f64', tempPrefix = '$__ia') {
+export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink = null, resultType = 'f64', tempPrefix = '$__ia') {
   const callee = pureFuncMap && pureFuncMap.get(callNode[1])
   if (!callee) return null
   const bodyStart = findBodyStart(callee)
@@ -2499,9 +2499,34 @@ function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink = null,
   const body = callee.slice(bodyStart)
   for (const p of params) if (writesName(body, p)) return null   // params must be read-only
   const subst = new Map()
+  // Callee-local RENAMING (general-inliner path, localSink passed): a callee local
+  // reached via `local.tee` / control-flow `local.set` isn't captured by bindOnce,
+  // so its NAME would collide with same-named caller locals (the canonical trap:
+  // arrow `(x,k)=>…` inlined into a caller whose variable is also `x`). Rename at
+  // substitution time — sub() returns substituted caller-arg nodes WHOLE without
+  // descending, so a rename can never touch a caller node. A tee/set of a name
+  // bindOnce already substituted means reads and writes diverged — bail (broken).
+  let broken = false
+  const renames = localSink ? new Map() : null
+  const renameOf = (name) => {
+    let r = renames.get(name)
+    if (!r) {
+      r = `${tempPrefix}${freshIdRef.next++}`
+      renames.set(name, r)
+      localSink.push(['local', r, localType.get(name) || 'f64'])
+    }
+    return r
+  }
   const sub = (n) => {
     if (!isArr(n)) return n
-    if (n[0] === 'local.get' && typeof n[1] === 'string' && subst.has(n[1])) return subst.get(n[1])
+    if (n[0] === 'local.get' && typeof n[1] === 'string') {
+      if (subst.has(n[1])) return subst.get(n[1])
+      if (renames && localType.has(n[1])) return ['local.get', renameOf(n[1])]
+    }
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      if (subst.has(n[1])) { broken = true; return n }
+      if (renames && localType.has(n[1])) return [n[0], renameOf(n[1]), ...n.slice(2).map(sub)]
+    }
     return n.map((c, i) => i === 0 ? c : sub(c))
   }
   // A constant / bare local read is free to duplicate — substitute it directly (no binding),
@@ -2521,15 +2546,27 @@ function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink = null,
   params.forEach((p, i) => bindOnce(p, args[i], paramType.get(p), true))   // args live in the OUTER scope — do NOT sub
   // Leak guard: a callee local reached only via `local.tee` (a CSE'd subexpression) or set inside
   // control flow is NOT captured by the top-level bindOnce, so its name would survive into the caller
-  // where it isn't declared ("$x not in scope"). Bail (keep the call) if ANY callee-local name remains
-  // in the inlined result — the substitution model only safely handles straight-line param+set locals.
-  // The leak check applies ONLY to the general inliner (which passes a localSink and splices the
-  // result verbatim into the caller). The VECTORIZER path (localSink == null) re-processes the
-  // returned expression in its lane context — a tee'd callee local becomes a lane local there — so
-  // it must NOT bail on the leak, or pure helpers with a CSE'd tee (spow's `av`) stop vectorizing.
+  // where it isn't declared ("$x not in scope"). For the general inliner (localSink passed): RENAME
+  // any surviving TRUE-local name to a fresh caller-scope local declared into the sink — sound,
+  // locals are function-scoped names (a tee'd NaN-guard local `(x,k)=>(x??0)|0` is the canonical
+  // shape). Params are read-only and fully substituted by bindOnce, so a surviving PARAM name means
+  // the model broke — bail (keep the call) as the backstop. The VECTORIZER path (localSink == null)
+  // re-processes the returned expression in its lane context — a tee'd callee local becomes a lane
+  // local there — so it must NOT bail or rename, or pure helpers with a CSE'd tee (spow's `av`)
+  // stop vectorizing.
   const calleeLocals = new Set([...paramType.keys(), ...localType.keys()])
+  // Backstop: with renaming inlined into sub(), the only way a callee name survives
+  // into a sink-spliced result is a broken substitution model (e.g. a param name in
+  // write position, or a bindOnce'd local later tee'd). Bail — keep the call. The
+  // VECTORIZER path (localSink == null) neither renames nor bails: it re-processes
+  // the expression in its lane context, where a tee'd callee local becomes a lane
+  // local — bailing there would stop pure helpers with a CSE'd tee (spow's `av`)
+  // from vectorizing.
   const leaks = (n) => isArr(n) && (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) || n.some((c, i) => i > 0 && leaks(c)))
-  const wrap = (val) => { const r = pre.length ? ['block', ['result', resultType], ...pre, val] : val; return (localSink && leaks(r)) ? null : r }
+  const wrap = (val) => {
+    const r = pre.length ? ['block', ['result', resultType], ...pre, val] : val
+    return (localSink && (broken || leaks(r))) ? null : r
+  }
   for (let k = 0; k < body.length; k++) {
     const stmt = body[k]
     if (!isArr(stmt)) return null

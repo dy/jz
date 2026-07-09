@@ -1110,3 +1110,51 @@ test('closure: one-pole accumulator in returned closure (envelope follower)', ()
     }`)
   ok(Math.abs(f() - 0.49998671930055616) < 1e-12, `expected ≈0.5, got ${f()}`)
 })
+
+test('const fn-table dispatch: devirt arms inline value-exact (all 8 ops, negatives)', () => {
+  // The devirt br_table inlines tiny pure arm bodies (optimize/index.js
+  // devirtConstFnArrayCalls + inlinePureCallExpr). The arms' NaN-guard locals are
+  // named x/k — SAME as the caller's variables — which once made the inliner's
+  // local rename rewrite the substituted caller args too (self-assign tees,
+  // every arm read zeros). Mixed signs + all 8 shapes pin the whole class.
+  const opsSrc = `const ops = [
+    (x, k) => (x + k) | 0,
+    (x, k) => x ^ k,
+    (x, k) => Math.imul(x, k | 1),
+    (x, k) => (k - x) | 0,
+    (x, k) => x ^ (x >>> 7) ^ k,
+    (x, k) => ((x << 5) - x + k) | 0,
+    (x, k) => ((x << 13) | (x >>> 19)) ^ k,
+    (x, k) => (x & k) ^ (x >>> 11),
+  ]`
+  const body = `export let f = (n) => {
+    let x = 0x2545f491 | 0
+    for (let i = 0; i < n; i++) x = ops[i & 7](x, (i * 40503) | 0)
+    return x
+  }`
+  const { f } = run(`${opsSrc}\n${body}`)
+  const jsOps = new Function(`${opsSrc}; return ops`)()
+  const ref = (n) => { let x = 0x2545f491 | 0; for (let i = 0; i < n; i++) x = jsOps[i & 7](x, (i * 40503) | 0); return x }
+  for (const n of [1, 8, 64, 1000]) is(f(n), ref(n), `n=${n}`)
+})
+
+test('static const array reads: base/len fold is strip-safe and mutation-gated', () => {
+  // foldStaticConstArrayReads bakes base/len only under the never-resized /
+  // never-aliased program facts, and derives the base from the global (assemble's
+  // static-prefix-strip rebases pointers AFTER the fold — a baked absolute went
+  // stale once, trapping OOB on nested tables).
+  // 1) big string pool → nonzero prefix strip; folded read must still be correct
+  const big = run(`const S = "${'x'.repeat(200)}"
+const T = [1.5, 2.5, 3.5, 4.5]
+export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 3]; return s + S.length * 0 }`)
+  is(big.f(8), 24, 'strip + fold')
+  // 2) resize disqualifies: push beyond the static len must be visible
+  const grow = run(`const T = [1, 2]
+export let f = () => { T.push(7); return T[2] + T.length }`)
+  is(grow.f(), 10, 'push growth visible (no baked len)')
+  // 3) alias disqualifies: writes through the alias must be visible
+  const alias = run(`const T = [1, 2]
+let A = T
+export let f = () => { A[0] = 9; return T[0] }`)
+  is(alias.f(), 9, 'alias write visible (no baked base)')
+})
