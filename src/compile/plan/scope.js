@@ -407,9 +407,22 @@ export const flattenFuncNamespaces = (ast) => {
     for (const prop of info.props) {
       if (ctx.func.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
       const w = info.writes.get(prop)
-      // Single write of the lifted `$f$prop`, never read as a value → drop it.
-      if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}` && !info.valRead.has(prop))
-        plan(prop, { drop: true })
+      // Single top-level write of the lifted `$f$prop` (the `f.prop = arrow`
+      // definition shape): calls to it already lower to a direct `call $f$prop`,
+      // which a global would demote to call_indirect — leave it alone; when it's
+      // additionally never read as a value, the write itself is dead → drop it.
+      if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`) {
+        if (!info.valRead.has(prop)) plan(prop, { drop: true })
+        continue
+      }
+      // Everything else dissolves into a module global — the namespace is
+      // non-escaping, so every site is visible and the slot is a closed cell.
+      // This covers slots multiProp can't see: props reassigned only INSIDE
+      // function bodies (prepare's registry counts top-level lifts), and
+      // single-write non-function values. The layered-parser state pattern
+      // (subscript's parse.comment/newline/semi — read/written per token) was
+      // paying a __dyn_get/__dyn_set probe chain per site without this.
+      plan(prop, { global: `${f}${T}${prop}` })
     }
   }
   if (!flat.size) return false
