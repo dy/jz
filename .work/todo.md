@@ -242,6 +242,42 @@ a look) and a receiver+key->value 1-slot read cache would kill the rest;
 (2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
 slot-in-header idea); (3) closure8 descriptor walk (genuine work —
 leaf-op costs only).
+V1 ARCHITECTURE CAMPAIGN — MEASURED STATE (2026-07-09 leg; all four
+selected items now have causal numbers + ranked levers):
+(A) jz.wasm vs V8: warm self-host geomean 1.004x jz.js (sort 0.97,
+mandelbrot 0.98, crc32 1.00 already BEAT; mat4 1.06 lags), fresh 1.097x.
+The V1 item is a mat4+fresh-instance problem, not a strings problem.
+(B) produced-wasm size: jz size-tier is 1.026x geomean of wasm-opt -Oz
+APPLIED ON TOP (8-case corpus) — i.e. 97.4% of binaryen's ceiling.
+Residual decomposed (crc32 disassembly diff): ~60 if->select conversions
+(wasm-opt: if 240->180, select 5->37 — most of the bytes, also a speed
+win) + ~87 locals stack-threaded away (set 293->206). Both are
+well-defined watr passes: `ifToSelect` (arms pure+cheap+non-trapping)
+and cross-block set/get threading. Land those upstream -> jz output
+BEATS wasm-opt and 'internalize the optimizer' is done.
+(C) compile speed: bottleneck MOVED — emit phase now dominates
+(base64: emit 43ms vs watr 16ms of 68ms; blur 37/33). CPU profile
+(30x base64): watr's generic tree walkers = walk 679ms self + walkPost
+356ms ≈ 30% of ALL compile time (megamorphic callback per node incl.
+leaves); biggest single callback was tallyLocals (329ms) — SPECIALIZED
+upstream (watr e83c858, direct monomorphic recursion, outputs
+byte-identical on the 48-bench corpus) — wall-clock wash under load,
+keep and re-measure quiet. NEXT: same specialization for the remaining
+hot pass callbacks (writesOf 83ms, cseFactsOf 92ms, hashFunc 138ms,
+substGets), or the deeper fix — arrays-only walker variants (half of
+all nodes are leaf strings/numbers that most callbacks reject first
+thing). jz-side emit: ir.js walk 95ms + countsOf/writesIn ~106ms.
+(D) jz.js size /2: dist/jz.js = 1.59MB minified (3.5MB source).
+Composition: src/optimize/ = 629KB source (vectorize.js 369KB +
+optimize/index.js 251KB) — the single biggest block, ~19% of dist.
+THE architectural fold matching the V1 item text: migrate jz's
+post-watr WAT passes + vectorizer INTO watr (one optimizer, one walker
+infra, one convergence loop) — deletes ~600KB source from jz, ends the
+duplicated pass machinery, and consolidates where (B)'s new passes land
+anyway. Next-biggest: emit.js 218KB, collection.js 169KB (WAT-string
+stdlib — candidate for extraction to a precompiled artifact?).
+PRE-EXISTING FIXED EN ROUTE: examples/bench.mjs interference harness
+called removed update() (frame() since 5e7df87).
 LEVER (1) SOLVED AT THE ROOT (next leg, same night): not a cache — the
 existing fn-namespace SROA (flattenFuncNamespaces) was promoting ONLY
 multiProp slots (prepare's registry = top-level `f.prop = arrow`
