@@ -41,6 +41,7 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
     __coll_order: ['__alloc'],
+    __hash_keys_ro: ['__ptr_offset', '__coll_order', '__alloc_hdr', '__mkptr'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors json.js's __json_obj
@@ -563,6 +564,43 @@ export default (ctx) => {
       (local.set $j (i32.add (local.get $j) (i32.const 1)))
       (br $sl)))
     (local.get $buf))`
+
+  // for-in's HASH key enumeration with a 1-slot enum cache (V8's EnumCache analog).
+  // A for-in over an unchanged dict re-derives the same key array every entry —
+  // __coll_order buffer + out-array alloc + cap scan + sort per loop entry (the
+  // dominant cost of any per-call `for (k in cfg)` pattern: jessie's comment
+  // wrapper paid this per TOKEN). Cache the boxed key array keyed by
+  // (table off, live len): an insert changes len, so it misses naturally with no
+  // insert-side hook; the only len-preserving key-set change is delete-then-insert,
+  // so the HASH delete (genDelete, collection.js) clears the cache unconditionally;
+  // `__clear` resets it (arena rewind can re-issue the cached off to a new table).
+  // Grow/remint relocation is safe hook-free: reads resolve forwarding to the new
+  // off (≠ cached), and a husk off is never re-issued within an arena epoch.
+  // ONLY sound for for-in (`__keys_ro`), whose result is read-only by construction —
+  // Object.keys must keep fresh-array semantics (callers may mutate the result).
+  ctx.core.stdlib['__hash_keys_ro'] = `(func $__hash_keys_ro (param $hbits i64) (result f64)
+    (local $off i32) (local $n i32) (local $ord i32) (local $i i32) (local $out i32)
+    (local.set $off (call $__ptr_offset (local.get $hbits)))
+    ;; degenerate/null backing (off below heap base): empty result, uncached
+    (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START}))
+      (then (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (call $__alloc_hdr (i32.const 0) (i32.const 0))))))
+    (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (if (i32.and (i32.eq (local.get $off) (global.get $__enumc_off))
+                 (i32.eq (local.get $n) (global.get $__enumc_len)))
+      (then (return (global.get $__enumc_arr))))
+    (local.set $ord (call $__coll_order (local.get $off)
+      (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 24)))
+    (local.set $out (call $__alloc_hdr (local.get $n) (local.get $n)))
+    (block $brk (loop $l
+      (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+      (i64.store (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 3)))
+        (i64.load (i32.add (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))) (i32.const 8))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (global.set $__enumc_off (local.get $off))
+    (global.set $__enumc_len (local.get $n))
+    (global.set $__enumc_arr (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $out)))
+    (global.get $__enumc_arr))`
 
   // === Memory-based length/cap helpers (C-style headers) ===
 

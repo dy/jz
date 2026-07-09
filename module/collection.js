@@ -428,6 +428,18 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
  *  the key was present (and len decremented), 0 otherwise. Home slots are recomputed
  *  from the stored hash (low 32 bits), so no rehash of the key is needed during the shift. */
 function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
+  // for-in enum cache invalidation (core.js __hash_keys_ro / object.js
+  // emitEnumerateObject): delete is the one key-set change the cache's
+  // (off, len) key can miss — a later insert restores the cached len with a
+  // different key set. Unconditional clear (not off-compare): the OBJECT-arm
+  // cache is keyed by SIDECAR off, but a durable receiver's runtime props live
+  // in per-object hashes under __dyn_props whose offs the cache never sees —
+  // a delete there must still invalidate. HASH deletes are cold; SET/MAP
+  // tables never feed enumeration, so only the HASH instance pays.
+  const enumcInval = expectedType === PTR.HASH
+    ? `(global.set $__enumc_off (i32.const 0))
+    `
+    : ''
   return `(func $${name} (param $coll i64) (param $key i64) (result i32)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
     (local $i i32) (local $j i32) (local $k i32) (local $n i32)
@@ -468,7 +480,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
       (br $shift)))
     (i64.store (local.get $i) (i64.const 0))
     (i64.store (i32.add (local.get $i) (i32.const 8)) (i64.const 0))
-    (i32.store (i32.sub (local.get $off) (i32.const 8))
+    ${enumcInval}(i32.store (i32.sub (local.get $off) (i32.const 8))
       (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
     (i32.const 1))`
 }
@@ -843,6 +855,17 @@ export default (ctx) => {
   // inserts — unreachable in practice; fresh per wasm instance.
   if (!ctx.scope.globals.has('__seq'))
     declGlobal('__seq', 'i32')
+
+  // for-in enum cache (core.js __hash_keys_ro): cached boxed key array keyed by
+  // (table off, live len). Declared here unconditionally — genDelete's HASH
+  // invalidation hook references $__enumc_off in its static WAT text, so the
+  // global must exist in any build that reaches __hash_del_local, for-in or not
+  // (same pattern as __seq/__dyn_props above; watr treeshakes them when unused).
+  if (!ctx.scope.globals.has('__enumc_off')) {
+    declGlobal('__enumc_off', 'i32')
+    declGlobal('__enumc_len', 'i32')
+    declGlobal('__enumc_arr', 'f64')
+  }
 
   if (!ctx.scope.globals.has('__dyn_props'))
     declGlobal('__dyn_props', 'f64')
@@ -2054,6 +2077,11 @@ export default (ctx) => {
         (then (i64.reinterpret_f64 (call $__hash_new_small)))
         (else (local.get $oldProps))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
+    ;; for-in enum cache: a global-side prop insert changes a durable receiver's
+    ;; enumeration without touching the (sidecar-keyed) cache key — clear it.
+    ;; Unconditional: an insert into an EXISTING per-object hash skips the
+    ;; props≠oldProps rekey below, so this can't ride that guard. Cold path.
+    (global.set $__enumc_off (i32.const 0))
     (if (i64.ne (local.get $props) (local.get $oldProps))
       (then
         (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
@@ -2234,6 +2262,9 @@ export default (ctx) => {
     (local.set $root (call $__ihash_set_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff))) (local.get $props)))
     (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root)))
     ${dynPropsFilterSetIR('(local.get $newOff)')}
+    ;; for-in enum cache: props re-keyed to a relocated receiver — global-side
+    ;; enumeration state changed without touching the sidecar-keyed cache. Clear.
+    (global.set $__enumc_off (i32.const 0))
     (i32.const 1))`
 
   // Generated HASH probe functions

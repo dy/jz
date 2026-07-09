@@ -282,6 +282,9 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
               (i64.reinterpret_f64 (local.get $oldProps)))))
             (global.set $__dyn_props (local.get $root))
             ${dynPropsFilterSetIR('(local.get $newOff)')}
+            ;; for-in enum cache: sidecar props moved into the global table —
+            ;; enumeration state changed off the cache's key. Clear (see collection.js).
+            (global.set $__enumc_off (i32.const 0))
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
 export default (ctx) => {

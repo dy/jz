@@ -108,3 +108,76 @@ test('for-in deopt: hot for-in is allocation-free (no memory growth)', () => {
   exports.run(2_000_000)
   is(memory.buffer.byteLength, before, 'no heap growth across 2M for-in iterations')
 })
+
+// ── Enum cache (core.js __hash_keys_ro / object.js emitEnumerateObject) ──
+// A for-in over a RUNTIME receiver (true HASH dict, or a shadow-mirrored schema
+// object) used to rebuild its key array — __coll_order alloc + scan + sort +
+// copy — on EVERY loop entry (jessie's comment wrapper paid it per token). It
+// now serves a 1-slot cache keyed (table off, live len), invalidated by deletes
+// and global-side dyn writes; inserts miss naturally via len. These pin the
+// cache's correctness across every key-set mutation and its allocation-free hit.
+
+test('for-in enum cache: mutations between hot dict enumerations stay correct', () => {
+  // insert (len miss) / overwrite (valid hit) / delete (hook) / the stale hole:
+  // delete-then-insert restoring the cached len with a DIFFERENT key set.
+  diff(`export let run=(z)=>{
+    let o={}; o['p']=1; o['q']=2
+    let r=''
+    for(let k in o) r+=k
+    o['r']=3;            for(let k in o) r+='|'+k   // insert → new key visible
+    o['p']=9;            for(let k in o) r+='|'+k   // overwrite → same keys
+    delete o['q'];       for(let k in o) r+='|'+k   // delete → key gone
+    o['s']=4;            for(let k in o) r+='|'+k   // delete+insert same len → fresh set
+    return r
+  }`)
+  // repeated enumeration of an UNCHANGED dict (pure hit path)
+  diff(`export let run=(n)=>{let o={}; o['a']=1; o['b']=2; let s=0; for(let i=0;i<n;i++){for(let k in o) s+=o[k]} return s}`, 50)
+})
+
+test('for-in enum cache: shadow-mirrored schema object (computed reads) stays correct', () => {
+  // Computed reads (o[s]) shadow-mirror the schema into the sidecar — the
+  // jessie parse.comment shape. Enumeration must dedup mirrors once, then hit.
+  diff(`export let run=(n)=>{
+    let o={x:1,y:2}
+    let ks=['x','y'], s=0
+    for(let i=0;i<2;i++) s+=o[ks[i]]     // computed reads → shadow mirror
+    let r=''
+    for(let j=0;j<n;j++) { r=''; for(let k in o) r+=k }
+    return r+s
+  }`, 20)
+  // runtime COMPUTED write of a NEW key on the shadowed object between
+  // enumerations — the cache must refresh (sidecar len changed → natural miss).
+  // (A late LITERAL-key write, `o['zz']=3`, is a distinct pre-existing
+  // enumeration gap — invisible to for-in on HEAD too, unrelated to the cache.)
+  diff(`export let run=(z)=>{
+    let o={x:1,y:2}
+    let ks=['x','zz'], s=o[ks[0]]
+    let r=''; for(let k in o) r+=k
+    o[ks[1]]=3
+    for(let k in o) r+='|'+k
+    return r+s
+  }`)
+})
+
+test('for-in enum cache: nested for-in over the same dict', () => {
+  diff(`export let run=(z)=>{let o={}; o['a']=1; o['b']=2; let r=''; for(let k in o){ for(let m in o) r+=k+m } return r}`)
+})
+
+test('for-in enum cache: two dicts alternating (1-slot thrash stays correct)', () => {
+  diff(`export let run=(n)=>{
+    let a={}; a['p']=1; a['q']=2
+    let b={}; b['x']=7
+    let s=0
+    for(let i=0;i<n;i++){ for(let k in a) s+=a[k]; for(let k in b) s+=b[k] }
+    return s
+  }`, 25)
+})
+
+test('for-in enum cache: hot dict for-in is allocation-free (no memory growth)', () => {
+  if (onWasi()) return
+  const { exports, memory } = jz(`export let run=(n)=>{let o={}; o['a']=1; o['b']=2; o['c']=3; let s=0; for(let i=0;i<n;i++){for(let k in o) s+=o[k]} return s}`)
+  exports.run(1000)
+  const before = memory.buffer.byteLength
+  exports.run(2_000_000)
+  is(memory.buffer.byteLength, before, 'no heap growth across 2M dict for-in iterations')
+})

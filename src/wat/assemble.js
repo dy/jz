@@ -720,7 +720,8 @@ export function pullStdlib(sec) {
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__dyn_props', '__dyn_props_filter',
-          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__gsnap_base'])
+          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__gsnap_base',
+          '__enumc_off', '__enumc_len', '__enumc_arr'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (!Array.isArray(node)) return
@@ -804,6 +805,14 @@ export function pullStdlib(sec) {
         if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const -1))`)
         if (ctx.scope.globals.has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
       }
+      // for-in enum cache (core.js __hash_keys_ro / object.js ro-enumeration):
+      // the cache keys a boxed array by table offset — both live in the arena
+      // __clear rewinds, so a later round could re-issue the cached offset to a
+      // NEW table and false-hit onto reclaimed memory (same ABA hazard as
+      // __dyn_get_cache_off above). Gated on enumcConsumed, not reachability:
+      // the OBJECT-arm fill sites are inline IR (no named helper to count).
+      if (ctx.runtime.enumcConsumed)
+        resets.push(`(global.set $__enumc_off (i32.const 0))`)
       // Durable relocation heal (collection.js's durableFwdLogIR / core.js's
       // __durable_fwd_log/__durable_fwd_heal): only reachable when some growable
       // ARRAY/HASH/SET/MAP relocation site actually logged a durable→ephemeral

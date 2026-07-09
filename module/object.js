@@ -271,10 +271,18 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  ctx.core.emit['Object.keys'] = (obj) => {
+  // Shared by Object.keys and __keys_ro. `ro` marks the for-in path: its result
+  // is read-only by construction (the lowering only reads ks[i]/ks.length), so
+  // the HASH arms may serve the shared enum-cache array (core.js __hash_keys_ro)
+  // instead of a fresh copy. Object.keys stays fresh — callers may mutate it.
+  const emitKeysGeneric = (obj, ro) => {
+    // Shared memory: cache globals are per-instance but the table is cross-thread,
+    // and shared's `__clear` (plain rewind, core.js) takes no reset injections —
+    // both break the cache's invalidation story. Serve the uncached path there.
+    if (ctx.memory.shared) ro = false
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
-    if (isHashTyped(obj)) return emitHashKeys(obj)
+    if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
     if (arrayValType(obj)) return idxKeys(obj, '__len')
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
@@ -285,8 +293,9 @@ export default (ctx) => {
     if (schema && !mayHaveDynProps(obj)) return emitStringArray(schema)
     // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
     // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
-    return emitRuntimeKeys(obj)
+    return emitRuntimeKeys(obj, ro)
   }
+  ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)
   ctx.core.emit['Object.getOwnPropertyNames'] = ctx.core.emit['Object.keys']
 
   // for-in's read-only key enumeration (src/prepare for…in lowering). Identical to
@@ -311,7 +320,7 @@ export default (ctx) => {
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
     }
-    return ctx.core.emit['Object.keys'](obj)
+    return emitKeysGeneric(obj, true)
   }
 
   // Object.prototype.hasOwnProperty(key) — own-property presence check.
@@ -960,6 +969,28 @@ function emitHashKeys(obj) {
     hashKeysFromTemp(t)], 'f64')
 }
 
+// for-in over a statically-HASH receiver: serve keys through the shared enum
+// cache (core.js __hash_keys_ro) — read-only by the for-in lowering's contract.
+function emitHashKeysRO(obj) {
+  inc('__hash_keys_ro')
+  declEnumcGlobals()
+  return typed(['call', '$__hash_keys_ro', ['i64.reinterpret_f64', asF64(emit(obj))]], 'f64')
+}
+
+// __hash_keys_ro's cache globals — declared at emit time so the helper's text
+// resolves even in builds where collection.js (which also declares them for its
+// delete-hook) never loads. enumcConsumed marks that some enumeration site can
+// FILL the cache this build (the OBJECT arm is inline IR — reachability can't
+// see it), so assemble.js knows to reset it in `__clear` (ABA guard).
+function declEnumcGlobals() {
+  ctx.runtime.enumcConsumed = true
+  if (!ctx.scope.globals.has('__enumc_off')) {
+    declGlobal('__enumc_off', 'i32')
+    declGlobal('__enumc_len', 'i32')
+    declGlobal('__enumc_arr', 'f64')
+  }
+}
+
 function emitHashValues(obj) {
   const t = temp('hv')
   return typed(['block', ['result', 'f64'],
@@ -1059,14 +1090,15 @@ function hashEntriesFromTemp(t) {
 // compile time or lazily at runtime by JSON.parse via __jp_schema_get); other
 // types (ARRAY, nullish, primitives) return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
-function emitRuntimeKeys(obj) {
+function emitRuntimeKeys(obj, ro) {
   const t = temp('rk')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
-    runtimeKeysFromTemp(t, 'rk')], 'f64')
+    runtimeKeysFromTemp(t, 'rk', ro)], 'f64')
 }
 
-function runtimeKeysFromTemp(t, tag) {
+function runtimeKeysFromTemp(t, tag, ro) {
+  if (ctx.memory.shared) ro = false  // see emitKeysGeneric — no enum cache under shared memory
   inc('__ptr_type')
   // Ensure the schema table global exists even in programs that never use
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
@@ -1083,10 +1115,14 @@ function runtimeKeysFromTemp(t, tag) {
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
-      ['then', hashKeysFromTemp(t)],
+      // for-in (ro): serve the shared enum-cache array — see emitHashKeysRO.
+      ['then', ro
+        ? (inc('__hash_keys_ro'), declEnumcGlobals(),
+          ['call', '$__hash_keys_ro', ['i64.reinterpret_f64', ['local.get', `$${t}`]]])
+        : hashKeysFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-        ['then', objectKeysFromTemp(t)],
+        ['then', objectKeysFromTemp(t, ro)],
         ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]]
 }
 
@@ -1146,8 +1182,9 @@ function emitRuntimeEntries(obj) {
 //
 // Callbacks receive the active locals as named fields so each variant can
 // reference what it needs without knowing the scaffold's layout.
-function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
+function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  if (ro) declEnumcGlobals()
   // Durable-receiver global-table merge (see below) only when collection.js's
   // dyn-props machinery is actually part of this build — a program that never
   // writes a dynamic prop anywhere never loads collection.js, so __dyn_props/
@@ -1172,6 +1209,21 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
   const j = tempI32('oej2'), skip = tempI32('oesk'), pair = tempI32('oep')
   const id = ctx.func.uniq++
   const env = { out, o, src, base, i, slot, pair }
+  // for-in enum cache, OBJECT arm (see core.js __hash_keys_ro for the scheme).
+  // Key = (sidecar off, sidecar len): the sidecar identifies the object (one
+  // sidecar per object, offs unique), sid/schema are immutable per object, and
+  // every other key-set change clears the cache — sidecar inserts change dnS
+  // (natural miss), sidecar/global deletes and global dyn-prop inserts clear
+  // __enumc_off at their (cold) sites. Checked BEFORE the global __dyn_props
+  // probe, so a hit skips the ihash lookup too — sound because any global-side
+  // structural change since fill cleared the cache. poffS≠0 guard: an empty
+  // cache (off 0) must not match a sidecar-less object.
+  const roHit = ro ? [['if', ['i32.and',
+      ['i32.and',
+        ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
+        ['i32.eq', ['local.get', `$${poffS}`], ['global.get', '$__enumc_off']]],
+      ['i32.eq', ['local.get', `$${dnS}`], ['global.get', '$__enumc_len']]],
+    ['then', ['br', `$oed${id}`, ['global.get', '$__enumc_arr']]]]] : []
   // Dedup-and-store one dyn source's dn live slots (at poff/pcap, ord already
   // computed) against the schema (0..sn @ src) and, when `against` is given,
   // a second dyn source's already-walked ord array (0..dn2 @ ord2).
@@ -1211,7 +1263,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
             ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$${label}loop${id}`]]]]]
-  return ['block', ['result', 'f64'],
+  return ['block', `$oed${id}`, ['result', 'f64'],
     // Static schema row: sid (AUX bits) → __schema_tbl[sid] → src offset; n@src-8.
     // __schema_tbl is omitted when every program schema is empty (dyn-only dicts);
     // guard the read so empty-table programs see sn=0 here and still enumerate
@@ -1251,15 +1303,19 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
             // propsPtr offset would point at the forward record, not live slots.
             ['local.set', `$${poffS}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
             ['local.set', `$${pcapS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 4]]]],
-            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]]],
+            ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]],
+        ...roHit],
       ...(hasDynProps ? [['else',
         // Durable AND genuinely heap-allocated (base >= __heap_start —
         // static-segment objects have no header at all, so both dyn sources
         // stay 0 for them, same as before this durable branch existed).
         ['if', ['i32.ge_u', ['local.get', `$${base}`], ['global.get', '$__heap_start']],
           ['then',
-        // Sidecar (init-time keys, if any — same header read as above).
-        ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
+        // Sidecar (init-time keys, if any — same header read as above). Durable
+        // words may carry the runtime-shadowed bit0 marker (collection.js
+        // __dyn_set) — mask it out or the resolved sidecar off is misaligned.
+        ['local.set', `$${props}`, ['i64.and',
+          ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]], ['i64.const', -2]]],
         ['if', ['i32.eq',
             ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
             ['i32.const', PTR.HASH]],
@@ -1267,6 +1323,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
             ['local.set', `$${poffS}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
             ['local.set', `$${pcapS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 4]]]],
             ['local.set', `$${dnS}`, ['i32.load', ['i32.sub', ['local.get', `$${poffS}`], ['i32.const', 8]]]]]],
+        ...roHit,
         // Global (runtime-written keys, if any) — same base >= __heap_start
         // guard as the sidecar read above, already established by the
         // wrapping `if` this block sits inside.
@@ -1280,6 +1337,14 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
                 ['local.set', `$${poffG}`, ['call', '$__ptr_offset', ['local.get', `$${props}`]]],
                 ['local.set', `$${pcapG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 4]]]],
                 ['local.set', `$${dnG}`, ['i32.load', ['i32.sub', ['local.get', `$${poffG}`], ['i32.const', 8]]]]]]]]]]]] : [])],
+    // for-in with no dyn sources at all: the enumeration IS the schema key
+    // array, and __schema_tbl[sid] already holds it as a static jz array —
+    // return it boxed directly. Read-only by for-in's contract, static by
+    // construction: no alloc, no cache, no invalidation.
+    ...(ro ? [['if', ['i32.and',
+        ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
+        ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]]],
+      ['then', ['br', `$oed${id}`, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])]]]] : []),
     // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
     // removed shadow-mirror/cross-source-duplicate slots never expose
     // garbage tails.
@@ -1310,11 +1375,20 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore) {
     walkDyn('oeg', dnG, ordG, null),
     walkDyn('oes', dnS, ordS, { dn: dnG, ord: ordG }),
     ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
+    // Fill the enum cache (keyed by sidecar — see roHit above). Objects without
+    // a sidecar are either tier-1 (returned above) or global-only (rare; a 0 key
+    // would collide across objects, so leave them uncached).
+    ...(ro ? [['if', ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
+      ['then',
+        ['global.set', '$__enumc_off', ['local.get', `$${poffS}`]],
+        ['global.set', '$__enumc_len', ['local.get', `$${dnS}`]],
+        ['global.set', '$__enumc_arr', mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]]]] : []),
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }
 
 // Object.keys for an OBJECT — copy schema key (i64@src+i*8) then dyn key (i64@slot+8).
-const objectKeysFromTemp = (t) => emitEnumerateObject(t,
+// ro (for-in): serve the static schema array / enum cache — see emitEnumerateObject.
+const objectKeysFromTemp = (t, ro) => emitEnumerateObject(t,
   ({ out, o, src, i }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -1322,7 +1396,7 @@ const objectKeysFromTemp = (t) => emitEnumerateObject(t,
   ({ out, o, slot }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]])
+      ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]], ro)
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
 const objectValuesFromTemp = (t) => emitEnumerateObject(t,
