@@ -277,6 +277,31 @@ a look) and a receiver+key->value 1-slot read cache would kill the rest;
 (2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
 slot-in-header idea); (3) closure8 descriptor walk (genuine work —
 leaf-op costs only).
+BEAT-WASM-OPT LEG (2026-07-09, fourth leg): DONE — geomean 0.998.
+Two more watr passes landed on top of ifset:
+- zeroinit (watr 59a0e3a): drop `local.set X (T.const 0)` when X provably
+  still holds its spec zero (no earlier set/tee in program order incl.
+  flat sibling forms, not inside a loop, params excluded). 42 sites on
+  crc32 alone. BUG CAUGHT DURING DEV: float -0 === 0 in JS — an equality
+  zero-test dropped `f64.const -0` sets and flipped the sign (jz's sort
+  -0-before-+0 pin caught it); fixed with Object.is for f32/f64.
+- ifset enabled at jz's SIZE tier (jz 32e32b8, watrIfset preset key):
+  select IS a size win; wasm-opt -Oz does it too. Speed keeps it via
+  boolConvertToSelect; DEFAULT stays branchy (pins).
+Three stale codegen pins re-anchored PRE-watr (slice-view, Map/Set
+refinement dispatch): the pinned DECISIONS are jz's, and watr's
+inlineOnce now legitimately dissolves the single-caller helpers whose
+names they grepped (zeroinit shrank bodies under the threshold).
+WRAPPER PROBE-HOIST DESCOPED (analysis recorded): asi/comment scanners
+call baseSpace through `parse._baseSpace ??= parse.space` — a
+CONDITIONAL init write, so single-value closure devirt can't prove the
+callee set and transitive-global-writes goes top. Would need ??=-aware
+init-once facts (the value IS fixed post-init) — plan-phase work, ~0.1-
+0.2ms of jessie at stake.
+WALKER SWEEP RESULT: writesOf already memoized direct recursion;
+remaining micro-specializations wash at wall-clock on this machine
+(twice measured) — the real lever stays arrays-only walker variants /
+per-pass fusion (design-level, recorded).
 IFSET + PROBE-HOIST LEG (2026-07-09, third night):
 WATR IFSET (watr 1f9b22c, jz 7fae21c): one-armed conditional update
 (if C (then (set X V))) -> set X (select V (get X) C) — THE dominant
