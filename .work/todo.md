@@ -4,12 +4,44 @@
 
 * [ ] Beat all bench cases, all examples - pinned
   * [x] 10 more bench cases - each area covered
+  * STATE 2026-07-09: examples geomean 1.71x, jz faster 13/14. Bench gate at the
+    standing 4: fastest-wasm tokenizer/qoi/crc32 (1.06-1.15x vs c/as — CI-jitter
+    band, scalar codegen race) + Sierpinski floatbeat. jessie 2.2ms vs V8 1.38
+    (~1.6x, was 5.4x; residual = per-char override PROBE in space — hoist it
+    (loop-invariant under the shape-1b stability proof), .loc sidecar churn,
+    closure8 descriptor walk). vs-JSC set unmeasured this leg (rerun bench.mjs
+    with JSC on a quiet machine).
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
+    * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
+      sortStrPoolByFreq, deadStoreElim, csePureExprLoop + the vestigial 'post'
+      phase DELETED — byte-identical outputs proven across 50 benches + 66
+      examples + the self-host kernel at all watr tiers (~900 lines, dist/jz.js
+      -9.5KB, dist/jz.wasm -370KB). Kept-with-evidence: cseScalarLoad (aos 25%),
+      hoistInvariantPtrOffset (shapes).
+    * next: value-unknown group needs corpus bench-timing (hoistAddrBase -2KB
+      when off!, hoistInvariantLoop vs watrLicm double-LICM, promoteGlobals,
+      internStrings, propagateSingleUse — disabling it is smaller AND faster to
+      compile). THE fold that halves jz.js: migrate src/optimize (vectorize.js
+      369KB + index.js 229KB) INTO watr — one optimizer, one walker infra.
   * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abstraction altogether to make compilation speed multiple times faster? Some folding or waste cutout possible - what can be killed of merged without effect?
+    * measured: watr's generic walkers = ~30% of compile (walk 679ms/profile);
+      tallyLocals specialized upstream (watr e83c858); dead-pass deletions bought
+      ~5-8%/corpus. Next: specialize writesOf/cseFactsOf/hashFunc callbacks or
+      arrays-only walker variants (half of nodes are leaves).
   * [ ] How to shave off the size of produced wasms? Attain level better than wasm-opt for produced wasms? We have three options - own post-watr wat optimize pass, watr/optimize or wasm-opt, but ideally we'd internalize the optimizer so that's more efficient than wasm-opt, as well as fast.
+    * measured 2026-07-09: jz size-tier = 1.026x of wasm-opt -Oz applied on top
+      (97.4% of binaryen's ceiling, 8-case geomean). Residual fully decomposed
+      (crc32 disassembly): ~60 if→select conversions + ~87 stack-threaded locals.
+      Two watr passes (ifToSelect: pure+cheap+non-trapping arms; cross-block
+      set/get threading) close it — then jz BEATS wasm-opt and the optimizer is
+      internal. No wasm-opt in the pipeline today; watr is the sole optimizer.
 * [ ] jz.wasm beats v8
   * I need your expertize to make jz.wasm faster than v8. I suspect there's too many string ops, or strings are too complex and could be done simpler OR not versatile enough, or there's some internal structure missing or redundant, or some internal optimizations possible, to reach the level of jz.wasm performing faster than jz.js. Now it's seemingly slower and we need to beat V8 and JSC. The point is not optimizing the source, but making current structures more efficient, so that generally any compiled WASM is faster than V8.
+  * STATE 2026-07-09: warm self-host compile = 1.004x jz.js GEOMEAN (sort 0.97,
+    mandelbrot 0.98, crc32 1.00 BEAT it; mat4 1.06 lags), fresh-instance 1.097x.
+    The item reduces to: mat4-shape warm gap + fresh-instance init cost. Not a
+    strings problem — the string-ops suspicion was refuted by the parity data.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
@@ -242,6 +274,31 @@ a look) and a receiver+key->value 1-slot read cache would kill the rest;
 (2) .loc sidecar alloc churn (hash_set 9.3k/parse on ephemeral nodes ->
 slot-in-header idea); (3) closure8 descriptor walk (genuine work —
 leaf-op costs only).
+COMPACTION LEG (2026-07-09, second night): PASS-ABLATION METHOD — for
+each optimizer pass, compile 50 benches + 66 examples + self-host kernel
+with it disabled at speed/size/2 tiers; byte-identical output = dead.
+DELETED (commits 0278309, 768748a): specializePtrBase (100% identical
+everywhere — watr's inlining/offset folding subsumed it), sortStrPoolByFreq
+(100% identical — its LEB128-ordering effect evaporated), deadStoreElim
+(identical at size/2; speed: only nqueens ±8B and FASTER without it 3/3),
+csePureExprLoop + the whole vestigial 'post' phase (unreachable: one
+caller, always 'pre'). ~900 lines, dist/jz.js -9.5KB, dist/jz.wasm
+-370KB, compile ~5-8% faster per corpus. KEPT with evidence:
+cseScalarLoad (aos -25% without), hoistInvariantPtrOffset (shapes).
+DEFERRED (need corpus bench-timing gates): hoistAddrBase (output 2KB
+SMALLER when off — suspicious), hoistInvariantLoop-vs-watrLicm double
+LICM, promoteGlobals, internStrings, propagateSingleUse (smaller AND
+faster-compile when off), specializeMkptr, narrowLoopBound.
+CHARCODEAT SHAPE-1B (274852e, 0a5e413): entry decomposition extended to
+stable module-global receivers (parser shape `cur.charCodeAt(idx)`) with
+an AST stability proof (never assigned in fn + only .charCodeAt calls in
+body + no yield/await/new); probe fallback arm re-references bare-name
+receivers so the ABI op sees the global.get. Honest: bench corpus
+byte-identical (no bench has the shape), jessie WASH — the per-char
+METHOD-OVERRIDE PROBE dominates that site now; its answer is loop-
+invariant under the same proof → HOIST THE PROBE is the named jessie
+lever. Learned: self-host kernel compiles the compiler's own source —
+structuredClone in abi/string.js broke the kernel build (fixed).
 V1 ARCHITECTURE CAMPAIGN — MEASURED STATE (2026-07-09 leg; all four
 selected items now have causal numbers + ranked levers):
 (A) jz.wasm vs V8: warm self-host geomean 1.004x jz.js (sort 0.97,
