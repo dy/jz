@@ -386,7 +386,7 @@ export const refreshProgramFacts = (ast, _prev) => collectProgramFacts(ast)
  *  is `const x = userFn(...)` from `undefined` to `NUMBER`/etc.
  *  observeSlot's first-wins-then-clash rule means later precise observations
  *  upgrade undefined slots without re-poisoning already-monomorphic ones. */
-export function observeProgramSlots(ast) {
+export function observeProgramSlots(ast, opts) {
   if (!ctx.schema?.register) return
   const slotTypes = ctx.schema.slotTypes
   const slotCtors = ctx.schema.slotTypedCtors
@@ -399,6 +399,59 @@ export function observeProgramSlots(ast) {
     if (arr[idx] === undefined) arr[idx] = vt
     else if (arr[idx] !== vt) arr[idx] = null
   }
+  // Hard kind-poison (observeSlot's `!vt` arm is a SKIP, not a poison): a write
+  // whose kind can't be independently proven forces the slot polymorphic.
+  const poisonSlot = (sid, idx) => {
+    let arr = slotTypes.get(sid)
+    if (!arr) { arr = []; slotTypes.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    arr[idx] = null
+  }
+  const poisonCtor = (sid, idx) => {
+    let arr = slotCtors.get(sid)
+    if (!arr) { arr = []; slotCtors.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    arr[idx] = null
+  }
+  // Strict write-kind resolver: valTypeOf EXCEPT (a) `.prop` reads answer null —
+  // consulting the live slotTypes state mid-census would make observations
+  // order-dependent (a source slot poisoned LATER would leave a stale kind
+  // standing), and (b) `+`/`+=` never guess — VT['+']'s NUMBER-for-unknowns
+  // optimism is fine for expression typing (the emitter still dispatches at
+  // runtime) but would durably misclassify a slot a string flows into.
+  // Non-plus arithmetic stays trustworthy through plain valTypeOf: ToNumber
+  // semantics make `* - / % << >> & | ^` NUMBER whatever the operands.
+  const writeVT = (n) => {
+    if (Array.isArray(n)) {
+      const op = n[0]
+      if (op === '.' || op === '?.') return null
+      if (op === '+' || op === '+=') {
+        const ta = writeVT(n[1]), tb = writeVT(n[2])
+        if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+        if (ta == null || tb == null) return null
+        if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+        return VAL.NUMBER
+      }
+      if (op === '?:') { const a = writeVT(n[2]), b = writeVT(n[3]); return a === b ? a : null }
+      if (op === '&&' || op === '||' || op === '??') { const a = writeVT(n[1]), b = writeVT(n[2]); return a === b ? a : null }
+    }
+    return valTypeOf(n)
+  }
+  // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
+  // receivers, computed-key writes, extern constructors — see
+  // collectSlotWriteHazards). Sticky: observeSlot never upgrades null.
+  // Kind-safe sids (JSON shaped/const parsers) OBSERVE their sample kinds
+  // instead — clash with a same-sid literal still nulls, exactly right; their
+  // elem-ctors poison regardless (JSON never carries typed arrays).
+  // opts.fresh (plan's post-narrowing refine): REBUILD from scratch — the late
+  // hazard recompute resolves receivers the early pass poisoned wholesale
+  // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
+  // Sound to rebuild: every kind consumer left reads at emit, after this.
+  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear() }
+  const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
+  applySlotWriteHazards(hazards,
+    (sid, idx) => { poisonSlot(sid, idx); poisonCtor(sid, idx) },
+    { observe: (sid, idx, vt) => { vt ? observeSlot(sid, idx, vt) : poisonSlot(sid, idx); poisonCtor(sid, idx) } })
   // Elem-ctor sibling of observeSlot — same first-wins-then-clash lattice. A
   // slot whose every observed value is one typed-array kind keeps that kind for
   // `plan.tw[i]`-style reads (consumption additionally gates on the prop never
@@ -436,6 +489,21 @@ export function observeProgramSlots(ast) {
           observeSlot(sid, i, valTypeOf(parsed.values[i]))
           observeCtor(sid, i, ctorOfValue(parsed.values[i]))
         }
+      }
+    } else if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1]) &&
+        (node[1][0] === '.' || node[1][0] === '?.') && typeof node[1][1] === 'string' && typeof node[1][2] === 'string') {
+      // Resolvable `.prop` writes: observe the written kind when it's
+      // independently provable (writeVT), hard-poison otherwise — a slot's
+      // censused kind must reflect EVERY write, not just literal init values
+      // (`o.x = 'oops'` on a NUMBER-observed slot was a live miscompile).
+      // Unresolvable receivers are hazard-poisoned; elem-ctor consumers are
+      // already fail-closed on writtenProps, so no ctor action here.
+      const sid = repOf(node[1][1])?.schemaId ?? ctx.schema.vars.get(node[1][1])
+      const idx = sid != null ? (ctx.schema.list[sid]?.indexOf(node[1][2]) ?? -1) : -1
+      if (idx >= 0) {
+        const vt = writeVT(effectiveWriteValue(op, node[1], node[2]))
+        if (vt) observeSlot(sid, idx, vt)
+        else poisonSlot(sid, idx)
       }
     }
     for (let i = 1; i < node.length; i++) visit(node[i])
@@ -486,6 +554,231 @@ export function observeProgramSlots(ast) {
   ctx.func.localValTypesOverlay = prevOverlay
 }
 
+// ————————————————————————————— slot-write hazards —————————————————————————————
+// The slot censuses (slotIntCertain here, slotTypes/slotTypedCtors in
+// observeProgramSlots) observe `{}` literals and resolvable `obj.prop =`
+// writes — every OTHER way a schema slot's value can change is a HAZARD the
+// censuses must poison, or a consumer bakes a stale fact into codegen
+// (Math.floor elision on a 1.5, raw arithmetic on a string box — live
+// miscompiles, each probed):
+//   - `.prop` writes through an UNRESOLVABLE receiver (expression receivers,
+//     params no caller agreement pins) → by-prop poison across all schemas.
+//   - computed-key writes `o[k] = v` / `delete o[k]` — a resolvable OBJECT
+//     receiver poisons its whole sid; HASH/ARRAY/TYPED/MAP/SET/STRING
+//     receivers never hit schema slots (dict/element/sidecar homes); an
+//     unknown receiver with a provably-NUMERIC key can only hit slots with
+//     canonical-integer names; anything else poisons everything.
+//   - destructuring assignment into member targets (value shapes unknown).
+//   - extern slot writers — the JSON const emitter / shaped parser and
+//     spread / Object.assign slot copies (ctx.schema.externSlotSids +
+//     Object.assign / spread / JSON.parse discovery here).
+// Fail-closed: under-resolution only loses precision, never soundness.
+const _numericName = (s) => /^(0|[1-9][0-9]*)$/.test(String(s))
+
+/** Body-local element-alias sids: single-`=` bindings whose init is a whole
+ *  element read of an array with a known element schema (local decl facts or a
+ *  narrowed param's arrayElemSchema — the latter exists only post-narrowing).
+ *  Shared by the late slot-int census and the hazard scan so both resolve
+ *  receivers equally (a hazard scan weaker than the census would poison the
+ *  very slots the census just proved). */
+function collectBodyElemSids(func, paramReps) {
+  if (!paramReps || !func?.body || func.raw) return null
+  const facts = analyzeBody(func.body)
+  const reps = paramReps.get(func.name)
+  const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
+  const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
+    ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
+  const sids = new Map(), writes = new Map()
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '=' && typeof n[1] === 'string') {
+      writes.set(n[1], (writes.get(n[1]) || 0) + 1)
+      const rhs = n[2]
+      if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
+        const sid = elemSidOf(rhs[1])
+        if (sid != null) sids.set(n[1], sid)
+      }
+    }
+    for (let i = 1; i < n.length; i++) scan(n[i])
+  }
+  scan(func.body)
+  for (const [name, c] of writes) if (c > 1) sids.delete(name)
+  return sids.size ? sids : null
+}
+
+/** The value a compound assignment / inc-dec effectively stores — synthesized
+ *  so census value-analyses (isIntExpr, kind checks) see the real shape:
+ *  `o.n++` → `['+', o.n, 1]` (self-referential, resolved by the censuses' own
+ *  optimistic fixpoint), `o.f ||= x` → either arm. */
+export function effectiveWriteValue(op, lhs, rhs) {
+  if (op === '=') return rhs
+  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
+  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
+  return [op.slice(0, -1), lhs, rhs]
+}
+
+const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
+let _hazardCache = null
+
+/** Program-wide slot-write hazard scan → `{ all, sids, props, numeric,
+ *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
+ *  readers' belt checks. Recomputed per program-facts generation, and again
+ *  post-narrowing (plan's refine step, opts.paramReps) — narrowed param reps
+ *  resolve receivers the early pass can't (`re[j] = tr` on a TYPED param is an
+ *  element write, not a world-poison). `kindSafeSids` maps a sid to its
+ *  guarded-constructor slot KINDS (the JSON shaped/const parsers — any runtime
+ *  shape divergence falls back to the generic parser's disjoint runtime sids,
+ *  so the sample's kinds hold for every object carrying the sid): slotTypes
+ *  OBSERVES those kinds, slotIntCertain still poisons (a JSON number is any
+ *  double). */
+export function collectSlotWriteHazards(ast, opts) {
+  const late = !!opts?.paramReps
+  if (_hazardCache && _hazardCache.gen === _programFactsGen && _hazardCache.late === late)
+    return (ctx.schema.slotWriteHazards = _hazardCache.hz)
+  const hz = { all: false, sids: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
+  let curSids = null, curParamVts = null
+  const sidOf = (obj) => {
+    if (typeof obj !== 'string' || ctx.schema.poisoned?.has(obj)) return null
+    return curSids?.get(obj) ?? repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj) ?? null
+  }
+  const kindOf = (obj) => typeof obj === 'string'
+    ? (curParamVts?.get(obj) ?? repOf(obj)?.val ?? valTypeOf(obj))
+    : valTypeOf(obj)
+  const propWrite = (obj, prop) => {
+    // Resolvable string receivers are the censuses' own precise territory.
+    if (sidOf(obj) == null) hz.props.add(prop)
+  }
+  const keyedWrite = (obj, key) => {
+    if (isLiteralStr(key)) return propWrite(obj, key[1])
+    const sid = sidOf(obj)
+    if (sid != null) { hz.sids.add(sid); return }
+    const vt = kindOf(obj)
+    if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
+    if (valTypeOf(key) === VAL.NUMBER || (typeof key === 'string' && repOf(key)?.intCertain === true)) hz.numeric = true
+    else hz.all = true
+  }
+  // Member targets buried in a destructuring pattern — written with values the
+  // censuses can't see; hazard them like opaque writes.
+  const patternTargets = (pat) => {
+    if (!Array.isArray(pat)) return
+    const op = pat[0]
+    if (op === '.' || op === '?.') {
+      if (typeof pat[2] === 'string') {
+        const sid = sidOf(pat[1])
+        if (sid != null) hz.sids.add(sid)
+        else hz.props.add(pat[2])
+      }
+      return
+    }
+    if (op === '[]') return keyedWrite(pat[1], pat[2])
+    for (let i = 1; i < pat.length; i++) patternTargets(pat[i])
+  }
+  const visit = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1])) {
+      const lhs = node[1]
+      if ((lhs[0] === '.' || lhs[0] === '?.') && typeof lhs[2] === 'string') propWrite(lhs[1], lhs[2])
+      else if (lhs[0] === '[]') keyedWrite(lhs[1], lhs[2])
+      else if (op === '=' && (lhs[0] === '{}' || lhs[0] === '[')) patternTargets(lhs)
+    } else if (op === 'delete') {
+      // prepare only lets computed-key deletes through (['delete', obj, key]);
+      // __dyn_del's schema arm writes UNDEF into a matching slot.
+      keyedWrite(node[1], node[2])
+    } else if (op === '{}') {
+      // Spread literal: the emitter slot-copies source schemas into the merged
+      // sid — writes outside the census's view. Resolve the merged name-set the
+      // same way (explicit `: names` + spread source schemas); an unresolvable
+      // source builds a HASH / __obj_clone result instead (no censused sid).
+      // The `{}` emitter's own extern belt covers any resolution divergence.
+      const entries = node.length === 2 && Array.isArray(node[1]) && node[1][0] === ','
+        ? node[1].slice(1) : node.slice(1)
+      if (entries.some(p => Array.isArray(p) && p[0] === '...')) {
+        const names = []
+        let known = true
+        for (const p of entries) {
+          if (!Array.isArray(p)) continue
+          if (p[0] === '...') {
+            const sid = sidOf(p[1])
+            const src = sid != null ? ctx.schema.list[sid] : null
+            if (src) { for (const n of src) if (!names.includes(n)) names.push(n) }
+            else known = false
+          } else if (p[0] === ':' && (typeof p[1] === 'string' || typeof p[1] === 'number')) {
+            if (!names.includes(String(p[1]))) names.push(String(p[1]))
+          }
+        }
+        if (known && names.length) hz.sids.add(ctx.schema.register(names))
+      }
+    } else if (op === '()' && node[1] === 'Object.assign') {
+      const target = node[2]
+      const sid = sidOf(target)
+      if (sid != null) hz.sids.add(sid)
+      else {
+        const vt = kindOf(target)
+        if (vt == null || vt === VAL.OBJECT) hz.all = true
+      }
+    } else if (op === '()' && (node[1] === 'JSON.parse' ||
+        (Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'JSON' && node[1][2] === 'parse'))) {
+      // Plan-time mirror of the JSON.parse dispatch (module/json.js hook): every
+      // key-set the const emitter / shaped parser will register gets its sid
+      // KIND-SAFE-marked here with the sample's slot kinds, before any census
+      // consumer reads it (a null kind entry poisons that slot's kind too).
+      const keysets = ctx.schema.jsonParseKeysets?.(node[2])
+      if (keysets) for (const { keys, kinds } of keysets)
+        hz.kindSafeSids.set(ctx.schema.register(keys), kinds)
+    }
+    for (let i = 1; i < node.length; i++) visit(node[i])
+  }
+  // Per-body valTypes overlays (mirrors observeProgramSlots): receiver/key
+  // resolution must see local kinds — `ps[i] = {…}` with ps a local ARRAY and
+  // i an int counter is an ELEMENT write, not a slot hazard; without the
+  // overlay both fall to unknown and the scan poisons the world.
+  const prevOverlay = ctx.func.localValTypesOverlay
+  if (ast) { ctx.func.localValTypesOverlay = null; curSids = null; visit(ast) }
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
+    curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
+    // Late mode: narrowed param reps type this body's params (the early pass
+    // can't — `re[j] = tr` on a TYPED param must classify as an element write).
+    if (late) {
+      const reps = opts.paramReps.get(func.name)
+      curParamVts = reps
+        ? new Map((func.sig?.params || []).map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+        : null
+    }
+    visit(func.body)
+    curSids = curParamVts = null
+  }
+  ctx.func.localValTypesOverlay = null
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
+  ctx.func.localValTypesOverlay = prevOverlay
+  _hazardCache = { gen: _programFactsGen, late, hz }
+  return (ctx.schema.slotWriteHazards = hz)
+}
+
+/** Apply hazards (+ the extern-sid belt set) to a census map: `poison(sid, idx)`
+ *  for every hazarded slot. Idempotent; each census calls it at (re)build entry.
+ *  `opts.kindSafe` (slotTypes only): kind-safe sids' sample kinds are OBSERVED
+ *  via the callback instead of poisoned — `observe(sid, idx, vtOrNull)`; the
+ *  int census omits it, so kind-safe sids fully poison there (JSON numbers are
+ *  arbitrary doubles). */
+export function applySlotWriteHazards(hz, poison, opts) {
+  const list = ctx.schema.list || []
+  const externs = ctx.schema.externSlotSids
+  for (let sid = 0; sid < list.length; sid++) {
+    const names = list[sid]
+    if (!names) continue
+    const kindSafe = opts?.observe ? hz.kindSafeSids?.get(sid) : undefined
+    const whole = hz.all || hz.sids.has(sid) || externs?.has(sid) ||
+      (hz.kindSafeSids?.has(sid) && kindSafe == null)
+    for (let i = 0; i < names.length; i++) {
+      if (whole || hz.props.has(String(names[i])) || (hz.numeric && _numericName(names[i]))) { poison(sid, i); continue }
+      if (kindSafe) opts.observe(sid, i, kindSafe[i] ?? null)
+    }
+  }
+}
+
 /** Whole-program slot intCertain observation.
  *
  *  A schema slot `(sid, idx)` is `intCertain` iff every write to it across the
@@ -496,6 +789,8 @@ export function observeProgramSlots(ast) {
  *
  *  Global poison semantics: any non-int write to a slot — in any body —
  *  permanently flips it false. Slots never observed stay `undefined`.
+ *  Writes the census can't SEE (unresolvable receivers, computed keys, extern
+ *  constructors) are poisoned via collectSlotWriteHazards at every (re)build.
  *
  *  Cross-function flow (slot written from a call's return value) is **not**
  *  tracked — those writes count as non-int and poison the slot. Conservative:
@@ -510,6 +805,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (!ctx.schema?.register) return
   const slotIntCertain = ctx.schema.slotIntCertain
   if (opts?.paramReps) slotIntCertain.clear()
+  const hazards = collectSlotWriteHazards(ast, opts)
   let flipped = false
   const poisonSlot = (sid, idx) => {
     let arr = slotIntCertain.get(sid)
@@ -552,34 +848,10 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     return slotIntCertain.get(sid)?.[idx] !== false
   }
 
-  // LATE mode: body-local element-alias sids. Single-`=` bindings whose init
-  // is a whole element read of an array with a known element schema (local
-  // decl facts or a narrowed param's arrayElemSchema).
+  // LATE mode: body-local element-alias sids (collectBodyElemSids — shared
+  // with the hazard scan so receiver resolution stays in lockstep).
   const paramReps = opts?.paramReps
-  const bodySidsOf = (func) => {
-    if (!paramReps || !func?.body || func.raw) return null
-    const facts = analyzeBody(func.body)
-    const reps = paramReps.get(func.name)
-    const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
-    const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
-      ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
-    const sids = new Map(), writes = new Map()
-    const scan = (n) => {
-      if (!Array.isArray(n)) return
-      if (n[0] === '=' && typeof n[1] === 'string') {
-        writes.set(n[1], (writes.get(n[1]) || 0) + 1)
-        const rhs = n[2]
-        if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
-          const sid = elemSidOf(rhs[1])
-          if (sid != null) sids.set(n[1], sid)
-        }
-      }
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
-    scan(func.body)
-    for (const [name, c] of writes) if (c > 1) sids.delete(name)
-    return sids.size ? sids : null
-  }
+  const bodySidsOf = (func) => collectBodyElemSids(func, paramReps)
 
   // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
   // later poisoning flows through); after any flip the LOCAL binding fixpoints
@@ -609,25 +881,32 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
         const sid = ctx.schema.register(parsed.names)
         for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, isInt(parsed.values[i]))
       }
-    } else if (op === '=' && Array.isArray(node[1]) && node[1][0] === '.') {
+    } else if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '.') {
       const [, obj, prop] = node[1]
       if (typeof obj === 'string') {
         // Same precise-path resolution as ctx.schema.slotVT — no structural
         // fallback (slot index could differ across schemas with the same prop).
         // Poisoned names carry no schema (shape-disagreeing assignments).
         // Late mode adds the current body's element-alias sids (sidOfName).
+        // Compound assigns / inc-dec observe their EFFECTIVE value (`o.n++` →
+        // `o.n + 1` — self-referential, the optimistic fixpoint resolves it).
         const sid = sidOfName(obj)
         if (sid != null) {
           const idx = ctx.schema.list[sid]?.indexOf(prop)
-          if (idx >= 0) observeSlot(sid, idx, isInt(node[2]))
+          if (idx >= 0) observeSlot(sid, idx, isInt(effectiveWriteValue(op, node[1], node[2])))
           else if (idx < 0) {/* off-schema write — irrelevant to existing slots */}
         }
+        // Unresolvable receivers are hazard-poisoned (collectSlotWriteHazards).
       }
     }
     for (let i = 1; i < node.length; i++) visit(node[i], isInt)
   }
 
   const sweep = (fresh) => {
+    // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a
+    // hazarded slot int mid-fixpoint (it would infect other slots' certainty).
+    applySlotWriteHazards(hazards, poisonSlot)
+    flipped = false
     curSids = null
     if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
     for (const func of ctx.func.list) {

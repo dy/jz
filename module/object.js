@@ -511,6 +511,8 @@ export default (ctx) => {
         }
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
+        // Extern-write belt: source slot values copied in below, unseen by the censuses.
+        ctx.schema.externSlotSids?.add(schemaId)
         ctx.schema.vars.set(target, schemaId)
         // Emit-time rep mutation: Object.assign's target gains a freshly-registered
         // boxed-schema binding here; downstream `.prop` reads in the same emit pass
@@ -542,6 +544,11 @@ export default (ctx) => {
     const sourceSchemas = sources.map(resolveSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     if (sourceSchemas.some(s => !s)) return emitDynamicAssign(target, sources, sourceSchemas)
+    // Extern-write belt: cross-schema slot copies into the TARGET's sid below
+    // (plan's hazard scan marks the same target when it resolves it).
+    const tSid = typeof target === 'string'
+      ? (repOf(target)?.schemaId ?? ctx.schema.vars.get(target)) : null
+    if (tSid != null) ctx.schema.externSlotSids?.add(tSid)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     // When the target carries a dynamic-props shadow (needsDynShadow), reads of an
@@ -870,6 +877,10 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   if (!allKnown) return emitDynamicSpread(props)
 
   const schemaId = ctx.schema.register(allNames)
+  // Extern-write belt: the spread slot-copies below write source-schema values
+  // into this sid outside the write censuses' view (collectSlotWriteHazards
+  // normally resolves the same merge at plan time; the belt covers divergence).
+  ctx.schema.externSlotSids?.add(schemaId)
   const schema = ctx.schema.list[schemaId]
   const t = tempI32('obj')
   const ptr = temp('objp')

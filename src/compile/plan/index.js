@@ -26,7 +26,7 @@
 
 import { ctx } from '../../ctx.js'
 import { invalidateLocalsCache } from '../analyze.js'
-import { collectProgramFacts, refreshProgramFacts, analyzeSchemaSlotIntCertain } from '../program-facts.js'
+import { collectProgramFacts, refreshProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -122,6 +122,12 @@ export default function plan(ast, profiler) {
   // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
   // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
   if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
+  // Slot-kind census REBUILD with post-narrowing receiver resolution: the early
+  // hazard scan can't type params (`re[j] = tr` on a then-unnarrowed TYPED param
+  // read as a world-poisoning keyed write), so recompute hazards with paramReps
+  // and rebuild slotTypes/slotTypedCtors fresh BEFORE their consumers below
+  // (inplace sweep, bimorphic split, typed-param speculation) and at emit.
+  t('refineSlotKindCensus', () => observeProgramSlots(ast, { fresh: true, paramReps: programFacts.paramReps }))
   // Whole-program alias sweep for in-place replace-stores (`arr[i] = {lit}` →
   // overwrite the old element's slots) — needs the settled arrayElemSchema
   // facts, so it runs after the signature fixpoint.

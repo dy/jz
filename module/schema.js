@@ -136,9 +136,28 @@ export function initSchema(ctx) {
    *  kinds) when in fact the holder isn't an object of any registered
    *  schema. That mistyping then routes downstream property accesses
    *  through __hash_get instead of __dyn_get_any, growing the binary. */
+  // Post-census belt for every slot-fact reader: a sid registered AFTER the
+  // censuses ran (the JSON emitters, spread/assign merge — extern slot
+  // writers) or hazarded by the write scan answers null/false even though the
+  // census maps never saw it. Census-time poisoning covers plan-known sids;
+  // this covers emit-time registrations at O(1) per read.
+  // `kindSafeOk` (slotVT only): kind-safe sids' sample KINDS were observed
+  // into slotTypes at the census, so the kind reader may trust the map —
+  // unless the entry is a null-kinds emit-belt fallback. Value-level readers
+  // (intCertain, elem-ctors) always fail closed on kind-safe sids: the JSON
+  // parser writes arbitrary doubles/values within the sample's kinds.
+  const slotHazarded = (id, prop, kindSafeOk = false) => {
+    if (ctx.schema.externSlotSids?.has(id)) return true
+    const hz = ctx.schema.slotWriteHazards
+    if (!hz) return false
+    if (hz.kindSafeSids?.has(id) && (!kindSafeOk || hz.kindSafeSids.get(id) == null)) return true
+    return hz.all || hz.sids.has(id) || hz.props.has(prop) ||
+      (hz.numeric && /^(0|[1-9][0-9]*)$/.test(String(prop)))
+  }
+
   ctx.schema.slotVT = (varName, prop) => {
     const id = ctx.schema.idOf(varName)
-    if (id == null) return null
+    if (id == null || slotHazarded(id, prop, true)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
     return idx >= 0 ? (ctx.schema.slotTypes.get(id)?.[idx] ?? null) : null
   }
@@ -157,7 +176,7 @@ export function initSchema(ctx) {
   ctx.schema.slotTypedCtorBySid = (id, prop) => {
     // fail CLOSED: without the program-wide write census the ctor can't be trusted
     if (!ctx.types.writtenProps || ctx.types.writtenProps.has(prop)) return null
-    if (id == null) return null
+    if (id == null || slotHazarded(id, prop)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
     if (idx == null || idx < 0) return null
     return ctx.schema.slotTypedCtors.get(id)?.[idx] ?? null
@@ -174,6 +193,7 @@ export function initSchema(ctx) {
     if (!bucket?.length) return null
     let ctor = null
     for (const b of bucket) {
+      if (slotHazarded(b.id, prop)) return null
       const c = ctx.schema.slotTypedCtors.get(b.id)?.[b.slot] ?? null
       if (!c || (ctor && c !== ctor)) return null
       ctor = c
@@ -187,7 +207,7 @@ export function initSchema(ctx) {
    *  intIndexIR) treat `false`/`null` identically (no narrowing). */
   ctx.schema.slotIntCertainAt = (varName, prop) => {
     const id = ctx.schema.idOf(varName)
-    if (id == null) return false
+    if (id == null || slotHazarded(id, prop)) return false
     const idx = ctx.schema.list[id]?.indexOf(prop)
     if (idx < 0) return false
     return ctx.schema.slotIntCertain.get(id)?.[idx] === true

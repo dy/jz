@@ -7,7 +7,7 @@
  */
 
 import { ctx } from './ctx.js'
-import { VAL, lookupValType } from './reps.js'
+import { VAL, lookupValType, repOf } from './reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
@@ -260,10 +260,25 @@ VT['.'] = (args) => {
   // OBJECT `.prop` propagation: when the receiver chain roots at a binding
   // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
   // child's val-type. Generic for any compile-time-known JSON literal.
+  // The shape's per-prop kind is a DECL-SITE fact — writes can invalidate it:
+  //   - a sid-bound receiver whose schema declares the prop: the slot census
+  //     above (slotVT) is authoritative — it saw every resolvable write and
+  //     answered null on clash/poison, so the stale decl kind must not revive
+  //     (`o.x = 'oops'; o.x + 1` skipped concat dispatch — live miscompile);
+  //   - otherwise, the write-hazard sets cover unresolvable-receiver writes
+  //     that could reach this object through an alias.
   const sh = shapeOf(args[0])
   if (sh?.val === VAL.OBJECT || sh?.val === VAL.HASH) {
     const child = sh.props[args[1]]
-    if (child) return child.val
+    if (child) {
+      const sid = typeof args[0] === 'string'
+        ? (repOf(args[0])?.schemaId ?? ctx.schema?.vars?.get(args[0])) : null
+      if (sid != null && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
+      const hz = ctx.schema?.slotWriteHazards
+      if (hz && (hz.all || hz.props.has(args[1]) ||
+        (hz.numeric && /^(0|[1-9][0-9]*)$/.test(args[1])))) return null
+      return child.val
+    }
   }
   // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
   // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are

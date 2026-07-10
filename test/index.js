@@ -47,6 +47,7 @@ const TESTS = [
   'wat-invariants',
   'loop-square',
   'inplace-store',
+  'slot-hazards',
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',

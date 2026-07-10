@@ -341,6 +341,18 @@ export function reset(proto, globals, bridge) {
                                 //   writes). Read by `ctx.schema.slotIntCertainAt`
                                 //   so Math.floor/toNumF64/intIndexIR consumers fire
                                 //   on `.prop` reads of provably-integer slots.
+    externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
+                                //   written by machinery the write censuses never
+                                //   see: the JSON const emitter / shaped runtime
+                                //   parser (arbitrary runtime JSON into a sid
+                                //   shared with source literals) and spread /
+                                //   Object.assign slot copies across schemas.
+                                //   Populated by plan's markExternSlotSids sweep
+                                //   (+ belts at the emit registration sites); the
+                                //   slot censuses pre-poison these sids and every
+                                //   census reader (slotVT / slotTypedCtor* /
+                                //   slotIntCertainAt / guardedNumSlot stamp)
+                                //   answers null/false for them.
     inlineArray: new Set(),     // schemaId set — schemas whose `Array<S>` instances
                                 //   use the `structInline` SRoA carrier (K f64
                                 //   fields inlined per element, no per-row object).

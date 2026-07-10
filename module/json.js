@@ -197,6 +197,12 @@ export default (ctx) => {
         return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(0)]])
       }
       const schemaId = ctx.schema.register(keys)
+      // Extern-write belt: these slot stores bypass the write censuses (they
+      // are IR, not AST `{}` literals). plan's hazard scan (jsonParseKeysets)
+      // normally kind-safe-marks this sid earlier; a sid it MISSED gets a
+      // null-kinds entry so every reader belt fails closed on it.
+      const hzLive = ctx.schema.slotWriteHazards
+      if (hzLive && !hzLive.kindSafeSids.has(schemaId)) hzLive.kindSafeSids.set(schemaId, null)
       const t = tempI32('jobj')
       const body = [
         ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(keys.length)]]],
@@ -1256,6 +1262,10 @@ export default (ctx) => {
       const obj = local('obj', 'i32')
       const val = local('val', 'f64')
       const sid = ctx.schema.register(keys)
+      // Extern-write belt (see emitJsonConstValue): a shaped-parser sid the
+      // plan hook missed fails closed via a null-kinds entry.
+      const hzLive = ctx.schema.slotWriteHazards
+      if (hzLive && !hzLive.kindSafeSids.has(sid)) hzLive.kindSafeSids.set(sid, null)
       let body = `${WS()}
     ${expect(123)}
     (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)})))`
@@ -1472,6 +1482,48 @@ ${localDecls}
     try { result = JSON.stringify(val, rep, sp) }
     catch { return undefined }
     return result === undefined ? undefExpr() : asF64(emit(['str', result]))
+  }
+
+  // Plan-time mirror of the JSON.parse emit dispatch below: resolve the same
+  // const/shape sources and return `{keys, kinds}` for every object key-set
+  // the parser could WRITE into a compile-time schema (const fold or shaped
+  // parser). The generic runtime parser needs no entry — it mints sids from
+  // $__schema_next, seeded past the compile-time table (assemble.js), so it
+  // can never alias a censused sid. `kinds` are the SAMPLE's per-slot VAL
+  // kinds — trustworthy because both emit paths are shape-guarded: the const
+  // fold bakes exactly these values, and the shaped parser falls back to the
+  // generic parser (disjoint sids) on ANY text/structure divergence, so an
+  // object carrying the sid always matches the sample's kinds. A null kind
+  // (sample `null` value) poisons just that slot. Consumed by plan's
+  // collectSlotWriteHazards BEFORE any census consumer bakes a decision.
+  const JSON_KIND = (v) => v == null ? null
+    : typeof v === 'number' ? VAL.NUMBER
+    : typeof v === 'string' ? VAL.STRING
+    : typeof v === 'boolean' ? VAL.BOOL
+    : Array.isArray(v) ? VAL.ARRAY
+    : VAL.OBJECT
+  ctx.schema.jsonParseKeysets = (x) => {
+    if (x === undefined || (Array.isArray(x) && x[0] == null && typeof x[1] !== 'string')) return []
+    const out = []
+    const collect = (v) => {
+      if (v == null || typeof v !== 'object') return
+      if (Array.isArray(v)) { for (const e of v) collect(e); return }
+      const keys = Object.keys(v)
+      if (keys.length) out.push({ keys, kinds: keys.map(k => JSON_KIND(v[k])) })
+      for (const k of keys) collect(v[k])
+    }
+    const src = jsonConstString(ctx, x)
+    if (src != null) {
+      try { collect(JSON.parse(src)); return out } catch { /* emitter falls through the same way */ }
+    }
+    const shapeSrcs = jsonShapeStrings(ctx, x)
+    if (shapeSrcs) {
+      try {
+        const parsed = shapeSrcs.map(s => JSON.parse(s))
+        if (parsed.every(v => sameJsonShape(parsed[0], v))) collect(parsed[0])
+      } catch { /* generic parser — disjoint runtime sids */ }
+    }
+    return out
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
