@@ -72,7 +72,7 @@ export const examples = [
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — the spanning cluster snaps in at p_c, P∞(p) charted live' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'ink on flowing water — a vortical fluid bath; drops bloom, strokes comb' },
   { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — stacked drops push into concentric stones, combs draw them to swirls' },
-  { name: 'dithering',    title: 'Dithering',         blurb: "a pyramid, David in profile, a cube, a torus, a hemisphere — seven 1-bit dithers, ordered through Floyd–Steinberg" },
+  { name: 'dithering',    title: 'Dithering',         blurb: "Michelangelo's David, a pyramid, a cube, a torus — seven 1-bit dithers, ordered through Floyd–Steinberg" },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray tracing — soft shadows, a mirror sphere, and a refractive glass ball' },
   { name: 'pathtracer',   title: 'Path Tracer',       blurb: 'path-traced Cornell box — soft shadows, glass, color bleeding; converges live from noise' },
 ]

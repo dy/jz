@@ -114,7 +114,9 @@ export let frame = (t) => {
   let i = 0
   while (i < N) {
     if (pin[i] === 0 && i !== grabbed) {
-      let vx = (nx[i] - ox[i]) * 0.99, vy = (ny[i] - oy[i]) * 0.99
+      // 0.95 velocity retention ≈ half-life of ~13 frames — motion dies like heavy fabric.
+      // (0.99 kept every jiggle ringing for seconds — that's what read as "springy".)
+      let vx = (nx[i] - ox[i]) * 0.95, vy = (ny[i] - oy[i]) * 0.95
       // a GENTLE ripple that drifts down the rows — small enough to sway, not shove the sheet
       // sideways into a crooked lean
       let wind = Math.sin(t * 0.4 + ny[i] * 0.06) * 0.16 * gust
