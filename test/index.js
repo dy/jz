@@ -50,6 +50,7 @@ const TESTS = [
   'inplace-store',
   'slot-hazards',
   'never-grown',
+  'bool-identity',
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',

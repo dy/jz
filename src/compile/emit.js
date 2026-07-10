@@ -43,7 +43,7 @@ import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
-  NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
+  NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY, TRUE_NAN, FALSE_NAN, NULL_NAN,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64, maskBound,
@@ -52,7 +52,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
-  boolBoxIR,
+  boolBoxIR, carrierF64,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -901,9 +901,17 @@ function tryIntDivTrunc(aNode, bNode) {
 }
 
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
- *  i32 offset), else falls back to numeric WASM type coercion. */
-function coerceArg(ir, param) {
+ *  i32 offset), else falls back to numeric WASM type coercion.
+ *  `node` (the arg's AST, when the caller has it): a statically-BOOL arg headed
+ *  into an UNTYPED f64 param crosses as its TRUE/FALSE atom box — the callee
+ *  treats that slot as an opaque value, so identity (typeof/String/strict-eq)
+ *  must survive. A val-known param (narrow stamped `p.val`) keeps the raw 0/1
+ *  ABI its body assumes; i32/pointer params are numeric positions. */
+function coerceArg(ir, param, node) {
   if (param?.ptrKind != null) return ptrOffsetIR(ir, param.ptrKind)
+  if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
+      valTypeOf(node) === VAL.BOOL)
+    return carrierF64(node, ir)
   return asParamType(ir, param?.type)
 }
 
@@ -919,7 +927,7 @@ function padArgs(args, params) {
 /** Emit a node list as call arguments for the given param list: per-param
  *  coercion then arity padding. Used at every direct-call site. */
 function emitCallArgs(argNodes, params) {
-  return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k])), params)
+  return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k], a)), params)
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
@@ -1007,7 +1015,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
   const seq = [], slots = []
   for (let k = 0; k < params.length; k++) {
     if (k < argNodes.length) {
-      const ir = coerceArg(emit(argNodes[k]), params[k])
+      const ir = coerceArg(emit(argNodes[k]), params[k], argNodes[k])
       // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
       // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
       const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'
@@ -1778,7 +1786,7 @@ const isCheapPureVal = (n) => {
 // condition is evaluated exactly once whether the lowering branches or selects (any trap fires the
 // same in both, the read order vs the pure value arm is immaterial), so it need only avoid MUTATING
 // state the value arm could read — i.e. be side-effect-free, not unconditionally-evaluable.
-const SIDE_EFFECT_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=',
+const SIDE_EFFECT_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=',
   '>>>=', '||=', '&&=', '??=', '++', '--', '()', '=>', 'throw', 'new', 'await', 'yield'])
 const isSideEffectFree = (n) => {
   if (!Array.isArray(n)) return true
@@ -1945,6 +1953,24 @@ function emitStrictEq(a, b, negate) {
   const strictB = resolveValType(b, valTypeOf, lookupValType)
   if (strictA && strictB && strictA !== strictB && (STRICT_PRIM.has(strictA) || STRICT_PRIM.has(strictB)))
     return emitNum(negate ? 1 : 0)
+  // Both sides statically BOOL: compare TRUTH VALUES, not raw bits — a boolean's
+  // carrier varies by source (raw 0/1 from locals/comparisons, TRUE/FALSE atom out
+  // of slots/hashes/JSON) and truthyIR normalizes both representations.
+  if (strictA === VAL.BOOL && strictB === VAL.BOOL) {
+    const cmp = typed(['i32.eq', truthyIR(emit(a)), truthyIR(emit(b))], 'i32')
+    return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
+  }
+  // One side statically BOOL, other side dynamic-unknown: strict equality is
+  // IDENTITY. An unknown operand carries booleans as their TRUE/FALSE atom
+  // (carrierF64 ingress) while numbers are raw — so `1 === true` must be false
+  // even though the loose lowering's ToNumber would equate them. Compare bits:
+  // the BOOL side boxes to its atom, the unknown side is compared verbatim.
+  if ((strictA === VAL.BOOL) !== (strictB === VAL.BOOL) && (strictA == null || strictB == null)) {
+    const va = strictA === VAL.BOOL ? carrierF64(a, emit(a)) : asF64(emit(a))
+    const vb = strictB === VAL.BOOL ? carrierF64(b, emit(b)) : asF64(emit(b))
+    const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
+    return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
+  }
   // Same type (or dynamic-unknown): identical bits to loose `==`/`!=`.
   return emitter[negate ? '!=' : '=='](a, b)
 }
@@ -2772,7 +2798,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // legitimate 0-arity callee isn't bypassed.
   const params = func?.sig.params ?? []
   const args = func ? emitCallArgs(parsed.normal, params)
-                    : parsed.normal.map(a => coerceArg(emit(a), undefined))
+                    : parsed.normal.map(a => coerceArg(emit(a), undefined, a))
   if (func && args.length > params.length) args.length = params.length
   // Multi-value return: materialize as heap array (caller expects single pointer).
   // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
@@ -2824,7 +2850,10 @@ function tryDirectClosureCall(callee, parsed) {
   mn.set(bodyName, prev === undefined ? n : (n < prev ? n : prev))
   // Body signature is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64.
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
-  const slots = parsed.normal.map(a => asF64(emit(a)))
+  // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
+  // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
+  // the body never assumes raw numerics for these slots).
+  const slots = parsed.normal.map(a => carrierF64(a, emit(a)))
   while (slots.length < W) slots.push(undefExpr())
   return typed(['call', `$${bodyName}`,
     asF64(emit(callee)),
@@ -3137,6 +3166,8 @@ export const emitter = {
     if (typeof name !== 'string') return emit(['=', name, ['%', name, val]])
     return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'))
   },
+  // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
+  '**=': (name, val) => emit(['=', name, ['**', name, val]]),
 
   // Bitwise compound assignments: i32 normally, i64 when either operand is BigInt
   ...Object.fromEntries([
@@ -3270,10 +3301,36 @@ export const emitter = {
       // is a TYPED concat (handled by concatRaw above); a both-untyped self-mutation stays the
       // documented rare-aliasing tradeoff. Self-accumulation is still safe to extend.
       inc('__str_concat', '__is_str_key')
-      const checkA = vtA == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, asF64(emit(a))]]] : null
-      const checkB = vtB == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, asF64(emit(b))]]] : null
+      const eA = vtA == null ? asF64(emit(a)) : null
+      const eB = vtB == null ? asF64(emit(b)) : null
+      const checkA = eA ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, eA]]] : null
+      const checkB = eB ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, eB]]] : null
       const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
-      const add    = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      // Numeric arm: an UNKNOWN operand may still be a non-string NaN-box (bool
+      // atom, null) whose ToNumber is not its raw bits — `true + 1` is 2,
+      // `null + 1` is 1. Guard with the self-compare (every non-NaN f64 IS its
+      // own ToNumber; two inline ops on the hot path); the cold arm is the
+      // inline ATOM ladder, not __to_num — strings can't reach here (the
+      // __is_str_key fork above took them) and objects stay jz-permissive NaN
+      // either way, so the full ToNumber (and the number↔string formatter tree
+      // it pins — the dyn-object golden) buys nothing. Skipped when the side is
+      // known-vt (raw carrier by design) or IR-shape numeric (isNumArm — keeps
+      // floatbeat kernels at their box-free ratchet counts).
+      const numSide = (t, e, node) => {
+        if (!e || isNumArm(e, node)) return ['local.get', `$${t}`]
+        const bits = ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+        return ['if', ['result', 'f64'],
+          ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+          ['then', ['local.get', `$${t}`]],
+          ['else', ['select',
+            ['f64.const', 1],
+            ['select',
+              ['f64.const', 0],
+              ['f64.const', 'nan'],
+              ['i32.or', ['i64.eq', bits, ['i64.const', FALSE_NAN]], ['i64.eq', bits, ['i64.const', NULL_NAN]]]],
+            ['i64.eq', bits, ['i64.const', TRUE_NAN]]]]]
+      }
+      const add    = ['f64.add', numSide(tA, eA, a), numSide(tB, eB, b)]
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')
       }
@@ -3439,6 +3496,27 @@ export const emitter = {
     const elseRefs = extractRefinements(a, new Map(), false)
     const vb = withRefinements(thenRefs, b, () => emit(b))
     const vc = withRefinements(elseRefs, c, () => emit(c))
+    // A BOOL arm beside a non-BOOL, non-NUMBER arm: the merge kills the static
+    // type, so the boolean's identity is observable only through its atom box —
+    // materialize it per-arm here, BEFORE the raw-bit collapses below erase it
+    // (`i ? true : [from, len]` — watr's rec-type marker — must yield TRUE_NAN,
+    // not 1.0). BOOL∪NUMBER stays raw: VT['?:'] carries NUMBER there (the raw
+    // 0/1 IS the bool's ToNumber image — the benign numeric-context lie), and
+    // both-BOOL arms keep vt BOOL and stay raw 0/1 by design.
+    {
+      const vtbM = resolveValType(b, valTypeOf, lookupValType)
+      const vtcM = resolveValType(c, valTypeOf, lookupValType)
+      if ((vtbM === VAL.BOOL) !== (vtcM === VAL.BOOL) &&
+          (vtbM === VAL.BOOL ? vtcM : vtbM) !== VAL.NUMBER) {
+        const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
+        const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
+        const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
+        const bits = isPureIR(fb) && isPureIR(fc)
+          ? ['select', ib, ic, cond]
+          : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
+        return typed(['f64.reinterpret_i64', bits], 'f64')
+      }
+    }
     // `cond ? 1 : 0` is the condition bit itself; `cond ? 0 : 1` its negation. `cond`
     // (truthyIR) is already canonical 0/1, so the select + two const arms collapse to
     // the bit. (Both arms are literals here, so dropping their emitted IR is side-effect
@@ -3544,6 +3622,23 @@ export const emitter = {
     // (`Array.isArray(x) && x[0]` → x[0] sees x as ARRAY, eliding union-rep fallbacks).
     const rightRefs = extractRefinements(a, new Map(), true)
     const emitRight = () => withRefinements(rightRefs, b, () => emit(b))
+    // Mixed BOOL/non-NUMBER sides: the merge kills the static type (VT['&&']
+    // returns null), so a surfacing bool must carry its atom box — same rule as
+    // the `?:` arm materialization above. Both-BOOL and BOOL∪NUMBER stay raw.
+    {
+      const vtA = resolveValType(a, valTypeOf, lookupValType)
+      const vtB = resolveValType(b, valTypeOf, lookupValType)
+      if ((vtA === VAL.BOOL) !== (vtB === VAL.BOOL) && (vtA === VAL.BOOL ? vtB : vtA) !== VAL.NUMBER) {
+        const t = temp()
+        const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+        const fb0 = emitRight()
+        const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+        return typed(['if', ['result', 'f64'],
+          toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64')),
+          ['then', fb],
+          ['else', ['local.get', `$${t}`]]], 'f64')
+      }
+    }
     // i32 fast path: use i32 tee as cond directly (nonzero=truthy in wasm `if`),
     // skip f64 round-trip and __is_truthy call entirely.
     if (va.type === 'i32') {
@@ -3591,6 +3686,21 @@ export const emitter = {
     // De Morgan'd via the sense=false branch of extractRefinements (mirrors the ?: else-arm).
     const rightRefs = extractRefinements(a, new Map(), false)
     const emitRight = () => withRefinements(rightRefs, b, () => emit(b))
+    // Mixed BOOL/non-NUMBER sides — see `&&`: a surfacing bool carries its atom box.
+    {
+      const vtA = resolveValType(a, valTypeOf, lookupValType)
+      const vtB = resolveValType(b, valTypeOf, lookupValType)
+      if ((vtA === VAL.BOOL) !== (vtB === VAL.BOOL) && (vtA === VAL.BOOL ? vtB : vtA) !== VAL.NUMBER) {
+        const t = temp()
+        const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+        const fb0 = emitRight()
+        const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+        return typed(['if', ['result', 'f64'],
+          toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64')),
+          ['then', ['local.get', `$${t}`]],
+          ['else', fb]], 'f64')
+      }
+    }
     if (va.type === 'i32') {
       const vb = emitRight()
       const t = tempI32()
@@ -3622,6 +3732,19 @@ export const emitter = {
   '??': (a, b) => {
     const va = emit(a), vb = emit(b)
     const t = temp()
+    // Mixed BOOL/non-NUMBER sides — see `&&`: a surfacing bool carries its atom box.
+    {
+      const vtA = resolveValType(a, valTypeOf, lookupValType)
+      const vtB = resolveValType(b, valTypeOf, lookupValType)
+      if ((vtA === VAL.BOOL) !== (vtB === VAL.BOOL) && (vtA === VAL.BOOL ? vtB : vtA) !== VAL.NUMBER) {
+        const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+        const fb = vtB === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
+        return typed(['if', ['result', 'f64'],
+          ['i32.eqz', isNullish(['local.tee', `$${t}`, fa])],
+          ['then', ['local.get', `$${t}`]],
+          ['else', fb]], 'f64')
+      }
+    }
     const numA = isNumArm(va, a), numB = isNumArm(vb, b)
     // Both arms can surface as the (untyped) result — `a` when non-nullish (a NaN is not
     // nullish, so it IS returned), `b` otherwise. Canon a lone-numeric arm; `a` before the
