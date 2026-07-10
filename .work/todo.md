@@ -607,9 +607,27 @@
       spread enumerates+rewrites entries — a miscompiled iterator could
       duplicate), Object.keys enumeration double-counting, or a narrow/
       spec clone of one of the dict helpers only reachable in the bundle.
-      Note the shape kinship: duplicate sidecar dict entries = the same
-      dict probe/hash layer kern-seq's durable-heal OOB traps in ("hashing
-      a dangling key") — watch the heal agent's root for a shared cause.
+      SHARPENED (same session, continued): the "6 duplicate keys" were
+      actually SIX PHANTOM KEYS — `op l p map word kw` (parser-state
+      names!) enumerated by watr's `opts` object in-kernel, an object
+      jz's own optimizeTail builds fresh as `{loopify:false}` + named
+      writes. A freshly built object's dyn-prop SIDECAR aliased a dead
+      dict from an earlier pipeline phase ⇒ pointer-keyed sidecar
+      resolution (global __dyn_props registry / header props field) +
+      arena address reuse hands a new object a dead object's sidecar.
+      Same layer as kern-seq's durable-heal OOB — evidence handed to the
+      heal agent (registry-purge invariant + mid-compile rewind checks).
+      ALSO FIXED en route, host-level (83106cb): resolveSchema of a
+      spread-bearing literal filtered to ':'-entries while
+      emitObjectSpread built the full merged slot layout — Object.keys/
+      values/entries/for-in/JSON.stringify of `{ ...S, z }` silently
+      dropped every spread-copied key (values stayed readable). Now both
+      phases share spreadLiteralSchema (null on unknown source → HASH →
+      runtime enumeration); comma-grouped literal children unwrapped;
+      pinned across all five enumeration surfaces (test/objects.js).
+      This was HOW normalize's cfg lost its pass defaults; the phantom
+      sidecar aliasing is WHY opts carries foreign keys — L2 parity stays
+      blocked on the latter (heal agent's lane).
       kern-seq durable-heal OOB is NOT the L2 byte-drift bug itself (still
       reproduces post-bool-fix; focused agent hunting it — trap in the
       zombie/heal machinery on warm instances after compiling
