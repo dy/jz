@@ -272,6 +272,56 @@
     LEAD both engines; sort/mat4/raytrace/hashjoin lead; wordcount 1.5x,
     immutable 1.7x behind V8 (both with named structural levers);
     dispatch 1.07x-beaten V8 / JSC-only gap stands (predictor-bound).
+  * violations leg 4 (2026-07-10, aa77000/9adc984/ca6986a/a343424 on
+    published watr 5.3.6): IMMUTABLE FLIPPED + a census soundness audit.
+    - $__mkptr → NON_MUTATING_CALLS (one line, aa77000): the in-place
+      store's re-boxed result was the ONE call pinning hoistInvariantLoop's
+      purity gate — the immutable/wordcount loops re-ran the full
+      __ptr_offset forwarding+bounds dance per iteration. Hoist now fires
+      (pinned: inner loop has zero ptr_offset calls).
+    - SLOT-CENSUS SOUNDNESS AUDIT (9adc984): probing the extern-write
+      question (JSON parsers writing into censused sids) surfaced FIVE
+      probed-live miscompile families — dyn keyed writes vs floor-elision
+      AND vs slotVT NUMBER (raw arithmetic on a string box → NaN), `.prop=`
+      through unresolvable receivers, compound assigns (`o.x += 0.5` never
+      censused), plain writes (slotTypes observed ONLY literals — `o.x =
+      'oops'; o.x + 1` skipped concat dispatch), const-JSON floats into
+      literal-shared sids. Repair: collectSlotWriteHazards — one
+      program-wide write-family scan (keyed/delete/destructure/spread/
+      assign/JSON shapes) applied at every census (re)build + gated in
+      every reader (schema.js belts, kind.js shapeOf-arm census deferral);
+      hazards RECOMPUTE post-narrowing (paramReps type receivers — early
+      pass had poisoned the world off fftplan's `re[j]=tr` on a
+      then-unnarrowed param) and slotTypes gained the late fresh rebuild
+      the int census already had. JSON shaped/const sids are KIND-SAFE
+      (any shape divergence falls back to the generic parser, whose sids
+      are DISJOINT by construction — __schema_next seeds past the
+      compile-time table): slotTypes observes sample kinds, json keeps its
+      shaped fast path; value-facts (intCertain/ctors) fail closed.
+      Compound writes now OBSERVE their effective value (`o.n++` → `o.n+1`
+      through the optimistic fixpoint — int compound counters keep
+      certainty). 7 regression pins (test/slot-hazards.js).
+    - STRICT-I32 SLOT LATTICE (ca6986a) — the "i32 slot storage" lever
+      landed WITHOUT a layout change: the int census graduated to 3 levels
+      (0 / 1 integral / 2 strict-int32: bitwise minus `>>>`, in-range
+      literals, bools, comparisons, imul/clz32 — never -0, trunc-exact),
+      one monotone-down fixpoint (type.js intLevelMap) with boolean
+      projections for all existing callers. Strict slots load as
+      `i32.trunc_sat_f64_s` directly in i32 (guard-free), exprType types
+      their ternary locals i32, and emit re-derives the locals slice after
+      inferLocals binds elem-alias sids (the analyzeBody-before-
+      analyzeValTypes ordering hole). immutable 0.75→0.31ms: LEADS V8
+      (0.44, 1.4x) and JSC (0.73, 2.3x) — was 1.74x BEHIND. Range-edge
+      pins: 3e9 / >>>0 / % / u- slots stay level 1.
+    - wordcount discharges (a343424): fused-RMW statically-numeric result
+      → bare i64.store (durable barrier provably dead, __is_eph_bits call
+      dies); generic __to_num sites test f64.eq(v,v) inline (non-NaN IS
+      its ToNumber; optimize-gated); fusion's unknown-key arm inlines the
+      6-op NaN+tag test. 1.49x → ~1.3x behind V8. REMAINING (named): the
+      per-token __ptr_offset(words) — needs cross-function neverGrown for
+      PARAMS (a narrowReturnArrayElems-style caller fixpoint feeding the
+      existing localReps.neverGrown consumer at array.js:831); then
+      __str_hash SSO-arm inline.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
