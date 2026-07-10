@@ -435,6 +435,19 @@
     stdlib[name] bracket reads + globals.get(...).mut chain. Repro:
     scratchpad/self-parity.mjs (3 probes: bytes DIFF, behavior EQUAL).
     Goal when picked up: byte-exact self-host → bench parity column 'ok'.
+    Narrowed further 2026-07-10: __alloc's manual deps edge __memgrow
+    EXISTS (module/core.js:40) so the fixpoint edge isn't the miss; jz-
+    compiled probes of BOTH scan constructs — matchAll group extraction
+    (m[1]) and the sweep's `\\(global\\.set \\$([A-Za-z0-9_.$]+)` with $
+    and . inside the char class — are EQUAL host/kernel at O0+O2. The
+    divergence is therefore kernel-EXECUTION state, most likely a thunked
+    template's expansion-time ctx reads differing in-kernel (the sweep
+    memoizes `stdlib[name] = src()` at line ~739 — heapResetWat()-style
+    ctx.scope.globals reads at that moment) or a bracket-read timing
+    difference. NEXT: instrumented dist (resolveIncludes/sweep records a
+    diagnostic readable through the kernel boundary — e.g. a '2diag'
+    optimize-flag path returning the diagnostic string instead of wasm),
+    run self-parity.mjs against it, compare the three record sets.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
