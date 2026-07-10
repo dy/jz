@@ -365,6 +365,28 @@
       collapsed 46% → 8.4% by prior legs. Agent's 'jessie crashes under
       default memory' claim NOT reproduced through the real bench harness
       (6/6 clean) — likely its raw-instantiate harness artifact; watch.
+  * pow leg (2026-07-10, 07f6346, agent-ported in a worktree + merged):
+    $math.pow's non-integer tail (single-precision exp(y·log x), relative
+    error ~|y·ln x| ulps) replaced with the fdlibm e_pow core (FreeBSD msun
+    + musl scalbn, cited — the same algorithm V8 ports). Special cases +
+    integer binary-exponentiation fast path bit-unchanged. Differential vs
+    host Math.pow: 651/672 grid bit-exact + 21 at 1 ulp, 64/64 random ≤1
+    ulp, 42k-case sweep zero >1 ulp (test/pow-ulp.js). test/math.js's
+    constant-exponent fold pin relaxed to tolerance (that fold is a
+    separate deliberately-cheap path, no longer bit-identical to the
+    now-correct pow).
+    colorpq UNMOVED by design finding: its exponents are compile-time
+    CONSTANTS routed through the scalar const-exponent exp∘log fold
+    (module/math.js ~396) + its vectorized twin (vectorize.js:3180) —
+    $math.pow is never called. colorlch (fifthroot algebraic path) and
+    colorlog (exp2) likewise carry pre-existing engine-checksum DIFFs from
+    the same FAST-TRANSCENDENTAL-FOLD ACCURACY family. Named residual: a
+    compensated (double-double log) const-exponent fold — scalar AND
+    vectorized — would close the parity family; a naive de-vectorization
+    would close parity but lose the SIMD lead (colorlch leads V8 1.5x,
+    colorlog 1.8x today). Also noted pre-existing: integer fast path
+    overflows to 0 for pow(huge, -3) (squaring hits Inf before the
+    reciprocal); kernel-leg 5 worktree failures were worktree artifacts.
     STATE 2026-07-10 (full 52-case table, jz/v8/jsc): svg geomean —
     V8 2.09x slower than jz (was 1.89x at leg 3). 43/52 cases jz LEADS
     BOTH engines outright. V8 beats jz on only THREE: wordcount 1.36x
