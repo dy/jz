@@ -170,6 +170,70 @@
     own move; then RMW fusion fires and halves the probes; (b) audit the
     per-store __durable_*_log write barriers (two per token); (c) dedupe
     the doubled __is_str_key per access. strbuild/shapes/json unprofiled.
+  * violations leg 2 (2026-07-09, 158abe7/4a77ad2/de52447): three cases
+    flipped or moved, all engine-level levers:
+    - strbuild 2.29→1.18ms LEADS JSC 1.39 + V8 1.82: (1) string concat-
+      CHAIN fusion (emit '+') — a ≥3-leaf chain lowers to ONE measure→
+      alloc→copy pass instead of per-+ pairwise (triangular prefix
+      re-copy gone); node joins the chain only when a side is statically
+      STRING (BOOL/OBJECT as node-qualifiers broke bool addition — caught
+      by destruct pins); self-accum head stays pairwise (bump-extend
+      lives); result MUST route __sso_norm — a ≤6-char heap result breaks
+      the SSO-canonicality invariant and representation-keyed lookups
+      MISS (caught by watr-metacircular type-dedup pins). (2)
+      $__str_byteLen added to PURE_CALL_I32 (strings immutable; the
+      bump-extend mutator only fires on provably-dead old values) —
+      `j < line.length` hoists out of char loops.
+    - shapes 3.65→2.59ms LEADS V8 3.21: emitSchemaSlotGuarded stamps
+      guardedNumSlot when its ONE schema censuses the slot NUMBER +
+      writtenProps-clean; toNumF64 SINKS the coercion into the arms
+      (guard-hit raw load passes bare, only the dyn-miss arm pays
+      __to_num). The 8-schema measure(o) dispatch drops a __to_num call
+      per field per record. REMAINING shapes levers (profiled, valuable):
+      dead zero-init stores per record (~24/record — WATR-side DSE: kill
+      local.set x (const 0) when set-before-read on all paths; watr repo
+      work), .prop CSE within one expression (o.r read twice).
+    - wordcount RMW fusion FIXED (never fired): dictionary-mode {} reps
+      VAL.HASH but the decl-site flow overlay stamps the literal's OBJECT
+      kind — the receiver gate now honors the rep; single probe per token
+      (5.51→4.04ms absolute; ratio ~1.45x vs faster-idle V8). REMAINING:
+      per-token __durable_*_log barrier audit; the fused path had ZERO
+      test coverage — value pins added (test/objects.js).
+    - json PROFILED (agents, full diagnosis in workflow journal): levers =
+      SWAR wide-word key compares in the schema-directed inline parser
+      (module/json.js), parser cursor state (__jppos/__jpstr/__jplen)
+      globals→locals/params, __jp_num inlining into the specialized path,
+      whitespace-skip fusion, per-iteration arena scoping. UNIMPLEMENTED.
+  * SELF-HOST RECOVERY (2026-07-09, e621c53): kernel-target suite was
+    silently broken 172 fails since 1f36c9d (nanPrefixMaskHex) — the
+    kernel could not compile Map/Set/static-object programs AT ALL.
+    Roots: (1) i64Hex routed through BigInt toString(16); under self-host
+    BigInts are raw SIGNED i64 bits, so the first bit-63-set caller
+    rendered "-8000…" and the kernel emitted unparseable i64 consts
+    (surfaced as "Bad int"/"Error: 0"/compile-OOB). Now formatted via
+    logical-shifted 32-bit halves; host-byte-identical (pinned in
+    invariants). (2) __set_add embedded durableEntryLogIR's
+    $__durable_slot_log call with NO explicit deps edge (hasVal=false
+    skips slotLogDeps) — the kernel's auto-dep scan silently yields
+    nothing (the documented selfhost-includes class) so every
+    `new Set(...)` died. test/selfhost-includes.js tightened from
+    union-reachability to PER-TEMPLATE transitive closure — immediately
+    surfaced + fixed 4 more latent holes (__static_str→__mkstr,
+    __map_new→__alloc_hdr_n, __jput_str→__jput, __jput_num→__jput_str).
+    Kernel leg now 2422/2446 (18 fails). RESIDUE (open, repro'd):
+    - alternating-round durable-heal OOB: compiling
+      `const g = m.get('a'); g.mut` poisons the NEXT kernel round
+      (rounds 1,3 fail / 0,2 pass — scratchpad/kern-seq.mjs); trap in a
+      (i64)→i32 helper hashing a dangling key — the zombie/heal machinery.
+    - byte-parity DIFF (loop/closure/data probes): kernel's resolveIncludes
+      autoDepsOf realize/scan yields nothing for __alloc's template →
+      __memgrow reaches includes late → the global-snapshot sweep misses
+      __heap_end → watr inline drift (+bytes, behavior EQUAL). All sweep
+      CONSTRUCTS probe equal now (scratchpad/sweep-probe.mjs) — remaining
+      root is WHY autoDepsOf's realize/matchAll diverges in-kernel.
+    - 18 kernel-leg fails: multi-module 'Unknown module' shapes (arguably
+      mis-classified for the kernel leg — it has no module resolver by
+      construction), destructure-assignment `({a,b} = obj)` internal.
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
