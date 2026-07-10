@@ -159,9 +159,17 @@ const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||
   (Array.isArray(e) && e[0] == null && (e[1] === null || e[1] === undefined))
 
-export function scanBindingUses(body) {
-  const hit = _bindingUsesCache.get(body)
-  if (hit) return hit
+// `trackNames` (optional): also report uses of these names even though they're
+// never `let`/`const`-declared IN THIS body — the program-wide dyn-fn-table scan
+// (compile/dyn-closure-tables.js) uses this to see a GLOBAL's uses inside every
+// function body, not just its one module-scope declaration site. Bypasses the
+// cache (a different `trackNames` on the same body would otherwise read a stale
+// entry keyed only by `body`) — fine, this path is a one-shot pre-pass, not hot.
+export function scanBindingUses(body, trackNames) {
+  if (!trackNames) {
+    const hit = _bindingUsesCache.get(body)
+    if (hit) return hit
+  }
 
   const summary = new Map()                    // name → { decls, initRhs, uses }
   const slot = (name) => {
@@ -327,8 +335,11 @@ export function scanBindingUses(body) {
 
   walk(body, false)
 
-  for (const [name, s] of summary) if (s.decls === 0) summary.delete(name)
-  _bindingUsesCache.set(body, summary)
+  for (const [name, s] of summary) if (s.decls === 0 && !trackNames?.has(name)) summary.delete(name)
+  // `body` can be null (a module whose every top-level statement got lifted
+  // into ctx.func.list, e.g. a single `export const f = () => …` leaves
+  // nothing at module scope) — WeakMap keys must be objects.
+  if (!trackNames && body != null && typeof body === 'object') _bindingUsesCache.set(body, summary)
   return summary
 }
 

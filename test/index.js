@@ -39,6 +39,7 @@ const TESTS = [
   'external',
   'watr',
   'optimizer',
+  'dyn-closure-tables',
   'preeval',
   'inference',
   'provenance-inference',

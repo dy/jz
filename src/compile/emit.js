@@ -3788,7 +3788,22 @@ export const emitter = {
     // a is truthy in the right-arm — narrow b accordingly. Matches `?:`'s then-arm threading
     // (`Array.isArray(x) && x[0]` → x[0] sees x as ARRAY, eliding union-rep fallbacks).
     const rightRefs = extractRefinements(a, new Map(), true)
-    const emitRight = () => withRefinements(rightRefs, b, () => emit(b))
+    // Guarded indexed-closure dispatch: `(name = V[idx]) && name(args)` —
+    // subscript's parse.step idiom for "look up a handler, call it if present."
+    // `a`'s assignment (emitted normally, above) already set `name` from
+    // `V[idx]`; `b`'s callee, though syntactically a bare identifier, is
+    // PROVABLY that same read — tag the resulting call_indirect the same way
+    // a direct `V[idx](args)` gets tagged (emitGenericClosureCall below), so
+    // devirtConstFnArrayCalls can rewrite it once dyn-closure-tables.js proves
+    // V monomorphic. An unresolved/untagged V just leaves the tag inert.
+    const dvArrName = ctx.transform.optimize && Array.isArray(a) && a[0] === '=' &&
+      typeof a[1] === 'string' && Array.isArray(a[2]) && a[2][0] === '[]' &&
+      typeof a[2][1] === 'string' && ctx.scope.dynFnTableCandidates?.has(a[2][1]) &&
+      Array.isArray(b) && b[0] === '()' && b[1] === a[1] ? a[2][1] : null
+    const emitRight = () => {
+      const vr = withRefinements(rightRefs, b, () => emit(b))
+      return dvArrName ? tagFnArrayDispatch(vr, dvArrName) : vr
+    }
     // Mixed BOOL/non-NUMBER sides: the merge kills the static type (VT['&&']
     // returns null), so a surfacing bool must carry its atom box — same rule as
     // the `?:` arm materialization above. Both-BOOL and BOOL∪NUMBER stay raw.

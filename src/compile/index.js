@@ -45,6 +45,9 @@ import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
+import {
+  scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
+} from './dyn-closure-tables.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later inlining).
 let __cseCtr = 0
@@ -1188,6 +1191,10 @@ function emitFunc(func, funcFacts, programFacts) {
     // emit(defVal) ONCE, before branching on t — same self-host miscompile class as
     // emit.js's 'return' handler. See .work/todo.md (groundtruth archive).
     const emittedDefVal = emit(defVal)
+    // dyn-closure-tables.js: a default value that's provably a closure literal
+    // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
+    // proveClosureFactory needs to see through `dispatch`'s forwarded return.
+    recordParamClosureDefault(name, pname, emittedDefVal)
     defaultInits.set(pname,
       ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
         ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emittedDefVal) : asI32(emittedDefVal)]]])
@@ -1281,6 +1288,10 @@ function emitFunc(func, funcFacts, programFacts) {
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
   } else {
     const ir = emit(body)
+    // dyn-closure-tables.js: an expression-bodied function whose return value
+    // is unconditionally a closure literal (e.g. `mk = (n) => (x) => x + n`) —
+    // a direct-return closure factory, no defaulted-param indirection needed.
+    recordDirectReturnClosure(name, ir)
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
@@ -1860,6 +1871,13 @@ export default function compile(ast, profiler) {
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
 
+  // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
+  // structurally safe candidate closure tables (never alias/escape) — the
+  // write-family + call-site facts gathered during emission below only fire
+  // for names in this set. Post-plan so the scan sees the AST shapes that will
+  // actually emit.
+  if (ctx.transform.optimize) ctx.scope.dynFnTableCandidates = scanDynClosureTableCandidates(ast)
+
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
   // per-function below as funcFacts settle. Bytes themselves are unchanged.
@@ -1974,6 +1992,12 @@ export default function compile(ast, profiler) {
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
+
+  // dyn-closure-tables.js: every function AND module init has now emitted, so
+  // callSites/paramClosureDefaults/directReturnClosures are complete — resolve
+  // each candidate table's write family and (if monomorphic) hand it to
+  // devirtConstFnArrayCalls via ctx.scope.constFnArrays, same as a const array.
+  if (ctx.transform.optimize) timePhase(profiler, 'resolveDynFnTables', () => resolveDynFnTables(programFacts))
 
   // Host globals (globalThis/process/WebAssembly/…) referenced as values are
   // recorded in ctx.core.hostGlobals during emit; register them as env imports

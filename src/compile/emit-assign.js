@@ -15,6 +15,7 @@ import { T } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps } from '../static.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
 import { inplaceKey } from './inplace-store.js'
+import { recordDynFnTableWrite } from './dyn-closure-tables.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
@@ -411,6 +412,12 @@ export function emitElementAssign(arr, idx, val) {
   // NaN-boxed values (spec ToNumber for typed element writes), so a boxed
   // bool stores 0/1 there, never raw atom bits.
   const valueExpr = storedValue(val)
+  // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure
+  // table — record this write's provenance (direct closure literal, or a call
+  // to a function resolveDynFnTables can later prove is a closure factory) for
+  // the program-wide same-body devirt proof. A no-op for every other array.
+  if (typeof arr === 'string' && ctx.scope.dynFnTableCandidates?.has(arr))
+    recordDynFnTableWrite(arr, val, valueExpr)
   // Literal string key, or schema-known object receiver with a static key expression.
   const litKey = isLiteralStr(idx) ? idx[1]
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
