@@ -319,9 +319,30 @@
       its ToNumber; optimize-gated); fusion's unknown-key arm inlines the
       6-op NaN+tag test. 1.49x → ~1.3x behind V8. REMAINING (named): the
       per-token __ptr_offset(words) — needs cross-function neverGrown for
-      PARAMS (a narrowReturnArrayElems-style caller fixpoint feeding the
-      existing localReps.neverGrown consumer at array.js:831); then
+      PARAMS. NOT body-local-only: callee-reachable aliases can grow the
+      array mid-call, and arrResized/nameEscapes are NAME-keyed (the
+      builder's `words.push` collides with the kernel's read-only param of
+      the same name) — needs an escape-aware caller fixpoint feeding the
+      existing localReps.neverGrown consumer at array.js:831; then
       __str_hash SSO-arm inline.
+    STATE 2026-07-10 (full 52-case table, jz/v8/jsc): svg geomean —
+    V8 2.09x slower than jz (was 1.89x at leg 3). 43/52 cases jz LEADS
+    BOTH engines outright. V8 beats jz on only THREE: wordcount 1.36x
+    (named lever above), colorpq 1.20x (lab; jz checksum ULP-differs from
+    both engines — jz's Math.pow, pre-existing float note), jessie 1.51x
+    (standing worst lab case — .loc sidecar churn, closure8 descriptor
+    walk). JSC-only-beaten six (V8 beaten in all): dispatch 3.8x (call-IC,
+    predictor-bound — recorded), crc32/dict/colorconv (recorded JSC-only
+    class), synth 1.11x, json 1.14x (CI-jitter band — LED JSC 0.13 vs
+    0.15 in this session's quiet runs). Self-host row: jz.wasm 24.2ms
+    BEATS V8 40.0 (1.66x) and JSC 35.0 (1.45x) full-pipeline; parity
+    column still DIFF (the recorded autoDepsOf byte-parity OPEN item).
+    All 66 examples compile clean. Gates at close: suite 2742/2748,
+    ratchet 6/6, selfhost 20/20+5/5, size geomean vs binaryen 0.964.
+    bench-compile.mjs NOTE: its jessie lab case fails on subscript
+    node_modules path resolution (bench-harness module resolution, the
+    known 'Unknown module' class — NOT a compile regression; the main
+    bench table's jessie compiles and runs).
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
