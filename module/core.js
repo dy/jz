@@ -947,7 +947,7 @@ export default (ctx) => {
    *  key into the payload slot, so the slot stays authoritative even after an
    *  `obj[k] = v` write through the dyn-props sidecar/global table — schema
    *  fields are never shadowed by a dynamic write. */
-  function emitSchemaSlotGuarded(va, guard, slow) {
+  function emitSchemaSlotGuarded(va, guard, slow, prop) {
     const bits = asI64(va?.type ? va : typed(va, 'f64'))
     const cond = ['i64.eq',
       ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]],
@@ -960,10 +960,20 @@ export default (ctx) => {
     // the same extraction __ptr_offset itself would perform for an OBJECT tag.
     const off = ['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]]
     const fast = typed(ctx.abi.object.ops.load(off, guard.slot), 'f64')
-    return typed(['if', ['result', 'f64'],
+    const ir = typed(['if', ['result', 'f64'],
       cond,
       ['then', fast],
       ['else', slow()]], 'f64')
+    // Slot-kind stamp for ToNumber sinking (toNumF64): when the ONE schema
+    // this guard proves censuses the slot as NUMBER — and the prop is never
+    // written anywhere (a write could store any kind) — the guard-HIT arm's
+    // raw load is already a plain number. toNumF64 then coerces only the
+    // dyn-miss arm instead of wrapping the whole read in __to_num — the
+    // shapes-dispatch pattern's per-field coercion collapses on the hot path.
+    if (ctx.schema.slotTypes?.get(guard.sid)?.[guard.slot] === VAL.NUMBER
+        && ctx.types.writtenProps && !ctx.types.writtenProps.has(prop))
+      ir.guardedNumSlot = true
+    return ir
   }
 
   function emitHashGetLocalConst(base, key, prop) {
@@ -1114,7 +1124,7 @@ export default (ctx) => {
         // guard on it instead of always paying the full dynamic dispatch
         // (durable-receiver check + ihash probe + schema-table scan).
         const guard = ctx.schema.guardedSlotOf(prop)
-        return guard ? emitSchemaSlotGuarded(va, guard, slow) : slow()
+        return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
       // undefined. Without this the value falls to the __hash_get fallback, which

@@ -872,6 +872,22 @@ export function toNumF64(node, v) {
   if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {
     if (ctx.schema.slotIntCertainAt?.(node[1], node[2]) === true) return asF64(v)
   }
+  // Guarded schema-slot read whose ONE schema censuses the slot NUMBER
+  // (emitSchemaSlotGuarded's stamp): SINK the coercion into the arms — the
+  // guard-HIT raw load is already a plain number; only the dyn-miss arm pays
+  // __to_num. The shapes-dispatch pattern (`measure(o)` over 8 schemas) drops
+  // a per-field ToNumber call from every hot read this way.
+  if (v.guardedNumSlot && Array.isArray(v) && v[0] === 'if') {
+    const out = v.map((c, i) => {
+      if (Array.isArray(c) && c[0] === 'else' && c.length === 2) {
+        if (!ctx.core.stdlib['__to_num']) return c
+        inc('__to_num')
+        return ['else', typed(['call', '$__to_num', asI64(typed(c[1], 'f64'))], 'f64')]
+      }
+      return c
+    })
+    return typed(out, 'f64')
+  }
   // IR-level shapes that produce real f64 numbers (never NaN-boxed pointers):
   // i32→f64 conversions, stdlib clock helper, length/ptr helpers.
   // Skip the __to_num call wrapper for these — they always return plain f64.
