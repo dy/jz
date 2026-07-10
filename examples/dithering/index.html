@@ -12,15 +12,16 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Eight 1-bit dithers of five recognizable subjects — a pyramid seen apex-on, a photograph of
-// Michelangelo's David (an embedded 19th-century Brogi print), a cube, a torus, a sphere dipped
-// into the ground — cycling automatically (algorithm every ~6s, subject once per full algorithm
-// lap), or drag left↔right to pick the algorithm / hit the dice for a new subject. The pixelated
+// Eight 1-bit dithers of one BAS-RELIEF plate viewed from above under an orbiting light — a
+// pyramid standing on the surface, an embossed relief of Michelangelo's David (heightmap from a
+// 19th-century Brogi print), a cube sunk corner-down, a torus and a full sphere sunk to their
+// equators — cycling automatically (algorithm every ~6s, subject once per full algorithm lap),
+// or drag left↔right to pick the algorithm / hit the dice for a new subject. The pixelated
 // backing keeps the dot pattern crisp at any window size. Threshold (pure 50% B&W) is excluded
 // from the algorithm cycle — it carries no dither texture. Host mode m → kernel mode m+1.
 const NAMES = ["Random", "Ordered · Bayer 4×4", "Ordered · Bayer 8×8", "Clustered-dot halftone", "Floyd–Steinberg", "Jarvis–Judice–Ninke", "Atkinson"]
 const N = NAMES.length
-const SHAPES = ["Pyramid", "David", "Cube", "Torus", "Dipped sphere"]
+const SHAPES = ["Pyramid", "David", "Cube", "Torus", "Sphere"]
 const NSHAPES = SHAPES.length
 const LAP = N * 6   // one full algorithm cycle, in seconds — the subject advances once per lap
 

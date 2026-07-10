@@ -1,7 +1,8 @@
 // Dithering — eight ways to render a smooth grayscale image with only black & white pixels.
-// Five subjects — a pyramid seen apex-on, a photograph of Michelangelo's David (the real head,
-// embedded as a tiny grayscale plate — halftoning photographs is what these algorithms were born
-// for), a cube, a torus, and a sphere dipped into the ground — are reduced to 1-bit by `mode`:
+// The subject is one BAS-RELIEF plate seen from straight above, lit by an orbiting light: a
+// pyramid standing on it, an embossed relief of Michelangelo's David (heightmap from a real
+// 19th-century print), a cube sunk corner-down, a torus and a full sphere each sunk to their
+// equator — all reduced to 1-bit by `mode`:
 //   0 threshold · 1 random · 2 ordered Bayer 4×4 · 3 ordered Bayer 8×8 · 4 clustered-dot halftone
 //   5 Floyd–Steinberg · 6 Jarvis–Judice–Ninke · 7 Atkinson
 // The threshold/random/ordered/halftone passes are per-pixel; the three error-diffusion passes
@@ -196,89 +197,90 @@ let dvSample = (u, v) => {
   return (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv
 }
 
-// Continuous-tone source image to be dithered — one of five subjects, chosen by `shape`,
-// each a smooth full-tonal-range field so every dither algorithm has real gradients to bite into:
-//   0 = pyramid seen APEX-ON (tip at the centroid, three faces)   1 = David (embedded photograph)
-//   2 = cube (flat-shaded, three faces)                           3 = torus
-//   4 = sphere dipped into the ground (dome + floor + contact ring)
-// The geometric subjects share one rotating key light (lx,ly,lz, from `t`) and the soft diagonal
-// backdrop gradient; the David plate is a static photograph — the cycling dithers are its show.
+// Continuous-tone source image to be dithered — a BAS-RELIEF plate seen from DIRECTLY ABOVE:
+// one flat surface into which every subject is half-sunk, all lit by the same ORBITING light
+// (in-plane azimuth circles with t, fixed elevation). Every form shades by its true top-view
+// normal — n·light — and meets the plate through a thin dark contact groove, so the whole set
+// reads as one coin-like relief whose shadows swing around as the light orbits:
+//   0 = pyramid standing on the plate (square base, apex at the CENTER, four faces)
+//   1 = David — the embedded Brogi plate used as a HEIGHTMAP: an embossed relief of the head,
+//       its normals lit live by the orbiting light (not a static photograph)
+//   2 = cube sunk corner-down (space diagonal vertical): a hexagon silhouette, the top corner
+//       at the center, three rhombic faces
+//   3 = torus lying flat, sunk to its tube's equator — an annulus bulging out of the plate
+//   4 = FULL sphere sunk to its equator — a shaded disc flush in the surface
 let source = (t, shape) => {
   let aspect = W / H
-  let lx = Math.cos(t * 0.6), ly = 0.45, lz = Math.sin(t * 0.6)
-  let il = 1.0 / Math.sqrt(lx * lx + ly * ly + lz * lz)
-  lx = lx * il; ly = ly * il; lz = lz * il
+  // orbiting light: unit in-plane azimuth (lpx,lpy) + fixed elevation weight LEL (surface z-up)
+  let lpx = Math.cos(t * 0.6), lpy = Math.sin(t * 0.6)
+  let LEL = 0.62
   let sh = shape | 0
   // David plate mapping: fill most of the frame height, width from the plate's own aspect
   let dvH = 1.84, dvW = dvH * DV_W / DV_H
+  // orbit-lit reliefs pop best on a calm plate: a GENTLE diagonal sheen, not a full-range sweep
   let py = 0
   while (py < H) {
     let ny = (py / H - 0.5) * 2.0
     let qx = 0
     while (qx < W) {
       let nx = (qx / W - 0.5) * 2.0 * aspect
-      // background: a soft diagonal gradient sweeping the FULL tonal range, so there are real
-      // midtones to render (not a near-black field). The subject sits on top.
-      let lum = 0.16 + 0.56 * (qx / W * 0.5 + (1.0 - py / H) * 0.5)
+      // the plate: soft diagonal sheen that leans toward the light's azimuth, so even the flat
+      // surface breathes as the light orbits
+      let lum = 0.34 + 0.10 * (qx / W - 0.5) * lpx + 0.10 * (0.5 - py / H) * lpy + 0.08 * (qx / W + 1.0 - py / H) * 0.5
       if (sh === 0) {
-        // Pyramid seen APEX-ON — looking straight down the tip: the silhouette is an equilateral
-        // triangle (corners at 120° around the centroid), the APEX projects to the CENTER, and
-        // three ridges run from the center out to the corners, cutting it into three flat-shaded
-        // faces. Each face's outward azimuth is the direction to its outer edge's midpoint; the
-        // circling light picks which faces are lit, so the pyramid visibly rotates its shading.
-        let Rt = 0.66, pcy = 0.02
-        let dxp = nx, dyp = ny - pcy
-        // corners (unit dirs from the centroid): up, lower-left, lower-right
-        let uax = 0.0, uay = -1.0
-        let ubx = -0.8660254037844386, uby = 0.5
-        let ucx = 0.8660254037844386, ucy = 0.5
-        // inside the triangle: on the inner side of all three outer edges (corner_i → corner_j)
-        let axp = uax * Rt, ayp = pcy + uay * Rt
-        let bxp = ubx * Rt, byp = pcy + uby * Rt
-        let cxp = ucx * Rt, cyp = pcy + ucy * Rt
-        let e1 = (bxp - axp) * (ny - ayp) - (byp - ayp) * (nx - axp)
-        let e2 = (cxp - bxp) * (ny - byp) - (cyp - byp) * (nx - bxp)
-        let e3 = (axp - cxp) * (ny - cyp) - (ayp - cyp) * (nx - cxp)
-        if (e1 <= 0.0 && e2 <= 0.0 && e3 <= 0.0) {
-          // which of the three wedge faces (between consecutive ridges) holds this pixel
-          let sA = uax * dyp - uay * dxp
-          let sB = ubx * dyp - uby * dxp
-          let sC = ucx * dyp - ucy * dxp
-          let ox = 0.0, oy = 0.0, fb = 0.0
-          if (sA >= 0.0 && sB < 0.0) { ox = -0.8660254037844386; oy = -0.5 }                    // face A–B (upper-left)
-          else if (sB >= 0.0 && sC < 0.0) { ox = 0.0; oy = 1.0; fb = 0.10 }                      // face B–C (bottom)
-          else { ox = 0.8660254037844386; oy = -0.5; fb = 0.20 }                                // face C–A (upper-right)
-          // flat Lambert against the circling light's in-plane direction, plus a fixed per-face
-          // offset (fb) so no two faces — or a face and the backdrop — can land on the same tone
-          let d = ox * lx + oy * lz
+        // Pyramid standing on the plate, seen from straight above: a SQUARE base, the apex
+        // projecting to the CENTER, four ridges running center → corners, four triangular
+        // faces facing N/S/E/W — each flat-shaded by its true tilted normal.
+        let S = 0.56, pcy = 0.0
+        let dx = nx, dy = ny - pcy
+        let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
+        let mx = adx > ady ? adx : ady          // Chebyshev radius: base edge at mx = S
+        if (mx < S) {
+          // face by quadrant between the diagonals; outward azimuth ±x or ±y
+          let ox = 0.0, oy = 0.0
+          if (adx >= ady) { ox = dx > 0.0 ? 1.0 : -1.0 }
+          else { oy = dy > 0.0 ? 1.0 : -1.0 }
+          // tilted face normal: 0.8 outward + 0.6 up (a steep-ish pyramid)
+          let d = 0.8 * (ox * lpx + oy * lpy) + 0.6 * LEL
           if (d < 0.0) d = 0.0
-          let v = 0.05 + 0.72 * pow75(d) + fb
-          // drawn structure: thin dark RIDGE lines (small |s| = near a center→corner ridge) and a
-          // dark OUTER edge (small −e = near a silhouette edge) — the pyramid reads even where a
-          // face's tone happens to match the local backdrop
-          let m = Math.abs(sA)
-          let m2 = Math.abs(sB); if (m2 < m) m = m2
-          let m3 = Math.abs(sC); if (m3 < m) m = m3
-          let eo = -e1
-          if (-e2 < eo) eo = -e2
-          if (-e3 < eo) eo = -e3
-          let line = m / 0.035
-          let l2 = eo / 0.045; if (l2 < line) line = l2
+          let v = 0.06 + 0.86 * pow75(d)
+          // drawn structure: dark ridge lines along the diagonals (|adx−ady| small), a groove at
+          // the base edge (S−mx small), and a slight lift toward the apex for volume
+          let rid = adx - ady; if (rid < 0.0) rid = -rid
+          let line = rid / 0.03
+          let l2 = (S - mx) / 0.035; if (l2 < line) line = l2
           if (line > 1.0) line = 1.0
-          lum = v * (0.25 + 0.75 * line)
+          lum = v * (0.30 + 0.70 * line) * (0.86 + 0.14 * (1.0 - mx / S))
+        } else if (mx < S + 0.06) {
+          // contact groove: the plate darkens right around the base — the "standing on" cue
+          let g = 1.0 - (mx - S) / 0.06
+          lum = lum * (1.0 - 0.42 * g * g)
         }
       } else if (sh === 1) {
-        // David — THE David: Michelangelo's head in profile, from the 19th-century Brogi albumen
-        // print "Particolare del David di Michelangiolo" (Rijksmuseum RP-F-F01184-K, CC0 public-
-        // domain dedication), embedded below as a 72×93 grayscale plate and bilinearly enlarged.
-        // Halftoning a photograph is the algorithms' native habitat — the plate edge feathers
-        // into the backdrop so it reads as a mounted print.
+        // David — the embedded Brogi plate (Rijksmuseum RP-F-F01184-K, CC0; see the DV table)
+        // used as a HEIGHTMAP: the print's luminance stands in for relief height, its central-
+        // difference gradient gives a surface normal per pixel, and the orbiting light rakes
+        // across it — an embossed marble medallion of the head whose shadows genuinely move.
         let u = (nx + dvW * 0.5) / dvW * (DV_W - 1)
         let v = (ny + dvH * 0.5) / dvH * (DV_H - 1)
         if (u >= 0.0 && u <= DV_W - 1 && v >= 0.0 && v <= DV_H - 1) {
-          let g = dvSample(u, v) / 255.0
-          let plum = 0.03 + 0.93 * g
-          // feather the plate's outer ~2.5 texels into the backdrop
+          let hgt = dvSample(u, v) * 0.00392156862745098          // /255 → 0..1 relief height
+          // central-difference normal on the plate grid (clamped sample coords at the rim)
+          let u0 = u - 1.0; if (u0 < 0.0) u0 = 0.0
+          let u1 = u + 1.0; if (u1 > DV_W - 1) u1 = DV_W - 1
+          let v0 = v - 1.0; if (v0 < 0.0) v0 = 0.0
+          let v1 = v + 1.0; if (v1 > DV_H - 1) v1 = DV_H - 1
+          let gxs = (dvSample(u1, v) - dvSample(u0, v)) * 0.00392156862745098
+          let gys = (dvSample(u, v1) - dvSample(u, v0)) * 0.00392156862745098
+          let G = 2.6                                             // relief gain — how deep the emboss cuts
+          let nzr = 1.0 / Math.sqrt(1.0 + G * G * (gxs * gxs + gys * gys))
+          let d = (-gxs * G * nzr) * lpx + (-gys * G * nzr) * lpy + nzr * LEL
+          if (d < 0.0) d = 0.0
+          // albedo (the print's own tones — keeps the face recognizable at EVERY light angle)
+          // + relief shading (the moving shadows) — a sum, not a pure product, so neither term
+          // can erase the other as the light orbits
+          let plum = 0.04 + 0.40 * hgt + 0.52 * pow75(d) * (0.55 + 0.45 * hgt)
+          // feather the medallion's outer ~2.5 texels into the plate
           let m = u; if (DV_W - 1 - u < m) m = DV_W - 1 - u
           if (v < m) m = v
           if (DV_H - 1 - v < m) m = DV_H - 1 - v
@@ -286,69 +288,91 @@ let source = (t, shape) => {
           lum = lum + (plum - lum) * bl
         }
       } else if (sh === 2) {
-        // Cube — isometric: three flat parallelogram faces (top / right / left) sharing the
-        // near-bottom vertex N, exactly like a Rubik's-cube icon. Same flat-shaded-face idea as
-        // the pyramid, one more tone. Three edges from N: eLeft=(-w,-hTop), eRight=(w,-hTop) (the
-        // top rhombus's two upper corners) and eDown=(0,hSide) (the vertical edge shared by both
-        // side faces). Each face test solves P−N = a·e1 + b·e2 (0≤a,b≤1) in closed form — no
-        // matrix inverse needed, the edges are mirror-symmetric.
-        let ccx = 0.0, ccy = 0.10, wSide = 0.50, hTop = 0.28, hSide = 0.55
-        let dx = nx - ccx, dy = ny - ccy
-        let at = (-dy / hTop - dx / wSide) * 0.5, bt = (-dy / hTop + dx / wSide) * 0.5   // top: a·eLeft+b·eRight
-        let ar = dx / wSide, br = (dy + ar * hTop) / hSide                                // right: a·eRight+b·eDown
-        let al = -dx / wSide, bl = (dy + al * hTop) / hSide                              // left: a·eLeft+b·eDown
-        if (at >= 0.0 && at <= 1.0 && bt >= 0.0 && bt <= 1.0) {
-          let fy = 1.0, fz = 0.18, ifn = 1.0 / Math.sqrt(fy * fy + fz * fz)
-          let d = (fy * ifn) * ly + (fz * ifn) * lz
+        // Cube sunk DIAGONALLY into the plate (space diagonal vertical), seen from above: a
+        // regular-hexagon silhouette, the cube's top corner at the CENTER, three ridges running
+        // to alternating hexagon corners, three rhombic faces — the classic isometric hexagon,
+        // here as a half-buried solid.
+        let Rh = 0.60, hcy = 0.0
+        let dx = nx, dy = ny - hcy
+        // regular hexagon inside-test: below the apothem along all three face-outward axes
+        let ap = Rh * 0.8660254037844386
+        let p1 = dx * -0.8660254037844386 + dy * -0.5; if (p1 < 0.0) p1 = -p1   // |proj on O_AB|
+        let p2 = dy; if (p2 < 0.0) p2 = -p2                                      // |proj on O_BC|
+        let p3 = dx * 0.8660254037844386 + dy * -0.5; if (p3 < 0.0) p3 = -p3     // |proj on O_CA|
+        let hx2 = p1 > p2 ? p1 : p2; if (p3 > hx2) hx2 = p3                      // hexagon "radius"
+        if (hx2 < ap) {
+          // face = the rhombus whose outward azimuth (120° apart, pointing at each hexagon
+          // edge's midpoint) best matches this pixel's direction from the center — a max-dot
+          // pick, immune to wedge-ordering mistakes a cross-sign fence invites
+          let d1 = dx * -0.8660254037844386 + dy * -0.5     // upper-left rhombus
+          let d2 = dy                                        // bottom rhombus
+          let d3 = dx * 0.8660254037844386 + dy * -0.5       // upper-right rhombus
+          let ox = -0.8660254037844386, oy = -0.5, best = d1
+          if (d2 > best) { best = d2; ox = 0.0; oy = 1.0 }
+          if (d3 > best) { best = d3; ox = 0.8660254037844386; oy = -0.5 }
+          // a corner-up cube's faces tilt 54.7° from vertical: n = 0.816·outward + 0.577·up
+          let d = 0.816 * (ox * lpx + oy * lpy) + 0.577 * LEL
           if (d < 0.0) d = 0.0
-          lum = 0.10 + 0.88 * pow75(d)
-        } else if (dx >= 0.0 && ar >= 0.0 && ar <= 1.0 && br >= 0.0 && br <= 1.0) {
-          let fx = 0.80, fy = 0.30, fz = 0.52, ifn = 1.0 / Math.sqrt(fx * fx + fy * fy + fz * fz)
-          let d = (fx * ifn) * lx + (fy * ifn) * ly + (fz * ifn) * lz
-          if (d < 0.0) d = 0.0
-          lum = (0.10 + 0.86 * pow75(d)) * (1.0 - 0.08 * br)
-        } else if (dx < 0.0 && al >= 0.0 && al <= 1.0 && bl >= 0.0 && bl <= 1.0) {
-          let fx = -0.80, fy = 0.30, fz = 0.52, ifn = 1.0 / Math.sqrt(fx * fx + fy * fy + fz * fz)
-          let d = (fx * ifn) * lx + (fy * ifn) * ly + (fz * ifn) * lz
-          if (d < 0.0) d = 0.0
-          lum = (0.10 + 0.86 * pow75(d)) * (1.0 - 0.08 * bl)
+          let v = 0.06 + 0.86 * pow75(d)
+          // ridge lines: the three seams run from the center corner OUT to alternating hexagon
+          // corners (up, lower-left, lower-right) — distance to each ray, gated to its forward
+          // half so the tie-locus' mirror half never draws a phantom seam across a face
+          let m = 1.0
+          let cr = dy < 0.0 ? -dx : 1.0                                         // ray (0,-1): |cross|=|dx|, only where dy<0
+          if (dy < 0.0) { cr = dx < 0.0 ? -dx : dx; if (cr < m) m = cr }
+          let dt2 = dx * -0.8660254037844386 + dy * 0.5                          // ray to lower-left corner
+          if (dt2 > 0.0) { let c2 = -0.8660254037844386 * dy - 0.5 * dx; if (c2 < 0.0) c2 = -c2; if (c2 < m) m = c2 }
+          let dt3 = dx * 0.8660254037844386 + dy * 0.5                           // ray to lower-right corner
+          if (dt3 > 0.0) { let c3 = 0.8660254037844386 * dy - 0.5 * dx; if (c3 < 0.0) c3 = -c3; if (c3 < m) m = c3 }
+          let line = m / 0.03
+          let l2 = (ap - hx2) / 0.03; if (l2 < line) line = l2
+          if (line > 1.0) line = 1.0
+          lum = v * (0.30 + 0.70 * line)
+        } else if (hx2 < ap + 0.06) {
+          let g = 1.0 - (hx2 - ap) / 0.06
+          lum = lum * (1.0 - 0.42 * g * g)
         }
       } else if (sh === 3) {
-        // Torus (donut) — an annulus shaded as a tube: recast the radial position as a
-        // cross-section angle (a sin/cos pair, already unit length by construction) so the
-        // ring reads as a rounded 3D surface — bright crest, dark inner/outer rim — not a flat washer.
-        let ccx = 0.0, ccy = 0.02, Router = 0.62, Rinner = 0.30
+        // Torus lying flat, sunk to its tube's equator: an annulus bulging out of the plate.
+        // The tube's top-view normal tilts radially by u = (r−Rmid)/tubeR and up by √(1−u²);
+        // the rims (u→±1) flatten to the plate through a contact groove on both sides.
+        let Router = 0.62, Rinner = 0.30
         let Rmid = (Router + Rinner) * 0.5, tubeR = (Router - Rinner) * 0.5
-        let dx = nx - ccx, dy = ny - ccy, r = Math.sqrt(dx * dx + dy * dy)
+        let dx = nx, dy = ny, r = Math.sqrt(dx * dx + dy * dy)
         if (r > Rinner && r < Router) {
           let u = (r - Rmid) / tubeR
-          let z = Math.sqrt(Math.max(0.0, 1.0 - u * u))
+          let z = 1.0 - u * u; if (z < 0.0) z = 0.0
+          z = Math.sqrt(z)
           let ir = 1.0 / (r + 1e-6)
-          let d = (dx * ir * u) * lx + (dy * ir * u) * ly + z * lz
+          let d = (dx * ir * u) * lpx + (dy * ir * u) * lpy + z * LEL
           if (d < 0.0) d = 0.0
-          lum = 0.06 + 0.92 * pow75(d)
+          lum = 0.05 + 0.88 * pow75(d)
+        } else {
+          // contact grooves hugging both rims (outside the outer rim, inside the inner)
+          let e = r > Rmid ? r - Router : Rinner - r
+          if (e >= 0.0 && e < 0.05) {
+            let g = 1.0 - e / 0.05
+            lum = lum * (1.0 - 0.4 * g * g)
+          }
         }
       } else {
-        // Sphere DIPPED into the ground — a floor plane with a horizon, the ball sunk to its
-        // equator: the dome rises above the ground line, and a soft elliptical contact ring
-        // darkens the floor around the waterline, so it reads as a ball half-buried in a
-        // surface rather than a floating dome.
-        let gY = 0.28, R = 0.55
-        if (ny > gY) {
-          // floor: brightens toward the viewer (bottom of frame), a hint of the diagonal sweep kept
-          lum = 0.14 + 0.44 * ((ny - gY) / (1.0 - gY)) + 0.10 * (qx / W)
-        }
-        let dx = nx, dy = ny - gY, r2 = dx * dx + dy * dy
-        if (dy <= 0.0 && r2 < R * R) {
-          let z = Math.sqrt(R * R - r2), inv = 1.0 / R
-          let d = (dx * inv) * lx + (dy * inv) * ly + (z * inv) * lz
+        // A FULL sphere sunk to its equator, seen from straight above: the silhouette is a
+        // circle flush in the plate, shaded by the true spherical normal — bright toward the
+        // light's azimuth, rolling dark on the far side — ringed by a contact groove.
+        let R = 0.60
+        let dx = nx, dy = ny, r2 = dx * dx + dy * dy
+        if (r2 < R * R) {
+          let inv = 1.0 / R
+          let nz = Math.sqrt(1.0 - r2 * inv * inv)
+          let d = (dx * inv) * lpx + (dy * inv) * lpy + nz * LEL
           if (d < 0.0) d = 0.0
-          lum = 0.04 + 0.96 * pow75(d)
-        } else if (ny > gY) {
-          // contact ring: an ellipse hugging the ball's waterline, fading outward on the floor
-          let ex = dx / (R * 1.45), ey = dy / (R * 0.30)
-          let s = ex * ex + ey * ey
-          if (s < 1.0) lum = lum * (1.0 - 0.5 * (1.0 - s))
+          lum = 0.04 + 0.92 * pow75(d)
+        } else {
+          let r = Math.sqrt(r2)
+          if (r < R + 0.06) {
+            let g = 1.0 - (r - R) / 0.06
+            lum = lum * (1.0 - 0.45 * g * g)
+          }
         }
       }
       gray[py * W + qx] = lum
