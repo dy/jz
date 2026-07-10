@@ -51,6 +51,7 @@ const TESTS = [
   'slot-hazards',
   'never-grown',
   'bool-identity',
+  'hoist-loop-global',
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',

@@ -105,6 +105,7 @@ export const PASS_NAMES = [
   'unrollRecurrence',         // unit-stride DP/scan: scalar-replace arr[j-1]/arr[j] recurrence + ×2 unroll
   'clampPeel',                // edge-clamp stencil: split into clamp-free interior (vectorizes) + edges
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
+  'hoistLoopGlobalPtrOffset', // per-loop complement: narrower write/call scan lets a clean loop hoist inside an otherwise-poisoned function
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
@@ -2361,6 +2362,194 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
     snaps.push(['local.set', name, snap])
   }
   fn.splice(bodyStart, 0, ...decls, ...snaps)
+}
+
+/**
+ * Loop-scoped complement to `hoistGlobalPtrOffset`. That pass requires the
+ * WHOLE FUNCTION to be clean w.r.t. a global (no write anywhere, no
+ * call_indirect/call_ref anywhere) — one unrelated indirect call ANYWHERE in
+ * a large function (e.g. a devirtualized Pratt-loop trampoline that inlines
+ * many operator handlers) poisons every stable-pointee global for the WHOLE
+ * function, even a tight char-scan loop inside it that touches nothing
+ * unsafe itself. This pass re-tries per LOOP, narrowing the write/call scan
+ * to just that loop's own subtree (including nested loops, whose dynamic
+ * extent is part of the enclosing loop's).
+ *
+ * Soundness (route (a) from the design note — the simplest sound design):
+ * a global's base is hoisted to a loop's preheader iff, within that loop's
+ * subtree, (1) the global is never `global.set`, (2) no `call_indirect` /
+ * `call_ref` appears at all (fail-closed: an unknown target could write
+ * anything), and (3) every DIRECTLY-called function does not (transitively,
+ * via `reachableWrites` — `collectReachableGlobalWrites`, itself fail-closed
+ * the same way) write the global. No route (b) (re-derive-at-write /
+ * generation guard) — a loop that fails (1)-(3) is left exactly as
+ * `hoistGlobalPtrOffset` left it.
+ *
+ * One extra idiom this pass alone needs: the durable-receiver override probe
+ * (`sidecarOverride`, src/ir.js) reads a global ONCE per iteration into a
+ * local for a NaN/tag check, then reuses that SAME local for the base-decode
+ * a few nodes downstream — `local.tee $vo (global.get $cur)` feeding a later
+ * `(i64.reinterpret_f64 (local.get $vo))`. hoistGlobalPtrOffset's site
+ * matcher only recognizes a DIRECT `global.get`, missing this alias.
+ * `buildLocalGlobalAlias` resolves it: `$vo` aliases `$cur` when every write
+ * to `$vo` within the loop is textually `(global.get $cur)` — since `$cur`
+ * is already proven unwritten in the loop, every such tee assigns the same
+ * invariant value, so any downstream read of `$vo` is as invariant as
+ * `global.get $cur` itself.
+ *
+ * Runs immediately after `hoistGlobalPtrOffset` in the same module pass: any
+ * site the function-wide pass already hoisted is now `local.get $__goN`, so
+ * `siteGlobal` no longer matches it there — the two passes can't double-hoist
+ * the same read.
+ *
+ * @param {Array} fn - func IR node
+ * @param {Set<string>} stablePtrGlobals - '$name's of never-forwarding module globals
+ * @param {Map<string,Set<string>>} reachableWrites - from collectReachableGlobalWrites
+ */
+export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
+  if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Per-loop: locals whose every write in `loopNode` is exactly `(global.get
+  // $G)` for one consistent G — a conflicting write (different G, or any
+  // other expression) poisons the name for this loop.
+  const buildLocalGlobalAlias = (loopNode) => {
+    const alias = new Map(), poisoned = new Set()
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+        const name = n[1], rhs = n[2]
+        if (!poisoned.has(name)) {
+          const g = Array.isArray(rhs) && rhs[0] === 'global.get' && typeof rhs[1] === 'string' ? rhs[1] : null
+          if (g != null && (!alias.has(name) || alias.get(name) === g)) alias.set(name, g)
+          else { poisoned.add(name); alias.delete(name) }
+        }
+        scan(rhs)
+        return
+      }
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+    return alias
+  }
+
+  // `(i64.reinterpret_f64 X)` → stable-pointee global name, or null. X is a
+  // direct `(global.get $G)`, or a `(local.get $X)` resolved through `alias`.
+  const reintGlobal = (n, alias) => {
+    if (!Array.isArray(n) || n[0] !== 'i64.reinterpret_f64' || n.length !== 2) return null
+    const x = n[1]
+    if (Array.isArray(x) && x[0] === 'global.get' && typeof x[1] === 'string') return x[1]
+    if (Array.isArray(x) && x[0] === 'local.get' && typeof x[1] === 'string') return alias.get(x[1]) ?? null
+    return null
+  }
+  // Same two interchangeable shapes as hoistGlobalPtrOffset.siteGlobal — see
+  // that function's comment for why both forms hoist to one snapshot.
+  const siteGlobal = (n, alias) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'call' && n[1] === '$__ptr_offset' && n.length === 3) return reintGlobal(n[2], alias)
+    if (n[0] === 'i32.wrap_i64' && n.length === 2 && Array.isArray(n[1]) && n[1][0] === 'i64.and' && n[1].length === 3) {
+      const mask = n[1][2]
+      if (Array.isArray(mask) && mask[0] === 'i64.const'
+          && (typeof mask[1] === 'string' ? Number(mask[1]) : mask[1]) === LAYOUT.OFFSET_MASK)
+        return reintGlobal(n[1][1], alias)
+    }
+    return null
+  }
+
+  // Collision-proof snap ids — shared `$__goN` numbering space with
+  // hoistGlobalPtrOffset so re-running either pass never collides.
+  const used = new Set()
+  const scanIds = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__go')) {
+      const t = n[1].slice(5); if (/^\d+$/.test(t)) used.add(+t)
+    }
+    for (let i = 0; i < n.length; i++) scanIds(n[i])
+  }
+  scanIds(fn)
+  let idCounter = 0
+  const freshId = () => { while (used.has(idCounter)) idCounter++; const id = idCounter++; used.add(id); return `$__go${id}` }
+
+  const newDecls = []
+
+  // Attempt one loop; returns preheader statements to splice just before it
+  // (possibly empty). Outer-first (top-down): if the outer loop's hoist
+  // succeeds, `replace` below rewrites every matching site in its ENTIRE
+  // subtree — including nested loops — so a later independent attempt on a
+  // nested loop finds nothing left to do for that global (no double-hoist,
+  // no redundant inner snapshot of an outer-invariant value).
+  const processLoop = (loopNode) => {
+    const alias = buildLocalGlobalAlias(loopNode)
+    const sites = new Map(), ownWrites = new Set(), ownCallees = new Set(), ptrOffsetForm = new Set()
+    let hasIndirect = false
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      const g = siteGlobal(n, alias)
+      if (g != null) {
+        let arr = sites.get(g); if (!arr) { arr = []; sites.set(g, arr) }
+        arr.push(n)
+        if (n[0] === 'call') ptrOffsetForm.add(g)
+        return
+      }
+      if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
+      else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
+      else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+
+    const preheader = []
+    if (sites.size && !hasIndirect) {
+      const calleeWrites = (g) => {
+        for (const c of ownCallees) if (reachableWrites?.get(c)?.has(g)) return true
+        return false
+      }
+      const chosen = new Map()
+      for (const g of sites.keys()) {
+        if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites(g)) continue
+        chosen.set(g, freshId())
+      }
+      if (chosen.size) {
+        const replace = (n) => {
+          if (!Array.isArray(n)) return
+          for (let i = 1; i < n.length; i++) {
+            const g = siteGlobal(n[i], alias)
+            if (g != null && chosen.has(g)) n[i] = ['local.get', chosen.get(g)]
+            else replace(n[i])
+          }
+        }
+        for (let i = 1; i < loopNode.length; i++) replace(loopNode[i])
+        for (const [g, name] of chosen) {
+          newDecls.push(['local', name, 'i32'])
+          const snap = ptrOffsetForm.has(g)
+            ? ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]
+            : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['global.get', g]], ['i64.const', LAYOUT.OFFSET_MASK]]]
+          preheader.push(['local.set', name, snap])
+        }
+      }
+    }
+    return preheader
+  }
+
+  // Walk every statement-bearing container; splice a loop's preheader into
+  // its own parent array right before it, then recurse into the loop body
+  // (nested loops get their own independent, narrower attempt).
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (Array.isArray(c) && c[0] === 'loop') {
+        const pre = processLoop(c)
+        if (pre.length) { node.splice(i, 0, ...pre); i += pre.length }
+        walk(c)
+      } else {
+        walk(c)
+      }
+    }
+  }
+  walk(fn)
+  if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
 /**

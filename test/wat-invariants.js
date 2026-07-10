@@ -73,9 +73,53 @@ test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of
   // re/im are module globals; their pointer base is loop-invariant. Without the
   // hoist every element access re-runs `i64.reinterpret_f64(global.get)` per step.
   const src = `let re = new Float64Array(64); let im = new Float64Array(64); export let g = () => { for (let i = 0; i < 64; i++) re[i] = re[i] + im[i] }`
-  const off = { hoistGlobalPtrOffset: false, hoistInvariantPtrOffset: false, hoistInvariantLoop: false, vectorizeLaneLocal: false }
+  const off = { hoistGlobalPtrOffset: false, hoistLoopGlobalPtrOffset: false, hoistInvariantPtrOffset: false, hoistInvariantLoop: false, vectorizeLaneLocal: false }
   ok(loopHas(parse(src, off), GLOBAL_DECODE), 'control: global base re-decoded inside loop with hoists OFF')
   ok(!loopHas(parse(src, 2), GLOBAL_DECODE), 'INVARIANT: global base decoded once at entry, never in loop, with pass ON')
+})
+
+// The string-base offset decode a per-char `cur.charCodeAt(idx)` read produces:
+// `i32.wrap_i64(i64.and(i64.reinterpret_f64(global.get $G), OFFSET_MASK))`, or
+// the equivalent `call $__ptr_offset` form (module-global STRING/TYPED/OBJECT/
+// BUFFER/CLOSURE pointees never forward, so both compute the same offset).
+const STRING_BASE_DECODE = (n) =>
+  (n[0] === 'i32.wrap_i64' && Array.isArray(n[1]) && n[1][0] === 'i64.and'
+    && Array.isArray(n[1][1]) && n[1][1][0] === 'i64.reinterpret_f64'
+    && Array.isArray(n[1][1][1]) && n[1][1][1][0] === 'global.get')
+  || (n[0] === 'call' && n[1] === '$__ptr_offset')
+
+test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a call to a PROVABLY-clean named function, inside a function poisoned elsewhere by an unrelated call_indirect', () => {
+  // Two things independently block the EXISTING machinery here:
+  //  - hoistGlobalPtrOffset requires the WHOLE function clean (no write, no
+  //    call_indirect anywhere) — `ops[mode]()`'s dynamic dispatch poisons the
+  //    entire function even though the scan loop itself never reaches it.
+  //  - hoistInvariantLoop's generic LICM already re-tries per loop, but its
+  //    purity rule for `global.get` is a blanket "no call at all in the loop"
+  //    (SAFE_OFFSET/READONLY_MEM/NON_MUTATING/PURE_CALL whitelist only) — a
+  //    call to an ordinary user function (`helper`, forced un-inlined via a
+  //    second call site) trips it even though `helper` provably never writes
+  //    idx/cur (collectReachableGlobalWrites over the direct call graph).
+  // hoistLoopGlobalPtrOffset is the only pass that clears BOTH: scoped to the
+  // loop (ignores the unrelated call_indirect outside it) AND reachableWrites-
+  // aware (tolerates the in-loop call once the callee is proven clean).
+  const src = `
+    export let idx = 0, cur = ''
+    const ops = []
+    const reg = (fn) => { ops.push(fn) }
+    reg((x) => x + 1); reg((x) => x * 2)
+    export let helper = (x) => { let y = x; for (let k = 0; k < 3; k++) y = y * 2 + 1; return y }
+    export let warmup = () => helper(7)
+    export let setup = (s) => { idx = 0; cur = s }
+    export let scanThenDispatch = (mode, x) => {
+      let cc = 0, acc = 0
+      while ((cc = cur.charCodeAt(idx)) <= 32) { acc = helper(acc); idx = idx + 1 }
+      if (mode) { let fn = ops[mode]; return fn ? fn(x) : cc }
+      return acc + cc
+    }`
+  ok(loopHas(parse(src, { hoistLoopGlobalPtrOffset: false }), STRING_BASE_DECODE),
+    'control: string base re-decoded inside the scan loop with the per-loop pass OFF')
+  ok(!loopHas(parse(src, 2), STRING_BASE_DECODE),
+    'INVARIANT: string base decoded once at the loop preheader, never per-char, with pass ON')
 })
 
 test('ablation: vectorizeLaneLocal lifts a pure f64 element map to SIMD lanes', () => {

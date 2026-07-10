@@ -41,7 +41,7 @@ export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
-import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
+import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64, appendStaticSlots } from '../ir.js'
 import { staticArrayPtr } from '../../module/array.js'
@@ -926,6 +926,15 @@ export function optimizeModule(sec, profiler) {
   if (!cfg || cfg.hoistGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
     const stable = stablePtrGlobalNames()
     if (stable.size) for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, reachableWrites)
+  })
+  // Per-loop complement: a function the whole-function pass above declined
+  // (an unrelated call_indirect / write ANYWHERE in the function poisons
+  // every global for it) may still have individual loops that are clean on
+  // their own narrower scope — e.g. a char-scan loop inside a devirtualized
+  // Pratt-loop trampoline that also inlines unrelated operator dispatch.
+  if (!cfg || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistLoopGlobalPtr', () => {
+    const stable = stablePtrGlobalNames()
+    if (stable.size) for (const s of allFuncs) hoistLoopGlobalPtrOffset(s, stable, reachableWrites)
   })
   // Build the pure-function map for tryPerPixelColor's Phase-2 lane inline BEFORE the
   // per-function vectorizer runs — the vectorizer is jz lowering (pre-watr), so it needs
