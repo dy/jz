@@ -203,7 +203,12 @@ const _rmwSafe = (n, readNode) => {
 }
 function tryHashRmwFusion(arr, idx, val) {
   if (typeof arr !== 'string') return null
-  const at = valTypeOf(arr)
+  // valTypeOf consults the decl-site FLOW overlay, which stamps a dictionary-
+  // mode `{}` binding OBJECT (the literal node's kind) even though the
+  // dictionary lowering just repped it VAL.HASH — honor the rep, else the
+  // fusion never fires on exactly the bindings it exists for (`counts[w] =
+  // (counts[w]|0)+1` on a computed-key dictionary).
+  const at = repOf(arr)?.val === VAL.HASH ? VAL.HASH : valTypeOf(arr)
   if (at !== VAL.HASH && at != null) return null
   // A proven-string key probes directly; an unknown-typed name key takes the same
   // __is_str_key routing __dyn_set uses (numeric keys → slot 0 → generic path).

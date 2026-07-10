@@ -1571,3 +1571,28 @@ test('devirt schema-slot: two schemas sharing a field name at different slots ne
   is(r.getA(r.buildA()), 1)
   is(r.getA(r.buildB()), 99)
 })
+
+test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
+  // The dictionary-mode `{}` (computed keys only → real HASH) plus the
+  // `o[k] = f(o[k])` single-probe fusion (tryHashRmwFusion). Values pinned at
+  // both levels: a fused miscount (e.g. a re-inserting probe) shows here.
+  const src = `
+  const words = ['aaa', 'bbb', 'ccc']
+  export let go = (n) => {
+    const counts = {}
+    for (let i = 0; i < n; i++) {
+      const w = words[i % 3]
+      counts[w] = (counts[w] | 0) + 1
+    }
+    let s = 0
+    for (let j = 0; j < 3; j++) s += counts[words[j]] | 0
+    return s
+  }
+  export let missing = () => { const c = {}; c['k'] = (c['k'] | 0) + 5; return c['k'] | 0 }`
+  for (const optimize of [0, 2]) {
+    const { exports } = jz(src, { optimize })
+    is(exports.go(9), 9, `O${optimize}: 3 keys x 3 hits`)
+    is(exports.go(10), 10, `O${optimize}: uneven distribution still sums to n`)
+    is(exports.missing(), 5, `O${optimize}: missing key reads as 0 through the fused probe`)
+  }
+})
