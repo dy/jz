@@ -792,7 +792,11 @@ export default (ctx) => {
     // way (the "Unknown func $__clamp_idx" shape documented in
     // test/selfhost-includes.js) — that test would fail (and the kernel would trap)
     // without these edges.
-    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : [])],
+    // slotLogDeps: hasVal=false skips the VALUE slot-log, but the ENTRY-insert
+    // log (durableEntryLogIR) still calls $__durable_slot_log — without the
+    // explicit edge the kernel leg drops the helper (auto-scan divergence, the
+    // selfhost-includes class) and every `new Set(...)` fails to compile there.
+    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
     __set_delete: ['__map_hash', '__same_value_zero'],
     __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
@@ -804,6 +808,9 @@ export default (ctx) => {
     __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
     __map_delete: ['__map_hash', '__same_value_zero'],
     __map_from: ['__ptr_type', '__ptr_offset', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
+    // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
+    // reachability vanishes under self-host (test/selfhost-includes.js)
+    __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.features.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),

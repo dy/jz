@@ -52,7 +52,16 @@ const AUX_SHIFT = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK = BigInt(LAYOUT.AUX_MASK)
 const OFFSET_MASK = BigInt(LAYOUT.OFFSET_MASK)
 
 /** Format an i64 BigInt as a zero-padded `0x…` hex literal for WAT/IR templates. */
-export const i64Hex = bits => '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
+// Formatted via 32-bit halves with an explicit logical shift, NOT
+// bits.toString(16): under self-host, BigInts are raw SIGNED i64 bits
+// (kind-erased — see ir.js's SELF-HOST CONTRACT), so toString(16) of a
+// bit-63-set value renders a signed "-8000…" fragment and the emitted
+// `(i64.const 0x00-8000…)` kills the kernel's watr parse ("Bad int") — the
+// nanPrefixMaskHex regression that silently broke every durable-log helper
+// the kernel compiled. `>> 32n` sign-extends on raw bits; the & masks the
+// extension off, so both host and kernel produce the same unsigned halves.
+const _hx8 = (n) => n.toString(16).toUpperCase().padStart(8, '0')
+export const i64Hex = bits => '0x' + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))
 
 /** Pack (type, aux, offset) into the i64 NaN-box carrier — the single source of
  *  truth for pointer bit layout. Compiler IR (`packPtrBits`/`mkPtrIR`), the

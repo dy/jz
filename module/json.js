@@ -149,8 +149,11 @@ export default (ctx) => {
     // dynamic prop anywhere never loads collection.js.
     __json_obj: () => ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
-    __jput_num: ['__ftoa'],
-    __jput_str: ['__char_at', '__str_byteLen'],
+    // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
+    // next stage; without the explicit edge they ride the auto-dep scan, which
+    // silently yields nothing under self-host (test/selfhost-includes.js).
+    __jput_num: ['__ftoa', '__jput_str'],
+    __jput_str: ['__char_at', '__str_byteLen', '__jput'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__ishex', '__utf8_enc', '__sso_norm'],

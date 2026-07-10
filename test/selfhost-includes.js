@@ -58,26 +58,50 @@ const realize = (v) => typeof v === 'string' ? v : typeof v === 'function' ? (()
 test('self-host: no stdlib helper is reachable only via the (self-host-unreliable) auto-dep scan', () => {
   if (onKernel()) return  // inspects host-side ctx internals + scans source; the in-process leg owns it
   const incd = emitterIncluded()
-  const bodyRefs = new Set()       // helper → some template body that calls it
-  const depTargets = new Set()     // helper → appears in some deps() array
+  // PER-TEMPLATE edges, not a program-wide union: `__set_add`'s body called
+  // $__durable_slot_log while only __map_set's deps row listed it — the union
+  // check passed, and every `new Set(...)` failed to compile on the kernel leg
+  // ("Unknown func $__durable_slot_log"). A body-called helper must be in the
+  // TRANSITIVE closure of the CALLING template's own explicit deps (or inc'd
+  // globally) — that is what actually keeps it alive when the auto-scan
+  // silently yields nothing under self-host.
+  const callerBodyRefs = new Map()  // template name → Set of helpers its body calls
+  const edges = new Map()           // template name → its OWN explicit deps
+  let depTargets = 0
   for (const src of PROBES) {
     try { compile(src, { optimize: 2 }) } catch { continue }
     const { stdlib, stdlibDeps: graph } = ctx.core
     for (const name of Object.keys(stdlib)) {
       const txt = realize(stdlib[name])
-      if (typeof txt === 'string')
-        for (const m of txt.matchAll(/\$(__[A-Za-z0-9_]+)/g)) if (m[1] !== name && stdlib[m[1]]) bodyRefs.add(m[1])
+      if (typeof txt !== 'string') continue
+      let refs = callerBodyRefs.get(name)
+      if (!refs) callerBodyRefs.set(name, refs = new Set())
+      for (const m of txt.matchAll(/\$(__[A-Za-z0-9_]+)/g)) if (m[1] !== name && stdlib[m[1]]) refs.add(m[1])
     }
     for (const k of Object.keys(graph)) {
       const e = graph[k]; const a = typeof e === 'function' ? (() => { try { return e() } catch { return [] } })() : e
-      for (const d of (a || [])) depTargets.add(d)
+      let es = edges.get(k)
+      if (!es) edges.set(k, es = new Set())
+      for (const d of (a || [])) { es.add(d); depTargets++ }
     }
   }
-  // A body-referenced helper is kernel-safe iff it has an explicit edge (deps() or inc()).
-  // Exclude generated helpers (numeric suffix, e.g. __regex_0) — those are per-construct roots.
-  const vulnerable = [...bodyRefs].filter(h => !depTargets.has(h) && !incd.has(h) && !/_\d+$/.test(h))
+  const closureOf = (name) => {
+    const out = new Set(), queue = [name]
+    while (queue.length) {
+      const n = queue.pop()
+      for (const d of edges.get(n) || []) if (!out.has(d)) { out.add(d); queue.push(d) }
+    }
+    return out
+  }
+  const vulnerable = []
+  for (const [name, refs] of callerBodyRefs) {
+    if (!refs.size) continue
+    const reach = closureOf(name)
+    for (const h of refs)
+      if (!reach.has(h) && !incd.has(h) && !/_\d+$/.test(h)) vulnerable.push(`${name}→${h}`)
+  }
   ok(vulnerable.length === 0,
-    `helper(s) reachable only via the auto-dep scan — declare an explicit deps() edge or inc(): ${vulnerable.join(', ')} ` +
-    `(these compile in-process but vanish from the self-host kernel, e.g. "Unknown func $__clamp_idx")`)
-  ok(bodyRefs.size > 20 && depTargets.size > 20, `realized surface: ${bodyRefs.size} body-refs, ${depTargets.size} dep targets`)
+    `template body calls a helper its OWN explicit deps can't reach — add the deps() edge or inc(): ${[...new Set(vulnerable)].join(', ')} ` +
+    `(these compile in-process but vanish from the self-host kernel, e.g. "Unknown func $__clamp_idx" / "$__durable_slot_log")`)
+  ok(callerBodyRefs.size > 20 && depTargets > 20, `realized surface: ${callerBodyRefs.size} templates, ${depTargets} dep edges`)
 })

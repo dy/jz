@@ -186,3 +186,19 @@ test('layout: NaN-box carrier i64 hex only via layout.js helpers', () => {
     ? `use layout.js helpers (nanPrefixHex, ssoBitI64Hex, sliceBitI64Hex, …):\n${violations.join('\n')}`
     : 'no hand-rolled layout hex')
 })
+
+test('layout: i64Hex is self-host-safe across the full 64-bit range', async () => {
+  // Under self-host, BigInts are raw SIGNED i64 bits (kind-erased), so any
+  // formatting that routes through bits.toString(16) renders a bit-63-set
+  // value as a signed "-8000…" fragment — the emitted `(i64.const 0x00-…)`
+  // is unparseable and killed every durable-log helper the kernel compiled
+  // (the nanPrefixMaskHex regression). i64Hex must build the hex from
+  // logical-shifted 32-bit halves; this pins host output byte-for-byte
+  // against the toString reference for the boundary patterns.
+  const { i64Hex, nanPrefixMaskHex } = await import('../layout.js')
+  const ref = (b) => '0x' + b.toString(16).toUpperCase().padStart(16, '0')
+  for (const bits of [0n, 1n, 0x7FF8000000000000n, 1n << 63n,
+    0x7FF8000000000000n | (1n << 63n), 0xFFFFFFFFFFFFFFFFn, 0x0123456789ABCDEFn])
+    is(i64Hex(bits), ref(bits), `i64Hex(${bits.toString(16)})`)
+  ok(/^0xFFF8/.test(nanPrefixMaskHex()), 'sign-bit-forced mask formats unsigned')
+})

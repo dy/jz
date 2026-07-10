@@ -366,6 +366,9 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
 export default (ctx) => {
   deps({
     __mkstr: ['__alloc'],
+    // own edge: __static_str's body calls $__mkstr — without it the helper
+    // rides the self-host-unreliable auto-scan (test/selfhost-includes.js)
+    __static_str: ['__mkstr'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __i32_to_str: ['__itoa', '__mkstr'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
