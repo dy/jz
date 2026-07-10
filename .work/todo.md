@@ -234,6 +234,44 @@
     - 18 kernel-leg fails: multi-module 'Unknown module' shapes (arguably
       mis-classified for the kernel leg — it has no module resolver by
       construction), destructure-assignment `({a,b} = obj)` internal.
+  * violations leg 3 (2026-07-09, 5807563/3073247 + watr 7ad05df):
+    - immutable 1.06→0.73ms (−31%): analyzeSchemaSlotIntCertain gains a
+      LATE mode (plan's post-narrowing block) — FRESH census rebuild with
+      per-body element-alias sids (`const p = ps[i]` through the param's
+      arrayElemSchema / local arrElemSchemas facts, knowledge that exists
+      only after narrowSignatures). Sound to rebuild (not just widen):
+      every consumer reads at emit. Residual vs V8 0.42 (1.7x): f64-boxed
+      slots vs SMIs — i32 SLOT STORAGE stays the named big lever.
+    - json 0.23→0.13ms LEADS JSC 0.15 (1.11x) + V8 0.26 (1.92x): SWAR key
+      matching in the shaped parser — expectText compares 8/4/2/1-byte
+      chunks against packed LE constants (one load+compare+branch per
+      CHUNK, one pos advance); in-bounds by the existing len+8 alloc with
+      8-byte 0xFF sentinel (sentinel-overlap fails into generic reparse ✓
+      bit-exact). Remaining json levers recorded (cursor globals→locals,
+      __jp_num inline, ws-skip fusion) — now BELOW the lead, optional.
+    - watr `deadset` (7ad05df, PENDING PUBLISH): drop const local.set
+      overwritten on every path before any read — the inliner zero-init
+      shape (shapes' ~24/record). First-x-op scan, ITERATIVE (the CPS
+      draft + the naive continuation unwinding each blew the stack on
+      kernel-size functions — three rewrites: fork-only recursion,
+      depth-cap 512, in-loop continuation unwinding); runs ONCE
+      pre-rounds (post-coalesce slot sharing aliases per-name liveness —
+      a real "x"+1→"x0" miscompile caught during development by jz's
+      preeval pins). watr suites 256+590 green; jz suite/selfhost green
+      against the local copy; shapes number ~neutral on V8 (its regalloc
+      absorbs dead stores) — ships as codegen-quality/size.
+    - foldImmutableGlobals CROSSED OFF: V8 constant-folds immutable
+      global.get at wasm-compile time; watr's `globals` pass is size-
+      gated by design. Non-lever.
+    - wordcount RE-VERIFIED fused pre-watr (hash_slot+slot_write; the
+      census noise earlier was stdlib text). 3.89ms vs V8 2.63 (1.5x) —
+      residual is probe-structural (str_hash+bucket+str_eq per token vs
+      dictionary ICs); next named lever: key-pointer interning for the
+      probe loop + the durable-barrier audit.
+    QUEUE STATE after leg 3: fftplan/provenance/fft/strbuild/shapes/json
+    LEAD both engines; sort/mat4/raytrace/hashjoin lead; wordcount 1.5x,
+    immutable 1.7x behind V8 (both with named structural levers);
+    dispatch 1.07x-beaten V8 / JSC-only gap stands (predictor-bound).
 * [ ] compiler architecture perfection
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
