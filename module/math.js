@@ -378,8 +378,10 @@ export default (ctx) => {
       // Constant exponent with denominator 5 and < 5 (the sRGB / Rec.709 decode gammas 2.4, 2.2,
       // and any k/5): x^(k/5) = x^p · fifthroot(x^r), p=⌊c⌋, r=5c−5p ∈ 1..4 — algebraic, no exp/log,
       // ~3.6e-10 rel err over x ∈ (0,1]. Beats exp(c·log x): the pow microbench drops below V8's
-      // own Math.pow intrinsic. x<0 → NaN to match Math.pow on a non-integer exponent (the exp·log
-      // form's log(<0)=NaN). x=0/+∞/NaN all carry correctly through the power + fifthroot.
+      // own Math.pow intrinsic. Finite x<0 → NaN to match Math.pow on a non-integer exponent (the
+      // exp·log form's log(<0)=NaN). x=-Infinity is its OWN case, not "negative": |x|=Infinity
+      // means Math.pow ignores the sign for a non-integer exponent (c > 0 in this branch's guard,
+      // so the result is +Infinity). x=+0/-0/+∞/NaN carry correctly through power + fifthroot.
       if (Number.isFinite(c) && c > 0 && c < 5 && !Number.isInteger(c) && Number.isInteger(c * 5)) {
         inc('math.fifthroot')
         const t = temp('pw'), g = get(t)
@@ -390,8 +392,10 @@ export default (ctx) => {
         const body = p === 0 ? root : ['f64.mul', ipow(p), root]
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, irA],
-          ['if', ['result', 'f64'], ['f64.lt', g, ['f64.const', 0]],
-            ['then', ['f64.const', 'nan']], ['else', body]]], 'f64')
+          ['if', ['result', 'f64'], ['f64.eq', g, ['f64.const', '-inf']],
+            ['then', ['f64.const', 'inf']],
+            ['else', ['if', ['result', 'f64'], ['f64.lt', g, ['f64.const', 0]],
+              ['then', ['f64.const', 'nan']], ['else', body]]]]], 'f64')
       }
       if (Number.isFinite(c) && !Number.isInteger(c) && c !== 0.5 && c !== -0.5)
         return (inc('math.exp'), inc('math.log'),
