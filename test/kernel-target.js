@@ -15,7 +15,22 @@ import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import v8 from 'node:v8'
+import vm from 'node:vm'
 import { instantiate } from '../interop.js'
+
+// Reclaim dead kernel instances. Each compile gets a FRESH 8192-page instance
+// (512 MB committed, see getSelfModule below) whose Memory lives OUTSIDE the JS
+// heap — thousands of dead instances add ~zero GC pressure, so a full test:wasm
+// leg balloons past 20 GB RSS without a single major GC. Force a collection
+// every few compiles: bounds live instances to GC_EVERY × 512 MB (~2 GB) for a
+// few ms of GC each. Tunable via JZ_KERNEL_GC_EVERY (0 disables).
+v8.setFlagsFromString('--expose-gc')
+const gc = vm.runInNewContext('gc')
+v8.setFlagsFromString('--no-expose-gc')
+const GC_EVERY = process.env.JZ_KERNEL_GC_EVERY == null ? 4 : Number(process.env.JZ_KERNEL_GC_EVERY)
+let compileCount = 0
+const reclaim = () => { if (GC_EVERY && ++compileCount % GC_EVERY === 0) gc() }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = join(ROOT, 'dist/jz.wasm')
@@ -88,7 +103,9 @@ export const compileViaKernel = (code, opts = {}) => {
     // verbatim: self.js's compileWat now runs the full index.js optimization tail
     // (watOptimize + the optimizeFunc 'post' pass), so the self-host emits the same
     // WAT IR native does. Explicit optimize:false / 0 stays off.
-    return self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts)))
+    const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts)))
+    reclaim()
+    return wat
   }
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
   // syntax) to match the native compiler's accept/reject behavior. The optimize
@@ -101,5 +118,11 @@ export const compileViaKernel = (code, opts = {}) => {
   // now runs its own optimizer by default, same as native.
   const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts))
   const bin = self.memory.read(out)
-  return bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+  // COPY out of the instance: memory.read returns a zero-copy VIEW into the wasm
+  // memory (interop.js typed-array marshal), so returning it as-is pins the whole
+  // 512 MB instance for as long as the caller holds the bytes — the reclaim gc
+  // could never free anything. slice() detaches the result onto its own buffer.
+  const bytes = (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
+  reclaim()
+  return bytes
 }

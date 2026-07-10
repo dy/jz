@@ -125,4 +125,17 @@ if (process.env.JZ_TEST_TARGET === 'jz.wasm') {
   _setCompileTarget(compileViaKernel)
 }
 
-for (const name of selected) await import(`./${name}.js`)
+// Full GC between test files. Every test instantiates fresh wasm modules whose
+// Memory lives OUTSIDE the JS heap — thousands of dead instances add ~zero GC
+// pressure (the JS heap stays small, major GC never fires) and the suite's RSS
+// balloons to tens of GB before the process exits. A forced collection after
+// each file frees the previous file's instances and returns their memories to
+// the OS, bounding RSS to roughly one file's working set. --expose-gc is
+// enabled from inside (v8 flag + a scratch context) so npm scripts stay flag-free.
+import v8 from 'node:v8'
+import vm from 'node:vm'
+v8.setFlagsFromString('--expose-gc')
+const gc = vm.runInNewContext('gc')
+v8.setFlagsFromString('--no-expose-gc')
+
+for (const name of selected) { await import(`./${name}.js`); gc() }
