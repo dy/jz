@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR } from '../src/ir.js'
 import { emit, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -955,6 +955,17 @@ export default (ctx) => {
    *  `obj[k] = v` write through the dyn-props sidecar/global table — schema
    *  fields are never shadowed by a dynamic write. */
   function emitSchemaSlotGuarded(va, guard, slow, prop) {
+    // Clone: `slow` is a closure the CALLER built over the same `va` object
+    // (emitPropAccess's `const slow = () => …emitDynGetAnyTyped(va, …)`), so this
+    // function's own use of `va` below and the caller's use inside `slow()` would
+    // otherwise be the SAME node appearing twice in the final if/then/else tree —
+    // one logical read, but two tree positions. A later pass that walks the tree
+    // once per node identity (not per position) — e.g. local-slot lifetime/reuse
+    // analysis — sees only the FIRST occurrence's use and can free/reassign the
+    // local behind the second, producing whatever locals happen to be resident at
+    // that point (see cloneIR's doc; ir.js). va is a pure receiver read (a local/
+    // cell load), safe to duplicate as long as each occurrence is its own object.
+    va = cloneIR(va)
     const bits = asI64(va?.type ? va : typed(va, 'f64'))
     const cond = ['i64.eq',
       ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]],
@@ -989,11 +1000,15 @@ export default (ctx) => {
     return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', receiver, key, ['i32.const', strHashLiteral(prop)]]], 'f64')
   }
 
+  // Every call site embeds `receiver` a SECOND time directly (as the dyn-get
+  // call's own receiver arg) alongside this function's result — clone so the two
+  // occurrences are distinct node objects (see emitSchemaSlotGuarded's comment /
+  // cloneIR's doc for why aliased IR nodes are unsound to leave standing).
   function emitTypeTag(receiver, vt) {
     const p = valKindToPtr(vt)
     if (p != null) return ['i32.const', p]
     inc('__ptr_type')
-    return ['call', '$__ptr_type', receiver]
+    return ['call', '$__ptr_type', cloneIR(receiver)]
   }
 
   function emitDynGetExprTyped(base, key, vt, prop) {

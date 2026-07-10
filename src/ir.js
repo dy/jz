@@ -818,7 +818,18 @@ function toPrimitiveChain(node, v, order) {
   return typed(['block', blk, ...body], 'i64')
 }
 
-const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
+/** Structural clone of an already-emitted IR node. Two DIFFERENT positions in the
+ *  final tree must never share one node object: a later pass (CSE, peephole, local
+ *  renumbering) that walks the tree and mutates/tags a node in place only sees ONE
+ *  of the two logical occurrences and silently mutates both — the exact "IR-aliasing"
+ *  hazard multiple emit sites must avoid when a value is READ into more than one
+ *  branch of an if/else or more than one argument position. Caller's responsibility:
+ *  the node must be side-effect-free to duplicate (a local/cell read, not a call) —
+ *  see coerceNullishToNum below for the established idiom. Does not preserve `.type`/
+ *  `.ptrKind` (a plain array map): every consumer of a cloned node already re-derives
+ *  those from context (`node?.type ? node : typed(node, 'f64')`), so this only needs
+ *  to reproduce the value-computing shape, not its cached metadata. */
+export const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
 
 /** ToNumber for a runtime value that may carry a nullish sentinel: null→+0, undefined→NaN,
  *  anything else → itself. `valIR` must be side-effect-free (a local read) — it is duplicated,

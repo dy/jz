@@ -8,7 +8,7 @@
  */
 
 import { ctx, warn, err } from '../ctx.js'
-import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
   analyzeBody, findMutations, invalidateLocalsCache,
@@ -145,7 +145,7 @@ function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k] of reps) {
+    for (const [k, r] of reps) {
       // Re-fold call sites HARD (the shared val lattice is soft, so r.val may be a
       // partial consensus from typed sites alone) — only specialize when every site
       // proves the same pointer kind.
@@ -156,6 +156,26 @@ function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
+      // OBJECT is the one PTR_ABI_KINDS member whose unboxed i32 offset is
+      // ambiguous without a schema id: SET/MAP/BUFFER have a fixed runtime layout
+      // (aux always 0, per narrowPointerResults), but an OBJECT's payload slots are
+      // laid out per-schema, and the offset alone can't tell a reader which schema
+      // to rebox against. r.schemaId is the SAME hard (never-reset) call-site fact
+      // narrowPointerResults' return-value arm trusts (param-reps.js: "schemaId ...
+      // stay HARD"); demanding it here too, and skipping the narrow when it's absent
+      // or conflicting, closes the gap this function used to leave: it set
+      // p.ptrKind = VAL.OBJECT with no p.ptrAux, so every later reboxer of this
+      // param — asF64's boxPtrIR defaults an omitted aux to 0 — stamped the offset
+      // with WHATEVER schema happens to be id 0 program-wide (a live, unrelated
+      // object's field layout, not this parameter's own). A fresh instance built
+      // from that mistagged parameter (watr's own `normalize(opts)`, opts narrowed
+      // this way with no callers.length>1 disagreement to save it) then reads as
+      // if it belonged to schema 0 — the wild "phantom keys" class of miscompile.
+      if (hv === VAL.OBJECT) {
+        const aux = r.schemaId
+        if (aux == null) continue
+        p.ptrAux = aux
+      }
       p.type = 'i32'
       p.ptrKind = hv
     }
@@ -513,14 +533,51 @@ function typedAuxOfReturn(expr, localElemMap) {
  * Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so
  * outer's call to inner contributes a known schema-id.
  */
+/** True iff return-expr `e` is provably just `paramName` unchanged: either the bare
+ *  name itself, or a recursive call to `func.name` that forwards `paramName` at its
+ *  OWN parameter index (`return f(x, out, y)` inside `f`) — by induction on recursion
+ *  depth, that call's result is whatever `f` would return given that same value, which
+ *  bottoms out at the direct-return arms below. Strict AST-identity match only (no
+ *  attempt to prove two *different* expressions are equal at runtime). */
+function passesParamThrough(e, paramName, paramIdx, funcName) {
+  if (e === paramName) return true
+  if (!Array.isArray(e) || e[0] !== '()' || e[1] !== funcName) return false
+  return callArgs(e)[paramIdx] === paramName
+}
+
 /** A function whose every return is the same parameter that was pointer-ABI
- *  narrowed to an unboxed i32 (p.ptrKind set). Returns that param, else null. */
+ *  narrowed to an unboxed i32 (p.ptrKind set) — directly, or via a same-function
+ *  recursive call that forwards it unchanged (see passesParamThrough). Without the
+ *  recursive case, a function like flow-types.js's extractRefinements — whose `!`
+ *  branch delegates via `return extractRefinements(cond[1], out, !sense)` instead of
+ *  a bare `return out` — fails the naive all-return-exprs-are-the-bare-name check on
+ *  that ONE path, so the whole function loses ptrKind tracking (see
+ *  narrowPointerResults below): the caller then numeric-converts the returned offset
+ *  bits into a bogus float instead of reboxing them into a NaN-boxed pointer — a
+ *  silent value corruption, not a compile error, that only a receiver expecting the
+ *  real pointer (e.g. Map.prototype.size's raw __len dispatch) turns into a wild
+ *  offset read.
+ *
+ *  Every path must also yield a real value, not fall through / bare-`return` into
+ *  `undefined` (an f64 atom) — a match here forces this function's signature to
+ *  unconditional i32, so a value-less path would be a genuine wasm type error
+ *  (validated on encode, not just a mistracked type). Same guarantee
+ *  narrowPointerResults' func.valResult-driven arm takes via alwaysReturns, and
+ *  narrowValResults skips via hasBareReturn, for the identical reason: a recursive
+ *  walker whose tail happens to read `return helper(...)` (a value only its OWN
+ *  recursive call consumes) commonly has OTHER arms that are bare `return;`
+ *  early-exits — real shape, not hypothetical (plan/literals.js's
+ *  _disqualifyPromotion: single value-bearing return via self-recursion, but
+ *  multiple bare `return`s alongside it that returnExprs below never sees).
+ *
+ *  Returns that param, else null. */
 function passthroughPtrParam(func) {
-  const exprs = returnExprs(func.body)
+  const body = func.body
+  if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) return null
+  const exprs = returnExprs(body)
   if (!exprs.length) return null
-  const name = exprs[0]
-  if (typeof name !== 'string' || !exprs.every(e => e === name)) return null
-  return func.sig.params.find(p => p.name === name && p.ptrKind) || null
+  return func.sig.params.find((p, idx) =>
+    p.ptrKind && exprs.every(e => passesParamThrough(e, p.name, idx, func.name))) || null
 }
 
 function narrowPointerResults(funcs, paramReps) {
