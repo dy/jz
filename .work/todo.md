@@ -638,10 +638,34 @@
       This was HOW normalize's cfg lost its pass defaults; the phantom
       sidecar aliasing is WHY opts carries foreign keys — L2 parity stays
       blocked on the latter (heal agent's lane).
-      kern-seq durable-heal OOB is NOT the L2 byte-drift bug itself (still
-      reproduces post-bool-fix; focused agent hunting it — trap in the
-      zombie/heal machinery on warm instances after compiling
-      `const g = m.get('a'); g.mut`).
+      kern-seq OOB, heal-agent verdict (honest no-kill, decisive
+      narrowing): the "durable-heal" framing was WRONG — `_clear()` NEVER
+      RUNS in the repro (exported __heap grows monotonically ~19MB/round
+      across all 8 rounds), so NO rewind/reuse is involved; the phantom
+      keys were likewise observed rewind-free ⇒ the corruption is a WILD
+      pointer/write during KERNEL-EXECUTED EMIT, not stale-after-rewind.
+      Exact trigger shape: `const g = m.get('a')` → bindAssignSchema
+      POISONS g (non-literal RHS) → `g.mut` hits emitPropAccess's
+      vt==null branch → ctx.schema.guardedSlotOf(prop) (unique-schema
+      guard) → emitSchemaSlotGuarded — explains all three probe
+      variants. Trap chain: __len ← withRefinements (flow-types) ← emit
+      dispatch closures. optimize:0 always safe; ANY single trivial pass
+      (treeshake alone, sortLocalsByUse alone, fusedRewrite alone)
+      reproduces ⇒ passes are layout perturbers only, corruption
+      precedes them. Two real IR-aliasing convention violations found
+      (emitTypeTag embeds its receiver node twice; emitSchemaSlotGuarded
+      shares va between fast arm and slow()) — fixed as hypotheses, did
+      NOT clear the repro, reverted honestly (real hygiene items, not
+      the root). Agent worktree also re-fixed two pre-existing base bugs
+      main already has (i64Hex halves, Array.isArray-as-value) — not
+      merged. Repro/bisect tooling preserved in the session scratchpad
+      (bisect-passes.mjs, repro-diag.mjs, build-named-kernel.mjs).
+      NEXT (continuation agent, combined brief): use the PHANTOM-KEYS
+      manifestation as the primary repro (single compileDiag call — far
+      faster than kern-seq's rounds); instrument the sidecar-resolution
+      path through the kernel diag channel to catch the foreign pointer
+      at its source; audit __alloc for overlapping live allocations
+      (heap monotonic ⇒ either allocator overlap or wild store).
     - for-of over nullish: DECIDED + LANDED (8f7b380) — throws per ES
       (catchable $__jz_err), guard only in __iter_arr's unknown-receiver arm
       (typed receivers pay nothing). Pinned in test/iteration.js.
