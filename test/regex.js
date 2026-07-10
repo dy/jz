@@ -706,3 +706,25 @@ test('regex: matchAll collects all matches', () => {
     'a1b2')
   is(run('export let f = (s) => [...s.matchAll(/z/g)].length')('hello'), 0)
 })
+
+test('regex: matchAll on an UNTYPED receiver (the generic-twin dispatch)', () => {
+  // A receiver the static types can't pin (dyn-table read, typeof-continue
+  // narrowing) must still scan: with only the `.string:` emitter registered,
+  // the untyped path fell to the dyn-prop probe, yielded undefined, and
+  // for-of swallowed it SILENTLY — the self-host kernel's global-snapshot
+  // sweep scanned zero templates (byte-parity divergence root #2).
+  const src = `
+const table = { a: '(global.set $__heap_end) call $__memgrow', b: () => '(global.set $__heap)' }
+export let sweep = () => {
+  let out = ''
+  for (const name of ['a', 'b', 'c']) {
+    let src = table[name]
+    if (typeof src === 'function') src = src()
+    if (typeof src !== 'string') continue
+    for (const m of src.matchAll(/\\(global\\.set \\$([A-Za-z0-9_.$]+)/g)) out += m[1] + ' '
+  }
+  return out
+}`
+  for (const optimize of [0, 2])
+    is(jz(src, { optimize }).exports.sweep(), '__heap_end __heap ', `O${optimize}: untyped receiver scans`)
+})

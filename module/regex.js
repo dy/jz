@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32, toStrI64 } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1127,6 +1127,26 @@ export default (ctx) => {
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
     const s = temp('mas'), outArr = tempI32('mao')
+    return matchAllImpl(asF64(emit(str)), id, nGroups, groupNames, s, outArr)
+  }
+  // Generic twin (unknown receiver): ES String.prototype.matchAll ToString-
+  // coerces its receiver, so route through the coercion into the same scan.
+  // Its presence also arms emit's runtime string-fork — with ONLY the
+  // `.string:` key, an untyped receiver (`let src = tbl[k]` narrowed by a
+  // typeof-continue guard the static types can't follow) fell through to the
+  // dyn-prop probe, yielded `undefined`, and for-of swallowed it SILENTLY —
+  // the self-host global-snapshot sweep scanned nothing (byte-parity root #2,
+  // pinned in test/regex.js).
+  ctx.core.emit['.matchAll'] = (str, search) => {
+    const id = resolveRegex(search)
+    if (id == null) err('matchAll requires a regex argument')
+    const nGroups = ctx.runtime.regex.groups.get(id) || 0
+    const groupNames = ctx.runtime.regex.groupNames.get(id) || []
+    inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
+    const s = temp('mas'), outArr = tempI32('mao')
+    return matchAllImpl(typed(['f64.reinterpret_i64', toStrI64(null, asF64(emit(str)))], 'f64'), id, nGroups, groupNames, s, outArr)
+  }
+  function matchAllImpl(recvIR, id, nGroups, groupNames, s, outArr) {
     const off = tempI32('maof'), len = tempI32('maln'), pos = tempI32('maps')
     const res = tempI32('mars'), cnt = tempI32('macn'), wi = tempI32('mawi')
     const ms = tempI32('mams'), me = tempI32('mame')
@@ -1148,7 +1168,7 @@ export default (ctx) => {
     // globals just before buildMatchArr reads them — correct per-match captures.
     const matchArr = buildMatchArr(s, ms, me, nGroups, groupNames)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${s}`, recvIR],
       ['local.set', `$${off}`, ['call', '$__str_to_buf', sI64()]],
       ['local.set', `$${len}`, ['call', '$__str_byteLen', sI64()]],
       ['local.set', `$${cnt}`, ['i32.const', 0]],

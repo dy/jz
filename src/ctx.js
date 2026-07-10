@@ -211,6 +211,9 @@ export function resolveIncludes() {
     ctx.core.diagSink.resolve.push({
       includes: [...ctx.core.includes].sort().join(' '),
       autoAlloc: autoDepsOf('__alloc').join(' '),
+      memShared: !!ctx.memory.shared,
+      memSharedRaw: String(ctx.memory.shared),
+      allocOwned: typeof stdlib['__alloc'] === 'string' && stdlib['__alloc'].indexOf('global.get $__heap') >= 0,
     })
   }
 }
