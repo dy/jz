@@ -1596,3 +1596,28 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
     is(exports.missing(), 5, `O${optimize}: missing key reads as 0 through the fused probe`)
   }
 })
+
+test('spread merge: enumeration sees the spread keys, not just the literal ones', () => {
+  // resolveSchema of a spread-bearing literal must be emitObjectSpread's MERGE
+  // (spreadLiteralSchema), not the ':'-entries filter — the filter made
+  // Object.keys({ ...S, z: 9 }) fold to ['z'] while a/b/c stayed readable as
+  // slots: keys/values/entries/for-in/JSON all silently dropped the spread's
+  // keys (watr-in-kernel's normalize() lost its pass defaults this way).
+  const r = run(`
+    const S = Object.freeze({ a: 1, b: 2 })
+    export let keys = () => Object.keys({ ...S, z: 9 }).join('+')
+    export let first = () => Object.keys({ z: 9, ...S }).join('+')
+    export let two = () => Object.keys({ ...S, ...{ x: 7 } }).join('+')
+    export let vals = () => Object.values({ ...S, z: 9 }).join('+')
+    export let json = () => JSON.stringify({ ...S, z: 9 })
+    export let forin = () => { let o = ''; const m = { ...S, z: 9 }; for (const k in m) o += k; return o }
+    export let gate = () => { const m = { ...S, z: 9 }; return m.a !== undefined && m.z === 9 ? 1 : 0 }
+  `)
+  is(r.keys(), 'a+b+z', 'keys sees spread + literal')
+  is(r.first(), 'z+a+b', 'first-occurrence order (literal first)')
+  is(r.two(), 'a+b+x', 'two spreads merge')
+  is(r.vals(), '1+2+9')
+  is(r.json(), '{"a":1,"b":2,"z":9}')
+  is(r.forin(), 'abz')
+  is(r.gate(), 1, 'reads through the merged schema stay live')
+})

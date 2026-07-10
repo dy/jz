@@ -810,8 +810,20 @@ const hasOutOfSchemaWrites = (obj, schema) => {
 
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
-  if (Array.isArray(obj) && obj[0] === '{}')
-    return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+  if (Array.isArray(obj) && obj[0] === '{}') {
+    // Comma-grouped children arrive as ['{}', [',', p1, p2, …]] — same unwrap
+    // as the '{}' emitter's, or a grouped literal resolves to zero keys.
+    const props = obj.length === 2 && Array.isArray(obj[1]) && obj[1][0] === ','
+      ? obj[1].slice(1) : obj.slice(1)
+    // A spread-bearing literal's schema is the MERGE emitObjectSpread builds
+    // (or null when any source is unknown → HASH result, runtime enumeration).
+    // Filtering to ':'-entries here made Object.keys({ ...S, z: 9 }) fold to
+    // ['z'] while the object's real slot layout carried S's keys too — the
+    // spread's keys vanished from keys/values/entries/for-in/JSON while
+    // remaining readable as properties (watr-in-kernel's normalize() cfg).
+    if (props.some(p => Array.isArray(p) && p[0] === '...')) return spreadLiteralSchema(props)
+    return props.filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+  }
   // JSON-shape inferred: JSON.parse(constStr) call or `.prop`/`[i]` chain
   // resolving to a known OBJECT shape carries its key list as `names`.
   const sh = shapeOf(obj)
@@ -844,22 +856,32 @@ function takeLiteralTarget() {
   return frame.name
 }
 
+// Merged static schema of a spread-bearing literal, or null when any spread
+// source's key set is unknown at compile time (→ HASH result). The SINGLE
+// source of truth for emitObjectSpread (which builds the object with exactly
+// this slot layout) and resolveSchema (which keys/values/entries/for-in fold
+// against) — the two MUST agree or enumeration drops the spread's keys.
+function spreadLiteralSchema(props) {
+  const names = []
+  const add = n => { if (!names.includes(n)) names.push(n) }
+  for (const p of props) {
+    if (Array.isArray(p) && p[0] === '...') {
+      const s = spreadSourceSchema(p[1])
+      if (!s) return null
+      for (const n of s) add(n)
+    } else if (Array.isArray(p) && p[0] === ':') add(p[1])
+  }
+  return names
+}
+
 function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   // Resolve every spread source's schema. A source with no static schema means
   // its full key set is unknown at compile time, so the merge result must be a
   // HASH (dynamic dict) — a fixed schema would silently drop the source's keys
   // it doesn't list. Only when EVERY source is known do we build the fixed-shape
   // OBJECT below.
-  const allNames = []
-  const addName = n => { if (!allNames.includes(n)) allNames.push(n) }
-  let allKnown = true
-  for (const p of props) {
-    if (Array.isArray(p) && p[0] === '...') {
-      const s = spreadSourceSchema(p[1])
-      if (s) for (const n of s) addName(n)
-      else allKnown = false
-    } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
-  }
+  const allNames = spreadLiteralSchema(props)
+  const allKnown = allNames != null
   // Single unknown spread `{ ...src }` → shallow-clone src at runtime, preserving
   // its type (OBJECT→OBJECT, HASH→HASH). Aliasing src (the old shortcut) leaked
   // every later write to the result back into the source — a real correctness bug
