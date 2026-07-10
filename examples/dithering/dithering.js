@@ -1,8 +1,8 @@
 // Dithering — eight ways to render a smooth grayscale image with only black & white pixels.
 // The subject is one BAS-RELIEF plate seen from straight above, lit by an orbiting light: a
-// pyramid standing on it, an embossed relief of Michelangelo's David (heightmap from a real
-// 19th-century print), a cube sunk corner-down, a torus and a full sphere each sunk to their
-// equator — all reduced to 1-bit by `mode`:
+// three-sided pyramid standing on it, the face of Michelangelo's David embossed as a medallion
+// (heightmap from a real 19th-century print), a cube sunk corner-down, a torus and a full sphere
+// each sunk to their equator — all reduced to 1-bit by `mode`:
 //   0 threshold · 1 random · 2 ordered Bayer 4×4 · 3 ordered Bayer 8×8 · 4 clustered-dot halftone
 //   5 Floyd–Steinberg · 6 Jarvis–Judice–Ninke · 7 Atkinson
 // The threshold/random/ordered/halftone passes are per-pixel; the three error-diffusion passes
@@ -182,11 +182,128 @@ const DV = [
 -50595078,-33817604,-33686019,-33686275,-67240451,-2102139655,944464758,-308989910,-705627655,-856164884
 ]
 
-// Bilinear sample of the embedded David plate (DV, packed 4 px/int, appended below) at
-// fractional texel (u,v) — pure +/*/shift integer unpacks, bit-exact across JS and jz.
+// Silhouette mask for the plate (same 72×93 grid, packed 4 px/int): 255 inside the head,
+// 0 on the old photo background — the relief is carved ONLY where the mask is set, so the
+// medallion shows the face alone against the bare plate, like an architectural relief.
+const MK = [
+0,0,0,0,0,0,0,0,0,0,33685761,1,0,0,0,0,
+0,0,0,0,0,0,0,0,0,84082944,201984007,437654031,791290911,67769895,1,0,
+0,0,0,0,0,0,0,0,0,0,16777216,1110842889,1801475660,-1718779273,-1111970141,895125423,
+17108252,0,0,0,0,0,0,0,0,0,0,0,436600832,-775777204,-404496937,-185471253,
+-84281098,-1076039945,591423894,132881,0,0,0,0,0,0,0,0,0,0,-2076437757,-33886263,
+-65795,-1,-1,-83951617,-1513430030,136465272,1,0,0,0,0,0,0,0,0,218234880,
+-373657553,-6,-1,-1,-1,-1,-168034561,1167511785,787,0,0,0,0,0,0,0,
+0,1528431360,-17243991,-1,-1,-1,-1,-1,-1,-1074856705,17311597,0,0,0,0,0,
+0,0,0,-831711231,-268,-1,-1,-1,-1,-1,-1,-117440513,323328220,3,0,0,
+0,0,0,0,16777216,-104178415,-1,-1,-1,-1,-1,-1,-1,-1,1807740669,542,
+0,0,0,0,0,0,184549376,-607413,-1,-1,-1,-1,-1,-1,-1,-1,
+-755433473,4713,0,0,0,0,0,0,990314496,-3670,-1,-1,-1,-1,-1,-1,
+-1,-1,-134217729,409017,0,0,0,0,0,0,-1758657536,-278,-1,-1,-1,-1,
+-1,-1,-1,-1,-16777217,18647017,0,0,0,0,0,0,-494723582,-3,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,190041851,0,0,0,0,0,0,-70099955,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,580776447,1,0,0,0,0,50331648,
+-743121,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,851442431,3,0,0,0,
+0,318767104,-73616,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,682883327,2,0,
+0,0,0,1007026176,-1862,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,479982847,
+0,0,0,0,0,-2078670592,-279,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+-1,310505215,0,0,0,0,0,-917763840,-6,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,208135679,0,0,0,0,0,-275308030,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,122343676,0,0,0,0,0,-53192693,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,-33554433,35818723,0,0,0,0,33554432,-877276,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,-453115905,405137,0,0,0,0,184549376,-207527,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1847263745,1583,0,0,0,0,
+604110848,-3427,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,798354686,6,0,0,
+0,0,1493893120,-811,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,138857724,0,
+0,0,0,0,-1658584576,-14,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+36287480,0,0,0,0,0,-715650304,-4,-1,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,1874932,0,0,0,0,0,-224648703,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,1212910,0,0,0,0,0,-53722106,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,813029,0,0,0,0,0,-1808372,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,-16777217,545499,0,0,0,0,0,-946408,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,-16777217,479450,0,0,0,0,33554432,
+-478422,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,746724,0,0,0,
+0,100663296,-208827,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1212141,0,
+0,0,0,201326592,-7064,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+1808627,0,0,0,0,402653184,-3697,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,36155896,0,0,0,0,637665280,-2130,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,53657850,0,0,0,0,654442496,-1872,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,36219894,0,0,0,0,419430400,-3694,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,-16777217,1076704,0,0,0,0,218103808,-6548,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,-150994945,274865,0,0,0,0,100663296,
+-142776,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-385875969,4726,0,0,0,
+0,33554432,-412116,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-402653185,4210,0,
+0,0,0,0,-880103,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-167772161,
+208299,0,0,0,0,0,-1676275,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+-1,-33554433,943837,0,0,0,0,0,-53590522,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,53324789,0,0,0,0,0,-292216574,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,241622525,0,0,0,0,0,-1085995008,-8,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,783021567,3,0,0,0,0,1829961984,-548,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1944125183,277,0,0,0,0,
+654508032,-4456,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1023803393,2377,0,0,
+0,0,134217728,-475323,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-268435457,207516,
+0,0,0,0,16777216,-35885805,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+-33554433,18182622,0,0,0,0,0,-292018429,-1,-1,-1,-1,-1,-1,-1,-1,
+-1,-1,-1,155828985,0,0,0,0,0,-1085995008,-8,-1,-1,-1,-1,-1,
+-1,-1,-1,-1,-1,496168703,1,0,0,0,0,1829961984,-548,-1,-1,-1,
+-1,-1,-1,-1,-1,-1,-1,512945663,1,0,0,0,0,654508032,-4456,-1,
+-1,-1,-1,-1,-1,-1,-1,-1,-1,155564790,0,0,0,0,0,134217728,
+-475322,-1,-1,-1,-1,-1,-1,-1,-1,-1,-67108865,17916369,0,0,0,0,
+0,16777216,-35688685,-1,-1,-1,-1,-1,-1,-1,-1,-1,-654901505,138621,0,0,
+0,0,0,0,-139514365,-1,-1,-1,-1,-1,-1,-1,-1,-16777217,1773265143,1059,
+0,0,0,0,0,0,-394849792,-1,-1,-1,-1,-1,-1,-1,-1,-218103809,
+271675065,3,0,0,0,0,0,0,-901511680,-5,-1,-1,-1,-1,-1,-1,
+-1,-620888065,201820,0,0,0,0,0,0,0,-1675624192,-13,-1,-1,-1,-1,
+-1,-1,-1,-738328577,1349,0,0,0,0,0,0,0,1695350784,-288,-1,-1,
+-1,-1,-1,-1,-1,-755105793,1347,0,0,0,0,0,0,0,906231808,-1603,
+-1,-1,-1,-1,-1,-1,-1,-872611841,1342,0,0,0,0,0,0,0,
+402653184,-4471,-1,-1,-1,-1,-1,-1,-1,-1695612929,548,0,0,0,0,0,
+0,0,150994944,-141484,-1,-1,-1,-1,-1,-1,-1,1169880831,9,0,0,0,
+0,0,0,0,50331648,-411858,-1,-1,-1,-1,-1,-1,-1,291623419,1,0,
+0,0,0,0,0,0,0,-880103,-1,-1,-1,-1,-1,-1,-33554433,35487712,
+0,0,0,0,0,0,0,0,0,-1676275,-1,-1,-1,-1,-1,-1,
+-453115905,273296,0,0,0,0,0,0,0,0,0,-36550650,-1,-1,-1,-1,
+-1,-1,-1847263745,1583,0,0,0,0,0,0,0,0,0,-105501694,-1,-1,
+-1,-1,-1,-1,798156798,6,0,0,0,0,0,0,0,0,0,-242083584,
+-1,-1,-1,-1,-1,-1,104113906,0,0,0,0,0,0,0,0,0,
+0,-429126400,-1,-1,-1,-1,-1,-83886081,741833,0,0,0,0,0,0,0,
+0,0,0,-767031808,-3,-1,-1,-1,-1,-402718721,72061,0,0,0,0,0,
+0,0,0,0,0,-1238629888,-7,-1,-1,-1,-1,-872611841,1601,0,0,0,
+0,0,0,0,0,0,0,-1843855360,-15,-1,-1,-1,-1,-1275527169,553,0,
+0,0,0,0,0,0,0,0,0,1812791296,-26,-1,-1,-1,-1,-1678442497,
+28,0,0,0,0,0,0,0,0,0,0,1208352768,-558,-1,-1,-1,
+-1,-2115043329,18,0,0,0,0,0,0,0,0,0,0,738328576,-1610,-1,
+-1,-1,-1,1743126527,12,0,0,0,0,0,0,0,0,0,0,419430400,
+-3694,-1,-1,-1,-1,1356529407,7,0,0,0,0,0,0,0,0,0,
+0,218103808,-6548,-1,-1,-1,-1,1171521023,6,0,0,0,0,0,0,0,
+0,0,0,100663296,-142519,-1,-1,-1,-1,1154678271,5,0,0,0,0,0,
+0,0,0,0,0,50331648,-344270,-1,-1,-1,-1,1154678271,5,0,0,0,
+0,0,0,0,0,0,0,16777216,-545243,-1,-1,-1,-1,1154678271,5,0,
+0,0,0,0,0,0,0,0,0,0,-746725,-1,-1,-1,-1,1154678271,
+5,0,0,0,0,0,0,0,0,0,0,0,-1013740,-1,-1,-1,
+-1,1154678271,5,0,0,0,0,0,0,0,0,0,0,0,-1412081,-1,
+-1,-1,-1,1154678271,5,0,0,0,0,0,0,0,0,0,0,0,
+-1941238,-1,-1,-1,-1,1154678271,5,0,0,0,0,0,0,0,0,0,
+0,0,-69775865,-33686019,-33686019,-33686019,-33686019,1137769469,5,0,0,0,0,0,0,0,
+0,0,0,0,-794085884,-757935406,-757935406,-757935406,-757935406,950915282,4,0,0,0,0,0,
+0,0,0,0,0,0,1127616513,1145324612,1145324612,1145324612,1145324612,305677124,1,0,0,0,
+0,0,0,0,0,0,0,0,84148480,84215045,84215045,84215045,84215045,17040645,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+]
+
+// Bilinear samplers over the embedded plates (packed 4 px/int) at fractional texel (u,v) —
+// pure +/*/shift integer unpacks, bit-exact across JS and jz. dvSample reads the print
+// PRE-MASKED (luminance × silhouette), so the head's height field falls to zero right at its
+// own outline — the carved medallion edge; mkSample reads the mask alone (the plate blend).
 let dvPx = (ix, iy) => {
   let idx = iy * DV_W + ix
-  return (DV[idx >> 2] >>> ((idx & 3) << 3)) & 255
+  return ((DV[idx >> 2] >>> ((idx & 3) << 3)) & 255) * ((MK[idx >> 2] >>> ((idx & 3) << 3)) & 255) * 0.00392156862745098
+}
+let mkPx = (ix, iy) => {
+  let idx = iy * DV_W + ix
+  return (MK[idx >> 2] >>> ((idx & 3) << 3)) & 255
 }
 let dvSample = (u, v) => {
   let iu = u | 0, iv = v | 0
@@ -194,6 +311,14 @@ let dvSample = (u, v) => {
   let iu1 = iu + 1; if (iu1 > DV_W - 1) iu1 = DV_W - 1
   let iv1 = iv + 1; if (iv1 > DV_H - 1) iv1 = DV_H - 1
   let a = dvPx(iu, iv), b = dvPx(iu1, iv), c = dvPx(iu, iv1), d = dvPx(iu1, iv1)
+  return (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv
+}
+let mkSample = (u, v) => {
+  let iu = u | 0, iv = v | 0
+  let fu = u - iu, fv = v - iv
+  let iu1 = iu + 1; if (iu1 > DV_W - 1) iu1 = DV_W - 1
+  let iv1 = iv + 1; if (iv1 > DV_H - 1) iv1 = DV_H - 1
+  let a = mkPx(iu, iv), b = mkPx(iu1, iv), c = mkPx(iu, iv1), d = mkPx(iu1, iv1)
   return (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv
 }
 
@@ -228,32 +353,51 @@ let source = (t, shape) => {
       // surface breathes as the light orbits
       let lum = 0.34 + 0.10 * (qx / W - 0.5) * lpx + 0.10 * (0.5 - py / H) * lpy + 0.08 * (qx / W + 1.0 - py / H) * 0.5
       if (sh === 0) {
-        // Pyramid standing on the plate, seen from straight above: a SQUARE base, the apex
-        // projecting to the CENTER, four ridges running center → corners, four triangular
-        // faces facing N/S/E/W — each flat-shaded by its true tilted normal.
-        let S = 0.56, pcy = 0.0
+        // THREE-sided pyramid standing on the plate, seen from straight above: an equilateral
+        // TRIANGLE base, the apex projecting to the CENTER, three ridges running center →
+        // corners, three faces — each flat-shaded by its true tilted normal.
+        let Rt = 0.62, pcy = 0.04
         let dx = nx, dy = ny - pcy
-        let adx = dx < 0.0 ? -dx : dx, ady = dy < 0.0 ? -dy : dy
-        let mx = adx > ady ? adx : ady          // Chebyshev radius: base edge at mx = S
-        if (mx < S) {
-          // face by quadrant between the diagonals; outward azimuth ±x or ±y
-          let ox = 0.0, oy = 0.0
-          if (adx >= ady) { ox = dx > 0.0 ? 1.0 : -1.0 }
-          else { oy = dy > 0.0 ? 1.0 : -1.0 }
+        // base corners (unit dirs × Rt): up, lower-left, lower-right
+        let axp = 0.0, ayp = -Rt
+        let bxp = -0.8660254037844386 * Rt, byp = 0.5 * Rt
+        let cxp = 0.8660254037844386 * Rt, cyp = 0.5 * Rt
+        // signed edge tests (negative inside): base outline
+        let e1 = (bxp - axp) * (dy - ayp) - (byp - ayp) * (dx - axp)
+        let e2 = (cxp - bxp) * (dy - byp) - (cyp - byp) * (dx - bxp)
+        let e3 = (axp - cxp) * (dy - cyp) - (ayp - cyp) * (dx - cxp)
+        let eMax = e1
+        if (e2 > eMax) eMax = e2
+        if (e3 > eMax) eMax = e3
+        let eLen = 1.7320508075688772 * Rt               // all three edges are √3·Rt long
+        if (eMax <= 0.0) {
+          // face = the one whose outward azimuth (toward its base edge's midpoint) best matches
+          // this pixel's direction from the apex — max-dot, like the cube
+          let d1 = dx * -0.8660254037844386 + dy * -0.5   // face between corners A and B (upper-left)
+          let d2 = dy                                     // face between B and C (bottom)
+          let d3 = dx * 0.8660254037844386 + dy * -0.5    // face between C and A (upper-right)
+          let ox = -0.8660254037844386, oy = -0.5, best = d1
+          if (d2 > best) { best = d2; ox = 0.0; oy = 1.0 }
+          if (d3 > best) { best = d3; ox = 0.8660254037844386; oy = -0.5 }
           // tilted face normal: 0.8 outward + 0.6 up (a steep-ish pyramid)
           let d = 0.8 * (ox * lpx + oy * lpy) + 0.6 * LEL
           if (d < 0.0) d = 0.0
           let v = 0.06 + 0.86 * pow75(d)
-          // drawn structure: dark ridge lines along the diagonals (|adx−ady| small), a groove at
-          // the base edge (S−mx small), and a slight lift toward the apex for volume
-          let rid = adx - ady; if (rid < 0.0) rid = -rid
-          let line = rid / 0.03
-          let l2 = (S - mx) / 0.035; if (l2 < line) line = l2
+          // ridge lines: the three seams run from the central apex OUT to the base corners —
+          // distance to each corner ray, gated to its forward half
+          let m = 1.0
+          if (dy < 0.0) { let c1r = dx < 0.0 ? -dx : dx; if (c1r < m) m = c1r }                    // ray to A (up)
+          let db = dx * -0.8660254037844386 + dy * 0.5
+          if (db > 0.0) { let c2r = -0.8660254037844386 * dy - 0.5 * dx; if (c2r < 0.0) c2r = -c2r; if (c2r < m) m = c2r }
+          let dc = dx * 0.8660254037844386 + dy * 0.5
+          if (dc > 0.0) { let c3r = 0.8660254037844386 * dy - 0.5 * dx; if (c3r < 0.0) c3r = -c3r; if (c3r < m) m = c3r }
+          let line = m / 0.03
+          let l2 = -eMax / (eLen * 0.03); if (l2 < line) line = l2   // groove hugging the base outline
           if (line > 1.0) line = 1.0
-          lum = v * (0.30 + 0.70 * line) * (0.86 + 0.14 * (1.0 - mx / S))
-        } else if (mx < S + 0.06) {
+          lum = v * (0.30 + 0.70 * line)
+        } else if (eMax / eLen < 0.06) {
           // contact groove: the plate darkens right around the base — the "standing on" cue
-          let g = 1.0 - (mx - S) / 0.06
+          let g = 1.0 - eMax / (eLen * 0.06)
           lum = lum * (1.0 - 0.42 * g * g)
         }
       } else if (sh === 1) {
@@ -272,20 +416,18 @@ let source = (t, shape) => {
           let v1 = v + 1.0; if (v1 > DV_H - 1) v1 = DV_H - 1
           let gxs = (dvSample(u1, v) - dvSample(u0, v)) * 0.00392156862745098
           let gys = (dvSample(u, v1) - dvSample(u, v0)) * 0.00392156862745098
-          let G = 2.6                                             // relief gain — how deep the emboss cuts
+          let G = 3.1                                             // relief gain — how deep the emboss cuts
           let nzr = 1.0 / Math.sqrt(1.0 + G * G * (gxs * gxs + gys * gys))
           let d = (-gxs * G * nzr) * lpx + (-gys * G * nzr) * lpy + nzr * LEL
           if (d < 0.0) d = 0.0
           // albedo (the print's own tones — keeps the face recognizable at EVERY light angle)
           // + relief shading (the moving shadows) — a sum, not a pure product, so neither term
           // can erase the other as the light orbits
-          let plum = 0.04 + 0.40 * hgt + 0.52 * pow75(d) * (0.55 + 0.45 * hgt)
-          // feather the medallion's outer ~2.5 texels into the plate
-          let m = u; if (DV_W - 1 - u < m) m = DV_W - 1 - u
-          if (v < m) m = v
-          if (DV_H - 1 - v < m) m = DV_H - 1 - v
-          let bl = m / 2.5; if (bl > 1.0) bl = 1.0
-          lum = lum + (plum - lum) * bl
+          let plum = 0.03 + 0.34 * hgt + 0.58 * pow75(d) * (0.5 + 0.5 * hgt)
+          // only the FACE is carved: blend to the bare plate by the silhouette mask, so the
+          // medallion is the head alone — no photo background, like an architectural relief
+          let m = mkSample(u, v) * 0.00392156862745098
+          lum = lum + (plum - lum) * m
         }
       } else if (sh === 2) {
         // Cube sunk DIAGONALLY into the plate (space diagonal vertical), seen from above: a
@@ -294,36 +436,38 @@ let source = (t, shape) => {
         // here as a half-buried solid.
         let Rh = 0.60, hcy = 0.0
         let dx = nx, dy = ny - hcy
-        // regular hexagon inside-test: below the apothem along all three face-outward axes
+        // regular hexagon inside-test: below the apothem along all three face-outward axes.
+        // CANONICAL cube-icon orientation: the TOP face is a diamond at the top-center (its
+        // outward azimuth points UP), the two side faces hang below it, and the three ridges
+        // from the central corner run down, upper-left and upper-right — the Rubik-icon look
+        // everyone parses as "cube" at a glance, not a hex flower.
         let ap = Rh * 0.8660254037844386
-        let p1 = dx * -0.8660254037844386 + dy * -0.5; if (p1 < 0.0) p1 = -p1   // |proj on O_AB|
-        let p2 = dy; if (p2 < 0.0) p2 = -p2                                      // |proj on O_BC|
-        let p3 = dx * 0.8660254037844386 + dy * -0.5; if (p3 < 0.0) p3 = -p3     // |proj on O_CA|
+        let p1 = dy; if (p1 < 0.0) p1 = -p1                                      // |proj on top-face axis (0,−1)|
+        let p2 = dx * -0.8660254037844386 + dy * 0.5; if (p2 < 0.0) p2 = -p2     // |proj on left-face axis|
+        let p3 = dx * 0.8660254037844386 + dy * 0.5; if (p3 < 0.0) p3 = -p3      // |proj on right-face axis|
         let hx2 = p1 > p2 ? p1 : p2; if (p3 > hx2) hx2 = p3                      // hexagon "radius"
         if (hx2 < ap) {
-          // face = the rhombus whose outward azimuth (120° apart, pointing at each hexagon
-          // edge's midpoint) best matches this pixel's direction from the center — a max-dot
-          // pick, immune to wedge-ordering mistakes a cross-sign fence invites
-          let d1 = dx * -0.8660254037844386 + dy * -0.5     // upper-left rhombus
-          let d2 = dy                                        // bottom rhombus
-          let d3 = dx * 0.8660254037844386 + dy * -0.5       // upper-right rhombus
-          let ox = -0.8660254037844386, oy = -0.5, best = d1
-          if (d2 > best) { best = d2; ox = 0.0; oy = 1.0 }
-          if (d3 > best) { best = d3; ox = 0.8660254037844386; oy = -0.5 }
-          // a corner-up cube's faces tilt 54.7° from vertical: n = 0.816·outward + 0.577·up
+          // face = max-dot over the three outward azimuths: top diamond, lower-left, lower-right
+          let d1 = -dy                                       // TOP diamond, outward (0,−1)
+          let d2 = dx * -0.8660254037844386 + dy * 0.5       // LEFT face, outward (−.866,.5)
+          let d3 = dx * 0.8660254037844386 + dy * 0.5        // RIGHT face, outward (.866,.5)
+          let ox = 0.0, oy = -1.0, fb = 0.16, best = d1                 // top face carries a fixed lift —
+          if (d2 > best) { best = d2; ox = -0.8660254037844386; oy = 0.5; fb = 0.0 }    // the canonical cube-icon
+          if (d3 > best) { best = d3; ox = 0.8660254037844386; oy = 0.5; fb = 0.08 }    // brightness hierarchy
+          // a corner-up cube's faces tilt 54.7° from vertical: n = 0.816·outward + 0.577·up.
+          // An ambient floor + the per-face offsets keep all THREE faces distinct even when two
+          // face away from the light — three tones is what makes a hexagon read as a cube.
           let d = 0.816 * (ox * lpx + oy * lpy) + 0.577 * LEL
           if (d < 0.0) d = 0.0
-          let v = 0.06 + 0.86 * pow75(d)
-          // ridge lines: the three seams run from the center corner OUT to alternating hexagon
-          // corners (up, lower-left, lower-right) — distance to each ray, gated to its forward
-          // half so the tie-locus' mirror half never draws a phantom seam across a face
+          let v = 0.12 + 0.62 * pow75(d) + fb
+          // ridge lines: seams from the central corner OUT to the down / upper-left /
+          // upper-right hexagon corners — distance to each ray, gated to its forward half
           let m = 1.0
-          let cr = dy < 0.0 ? -dx : 1.0                                         // ray (0,-1): |cross|=|dx|, only where dy<0
-          if (dy < 0.0) { cr = dx < 0.0 ? -dx : dx; if (cr < m) m = cr }
-          let dt2 = dx * -0.8660254037844386 + dy * 0.5                          // ray to lower-left corner
-          if (dt2 > 0.0) { let c2 = -0.8660254037844386 * dy - 0.5 * dx; if (c2 < 0.0) c2 = -c2; if (c2 < m) m = c2 }
-          let dt3 = dx * 0.8660254037844386 + dy * 0.5                           // ray to lower-right corner
-          if (dt3 > 0.0) { let c3 = 0.8660254037844386 * dy - 0.5 * dx; if (c3 < 0.0) c3 = -c3; if (c3 < m) m = c3 }
+          if (dy > 0.0) { let c1 = dx < 0.0 ? -dx : dx; if (c1 < m) m = c1 }                        // ray down (0,1)
+          let dt2 = dx * -0.8660254037844386 + dy * -0.5                                            // ray to upper-left corner
+          if (dt2 > 0.0) { let c2 = -0.8660254037844386 * dy + 0.5 * dx; if (c2 < 0.0) c2 = -c2; if (c2 < m) m = c2 }
+          let dt3 = dx * 0.8660254037844386 + dy * -0.5                                             // ray to upper-right corner
+          if (dt3 > 0.0) { let c3 = 0.8660254037844386 * dy + 0.5 * dx; if (c3 < 0.0) c3 = -c3; if (c3 < m) m = c3 }
           let line = m / 0.03
           let l2 = (ap - hx2) / 0.03; if (l2 < line) line = l2
           if (line > 1.0) line = 1.0
