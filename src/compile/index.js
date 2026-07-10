@@ -453,12 +453,33 @@ function analyzeFuncForEmit(func, programFacts) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
-      if (r.typedCtor) {
+      // r.val/r.typedCtor describe the CALLER's argument — the param's value AT
+      // ENTRY, before this function's own body runs. A param the body reassigns
+      // (`opts = normalize(opts)`) no longer necessarily holds that entry-time
+      // kind past the write, so seeding it here is only sound when the body
+      // never writes the name. Without this guard the stale entry-time kind
+      // stands unchallenged: analyzeBody's OWN valType tracker (below, `bodyFacts.
+      // valTypes`) starts with no memory of this pre-seeded value (it's a fresh
+      // Map, not the shared ctx.func.localReps store), so when the reassignment's
+      // RHS type can't be resolved (e.g. a call to a function whose own valResult
+      // never converges), makeValTracker's poison path requires a PRIOR value
+      // in ITS OWN map to fire — there isn't one — so it neither confirms nor
+      // invalidates the seed, and the merge loop below never touches the name at
+      // all. A hardcoded-wrong kind then rides every read of that binding for the
+      // rest of the function (watr's own `optimize()`: opts's param-fact kind is
+      // VAL.OBJECT from callers that pass object literals; `opts = normalize(opts)`
+      // reassigns it to normalize's actual return — a HASH in the schema-less-
+      // spread shape — but the stale OBJECT kind survives, so `emitTypeTag` bakes
+      // a hardcoded `(i32.const PTR.OBJECT)` tag into `opts.inlineOnce`'s dyn-get
+      // dispatch instead of reading the receiver's true runtime tag, and the probe
+      // walks a schema this HASH was never shaped as — a silent miss, not a trap).
+      const reassigned = isReassigned(body, pname)
+      if (r.typedCtor && !reassigned) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         updateRep(pname, { val: VAL.TYPED })
       }
-      if (r.val && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
@@ -526,7 +547,32 @@ function analyzeFuncForEmit(func, programFacts) {
   const bodyFacts = block ? analyzeBody(body) : null
   ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
   if (bodyFacts?.valTypes) {
-    for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
+    // A PARAMETER name has no `let`/`const` declaration node inside body for
+    // analyzeBody's own tracker to seed a baseline "unknown" observation from
+    // (makeValTracker's poison logic needs a PRIOR value in ITS OWN map to
+    // detect a conflict — see that function's doc). So when a parameter is
+    // reassigned only CONDITIONALLY (`if (typeof opts === 'string' && …) opts
+    // = { profile: … }` — watr's own normalize()), the tracker's first (and
+    // only) observation is that ONE branch's type, with no competing
+    // observation for the other, equally-reachable path where the param keeps
+    // its original, caller-supplied value — a path this walk never visits
+    // because there's no assignment node ON it to visit. The merge below would
+    // then adopt the conditional branch's type as if it held on EVERY path.
+    // Trust it only when the param's own call-site-proven entry type (_reps,
+    // the fixpoint-settled cross-call-site fact — unlike this per-body walk,
+    // it already answers "what can this param be at entry, always") agrees:
+    // if it does, both the reassigned and the original-value paths carry the
+    // same kind, so unconditional-adoption is sound; if it's absent or
+    // different, the conditional branch's type does NOT generalize and must
+    // not override the (correctly) unresolved entry-time kind.
+    const paramIdx = block ? new Map(sig.params.map((p, i) => [p.name, i])) : null
+    for (const [name, vt] of bodyFacts.valTypes) {
+      if (paramIdx?.has(name)) {
+        const entryVal = _reps?.get(paramIdx.get(name))?.val
+        if (entryVal !== vt) continue
+      }
+      updateRep(name, { val: vt })
+    }
   }
   // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
   if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
@@ -1072,13 +1118,20 @@ function emitFunc(func, funcFacts, programFacts) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
-      if (r.val && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
-      if (r.typedCtor) {
+      // Same entry-vs-body-reassignment hazard analyzeFuncForEmit guards against
+      // (see its comment): r.val/r.typedCtor/r.schemaId describe the CALLER's
+      // argument, sound only while the body never writes the name. This step
+      // duplicates that seeding (funcFacts.localReps already carries whatever
+      // analyzeFuncForEmit settled, guarded — but re-applying the UNGUARDED
+      // call-site fact here would undo it) so it needs the identical guard.
+      const reassigned = isReassigned(body, pname)
+      if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.typedCtor && !reassigned) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         if (!ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
       }
-      if (r.schemaId != null && !exported && !ctx.schema.vars.has(pname)) {
+      if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
         ctx.schema.vars.set(pname, r.schemaId)
         updateRep(pname, { schemaId: r.schemaId })
       }
