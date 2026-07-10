@@ -500,9 +500,16 @@ export function observeProgramSlots(ast) {
  *  Cross-function flow (slot written from a call's return value) is **not**
  *  tracked — those writes count as non-int and poison the slot. Conservative:
  *  produces only false negatives, never false positives. */
-export function analyzeSchemaSlotIntCertain(ast) {
+/** @param opts.paramReps  LATE-mode (plan's post-narrowSignatures block): re-derive
+ *  the census FRESH with BODY-LOCAL receiver resolution — `const p = ps[i]`
+ *  binds p's sid from the array's element schema (analyzeBody.arrElemSchemas
+ *  for locals, paramReps.arrayElemSchema for params), which only exists after
+ *  narrowing. Sound to REBUILD (not merely widen): every census consumer
+ *  (toNumF64 / floor elision / intIndexIR) reads at EMIT time, after this. */
+export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (!ctx.schema?.register) return
   const slotIntCertain = ctx.schema.slotIntCertain
+  if (opts?.paramReps) slotIntCertain.clear()
   let flipped = false
   const poisonSlot = (sid, idx) => {
     let arr = slotIntCertain.get(sid)
@@ -529,13 +536,49 @@ export function analyzeSchemaSlotIntCertain(ast) {
   // in ≤ slots+1 rounds and re-runs can only widen poisoning, never unpoison
   // — the documented re-entrancy contract holds). Same precise-path receiver
   // resolution as the write side; a censused FALSE answers definitively.
+  // Receiver → sid. `curSids` is the CURRENT body's local element-alias map
+  // (late mode only): `const p = ps[i]` resolves p through ps's element
+  // schema. Precise-path rep/vars resolution is the fallback either way.
+  let curSids = null
+  const sidOfName = (obj) => {
+    if (ctx.schema.poisoned?.has(obj)) return undefined
+    return curSids?.get(obj) ?? repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+  }
   const slotIntOf = (obj, prop) => {
-    const sid = ctx.schema.poisoned?.has(obj) ? undefined
-      : repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+    const sid = sidOfName(obj)
     if (sid == null) return null
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return null
     return slotIntCertain.get(sid)?.[idx] !== false
+  }
+
+  // LATE mode: body-local element-alias sids. Single-`=` bindings whose init
+  // is a whole element read of an array with a known element schema (local
+  // decl facts or a narrowed param's arrayElemSchema).
+  const paramReps = opts?.paramReps
+  const bodySidsOf = (func) => {
+    if (!paramReps || !func?.body || func.raw) return null
+    const facts = analyzeBody(func.body)
+    const reps = paramReps.get(func.name)
+    const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
+    const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
+      ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
+    const sids = new Map(), writes = new Map()
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=' && typeof n[1] === 'string') {
+        writes.set(n[1], (writes.get(n[1]) || 0) + 1)
+        const rhs = n[2]
+        if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
+          const sid = elemSidOf(rhs[1])
+          if (sid != null) sids.set(n[1], sid)
+        }
+      }
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    scan(func.body)
+    for (const [name, c] of writes) if (c > 1) sids.delete(name)
+    return sids.size ? sids : null
   }
 
   // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
@@ -572,8 +615,8 @@ export function analyzeSchemaSlotIntCertain(ast) {
         // Same precise-path resolution as ctx.schema.slotVT — no structural
         // fallback (slot index could differ across schemas with the same prop).
         // Poisoned names carry no schema (shape-disagreeing assignments).
-        const sid = ctx.schema.poisoned?.has(obj) ? undefined
-          : repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+        // Late mode adds the current body's element-alias sids (sidOfName).
+        const sid = sidOfName(obj)
         if (sid != null) {
           const idx = ctx.schema.list[sid]?.indexOf(prop)
           if (idx >= 0) observeSlot(sid, idx, isInt(node[2]))
@@ -585,16 +628,19 @@ export function analyzeSchemaSlotIntCertain(ast) {
   }
 
   const sweep = (fresh) => {
+    curSids = null
     if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
     for (const func of ctx.func.list) {
       if (!func.body || func.raw) continue
+      curSids = bodySidsOf(func)
       visit(func.body, bodyIntCertainOf(func.body, fresh))
+      curSids = null
     }
     if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
       for (const mi of ctx.module.moduleInits) visit(mi, bodyIntCertainOf(mi, fresh))
     }
   }
-  sweep(false)
+  sweep(!!paramReps)
   // Any flip invalidates the LOCAL binding fixpoints baked into round-1
   // checkers (both the rounds below and any same-gen cache reuse later), so
   // drop the cache and re-derive until the census is stable.

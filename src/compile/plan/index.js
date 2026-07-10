@@ -26,7 +26,7 @@
 
 import { ctx } from '../../ctx.js'
 import { invalidateLocalsCache } from '../analyze.js'
-import { collectProgramFacts, refreshProgramFacts } from '../program-facts.js'
+import { collectProgramFacts, refreshProgramFacts, analyzeSchemaSlotIntCertain } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -135,6 +135,10 @@ export default function plan(ast, profiler) {
   // only now. Upgrade-only: strictly more evidence than the early run.
   t('refineFieldProvenance', () => refineFieldProvenance(ast))
   t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
+  // Late slot-int census: rebuild FRESH with body-local element-alias sids
+  // (`const p = ps[i]` through the param's arrayElemSchema — knowledge that
+  // exists only after narrowing). Consumers read at emit, after this.
+  t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, { paramReps: programFacts.paramReps }))
   // The late upgrades land through analyzeBody's trackers — drop the cached
   // walks so emit-time re-analysis sees the new field kinds.
   for (const f of ctx.func.list) if (f.body && !f.raw) invalidateLocalsCache(f.body)
