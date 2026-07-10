@@ -27,7 +27,7 @@ import {
   ASSIGN_OPS,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
-import { i64Hex, encodePtrHi } from '../../layout.js'
+import { i64Hex, encodePtrHi, STR_HCACHE_BIT } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
@@ -920,6 +920,77 @@ function padArgs(args, params) {
  *  coercion then arity padding. Used at every direct-call site. */
 function emitCallArgs(argNodes, params) {
   return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k])), params)
+}
+
+/** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
+ *  each leaf ONCE to an i64 string box (left-to-right — JS ToString order),
+ *  measure each with __str_byteLen, allocate the [hash=0][len][bytes]
+ *  HCACHE header once, and __str_copy each leaf at its cumulative offset.
+ *  Replaces the pairwise lowering's per-`+` alloc + triangular prefix
+ *  re-copy. Self-accumulation (`line = line + …`) keeps the head pairwise:
+ *  the TAIL fuses to one fresh string and the head takes the existing
+ *  bump-extend concatRaw. A total ≤ 6 yields a short HEAP string where
+ *  pairwise gave SSO — value-equal (SSO is representation, not semantics). */
+function tryConcatChain(a, b, selfAccum) {
+  // A `+` NODE is a string concat iff a side is statically STRING — the exact
+  // gate the pairwise lowering uses. (BOOL/OBJECT must NOT qualify a node:
+  // `(x===y) + (u===v)` is NUMERIC bool addition; they only stringify as
+  // LEAVES once the node qualifies through a genuine STRING side.)
+  const isStr = (n) => valTypeOf(n) === VAL.STRING
+  if (!(isStr(a) || isStr(b))) return null
+  const leaves = []
+  const walk = (n) => {
+    if (Array.isArray(n) && n[0] === '+' && n.length === 3 && (isStr(n[1]) || isStr(n[2]))) {
+      walk(n[1]); walk(n[2])
+    } else leaves.push(n)
+  }
+  walk(a); walk(b)
+  // Self-accumulating head: fuse only the tail, join with bump-extend after.
+  const headAccum = selfAccum && leaves[0] === a && typeof a === 'string' ? leaves.shift() : null
+  if (leaves.length < 3) return null
+  // Every leaf must stringify deterministically at this site: known kinds
+  // (STRING/OBJECT/BOOL/NUMBER) or unknown-through-__to_str. BIGINT joins
+  // numerically elsewhere — bail so the existing lowering keeps its path.
+  for (const l of leaves) if (valTypeOf(l) === VAL.BIGINT) return null
+  inc('__str_byteLen', '__alloc', '__mkptr', '__str_copy', '__sso_norm')
+  const leafI64 = (n) => {
+    const vt = valTypeOf(n)
+    if (vt === VAL.STRING) return ['i64.reinterpret_f64', asF64(emit(n))]
+    if (vt === VAL.BOOL) return ['i64.reinterpret_f64', emitBoolStr(n)]
+    return toStrI64(n, emit(n))   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
+  }
+  const bT = leaves.map(() => tempI64('cc'))
+  const lT = leaves.map(() => tempI32('cl'))
+  const offT = tempI32('co'), curT = tempI32('cu')
+  const seq = []
+  leaves.forEach((n, k) => {
+    seq.push(['local.set', `$${bT[k]}`, leafI64(n)])
+    seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_byteLen', ['local.get', `$${bT[k]}`]]])
+  })
+  let total = ['local.get', `$${lT[0]}`]
+  for (let k = 1; k < leaves.length; k++) total = ['i32.add', total, ['local.get', `$${lT[k]}`]]
+  seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], total]]])
+  seq.push(['i32.store', ['local.get', `$${offT}`], ['i32.const', 0]])                       // lazy hash cell
+  let total2 = ['local.get', `$${lT[0]}`]
+  for (let k = 1; k < leaves.length; k++) total2 = ['i32.add', total2, ['local.get', `$${lT[k]}`]]
+  seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], total2])                     // len
+  seq.push(['local.set', `$${offT}`, ['i32.add', ['local.get', `$${offT}`], ['i32.const', 8]]])
+  seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
+  leaves.forEach((n, k) => {
+    seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
+    if (k < leaves.length - 1)
+      seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]]])
+  })
+  // __sso_norm epilogue: every producer that hand-writes heap bytes must
+  // re-canonicalize — a ≤6-ASCII result MUST be SSO or its hash diverges
+  // from a literal/SSO-built equal string (representation-keyed fast paths:
+  // the SSO arithmetic mix vs the byte-FNV walk) and keyed lookups miss.
+  const fresh = typed(['block', ['result', 'f64'],
+    ...seq,
+    ['call', '$__sso_norm', mkPtrIR(PTR.STRING, STR_HCACHE_BIT, ['local.get', `$${offT}`])]], 'f64')
+  if (headAccum != null)
+    return typed(ctx.abi.string.ops.concatRaw(asF64(emit(headAccum)), fresh, ctx, true), 'f64')
+  return fresh
 }
 
 /** Guarded dispatch to a speculative typed clone (narrow's speculateTypedParams).
@@ -3130,6 +3201,19 @@ export const emitter = {
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
     const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
     ctx.func._selfAccumConcat = null
+    // String concat-CHAIN fusion: `i + ',' + name + ',' + v + '\n'` is
+    // left-associated pairwise `+`, and pairwise lowering re-copies the whole
+    // growing prefix at every step (triangular bytes moved, one fresh heap
+    // buffer per `+`). Flatten the chain and emit ONE measure→alloc→copy pass
+    // instead. Fusion crosses a nested `+` only when a side is statically
+    // string-ish (so a numeric `1 + 2 + s` keeps its numeric ADD as a single
+    // leaf); ToString order stays left-to-right (leaves evaluate in order).
+    // A self-accumulating head (`line = line + a + b`) keeps leaf 0 pairwise
+    // so the O(1) bump-extend accumulator survives — only the tail fuses.
+    {
+      const fused = tryConcatChain(a, b, selfAccum)
+      if (fused) return fused
+    }
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)

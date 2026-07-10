@@ -613,9 +613,14 @@ const READONLY_MEM_CALLS = new Set(['$__typed_idx', '$__str_idx'])
 // it treats every call as opaque and recomputes the search/transcendental each
 // iteration. (Math.random is INLINED — it mutates a global PRNG seed, never a
 // `$math.` call — but exclude it by name defensively; $__str_eq_cold is the cold
-// half of __str_eq, equally pure.) byteLen/length stay OUT: $__length is polymorphic
-// over MUTABLE arrays (push changes it), so it isn't arg-pure.
-const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key'])
+// half of __str_eq, equally pure.) $__length stays OUT: it is polymorphic over
+// MUTABLE arrays (push changes it), so it isn't arg-pure. $__str_byteLen is IN:
+// its operand is a string (immutable), and the one in-place length mutator —
+// the heap-top bump-extend twins (module/string.js) — is only emitted where the
+// OLD string value is provably dead, so a live, loop-invariant operand's length
+// cannot change under the loop (`for (j = 0; j < line.length; j++)` hoists to
+// one call instead of one per character — the strbuild row-scan shape).
+const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_byteLen'])
 const isPureFnCall = (callee) =>
   typeof callee === 'string' &&
   ((callee.startsWith('$math.') && !callee.startsWith('$math.random')) || PURE_CALL_I32.has(callee))
