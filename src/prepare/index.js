@@ -388,15 +388,6 @@ function staticStringExpr(node) {
     }
     return out
   }
-  if (op === '``' && Array.isArray(args[0]) && args[0][0] === '.' && args[0][1] === 'String' && args[0][2] === 'raw') {
-    let out = ''
-    for (const part of args.slice(1)) {
-      const s = staticStringExpr(part)
-      if (s == null) return null
-      out += s
-    }
-    return out
-  }
   if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'join' && typeof args[0][1] === 'string') {
     const arr = lookupStaticStringArray(args[0][1])
     if (!arr) return null
@@ -847,6 +838,9 @@ function prep(node) {
       if (node in CONSTANTS) return [, CONSTANTS[node]]
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (REJECT_IDENTS[node]) err(REJECT_IDENTS[node])
+      // A bare #name ident outside its class body: the `#field in obj` brand check
+      // (or a leaked private name). Reject with intent, not "not in scope".
+      if (node[0] === '#') err(`private name '${node}' — \`#field in obj\` brand checks are not supported`)
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
@@ -870,7 +864,7 @@ function prep(node) {
   }
 
   const [op, ...args] = node
-  if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited. It diverges from JS by evaluating to 0.')
+  if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited — write `undefined`.')
   // jz's `==`/`!=` already never coerce (identical to `===`/`!==`), so default mode accepts them.
   // strict enforces the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
   if ((op === '==' || op === '!=') && ctx.transform.strict)
@@ -934,7 +928,10 @@ export const GLOBALS = Object.assign(Object.create(null), {
   TextDecoder: 'TextDecoder',
 })
 
-const patternItems = (node) => node?.[0] === ',' ? node.slice(1) : [node]
+// `,` is the ordinary pattern separator; `;` appears when a `{…}` pattern parsed
+// in STATEMENT position (for-of head cover grammar: `for ({ x = 1 } of …)`) —
+// same items, block-shaped node.
+const patternItems = (node) => (node?.[0] === ',' || node?.[0] === ';') ? node.slice(1) : [node]
 const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
 
 // Element count of a prepared inline array literal `['[', e0, e1, …]` with no
@@ -995,7 +992,13 @@ function bindingNames(pattern, out = new Set()) {
 
 function pushPatternAssign(target, valueExpr, out, decls = null) {
   if (Array.isArray(target) && target[0] === '=') {
-    pushPatternAssign(target[1], ['??', valueExpr, prep(target[2])], out, decls)
+    // Destructuring default fires ONLY on undefined (ES §13.15.5.3) — `??` would
+    // also fire on null (`[a = 1] = [null]` must leave a null). Spill the read
+    // once, test against undefined, keep the default lazily evaluated.
+    const tmp = `${T}d${ctx.func.uniq++}`
+    if (decls) decls.push(['=', tmp, valueExpr])
+    else out.push(['=', tmp, valueExpr])
+    pushPatternAssign(target[1], ['?:', ['===', tmp, [, JZ_UNDEF]], prep(target[2]), tmp], out, decls)
     return
   }
 
@@ -1063,8 +1066,9 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
     }
 
     if (Array.isArray(item) && item[0] === '=') {
+      // Route through pushPatternAssign's `=` case: undefined-only default.
       if (typeof item[1] === 'string')
-        pushPatternAssign(item[1], ['??', ['.', source, item[1]], prep(item[2])], out, decls)
+        pushPatternAssign(item, ['.', source, item[1]], out, decls)
       continue
     }
 
@@ -1072,7 +1076,17 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
       const key = item[1]
       const computedKey = Array.isArray(key) && key[0] === '[]' && key.length === 2 ? key[1] : null
       if (computedKey) includeForArrayAccess()
-      pushPatternAssign(item[2], computedKey ? ['[]', source, computedKey] : ['.', source, key], out, decls)
+      // Numeric key (`{ 0: v, length: z } = arr`) — an index read, not a dot-key:
+      // the static-key path hashes STRING keys only (and arrays index natively).
+      // The parser yields the key as a literal node `[null, 0]` (raw number in
+      // synthesized shapes).
+      const numKey = typeof key === 'number' ? key
+        : Array.isArray(key) && key.length === 2 && key[0] == null && typeof key[1] === 'number' ? key[1]
+        : null
+      const read = computedKey ? ['[]', source, computedKey]
+        : numKey != null ? (includeForArrayAccess(), ['[]', source, [, numKey]])
+        : ['.', source, key]
+      pushPatternAssign(item[2], read, out, decls)
       continue
     }
   }
@@ -1824,6 +1838,13 @@ const handlers = {
 
   // Tagged template: tag`a${x}b` → tag(['a','b'], x)
   '``'(tag, ...parts) {
+    // String.raw needs the RAW source slices, but subscript's template node
+    // carries only cooked strings (escapes already applied) — raw text is
+    // unrecoverable post-parse, and folding cooked-as-raw is silently wrong
+    // for any template containing an escape. Reject until the parser keeps
+    // raw slices (upstream subscript; same for `.raw` inside custom tags).
+    if (Array.isArray(tag) && tag[0] === '.' && tag[1] === 'String' && tag[2] === 'raw')
+      err('String.raw not supported: the parser keeps only cooked template strings')
     const raw = staticStringExpr(['``', tag, ...parts])
     if (raw != null) return staticString(raw)
     const strs = [], exprs = []
@@ -2306,6 +2327,16 @@ const handlers = {
     // `(x.pop)` and drop the call. Keeping the slot makes `prep` idempotent for
     // calls and matches `setCallArgs`'s canonical shape; `commaList(node[2])`
     // reads it back as zero args everywhere downstream.
+    // Object.freeze is identity in jz (frozenness is not modeled — the emitter
+    // returns its operand unchanged, module/object.js). Fold the CALL away so
+    // the operand's static knowledge survives the wrapper: a frozen literal
+    // binding keeps its schema (slot dispatch), and `TABLE[2]` on a frozen
+    // preset table resolves statically instead of falling to the untyped
+    // element dispatch. `Object.freeze` as a value (`arr.map(Object.freeze)`)
+    // is not a call form and keeps the runtime emitter.
+    if (callee === 'Object.freeze' && preppedArgs.length === 1 && preppedArgs[0] != null)
+      return preppedArgs[0]
+
     const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
 
     if (callee === 'Object.assign' && ctx.schema.register) inferAssignSchema(result)

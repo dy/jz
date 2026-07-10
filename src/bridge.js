@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter } from './ctx.js'
-import { typed, asF64, asI32, asI64 } from './ir.js'
+import { typed, asF64, asI32, asI64, carrierF64 } from './ir.js'
 
 export { emitter } from './ctx.js'
 
@@ -83,8 +83,13 @@ export const dual = (wrap, core, fast) => {
 
 const cast = { I: asI64, F: asF64, i: asI32 }
 
+// 'I' is the boxed-value slot (receivers, collection keys/values) — a boolean
+// crosses it as its TRUE/FALSE atom so identity survives the container round-trip
+// (typeof / String / strict-eq); 'F'/'i' are numeric positions and stay raw.
 const coerce = (sig, nodes) =>
-  sig.split('').map((c, i) => cast[c](emit(nodes[i])))
+  sig.split('').map((c, i) => c === 'I'
+    ? asI64(carrierF64(nodes[i], emit(nodes[i])))
+    : cast[c](emit(nodes[i])))
 
 const wrap = (fmt, call) => {
   if (fmt === 'i64') return typed(['f64.reinterpret_i64', call], 'f64')

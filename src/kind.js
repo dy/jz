@@ -138,14 +138,21 @@ VT['?:'] = (args) => {
   if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
   const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
   if (ta && ta === tb) return ta
-  // A boolean branch coerces to 0/1 in numeric context (same rule as &&/||/?? below):
-  // when the other branch has a known non-boolean type, the conditional carries it.
-  // Without this, `num + (cond ? num : num>k)` sees a null-typed operand and emits the
-  // polymorphic string-concat dispatch on two pure-numeric subexprs — which pins the
-  // whole number→string formatter (__str_concat → __to_str → __static_str), a pure-int
-  // program ballooning 1 → ~19 funcs (see test/wat-invariants.js, .work/todo.md).
-  if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
-  if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
+  // A boolean branch coerces to 0/1 in NUMERIC context: when the other branch is a
+  // known NUMBER, the conditional carries NUMBER — the raw 0/1 bool carrier IS its
+  // ToNumber image, so the claim is benign and keeps `num + (cond ? num : num>k)`
+  // off the polymorphic string-concat dispatch (which pins the whole number→string
+  // formatter — __str_concat → __to_str → __static_str, a pure-int program
+  // ballooning 1 → ~19 funcs; see test/wat-invariants.js, .work/todo.md).
+  // Any OTHER mix is null: both ternary arms are "the value", so claiming the
+  // non-bool arm's kind would let strict-eq's differing-class fold constant-fold
+  // `x === true` on a value that IS sometimes a boolean (watr's `i ? true :
+  // [from,len]` rec marker); the bool arm materializes as its atom at emit
+  // (emit.js '?:') and stays observable. (&&/||/?? below keep the full carry —
+  // there the bool side is a GUARD whose value surfaces only when falsy, and the
+  // carry is what types `cond && typedArr` guarded-use idioms.)
+  if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb === VAL.NUMBER ? VAL.NUMBER : null
+  if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta === VAL.NUMBER ? VAL.NUMBER : null
   return null
 }
 
@@ -354,7 +361,11 @@ VT['()'] = (args) => {
         if (c === '{') return VAL.OBJECT
         if (c === '[') return VAL.ARRAY
         if (c === '"') return VAL.STRING
-        if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
+        // 't'/'f' → boolean: the parser mints the TRUE/FALSE atom (module/json.js
+        // litCase), NOT a raw 0/1 — claiming NUMBER here would let numeric fast
+        // paths raw-add the atom bits.
+        if (c === 't' || c === 'f') return VAL.BOOL
+        if (c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
       }
     } else {
       const vt = calleeValType(callee, args, ctx)

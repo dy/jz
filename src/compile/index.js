@@ -1343,14 +1343,18 @@ function synthesizeBoundaryWrappers() {
       const ptrType = valKindToPtr(sig.ptrKind)
       body = toI64(mkPtrIR(ptrType, sig.ptrAux ?? 0, callIR))
     } else if (resultBool) {
-      // The inner func returns a clean 0/1 boolean carrier — never NaN. The i32
-      // carrier already takes truthyIR's identity path; the f64 carrier would
-      // otherwise fall through to the full __is_truthy NaN-discrimination, every
-      // arm of which is dead for a boolean. Pull the bit out with one f64.ne so
-      // boolBoxIR boxes `4|bit` straight into the TRUE_NAN/FALSE_NAN atom.
-      const carrier = sig.results[0] === 'i32'
-        ? typed(callIR, 'i32')
-        : typed(['f64.ne', callIR, ['f64.const', 0]], 'i32')
+      // The i32 carrier is a clean 0/1 — truthyIR's identity path boxes it
+      // straight into the TRUE_NAN/FALSE_NAN atom. The f64 carrier is NOT
+      // provably raw: a BOOL-valued result may already be the atom box
+      // (JSON.parse("false") returns FALSE_NAN — a bare f64.ne(v,0) reads any
+      // atom as truthy). __is_truthy normalizes both representations; this is
+      // the cold host boundary, the call costs nothing that matters.
+      let carrier
+      if (sig.results[0] === 'i32') carrier = typed(callIR, 'i32')
+      else {
+        inc('__is_truthy')
+        carrier = typed(['call', '$__is_truthy', toI64(callIR)], 'i32')
+      }
       body = toI64(boolBoxIR(carrier))
     } else if (resultBigint || resultDynamic) {
       // BigInt rides the i64-reinterpret-f64 carrier internally; a dynamic result is already an

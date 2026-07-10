@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -1050,7 +1050,7 @@ export default (ctx) => {
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
   ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
-    (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
+    (local $off i32) (local $aux i32) (local $et i32) (local $bits i32) (local $vb i64)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
@@ -1059,6 +1059,19 @@ export default (ctx) => {
     (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
       (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i64.reinterpret_f64 (local.get $v))))
       (else
+        ;; ToNumber for NaN-boxed values (spec: typed element writes coerce).
+        ;; true/false/null atoms store 1/0/0; other boxes (undefined, string,
+        ;; object) store canonical NaN. Skipped on the BigInt arm above — raw
+        ;; bigint i64 bits legitimately look like NaN through the f64 param.
+        (if (f64.ne (local.get $v) (local.get $v))
+          (then
+            (local.set $vb (i64.reinterpret_f64 (local.get $v)))
+            (local.set $v (f64.const nan))
+            (if (i64.eq (local.get $vb) (i64.const ${TRUE_NAN}))
+              (then (local.set $v (f64.const 1))))
+            (if (i32.or (i64.eq (local.get $vb) (i64.const ${FALSE_NAN}))
+                        (i64.eq (local.get $vb) (i64.const ${NULL_NAN})))
+              (then (local.set $v (f64.const 0))))))
         (if (i32.eq (local.get $et) (i32.const 7))
           (then (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $v)))
           (else
@@ -1288,10 +1301,13 @@ export default (ctx) => {
     const objIR = emit(arr), vi = idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) return typed(['f64.reinterpret_i64', ['i64.load', off]], 'f64')
-    if (et === 7) return typed(['f64.load', off], 'f64') // Float64Array
-    if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64') // Float32Array
+    // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
+    // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
+    const num = (n) => { const t = typed(n, 'f64'); t.valKind = VAL.NUMBER; return t }
+    if (et === 7) return num(['f64.load', off]) // Float64Array
+    if (et === 6) return num(['f64.promote_f32', ['f32.load', off]]) // Float32Array
     // Integer types: load and convert to f64 (unsigned types use unsigned conversion)
-    return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+    return num([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]])
   }
 
   // Type-aware TypedArray write: arr[i] = val

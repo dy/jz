@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR, carrierF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -43,10 +43,7 @@ const objectToStringTagForVal = (obj) => {
 // 'return' handler (src/compile/emit.js): emit(node) called separately inline per
 // ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
 // behaviorally identical in JS but self-host-fragile. See .work/selfhost-perf-groundtruth.md.
-const storedValue = (node) => {
-  const emitted = emit(node)
-  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
-}
+const storedValue = (node) => carrierF64(node, emit(node))
 
 // Array-IR twin of collection.js's heapResetWat (WAT-string form) — both MUST
 // gate identically. True when `off` is ephemeral (>= the post-init high-water

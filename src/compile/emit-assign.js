@@ -20,7 +20,7 @@ import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR,
+  usesDynProps, needsDynShadow, boolBoxIR, carrierF64, mkPtrIR, isNumericIR,
 } from '../ir.js'
 import { emit } from '../bridge.js'
 
@@ -30,10 +30,7 @@ import { emit } from '../bridge.js'
 // 'return' handler (src/compile/emit.js): emit(node) called separately inline per
 // ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
 // behaviorally identical in JS but self-host-fragile. See .work/selfhost-perf-groundtruth.md.
-const storedValue = (node) => {
-  const emitted = emit(node)
-  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
-}
+const storedValue = (node) => carrierF64(node, emit(node))
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
 function arrayIndexKey(key) {
@@ -408,7 +405,12 @@ export function emitElementAssign(arr, idx, val) {
   const useRuntimeKeyDispatch = !idxNumericName &&
     (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
   const keyExpr = asF64(emit(idx))
-  const valueExpr = asF64(emit(val))
+  // Boxed-bool-aware: `o[k] = false` through every receiver path (slot, SRoA,
+  // array payload, __dyn_set) keeps boolean identity. The one representation-
+  // sensitive consumer is the typed-array route — __typed_set_idx ToNumbers
+  // NaN-boxed values (spec ToNumber for typed element writes), so a boxed
+  // bool stores 0/1 there, never raw atom bits.
+  const valueExpr = storedValue(val)
   // Literal string key, or schema-known object receiver with a static key expression.
   const litKey = isLiteralStr(idx) ? idx[1]
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)

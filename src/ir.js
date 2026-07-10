@@ -385,6 +385,17 @@ export function boolBoxIR(e) {
   return mkPtrIR(['i32.const', PTR.ATOM], ['i32.or', ['i32.const', BOOL_ATOM_BASE], i], ['i32.const', 0])
 }
 
+/** Value-preserving f64 carrier for a value entering an untyped slot — container
+ *  stores, collection keys/values, dyn-prop writes, generic call args. A boolean
+ *  keeps its identity as the TRUE/FALSE atom box (typeof/String/strict-eq survive
+ *  the round-trip); everything else takes the plain asF64 box. Never use in branch
+ *  or arithmetic position — truthyIR/toNumF64 own those (raw 0/1 there by design).
+ *  Callers emit(node) ONCE and pass both (emitting per-arm inside a ternary wrapped
+ *  by different coercions is the self-host-fragile shape — see emit.js 'return'). */
+export function carrierF64(node, emitted) {
+  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
+}
+
 /** Recover the 0/1 i32 value of a known boxed-boolean f64 expression: `aux & 1`. */
 export function unboxBoolIR(f64expr) {
   if (Array.isArray(f64expr) && f64expr[0] === 'f64.const') {

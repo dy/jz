@@ -2885,11 +2885,25 @@ export function foldStrDispatchF64(fn) {
     // then: ['then', ['call','$__str_concat',...]]
     if (!Array.isArray(thenB) || thenB[0] !== 'then') return node
     // else: ['else', ['f64.add', ['local.get',$B], ['local.get',$C]]]
+    // Each operand may be wrapped in emit '+' numSide's atom-coercion guard —
+    // `(if (f64.eq $X $X) (then $X) (else <atom select ladder>))` — which is dead
+    // once the operand is proven rawF64; unwrap to the inner local.get.
+    const unwrapGuard = (n) => {
+      if (!Array.isArray(n) || n[0] !== 'if' || n.length !== 5) return n
+      const [, res, cnd, thn] = n
+      if (!Array.isArray(res) || res[0] !== 'result' || res[1] !== 'f64') return n
+      if (!Array.isArray(cnd) || cnd[0] !== 'f64.eq') return n
+      if (!Array.isArray(thn) || thn[0] !== 'then' || thn.length !== 2) return n
+      const inner = thn[1]
+      if (!Array.isArray(inner) || inner[0] !== 'local.get') return n
+      if (!Array.isArray(cnd[1]) || cnd[1][0] !== 'local.get' || cnd[1][1] !== inner[1]) return n
+      return inner
+    }
     if (!Array.isArray(elseB) || elseB[0] !== 'else' || elseB.length !== 2) return node
     const addExpr = elseB[1]
     if (!Array.isArray(addExpr) || addExpr[0] !== 'f64.add' || addExpr.length !== 3) return node
     // The two operands of f64.add must be local.get $B and local.get $C (in either order)
-    const [lhsAdd, rhsAdd] = [addExpr[1], addExpr[2]]
+    const [lhsAdd, rhsAdd] = [unwrapGuard(addExpr[1]), unwrapGuard(addExpr[2])]
     const lhsIsB = Array.isArray(lhsAdd) && lhsAdd[0] === 'local.get' && lhsAdd[1] === B
     const rhsIsC = Array.isArray(rhsAdd) && rhsAdd[0] === 'local.get' && rhsAdd[1] === C
     const lhsIsC = Array.isArray(lhsAdd) && lhsAdd[0] === 'local.get' && lhsAdd[1] === C

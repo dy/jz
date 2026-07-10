@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, carrierF64 } from '../src/ir.js'
 import { emit, deps, call } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -1152,8 +1152,10 @@ export default (ctx) => {
 
   ctx.core.emit['.set'] = (mapExpr, key, val) => {
     inc('__map_set')
-    const value = val === undefined ? asI64(undefExpr()) : asI64(emit(val))
-    return typed(['f64.reinterpret_i64', ['call', '$__map_set', asI64(emit(mapExpr)), asI64(emit(key)), value]], 'f64')
+    // Keys and values are boxed-value slots — booleans cross as their atom so
+    // set(true, …)/get(true) agree on bits and stored values keep identity.
+    const value = val === undefined ? asI64(undefExpr()) : asI64(carrierF64(val, emit(val)))
+    return typed(['f64.reinterpret_i64', ['call', '$__map_set', asI64(emit(mapExpr)), asI64(carrierF64(key, emit(key))), value]], 'f64')
   }
   ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
@@ -1164,7 +1166,8 @@ export default (ctx) => {
       return typed(['f64.reinterpret_i64', ['call', '$__map_get_h', asI64(emit(mapExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
     }
     inc('__map_get')
-    return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(emit(key))]], 'f64')
+    // Key is a boxed-value slot — a bool key probes with the same atom bits .set stored.
+    return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(carrierF64(key, emit(key)))]], 'f64')
   }
 
   ctx.core.emit['.get'] = emitMapGet

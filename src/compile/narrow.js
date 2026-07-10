@@ -1151,6 +1151,22 @@ export default function narrowSignatures(programFacts, ast) {
   // slot from f64 (nanbox SSO carrier) to externref so the JS host passes the
   // native string directly. Zero copy, zero transcoding. See applyJsstringBoundaryCarrier.
   if (jsstringEnabled()) applyJsstringBoundaryCarrier(paramReps, valueUsed)
+
+  // Stamp the settled per-param val kind onto sig.params (mirror of emitFunc's
+  // updateRep(pname, { val: r.val }) merge — same source, same condition). The
+  // call-site emitter needs it to pick the arg carrier: a BOOL arg into an
+  // UNTYPED f64 param boxes to its TRUE/FALSE atom (boolean identity crosses
+  // the boundary), while a val-known param keeps the raw 0/1 ABI its body
+  // assumes. Read by coerceArg (emit.js).
+  for (const func of ctx.func.list) {
+    if (!func.sig || func.raw) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    for (const [k, r] of reps) {
+      const p = func.sig.params[k]
+      if (p && r.val != null && p.val == null) p.val = r.val
+    }
+  }
 }
 
 /** Gate the jsstring carrier on the host. ON by default for the JS host: a

@@ -10,7 +10,7 @@
  * @module fn
  */
 
-import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, appendStaticSlots } from '../src/ir.js'
+import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, appendStaticSlots, carrierF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
@@ -297,12 +297,15 @@ export default (ctx) => {
             ['i64.const', LAYOUT.AUX_MASK]]]]], 'f64')
     }
 
-    // Inline path: emit each arg, pad missing slots with UNDEF
+    // Inline path: emit each arg, pad missing slots with UNDEF. Closure ABI slots
+    // are untyped boxed-value positions — a bool arg crosses as its atom box so
+    // the callee observes boolean identity (typeof/String/strict-eq); pre-emitted
+    // IR (has .type) has no AST node to consult and keeps the plain box.
     const n = args.length
     if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
-    for (let i = 0; i < n; i++) slots.push(asF64(args[i]?.type ? args[i] : emit(args[i])))
+    for (let i = 0; i < n; i++) slots.push(args[i]?.type ? asF64(args[i]) : carrierF64(args[i], emit(args[i])))
     for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
 
     return typed(['block', ['result', 'f64'],

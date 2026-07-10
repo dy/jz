@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, carrierF64, isPureIR } from '../src/ir.js'
 import { inBoundsArrIdx } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -325,8 +325,17 @@ export default (ctx) => {
 
   inc('__ptr_offset', '__ptr_type', '__len', '__set_len', '__typed_idx', '__is_truthy')
 
-  // Array.isArray(x): check ptr_type === PTR.ARRAY
+  // Array.isArray(x): check ptr_type === PTR.ARRAY.
+  // Statically-known ARRAY values must answer from the FACT, not the carrier —
+  // a rep-narrowed array (raw base local, e.g. a slice() result) is not a
+  // NaN-box, so the runtime tag test would read a plain number and say false.
   ctx.core.emit['Array.isArray'] = (x) => {
+    const vt = valTypeOf(x)
+    if (vt === VAL.ARRAY) {
+      const v = emit(x)
+      return isPureIR(v) ? typed(['i32.const', 1], 'i32')
+        : typed(['block', ['result', 'i32'], ['drop', asF64(v)], ['i32.const', 1]], 'i32')
+    }
     const v = asF64(emit(x))
     const t = temp('t')
     return typed(['i32.and',
@@ -636,7 +645,9 @@ export default (ctx) => {
       // so `const x = [1, 2, 3]` is a data segment, not an alloc.
       if (ctx.func.atModuleScope && len >= 1 && !ctx.memory.shared) {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
-        const vals = elems.map(e => asF64(emit(e)))
+        // carrierF64: a bool literal folds to its TRUE/FALSE atom const — still
+        // static-extractable, and the element keeps boolean identity in the segment.
+        const vals = elems.map(e => carrierF64(e, emit(e)))
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -655,7 +666,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), asF64(emit(elems[i]))])
+        body.push(['f64.store', slotAddr(a.local, i), carrierF64(elems[i], emit(elems[i]))])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
@@ -1024,7 +1035,7 @@ export default (ctx) => {
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
       const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
       const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
-      const vv = asF64(emit(vals[0]))
+      const vv = carrierF64(vals[0], emit(vals[0]))
       const pushed = ['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]
       if (void_) return typed(['block', writeVar(pushed)], 'void')
       return typed(['block', ['result', 'f64'],
@@ -1077,7 +1088,7 @@ export default (ctx) => {
 
     // Store each value and increment len
     for (const val of vals) {
-      const vv = asF64(emit(val))
+      const vv = carrierF64(val, emit(val))
       body.push(
         ['f64.store',
           ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
@@ -1183,7 +1194,7 @@ export default (ctx) => {
     inc('__arr_fill')
     return typed(['call', '$__arr_fill',
       asI64(emit(arr)),
-      val == null ? undefExpr() : asF64(emit(val)),
+      val == null ? undefExpr() : carrierF64(val, emit(val)),
       start == null ? ['i32.const', 0] : asI32(emit(start)),
       end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
   }
@@ -1270,7 +1281,7 @@ export default (ctx) => {
 
   // .unshift(val) → prepend element, shift existing right
   ctx.core.emit['.unshift'] = (arr, val) => (inc('__arr_unshift'),
-    typed(['call', '$__arr_unshift', asI64(emit(arr)), asF64(emit(val))], 'f64'))
+    typed(['call', '$__arr_unshift', asI64(emit(arr)), carrierF64(val, emit(val))], 'f64'))
 
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
     (local $off i32) (local $len i32) (local $a f64)
@@ -1817,7 +1828,7 @@ export default (ctx) => {
 
   ctx.core.emit['.indexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = asF64(emit(val))
+    const vv = carrierF64(val, emit(val))
     const eq = arrEqIR(val)
     const result = tempI32('ix')
     const exit = `$exit${ctx.func.uniq++}`
@@ -1834,7 +1845,7 @@ export default (ctx) => {
 
   ctx.core.emit['.includes'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = asF64(emit(val))
+    const vv = carrierF64(val, emit(val))
     const eq = arrEqIR(val)
     const result = tempI32('ic')
     const exit = `$exit${ctx.func.uniq++}`
@@ -1855,7 +1866,7 @@ export default (ctx) => {
   // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
   ctx.core.emit['.lastIndexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = asF64(emit(val))
+    const vv = carrierF64(val, emit(val))
     const eq = arrEqIR(val)
     const result = tempI32('lx')
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
