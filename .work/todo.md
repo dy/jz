@@ -365,6 +365,29 @@
       collapsed 46% → 8.4% by prior legs. Agent's 'jessie crashes under
       default memory' claim NOT reproduced through the real bench harness
       (6/6 clean) — likely its raw-instantiate harness artifact; watch.
+    - jessie levers GROUND OUT (2026-07-10, two worktree agents, both
+      verdicts humbling and precise):
+      * 27% base-hoist lever: hoistLoopGlobalPtrOffset LANDED (e3c6d38,
+        merged) — per-loop stable-pointee global base hoist, callee
+        cleanliness via the existing collectReachableGlobalWrites fixpoint,
+        fail-closed on call_indirect/call_ref; positive ablation + two
+        fail-closed pins (test/hoist-loop-global.js, wat-invariants). Jessie
+        BYTE-IDENTICAL though: subscript's `cur` global is assigned only
+        INSIDE parse()'s body and recordGlobalRep observes depth-0 module
+        assignments only → `cur` never proves STRING → the durable-receiver
+        override probe keeps its OWN call_indirect inside every scan loop →
+        the hoist correctly declines. THE REAL LEVER: module-global valType
+        inference from an ALL-WRITERS program scan (observeProgramSlots
+        analogue for globals) — prove `cur` STRING, the override probe
+        leaves the loops, THEN the hoist (already landed) fires.
+      * 11.3% same-body devirt lever: REFUTED BY PROOF — the agent built the
+        full write-family scan (dyn closure tables → constFnArrays reuse) and
+        it correctly refuses subscript's table: ≥8 distinct closure bodies
+        write into it (string/module/number/template.js each register their
+        own), genuinely polymorphic, NOT the same-body shape the profiling
+        assumed. Machinery left on branch worktree-agent-aca96e30f3fea719d
+        (byte-identical on jessie = zero present value; take it if a
+        monomorphic dyn table ever shows up in a bench).
   * pow leg (2026-07-10, 07f6346, agent-ported in a worktree + merged):
     $math.pow's non-integer tail (single-precision exp(y·log x), relative
     error ~|y·ln x| ulps) replaced with the fdlibm e_pow core (FreeBSD msun
@@ -387,6 +410,22 @@
     colorlog 1.8x today). Also noted pre-existing: integer fast path
     overflows to 0 for pow(huge, -3) (squaring hits Inf before the
     reciprocal); kernel-leg 5 worktree failures were worktree artifacts.
+    COMPENSATED-FOLD VERDICT (2026-07-10, worktree agent, NOT merged):
+    the double-double const-exponent fold was built ($math.pow_fold +
+    SIMD repack twin) and CLOSED THE ULP GAP (≤1 ulp on colorpq's actual
+    exponents) but full checksum parity is UNREACHABLE — fdlibm is
+    "nearly rounded", not correctly-rounded (even $math.pow_core is
+    651/672 bit-exact vs host), and the strided-hash checksums need
+    bit-exactness at every sample. Speed: the correct algorithm costs
+    ~4x a scalar V8 Math.pow call → colorpq 3.76x SLOWER (vs 1.20x
+    today) — accuracy at that price loses the V1 bench mandate; branch
+    worktree-agent-a645ccd97ec575d12 holds it (incl. two latent fixes to
+    take with any revival: PPC_CALL2 call-lift hardcodes unary/binary
+    arity, LATE_VEC_HELPERS allowlist misses new SIMD helper names).
+    CHERRY-PICKED from it: fifthroot fold pow(-Inf, k/5) → +Infinity
+    (was NaN; f800b0c). colorpq/colorlch/colorlog parity stays a
+    recorded ULP-family DIFF — closing it needs a CORRECTLY-ROUNDED pow
+    (e.g. CORE-MATH's two-phase scheme), a different, larger project.
     STATE 2026-07-10 (full 52-case table, jz/v8/jsc): svg geomean —
     V8 2.09x slower than jz (was 1.89x at leg 3). 43/52 cases jz LEADS
     BOTH engines outright. V8 beats jz on only THREE: wordcount 1.36x
@@ -491,23 +530,56 @@
       undefined → for-of swallowed it. Fix: generic `.matchAll` twin
       (ES ToString-coerces the receiver) → the same anchored scan.
       Host-level repro of the exact sweep shape pinned at both levels.
-    - STILL OPEN, sharply narrowed: same build, same input — kernel
-      compileDiag takes the OWNED-allocator branch, kernel compileWat the
-      SHARED one (no __heap_reset/__mkptr → byte drift), DETERMINISTIC
-      per-export, flipped by an unrelated pre-prepare dyn-prop write;
-      fresh-instance order tests rule out warm state; minimal host-side
-      repros all pass. Shared callees behaving differently per entry ⇒
-      prime suspect: per-export SPECIALIZED CLONES (narrow's bimorphic /
-      speculative machinery over the 100-module bundle) — one clone chain
-      miscompiled at O0. NEXT: kernel.wat is dumpable (scratchpad
-      kernel-wat.mjs, 123MB); find core-install / ctx.memory readers'
-      $name$spec/bimorphic clones, map which export's call chain reaches
-      which clone, diff the clones. kern-seq durable-heal OOB shifts its
-      failing rounds per build (1,3 → 3 → 1,3) — consistent with the same
-      clone/layout sensitivity; likely the same mother bug.
-    - for-of over nullish iterates ZERO times silently in jz (JS throws
-      'not iterable') — the fail-SILENT that masked both roots; worth a
-      deliberate decision (throw, or keep permissive + document).
+    - RESOLVED (2026-07-10, dbd3293/367b151): the "per-export clone" suspicion
+      was WRONG — the mother bug was BOOLEAN IDENTITY LOSS. Chain: kernel's
+      resolveOptimize gets JSON.parse('1') = NUMBER 1; jz lowered `opt === true`
+      on an unknown operand to NUMERIC equality → 1 === true → TRUE → level-2
+      branch; there `{...LEVEL_PRESETS[2]}` read UNDEFINED (Object.freeze
+      wrapper blinded the literal's schema → untyped element dispatch, no
+      OBJECT arm) → spread {} → empty cfg → every `cfg.pass !== false` gate ran
+      + watr off → level-'1' kernel output drifted (csePureExpr/foldSetToTee
+      fired). Also: fromEntries preset values stored as raw 0/1 (`false` read
+      back as number 0 — `0 !== false` true). Fixes, all landed with pins
+      (test/bool-identity.js, 6 tests):
+      * carrierF64 ingress — bools cross EVERY untyped carrier as TRUE/FALSE
+        atoms: array literal elems + push/fill/unshift, Map/Set keys+values
+        (bridge 'I' casts + .set/.get), dyn-keyed writes, closure + direct call
+        args (narrow stamps settled p.val; val-known params keep raw 0/1 ABI).
+      * emitStrictEq: unknown-vs-bool-literal compares ATOM BITS (1===true
+        false); both-BOOL compares truth values (carriers vary by source).
+      * Mixed ?:/&&/||/?? merges box the BOOL arm (watr's `i ? true : [from,
+        len]` rec marker — metacircular type-dedup pin); VT['?:'] carries only
+        BOOL∪NUMBER (both-arms-are-the-value ⇒ a carried pointer-kind claim let
+        strict-eq const-fold wrongly); &&/|| keep the full guard-idiom carry.
+      * '+' string-dispatch numeric arm: inline atom ladder coerces NaN-boxed
+        operands (true+1=2, null+1=1) — no __to_num (formatter tree stays out
+        of the dyn-object golden); isNumArm/typed-load valKind evidence skips
+        guards in numeric kernels; foldStrDispatchF64 unwraps the guard so
+        plasma still folds+vectorizes. nest ratchet re-baselined 8559→8834
+        (guards on '+' over unknown-param array elems are load-bearing).
+      * Object.freeze folds to its operand in prepare (jz never modeled
+        frozenness; the wrapper only blinded schema dispatch). __typed_set_idx
+        ToNumbers NaN-boxes (spec). JSON.parse const-bool claims BOOL. Export
+        wrappers extract the result bit via __is_truthy (bare f64.ne(v,0) read
+        FALSE_NAN as truthy — JSON.parse("false") exported true).
+      RESULT: kernel-vs-host parity levels 0 AND 1 byte-IDENTICAL; dist
+      kernel -163 kB (freeze-fold made jz's own preset tables static);
+      benches re-verified no-regression (wordcount 1.008x parity, immutable/
+      json/dict/shapes/fftplan/strbuild/mandelbrot all still lead, checksums
+      exact). REMAINING level-2 residual, sharply narrowed: watr-IN-KERNEL
+      makes a different `inlineOnce` decision (__memgrow spliced by host, kept
+      by kernel; ±bytes, behavior EQUAL) — jz-side emission parity-proven by
+      the L0/L1 identity, so the divergence is inside watr's optimizer running
+      under the kernel; watr's own source carries a prior self-host workaround
+      note in exactly that region (optimize.js ~4442 "KEEP THIS EXTRACTED").
+      NEXT: instrument watr's inlineOnce/inline decision inputs (candidate
+      sets, size counts) through the kernel boundary, diff host-vs-kernel.
+      kern-seq durable-heal OOB is NOT this bug (still reproduces post-fix;
+      focused agent hunting it — trap in the zombie/heal machinery on warm
+      instances after compiling `const g = m.get('a'); g.mut`).
+    - for-of over nullish: DECIDED + LANDED (8f7b380) — throws per ES
+      (catchable $__jz_err), guard only in __iter_arr's unknown-receiver arm
+      (typed receivers pay nothing). Pinned in test/iteration.js.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
@@ -613,6 +685,84 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [ ] **Heap + RAM budget** — pick a memory region; document RAM budget; w2c2 (~150 KB) runtime.
 
 ## Language coverage / correctness
+- [ ] **Extension-surface plan (2026-07-10)** — full evidence map in
+  `.work/extension-surface.md` (gates, rings 0–3, async/workers verdicts, test262 pool
+  math, permanently-out reasons). Measured this session: language 1462/0/21924 (floor
+  1453 ✓), builtins **719/12 RED** (floor 722). Work ALL of it, in order:
+  * [~] **RING 0 — truth debt** — LEG 1 LANDED 2026-07-10 (see extension-surface.md
+    §Landed): hypot n-ary, parseInt/parseFloat spec edges, regex trio, normalize,
+    `**=`, clean roles for function*/yield*/new.target/#x-in-o/String.raw, void text,
+    + FOUR unblanketing-surfaced fixes (defaults-on-null, numeric pattern keys,
+    var pattern declarators, for-of cover-grammar patterns). Language 262:
+    1462 → 2205 / 0 fail, CI floor 2205. REMAINING below (0.2 let-capture,
+    0.3 bigint-mixed, 0.4/0.5 bind/call/apply, 0.7 unknown-method, 0.13
+    strict-switch, 0.17 reviver, 0.18 freeze [blocked: concurrent object.js],
+    0.20/0.21) + NEW: isArray-of-derived-promoted (12 xfail), catch-param
+    patterns, var-pattern for-of heads, member for-of targets, const-reassign
+    guard absent, arguments.js `??` param default.
+  * [ ] RING 0 remaining items (original list):
+    - [ ] builtins gate RED: `Math.hypot()`/`1/Math.hypot(0)`/`parseInt(" 1")` return
+      **boxed null** (non-canonical NaN escaping as ATOM — suspect pow/str-hash legs);
+      parseInt radix 1/37/i32-wrap + parseInt(Infinity)→Infinity; String.indexOf
+      position-ToInteger; Array.isArray.length; prune 3 unexpected-passes.
+    - [ ] for-head `let` capture: `for(let i…) fs.push(()=>i)` → [3,3,3] not [0,1,2]
+      (every -O; for-of/body-let correct) — jzify copy-in/copy-out, only-when-captured.
+    - [ ] mixed BigInt⊕Number: `1n+1` = f64-bits-as-i64 garbage, `5n>3` = false —
+      arith must TypeError, compares must coerce (emit.js cmpOp unconditional asI64).
+    - [ ] `fn.bind` → table-OOB trap; `fn.call/apply` → silent undefined — jzify-lower
+      static shapes, reject dynamic.
+    - [ ] silent-wrong family: Symbol computed key no-ops; regex `\p{…}` matches literal
+      "p{L}" (regex.js:188); `/y` scans like `/g` (:864); matchAll non-global no TypeError
+      (:1123); tagged `.raw` undefined; Object.freeze no-op + isFrozen(freeze(x))=false
+      (object.js:202/232 — bonus: freeze as immutable-schema optimizer fact).
+    - [ ] leaky→clean rejects: `function*` w/o yield + `yield*` ("Unknown op"), new.target
+      (watr leak), `#x in o` — op-policy entries; `**=` missing from ASSIGN_OPS
+      (ast.js:77) — support; strict-mode switch+break broken (route strict through
+      jzify/switch.js, delete native twin); `.normalize()` crash (autoload tuple) —
+      implement as ASCII identity; **unknown method on KNOWN receiver**
+      (`[].toSorted()` → runtime TypeError) must compile-error in default mode too.
+    - [ ] JSON.parse `reviver` silently dropped (json.js:1529) + runtime `replacer` —
+      implement, kills the xfail family.
+    - [ ] `({a,b} = obj)` assignment-form internal error — fix (kernel-leg + main).
+    - [ ] for-of over nullish silently 0-iterates (masked two kernel roots) — decide:
+      throw (leaning) vs documented-permissive.
+  * [~] **RUNNER HONESTY** — skip-split LANDED 2026-07-10: stale blankets removed
+    (for-of dir rule, destructuring content rules, this/class/super/WeakMap/
+    new.target/for-of EXCLUDED patterns), allowlist grew 'outside jz scope' +
+    'requires source with known schema', TypeError/ReferenceError-synthesis rule
+    scoped to dstr corpora, bool-carrier family xfail-tracked (flips to xpass on
+    carrier landing — prune then), 26 residuals precisely skip-classified.
+    REMAINING: track implemented-but-untracked pools (TypedArray 2184, RegExp
+    1877, WeakMap/WeakSet 226, Error family, global); count the 4389 verified
+    negative-rejects as their own pass-class; add language/import (182).
+  * [ ] **STDLIB batch** (module/, pay-per-use): Array toSorted/toReversed/with/
+    copyWithin/of (TypedArray has all four — port); ES2025 Set ops (7, over existing
+    tables); Object/Map.groupBy; String.raw; RegExp.escape + named backrefs; Float16Array
+    + f16round; structuredClone (arena deep-copy); Date toJSON/toDateString slices;
+    Ryū shortest-round-trip String(number) lazily-included (JSON float round-trip — the
+    big trust win); insertion-order Map/Set decision via bench gate.
+  * [ ] **WORKERS v1** (before async; philosophy-aligned; toolchain ready — watr encodes
+    all atomics + shared memtype): emit real `(memory … shared)`+max (assemble.js:883
+    lacks keyword); atomic `__alloc` bump (core.js:350 races); module/atomics.js →
+    wasm atomics; ~100-line interop pool helper. v1 CONTRACT: shared typed arrays +
+    scalars only (SPMD tiles — whole bench corpus shape); strings/objects thread-local —
+    dodges the stdlib single-writer audit (forwarding ptrs, STR_HCACHE, enum caches =
+    shared-everything later). Headline: N×cores × SIMD, same JS file.
+  * [ ] **GENERATORS** (pivotal; NOT coroutines — regenerator state machine): jzify
+    lowering (switch.js precedent; locals→env cells, mutable captures shipped;
+    next() = closure call); try/finally-across-yield = EH handler re-entry design;
+    **local fusion**: statically-consumed for-of SROAs the machine → plain loop =
+    zero-cost lazy sequences (V8 allocates, jz compiles them out); unlocks iterator
+    protocol + Symbol.iterator + ES2025 iterator helpers AS FUSED LOOPS (514-pool).
+  * [ ] **PARKED, designs recorded** (extension-surface.md): async/await — verdict:
+    NOT an architectural hit (state machine + module/promise.js on a free NaN-box tag
+    (5,12–15 free) + the shipped timer-pump pattern; sync pays zero; asyncify REJECTED,
+    JSPI watch — watr already encodes stack-switching); open design item = memory.reset()
+    vs in-flight continuations (nursery arena or contract). Relaxed-SIMD opt-in (watr has
+    relaxed_madd FMA — biquad/fft native floor; breaks bit-exact → flag only).
+    js-string-builtins deepening; memory64/multi-memory YAGNI.
+  * [x] **Permanently-out documented** — README FAQ entry with reasons + site link
+    (2026-07-10); keep the divergence list in sync as Ring-0 items land.
 - [ ] **Date** — deterministic spec slices first; local-tz/Intl later. (deferred: object
   ToPrimitive coercion order; Date.parse until value-objects + UTC stringify exist. out of
   scope: local-time getters/setters, getTimezoneOffset, locale methods, toJSON, subclassing.)
@@ -1221,7 +1371,9 @@ correctness risk for zero measured benefit:
 - [ ] **threads/atomics** — lower `Atomics.*` on shared typed arrays → wasm atomic ops;
   `memory:{shared:true}` → shared Memory + `(memory … shared)`; worker spawn stays host-side
   (same boundary discipline as I/O). Large; verify a real workload first. Vectorizer +
-  shared-memory substrate already exist.
+  shared-memory substrate already exist. SCOPED 2026-07-10: v1 plan + missing-pieces +
+  single-writer audit list in `.work/extension-surface.md` §Workers (promoted into the
+  Language-coverage plan — typed-array-SPMD v1 dodges the stdlib audit).
 - [ ] memory64 (>4GB); relaxed SIMD; WebGPU compute shaders.
 - [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
   typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination
