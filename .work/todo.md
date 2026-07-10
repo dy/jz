@@ -470,6 +470,44 @@
     diagnostic readable through the kernel boundary — e.g. a '2diag'
     optimize-flag path returning the diagnostic string instead of wasm),
     run self-parity.mjs against it, compare the three record sets.
+  * INSTRUMENTED-KERNEL SESSION (2026-07-10, 9888cbd/281afc5): the channel
+    (scripts/self.js compileDiag — diagSink snapshots in resolveIncludes +
+    the assemble sweep, JSON through the kernel boundary, diffed
+    host-vs-kernel) landed and IMMEDIATELY paid: TWO real host-side
+    miscompile roots found and fixed, both suite-green with pins.
+    - ROOT 1 (9888cbd): the kernel's own `autoCache.get(name) !==
+      undefined` compiled to an UNCONDITIONAL return — mayBeNullish only
+      flagged nullish literals/ternaries, sound while opaque sources had
+      no value kind; the Map/element value-kind inference broke that and
+      emit's strictSentinel fold erased the miss guard AT EVERY LEVEL
+      (dist builds at optimize:false). Fix: fail-closed mayBeNullish
+      (anything not structurally non-nullish is nullable — the flag only
+      suppresses sentinel folds + capture propagation). Pinned via the
+      dedupe-cache memo idiom (hit-count, both levels).
+    - ROOT 2 (281afc5): the sweep's `src.matchAll(...)` on the typeof-
+      continue-narrowed receiver silently scanned NOTHING — matchAll had
+      only a `.string:` emitter, so the runtime string-fork (needs BOTH
+      keys) never armed; untyped receivers fell to the dyn-prop probe →
+      undefined → for-of swallowed it. Fix: generic `.matchAll` twin
+      (ES ToString-coerces the receiver) → the same anchored scan.
+      Host-level repro of the exact sweep shape pinned at both levels.
+    - STILL OPEN, sharply narrowed: same build, same input — kernel
+      compileDiag takes the OWNED-allocator branch, kernel compileWat the
+      SHARED one (no __heap_reset/__mkptr → byte drift), DETERMINISTIC
+      per-export, flipped by an unrelated pre-prepare dyn-prop write;
+      fresh-instance order tests rule out warm state; minimal host-side
+      repros all pass. Shared callees behaving differently per entry ⇒
+      prime suspect: per-export SPECIALIZED CLONES (narrow's bimorphic /
+      speculative machinery over the 100-module bundle) — one clone chain
+      miscompiled at O0. NEXT: kernel.wat is dumpable (scratchpad
+      kernel-wat.mjs, 123MB); find core-install / ctx.memory readers'
+      $name$spec/bimorphic clones, map which export's call chain reaches
+      which clone, diff the clones. kern-seq durable-heal OOB shifts its
+      failing rounds per build (1,3 → 3 → 1,3) — consistent with the same
+      clone/layout sensitivity; likely the same mother bug.
+    - for-of over nullish iterates ZERO times silently in jz (JS throws
+      'not iterable') — the fail-SILENT that masked both roots; worth a
+      deliberate decision (throw, or keep permissive + document).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
