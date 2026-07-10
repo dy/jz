@@ -696,6 +696,129 @@ test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays t
   ok(/f64\.load\b/.test(jz.compile(src, { wat: true })), 'expected direct f64.load over the swapped buffers')
 })
 
+// ────────────────────────────── inferModuleGlobalValTypes: all-writers global scan
+//
+// recordGlobalRep only observes depth-0 (module-init-time) assignments. A global
+// whose every write lives INSIDE a function body — subscript's parser keeps its
+// cursor this way: `export let idx, cur, parse = s => (idx = 0, cur = s, …)` —
+// never gets a valType from it, so every `cur.charCodeAt(i)` / `cur[i]` read
+// keeps a runtime string-vs-typed fork (and the durable-receiver override probe
+// for method calls). inferModuleGlobalValTypes closes that gap: a whole-program,
+// shadow-aware scan of every write, meeting the RHS valTypes to one kind or
+// failing closed. The `[]`-index read is the cleanest probe — a receiver with a
+// proven kind drops straight to `$__str_idx` with no runtime dispatch; an unclaimed
+// one forks between `$__str_idx` and `$__typed_idx` on a runtime tag test.
+const TYPE_FORK = /\$__typed_idx\b/g
+const noTypeFork = (wat, msg) => is(count(wat, TYPE_FORK), 0, msg)
+const keepsTypeFork = (wat, msg) => ok(count(wat, TYPE_FORK) > 0, msg)
+
+test('inferModuleGlobalValTypes: global assigned STRING only inside a function body proves STRING (subscript cur shape)', () => {
+  // Mirrors subscript/parse.js exactly: a module global (`cur`) written only
+  // inside a non-exported helper's body, from that helper's OWN parameter —
+  // whose type in turn comes from a call-site argument (`buildSrc()`'s proven
+  // STRING return), not a literal. Needs narrowSignatures' resolved param facts
+  // (pass 2, post-narrowSignatures) — disable inlining so `setSrc`/`buildSrc`
+  // survive as separate functions long enough to be call-site-typed, exactly
+  // as subscript's own (much larger, naturally un-inlined) `parse` does.
+  const src = `
+    let cur
+    const setSrc = (s) => { cur = s }
+    const buildSrc = () => { let s = ''; for (let i = 0; i < 3; i++) s = s + 'ab'; return s }
+    export let scan = () => {
+      setSrc(buildSrc())
+      let n = 0, i = 0
+      while (i < cur.length) { n += cur[i].charCodeAt(0); i++ }
+      return n
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { sourceInline: false } })
+  noTypeFork(wat, 'a STRING-proven global receiver must drop the runtime string-vs-typed fork on `[]` reads')
+  const ex = run(src, { optimize: { sourceInline: false } })
+  const s = 'ababab'
+  let want = 0
+  for (let i = 0; i < s.length; i++) want += s[i].charCodeAt(0)
+  is(ex.scan(), want, 'values bit-exact vs plain JS')
+})
+
+test('inferModuleGlobalValTypes: conflicting STRING/NUMBER writes across functions → no claim (fail closed)', () => {
+  const src = `
+    let g
+    export let setStr = () => { g = 'x' }
+    export let setNum = () => { g = 5 }
+    export let getFirst = () => g[0]
+    export let get = () => g
+  `
+  keepsTypeFork(jz.compile(src, { wat: true }),
+    'a global written STRING in one function and NUMBER in another must keep the runtime dispatch — no false claim')
+  const ex = run(src)
+  ex.setStr(); is(ex.get(), 'x', 'string value round-trips')
+  ex.setNum(); is(ex.get(), 5, 'numeric value round-trips — no false claim corrupted it')
+})
+
+test('inferModuleGlobalValTypes: a local shadowing the global name does not pollute its kind', () => {
+  // `unrelated`'s `g` is a DIFFERENT, locally-scoped binding (`let g = 0`) that
+  // happens to share the module global's name. Its NUMBER-ish writes must not
+  // be attributed to the real global, whose only genuine write (in `setG`) is STRING.
+  const src = `
+    let g
+    export let setG = () => { g = 'hello' }
+    export let unrelated = () => { let g = 0; g = g + 1; return g }
+    export let getFirst = () => g[0]
+  `
+  noTypeFork(jz.compile(src, { wat: true }),
+    'a same-named LOCAL in an unrelated function must not poison the global — STRING claim should still fire')
+  const ex = run(src)
+  ex.setG()
+  is(ex.getFirst(), 'h', 'global read is correct')
+  is(ex.unrelated(), 1, 'the shadowing local computes independently')
+})
+
+test('inferModuleGlobalValTypes: a write from a nested closure counts (poisons on conflict)', () => {
+  // If the closure body were invisible to the scan (treated as an opaque `=>`
+  // boundary, the way analyzeBody's OWN per-function walk deliberately is),
+  // `g` would wrongly resolve STRING from `setStr` alone. The closure's NUMBER
+  // write must be seen and must conflict.
+  const src = `
+    let g
+    export let setStr = () => { g = 'x' }
+    export let setNumViaClosure = (arr) => { arr.forEach(x => { g = 5 }) }
+    export let getFirst = () => g[0]
+  `
+  keepsTypeFork(jz.compile(src, { wat: true }),
+    'a NUMBER write buried inside a closure must still conflict with the STRING evidence elsewhere')
+})
+
+test('inferModuleGlobalValTypes: a global written only inside a closure resolves (positive)', () => {
+  // The mirror of the pin above: when the closure's write IS the only, provable
+  // (literal) evidence, the closure must not be skipped as an opaque boundary —
+  // the global should resolve cleanly.
+  const src = `
+    let g
+    export let setG = (arr) => { arr.forEach(x => { g = 'hi' }) }
+    export let getFirst = () => g[0]
+  `
+  noTypeFork(jz.compile(src, { wat: true }), 'a literal STRING write inside a closure must resolve the global')
+  const ex = run(src)
+  ex.setG([1])
+  is(ex.getFirst(), 'h', 'closure-proven global reads correctly')
+})
+
+test('inferModuleGlobalValTypes: an exported mutable global stays unclaimed (host can write any value)', () => {
+  // A wasm export of a MUTABLE global lets the host assign it any bit pattern
+  // via `instance.exports.g.value = …`, invisible to any AST scan — must never
+  // be claimed regardless of how consistent its VISIBLE writes look.
+  const src = `
+    export let g = undefined
+    export let setG = () => { g = 'x' }
+    export let getFirst = () => g[0]
+  `
+  keepsTypeFork(jz.compile(src, { wat: true }),
+    'an exported MUTABLE global must stay unclaimed — the host can write any bit pattern to it directly')
+  const ex = run(src)
+  ex.setG()
+  is(ex.getFirst(), 'x', 'value is still correct even though the kind is unclaimed')
+})
+
 // ─────────────────────────────────── typed-array index arithmetic stays i32
 //
 // A subscript is truncated to i32 at the memory boundary, so integer index math —

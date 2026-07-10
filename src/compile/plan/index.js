@@ -37,7 +37,7 @@ import { optimizing } from './common.js'
 import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import {
-  inferModuleLetTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
+  inferModuleLetTypes, inferModuleGlobalValTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
   flattenFuncNamespaces, devirtGlobalCalls,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
@@ -61,6 +61,10 @@ export default function plan(ast, profiler) {
   }
 
   t('inferModuleLetTypes', () => inferModuleLetTypes(ast))
+  // Pass 1 (no call-site param facts yet): literal/alias/global-to-global
+  // evidence only. Early enough that a freshly-proven NUMBER global still
+  // reaches inferModuleIntGlobals's candidacy check below.
+  t('inferModuleGlobalValTypes', () => inferModuleGlobalValTypes(ast))
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
@@ -119,6 +123,11 @@ export default function plan(ast, profiler) {
   }
 
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
+  // Pass 2: narrowSignatures has now settled `programFacts.paramReps`, so a
+  // global written from a bare parameter alias (`cur = s`, subscript's parse-
+  // state shape) resolves — pass 1 saw only an untyped param and poisoned it.
+  // Idempotent: names pass 1 already claimed are skipped.
+  t('inferModuleGlobalValTypes2', () => inferModuleGlobalValTypes(ast, programFacts.paramReps))
   // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
   // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
   if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))

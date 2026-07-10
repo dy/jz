@@ -8,6 +8,7 @@
  * which mutate the AST as their final step):
  *
  *   - `inferModuleLetTypes`        — module-level `let` typed-array union
+ *   - `inferModuleGlobalValTypes`  — module-global VAL-kind from an all-writers scan
  *   - `unboxConstTypedGlobals`     — const typed-array → unboxed i32 offset
  *   - `inferModuleIntGlobals`      — purpose-focused f64→i32 numeric demotion
  *   - `flattenFuncNamespaces`      — `f.prop` slot SROA + dead-write drop
@@ -20,13 +21,14 @@
  */
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
-import { ASSIGN_OPS, T, refsAny } from '../../ast.js'
+import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS } from '../../type.js'
 import { inferSchemaId } from '../infer.js'
+import { valTypeOf } from '../../kind.js'
 import { typedElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN } from '../../ir.js'
-import { analyzeFuncNamespaces } from '../analyze.js'
+import { analyzeFuncNamespaces, analyzeBody } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 // `scanGlobalValueFacts` was deleted — prepare's depth-0 catch (calling
@@ -222,6 +224,221 @@ export const refineFieldProvenance = (ast) => {
   if (Array.isArray(ast)) {
     if (ast[0] === ';') for (let i = 1; i < ast.length; i++) visitDecl(ast[i])
     else visitDecl(ast)
+  }
+}
+
+// A module global whose every write anywhere in the program (any function body,
+// any nesting/closure depth) agrees on one VAL.* kind — not just its depth-0
+// initializer (recordGlobalRep's territory). The subscript/jessie shape this
+// unblocks: `export let idx, cur, parse = s => (idx = 0, cur = s, …)` — `cur`
+// is a parse-state global assigned ONLY inside `parse`'s body, so recordGlobalRep
+// (depth-0 only) never proves it, every `cur.charCodeAt(i)` read in the scan
+// loop stays on the durable-receiver override probe (sidecarOverride, ir.js —
+// gated on `valTypeOf(receiver)`, which this pass feeds via `ctx.scope.
+// globalValTypes`), and the probe's own call_indirect fail-closes the loop
+// hoist. Proving `cur` STRING here removes the probe (emit.js's tryStaticDispatch
+// fires once `vt` is known, ahead of the runtime-dispatch/sidecar strategies).
+//
+// Soundness is fail-closed and layered:
+//   - Host-writable escape: an exported MUTABLE global's wasm export lets the
+//     host `.value =` it with ANY bit pattern, invisible to this (or any) AST
+//     scan — excluded from candidacy outright (isHostWritableGlobal).
+//   - Shadowing: a write only counts when `name` is free (not a param/let/const/
+//     catch binding) at that point in ITS OWN enclosing function/closure scope —
+//     computed per scope via a dedicated bound-name collector, not reused from
+//     emit-time `ctx.func.locals` (not populated yet at plan time).
+//   - Unrecognized write shapes (compound-assign, `++`/`--`, a destructuring
+//     target — in practice already desugared to plain assigns by prepare, but
+//     defended anyway) poison the candidate outright: correctness-relevant
+//     mutations this scan can't classify must not be silently dropped.
+//   - Every other write's RHS is resolved via `valTypeOf` under a per-scope
+//     overlay (that scope's `let/const` locals from `analyzeBody`, plus — when
+//     `paramReps` is supplied — its OWN resolved param facts), so a plain
+//     parameter alias (`cur = s`) or a method result (`cur = s.slice(i)`)
+//     resolves the same way a body-local's does. A bare reference to ANOTHER
+//     candidate global, or a call to a user function, defers to a small
+//     alias-graph fixpoint (module globals + `@ret:fn` result nodes only —
+//     unlike inferModuleLetTypes's ctor lattice, ordinary locals need no
+//     fixpoint slot since the overlay already resolves them in one pass).
+//
+// Two call sites (mirrors recordGlobalRep's early landing spot, then widens
+// once call-site param facts exist):
+//   1. Here in plan(), alongside inferModuleLetTypes — before narrowSignatures
+//      reads `ctx.scope.globalValTypes` for its own callerValTypes seed, and
+//      early enough that a freshly-proven NUMBER global still reaches
+//      inferModuleIntGlobals's i32 candidacy check.
+//   2. Again after narrowSignatures (plan/index.js) — `cur = s` needs `s`'s
+//      resolved param fact (`programFacts.paramReps`), which narrowSignatures'
+//      call-site fixpoint hasn't produced yet on pass 1. Idempotent: candidates
+//      already claimed (by recordGlobalRep, inferModuleLetTypes, or pass 1 of
+//      this same function) are skipped, so the rerun only picks up new proofs.
+const GLOBAL_VT_CONFLICT = Symbol('global-vt-conflict')
+
+// Exported mutable global — the wasm export lets the host assign it any value
+// through `instance.exports.name.value = …`, a write no AST scan can see.
+// `mut: false` (const) globals export as immutable wasm globals — the JS API
+// throws on `.value =`, so a const export is safe regardless of `ctx.func.exports`.
+const isHostWritableGlobal = (name) => {
+  const decl = ctx.scope.globals.get(name)
+  if (!decl?.mut) return false
+  for (const [exportName, val] of Object.entries(ctx.func.exports || {}))
+    if (val === name || (val === true && exportName === name)) return true
+  return false
+}
+
+const isNullishLit = (e) => e == null || e === 'undefined' || e === 'null'
+  || (Array.isArray(e) && e[0] == null && (e[1] === undefined || e[1] === null))
+
+// A destructuring-ASSIGNMENT target (`[a,b] = …` / `({a} = …)`) — prepare
+// desugars these to temp-based plain assigns before this pass ever runs (a
+// module-global candidate never actually reaches this shape in practice), but
+// a leaf write through one is a real mutation this scan doesn't classify, so
+// it must poison rather than silently pass through. `'[]'` here is the
+// pre-prepare pattern-or-index overload — length ≠ 3 rules out `recv[idx]`.
+const isAssignPatternNode = (n) =>
+  Array.isArray(n) && (n[0] === '[' || n[0] === '{}' || (n[0] === '[]' && n.length !== 3))
+
+export const inferModuleGlobalValTypes = (ast, paramReps) => {
+  if (!ctx.scope.userGlobals?.size) return
+
+  const candidates = new Set()
+  for (const name of ctx.scope.userGlobals) {
+    if (ctx.scope.globalValTypes?.get(name)) continue      // already proven (recordGlobalRep / inferModuleLetTypes / a prior call)
+    if (ctx.func.names?.has(name)) continue                 // a function binding, not a data global
+    if (isHostWritableGlobal(name)) continue                 // host can write any bit pattern — no claim possible
+    candidates.add(name)
+  }
+  if (!candidates.size) return
+
+  const fnames = ctx.func.names || new Set()
+  // defs keys: bare candidate names (module-wide — globally unique) and
+  // `@ret:<fn>` virtual nodes (also globally unique). No scope qualification
+  // needed — everything that ISN'T a candidate-to-candidate or fn-return alias
+  // resolves synchronously via valTypeOf under the per-scope overlay below.
+  const defs = new Map()
+  const getDef = (k) => { let d = defs.get(k); if (!d) defs.set(k, d = { vals: new Set(), refs: new Set(), bad: false }); return d }
+
+  const observe = (name, rhs) => {
+    const d = getDef(name)
+    if (d.bad) return
+    if (isNullishLit(rhs)) return                            // no evidence either way
+    if (typeof rhs === 'string' && candidates.has(rhs)) { d.refs.add(rhs); return }
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && fnames.has(rhs[1])) {
+      d.refs.add('@ret:' + rhs[1]); return
+    }
+    const vt = valTypeOf(rhs)
+    if (vt) d.vals.add(vt)
+    else d.bad = true                                         // unrecognized/computed shape — fail closed
+  }
+
+  // Positional (index-keyed) param names for a `=>` params node or a func.list
+  // signature — `null` slots (rest/destructured params) simply never resolve
+  // via paramReps, which is fine: they fall to the overlay's ordinary "unknown".
+  const paramNamesOf = (paramsNode) => extractParams(paramsNode).map(r => {
+    const c = classifyParam(r)
+    return (c.kind === 'plain' || c.kind === 'default') ? c.name : null
+  })
+
+  // Enter one function/arrow scope: `body` is walked for writes to `candidates`,
+  // with `paramNames` (positional) seeding the shadow set and — for a NAMED
+  // function with a resolved paramReps entry — the valType overlay too.
+  const walkFn = (body, paramNames, funcName) => {
+    // Shadow set: every name locally bound anywhere in THIS scope (params +
+    // every let/const/catch binding, at any nesting depth short of a nested
+    // `=>` — jz's own body-local analyses (findFreeVars, boxedCaptures) use
+    // the same "hoist let to function scope" convention, matching how prepare
+    // resolves same-name block shadowing). A write to a shadowed name is a
+    // local mutation, not a global one — it must not pollute the global's kind.
+    const bound = new Set()
+    for (const p of paramNames) if (p) bound.add(p)
+    const collectDecls = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === '=>') return
+      if (op === 'let' || op === 'const') collectParamNames(node.slice(1), bound)
+      if (op === 'catch' && typeof node[2] === 'string') bound.add(node[2])
+      for (let i = 1; i < node.length; i++) collectDecls(node[i])
+    }
+    collectDecls(body)
+
+    // Overlay: this scope's own let/const locals (analyzeBody — the same
+    // per-function local analysis emit.js seeds from) plus, for a named
+    // function once paramReps is populated (pass 2, post-narrowSignatures),
+    // its resolved param facts — so `cur = s` resolves `s` exactly like a
+    // local alias would, via the same valTypeOf call sites use everywhere else.
+    const overlay = new Map(analyzeBody(body).valTypes)
+    if (funcName && paramReps) {
+      const reps = paramReps.get(funcName)
+      if (reps) for (const [idx, r] of reps)
+        if (r.val && paramNames[idx] != null && !overlay.has(paramNames[idx])) overlay.set(paramNames[idx], r.val)
+    }
+
+    const prevOverlay = ctx.func.localValTypesOverlay
+    ctx.func.localValTypesOverlay = overlay
+    try { walkStmts(body, bound, funcName) }
+    finally { ctx.func.localValTypesOverlay = prevOverlay }
+  }
+
+  const walkStmts = (node, bound, retFn) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') { walkFn(node[2], paramNamesOf(node[1]), null); return }
+    if (op === 'return' && retFn && node[1] !== undefined) observe('@ret:' + retFn, node[1])
+    if (op === '=' && node.length >= 3) {
+      const t = node[1]
+      if (typeof t === 'string') { if (candidates.has(t) && !bound.has(t)) observe(t, node[2]) }
+      else if (isAssignPatternNode(t)) {
+        for (const n of collectParamNames([t])) if (candidates.has(n) && !bound.has(n)) getDef(n).bad = true
+      }
+    } else if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') {
+      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1]).bad = true   // compound-assign: can't classify the merged value — poison
+    } else if ((op === '++' || op === '--') && typeof node[1] === 'string') {
+      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1]).bad = true   // ToNumeric mutation — poison (recordGlobalRep/inferModuleIntGlobals own the numeric-counter case)
+    }
+    for (let i = 1; i < node.length; i++) walkStmts(node[i], bound, retFn)
+  }
+
+  // Module-init-time code (ast + every bundled dependency's top-level init)
+  // is recordGlobalRep's territory ALREADY — including control-flow-nested
+  // assignments, verified empirically (an `if`-nested depth-0 `cur = 5` DOES
+  // land in `ctx.scope.globalValTypes` via prepare's own depth-0 walk). This
+  // walk exists only to reach closures DEFINED at module-init time (an inline
+  // `.forEach(x => { g = x })` at top level) whose BODIES don't run until
+  // called — invisible to the depth-0 walk, visible to this one.
+  const findArrows = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === '=>') { walkFn(node[2], paramNamesOf(node[1]), null); return }
+    for (let i = 1; i < node.length; i++) findArrows(node[i])
+  }
+  findArrows(ast)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) findArrows(init)
+  for (const f of ctx.func.list) {
+    if (!f.body || f.raw) continue
+    walkFn(f.body, (f.sig?.params || []).map(p => p.name), f.name)
+  }
+
+  // Least-fixed-point over the alias graph (candidate↔candidate refs + `@ret:`
+  // fn-result refs). bottom = null (no evidence), top = CONFLICT; a concrete
+  // VAL.* is a fixed point once every def and ref agree.
+  const join = (a, b) => a === GLOBAL_VT_CONFLICT || b === GLOBAL_VT_CONFLICT ? GLOBAL_VT_CONFLICT
+    : a == null ? b : b == null ? a : a === b ? a : GLOBAL_VT_CONFLICT
+  const state = new Map()
+  const refState = (r) => defs.has(r) ? (state.get(r) ?? null) : (ctx.scope.globalValTypes?.get(r) ?? null)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [k, d] of defs) {
+      let cur = d.bad ? GLOBAL_VT_CONFLICT : null
+      if (cur !== GLOBAL_VT_CONFLICT) for (const v of d.vals) cur = join(cur, v)
+      if (cur !== GLOBAL_VT_CONFLICT) for (const r of d.refs) cur = join(cur, refState(r))
+      if (cur !== (state.get(k) ?? null)) { state.set(k, cur); changed = true }
+    }
+  }
+
+  for (const name of candidates) {
+    const vt = state.get(name)
+    if (!vt || vt === GLOBAL_VT_CONFLICT) continue
+    ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
   }
 }
 
