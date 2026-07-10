@@ -12,16 +12,17 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Eight 1-bit dithers of one BAS-RELIEF plate viewed from above under an orbiting light — a
-// three-sided pyramid standing on the surface, the face of Michelangelo's David embossed as a
-// medallion (heightmap from a 19th-century Brogi print), a cube sunk corner-down, a torus and a
-// full sphere sunk to their equators — cycling automatically (algorithm ~6s, subject per lap),
+// Eight 1-bit dithers of one BAS-RELIEF plate viewed from above under an orbiting light — every
+// subject a true heightfield casting a REAL swinging shadow (an O(N) horizon sweep): a
+// three-sided pyramid, sculpted lips embossed as a medallion (the classic atelier cast, pure
+// arithmetic), a cube standing flat whose long shadow tells its height, a torus and a full
+// sphere sunk to their equators — cycling automatically (algorithm ~6s, subject per lap),
 // or drag left↔right to pick the algorithm / hit the dice for a new subject. The pixelated
 // backing keeps the dot pattern crisp at any window size. Threshold (pure 50% B&W) is excluded
 // from the algorithm cycle — it carries no dither texture. Host mode m → kernel mode m+1.
 const NAMES = ["Random", "Ordered · Bayer 4×4", "Ordered · Bayer 8×8", "Clustered-dot halftone", "Floyd–Steinberg", "Jarvis–Judice–Ninke", "Atkinson"]
 const N = NAMES.length
-const SHAPES = ["Pyramid", "David", "Cube", "Torus", "Sphere"]
+const SHAPES = ["Pyramid", "Lips", "Cube", "Torus", "Sphere"]
 const NSHAPES = SHAPES.length
 const LAP = N * 6   // one full algorithm cycle, in seconds — the subject advances once per lap
 

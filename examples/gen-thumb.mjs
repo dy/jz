@@ -88,7 +88,7 @@ const FRAME_ARGS = {
   'domain-color': () => [0, 0.3, 0.2, 0, 0, 2.5],
   chladni:       () => [4, 5],          // (n,m) — an even mode: crisp flowing nodal figure, no both-odd centre cross
   hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
-  dithering:     () => [1.0, 5, 1],     // Floyd–Steinberg of the David plate — the star subject
+  dithering:     () => [2.2, 5, 1],     // Floyd–Steinberg of the lips relief — the star subject
   phyllotaxis:   () => [0, GOLDEN, 3600, 1.0],
   harmonograph:  () => [0, 0.06, 0.5, 0, 0, 1, 0.3],
   truchet:       () => [0, 30],
