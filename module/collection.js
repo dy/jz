@@ -2426,9 +2426,17 @@ export default (ctx) => {
     if (vt === VAL.SET) return typed(['block', ['result', 'f64'], bind, collKeysFromTemp(t, SET_ENTRY)], 'f64')
     if (vt === VAL.MAP) return typed(['block', ['result', 'f64'], bind, collEntriesFromTemp(t, MAP_ENTRY)], 'f64')
     // Unknown receiver: resolve the kind once at runtime (loop-invariant).
-    inc('__ptr_type')
+    // ES: for-of / spread over null/undefined is a TypeError ("x is not
+    // iterable") — throw, per spec. The silent zero-iteration this replaces
+    // masked two real self-host miscompiles (a folded undefined-guard and a
+    // never-armed matchAll swallowed their wrong undefineds into empty loops)
+    // before they were caught. Known-vt receivers skip the check entirely.
+    ctx.runtime.throws = true
+    inc('__ptr_type', '__is_nullish')
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'], bind,
+      ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
       ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.SET]],
         ['then', collKeysFromTemp(t, SET_ENTRY)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],

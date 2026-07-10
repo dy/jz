@@ -52,6 +52,7 @@ const TESTS = [
   'never-grown',
   'bool-identity',
   'hoist-loop-global',
+  'iteration',
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',
