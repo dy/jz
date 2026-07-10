@@ -8,7 +8,7 @@ import { VAL, lookupValType, repOf } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { extractParams, classifyParam } from '../ast.js'
 import { staticObjectProps } from '../static.js'
-import { intExprChecker, typedElemCtor } from '../type.js'
+import { intLevelChecker, typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { analyzeBody } from './analyze.js'
 
@@ -803,24 +803,33 @@ export function applySlotWriteHazards(hz, poison, opts) {
  *  (toNumF64 / floor elision / intIndexIR) reads at EMIT time, after this. */
 export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (!ctx.schema?.register) return
-  const slotIntCertain = ctx.schema.slotIntCertain
-  if (opts?.paramReps) slotIntCertain.clear()
+  // Working state is the LEVEL map (0 | 1 integral | 2 strict-int32 — see
+  // type.js's lattice); the boolean projections slotIntCertain (≥1) and
+  // slotI32Certain (≥2) are published for consumers after the rounds settle.
+  const slotIntLevels = ctx.schema.slotIntLevels
+  if (opts?.paramReps) slotIntLevels.clear()
   const hazards = collectSlotWriteHazards(ast, opts)
   let flipped = false
   const poisonSlot = (sid, idx) => {
-    let arr = slotIntCertain.get(sid)
-    if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
+    let arr = slotIntLevels.get(sid)
+    if (!arr) { arr = []; slotIntLevels.set(sid, arr) }
     while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] !== false) flipped = true
-    arr[idx] = false
+    if (arr[idx] !== 0) flipped = true
+    arr[idx] = 0
   }
-  const observeSlot = (sid, idx, isInt) => {
-    let arr = slotIntCertain.get(sid)
-    if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
+  const observeSlot = (sid, idx, level) => {
+    let arr = slotIntLevels.get(sid)
+    if (!arr) { arr = []; slotIntLevels.set(sid, arr) }
     while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === false) return
-    if (!isInt) { arr[idx] = false; flipped = true; return }
-    if (arr[idx] === undefined) arr[idx] = true
+    const cur = arr[idx]
+    if (cur === 0) return
+    const next = cur === undefined ? level : Math.min(cur, level)
+    if (next !== cur) {
+      arr[idx] = next
+      // Any drop below the optimistic top contradicts reads already resolved
+      // through it this round — re-derive (mirrors the old true→false flip).
+      if (next < (cur ?? 2)) flipped = true
+    }
   }
 
   // OPTIMISTIC slot-read resolver — the self-referential immutable-update
@@ -840,12 +849,12 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     if (ctx.schema.poisoned?.has(obj)) return undefined
     return curSids?.get(obj) ?? repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
   }
-  const slotIntOf = (obj, prop) => {
+  const slotLevelOf = (obj, prop) => {
     const sid = sidOfName(obj)
     if (sid == null) return null
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return null
-    return slotIntCertain.get(sid)?.[idx] !== false
+    return slotIntLevels.get(sid)?.[idx] ?? 2   // unobserved = optimistic top
   }
 
   // LATE mode: body-local element-alias sids (collectBodyElemSids — shared
@@ -857,12 +866,12 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // later poisoning flows through); after any flip the LOCAL binding fixpoints
   // baked into those checkers may be stale-optimistic, so rebuild fresh.
   const bodyIntCertainOf = (body, fresh) => {
-    if (fresh) return intExprChecker(body, slotIntOf)
+    if (fresh) return intLevelChecker(body, slotLevelOf)
     if (body != null && typeof body === 'object') {
       const hit = _bodyIntCertainCache.get(body)
       if (hit?.gen === _programFactsGen) return hit.isInt
     }
-    const isInt = intExprChecker(body, slotIntOf)
+    const isInt = intLevelChecker(body, slotLevelOf)
     if (body != null && typeof body === 'object')
       _bodyIntCertainCache.set(body, { gen: _programFactsGen, isInt })
     return isInt
@@ -924,10 +933,22 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // checkers (both the rounds below and any same-gen cache reuse later), so
   // drop the cache and re-derive until the census is stable.
   let rounds = 0
-  while (flipped && ++rounds <= 32) {
+  while (flipped && ++rounds <= 64) {
     _bodyIntCertainCache = new WeakMap()
     flipped = false
     sweep(true)
+  }
+  // Cap exhaustion (never expected — each slot descends ≤2 levels): the state
+  // may still carry stale optimism, so fail closed for the whole program.
+  if (flipped) for (const arr of slotIntLevels.values()) arr.fill(0)
+  // Publish the consumer projections: intCertain = integral (≥1) for the
+  // ToNumber-skip / floor-elision family, i32Certain = strict (=2) for raw
+  // i32 slot loads and i32 local typing.
+  const slotIntCertain = ctx.schema.slotIntCertain, slotI32Certain = ctx.schema.slotI32Certain
+  slotIntCertain.clear(); slotI32Certain.clear()
+  for (const [sid, arr] of slotIntLevels) {
+    slotIntCertain.set(sid, arr.map(l => l === undefined ? undefined : l >= 1))
+    slotI32Certain.set(sid, arr.map(l => l === 2))
   }
 }
 

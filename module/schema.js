@@ -212,4 +212,22 @@ export function initSchema(ctx) {
     if (idx < 0) return false
     return ctx.schema.slotIntCertain.get(id)?.[idx] === true
   }
+
+  /** Strict-int32 sibling of slotIntCertainAt: every write is exactly-int32
+   *  and never -0, so `i32.trunc_sat_f64_s(f64.load(slot))` is value-exact.
+   *  Feeds raw i32 slot loads + i32 local typing — a wrong answer here is a
+   *  wrong VALUE (saturation), so it shares every fail-closed belt. */
+  ctx.schema.slotI32CertainAt = (varName, prop) => {
+    const id = ctx.schema.idOf(varName)
+    if (id == null || slotHazarded(id, prop)) return false
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    if (idx < 0) return false
+    return ctx.schema.slotI32Certain.get(id)?.[idx] === true
+  }
+  ctx.schema.slotI32CertainBySid = (id, prop) => {
+    if (id == null || slotHazarded(id, prop)) return false
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    if (idx == null || idx < 0) return false
+    return ctx.schema.slotI32Certain.get(id)?.[idx] === true
+  }
 }

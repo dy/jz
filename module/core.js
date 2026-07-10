@@ -909,7 +909,7 @@ export default (ctx) => {
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
   // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
   // (read on the AST `.prop` node), not via tagging this IR node.
-  function emitSchemaSlotRead(baseExpr, idx) {
+  function emitSchemaSlotRead(baseExpr, idx, i32Certain) {
     // An unboxed proven-non-ARRAY pointer (a structInline element cell, a narrowed local)
     // reaches ptrOffsetIR raw so it returns the offset directly — no `__ptr_offset` call.
     // Pre-boxing via asF64 strips ptrKind and forces every field read onto the call path
@@ -918,7 +918,14 @@ export default (ctx) => {
     const base = (baseExpr?.ptrKind != null && baseExpr.ptrKind !== VAL.ARRAY)
       ? baseExpr
       : (baseExpr?.type === 'f64' ? baseExpr : asF64(baseExpr))
-    return typed(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'f64')
+    const load = ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx)
+    // Strict-int32 slot (ctx.schema.slotI32CertainAt — every censused write is
+    // exactly-int32, never -0): land the value directly in i32. trunc_sat of
+    // such an f64 is a value-exact round-trip, and every int consumer skips
+    // the ToInt32 guard/convert battery the f64 route pays (the immutable
+    // kernel's per-field cost); f64 consumers convert back at one op.
+    if (i32Certain) return typed(['i32.trunc_sat_f64_s', load], 'i32')
+    return typed(load, 'f64')
   }
 
   // Top 32 bits of the i64 NaN-box carrier: NAN_PREFIX | PTR tag (TAG_SHIFT=47)
@@ -1080,7 +1087,7 @@ export default (ctx) => {
     if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
       const sch = ctx.schema.list[va.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return emitSchemaSlotRead(va, si)
+      if (si >= 0) return emitSchemaSlotRead(va, si, ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop))
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
@@ -1095,7 +1102,8 @@ export default (ctx) => {
       }
     }
     const key = asI64(emit(['str', prop]))
-    if (schemaIdx >= 0) return emitSchemaSlotRead(va, schemaIdx)
+    if (schemaIdx >= 0) return emitSchemaSlotRead(va, schemaIdx,
+      typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop))
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
@@ -1196,7 +1204,7 @@ export default (ctx) => {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', inner]]], 'f64')
       }
       const idx = ctx.schema.slotOf(obj, prop)
-      if (idx >= 0) return emitSchemaSlotRead(emit(obj), idx)
+      if (idx >= 0) return emitSchemaSlotRead(emit(obj), idx, ctx.schema.slotI32CertainAt?.(obj, prop))
     }
 
     if (prop === 'length') {

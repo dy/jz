@@ -332,6 +332,11 @@ export function reset(proto, globals, bridge) {
                                 //   never being WRITTEN program-wide) so `plan.twRe`
                                 //   keeps its concrete Float64Array kind through
                                 //   field provenance (bench: provenance, fftplan).
+    slotIntLevels: new Map(),   // schemaId → Array<0|1|2 | undefined> — the int
+                                //   census's WORKING state (type.js lattice:
+                                //   1 integral, 2 strict-int32). Consumers read
+                                //   the two projections below, published when
+                                //   `analyzeSchemaSlotIntCertain`'s rounds settle.
     slotIntCertain: new Map(),  // schemaId → Array<boolean | undefined>
                                 //   undefined: no write observed, true: all observed
                                 //   writes are integer-shaped, false: poisoned by at
@@ -341,6 +346,13 @@ export function reset(proto, globals, bridge) {
                                 //   writes). Read by `ctx.schema.slotIntCertainAt`
                                 //   so Math.floor/toNumF64/intIndexIR consumers fire
                                 //   on `.prop` reads of provably-integer slots.
+    slotI32Certain: new Map(),  // schemaId → Array<boolean> — the strict (=2)
+                                //   projection: every write is exactly-int32 and
+                                //   never -0, so `i32.trunc_sat_f64_s` of the slot's
+                                //   f64 is an exact round-trip. Read by
+                                //   `ctx.schema.slotI32CertainAt` → raw i32 slot
+                                //   loads (module/core.js) + i32 local typing
+                                //   (type.js exprType '.').
     externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
                                 //   written by machinery the write censuses never
                                 //   see: the JSON const emitter / shaped runtime

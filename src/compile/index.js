@@ -551,6 +551,17 @@ function analyzeFuncForEmit(func, programFacts) {
     .filter(p => !ctx.func.localReps?.get(p.name)?.val)
     .map(p => p.name)
   inferLocals(body, candidates)
+  // analyzeBody's locals slice (line above bodyFacts) ran BEFORE inferLocals
+  // bound elem-alias schema ids (`const p = ps[i]` → p.schemaId via
+  // analyzeValTypes). With strict-int32 slots in the program, re-derive the
+  // widths so exprType's slotI32CertainAt consult resolves through p — then
+  // `const x = hitX ? p.x : nx` declares i32 and the raw i32 slot load lands
+  // without an f64 round-trip. Gated: programs without strict slots skip the
+  // extra walk.
+  if (block && ctx.schema.slotI32Certain?.size) {
+    invalidateLocalsCache(body)
+    ctx.func.locals = analyzeBody(body).locals
+  }
   if (block) {
     boxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.

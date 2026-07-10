@@ -20,6 +20,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { ctx } from '../src/ctx.js'
 import { run } from './util.js'
 
 const LEVELS = [0, 2]
@@ -98,6 +99,77 @@ export let main = () => {
   return Math.floor(o.x) + p.x
 }`
   for (const optimize of LEVELS) is(run(src, { optimize }).main(), 2, `O${optimize}: floor(1.5) NOT elided`)
+})
+
+test('slot-hazards: strict-i32 lattice range edges stay f64 (level 1, not 2)', () => {
+  // A slot fed by integral-but-not-int32 producers must NOT take the raw i32
+  // load route: 3e9 exceeds int32 (i32.trunc_sat would saturate to 2^31-1),
+  // `>>> 0` of a negative is a uint32 above 2^31. Value pins prove no
+  // saturation; the census check pins the lattice verdicts themselves —
+  // including `%` and unary minus, the -0-capable producers (their runtime -0
+  // is already normalized upstream by jz's int arithmetic lowering, so only
+  // the level verdict is observable here).
+  // Records flow through an array so the literal survives scalarization and
+  // the schema is a real runtime shape (a fully-SROA'd literal has no slots).
+  const src = `
+let five = 5
+const rows = []
+for (let i = 0; i < 4; i++)
+  rows.push({ big: 3000000000 - i, u: (-5 | 0) >>> 0, m: (0 - five) % 5, n: -(five - 5), s: five & 7 })
+export let main = () => {
+  let out = ''
+  for (let i = 0; i < rows.length; i++) {
+    const o = rows[i]
+    if (i === 0) out = (o.big + 1) + ',' + o.u + ',' + o.s
+  }
+  return out
+}`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), '3000000001,4294967291,5', `O${optimize}: no i32 saturation`)
+  // Level verdicts via the compiler's schema state: only the bitwise slot is strict.
+  jz.compile(src, { optimize: 2 })
+  const arr = [...ctx.schema.slotI32Certain.values()].find(a => a.length === 5)
+  ok(arr, 'census ran on the 5-slot schema')
+  is(arr.join(','), 'false,false,false,false,true', 'only the & slot is strict-i32')
+})
+
+test('slot-hazards: strict-i32 slots load raw i32 on the immutable kernel', () => {
+  // The immutable-update kernel's four slots are strict (bitwise/int32-literal
+  // writes through the optimistic fixpoint): every field read lands as
+  // `i32.trunc_sat_f64_s(load)` with NO ToInt32 NaN-guard select left in the
+  // inner loop, and the ternary locals declare i32.
+  const src = `
+const step = (ps) => {
+  let sum = 0
+  for (let it = 0; it < 8; it++)
+    for (let i = 0; i < 64; i++) {
+      const p = ps[i]
+      const nx = (p.x + p.vx) | 0
+      const hitX = nx < 0 || nx > 1023
+      const x = hitX ? p.x : nx, vx = hitX ? -p.vx | 0 : p.vx
+      ps[i] = { x: x, vx: vx }
+      sum = (sum + x) | 0
+    }
+  return sum
+}
+const init = () => {
+  const ps = []
+  let s = 0x1234abcd | 0
+  for (let i = 0; i < 64; i++) {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    const vx = ((s >>> 4) & 15) - 8
+    ps.push({ x: (s >>> 12) & 1023, vx: (vx === 0 ? 1 : vx) | 0 })
+  }
+  return ps
+}
+export let main = () => step(init())`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
+  ok(/\(local \$x i32\)/.test(stepBody), 'ternary local x declared i32')
+  ok(/i32.trunc_sat_f64_s\s*\(f64.load/.test(stepBody.replace(/\n\s*/g, ' ')), 'slot reads land raw i32')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'bit-matches plain JS')
 })
 
 test('slot-hazards: shaped-parser sids keep sample kinds (json fast path intact)', () => {

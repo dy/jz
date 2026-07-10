@@ -451,6 +451,11 @@ export function exprType(expr, locals) {
   // The membership lives in one place — `propValType` (src/kind-traits.js).
   if (op === '.') {
     if (typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER) return 'i32'
+    // Strict-int32 schema slot (write census): the read emits as a raw i32
+    // (emitSchemaSlotRead's trunc route), so the static local-slot classifier
+    // must agree — `const x = hitX ? p.x : nx` then declares x i32 instead of
+    // f64, and the whole ternary/arith chain stays in int registers.
+    if (typeof args[0] === 'string' && ctx.schema?.slotI32CertainAt?.(args[0], args[1])) return 'i32'
     return 'f64'
   }
   // Comparisons, logical-not, and unsigned shift always yield an i32 — a boolean,
@@ -598,92 +603,137 @@ function collectIntDefs(body, capturedNames) {
   return defs
 }
 
-function makeIsIntExpr(intCertain, slotIntOf) {
-  return function isIntExpr(expr) {
-    if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
-    if (typeof expr === 'boolean') return true
-    if (typeof expr === 'string') return intCertain.get(expr) === true
-    if (!Array.isArray(expr)) return false
+// The integer lattice is 3-level:
+//   0 — not provably integer-valued
+//   1 — integral, but unbounded magnitude and/or -0-capable (`+ - *` closure,
+//       floor/ceil/round/trunc, `>>>` — a uint32 can exceed int32, `%`/unary
+//       minus — -0 producers)
+//   2 — STRICT int32: the value is exactly representable as a signed 32-bit
+//       int and is never -0 — i.e. `i32.trunc_sat_f64_s` of its f64 form is
+//       an exact round-trip. Producers: int32-range literals, booleans,
+//       comparisons, the signed bitwise ops (`| & ^ ~ << >>`), Math.imul /
+//       clz32, and meets of those through ?:/&&/||.
+// Level ≥1 is the historical `isIntExpr` (ToNumber-skip / floor-elision
+// consumers); level 2 feeds raw-i32 slot loads and i32 local typing, where
+// saturation or a lost -0 would be a WRONG VALUE, not a lost optimization.
+const INT_MATH_FNS_I32 = new Set(['imul', 'clz32'])
+const _numLevel = (v) => typeof v === 'boolean' ? 2
+  : typeof v !== 'number' || !Number.isInteger(v) || Object.is(v, -0) ? 0
+  : v >= -2147483648 && v <= 2147483647 ? 2 : 1
+
+function makeIntLevelExpr(intLevels, slotLevelOf) {
+  return function levelOf(expr) {
+    if (typeof expr === 'number' || typeof expr === 'boolean') return _numLevel(expr)
+    if (typeof expr === 'string') return intLevels.get(expr) ?? 0
+    if (!Array.isArray(expr)) return 0
     const sv = staticValue(expr)
-    if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return false
+    if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 0
     const [op, ...args] = expr
-    if (op == null) {
-      const v = args[0]
-      if (typeof v === 'number') return Number.isInteger(v) && !Object.is(v, -0)
-      if (typeof v === 'boolean') return true
-      return false
-    }
-    if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return true
+    if (op == null) return _numLevel(args[0])
+    if (op === '>>>') return 1                      // uint32: up to 2^32-1, exceeds int32
+    if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return 2
     if (op === '.') {
       // Slot-census resolver (analyzeSchemaSlotIntCertain's optimistic
-      // fixpoint): a censused slot answers definitively — including FALSE
+      // fixpoint): a censused slot answers definitively — including 0
       // (a known non-int write beats the val-kind fallback below).
-      if (slotIntOf && typeof args[0] === 'string') {
-        const r = slotIntOf(args[0], args[1])
+      if (slotLevelOf && typeof args[0] === 'string') {
+        const r = slotLevelOf(args[0], args[1])
         if (r != null) return r
       }
-      return typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER
+      return typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER ? 1 : 0
     }
     if (INT_CLOSED_OPS.has(op)) {
-      const a = isIntExpr(args[0])
-      const b = args[1] != null ? isIntExpr(args[1]) : a
-      return a && b
+      const a = levelOf(args[0])
+      const b = args[1] != null ? levelOf(args[1]) : a
+      return a && b ? 1 : 0                          // integral-closed, range-open
     }
     // `a % b` is integer-valued only when b is a provably-nonzero integer
     // constant — `a % 0` is NaN, which is not an integer. A runtime or zero
     // divisor leaves the expression non-int (f64), so result-narrowing won't
     // truncate a NaN remainder to 0 and floor-elision won't drop a NaN.
+    // Never strict: `-5 % 5` is -0.
     if (op === '%') {
       const bv = staticValue(args[1])
-      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && isIntExpr(args[0])
+      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(args[0]) ? 1 : 0
     }
-    if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
-    if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
-    if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
+    if (op === 'u-') return levelOf(args[0]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
+    if (op === 'u+') return levelOf(args[0])         // ToNumber identity on an int
+    if (op === '?:') return Math.min(levelOf(args[1]), levelOf(args[2]))
+    if (op === '&&' || op === '||') return Math.min(levelOf(args[0]), levelOf(args[1]))
     if (op === '()') {
       const c = args[0]
-      if (typeof c === 'string' && c.startsWith('math.') && INT_MATH_FNS.has(c.slice(5))) return true
-      if (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && INT_MATH_FNS.has(c[2])) return true
+      const fn = typeof c === 'string' && c.startsWith('math.') ? c.slice(5)
+        : Array.isArray(c) && c[0] === '.' && c[1] === 'Math' ? c[2] : null
+      if (fn && INT_MATH_FNS.has(fn)) return INT_MATH_FNS_I32.has(fn) ? 2 : 1
     }
-    return false
+    return 0
   }
 }
+
+// Adapt a boolean-or-level slot resolver to the level contract (a boolean
+// `true` caps at level 1 — weak evidence stays weak).
+const _slotLevelAdapter = (slotIntOf) => slotIntOf
+  ? (obj, prop) => { const r = slotIntOf(obj, prop); return r == null ? null : r === true ? 1 : r === false ? 0 : r }
+  : null
 
 /** Monotone fixpoint over binding defs in `body`. Map name → intCertain.
  *  `capturedNames` (optional): also fold in defs of these specific names found
  *  inside nested arrow bodies — see collectIntDefs. Only src/compile/index.js's
  *  boxed-cell narrowing passes this; every other caller keeps the default
  *  own-scope-only behavior unchanged. */
-export function intCertainMap(body, capturedNames, slotIntOf) {
+/** Monotone-down level fixpoint over binding defs in `body`:
+ *  Map name → 0|1|2 (see the lattice above `makeIntLevelExpr`).
+ *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads. */
+export function intLevelMap(body, capturedNames, slotLevelOf) {
   const defs = collectIntDefs(body, capturedNames)
   if (defs.size === 0) return new Map()
-  const intCertain = new Map()
-  for (const name of defs.keys()) intCertain.set(name, true)
+  const levels = new Map()
+  for (const name of defs.keys()) levels.set(name, 2)
   // A parameter has no def in `body` — its entry value is whatever the caller
   // passed. For an f64 param (JS-number ABI) that is an arbitrary real, so a
   // reassigned f64 param is NOT integer-certain: a self/int reassignment
   // (`p = p`, `p = p + 1`) would otherwise vacuously satisfy the optimistic
-  // fixpoint, since `isIntExpr(p)` reads p's own provisional `true`. Seed f64
-  // params false so the unknown entry value grounds the lattice; i32-narrowed
-  // params (integer ABI) stay certain. Seeding false is always conservative —
+  // fixpoint, since `levelOf(p)` reads p's own provisional 2. Seed f64
+  // params 0 so the unknown entry value grounds the lattice; i32-narrowed
+  // params (integer ABI) stay strict. Seeding 0 is always conservative —
   // at worst it re-applies a floor/round that was a runtime no-op — so a
   // mismatched ctx.func.current (whole-program intExprChecker callers) can only
   // forgo an optimization, never miscompile.
   for (const p of ctx.func.current?.params || [])
-    if (p.type !== 'i32' && intCertain.has(p.name)) intCertain.set(p.name, false)
-  const isIntExpr = makeIsIntExpr(intCertain, slotIntOf)
+    if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
+  const levelOf = makeIntLevelExpr(levels, slotLevelOf)
   let changed = true
   while (changed) {
     changed = false
     for (const [name, rhsList] of defs) {
-      if (!intCertain.get(name)) continue
-      if (!rhsList.every(isIntExpr)) { intCertain.set(name, false); changed = true }
+      const cur = levels.get(name)
+      if (!cur) continue
+      let next = cur
+      for (const rhs of rhsList) { const l = levelOf(rhs); if (l < next) next = l; if (!next) break }
+      if (next !== cur) { levels.set(name, next); changed = true }
     }
   }
-  return intCertain
+  return levels
+}
+
+/** Monotone fixpoint over binding defs in `body`. Map name → intCertain
+ *  (boolean — the level ≥1 projection; see `intLevelMap` for the raw levels). */
+export function intCertainMap(body, capturedNames, slotIntOf) {
+  const levels = intLevelMap(body, capturedNames, _slotLevelAdapter(slotIntOf))
+  const out = new Map()
+  for (const [name, l] of levels) out.set(name, l >= 1)
+  return out
 }
 
 /** Returns `expr => boolean` — integer-shaped expressions in `body`. */
 export function intExprChecker(body, slotIntOf) {
-  return makeIsIntExpr(intCertainMap(body, undefined, slotIntOf), slotIntOf)
+  const slotLevelOf = _slotLevelAdapter(slotIntOf)
+  const levelOf = makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf), slotLevelOf)
+  return (expr) => levelOf(expr) >= 1
+}
+
+/** Returns `expr => 0|1|2` over `body`'s level fixpoint — the strict-i32
+ *  sibling of `intExprChecker` (slot census / raw-i32 consumers). */
+export function intLevelChecker(body, slotLevelOf) {
+  return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf), slotLevelOf)
 }

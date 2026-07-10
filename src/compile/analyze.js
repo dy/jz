@@ -985,9 +985,21 @@ export function analyzeValTypes(body) {
   }
 }
 
-/** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js. */
+/** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js.
+ *  Threads the settled slot census as the `.prop`-read resolver — without it a
+ *  binding built from an int-certain slot (`const x = hitX ? p.x : nx`) stayed
+ *  uncertain and every consumer re-paid the ToNumber guard. */
 export function analyzeIntCertain(body) {
-  for (const [name, intC] of intCertainMap(body)) {
+  const slotIntOf = ctx.schema?.slotIntCertainAt
+    ? (obj, prop) => {
+      const id = ctx.schema.idOf?.(obj)
+      if (id == null) return null
+      const idx = ctx.schema.list[id]?.indexOf(prop)
+      if (idx == null || idx < 0) return null
+      return ctx.schema.slotIntCertainAt(obj, prop)
+    }
+    : undefined
+  for (const [name, intC] of intCertainMap(body, undefined, slotIntOf)) {
     if (intC) updateRep(name, { intCertain: true })
   }
 }
