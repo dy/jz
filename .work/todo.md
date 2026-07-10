@@ -572,11 +572,46 @@
       the L0/L1 identity, so the divergence is inside watr's optimizer running
       under the kernel; watr's own source carries a prior self-host workaround
       note in exactly that region (optimize.js ~4442 "KEEP THIS EXTRACTED").
-      NEXT: instrument watr's inlineOnce/inline decision inputs (candidate
-      sets, size counts) through the kernel boundary, diff host-vs-kernel.
-      kern-seq durable-heal OOB is NOT this bug (still reproduces post-fix;
-      focused agent hunting it — trap in the zombie/heal machinery on warm
-      instances after compiling `const g = m.get('a'); g.mut`).
+      INSTRUMENTED (same session, patches reverted — recipe: temporary
+      `export const _jzInlDiag = []` + pushes in node_modules/watr/src/
+      optimize.js at inlineOnce's candidate loop / mayInline gate /
+      normalize's fill loop; scripts/self.js compileDiag imports it from
+      'watr/optimize', runs optimizeTail, and stuffs `diag.inl`; rebuild
+      dist, run compileDiag host+kernel, diff). FINDINGS, razor-sharp:
+      (1) pre-watr L2 text is byte-IDENTICAL ({level:2,watr:false}) — the
+      divergence is 100% inside watr-in-kernel; (2) kernel NEVER CALLS
+      inlineOnce — the `(opts.inlineOnce || opts.inline) && mayInline(ast)`
+      gate fails with opts.inlineOnce = UNDEFINED (host: true); mayInline
+      itself agrees host/kernel; (3) inside normalize() the fill-write
+      `m[p[0]] = p[2]` LANDS (typeof m.inlineOnce === 'boolean' right
+      after the loop, fill counts identical 43/35) but the SAME object
+      read after `return m` has inlineOnce UNDEFINED, and Object.keys
+      counts 51 in-kernel vs 45 host — SIX DUPLICATE KEYS: insert-time vs
+      probe-time hash/probe divergence in the dyn-prop sidecar (dup
+      entries; different probes hit different copies). (4) a host-side
+      REPLICA of the exact normalize shape (45-key spread-built dict, 35
+      static-table fill-writes, named reads before/after return) compiles
+      CORRECT at both levels — the miscompile needs the REAL module
+      context; prime remaining suspect: the real PASSES table's elements
+      are [string, FUNCTION-REF, bool, string] tuples (closure boxes in a
+      const array — the constFnArrays/fnElements machinery may retag or
+      relocate the table) and/or the tiered $__str_hash hcache-cell fast
+      path (394ab5b) computing a different hash for the interned pass-name
+      strings at re-probe time than genSlotUpsert stored at insert.
+      Function-refs-in-table replica ALSO clean host-side — the miscompile
+      needs the full 100-module bundle context (the narrow/spec layout-
+      sensitive class). NEXT: bisect the KERNEL BUILD — rebuild dist with
+      the tiered $__str_hash inline (394ab5b) disabled in genSlotUpsert and
+      re-run the GATE probe; if the dupes vanish, the insert/probe hash
+      divergence is the tiered fast path mis-hashing interned pass-name
+      strings under the kernel. Note the shape kinship: duplicate sidecar
+      dict entries = the same dict probe/hash layer kern-seq's durable-heal
+      OOB traps in ("hashing a dangling key") — watch the heal agent's
+      root for a shared cause.
+      kern-seq durable-heal OOB is NOT the L2 byte-drift bug itself (still
+      reproduces post-bool-fix; focused agent hunting it — trap in the
+      zombie/heal machinery on warm instances after compiling
+      `const g = m.get('a'); g.mut`).
     - for-of over nullish: DECIDED + LANDED (8f7b380) — throws per ES
       (catchable $__jz_err), guard only in __iter_arr's unknown-receiver arm
       (typed receivers pay nothing). Pinned in test/iteration.js.
