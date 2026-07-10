@@ -145,3 +145,19 @@ export function compileWat(source, strict, optJSON) {
   return watrPrint(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
 
+/**
+ * Self-host divergence diagnostics: run the same pipeline with the internal
+ * diagnostic sink armed (resolveIncludes + assemble's global-snapshot sweep
+ * record what they resolved) and return the records as JSON. Running this
+ * HOST-side and KERNEL-side on the same input and diffing the two JSON
+ * strings names the first divergent fact behind a host/kernel byte drift —
+ * the archaeology channel for the parity work (.work/todo.md, jz.wasm item).
+ * @returns {string} JSON of { resolve: [...], sweep: {...} }
+ */
+export function compileDiag(source, strict, optJSON) {
+  setupSelf(strict, optJSON)
+  ctx.core.diagSink = {}
+  compileAst(prepare(lower(source, strict)))
+  return JSON.stringify(ctx.core.diagSink)
+}
+

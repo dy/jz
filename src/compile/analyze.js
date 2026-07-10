@@ -754,18 +754,42 @@ export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') _bodyFactsCache.delete(body)
 }
 
-// Can this RHS expression produce null/undefined? A direct nullish literal
-// (`[null, null]` covers both null and undefined), or a `?:`/`&&`/`||` with a
-// nullish branch. Drives the `nullable` rep flag so `x === null` on a binding
-// that was ever assigned null isn't constant-folded to false (emit.js
-// strictSentinel). Conservative — opaque sources (calls, member reads) aren't
-// flagged; the fold they'd suppress is rare and a runtime nullish check is cheap.
+// Can this RHS expression produce null/undefined? FAIL-CLOSED: anything not
+// STRUCTURALLY provable non-nullish counts nullable. The flag's only effect
+// is suppressing emit.js's strictSentinel constant fold (the comparison pays
+// a cheap runtime nullish check instead) plus capture propagation — while a
+// wrong non-nullable verdict FOLDS AWAY a real miss guard. The old shape
+// list (nullish literals + ternary arms only) was sound while opaque sources
+// carried no value kind (no kind ⇒ no fold); the Map/element value-kind
+// inference broke that assumption: the self-host kernel's own
+// `autoCache.get(name) !== undefined` cache probe folded to TRUE (the get's
+// rep carried the map's value kind, non-nullable) and every autoDepsOf call
+// returned the miss sentinel unconditionally — the byte-parity root.
+const NEVER_NULLISH_OPS = new Set([
+  'str', '//', '{}', '[', '=>', 'new', 'bool',
+  '+', '-', '*', '/', '%', '**', '|', '&', '^', '~', '<<', '>>', '>>>',
+  '==', '!=', '===', '!==', '<', '>', '<=', '>=', '!', 'u-', 'u+',
+  'typeof', 'in', 'instanceof', '++', '--',
+])
 function mayBeNullish(n) {
-  if (!Array.isArray(n)) return false
-  if (n.length === 2 && n[0] == null && n[1] == null) return true
-  if (n[0] === '?' || n[0] === '?:') return mayBeNullish(n[2]) || mayBeNullish(n[3])
-  if (n[0] === '&&' || n[0] === '||') return mayBeNullish(n[1]) || mayBeNullish(n[2])
-  return false
+  if (typeof n === 'number' || typeof n === 'boolean') return false
+  // name read: inherit the source binding's settled flag (best-effort — an
+  // unsettled rep reads false, matching the old behavior for plain aliases)
+  if (typeof n === 'string') return !!repOf(n)?.nullable
+  if (!Array.isArray(n)) return true
+  const op = n[0]
+  if (op == null) return n[1] == null                    // [null, v] literal value
+  if (op === '?' || op === '?:') return mayBeNullish(n[2]) || mayBeNullish(n[3])
+  // `a && b` yields a (when falsy — possibly nullish) or b; `a || b` / `a ?? b`
+  // yield a only when truthy/non-nullish, so only b's nullability matters.
+  if (op === '&&') return mayBeNullish(n[1]) || mayBeNullish(n[2])
+  if (op === '||' || op === '??') return mayBeNullish(n[2])
+  if (op === '=') return mayBeNullish(n[2])              // assignment expression yields its rhs
+  if (op === ',') return mayBeNullish(n[n.length - 1])
+  if (typeof op === 'string' && (NEVER_NULLISH_OPS.has(op) || op.startsWith('new.'))) return false
+  // calls (incl. `.get()` misses), member/element reads, optional chains,
+  // and anything unrecognized: missable — fail closed.
+  return true
 }
 
 /**

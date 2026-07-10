@@ -172,6 +172,33 @@ export let main = () => step(init())`
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'bit-matches plain JS')
 })
 
+test('slot-hazards: miss-capable reads keep their undefined guards (no sentinel fold)', () => {
+  // emit's strictSentinel fold trusts kind + non-nullable; the value-kind
+  // inference types `.get()` results / element reads from container kinds, so
+  // mayBeNullish must flag them (fail-closed) or the guard folds away — the
+  // self-host kernel's own `autoCache.get(name) !== undefined` cache probe
+  // folded TRUE and every call returned the miss sentinel (the byte-parity
+  // root). The dedupe-cache idiom pins it end to end.
+  const src = `
+const cache = new Map()
+const compute = (k) => k * 2 + 1
+let computes = 0
+export let memo = (k) => {
+  let v = cache.get(k)
+  if (v !== undefined) return v
+  computes = computes + 1
+  v = compute(k)
+  cache.set(k, v)
+  return v
+}
+export let count = () => computes`
+  for (const optimize of LEVELS) {
+    const { memo, count } = run(src, { optimize })
+    is(memo(3) + memo(3) + memo(4), 7 + 7 + 9, `O${optimize}: values exact`)
+    is(count(), 2, `O${optimize}: second memo(3) HIT the cache (guard not folded)`)
+  }
+})
+
 test('slot-hazards: shaped-parser sids keep sample kinds (json fast path intact)', () => {
   // The kind-safe refinement: a shaped JSON.parse must not fall back to
   // __to_num-per-field reads. Structural pin: the walk function's field

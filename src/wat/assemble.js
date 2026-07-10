@@ -740,6 +740,11 @@ export function pullStdlib(sec) {
           if (typeof src !== 'string') continue
           for (const m of src.matchAll(/\(global\.set \$([A-Za-z0-9_.$]+)/g)) runtimeWritten.add(m[1])
         }
+        // Self-host divergence diagnostics (see resolveIncludes' twin block).
+        if (ctx.core.diagSink) ctx.core.diagSink.sweep = {
+          includes: [...ctx.core.includes].sort().join(' '),
+          runtimeWritten: [...runtimeWritten].sort().join(' '),
+        }
         const SNAP_TYPES = { i32: 8, i64: 8, f32: 8, f64: 8, v128: 16 }
         const snapSlots = []   // [name, type, slabOffset]
         let slabBytes = 0
@@ -750,6 +755,11 @@ export function pullStdlib(sec) {
           if (startFn) { snapSlots.push([name, g.type, slabBytes]); slabBytes += SNAP_TYPES[g.type] }
           // no __start ⇒ post-init value = declared init: restore the constant, no slot
           else globalRestores.push(`(global.set $${name} (${g.type}.const ${g.init ?? 0}))`)
+        }
+        if (ctx.core.diagSink?.sweep) {
+          ctx.core.diagSink.sweep.snapSlots = snapSlots.map(([n]) => n).sort().join(' ')
+          ctx.core.diagSink.sweep.restores = globalRestores.slice().sort().join(' ')
+          ctx.core.diagSink.sweep.hasStart = !!startFn
         }
         if (startFn) {
           // Tier 2 payoff: when module init folded away entirely (static trees,

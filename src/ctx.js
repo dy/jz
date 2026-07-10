@@ -202,6 +202,17 @@ export function resolveIncludes() {
       for (const dep of autoDepsOf(name)) add(dep)
     }
   }
+  // Self-host divergence diagnostics (scripts/self.js compileDiag): snapshot
+  // what THIS side resolved, so a host-vs-kernel JSON diff names the first
+  // differing fact instead of leaving byte-drift archaeology. Near-zero cost
+  // when the sink is absent (one truthiness test per call).
+  if (ctx.core.diagSink) {
+    if (!ctx.core.diagSink.resolve) ctx.core.diagSink.resolve = []
+    ctx.core.diagSink.resolve.push({
+      includes: [...ctx.core.includes].sort().join(' '),
+      autoAlloc: autoDepsOf('__alloc').join(' '),
+    })
+  }
 }
 
 /** Reset all compilation state. Called once per jz() invocation. */
