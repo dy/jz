@@ -10,7 +10,7 @@
  * @module compile/emit-assign
  */
 
-import { ctx, err, inc, warnDeopt, PTR } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, LAYOUT } from '../ctx.js'
 import { T } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps } from '../static.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
@@ -20,7 +20,7 @@ import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR,
+  usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR,
 } from '../ir.js'
 import { emit } from '../bridge.js'
 
@@ -229,17 +229,35 @@ function tryHashRmwFusion(arr, idx, val) {
     : n.map((c, i) => i === 0 ? c : subst(c))
   const oT = temp('rmo'), kT = temp('rmk'), oldT = temp('rmold'), resT = temp('rmres')
   const slotT = tempI32('rms')
-  inc('__hash_slot', '__slot_write', '__dyn_set')
-  if (!keyStr) inc('__is_str_key')
+  inc('__hash_slot', '__dyn_set')
+  const resIR = asF64(emit(subst(val)))
+  // Statically-numeric result (isNumericIR — the counting idiom's
+  // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so
+  // __slot_write's durable-heal barrier is provably dead — store bare and
+  // skip the call + per-token __is_eph_bits test it wraps.
+  const bare = isNumericIR(resIR)
+  if (!bare) inc('__slot_write')
+  const writeBack = bare
+    ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
+    : ['call', '$__slot_write', ['local.get', `$${slotT}`],
+      ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${oT}`, asF64(emit(arr))],
     ['local.set', `$${kT}`, asF64(emit(idx))],
+    // Unknown-typed key: the same __is_str_key routing __dyn_set uses, but
+    // inline — `f64.ne(k,k)` (only NaN patterns carry pointers) AND tag ==
+    // STRING is 6 ops against a per-token call in the counting idiom's loop.
     ['local.set', `$${slotT}`, keyStr
       ? ['call', '$__hash_slot',
         ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
         ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]
       : ['if', ['result', 'i32'],
-        ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]],
+        ['i32.and',
+          ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
+          ['i64.eq',
+            ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
+              ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
+            ['i64.const', String(PTR.STRING)]]],
         ['then', ['call', '$__hash_slot',
           ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
           ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]],
@@ -253,9 +271,8 @@ function tryHashRmwFusion(arr, idx, val) {
         asI64(emit(val))]]],
       ['else', typed(['block', ['result', 'f64'],
         ['local.set', `$${oldT}`, ['f64.load', ['local.get', `$${slotT}`]]],
-        ['local.set', `$${resT}`, asF64(emit(subst(val)))],
-        ['call', '$__slot_write', ['local.get', `$${slotT}`],
-          ['i64.reinterpret_f64', ['local.get', `$${resT}`]]],
+        ['local.set', `$${resT}`, resIR],
+        writeBack,
         ['local.get', `$${resT}`]], 'f64')]]], 'f64')
 }
 

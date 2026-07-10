@@ -929,6 +929,20 @@ export function toNumF64(node, v) {
     return f
   }
   inc('__to_num')
+  // Inline number fast path (the engines' move): every non-NaN f64 IS its own
+  // ToNumber — only NaN bit patterns (all NaN-boxed pointers + sentinels, plus
+  // genuine NaN) take the call. One self-compare against a call per site; the
+  // dictionary-count idiom (`o[k] | 0` on a number-or-undefined slot) drops a
+  // per-token call this way. Optimize-gated: the O0 tier keeps the compact call.
+  if (ctx.transform.optimize) {
+    const t = temp('tnum')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(v)],
+      ['if', ['result', 'f64'],
+        ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+        ['then', ['local.get', `$${t}`]],
+        ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]], 'f64')
+  }
   return typed(['call', '$__to_num', asI64(v)], 'f64')
 }
 
