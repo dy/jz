@@ -604,6 +604,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
+    (local $kaux i32) (local $koff i32)
     (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
       (then (return (i32.const 0))))
     (local.set $off (call $__ptr_offset (local.get $obj)))
@@ -638,7 +639,34 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    ${hashFn === '$__str_hash' ? `;; tiered $__str_hash: the two FAST arms inline — SSO arithmetic mix and
+    ;; the heap lazy-hash-cell load, one of which the dictionary-count hot path
+    ;; pays per probe. Cold shapes (interned statics, uncached walk — and the
+    ;; one-in-4G SSO mix that hashes to 0) call the helper, which recomputes
+    ;; identically. Gates mirror $__str_hash's own exactly.
+    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $h (i32.const 0))
+    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+      (then
+        (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (if (i32.shr_u (local.get $kaux) (i32.const 14))
+          (then
+            (local.set $h (i32.mul
+              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+              (i32.const 0xC2B2AE35)))
+            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+            ;; $__str_hash's post-mix clamp, replicated EXACTLY (i32.le_s — it
+            ;; shifts every NEGATIVE-signed hash by 2, not just 0/1): the
+            ;; tiered value must be bit-equal to the helper's return and to
+            ;; the lazy hash cells (they cache post-clamp values).
+            (if (i32.le_s (local.get $h) (i32.const 1))
+              (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
+          (else
+            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
+                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
+    (if (i32.eqz (local.get $h)) (then (local.set $h (call ${hashFn} (local.get $key)))))`
+    : `(local.set $h (call ${hashFn} (local.get $key)))`}
     ${probeStart(entrySize)}
     (block $done (loop $probe
       (if (i64.eqz (i64.load (local.get $slot)))
