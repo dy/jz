@@ -589,7 +589,11 @@ const CMP_MANTISSA = new Set([
 // block readonly-mem-call LICM (else any `s += unknown` — which dispatches via
 // __is_str_key/__str_concat — would pin every invariant array element in-loop:
 // the jagged-array `grid[i][j]` deopt).
-const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_byteLen'])
+// $__mkptr is pure bit-packing over its i32 args (no memory access at all) — its
+// only loop-body producer is the in-place replace-store's re-boxed result, which
+// otherwise pinned the loop's `__ptr_offset(arr)` base resolution in-body (the
+// immutable-update kernel paid the full forwarding+bounds dance per iteration).
+const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_byteLen', '$__mkptr'])
 
 // Read-only HEAP-MEMORY calls: like SAFE_OFFSET_CALLS but they read element
 // storage that a direct f64.store/i32.store in the loop could alias. Safe to

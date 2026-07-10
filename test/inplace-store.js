@@ -66,6 +66,19 @@ test('inplace-store: fires on the immutable-update kernel and bit-matches JS', (
   is(main(), jsEval(KERNEL).main(), 'stepped sums bit-match plain JS')
 })
 
+test('inplace-store: loop-invariant array base hoists out of the step loop', () => {
+  // The in-place store's re-boxed result is a $__mkptr call — pure bit-packing.
+  // With it whitelisted (NON_MUTATING_CALLS), hoistInvariantLoop lifts the
+  // `__ptr_offset(ps)` base resolution to the loop preheader: the inner loop
+  // body must not re-resolve the array base per iteration.
+  const wat = jz.compile(KERNEL, { wat: true, optimize: 'speed' })
+  const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
+  ok(stepBody, 'step function present')
+  const innerLoop = stepBody.slice(stepBody.lastIndexOf('(loop '))
+  ok(!/call \$__ptr_offset\b/.test(innerLoop),
+    'inner loop body re-resolves no array base (hoisted to preheader)')
+})
+
 test('inplace-store: alias read AFTER the store keeps fresh-object semantics', () => {
   // `p` is read after ps[i] is replaced: with a fresh object p.x is the OLD x;
   // in-place would show the NEW x. The sweep must reject this site.
