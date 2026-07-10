@@ -367,19 +367,29 @@
       (6/6 clean) — likely its raw-instantiate harness artifact; watch.
     - jessie levers GROUND OUT (2026-07-10, two worktree agents, both
       verdicts humbling and precise):
-      * 27% base-hoist lever: hoistLoopGlobalPtrOffset LANDED (e3c6d38,
-        merged) — per-loop stable-pointee global base hoist, callee
-        cleanliness via the existing collectReachableGlobalWrites fixpoint,
-        fail-closed on call_indirect/call_ref; positive ablation + two
-        fail-closed pins (test/hoist-loop-global.js, wat-invariants). Jessie
-        BYTE-IDENTICAL though: subscript's `cur` global is assigned only
-        INSIDE parse()'s body and recordGlobalRep observes depth-0 module
-        assignments only → `cur` never proves STRING → the durable-receiver
-        override probe keeps its OWN call_indirect inside every scan loop →
-        the hoist correctly declines. THE REAL LEVER: module-global valType
-        inference from an ALL-WRITERS program scan (observeProgramSlots
-        analogue for globals) — prove `cur` STRING, the override probe
-        leaves the loops, THEN the hoist (already landed) fires.
+      * 27% base-hoist lever: COMPLETE as a two-pass chain (both halves
+        landed). Half 1: hoistLoopGlobalPtrOffset (e3c6d38) — per-loop
+        stable-pointee global base hoist, callee cleanliness via the
+        existing collectReachableGlobalWrites fixpoint, fail-closed on
+        call_indirect/call_ref; ablation + fail-closed pins
+        (test/hoist-loop-global.js, wat-invariants). Alone it was jessie
+        byte-identical: `cur` (assigned only inside parse()'s body) never
+        proved STRING under depth-0-only recordGlobalRep, so the
+        durable-receiver override probe's own call_indirect stayed in
+        every scan loop. Half 2 (agent, merged 6e06538):
+        inferModuleGlobalValTypes — whole-program shadow-aware all-writers
+        scan in plan/scope.js, run twice (pass 1 pre-narrow on
+        literal/alias evidence; pass 2 post-narrowSignatures with
+        paramReps so `cur = s` bare-param aliases resolve); fail-closed on
+        kind conflicts, same-name local shadowing, host-writable exported
+        mutable globals; six pins in test/inference.js incl. all three
+        fail-closed directions. `cur` proves STRING → probe leaves the
+        loops → the hoist fires. MEASURED on merged main (load-8 machine):
+        jessie 2286→2111µs (-7.7%, 1.54x→1.46x behind V8, checksum
+        exact); statics: call_indirect 81→29, __dyn_get_expr 67→13,
+        __ptr_offset sites 135→113 (the hoist's increment over the
+        agent-standalone 140→135), wasm -10%. Next named jessie residual
+        (agent's profiling): closure dispatch convention ~25%.
       * 11.3% same-body devirt lever: REFUTED BY PROOF — the agent built the
         full write-family scan (dyn closure tables → constFnArrays reuse) and
         it correctly refuses subscript's table: ≥8 distinct closure bodies
