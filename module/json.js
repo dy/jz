@@ -14,6 +14,7 @@ import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { i64Hex } from '../layout.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
 
 function jsonConstString(ctx, expr) {
@@ -1191,7 +1192,7 @@ export default (ctx) => {
     if (cached) return cached
 
     const name = `__jp_shape_${ctx.runtime.jsonShapeParsers.size}`
-    const locals = new Map([['len', 'i32'], ['buf', 'i32'], ['i', 'i32'], ['ch', 'i32']])
+    const locals = new Map([['len', 'i32'], ['buf', 'i32'], ['i', 'i32'], ['ch', 'i32'], ['kp', 'i32']])
     let uniq = 0
     const local = (p, t) => {
       const n = `${p}${uniq++}`
@@ -1201,7 +1202,38 @@ export default (ctx) => {
     const fail = `(return (call $__jp (local.get $str)))`
     const expect = (byte) => `(if (i32.ne ${PEEK} (i32.const ${byte})) (then ${fail}))
     ${ADV(1)}`
-    const expectText = (text) => [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+    // SWAR text match: a known ≥2-byte ASCII run (schema keys, null/true/false)
+    // compares as 8/4/2/1-byte chunks against packed little-endian constants —
+    // one load + compare + branch per CHUNK instead of per character, and ONE
+    // pos advance. In-bounds by construction: the entry allocates len+8 and
+    // stores an 8-byte 0xFF sentinel, so any chunk starting inside the text
+    // ends within the buffer, and a chunk overlapping the sentinel simply
+    // fails the compare (0xFF matches no ASCII) into the generic-reparse fail,
+    // exactly like the per-byte path. ASCII-only (a multi-byte char's UTF-8
+    // bytes would need encoding here) — non-ASCII keys keep per-byte expects.
+    const expectText = (text) => {
+      const bytes = [...text].map(c => c.charCodeAt(0))
+      if (bytes.length < 2 || bytes.some(b => b > 127))
+        return [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+      const le = (arr) => arr.reduce((a, b, k) => a | (BigInt(b) << BigInt(8 * k)), 0n)
+      const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
+      const out = [`(local.set $kp (i32.add (global.get $__jpstr) (global.get $__jppos)))`]
+      let i = 0
+      for (; bytes.length - i >= 8; i += 8)
+        out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(le(bytes.slice(i, i + 8)))})) (then ${fail}))`)
+      if (bytes.length - i >= 4) {
+        out.push(`(if (i32.ne (i32.load ${at(i)}) (i32.const ${Number(le(bytes.slice(i, i + 4)))})) (then ${fail}))`)
+        i += 4
+      }
+      if (bytes.length - i >= 2) {
+        out.push(`(if (i32.ne (i32.load16_u ${at(i)}) (i32.const ${Number(le(bytes.slice(i, i + 2)))})) (then ${fail}))`)
+        i += 2
+      }
+      if (i < bytes.length)
+        out.push(`(if (i32.ne (i32.load8_u ${at(i)}) (i32.const ${bytes[i]})) (then ${fail}))`)
+      out.push(ADV(bytes.length))
+      return out.join('\n    ')
+    }
     // Forward-declared with `let` (assigned below) so `parse` captures a boxed
     // cell, not a not-yet-initialized `const` binding — the self-host kernel
     // miscompiles the latter capture in this deeply-nested mutually-recursive
