@@ -36,7 +36,9 @@ export default (ctx) => {
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
     'math.log1p': ['math.log'],
-    'math.pow': ['math.exp', 'math.log'],
+    'math.pow': ['math.pow_core'],
+    'math.pow_core': ['math.pow_scalbn'],
+    'math.pow_scalbn': [],
     'math.asin': [],
     'math.acos': ['math.asin'],
     'math.atan2': ['math.atan'],
@@ -950,7 +952,232 @@ export default (ctx) => {
     ;; x < 0, non-integer finite y -> NaN
     (if (f64.lt (local.get $x) (f64.const 0.0))
       (then (return (f64.const nan))))
-    (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`)
+    ;; Remaining case: x > 0 finite (≠1), y finite (≠0,≠1) and not an i32-range integer.
+    ;; $math.pow_core below is a correctly-rounded fdlibm port — no exp/log double-rounding.
+    (call $math.pow_core (local.get $x) (local.get $y)))`)
+
+  // scalbn(x, n) = x * 2^n, correctly rounded even when the result lands in the subnormal
+  // range (a single f64.mul by a bit-constructed 2^n would double-round there). Ported from
+  // musl's src/math/scalbn.c (MIT — https://git.musl-libc.org/cgit/musl/tree/src/math/scalbn.c,
+  // also FreeBSD msun's scalbn.c): splitting the scale into two safe steps, each within the
+  // exact power-of-two range, avoids that double rounding. Only reached from $math.pow_core's
+  // subnormal-result tail, where |n| stays well under 1075 — the >1023 branch and the doubly-
+  // nested steps are dead there but kept for fidelity with the reference.
+  wat('math.pow_scalbn', `(func $math.pow_scalbn (param $x f64) (param $n i32) (result f64)
+    (local $y f64)
+    (local.set $y (local.get $x))
+    (if (i32.gt_s (local.get $n) (i32.const 1023))
+      (then
+        (local.set $y (f64.mul (local.get $y) (f64.const 0x1p1023)))
+        (local.set $n (i32.sub (local.get $n) (i32.const 1023)))
+        (if (i32.gt_s (local.get $n) (i32.const 1023))
+          (then
+            (local.set $y (f64.mul (local.get $y) (f64.const 0x1p1023)))
+            (local.set $n (i32.sub (local.get $n) (i32.const 1023)))
+            (if (i32.gt_s (local.get $n) (i32.const 1023)) (then (local.set $n (i32.const 1023)))))))
+      (else (if (i32.lt_s (local.get $n) (i32.const -1022))
+        (then
+          (local.set $y (f64.mul (local.get $y) (f64.mul (f64.const 0x1p-1022) (f64.const 0x1p53))))
+          (local.set $n (i32.add (local.get $n) (i32.const 969))) ;; 1022-53, staged to dodge subnormal double-rounding
+          (if (i32.lt_s (local.get $n) (i32.const -1022))
+            (then
+              (local.set $y (f64.mul (local.get $y) (f64.mul (f64.const 0x1p-1022) (f64.const 0x1p53))))
+              (local.set $n (i32.add (local.get $n) (i32.const 969)))
+              (if (i32.lt_s (local.get $n) (i32.const -1022)) (then (local.set $n (i32.const -1022))))))))))
+    (f64.mul (local.get $y)
+      (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $n) (i32.const 1023))) (i64.const 52)))))`)
+
+  // Correctly-rounded x**y for the case the ladder above can't fast-path: x > 0 finite (≠1),
+  // y finite (≠0,≠1) and not an i32-range integer. Ported from fdlibm/FreeBSD msun's e_pow.c
+  // (Sun Microsystems, freely licensed —
+  // https://raw.githubusercontent.com/freebsd/freebsd-src/main/lib/msun/src/e_pow.c), the same
+  // algorithm V8's base/ieee754.cc ports for Math.pow — so this targets bit-exactness against
+  // the host, not just low ulps. Trimmed to the x>0 slice: fdlibm's sign/yisint bookkeeping for
+  // x<0 is dead weight here (x<0 already returned NaN above).
+  //   1. y == 0.5 exactly: hardware sqrt (correctly rounded, and what fdlibm/V8 special-case
+  //      it to) instead of routing a "nice" exponent through the general kernel.
+  //   2. log2(x) in double-double (hi+lo): bit-extract the exponent, reduce the mantissa around
+  //      1 or 1.5 (whichever centers it tighter), run the L1..L6 minimax on s=(m-bp)/(m+bp).
+  //      |y| ≥ 2^31 skips straight to a 1-term series, valid because the only way such a y
+  //      doesn't over/underflow outright is x within 2^-20 of 1.
+  //   3. y*log2(x) in double-double, with an early overflow/underflow return once the exponent
+  //      product is unambiguously outside (-1075, 1024).
+  //   4. 2^(that product): round to the nearest integer n — via the high-word bit trick fdlibm
+  //      uses, not float rounding, so the fractional remainder stays exact — evaluate the
+  //      P1..P5 minimax on the fraction, then splice n back in as a raw exponent-field add,
+  //      falling back to $math.pow_scalbn only when that add would underflow the exponent field.
+  wat('math.pow_core', `(func $math.pow_core (param $x f64) (param $y f64) (result f64)
+    (local $ax f64) (local $u f64) (local $v f64) (local $w f64) (local $t f64) (local $r f64)
+    (local $t1 f64) (local $t2 f64) (local $y1 f64) (local $p_h f64) (local $p_l f64) (local $z f64)
+    (local $ss f64) (local $s2 f64) (local $s_h f64) (local $s_l f64) (local $t_h f64) (local $t_l f64)
+    (local $z_h f64) (local $z_l f64) (local $bp_k f64) (local $dp_h_k f64) (local $dp_l_k f64)
+    (local $ix i32) (local $hy i32) (local $iy i32) (local $j i32) (local $i i32) (local $k i32) (local $n i32)
+
+    ;; y == 0.5 exactly (x > 0 here, always a valid sqrt domain): matches fdlibm/V8's own sqrt
+    ;; fast path, and f64.sqrt is correctly rounded so this can only help bit-exactness.
+    (if (f64.eq (local.get $y) (f64.const 0.5))
+      (then (return (f64.sqrt (local.get $x)))))
+
+    (local.set $ax (local.get $x))
+    (local.set $ix (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $x)) (i64.const 32))))
+    (local.set $hy (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $y)) (i64.const 32))))
+    (local.set $iy (i32.and (local.get $hy) (i32.const 0x7fffffff)))
+
+    (if (i32.gt_u (local.get $iy) (i32.const 0x41e00000))
+      (then
+        ;; |y| > 2^31: definite overflow/underflow unless x is within ~2^-20 of 1, in which
+        ;; case log(x) via a short series (x-x^2/2+x^3/3-x^4/4) suffices.
+        (if (i32.gt_u (local.get $iy) (i32.const 0x43f00000))
+          (then
+            (if (i32.le_u (local.get $ix) (i32.const 0x3fefffff))
+              (then (return (select (f64.const inf) (f64.const 0.0) (i32.lt_s (local.get $hy) (i32.const 0))))))
+            (if (i32.ge_u (local.get $ix) (i32.const 0x3ff00000))
+              (then (return (select (f64.const inf) (f64.const 0.0) (i32.gt_s (local.get $hy) (i32.const 0))))))))
+        (if (i32.lt_u (local.get $ix) (i32.const 0x3fefffff))
+          (then (return (select (f64.const inf) (f64.const 0.0) (i32.lt_s (local.get $hy) (i32.const 0))))))
+        (if (i32.gt_u (local.get $ix) (i32.const 0x3ff00000))
+          (then (return (select (f64.const inf) (f64.const 0.0) (i32.gt_s (local.get $hy) (i32.const 0))))))
+        (local.set $t (f64.sub (local.get $ax) (f64.const 1.0)))
+        (local.set $w (f64.mul (f64.mul (local.get $t) (local.get $t))
+          (f64.sub (f64.const 0.5) (f64.mul (local.get $t)
+            (f64.sub (f64.const 3.3333333333333331e-01) (f64.mul (local.get $t) (f64.const 0.25)))))))
+        (local.set $u (f64.mul (f64.const 1.44269502162933349609e+00) (local.get $t)))
+        (local.set $v (f64.sub (f64.mul (local.get $t) (f64.const 1.92596299112661746887e-08))
+                                (f64.mul (local.get $w) (f64.const 1.44269504088896338700e+00))))
+        (local.set $t1 (f64.add (local.get $u) (local.get $v)))
+        (local.set $t1 (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $t1)) (i64.const 0xffffffff00000000))))
+        (local.set $t2 (f64.sub (local.get $v) (f64.sub (local.get $t1) (local.get $u)))))
+      (else
+        (local.set $n (i32.const 0))
+        ;; Subnormal x: scale into the normal range and remember the shift.
+        (if (i32.lt_u (local.get $ix) (i32.const 0x00100000))
+          (then
+            (local.set $ax (f64.mul (local.get $ax) (f64.const 9007199254740992.0)))
+            (local.set $n (i32.sub (local.get $n) (i32.const 53)))
+            (local.set $ix (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ax)) (i64.const 32))))))
+        (local.set $n (i32.add (local.get $n) (i32.sub (i32.shr_u (local.get $ix) (i32.const 20)) (i32.const 0x3ff))))
+        (local.set $j (i32.and (local.get $ix) (i32.const 0x000fffff)))
+        (local.set $ix (i32.or (local.get $j) (i32.const 0x3ff00000)))
+        ;; Interval split: center the reduced mantissa on 1 (k=0, |x|<sqrt(3/2)) or 1.5
+        ;; (k=1, |x|<sqrt(3)) — whichever keeps s=(m-bp[k])/(m+bp[k]) smaller.
+        (if (i32.le_u (local.get $j) (i32.const 0x0003988E))
+          (then (local.set $k (i32.const 0)))
+          (else (if (i32.lt_u (local.get $j) (i32.const 0x000BB67A))
+            (then (local.set $k (i32.const 1)))
+            (else
+              (local.set $k (i32.const 0))
+              (local.set $n (i32.add (local.get $n) (i32.const 1)))
+              (local.set $ix (i32.sub (local.get $ix) (i32.const 0x00100000)))))))
+        (local.set $ax (f64.reinterpret_i64
+          (i64.or (i64.and (i64.reinterpret_f64 (local.get $ax)) (i64.const 0x00000000ffffffff))
+                  (i64.shl (i64.extend_i32_u (local.get $ix)) (i64.const 32)))))
+        (local.set $bp_k (select (f64.const 1.5) (f64.const 1.0) (i32.eq (local.get $k) (i32.const 1))))
+        (local.set $dp_h_k (select (f64.const 0.584962487220764160156) (f64.const 0.0) (i32.eq (local.get $k) (i32.const 1))))
+        (local.set $dp_l_k (select (f64.const 1.35003920212974897128e-08) (f64.const 0.0) (i32.eq (local.get $k) (i32.const 1))))
+        (local.set $u (f64.sub (local.get $ax) (local.get $bp_k)))
+        (local.set $v (f64.div (f64.const 1.0) (f64.add (local.get $ax) (local.get $bp_k))))
+        (local.set $ss (f64.mul (local.get $u) (local.get $v)))
+        (local.set $s_h (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $ss)) (i64.const 0xffffffff00000000))))
+        ;; t_h ≈ (ax+bp[k]) with its low 32 bits cleared, built directly from ix's bits (half
+        ;; the exponent+mantissa, plus fdlibm's fixed per-k offsets) rather than an add+round.
+        (local.set $t_h (f64.reinterpret_i64 (i64.shl
+          (i64.extend_i32_u (i32.add (i32.add
+            (i32.or (i32.shr_u (local.get $ix) (i32.const 1)) (i32.const 0x20000000))
+            (i32.const 0x00080000))
+            (i32.shl (local.get $k) (i32.const 18))))
+          (i64.const 32))))
+        (local.set $t_l (f64.sub (local.get $ax) (f64.sub (local.get $t_h) (local.get $bp_k))))
+        (local.set $s_l (f64.mul (local.get $v)
+          (f64.sub (f64.sub (local.get $u) (f64.mul (local.get $s_h) (local.get $t_h))) (f64.mul (local.get $s_h) (local.get $t_l)))))
+        (local.set $s2 (f64.mul (local.get $ss) (local.get $ss)))
+        (local.set $r (f64.mul (f64.mul (local.get $s2) (local.get $s2))
+          (f64.add (f64.const 5.99999999999994648725e-01) (f64.mul (local.get $s2)
+            (f64.add (f64.const 4.28571428578550184252e-01) (f64.mul (local.get $s2)
+              (f64.add (f64.const 3.33333329818377432918e-01) (f64.mul (local.get $s2)
+                (f64.add (f64.const 2.72728123808534006489e-01) (f64.mul (local.get $s2)
+                  (f64.add (f64.const 2.30660745775561754067e-01) (f64.mul (local.get $s2) (f64.const 2.06975017800338417784e-01)))))))))))))
+        (local.set $r (f64.add (local.get $r) (f64.mul (local.get $s_l) (f64.add (local.get $s_h) (local.get $ss)))))
+        (local.set $s2 (f64.mul (local.get $s_h) (local.get $s_h)))
+        (local.set $t_h (f64.add (f64.add (f64.const 3.0) (local.get $s2)) (local.get $r)))
+        (local.set $t_h (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $t_h)) (i64.const 0xffffffff00000000))))
+        (local.set $t_l (f64.sub (local.get $r) (f64.sub (f64.sub (local.get $t_h) (f64.const 3.0)) (local.get $s2))))
+        (local.set $u (f64.mul (local.get $s_h) (local.get $t_h)))
+        (local.set $v (f64.add (f64.mul (local.get $s_l) (local.get $t_h)) (f64.mul (local.get $t_l) (local.get $ss))))
+        (local.set $p_h (f64.add (local.get $u) (local.get $v)))
+        (local.set $p_h (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $p_h)) (i64.const 0xffffffff00000000))))
+        (local.set $p_l (f64.sub (local.get $v) (f64.sub (local.get $p_h) (local.get $u))))
+        (local.set $z_h (f64.mul (f64.const 9.61796700954437255859e-01) (local.get $p_h)))
+        (local.set $z_l (f64.add (f64.add
+          (f64.mul (f64.const -7.02846165095275826516e-09) (local.get $p_h))
+          (f64.mul (local.get $p_l) (f64.const 9.61796693925975554329e-01)))
+          (local.get $dp_l_k)))
+        (local.set $t (f64.convert_i32_s (local.get $n)))
+        (local.set $t1 (f64.add (f64.add (f64.add (local.get $z_h) (local.get $z_l)) (local.get $dp_h_k)) (local.get $t)))
+        (local.set $t1 (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $t1)) (i64.const 0xffffffff00000000))))
+        (local.set $t2 (f64.sub (local.get $z_l)
+          (f64.sub (f64.sub (f64.sub (local.get $t1) (local.get $t)) (local.get $dp_h_k)) (local.get $z_h))))))
+
+    ;; Combine: (y1+y2)*(t1+t2) where y1 is y with its low 32 bits cleared, y2=y-y1 — a
+    ;; double-double multiply of y against log2(x).
+    (local.set $y1 (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $y)) (i64.const 0xffffffff00000000))))
+    (local.set $p_l (f64.add (f64.mul (f64.sub (local.get $y) (local.get $y1)) (local.get $t1)) (f64.mul (local.get $y) (local.get $t2))))
+    (local.set $p_h (f64.mul (local.get $y1) (local.get $t1)))
+    (local.set $z (f64.add (local.get $p_l) (local.get $p_h)))
+    (local.set $j (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $z)) (i64.const 32))))
+    (local.set $i (i32.wrap_i64 (i64.reinterpret_f64 (local.get $z))))
+
+    (if (i32.ge_s (local.get $j) (i32.const 0x40900000))
+      (then
+        (if (i32.ne (i32.or (i32.sub (local.get $j) (i32.const 0x40900000)) (local.get $i)) (i32.const 0))
+          (then (return (f64.const inf)))
+          (else (if (f64.gt (f64.add (local.get $p_l) (f64.const 8.0085662595372944372e-17)) (f64.sub (local.get $z) (local.get $p_h)))
+            (then (return (f64.const inf)))))))
+      (else (if (i32.ge_u (i32.and (local.get $j) (i32.const 0x7fffffff)) (i32.const 0x4090cc00))
+        (then
+          (if (i32.ne (i32.or (i32.sub (local.get $j) (i32.const 0xc090cc00)) (local.get $i)) (i32.const 0))
+            (then (return (f64.const 0.0)))
+            (else (if (f64.le (local.get $p_l) (f64.sub (local.get $z) (local.get $p_h)))
+              (then (return (f64.const 0.0))))))))))
+
+    ;; 2^(p_h+p_l): round to nearest integer n (bit trick, not float round, to keep the
+    ;; fractional remainder's low bits exact), evaluate the P1..P5 kernel on it, splice n back
+    ;; in as a raw exponent-field add.
+    (local.set $i (i32.and (local.get $j) (i32.const 0x7fffffff)))
+    (local.set $k (i32.sub (i32.shr_u (local.get $i) (i32.const 20)) (i32.const 0x3ff)))
+    (local.set $n (i32.const 0))
+    (if (i32.gt_u (local.get $i) (i32.const 0x3fe00000))
+      (then
+        (local.set $n (i32.add (local.get $j) (i32.shr_u (i32.const 0x00100000) (i32.add (local.get $k) (i32.const 1)))))
+        (local.set $k (i32.sub (i32.shr_u (i32.and (local.get $n) (i32.const 0x7fffffff)) (i32.const 20)) (i32.const 0x3ff)))
+        (local.set $t (f64.reinterpret_i64 (i64.shl
+          (i64.extend_i32_u (i32.and (local.get $n) (i32.xor (i32.shr_u (i32.const 0x000fffff) (local.get $k)) (i32.const -1))))
+          (i64.const 32))))
+        (local.set $n (i32.shr_u (i32.or (i32.and (local.get $n) (i32.const 0x000fffff)) (i32.const 0x00100000)) (i32.sub (i32.const 20) (local.get $k))))
+        (if (i32.lt_s (local.get $j) (i32.const 0)) (then (local.set $n (i32.sub (i32.const 0) (local.get $n)))))
+        (local.set $p_h (f64.sub (local.get $p_h) (local.get $t)))))
+    (local.set $t (f64.add (local.get $p_l) (local.get $p_h)))
+    (local.set $t (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $t)) (i64.const 0xffffffff00000000))))
+    (local.set $u (f64.mul (local.get $t) (f64.const 6.93147182464599609375e-01)))
+    (local.set $v (f64.add (f64.mul (f64.sub (local.get $p_l) (f64.sub (local.get $t) (local.get $p_h))) (f64.const 6.93147180559945286227e-01))
+                            (f64.mul (local.get $t) (f64.const -1.90465429995776804525e-09))))
+    (local.set $z (f64.add (local.get $u) (local.get $v)))
+    (local.set $w (f64.sub (local.get $v) (f64.sub (local.get $z) (local.get $u))))
+    (local.set $t (f64.mul (local.get $z) (local.get $z)))
+    (local.set $t1 (f64.sub (local.get $z) (f64.mul (local.get $t)
+      (f64.add (f64.const 1.66666666666666019037e-01) (f64.mul (local.get $t)
+        (f64.add (f64.const -2.77777777770155933842e-03) (f64.mul (local.get $t)
+          (f64.add (f64.const 6.61375632143793436117e-05) (f64.mul (local.get $t)
+            (f64.add (f64.const -1.65339022054652515390e-06) (f64.mul (local.get $t) (f64.const 4.13813679705723846039e-08))))))))))))
+    (local.set $r (f64.sub
+      (f64.div (f64.mul (local.get $z) (local.get $t1)) (f64.sub (local.get $t1) (f64.const 2.0)))
+      (f64.add (local.get $w) (f64.mul (local.get $z) (local.get $w)))))
+    (local.set $z (f64.sub (f64.const 1.0) (f64.sub (local.get $r) (local.get $z))))
+    (local.set $j (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $z)) (i64.const 32))))
+    (local.set $j (i32.add (local.get $j) (i32.shl (local.get $n) (i32.const 20))))
+    (if (result f64) (i32.le_s (i32.shr_s (local.get $j) (i32.const 20)) (i32.const 0))
+      (then (call $math.pow_scalbn (local.get $z) (local.get $n)))
+      (else (f64.reinterpret_i64 (i64.or (i64.and (i64.reinterpret_f64 (local.get $z)) (i64.const 0x00000000ffffffff))
+                                          (i64.shl (i64.extend_i32_u (local.get $j)) (i64.const 32)))))))`, ['math.pow_scalbn'])
 
   // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
   // 11-term odd polynomial split into even/odd parts. Accurate to <1 ulp —

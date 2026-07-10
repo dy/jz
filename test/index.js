@@ -44,6 +44,7 @@ const TESTS = [
   'perf',
   'timers',
   'invariants',
+  'pow-ulp',
   'wat-invariants',
   'loop-square',
   'inplace-store',
