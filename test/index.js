@@ -48,6 +48,7 @@ const TESTS = [
   'loop-square',
   'inplace-store',
   'slot-hazards',
+  'never-grown',
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',

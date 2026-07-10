@@ -485,7 +485,7 @@ export function scanSliceViews(body) {
  * `a[0].push(x)`, never relocates `a` itself, so `a` stays eligible — see safeReads.)
  */
 const grownOrEscapes = (op) => ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete'
-function safeReads(node, name) {
+export function safeReads(node, name) {
   if (typeof node === 'string') return node !== name            // bare value use → escape
   if (!Array.isArray(node)) return true
   const op = node[0]

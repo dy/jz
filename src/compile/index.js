@@ -462,6 +462,9 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
+      // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
+      // raw-base array read (module/array.js arrBase) keys off this rep.
+      if (r.neverGrown) updateRep(pname, { neverGrown: true })
     }
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
