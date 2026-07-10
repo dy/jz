@@ -600,14 +600,16 @@
       strings at re-probe time than genSlotUpsert stored at insert.
       Function-refs-in-table replica ALSO clean host-side — the miscompile
       needs the full 100-module bundle context (the narrow/spec layout-
-      sensitive class). NEXT: bisect the KERNEL BUILD — rebuild dist with
-      the tiered $__str_hash inline (394ab5b) disabled in genSlotUpsert and
-      re-run the GATE probe; if the dupes vanish, the insert/probe hash
-      divergence is the tiered fast path mis-hashing interned pass-name
-      strings under the kernel. Note the shape kinship: duplicate sidecar
-      dict entries = the same dict probe/hash layer kern-seq's durable-heal
-      OOB traps in ("hashing a dangling key") — watch the heal agent's
-      root for a shared cause.
+      sensitive class). Tiered-$__str_hash bisect NEGATIVE: kernel built
+      with the genSlotUpsert inline forced off still DIFFs at L2 (L0/L1
+      stay identical) — the insert/probe divergence is NOT the tiered fast
+      path. Remaining suspects: the spread-copy path building `m` (dict
+      spread enumerates+rewrites entries — a miscompiled iterator could
+      duplicate), Object.keys enumeration double-counting, or a narrow/
+      spec clone of one of the dict helpers only reachable in the bundle.
+      Note the shape kinship: duplicate sidecar dict entries = the same
+      dict probe/hash layer kern-seq's durable-heal OOB traps in ("hashing
+      a dangling key") — watch the heal agent's root for a shared cause.
       kern-seq durable-heal OOB is NOT the L2 byte-drift bug itself (still
       reproduces post-bool-fix; focused agent hunting it — trap in the
       zombie/heal machinery on warm instances after compiling
