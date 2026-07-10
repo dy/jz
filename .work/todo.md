@@ -325,6 +325,46 @@
       the same name) — needs an escape-aware caller fixpoint feeding the
       existing localReps.neverGrown consumer at array.js:831; then
       __str_hash SSO-arm inline.
+  * violations leg 5 (2026-07-10, e36668c/394ab5b): wordcount to V8 PARITY.
+    - cross-function neverGrown for array PARAMS (e36668c): the
+      activation-scoped proof — during any call of f the param's array can
+      only relocate if code RUNNING WITHIN the activation grows an array it
+      can reach. neverGrown iff safeReads(body, p) + f and every transitive
+      callee ARRAY-GROWTH-FREE (no resize/.length=/non-literal-key indexed
+      write on a possibly-ARRAY receiver; OBJECT/HASH/TYPED receivers exempt
+      — keyed writes there land in slots/dict tables, arena-bump never moves
+      arrays; unknown callees / computed calls / writtenProps-shadowable
+      methods / bare func-ref args poison). Poison fixpoint over the direct
+      call graph; receiver kinds via body valTypes overlay + paramReps (the
+      dictionary `{}` decl and TYPED params resolve) — name-keyed
+      arrResized/nameEscapes could NOT express this (builder's `words.push`
+      collides with the kernel's same-named read-only param). Consumer:
+      module/array.js raw-base read (skips __ptr_offset per element). Pins:
+      test/never-grown.js incl. all three fail-closed directions.
+    - tiered $__str_hash in genSlotUpsert (394ab5b): SSO mix + hcache-cell
+      load inline at the fused probe; cold shapes call the helper. FOUND
+      DURING: $__str_hash's final clamp is i32.le_s — it shifts every
+      NEGATIVE hash by 2, not just the 0/1 empty/tombstone guards (and pre-
+      clamp -2/-1 → 0/1 COLLIDE with empty/tombstone, a 1-in-2G pre-existing
+      quirk, noted); the untailed transcription re-inserted every
+      negative-hash key — caught by dictionary RMW value pins + a
+      divergence trap.
+    - wordcount: 1.36x → 1.10x (neverGrown) → 1.04x (tiered hash) vs V8;
+      JSC beaten. Remaining ~4%: probe-loop micro-structure — V8-parity
+      band, machine-noise dominated.
+    - jessie DIAGNOSED (agent, quantified per-parse helper counts): NOT two
+      residuals but three — parse$space char-scan __ptr_offset 27% of
+      helper traffic (module-global receiver blocks hoisting; strings are
+      stable pointees — a per-loop base hoist tolerant of global rewrites
+      is the lever), closure8 call_indirect volume 11.3% (lever: same-BODY
+      indirect devirt — prove every table value shares one closure.make
+      body → direct call with env arg; existing devirtConstFnArrayCalls
+      requires capture-free const literals, subscript's table is neither),
+      .loc dyn-set 2.6% (lever: array-expando header slot — the array
+      analogue of static-object schema tier 2). Dyn-prop READ chain already
+      collapsed 46% → 8.4% by prior legs. Agent's 'jessie crashes under
+      default memory' claim NOT reproduced through the real bench harness
+      (6/6 clean) — likely its raw-instantiate harness artifact; watch.
     STATE 2026-07-10 (full 52-case table, jz/v8/jsc): svg geomean —
     V8 2.09x slower than jz (was 1.89x at leg 3). 43/52 cases jz LEADS
     BOTH engines outright. V8 beats jz on only THREE: wordcount 1.36x
