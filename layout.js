@@ -204,10 +204,25 @@ export const oobNanIR = () => ['f64.const', oobNanLiteral()]
  *  __arr_idx_known, __typed_idx…) — a body containing a loop is excluded from
  *  V8's wasm inliner, and these helpers sit on ~25% of self-host compile time.
  *  Callers must list '__ptr_offset_fwd' in their deps()/wat() dependency set. */
+// Upper bound is `off <= memory.size() * 65536` (total bytes currently backed) — read from
+// $__heap_end64 (module/core.js, kept in sync by __memgrow on every grow), NOT recomputed
+// as `i64.shl(i64.extend_i32_u(memory.size), 16)` inline: this check is on the hottest
+// pointer-dereference path (~25% of self-host compile time, per the doc comment above), so
+// a per-call recompute would cost 3 extra instructions at every inlined site instead of one
+// global read. The i32 form `memory.size() << 16` (what a naive version — and $__heap_end
+// itself — uses) overflows to exactly 0 at the wasm32 ceiling (memory.size()==65536 pages,
+// i.e. the full 4 GiB: 65536*65536 == 2^32, unrepresentable in i32). Reading $__heap_end
+// here instead of $__heap_end64 would make the bound "off <= 0", failing for every real off
+// and silently disabling the forward-chase for the rest of execution: any pointer to an
+// already-relocated ARRAY/SET/MAP/HASH stops following its forwarding header and reads the
+// abandoned old block (cap=-1 sentinel misread as a real capacity) instead. That wraparound
+// is benign for $__heap_end's own consumer (__alloc's fast-path check just slow-paths one
+// extra time and __memgrow re-derives everything fresh in i64) but NOT here, where it gates
+// whether forwarding runs at all — hence the separate i64 global instead of reusing $__heap_end.
 export const followForwardingWat = (off = '$off', { lowGuard = true } = {}) =>
   `(if (i32.and
         ${lowGuard ? `(i32.ge_u (local.get ${off}) (i32.const 8))` : '(i32.const 1)'}
-        (i32.le_u (local.get ${off}) (i32.shl (memory.size) (i32.const 16))))
+        (i64.le_u (i64.extend_i32_u (local.get ${off})) (global.get $__heap_end64)))
     (then (if (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 4))) (i32.const -1))
       (then (local.set ${off} (call $__ptr_offset_fwd (local.get ${off})))))))`
 
@@ -218,7 +233,7 @@ export const ptrOffsetFwdWat = () =>
   `(func $__ptr_offset_fwd (param $off i32) (result i32)
     (block $done (loop $follow
       (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-      (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+      (br_if $done (i64.gt_u (i64.extend_i32_u (local.get $off)) (global.get $__heap_end64)))
       (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
       (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
       (br $follow)))

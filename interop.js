@@ -49,14 +49,25 @@ const envFuncNames = (mod) =>
 // threads must share a pointer cell in linear memory). 8-byte aligned bump on
 // the JS side; wasm `_alloc` takes over if exported.
 
+// Every i32 heap address that crosses the wasm boundary — a `$__heap` Global's `.value`,
+// or a DataView 32-bit read — comes back through JS as a SIGNED int32 (WebAssembly JS API
+// spec: i32 is observable as ToInt32, range -2^31..2^31-1), regardless of what the address
+// actually represents (offsets are conceptually unsigned, 0..4GiB). `>>> 0` reinterprets
+// the bit pattern back to unsigned. Skipping this is harmless below 2 GiB (same value
+// either way) and silently wrong past it — a "negative" address then poisons every
+// downstream `+`/comparison, and a DataView write at a negative offset throws RangeError.
 const makeJsAllocator = (mem, heapGlobal) => {
   const dv = () => new DataView(mem.buffer)
-  const getPtr = heapGlobal ? () => heapGlobal.value : () => dv().getInt32(HEAP.PTR_ADDR, true)
+  const getPtr = heapGlobal ? () => heapGlobal.value >>> 0 : () => dv().getUint32(HEAP.PTR_ADDR, true)
   const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP.PTR_ADDR, v, true)
   // Rewind target: the global's post-static-init value, else the fixed start.
-  const base = heapGlobal ? heapGlobal.value : HEAP.START
+  const base = heapGlobal ? (heapGlobal.value >>> 0) : HEAP.START
   const alloc = (bytes) => {
-    const aligned = (getPtr() + 7) & ~7
+    // Align up to 8 without `& ~7` — a JS bitwise op ToInt32-truncates its RESULT too,
+    // so `(x + 7) & ~7` would re-introduce the same sign flip past 2 GiB even with a
+    // correctly-unsigned `getPtr()`. Plain arithmetic has no such ceiling.
+    const ptr = getPtr()
+    const aligned = ptr - (ptr % 8)
     const next = aligned + bytes
     if (next > mem.buffer.byteLength)
       mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
@@ -69,7 +80,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   const initHeapPtr = () => {
     if (heapGlobal) return
     const d = dv()
-    if (d.getInt32(HEAP.PTR_ADDR, true) < HEAP.START) d.setInt32(HEAP.PTR_ADDR, HEAP.START, true)
+    if (d.getUint32(HEAP.PTR_ADDR, true) < HEAP.START) d.setInt32(HEAP.PTR_ADDR, HEAP.START, true)
   }
   return { alloc, reset, initHeapPtr }
 }
@@ -241,7 +252,11 @@ export const memory = (src) => {
   // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
   // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
   const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem, wasmExports?.__heap)
-  let alloc = wasmExports?._alloc || jsAlloc
+  // `_alloc`'s i32 result crosses the wasm→JS boundary SIGNED (same ToInt32 rule as any
+  // other i32 — see makeJsAllocator's comment); `>>> 0` restores the true unsigned address
+  // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
+  const wasmAlloc = wasmExports?._alloc && (bytes => wasmExports._alloc(bytes) >>> 0)
+  let alloc = wasmAlloc || jsAlloc
   initHeapPtr()
 
   // Write 16-byte header matching WASM `__alloc_hdr`:
@@ -282,7 +297,7 @@ export const memory = (src) => {
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     mem.schemas = schemas
-    if (wasmExports?._alloc) { alloc = wasmExports._alloc; mem.alloc = alloc }
+    if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = jsReset   // post-init rewind — see the note at the first-enhance path
     if (extMap) mem._extMap = extMap
     return mem

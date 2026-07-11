@@ -314,6 +314,16 @@ export default (ctx) => {
   // wasm memory never shrinks. 65536-page (4 GiB) memories wrap the shl to 0 —
   // every alloc slow-paths there, still correct. Seeded 0: first alloc pays once.
   declGlobal('__heap_end', 'i32', 0)
+  // i64 twin of __heap_end, for the CORRECTNESS-sensitive forwarding-chase bound
+  // (layout.js's followForwardingWat/ptrOffsetFwdWat, and their inline collection.js
+  // dyn-props copies): those checks gate whether a relocated ARRAY/SET/MAP/HASH's
+  // forwarding header gets followed at all, so the __heap_end wraparound-to-0 at the
+  // wasm32 4 GiB ceiling — benign for __alloc's slow-path retry — would there instead
+  // silently disable forwarding forever (every off > 0 reads as "out of bounds", so the
+  // cap=-1 sentinel of an abandoned block is never re-chased and gets misread as a real
+  // capacity). __memgrow updates this alongside __heap_end so every hot dereference site
+  // pays one $__heap_end64 global read instead of recomputing i64.shl(memory.size,16).
+  declGlobal('__heap_end64', 'i64', 0)
 
   // Shared memory keeps the heap pointer in linear memory (memory[HEAP.PTR_ADDR]):
   // wasm globals are per-instance, so threads sharing one memory must share one
@@ -345,7 +355,8 @@ export default (ctx) => {
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
             (then (unreachable)))))))
-    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16))))`
+    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
+    (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
   if (ctx.memory.shared) {
     // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at

@@ -1622,7 +1622,10 @@ export default (ctx) => {
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            ;; $__heap_end64 (i64), not i32.shl (memory.size) 16: at the wasm32 ceiling
+            ;; (memory.size()==65536 pages), the i32 form overflows to exactly 0 —
+            ;; see layout.js's followForwardingWat comment for the full account.
+            (br_if $done (i64.gt_u (i64.extend_i32_u (local.get $off)) (global.get $__heap_end64)))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))
@@ -2025,7 +2028,10 @@ export default (ctx) => {
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            ;; $__heap_end64 (i64), not i32.shl (memory.size) 16: at the wasm32 ceiling
+            ;; (memory.size()==65536 pages), the i32 form overflows to exactly 0 —
+            ;; see layout.js's followForwardingWat comment for the full account.
+            (br_if $done (i64.gt_u (i64.extend_i32_u (local.get $off)) (global.get $__heap_end64)))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
@@ -2199,7 +2205,10 @@ export default (ctx) => {
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
-            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            ;; $__heap_end64 (i64), not i32.shl (memory.size) 16: at the wasm32 ceiling
+            ;; (memory.size()==65536 pages), the i32 form overflows to exactly 0 —
+            ;; see layout.js's followForwardingWat comment for the full account.
+            (br_if $done (i64.gt_u (i64.extend_i32_u (local.get $off)) (global.get $__heap_end64)))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))
