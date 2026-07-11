@@ -89,7 +89,7 @@ const FRAME_ARGS = {
   chladni:       () => [4, 5],          // (n,m) — an even mode: crisp flowing nodal figure, no both-odd centre cross
   hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
   dithering:     () => [2.2, 5, 1],     // Floyd–Steinberg of the lips relief — the star subject
-  plume:         () => [1.0, 5, 14, 30, 0],   // the original constants, both feathers mid-swirl
+  plume:         () => [2.0, 1 / 18, 5, 14, 30, 0],   // original constants at t=1: pulse=2t, swirl=t/18
   spectra:       (f) => [f / 60, 0.001, 0.010],  // the Bohemian-lace α from the original piece
   phyllotaxis:   () => [0, GOLDEN, 3600, 1.0],
   harmonograph:  () => [0, 0.06, 0.5, 0, 0, 1, 0.3],

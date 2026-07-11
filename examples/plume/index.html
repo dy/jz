@@ -10,15 +10,25 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // Two rainbow feather-plumes from seven lines of trig (see plume.js — after the piece shared
-// by @Rainmaker1973). Dragging edits the FORMULA itself: ↔ retunes the x-cosine comb
-// (the /14), ↕ reweights the interference term (the leading 5) — sibling species of the same
-// family. The dice re-rolls all three shape constants plus the palette; double-click restores
-// the original (5, 14, 30).
+// by @Rainmaker1973). Drag steers the MOVEMENT: ↕ sets the swimming-pulse tempo (the ripple
+// beating through the barbs), ↔ sets the drift — right of centre swirls forward, left swirls
+// BACKWARD, the middle freezes it. Both are integrated as phases, so changing speed never
+// snaps the figure. The dice re-rolls the formula's shape constants (the 5/14/30) plus the
+// palette; double-click restores the original formula and motion.
 let ka = 5.0, fx = 14.0, fy = 30.0, hue0 = 0
+let pulseRate = 2.0, swirlRate = 1 / 18          // the original's 2t and t/18
+let pulse = 0, swirl = 0, last = -1
 const demo = runDemo({
   name: "plume",
-  hint: "40 000 points through seven lines of trig · drag rewrites the formula · dice re-rolls it",
-  frame: (e, t) => { e.frame(t, ka, fx, fy, hue0) },
+  hint: "seven lines of trig · drag ↕ swim tempo ↔ drift (left = reverse) · dice re-rolls the formula",
+  frame: (e, t) => {
+    if (last < 0) last = t
+    const dt = Math.min(t - last, 0.1)           // clamp tab-switch gaps
+    last = t
+    pulse += pulseRate * dt
+    swirl += swirlRate * dt
+    e.frame(pulse, swirl, ka, fx, fy, hue0)
+  },
   randomize: () => {
     ka = 2.0 + Math.random() * 6
     fx = 8.0 + Math.random() * 18
@@ -28,10 +38,13 @@ const demo = runDemo({
 })
 
 const ptr = trackPointer(demo.cv)
-const pick = () => { fx = 8.0 + ptr.x * 18; ka = 2.0 + ptr.y * 6 }
+const pick = () => {
+  swirlRate = (ptr.x - 0.5) * 0.3                // ±0.15 — left reverses, centre freezes
+  pulseRate = 0.2 + ptr.y * 5.8                  // 0.2 (calm) … 6 (frantic)
+}
 demo.cv.addEventListener("pointerdown", pick)
 demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
-demo.cv.addEventListener("dblclick", () => { ka = 5.0; fx = 14.0; fy = 30.0 })
+demo.cv.addEventListener("dblclick", () => { ka = 5.0; fx = 14.0; fy = 30.0; pulseRate = 2.0; swirlRate = 1 / 18 })
 </script>
 </body>
 </html>

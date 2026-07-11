@@ -6,16 +6,20 @@
 //   k = K·cos(x/FX)·cos(y/FY)          (original: K=5, FX=14, FY=30)
 //   e = y/8 − 13
 //   d = (k²+e²)/59 + 4
-//   q = 60 − 3·sin(atan2(k,e)·e) + k·(3 + 4/d·sin(d²−2t))
-//   c = d/2 + e/99 − t/18
+//   q = 60 − 3·sin(atan2(k,e)·e) + k·(3 + 4/d·sin(d² − PULSE))
+//   c = d/2 + e/99 − SWIRL
 //   → point at (u,v) = (3q·sin c, 3(q+9d)·cos c)
 // Each grid point lands somewhere on a feathered plume — the cap is the low-d core, the barbs
-// are the sin(d²−2t) ripple sweeping outward as t runs. Points splat additively into an RGB
+// are the sin(d²−PULSE) ripple sweeping outward. Points splat additively into an RGB
 // accumulator (hue follows d, so the ribs band into rainbow rings) and tone-map through a
-// soft-saturation exp curve. frame(t, ka, fx, fy, hue0) exposes the formula's three shape
-// constants — K reweights the whole interference term, FX/FY retune the two cosine combs, so
-// dragging genuinely REWRITES the formula into sibling species of the same family — plus a
-// palette spin. Defaults (5, 14, 30, 0) are the original. resize(w,h) → Uint32Array px.
+// soft-saturation exp curve.
+// The original animates with PULSE = 2t (the swimming beat rippling through the barbs) and
+// SWIRL = t/18 (the slow drift of the whole figure). frame(pulse, swirl, ka, fx, fy, hue0)
+// takes those two phases directly — the host integrates them from adjustable RATES, so the
+// medusas' swimming tempo and drift direction are drivable live without the figure snapping.
+// The three shape constants K/FX/FY rewrite the formula into sibling species of the same
+// family; hue0 spins the palette. Defaults (5, 14, 30, 0) are the original.
+// resize(w,h) → Uint32Array px.
 let W = 0, H = 0, px
 let acc               // Float64Array, W*H*3 — additive RGB exposure for this frame
 let elut              // Int32Array(1024) — 255·(1−e^(−v/150)) soft-saturation tone curve
@@ -52,7 +56,7 @@ let splat = (x, y, r, g, b) => {
   acc[i] = acc[i] + r3; acc[i + 1] = acc[i + 1] + g3; acc[i + 2] = acc[i + 2] + b3
 }
 
-export let frame = (t, ka, fx, fy, hue0) => {
+export let frame = (pulse, swirl, ka, fx, fy, hue0) => {
   let n3 = W * H * 3, i = 0
   while (i < n3) { acc[i] = 0.0; i++ }
 
@@ -70,13 +74,13 @@ export let frame = (t, ka, fx, fy, hue0) => {
     while (x < 200) {
       let k = ka * Math.cos(x / fx) * cyf
       let d = (k * k + e * e) / 59.0 + 4.0
-      let q = 60.0 - 3.0 * Math.sin(Math.atan2(k, e) * e) + k * (3.0 + 4.0 / d * Math.sin(d * d - 2.0 * t))
-      let c = d * 0.5 + e / 99.0 - t / 18.0
+      let q = 60.0 - 3.0 * Math.sin(Math.atan2(k, e) * e) + k * (3.0 + 4.0 / d * Math.sin(d * d - pulse))
+      let c = d * 0.5 + e / 99.0 - swirl
       let u = (3.0 * q * Math.sin(c) - 76.0) * s
       let v = (3.0 * (q + 9.0 * d) * Math.cos(c) + 226.0) * s
 
       // hue follows d — the ripple bands ring into a rainbow; inline HSV→RGB (S=.9, V=1)
-      let hue = (d - 4.0) * 95.0 + 50.0 + t * 8.0 + hue0
+      let hue = (d - 4.0) * 95.0 + 50.0 + swirl * 144.0 + hue0   // swirl·144 ≡ the original's t·8
       hue = hue - Math.floor(hue / 360.0) * 360.0
       let hs = hue / 60.0
       let hf = hs - Math.floor(hs * 0.5) * 2.0            // position within a 120° double-sector
