@@ -19,8 +19,9 @@ import { ssoEncode } from './string.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
-// arm in __dyn_get_t_h. ssoEncode('length') never returns null (6 ASCII).
-const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
+// arm in __dyn_get_t_h and __length's property-fallback arm (module/core.js).
+// ssoEncode('length') never returns null (6 ASCII).
+export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -1106,8 +1107,39 @@ export default (ctx) => {
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
-  registerGetter('.size', (expr) => {
+  // `.size` on a PROVEN Set/Map: entry count at off-8, direct __len.
+  const sizeLen = (expr) => {
+    inc('__len')
     return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
+  }
+  registerGetter(`.${VAL.SET}:size`, sizeLen)
+  registerGetter(`.${VAL.MAP}:size`, sizeLen)
+  // `.size` on an unproven receiver: in JS only Set/Map expose an entry count —
+  // on everything else `size` is an ordinary own property (or undefined). The
+  // old bare-__len form read the length HEADER of whatever arrived, silently
+  // returning 0 for `{size: 4}` — which broke the self-host kernel reading
+  // `ctx.runtime.internTable.size` (the last L2 byte-parity divergence).
+  // NaN-check guards real numbers whose bit pattern could false-match the tag
+  // compare; the dyn dispatcher covers OBJECT schema slots, HASH keys,
+  // sidecars, and primitives (→ undefined).
+  registerGetter('.size', (expr) => {
+    inc('__len', '__ptr_type', '__dyn_get_expr_t_h')
+    const o = temp('szv')
+    const t = tempI32('szt')
+    const og = ['local.get', `$${o}`]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${o}`, asF64(emit(expr))],
+      ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', og]]],
+      ['if', ['result', 'f64'],
+        ['i32.and',
+          ['f64.ne', og, og],
+          ['i32.or',
+            ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.SET]],
+            ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.MAP]]]],
+        ['then', ['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', og]]]],
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h',
+          ['i64.reinterpret_f64', og], asI64(emit(['str', 'size'])), ['local.get', `$${t}`],
+          ['i32.const', strHashLiteral('size')]]]]]], 'f64')
   })
 
   // x instanceof Map / Set — typed-pointer predicates emitted by jzify. NaN-check

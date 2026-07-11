@@ -20,7 +20,7 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral, heapResetWat } from './collection.js'
+import { strHashLiteral, heapResetWat, LENGTH_SSO_I64 } from './collection.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -36,7 +36,12 @@ export default (ctx) => {
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __set_len: ['__ptr_offset_fwd'],
-    __length: ['__ptr_type', '__str_len', '__len'],
+    // Property-fallback arm (`.length` as an ordinary own key on OBJECT/HASH
+    // receivers) needs the dyn dispatcher — but only when the program can even
+    // HOLD such a property (a schema'd object or dyn/hash machinery exists);
+    // string/array-only programs keep the lean undefined arm.
+    __length: () => ['__ptr_type', '__str_len', '__len',
+      ...(lengthNeedsDynArm() ? ['__dyn_get_expr_t_h'] : [])],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
@@ -869,8 +874,8 @@ export default (ctx) => {
   // === Shared dispatch helpers ===
 
   /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch.
-   *  ARRAY/SET/MAP share a single layout: length is i32 at offset-8. We inline that load
-   *  directly instead of calling __len which re-dispatches on type. ptrOffsetIR handles
+   *  ARRAY length is i32 at offset-8 — inline that load directly instead of calling
+   *  __len which re-dispatches on type. ptrOffsetIR handles
    *  ARRAY forwarding (non-ARRAY skips the forwarding loop). TYPED has a variable-width
    *  layout depending on the aux typed-element shift, so it still routes through __len.
    *  `notString` (from rep.notString — write-shape evidence rules out primitive string)
@@ -886,10 +891,13 @@ export default (ctx) => {
       ctx.core.jsstring.add('length')
       return typed(['f64.convert_i32_s', ['call', '$__jss_length', va]], 'f64')
     }
-    if (vt === VAL.ARRAY || vt === VAL.SET || vt === VAL.MAP) {
+    if (vt === VAL.ARRAY) {
       const off = ptrOffsetIR(va, vt)
       return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', off, ['i32.const', 8]]]], 'f64')
     }
+    // Set/Map have no .length in JS — their count is `.size`. (The former
+    // shared-layout __len shortcut returned the entry count here.)
+    if (vt === VAL.SET || vt === VAL.MAP) return undefExpr()
     if (vt === VAL.TYPED)
       return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     // Known string → byteLen via the active string rep. Pass the slot
@@ -1182,16 +1190,35 @@ export default (ctx) => {
   // this program (features.* + hash-stdlib presence). ARRAY is always live; STRING and
   // number are always dispatched. The __len disjunction collapses to whichever of
   // ARRAY/TYPED/HASH/SET/MAP are reachable. STRING covers both heap and SSO via __str_len.
+  // Can `.length` on an unproven receiver resolve to an ORDINARY own property?
+  // Only when the program can hold one: a registered object schema, or the
+  // dyn-prop/hash machinery. Otherwise the fallback arm stays plain undefined
+  // and __length pulls no dyn dispatcher. The dispatcher lives in
+  // module/collection.js — gate on its registration too, so a build whose
+  // autoload never pulled that module keeps the lean arm instead of
+  // requesting an unregistered stdlib. Consulted at pull time (factory +
+  // deps thunk), when schemas, includes, and module set are final — same
+  // pattern as the old HASH-arm includes probe.
+  const lengthNeedsDynArm = () =>
+    ctx.core.stdlib['__dyn_get_expr_t_h'] != null &&
+    (ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
+     ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
+
   ctx.core.stdlib['__length'] = () => {
     const types = [PTR.ARRAY]
     if (ctx.features.typedarray) types.push(PTR.TYPED)
-    if (ctx.core.includes.has('__hash_new') || ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
-      types.push(PTR.HASH)
-    if (ctx.features.set) types.push(PTR.SET)
-    if (ctx.features.map) types.push(PTR.MAP)
     const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`
     let disj = eqT(types[0])
     for (let i = 1; i < types.length; i++) disj = `(i32.or ${disj} ${eqT(types[i])})`
+    // Everything that is not a string/array/typed reads `length` as an ordinary
+    // property: OBJECT schema slot, HASH key, sidecar — or undefined. (Set/Map
+    // have NO .length in JS — their count is `.size`; the old HASH/SET/MAP
+    // __len arms returned the entry count, which no JS engine does.) The dyn
+    // dispatcher guards real-number receivers itself; gated to keep the lean
+    // undefined arm in programs that can't hold such a property at all.
+    const propArm = lengthNeedsDynArm()
+      ? `(f64.reinterpret_i64 (call $__dyn_get_expr_t_h (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
+      : `(f64.const nan:${UNDEF_NAN})`
     const lenArm = `(block (result f64)
             (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
             (if (result f64) ${disj}
@@ -1199,7 +1226,7 @@ export default (ctx) => {
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
                   (then (f64.convert_i32_s (call $__len (local.get $v))))
                   (else (f64.const nan:${UNDEF_NAN}))))
-              (else (f64.const nan:${UNDEF_NAN}))))`
+              (else ${propArm})))`
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (then (f64.convert_i32_s (call $__str_len (local.get $v))))
             (else ${lenArm}))`
@@ -1270,6 +1297,10 @@ export default (ctx) => {
       }
       const rep = typeof obj === 'string' ? repOf(obj) : null
       const vt = rep ? rep.val : valTypeOf(obj)
+      // Proven OBJECT/HASH receiver: `.length` is an ordinary own property
+      // (schema slot / hash key), never a builtin length — resolve statically
+      // instead of paying __length's runtime dispatch.
+      if (vt === VAL.OBJECT || vt === VAL.HASH) return emitPropAccess(emit(obj), obj, 'length')
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
@@ -1313,9 +1344,13 @@ export default (ctx) => {
     // Module-registered property getter (.size, .byteLength, …). Methods sharing
     // the bare-`.prop` table (`.values`, `.pop`, date getters) are untagged and
     // fall through to a real property read — `m.values` reads the "values" field.
+    // A PROVEN OBJECT/HASH receiver never has builtin accessors in JS — its
+    // `.size`/`.byteLength` are ordinary own properties, so skip the getter and
+    // fall through to the real property read below.
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]
-    if (propEmitter && ctx.core.getters.has(propKey)) return propEmitter(obj)
+    if (propEmitter && ctx.core.getters.has(propKey) &&
+        ptVt !== VAL.OBJECT && ptVt !== VAL.HASH) return propEmitter(obj)
 
     return emitPropAccess(emit(obj), obj, prop)
   }

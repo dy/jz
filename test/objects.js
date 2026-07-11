@@ -1653,3 +1653,53 @@ test('spread merge: enumeration sees the spread keys, not just the literal ones'
   is(r.forin(), 'abz')
   is(r.gate(), 1, 'reads through the merged schema stay live')
 })
+
+// Object.freeze/isFrozen consistency (2026-07-10): freeze is a documented
+// no-enforcement passthrough, but a freeze()-marked never-reassigned binding
+// now answers isFrozen true (prepare records it at the identity fold) — the
+// self-inconsistent isFrozen(freeze(x)) === false wart is gone.
+test('objects: freeze/isFrozen consistency', () => {
+  is(run(`export let f = () => { let o = { a: 1 }; return Object.isFrozen(Object.freeze(o)) ? 1 : 0 }`).f(), 1)
+  is(run(`export let f = () => { const o = { a: 1 }; Object.freeze(o); return Object.isFrozen(o) ? 1 : 0 }`).f(), 1)
+  is(run(`export let f = () => { let o = { a: 1 }; return Object.isFrozen(o) ? 1 : 0 }`).f(), 0)
+  // a rebind points at a fresh object — the mark must not survive
+  is(run(`export let f = () => { let o = { a: 1 }; Object.freeze(o); o = { a: 2 }; return Object.isFrozen(o) ? 1 : 0 }`).f(), 0)
+  is(run(`export let f = () => Object.freeze({ a: 7 }).a`).f(), 7)
+})
+
+// Builtin-name properties on plain objects (2026-07-11): `.size`/`.length` are
+// ORDINARY own keys on OBJECT/HASH — only Set/Map expose an entry count, only
+// string/array/typed a length. The old bare getters read the length HEADER of
+// whatever arrived (`{size:4}` → 0, `{length:7}` → undefined); in the self-host
+// kernel that broke `ctx.runtime.internTable.size` — the intern-table slot
+// skipped stripStaticDataPrefix's shift, the final L2 byte-parity divergence.
+test('objects: size/length are ordinary props on objects, counts on collections', () => {
+  const r = run(`
+    let holder = { t: null }
+    export let dyn = () => {
+      holder.t = { base: 120, size: 4, length: 7 }
+      const o = holder.t
+      const { size } = holder.t
+      return o.size + ':' + o.length + ':' + size
+    }
+    export let known = () => {
+      const k = { size: 3, length: 2 }
+      return k.size + ':' + k.length
+    }
+    export let coll = () => {
+      const s = new Set([1, 2, 3])
+      let u = null
+      u = s
+      return s.size + ':' + new Map([[1, 2]]).size + ':' + u.size
+    }
+    export let prim = () => {
+      let u = null
+      u = 5.5
+      return (u.size === undefined) && (new Set([1]).length === undefined) ? 1 : 0
+    }
+  `, { memory: 64 })
+  is(r.dyn(), '4:7:4', 'dyn-routed object reads own size/length keys')
+  is(r.known(), '3:2', 'known object resolves size/length statically')
+  is(r.coll(), '3:1:3', 'Set/Map .size = entry count, typed and dispatched')
+  is(r.prim(), 1, 'number .size and Set .length are undefined')
+})
