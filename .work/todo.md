@@ -738,13 +738,56 @@
       hijack UNKNOWN receivers carrying same-named own props (proven
       OBJECT/HASH now safe); notString OBJECT receivers still route
       .length → __len. Same fix shape when picked up.
-      REMAINING (in flight): bench jz ROW at level 'speed' THROWS
-      (uncaught $__jz_err) since ad45071 — L2/-Os builds run+parity-ok,
-      so it's a speed-only miscompile of the compiler bundle; entered
-      with the pointer-ABI narrowing commit; single-component ablation
-      over the L3 preset (inlineFns/reduceUnroll/rotateLoops/watrLicm/
-      watrGuard/hoistPool/caps/boolSelect/recursionUnroll) in progress
-      in a clean worktree (scratchpad/ablate.mjs).
+      REMAINING — speed-tier lab-row throw, ROOT-CAUSED (2026-07-11),
+      fix designed but deliberately not landed tired (see hazards):
+      * Bisect chain, every step verified: L3 preset ablation → ONLY
+        `inlineFns:false` heals (OK + cs=ref) → sub-ablation → ONLY the
+        hoistNestedCalls leg → per-callee skip over the 16 hoistable
+        leaves → ONLY `_i64Hex16` (watr optimize.js) → per-caller skip:
+        skipping EITHER _i64Canon (3 splices) or strengthNode (1) heals;
+        control skips (dollar ×6, getOrAllocLanedLocal ×3) still throw ⇒
+        semantic, not layout.
+      * Mechanism: inlining _i64Hex16 splices `v.toString(16)` into
+        callers where v binds a BIGINT∪NULL expression (`cb ?
+        BigInt(cb.value) : null`, `neg ? -BigInt(mag) : BigInt(mag)`),
+        AND removes the fresh-BigInt call sites that used to type the
+        remaining real function's param. VT['?:'] deliberately returns
+        null for mixed arms (strict-eq fold honesty) ⇒ receiver vt null
+        ⇒ tryRuntimeStringFork's non-NaN arm claims it as NUMBER —
+        `.number:toString(16)` formats raw i64 bits as a denormal
+        ("0.000…0"), poisoning watr's const-canon strings → downstream
+        throw. 3-line repro, wrong at EVERY level (not speed-specific;
+        speed only EXPOSES it via inlining):
+        `const r = a > 0 ? BigInt(a) : null; r == null ? 'null' :
+        r.toString(16)` → "0.0000…" instead of "ff". Also wrong via
+        `if`-guard and `!=` forms — no nullish refinement strips the
+        union anywhere.
+      * WHY static-only: a raw-i64 BIGINT carrier is UNTAGGABLE at
+        runtime (non-NaN f64 bits ≡ number bits) — no runtime fork can
+        ever rescue it; the static kind is the only truth. Tagged kinds
+        (string/array/…) are fine in the fork — the hole is exactly
+        BIGINT.
+      * Fix design (canonical, NOT landed): BIGINT union-grade carry —
+        (1) VT['?:']/'??' return VAL.BIGINT when one arm is BIGINT and
+        the other a nullish LITERAL (mayBeNullish at the decl already
+        sets rep.nullable — analyze.js:919 — and nullableOperand
+        (emit.js:1739) already keeps `x == null` folds honest for
+        kind+nullable reps, so the local story is complete); (2) the
+        narrow.js param val-lattice must OR-propagate nullability from
+        call-site args into paramReps/sig (TODAY it stamps bare
+        `p.val` — narrow.js:1218-1226 — so a BIGINT-nullable arg would
+        claim val=BIGINT on the param WITHOUT nullable and
+        strictSentinel would FOLD the callee's `r == null` guard —
+        _i64Arith's guard is live (folders pass real nulls), i.e. the
+        naive VT-only fix trades a wrong string for a broken guard —
+        THE hazard that stopped the tired landing); (3) re-gate: full
+        suite + bench spot-checks + the lab row at speed.
+      * Lab assets (scratchpad, fix2-wt worktree at 77331c4):
+        ablate.mjs (compileJzAt-mirror + cfg-keyed gates ablNotrans/
+        ablNohoist/ablSkipHoist/ablSkipCaller/ablList in fix2-wt's
+        plan/inline.js — LAB ONLY, never commit), hoist log shows 13
+        splices at speed; decode-exc.mjs; intern-diag.mjs (compileDiag
+        intern records).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
