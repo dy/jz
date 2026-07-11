@@ -585,3 +585,31 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   exports.churn(999); exports.churn(123)   // reuse the arena the stale entry pointed into
   is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
 })
+
+// Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
+// every ARRAY/SET/MAP/HASH pointer dereference validates its offset against
+// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. That bound
+// used to be computed as `i32.shl(memory.size, 16)` — sound for every page count
+// EXCEPT the wasm32 ceiling itself (memory.size()==65536 pages / 4 GiB), where
+// 65536*65536 == 2^32 overflows i32 to exactly 0, making the bound "offset <= 0" —
+// unsatisfiable for any real offset, so the forward-chase silently stops running for
+// the rest of execution. A large-offset RUNTIME repro needs an actual ~4 GiB memory
+// (exercised by the warm-kernel stress above, which drives a real build to that
+// ceiling); this is the fast, host-level structural pin: the fix computes the same
+// bound in i64 against a cached $__heap_end64 global (module/core.js, kept in sync by
+// __memgrow) instead of recomputing the overflowing i32 shift at every dereference.
+// Both counts are exact, not just "present" — 1 legitimate i32.shl(memory.size,16)
+// survives (module/core.js's own $__heap_end assignment, whose wraparound is benign:
+// __alloc's consumer just slow-paths one extra call, __memgrow re-derives everything
+// fresh in i64 — see that file's comment); a regression back to the inline i32 bound
+// at any forwarding site would push this count above 1.
+test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory.size,16), which overflows to 0 at the wasm32 4GiB ceiling)', () => {
+  const wat = compile(
+    `export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); const m = new Map(); m.set(1, 2); return xs.length + m.size }`,
+    { wat: true, optimize: 2 },
+  )
+  const shlMemSize = wat.match(/i32\.shl[\s\S]{0,3}\(memory\.size\)/g) || []
+  is(shlMemSize.length, 1, 'exactly one i32.shl(memory.size,16) survives — __memgrow\'s own benign $__heap_end assignment')
+  ok(/\$__heap_end64/.test(wat), 'forwarding-chase bound reads the cached i64 global')
+  ok(/i64\.extend_i32_u/.test(wat), 'offset is widened to i64 before the bound compare')
+})

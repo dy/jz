@@ -267,9 +267,31 @@ test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-p
 // compiles (never rewound, unlike the _clear test above) for the drift to walk
 // off the end of a page and trap "memory access out of bounds" instead of
 // silently misreading. Two field-name shapes (both single-letter-adjacent to
-// jz's own AST op tags, and a common short property name) at 30 rounds each is
-// the smallest N that reproduced the original bug reliably; keep it at or above
-// that rather than shrinking it back down to "looks clean in a quick run".
+// jz's own AST op tags, and a common short property name) at 30 rounds each was
+// the smallest N that reproduced that bug reliably.
+//
+// Bumped 30→40 rounds/program to also cover a FOURTH, independent bug this same
+// stress shape (repeated Map/HASH-growth allocation, no _clear) surfaces once the
+// bump arena's absolute byte address crosses ~2 GiB and later needs the wasm32
+// memory to grow to its full 65536-page (4 GiB) ceiling: layout.js's
+// followForwardingWat/ptrOffsetFwdWat (the ARRAY/SET/MAP/HASH relocation-forwarding
+// chase every dyn-prop/collection dereference runs through) bounded a pointer
+// offset against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one
+// time memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32).
+// That silently disabled the forward-chase for the rest of execution: a stale
+// reference to an already-relocated collection stopped following its forwarding
+// header and read the abandoned block's cap=-1 sentinel as a real capacity,
+// producing wild table-probe writes ("memory access out of bounds" inside
+// __alloc_hdr_n, or an unbounded probe loop, depending on layout — the exact
+// shape that landed at a given round was highly layout-sensitive, but the trigger
+// — sustained dyn-props allocation pressure with no reset — was not). Fixed by
+// comparing in i64 against a cached $__heap_end64 global (module/core.js,
+// layout.js) instead of the overflowing i32 shift. 40 rounds/program comfortably
+// exceeds every round this bug was observed to fire at across multiple builds
+// (22-52, layout-dependent) without running long enough to reach the genuine
+// 4 GiB ceiling itself (~100+ rounds, where an honest `unreachable` OOM trap is
+// the correct outcome, not a bug). Keep at or above 40 rather than shrinking it
+// back down to "looks clean in a quick run".
 test('selfhost: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
   getSelf()
   const warm = instantiate(readFileSync(SELF), { memory: 8192 })
@@ -278,7 +300,7 @@ test('selfhost: warm-instance reuse with NO _clear — repeated Map+prop-access 
     "export let go = () => { const m = new Map(); m.set('a', { mut: true }); const g = m.get('a'); return g.mut ? 1 : 0 }",
   ]
   for (const src of PROGRAMS) {
-    for (let round = 0; round < 30; round++) {
+    for (let round = 0; round < 40; round++) {
       const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String('2'))
       const bin = warm.memory.read(out)
       const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
