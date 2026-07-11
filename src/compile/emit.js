@@ -2221,6 +2221,27 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   const acc = `${T}acc${ctx.func.uniq++}`
   ctx.func.locals.set(acc, 'f64')
   const ir = [['local.set', `$${acc}`, asF64(emit(objArg))]]
+  if (reverse) {
+    // unshift(a, b, ...s): ES yields [a, b, ...s, ...existing]. Per-element
+    // PREPENDS must run right-to-left over the WHOLE argument list — spread
+    // elements first (end→start), the normal args last — or the spread lands
+    // in front of the normals ([...s, a, b, ...] — the order bug that broke
+    // the kernel's own `inject.unshift(setBase, ...stores)`). Argument
+    // EVALUATION order stays left-to-right: normals spill to temps first.
+    const temps = parsed.normal.map((a) => {
+      const t = `${T}usv${ctx.func.uniq++}`
+      ctx.func.locals.set(t, 'f64')
+      ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(a)))])
+      return t
+    })
+    ir.push(...emitSpreadElementLoop(parsed.spreads[0].expr, (arr, idx) => {
+      const body = asF64(emitAsValue(() => methodEmitter(objArg, ['[]', arr, idx])))
+      return [['drop', body]]
+    }, { reverse: true }))
+    if (temps.length) ir.push(['drop', asF64(emitAsValue(() => methodEmitter(objArg, ...temps)))])
+    ir.push(asF64(emit(objArg)))
+    return block64(...ir)
+  }
   if (parsed.normal.length > 0) {
     const r = asF64(emitAsValue(() => methodEmitter(objArg, ...parsed.normal)))
     ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
@@ -2245,6 +2266,42 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   if (acc) ctx.func.locals.set(acc, 'f64')
   const recv = inPlace ? objArg : acc
   const ir = inPlace ? [] : [['local.set', `$${acc}`, asF64(emit(objArg))]]
+  if (method === 'unshift') {
+    // Prepends compose right-to-left (see emitSingleSpreadMethodCall's reverse
+    // arm). Evaluation order stays left-to-right: spill every segment first —
+    // normal args to value temps, each spread's source array to a temp — then
+    // walk the segments END→START, spreads iterating end→start, each normal
+    // batch prepended through the multi-arg emitter (which lands its own args
+    // in argument order).
+    const segs = []
+    for (const item of combined) {
+      if (Array.isArray(item) && item[0] === '__spread') {
+        const t = `${T}ussp${ctx.func.uniq++}`
+        ctx.func.locals.set(t, 'f64')
+        ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(item[1])))])
+        segs.push(['spread', t])
+      } else {
+        const t = `${T}usv${ctx.func.uniq++}`
+        ctx.func.locals.set(t, 'f64')
+        ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(item)))])
+        if (segs.length && segs[segs.length - 1][0] === 'batch') segs[segs.length - 1].push(t)
+        else segs.push(['batch', t])
+      }
+    }
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const [kind, ...temps] = segs[i]
+      if (kind === 'spread') {
+        ir.push(...emitSpreadElementLoop(temps[0], (arr, idx) => {
+          const body = asF64(emitAsValue(() => methodEmitter(objArg, ['[]', arr, idx])))
+          return [['drop', body]]
+        }, { reverse: true }))
+      } else {
+        ir.push(['drop', asF64(emitAsValue(() => methodEmitter(objArg, ...temps)))])
+      }
+    }
+    ir.push(asF64(emit(objArg)))
+    return block64(...ir)
+  }
   let batch = []
   const flushBatch = () => {
     if (!batch.length) return

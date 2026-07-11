@@ -474,3 +474,24 @@ test('unshift: multi-arg inserts in argument order, returns new length', () => {
   `)
   is(r.go(), '[1,2,3,9]|4|0987')
 })
+
+test('unshift: spread args land in argument order', () => {
+  // Prepends compose right-to-left: the spread loop must run AFTER any normal
+  // args are staged and walk its elements end→start, or `a.unshift(1, ...ys)`
+  // yields [...ys, 1, ...] instead of [1, ...ys, ...]. Kernel instance:
+  // assemble.js `inject.unshift(setBase, ...snapSlots)` — the gsnap reorder.
+  const r = run(`
+    export let go = () => {
+      const ys = [2, 3]
+      const a = [9]
+      a.unshift(1, ...ys)
+      const b = [9]
+      b.unshift(...ys)
+      const zs = [5]
+      const c = [9]
+      c.unshift(1, ...ys, 4, ...zs)
+      return JSON.stringify(a) + '|' + JSON.stringify(b) + '|' + JSON.stringify(c)
+    }
+  `)
+  is(r.go(), '[1,2,3,9]|[2,3,9]|[1,2,3,4,5,9]')
+})
