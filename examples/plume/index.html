@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
+
+// Two rainbow feather-plumes from seven lines of trig (see plume.js — after the piece shared
+// by @Rainmaker1973, x.com/Rainmaker1973/status/2075485116856504794). The animation runs on
+// its own; drag ↔ spins the palette, drag ↕ sets the barb-ripple depth (the "4" in the
+// original formula), and the dice re-rolls both.
+let amp = 4.0, hue0 = 0
+const demo = runDemo({
+  name: "plume",
+  hint: "40 000 points through seven lines of trig · drag ↔ hue ↕ ripple · dice to re-roll",
+  frame: (e, t) => { e.frame(t, amp, hue0) },
+  randomize: () => { hue0 = Math.random() * 360; amp = 1.5 + Math.random() * 6 },
+})
+
+const ptr = trackPointer(demo.cv)
+const pick = () => { hue0 = ptr.x * 360; amp = 0.5 + ptr.y * 8 }
+demo.cv.addEventListener("pointerdown", pick)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
+</script>
+</body>
+</html>

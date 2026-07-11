@@ -89,6 +89,8 @@ const FRAME_ARGS = {
   chladni:       () => [4, 5],          // (n,m) — an even mode: crisp flowing nodal figure, no both-odd centre cross
   hydrogen:      () => [0, 6],          // sel=6 → the 3d_z² orbital (iconic lobes + ring)
   dithering:     () => [2.2, 5, 1],     // Floyd–Steinberg of the lips relief — the star subject
+  plume:         () => [1.0, 4, 0],     // the original formula (A=4), both feathers mid-swirl
+  spectra:       (f) => [f / 60, 0.001, 0.010],  // the Bohemian-lace α from the original piece
   phyllotaxis:   () => [0, GOLDEN, 3600, 1.0],
   harmonograph:  () => [0, 0.06, 0.5, 0, 0, 1, 0.3],
   truchet:       () => [0, 30],
@@ -114,7 +116,8 @@ const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,
-                 sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90 }[name] ?? 1
+                 sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90,
+                 spectra: 120 }[name] ?? 1
 // nbody live is 3 bodies trailing short comet tails on black — a raw frame leaves them as
 // specks in a sea of black. So: capture a single frame, crop to the bodies, and upscale so the
 // trio fills the frame. Roll many initial conditions and keep the most balanced triangle with

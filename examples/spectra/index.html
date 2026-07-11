@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
+</head>
+<body>
+<script type="module">
+// ⋃ spec(Aᵢ) for random 6×6 matrices, entries 2·Beta(α,β)−1 (see spectra.js — reproduces
+// Simone Conradi's piece with the title-card formula, β = 0.010). α sweeps a slow log
+// ping-pong on its own, morphing Bohemian lace into the smooth double-lobed cloud;
+// drag ↔ holds α, drag ↕ sets β; dice reseeds the stream.
+import { runDemo, trackPointer } from "../lib/jzdemo.js"
+
+const LA0 = Math.log(0.001), LA1 = Math.log(0.012)
+let beta = 0.010, manualAlpha = -1, manualAt = -10, nowT = 0, engine = null
+const demo = runDemo({
+  name: "spectra",
+  hint: "eigenvalues of a stream of random 6×6 matrices · drag ↔ α ↕ β · dice to reseed",
+  load: (e) => { engine = e },
+  frame: (e, t) => {
+    nowT = t
+    if (manualAlpha > 0 && t - manualAt > 8) manualAlpha = -1        // resume the sweep after 8s idle
+    const sweep = Math.exp(LA0 + (LA1 - LA0) * (1 - Math.cos(t * 0.10)) * 0.5)
+    e.frame(t, manualAlpha > 0 ? manualAlpha : sweep, beta)
+  },
+  randomize: () => { if (engine && engine.reseed) engine.reseed((Math.random() * 0x7fffffff) | 0) },
+})
+
+const ptr = trackPointer(demo.cv)
+const pick = () => {
+  manualAlpha = Math.exp(Math.log(0.0005) + (Math.log(0.1) - Math.log(0.0005)) * ptr.x); manualAt = nowT
+  beta = Math.exp(Math.log(0.002) + (Math.log(0.1) - Math.log(0.002)) * ptr.y)
+}
+demo.cv.addEventListener("pointerdown", pick)
+demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
+</script>
+</body>
+</html>
