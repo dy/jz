@@ -252,3 +252,38 @@ test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-p
     warm.instance.exports._clear()
   }
 })
+
+// Warm-instance reuse WITHOUT any `_clear()` — the bump arena grows monotonically
+// across every compile, exactly the condition under which narrow.js's pointer-ABI
+// fixes (applyPointerParamAbi's missing ptrAux, passthroughPtrParam's recursive
+// delegation — both in this same test/selfhost.js file's neighbor tests natively,
+// see test/objects.js's "devirt schema-slot" tests for the host-level pin) used to
+// leave a Map/Object receiver whose real schema the static analysis can't see
+// (bindAssignSchema poisons the binding on disagreeing assignments) routing
+// through ctx.schema.guardedSlotOf's speculative devirtualization with a wrong or
+// missing schema aux. The corruption doesn't surface on round 1 — the guard's
+// dyn-props fallback and the header allocator both write real, valid memory each
+// time, just occasionally at a wrong offset, and it takes dozens of accumulated
+// compiles (never rewound, unlike the _clear test above) for the drift to walk
+// off the end of a page and trap "memory access out of bounds" instead of
+// silently misreading. Two field-name shapes (both single-letter-adjacent to
+// jz's own AST op tags, and a common short property name) at 30 rounds each is
+// the smallest N that reproduced the original bug reliably; keep it at or above
+// that rather than shrinking it back down to "looks clean in a quick run".
+test('selfhost: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
+  getSelf()
+  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  const PROGRAMS = [
+    "export let go = () => { const m = new Map(); m.set('a', { zzqqxxdiagfield: true }); const g = m.get('a'); return g.zzqqxxdiagfield ? 1 : 0 }",
+    "export let go = () => { const m = new Map(); m.set('a', { mut: true }); const g = m.get('a'); return g.mut ? 1 : 0 }",
+  ]
+  for (const src of PROGRAMS) {
+    for (let round = 0; round < 30; round++) {
+      const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String('2'))
+      const bin = warm.memory.read(out)
+      const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+      ok(bytes.length > 8, `round ${round}: compiled wasm bytes (no allocator trap)`)
+      is(instantiate(bytes, { memory: 64 }).exports.go(), 1, `round ${round}: g's own field reads back true`)
+    }
+  }
+})

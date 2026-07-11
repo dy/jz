@@ -1572,6 +1572,38 @@ test('devirt schema-slot: two schemas sharing a field name at different slots ne
   is(r.getA(r.buildB()), 99)
 })
 
+// narrow.js's applyPointerParamAbi unboxes a non-exported function's OBJECT-kind
+// param to a raw i32 offset when every live call site proves the same schema —
+// here `chase`'s own recursive call (`chase(o, n-1)`) plus its one external entry
+// (`chase(mk(), n)`, mk's return schema provably `a,b,c`). Its OBJECT arm used to
+// set `p.type='i32'`/`p.ptrKind` and stop there, with no `p.ptrAux` (the schema
+// id): boxPtrIR/asF64 defaults a missing aux to 0 on re-box, so the returned
+// pointer silently carried schema id 0 (whichever schema registers first program-
+// wide) instead of mk's real one. `other`'s DIFFERENT field layout is declared
+// FIRST so it claims schema 0 — mk is provably schema 1+ — making the defaulted-
+// to-0 aux read `other`'s slot for 'a' (or nothing) instead of mk's. `getA`'s `.a`
+// read goes through guardedSlotOf (two schemas disagree on `a`'s slot index, so
+// the structural single-slot fast path can't apply either), whose runtime tag+aux
+// compare is exact-match — a wrong aux reads undefined, not a fallback.
+// Differential-verified: FAILS (returns undefined, base case n=0 included — not
+// just deep recursion) against the pre-fix narrow.js/ir.js/module/core.js, PASSES
+// against the fix.
+test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not schema 0', () => {
+  const r = run(`
+    const other = () => ({ z: 0, a: 99 })
+    const mk = () => ({ a: 111, b: 222, c: 333 })
+    const chase = (o, n) => n <= 0 ? o : chase(o, n - 1)
+    const chaseFromMk = (n) => chase(mk(), n)
+    export const getA = (o) => o.a
+    export const buildOther = () => other()
+    export const roundTrip = (n) => chaseFromMk(n)
+  `)
+  is(r.getA(r.roundTrip(0)), 111, 'base case (n=0): mk real schema id, not schema 0')
+  is(r.getA(r.roundTrip(1)), 111, 'one recursive hop keeps the real schema id')
+  is(r.getA(r.roundTrip(5)), 111, 'five recursive hops keep the real schema id')
+  is(r.getA(r.buildOther()), 99, 'schema-0 receiver still reads its own real field')
+})
+
 test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
   // The dictionary-mode `{}` (computed keys only → real HASH) plus the
   // `o[k] = f(o[k])` single-probe fusion (tryHashRmwFusion). Values pinned at
