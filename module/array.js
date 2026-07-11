@@ -1279,9 +1279,36 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
-  // .unshift(val) → prepend element, shift existing right
-  ctx.core.emit['.unshift'] = (arr, val) => (inc('__arr_unshift'),
-    typed(['call', '$__arr_unshift', asI64(emit(arr)), carrierF64(val, emit(val))], 'f64'))
+  // .unshift(...vals) → prepend elements, shift existing right. Multi-arg per ES:
+  // `a.unshift(1, 2, 3)` yields [1, 2, 3, …existing] and returns the NEW LENGTH
+  // (the helper's contract — it mutates in place; a grow leaves a forwarding
+  // pointer so the receiver box stays valid, no write-back). Args EVALUATE
+  // left-to-right (spilled to temps in source order) but INSERT last-to-first
+  // through the single-value helper so the block lands in argument order; the
+  // receiver is evaluated ONCE. (The old emitter silently DROPPED every argument
+  // past the first — in the self-host kernel that broke assemble.js's own
+  // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
+  // divergence.)
+  ctx.core.emit['.unshift'] = (arr, ...rawVals) => {
+    inc('__arr_unshift')
+    // Flatten comma-grouped args: [',', v1, v2] → [v1, v2] (same unwrap as '{}')
+    const vals = rawVals.length === 1 && Array.isArray(rawVals[0]) && rawVals[0][0] === ','
+      ? rawVals[0].slice(1) : rawVals
+    if (vals.length <= 1) {
+      const val = vals[0]
+      return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : carrierF64(val, emit(val))], 'f64')
+    }
+    const recv = temp('usr')
+    const temps = vals.map(() => temp('us'))
+    const body = [
+      ['local.set', `$${recv}`, asF64(emit(arr))],
+      ...vals.map((v, i) => ['local.set', `$${temps[i]}`, carrierF64(v, emit(v))]),
+    ]
+    for (let i = vals.length - 1; i >= 1; i--)
+      body.push(['drop', ['call', '$__arr_unshift', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${temps[i]}`]]])
+    body.push(['call', '$__arr_unshift', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${temps[0]}`]])
+    return typed(['block', ['result', 'f64'], ...body], 'f64')
+  }
 
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
     (local $off i32) (local $len i32) (local $a f64)

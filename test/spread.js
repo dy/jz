@@ -456,3 +456,21 @@ test.todo('spread: rest-param spread through export-only unknown callee', () => 
   }`)
   ok(wasm.length > 0)
 })
+
+test('unshift: multi-arg inserts in argument order, returns new length', () => {
+  // ES: a.unshift(1,2,3) -> [1,2,3,...existing], returns the new length. The
+  // old emitter silently DROPPED every argument past the first — in the
+  // self-host kernel that broke assemble.js's own
+  // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
+  // divergence (.work/todo.md, INSTRUMENTED-KERNEL SESSION).
+  const r = run(`
+    export let go = () => {
+      const a = [9]
+      const n = a.unshift(1, 2, 3)
+      const b = [9, 8, 7]
+      b.unshift(0)
+      return JSON.stringify(a) + '|' + n + '|' + b.join('')
+    }
+  `)
+  is(r.go(), '[1,2,3,9]|4|0987')
+})
