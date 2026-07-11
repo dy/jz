@@ -660,12 +660,49 @@
       main already has (i64Hex halves, Array.isArray-as-value) — not
       merged. Repro/bisect tooling preserved in the session scratchpad
       (bisect-passes.mjs, repro-diag.mjs, build-named-kernel.mjs).
-      NEXT (continuation agent, combined brief): use the PHANTOM-KEYS
-      manifestation as the primary repro (single compileDiag call — far
-      faster than kern-seq's rounds); instrument the sidecar-resolution
-      path through the kernel diag channel to catch the foreign pointer
-      at its source; audit __alloc for overlapping live allocations
-      (heap monotonic ⇒ either allocator overlap or wild store).
+      KILLED (2026-07-10, hunt agent, merged ad45071/90056b4): the wild
+      write was a REBOXED OBJECT POINTER SILENTLY CARRYING SCHEMA 0 —
+      three coupled defects in the pointer-ABI narrowing:
+      (1) applyPointerParamAbi's OBJECT arm set p.ptrKind but never
+      p.ptrAux, and boxPtrIR/asF64 default a missing aux to 0 on re-box —
+      a narrowed-then-reboxed OBJECT param carried whatever schema
+      registered FIRST program-wide instead of its own (the foreign-
+      sidecar phantom keys = another object's schema/props read through
+      the wrong sid; needs the full bundle because the colliding schema-0
+      owner only exists there); (2) passthroughPtrParam recognized only
+      a direct `return param`, not same-function recursive delegation
+      (`return f(param, …)` — watr's recursive helpers), so eligible
+      functions never proved pointer-ABI and mixed narrowed/boxed chains;
+      (3) emitSchemaSlotGuarded/emitTypeTag shared one IR node across two
+      tree positions (cloneIR now exported from src/ir.js and applied) —
+      single-visit passes could free a local behind the second occurrence.
+      Differentially verified (pre-fix narrow.js/ir.js/core.js reads a
+      NEIGHBORING schema's slot: 222-or-undefined instead of 111) +
+      pinned: test/objects.js host pin, test/selfhost.js warm-kernel
+      no-_clear stress (Map.get → unknown-schema prop access, 2 field
+      variants × 30 rounds). MAIN re-verified post-merge: kern-seq 10/10
+      clean, suite 2787/2793 + ratchet 6/6 + selfhost 5/5, dist rebuilt,
+      wordcount LEADS with exact checksum, jessie exact checksum.
+      L2 RESIDUAL (manifestation 3) — DIAGNOSED, fix withheld honestly:
+      watr's `opts = normalize(opts)` reassigns a param whose call-sites
+      all prove VAL.OBJECT while normalize actually returns a HASH; the
+      per-body tracker has no param decl node to re-seed from and can't
+      resolve the call RHS, so the stale OBJECT fact rides into
+      emitPropAccess → OBJECT off-16 propsPtr layout read on a HASH — a
+      genuine layout type-confusion (this is why opts.inlineOnce reads
+      undefined at the gate → inlineOnce never runs in-kernel → the
+      __memgrow inline byte-drift). EVERY fix variant (entry-kind guard
+      at analyzeFuncForEmit, D-step re-seed deletion, consumer-side
+      emitPropAccess gates broad and narrow) fixes L2 parity but exposes
+      a FOURTH pre-existing bug: __alloc_hdr_n OOB after ~22-28 warm
+      compiles with NO _clear — allocation-pressure-sensitive, different
+      call paths per fix variant (dyn_set/parseIf, map_set/optimize
+      closure), control code-reorder stays clean ⇒ routing MORE dispatch
+      through the guardedSlotOf/dyn-props path retriggers it. NEXT named
+      hunt: root-cause __alloc_hdr_n OOB under sustained dyn-props
+      allocation pressure (no rewind involved) — THEN re-apply the
+      manifestation-3 fix (the reverted variant is in the hunt branch:
+      6cfc4b2 on hunt-kernel-corruption, revert rationale in e229248).
     - for-of over nullish: DECIDED + LANDED (8f7b380) — throws per ES
       (catchable $__jz_err), guard only in __iter_arr's unknown-receiver arm
       (typed receivers pay nothing). Pinned in test/iteration.js.
