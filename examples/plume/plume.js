@@ -3,17 +3,19 @@
 // @Rainmaker1973 (x.com/Rainmaker1973/status/2075485116856504794, rendered in Processing by
 // 数理世界) — the tweet-sized generative genre pioneered by @yuruyurau. The formula, verbatim
 // from the video overlay:
-//   k = 5·cos(x/14)·cos(y/30)
+//   k = K·cos(x/FX)·cos(y/FY)          (original: K=5, FX=14, FY=30)
 //   e = y/8 − 13
 //   d = (k²+e²)/59 + 4
-//   q = 60 − 3·sin(atan2(k,e)·e) + k·(3 + A/d·sin(d²−2t))     (A = 4 in the original)
+//   q = 60 − 3·sin(atan2(k,e)·e) + k·(3 + 4/d·sin(d²−2t))
 //   c = d/2 + e/99 − t/18
 //   → point at (u,v) = (3q·sin c, 3(q+9d)·cos c)
 // Each grid point lands somewhere on a feathered plume — the cap is the low-d core, the barbs
 // are the sin(d²−2t) ripple sweeping outward as t runs. Points splat additively into an RGB
 // accumulator (hue follows d, so the ribs band into rainbow rings) and tone-map through a
-// soft-saturation exp curve. frame(t, amp, hue0): amp is the barb-ripple depth A, hue0 spins
-// the palette. resize(w,h) → Uint32Array px.
+// soft-saturation exp curve. frame(t, ka, fx, fy, hue0) exposes the formula's three shape
+// constants — K reweights the whole interference term, FX/FY retune the two cosine combs, so
+// dragging genuinely REWRITES the formula into sibling species of the same family — plus a
+// palette spin. Defaults (5, 14, 30, 0) are the original. resize(w,h) → Uint32Array px.
 let W = 0, H = 0, px
 let acc               // Float64Array, W*H*3 — additive RGB exposure for this frame
 let elut              // Int32Array(1024) — 255·(1−e^(−v/150)) soft-saturation tone curve
@@ -50,7 +52,7 @@ let splat = (x, y, r, g, b) => {
   acc[i] = acc[i] + r3; acc[i + 1] = acc[i + 1] + g3; acc[i + 2] = acc[i + 2] + b3
 }
 
-export let frame = (t, amp, hue0) => {
+export let frame = (t, ka, fx, fy, hue0) => {
   let n3 = W * H * 3, i = 0
   while (i < n3) { acc[i] = 0.0; i++ }
 
@@ -63,12 +65,12 @@ export let frame = (t, amp, hue0) => {
   let y = 0
   while (y < 200) {
     let e = y / 8.0 - 13.0
-    let cy30 = Math.cos(y / 30.0)
+    let cyf = Math.cos(y / fy)
     let x = 0
     while (x < 200) {
-      let k = 5.0 * Math.cos(x / 14.0) * cy30
+      let k = ka * Math.cos(x / fx) * cyf
       let d = (k * k + e * e) / 59.0 + 4.0
-      let q = 60.0 - 3.0 * Math.sin(Math.atan2(k, e) * e) + k * (3.0 + amp / d * Math.sin(d * d - 2.0 * t))
+      let q = 60.0 - 3.0 * Math.sin(Math.atan2(k, e) * e) + k * (3.0 + 4.0 / d * Math.sin(d * d - 2.0 * t))
       let c = d * 0.5 + e / 99.0 - t / 18.0
       let u = (3.0 * q * Math.sin(c) - 76.0) * s
       let v = (3.0 * (q + 9.0 * d) * Math.cos(c) + 226.0) * s

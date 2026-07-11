@@ -130,8 +130,8 @@ export const WIKI = {
   'burningship':       W + 'Burning_Ship_fractal',
   'lyapunov':          W + 'Lyapunov_fractal',
   'buddhabrot':        W + 'Buddhabrot',
-  'spectra':           'https://x.com/S_Conradi/status/2075661669854843080',
-  'plume':             'https://x.com/Rainmaker1973/status/2075485116856504794',
+  'spectra':           W + 'Random_matrix',
+  'plume':             W + 'Creative_coding',
   'domain-color':      W + 'Domain_coloring',
   'attractors':        W + 'Attractor',
   'lorenz':            W + 'Lorenz_system',
@@ -160,4 +160,11 @@ export const WIKI = {
   'sph':               W + 'Smoothed-particle_hydrodynamics',
   'lbm':               W + 'Lattice_Boltzmann_methods',
   'raytrace':          W + 'Ray_tracing_(graphics)',
+}
+
+// The specific work an example reproduces (rendered as an "original" link in the demo HUD) —
+// distinct from WIKI, which explains the underlying mathematics.
+export const ORIGIN = {
+  'plume':   'https://x.com/Rainmaker1973/status/2075485116856504794',
+  'spectra': 'https://x.com/S_Conradi/status/2075661669854843080',
 }

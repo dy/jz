@@ -9,7 +9,7 @@
 // hud({ kind, onSwitch, note })           FPS + ms readout + JS/jz toggle
 
 import { instantiate } from '../../interop.js'
-import { EXAMPLES, byName, WIKI } from '../examples.js'
+import { EXAMPLES, byName, WIKI, ORIGIN } from '../examples.js'
 
 // Gallery order + nicer labels come from the shared descriptor (examples/examples.js).
 // Re-exported so existing importers keep working.
@@ -475,6 +475,12 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
   if (nav && WIKI[nav]) {
     const a = document.createElement('a')
     a.className = 'jz-wiki'; a.href = WIKI[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'wiki'
+    addLink(a)
+  }
+  // the specific work this example reproduces (an X post, a paper …) — credit where it is due
+  if (nav && ORIGIN[nav]) {
+    const a = document.createElement('a')
+    a.className = 'jz-wiki'; a.href = ORIGIN[nav]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'original'
     addLink(a)
   }
   // "code" — slides the kernel source in over the demo area (the same .js that IS the example)

@@ -9,16 +9,18 @@
 // random matrices. Complex eigenvalues come in conjugate pairs (the figure is exactly mirror-
 // symmetric); real ones line the bright axis.
 //
-// Per matrix: Beta(α,β) sampled via the log-space Gamma ratio X = 1/(1+exp(lnU₂/β − lnU₁/α))
-// (exact where it matters — the α,β ≪ 1 regime), the characteristic polynomial by
+// Per matrix: Beta(α,β) = G_α/(G_α+G_β) with the Gamma variates generated in LOG space —
+// ln G_a = lnU/a + ln E (Stuart's theorem G_a = U^{1/a}·G_{1+a}, and for a ≪ 1 the factor
+// G_{1+a} is Exp(1) to O(a)) — so the astronomically small tails that double precision cannot
+// hold directly are sampled exactly, the characteristic polynomial by
 // Faddeev–LeVerrier (exact traces, no factorization), roots by Durand–Kerner — all six
 // eigenvalues refined simultaneously to sub-pixel accuracy in a few dozen sweeps. The density
 // DECAYS each frame (buddhabrot-style rolling exposure), so morphing α leaves a smooth trail
 // and a held α converges. frame(t, alpha, beta); reseed(s); resize(w,h) → px.
 let W = 0, H = 0, px, dens
 let rs = 0            // xorshift32 state — i32 wraps identically in JS and jz
-let DECAY = 0.975
-let MATS = 3000       // matrices per frame → 18k eigenvalues; the rolling window holds ~720k
+let DECAY = 0.98
+let MATS = 2200       // matrices per frame → 13k eigenvalues; the rolling window holds ~660k
 let N = 6
 let A = new Float64Array(36)    // the random matrix
 let FM = new Float64Array(36)   // Faddeev–LeVerrier accumulator M_k
@@ -72,10 +74,12 @@ export let frame = (t, alpha, beta) => {
 
   let m = 0
   while (m < MATS) {
-    // 36 i.i.d. entries 2·Beta(α,β)−1 via the log-space Gamma ratio
+    // 36 i.i.d. entries 2·Beta(α,β)−1, Beta as a Gamma ratio computed in log space
     let e = 0
     while (e < 36) {
-      A[e] = 2.0 / (1.0 + Math.exp(Math.log(rnd()) * ib - Math.log(rnd()) * ia)) - 1.0
+      let lga = Math.log(rnd()) * ia + Math.log(-Math.log(rnd()))   // ln G_α
+      let lgb = Math.log(rnd()) * ib + Math.log(-Math.log(rnd()))   // ln G_β
+      A[e] = 2.0 / (1.0 + Math.exp(lgb - lga)) - 1.0                // 2·G_α/(G_α+G_β) − 1
       e++
     }
 

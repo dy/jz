@@ -10,21 +10,28 @@
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
 // Two rainbow feather-plumes from seven lines of trig (see plume.js — after the piece shared
-// by @Rainmaker1973, x.com/Rainmaker1973/status/2075485116856504794). The animation runs on
-// its own; drag ↔ spins the palette, drag ↕ sets the barb-ripple depth (the "4" in the
-// original formula), and the dice re-rolls both.
-let amp = 4.0, hue0 = 0
+// by @Rainmaker1973). Dragging edits the FORMULA itself: ↔ retunes the x-cosine comb
+// (the /14), ↕ reweights the interference term (the leading 5) — sibling species of the same
+// family. The dice re-rolls all three shape constants plus the palette; double-click restores
+// the original (5, 14, 30).
+let ka = 5.0, fx = 14.0, fy = 30.0, hue0 = 0
 const demo = runDemo({
   name: "plume",
-  hint: "40 000 points through seven lines of trig · drag ↔ hue ↕ ripple · dice to re-roll",
-  frame: (e, t) => { e.frame(t, amp, hue0) },
-  randomize: () => { hue0 = Math.random() * 360; amp = 1.5 + Math.random() * 6 },
+  hint: "40 000 points through seven lines of trig · drag rewrites the formula · dice re-rolls it",
+  frame: (e, t) => { e.frame(t, ka, fx, fy, hue0) },
+  randomize: () => {
+    ka = 2.0 + Math.random() * 6
+    fx = 8.0 + Math.random() * 18
+    fy = 18.0 + Math.random() * 26
+    hue0 = Math.random() * 360
+  },
 })
 
 const ptr = trackPointer(demo.cv)
-const pick = () => { hue0 = ptr.x * 360; amp = 0.5 + ptr.y * 8 }
+const pick = () => { fx = 8.0 + ptr.x * 18; ka = 2.0 + ptr.y * 6 }
 demo.cv.addEventListener("pointerdown", pick)
 demo.cv.addEventListener("pointermove", () => { if (ptr.down) pick() })
+demo.cv.addEventListener("dblclick", () => { ka = 5.0; fx = 14.0; fy = 30.0 })
 </script>
 </body>
 </html>
