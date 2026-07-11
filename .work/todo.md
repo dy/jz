@@ -734,7 +734,7 @@
         shared-layout __len shortcut lied). Diagnosed via compileDiag
         intern records (host {size:4, shifted:[[1,132,68,11]]} vs kernel
         {size:0, shifted:[]}). Pinned test/objects.js, 4 surfaces.
-      NARROWED, recorded: '.byteLength'/'.buffer' bare getters still
+      NARROWED, recorded: '.byteLength'/'.buffer'/'.byteOffset' bare getters still
       hijack UNKNOWN receivers carrying same-named own props (proven
       OBJECT/HASH now safe); notString OBJECT receivers still route
       .length → __len. Same fix shape when picked up.
