@@ -706,6 +706,45 @@
     - for-of over nullish: DECIDED + LANDED (8f7b380) — throws per ES
       (catchable $__jz_err), guard only in __iter_arr's unknown-receiver arm
       (typed receivers pay nothing). Pinned in test/iteration.js.
+    - BYTE-PARITY COMPLETE (2026-07-11, 2b482a2 + 77331c4): all three
+      self-parity probes byte-IDENTICAL at ALL levels (9/9), and the full
+      bench lab input compiles kernel==host byte-exact (in-process L2 and
+      the -Os build both cs=3935718203 == engines' reference). Two final
+      roots, both ordinary jz miscompiles the kernel tripped on:
+      * unshift SPREAD ordering (2b482a2): prepends compose right-to-left,
+        so `a.unshift(1, ...ys)` must run the spread loop (end→start)
+        BEFORE the normal args — emitSingleSpreadMethodCall did the
+        opposite ([...ys, 1, …]) and emitMultiSpreadMethodCall walked
+        segments forward. Fixed with evaluation order preserved (normals
+        spill to temps L→R, operations run R→L). This was assemble.js's
+        own `inject.unshift(setBase, ...snapSlots)` — the __gsnap_base
+        stmt reorder seen in every closure/data diff. Pinned
+        (test/spread.js; multi-arg emitter landed earlier at 5ea4d15).
+      * `.size`/`.length` DOT-NAME HIJACK (77331c4): the bare '.size'
+        getter read __len of ANY unproven receiver — `{size: 4}` → 0 —
+        so the kernel's stripStaticDataPrefix read
+        `ctx.runtime.internTable.size` as 0 and never shifted the intern
+        slot: THE final L2 data byte (kern 68 = pre-strip, host 11).
+        Fixed at the right altitude: `.size` = typed SET/MAP getters +
+        runtime dispatch (SET|MAP → __len, else __dyn_get_expr_t_h);
+        __length gets a gated dyn-prop fallback arm (only when a schema
+        or hash machinery exists AND collection.js is registered);
+        proven-OBJECT/HASH receivers skip ALL bare getters (own props
+        win, static slot); Set/Map `.length` → undefined per ES (the
+        shared-layout __len shortcut lied). Diagnosed via compileDiag
+        intern records (host {size:4, shifted:[[1,132,68,11]]} vs kernel
+        {size:0, shifted:[]}). Pinned test/objects.js, 4 surfaces.
+      NARROWED, recorded: '.byteLength'/'.buffer' bare getters still
+      hijack UNKNOWN receivers carrying same-named own props (proven
+      OBJECT/HASH now safe); notString OBJECT receivers still route
+      .length → __len. Same fix shape when picked up.
+      REMAINING (in flight): bench jz ROW at level 'speed' THROWS
+      (uncaught $__jz_err) since ad45071 — L2/-Os builds run+parity-ok,
+      so it's a speed-only miscompile of the compiler bundle; entered
+      with the pointer-ABI narrowing commit; single-component ablation
+      over the L3 preset (inlineFns/reduceUnroll/rotateLoops/watrLicm/
+      watrGuard/hoistPool/caps/boolSelect/recursionUnroll) in progress
+      in a clean worktree (scratchpad/ablate.mjs).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
@@ -811,7 +850,7 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [ ] **Heap + RAM budget** — pick a memory region; document RAM budget; w2c2 (~150 KB) runtime.
 
 ## Language coverage / correctness
-- [ ] **Extension-surface plan (2026-07-10)** — full evidence map in
+- [~] **Extension-surface plan (2026-07-10)** — RINGS 0-1 + RUNNER COMPLETE 2026-07-11 (see extension-surface.md §session 3; remaining: Ring-2 stdlib batch, workers v1, generators) — full evidence map in
   `.work/extension-surface.md` (gates, rings 0–3, async/workers verdicts, test262 pool
   math, permanently-out reasons). Measured this session: language 1462/0/21924 (floor
   1453 ✓), builtins **719/12 RED** (floor 722). Work ALL of it, in order:
