@@ -14,7 +14,8 @@ const { exports } = await instantiate(wasm)
 
 // Most examples render at the standard thumb size; a few want a coarser grid so their cells
 // stay chunky/legible at thumbnail scale (the gallery upscales the webp).
-const SIZE = { wireworld: [1010, 700] }[name]   // larger die so the ~3×3 grid of distinct macro-cell blocks reads (bigger blocks now → fewer per unit area)
+const SIZE = { wireworld: [1010, 700],          // larger die so the ~3×3 grid of distinct macro-cell blocks reads (bigger blocks now → fewer per unit area)
+               lenia: [192, 118] }[name]        // the driver's cap — fixed-radius kernels mean creature size is set in CELLS
 const W = SIZE ? SIZE[0] : 760, H = SIZE ? SIZE[1] : 468
 let px = exports.resize(W, H)
 if (exports.init) exports.init()
@@ -97,7 +98,7 @@ const FRAME_ARGS = {
   penrose:       () => [0, 0.0, 0.0, 1.0],
   blackhole:     () => [3.0, 80 * Math.PI / 180, 0.5],
   interference:  () => [1.5, 5, 520],   // 5 sources spaced past one wavelength — distinct diffraction orders
-  lenia:         () => [0.1],           // dt is a STEP, not a clock — match the driver's fixed 0.1
+  lenia:         () => [0.2, 0, 0, 0],  // dt is a STEP, not a clock — match the driver's fixed 0.2
   raymarcher:    (f) => { const az = 0.6, el = 0.35, d = 3.7; return [f / 60, Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d] },
   percolation:   (f) => [f / 60, 0.62],
   schrodinger:   (f) => [f / 60],
